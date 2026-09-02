@@ -20,10 +20,12 @@ var eximMsgIDRegex = regexp.MustCompile(`^[0-9A-Za-z]{6}-(?:[0-9A-Za-z]{6}-[0-9A
 // Allowed roots for each fix action. Declared as vars (not consts) so tests
 // can redirect remediation under t.TempDir() without writing to real /home,
 // /tmp, or /var/spool. Production must not mutate these at runtime.
+// A nil list means "the platform's account roots" (plus, for quarantine,
+// the temp trees in quarantineExtraRoots); see effectiveFixRoots.
 var (
-	fixPermissionsAllowedRoots = []string{"/home"}
-	fixQuarantineAllowedRoots  = []string{"/home", "/tmp", "/dev/shm", "/var/tmp"}
-	fixHtaccessAllowedRoots    = []string{"/home"}
+	fixPermissionsAllowedRoots []string
+	fixQuarantineAllowedRoots  []string
+	fixHtaccessAllowedRoots    []string
 	eximSpoolDirs              = []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 )
 
@@ -163,7 +165,7 @@ func fixPermissions(path, checkType string) RemediationResult {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	path, info, err := resolveExistingFixPath(path, fixPermissionsAllowedRoots)
+	path, info, err := resolveExistingFixPath(path, effectiveFixRoots(fixPermissionsAllowedRoots))
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -207,7 +209,7 @@ func fixQuarantine(path string) RemediationResult {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	path, info, err := resolveExistingFixPath(path, fixQuarantineAllowedRoots)
+	path, info, err := resolveExistingFixPath(path, effectiveFixRoots(fixQuarantineAllowedRoots, quarantineExtraRoots...))
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -302,7 +304,7 @@ func fixHtaccess(path, message string) RemediationResult {
 	if filepath.Base(path) != ".htaccess" {
 		return RemediationResult{Error: "automated .htaccess remediation only applies to .htaccess files"}
 	}
-	path, _, err := resolveExistingFixPath(path, fixHtaccessAllowedRoots)
+	path, _, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -399,7 +401,7 @@ func fixHtaccess(path, message string) RemediationResult {
 // and "Webshell found: /path/to/file"
 func extractFilePathFromMessage(message string) string {
 	// Look for /home/ or /tmp/ paths
-	for _, prefix := range []string{"/home/", "/tmp/", "/dev/shm/", "/var/tmp/"} {
+	for _, prefix := range accountRootPrefixes("/tmp/", "/dev/shm/", "/var/tmp/") {
 		idx := strings.Index(message, prefix)
 		if idx < 0 {
 			continue
@@ -496,7 +498,7 @@ func fixTargetDepthBelow(path, root string) int {
 // A root itself is never a target, and under /home neither is an account's
 // home directory: quarantining or chmod-ing either takes a whole tree away.
 func fixTargetMinDepth(root string) int {
-	if filepath.Clean(root) == "/home" {
+	if isAccountRoot(root) {
 		return 2
 	}
 	return 1
@@ -509,15 +511,11 @@ func isPathWithinOrEqual(path, base string) bool {
 }
 
 func homeAccountRoot(path string) string {
-	clean := filepath.Clean(path)
-	if !strings.HasPrefix(clean, "/home/") {
+	root, account, ok := accountRootOf(path)
+	if !ok {
 		return ""
 	}
-	parts := strings.Split(clean, string(filepath.Separator))
-	if len(parts) < 4 {
-		return ""
-	}
-	return filepath.Join("/home", parts[2])
+	return filepath.Join(root, account)
 }
 
 // extractEximMsgID extracts an Exim message ID from a finding message.

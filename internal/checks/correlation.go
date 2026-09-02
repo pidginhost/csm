@@ -105,11 +105,8 @@ func CorrelateFindings(findings []alert.Finding) []alert.Finding {
 
 func extractAccountFromFinding(f alert.Finding) string {
 	for _, s := range []string{f.Message, f.Details} {
-		if idx := strings.Index(s, "/home/"); idx >= 0 {
-			rest := s[idx+6:]
-			if slashIdx := strings.Index(rest, "/"); slashIdx > 0 {
-				return rest[:slashIdx]
-			}
+		if account := accountNameInText(s); account != "" {
+			return account
 		}
 	}
 	return ""

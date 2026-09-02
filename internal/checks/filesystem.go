@@ -149,7 +149,7 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		if !entry.IsDir() {
 			continue
 		}
-		scanForSUID(ctx, filepath.Join("/home", entry.Name()), 3, &findings)
+		scanForSUID(ctx, scanHomeDirPath(entry), 3, &findings)
 	}
 
 	return findings
@@ -219,7 +219,7 @@ func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		if !homeEntry.IsDir() {
 			continue
 		}
-		homeDir := filepath.Join("/home", homeEntry.Name())
+		homeDir := scanHomeDirPath(homeEntry)
 
 		// Get all potential document roots
 		docRoots := []string{filepath.Join(homeDir, "public_html")}

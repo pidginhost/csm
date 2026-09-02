@@ -272,7 +272,7 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 			continue
 		}
 
-		path, info, err := resolveExistingFixPath(path, fixPermissionsAllowedRoots)
+		path, info, err := resolveExistingFixPath(path, effectiveFixRoots(fixPermissionsAllowedRoots))
 		if err != nil || info.IsDir() {
 			continue
 		}
@@ -372,7 +372,7 @@ func extractFilePath(message string) string {
 	// longer/more-specific prefixes (/var/tmp/, /dev/shm/) must come BEFORE
 	// shorter ones (/tmp/) — otherwise "/tmp/" would match inside "/var/tmp/"
 	// and we'd silently misclassify the path.
-	for _, prefix := range []string{"/var/tmp/", "/dev/shm/", "/home/", "/tmp/"} {
+	for _, prefix := range accountRootPrefixes("/var/tmp/", "/dev/shm/", "/tmp/") {
 		if idx := strings.Index(message, prefix); idx >= 0 {
 			rest := message[idx:]
 			// Path ends at space, comma, or end of string

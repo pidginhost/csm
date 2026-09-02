@@ -228,7 +228,7 @@ type mailboxEntry struct {
 // are inspected first when the check timeout cuts work short. maxFiles caps
 // iteration; 0 disables the cap.
 func discoverShadowFiles(ctx context.Context, maxFiles int) []shadowFile {
-	matches, _ := osFS.Glob("/home/*/etc/*/shadow")
+	matches, _ := accountHomeGlob("*/etc/*/shadow")
 	ranked := rankPathsByMtimeDesc(ctx, matches, maxFiles)
 	results := make([]shadowFile, 0, len(ranked))
 	for _, m := range ranked {

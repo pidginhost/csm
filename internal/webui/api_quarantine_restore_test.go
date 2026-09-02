@@ -217,10 +217,11 @@ func TestApiQuarantineRestoreRemovesCSMCreatedHtaccess(t *testing.T) {
 	if err := os.WriteFile(live, patched, 0644); err != nil {
 		t.Fatal(err)
 	}
+	liveOwner := fileOwner(t, live)
 	meta := checks.QuarantineMeta{
 		OriginalPath:          live,
-		Owner:                 os.Getuid(),
-		Group:                 os.Getgid(),
+		Owner:                 liveOwner.uid,
+		Group:                 liveOwner.gid,
 		Mode:                  "-rw-r--r--",
 		RestoreAction:         checks.QuarantineRestoreRemoveIfUnchanged,
 		ExpectedCurrentSHA256: restoreTestSHA256(patched),
@@ -266,10 +267,11 @@ func TestApiQuarantineRestorePreservesEditToCSMCreatedHtaccess(t *testing.T) {
 	if err := os.WriteFile(live, customerEdit, 0644); err != nil {
 		t.Fatal(err)
 	}
+	liveOwner := fileOwner(t, live)
 	meta := checks.QuarantineMeta{
 		OriginalPath:          live,
-		Owner:                 os.Getuid(),
-		Group:                 os.Getgid(),
+		Owner:                 liveOwner.uid,
+		Group:                 liveOwner.gid,
 		Mode:                  "-rw-r--r--",
 		RestoreAction:         checks.QuarantineRestoreRemoveIfUnchanged,
 		ExpectedCurrentSHA256: restoreTestSHA256(patched),
@@ -321,10 +323,11 @@ func TestApiQuarantineRestoreReplacesUnchangedVirtualPatch(t *testing.T) {
 	if err := os.Chmod(live, 0600); err != nil {
 		t.Fatal(err)
 	}
+	liveOwner := fileOwner(t, live)
 	meta := checks.QuarantineMeta{
 		OriginalPath:          live,
-		Owner:                 os.Getuid(),
-		Group:                 os.Getgid(),
+		Owner:                 liveOwner.uid,
+		Group:                 liveOwner.gid,
 		Mode:                  "-rw-------",
 		RestoreAction:         checks.QuarantineRestoreReplaceIfUnchanged,
 		ExpectedCurrentSHA256: restoreTestSHA256(patched),
@@ -373,10 +376,11 @@ func TestApiQuarantineRestorePreservesPostPatchCustomerEdit(t *testing.T) {
 	if err := os.WriteFile(live, customerEdit, 0644); err != nil {
 		t.Fatal(err)
 	}
+	liveOwner := fileOwner(t, live)
 	meta := checks.QuarantineMeta{
 		OriginalPath:          live,
-		Owner:                 os.Getuid(),
-		Group:                 os.Getgid(),
+		Owner:                 liveOwner.uid,
+		Group:                 liveOwner.gid,
 		Mode:                  "-rw-r--r--",
 		RestoreAction:         checks.QuarantineRestoreReplaceIfUnchanged,
 		ExpectedCurrentSHA256: restoreTestSHA256(patched),
@@ -566,4 +570,20 @@ func TestApiQuarantineRestoreConflictWhenDestinationExists(t *testing.T) {
 	if string(got) != "original survivor" {
 		t.Errorf("destination file should be untouched, got %q", got)
 	}
+}
+
+// fileOwner reads the uid and gid a test fixture actually got: on macOS a
+// file created under /private/tmp inherits the directory's group (wheel),
+// which is not the process gid the restore metadata used to assume.
+func fileOwner(t *testing.T, path string) struct{ uid, gid int } {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("owner information not available on this platform")
+	}
+	return struct{ uid, gid int }{int(st.Uid), int(st.Gid)}
 }

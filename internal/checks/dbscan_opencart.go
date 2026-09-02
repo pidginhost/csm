@@ -73,7 +73,7 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, _ *state.Stor
 	}
 	var findings []alert.Finding
 
-	configs, _ := osFS.Glob("/home/*/public_html/config.php")
+	configs, _ := accountHomeGlob("*/public_html/config.php")
 	if len(configs) == 0 {
 		return nil
 	}

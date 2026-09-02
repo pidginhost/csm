@@ -67,14 +67,37 @@ var uploadTreeDirNames = map[string]bool{
 // never a docroot-relative upload dir and is skipped, so a system temp root
 // does not make every path below it an upload tree.
 func htaccessInUploadTree(path string) bool {
-	parts := strings.Split(strings.Trim(filepath.ToSlash(filepath.Dir(path)), "/"), "/")
-	for i, part := range parts {
-		if i == 0 {
-			continue
-		}
+	for _, part := range webTreeComponents(filepath.Dir(path)) {
 		if uploadTreeDirNames[strings.ToLower(part)] {
 			return true
 		}
 	}
 	return false
+}
+
+// docrootMarkerNames are directory names that begin a web tree on hosts
+// whose layout is not one of the configured account roots.
+var docrootMarkerNames = map[string]bool{
+	"public_html": true, "www": true, "htdocs": true, "httpdocs": true,
+	"web": true, "html": true, "public": true,
+}
+
+// webTreeComponents returns the directory components that lie inside the
+// account's web tree: everything below <root>/<account> when dir is under
+// an account root, otherwise everything below the first document-root
+// marker. The prefix above the web tree (a temp root, /var/www, an account
+// literally named tmp) never counts: it is not attacker-writable content.
+func webTreeComponents(dir string) []string {
+	clean := filepath.ToSlash(filepath.Clean(dir))
+	if root, account, ok := accountRootOf(clean); ok {
+		rel := strings.TrimPrefix(clean, filepath.ToSlash(filepath.Join(root, account))+"/")
+		return strings.Split(rel, "/")
+	}
+	parts := strings.Split(strings.Trim(clean, "/"), "/")
+	for i, part := range parts {
+		if docrootMarkerNames[strings.ToLower(part)] {
+			return parts[i+1:]
+		}
+	}
+	return nil
 }

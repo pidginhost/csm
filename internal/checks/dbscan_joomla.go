@@ -93,7 +93,7 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, _ *state.Store)
 	}
 	var findings []alert.Finding
 
-	configs, _ := osFS.Glob("/home/*/public_html/configuration.php")
+	configs, _ := accountHomeGlob("*/public_html/configuration.php")
 	if len(configs) == 0 {
 		return nil
 	}

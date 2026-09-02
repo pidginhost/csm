@@ -93,7 +93,9 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 		"world_writable_php")
 	register(func(in VerifyInput) VerifyResult { return verifyWriteBit(in.Path, 0020, "group-writable") },
 		"group_writable_php")
-	register(func(in VerifyInput) VerifyResult { return verifyPathAbsent(in.Path, fixQuarantineAllowedRoots) },
+	register(func(in VerifyInput) VerifyResult {
+		return verifyPathAbsent(in.Path, effectiveFixRoots(fixQuarantineAllowedRoots, quarantineExtraRoots...))
+	},
 		presenceVerifiableChecks...)
 	register(reverifyContentFinding, contentReverifiableChecks...)
 	register(func(in VerifyInput) VerifyResult { return verifyHtaccessClean(in.Path) },

@@ -709,9 +709,11 @@ func htaccessAncestorDirs(path string) []string {
 }
 
 func stopHtaccessAncestorWalk(dir string) bool {
-	if !strings.HasPrefix(dir, "/home/") {
+	// Stop at an account home: "<root>/<account>" is not inside an account,
+	// while "<root>/<account>/x" is.
+	if _, _, inside := accountRootOf(dir); inside {
 		return false
 	}
-	rest := strings.TrimPrefix(dir, "/home/")
-	return rest != "" && !strings.Contains(rest, "/")
+	parent := filepath.Dir(dir)
+	return isAccountRoot(parent) && filepath.Base(dir) != "" && dir != parent
 }

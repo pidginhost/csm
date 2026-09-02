@@ -108,12 +108,12 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 // mutex and never bleed scope into each other.
 func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *state.Store, account string, opts AccountScanOptions) []alert.Finding {
 	// Verify account exists
-	homeDir := filepath.Join("/home", account)
+	homeDir := accountHomeDir(account)
 	if _, err := osFS.Stat(homeDir); os.IsNotExist(err) {
 		return []alert.Finding{{
 			Severity:  alert.Warning,
 			Check:     "account_scan",
-			Message:   fmt.Sprintf("Account '%s' not found (no /home/%s directory)", account, account),
+			Message:   fmt.Sprintf("Account '%s' not found (no %s directory)", account, homeDir),
 			Timestamp: time.Now(),
 		}}
 	}
@@ -285,50 +285,61 @@ func accountScanFindingInScope(f alert.Finding, account string) bool {
 	return true
 }
 
+// accountRootPrefixLen reports whether text starts with an account root
+// and how long that prefix is. "/home" keeps cPanel's multi-home tolerance
+// (/home2, /home3) so findings from those trees still resolve.
+func accountRootPrefixLen(text string) (int, bool) {
+	for _, root := range accountHomeRoots() {
+		root = filepath.ToSlash(filepath.Clean(root))
+		if !strings.HasPrefix(text, root) {
+			continue
+		}
+		i := len(root)
+		if root == "/home" {
+			for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+				i++
+			}
+		}
+		if i == len(text) || text[i] == '/' {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 func containsHomeReference(path string) bool {
-	cleaned := filepath.ToSlash(filepath.Clean(path))
-	if !strings.HasPrefix(cleaned, "/home") {
-		return false
-	}
-	i := len("/home")
-	for i < len(cleaned) && cleaned[i] >= '0' && cleaned[i] <= '9' {
-		i++
-	}
-	return i == len(cleaned) || cleaned[i] == '/'
+	_, ok := accountRootPrefixLen(filepath.ToSlash(filepath.Clean(path)))
+	return ok
 }
 
 func textHomeScope(text, account string) (hasHomeRef, hasAccountRef bool) {
-	for i := 0; i < len(text); {
-		idx := strings.Index(text[i:], "/home")
-		if idx < 0 {
-			return hasHomeRef, hasAccountRef
-		}
-		start := i + idx
-		homeAccount, ok := homeAccountAt(text[start:])
-		if ok {
-			hasHomeRef = true
-			if homeAccount == account {
-				hasAccountRef = true
+	for _, root := range accountHomeRoots() {
+		root = filepath.ToSlash(filepath.Clean(root))
+		for i := 0; i < len(text); {
+			idx := strings.Index(text[i:], root)
+			if idx < 0 {
+				break
 			}
+			start := i + idx
+			if homeAccount, ok := homeAccountAt(text[start:]); ok {
+				hasHomeRef = true
+				if homeAccount == account {
+					hasAccountRef = true
+				}
+			}
+			i = start + len(root)
 		}
-		i = start + len("/home")
 	}
 	return hasHomeRef, hasAccountRef
 }
 
 func homeAccountAt(text string) (string, bool) {
-	if !strings.HasPrefix(text, "/home") {
+	i, ok := accountRootPrefixLen(text)
+	if !ok {
 		return "", false
-	}
-	i := len("/home")
-	for i < len(text) && text[i] >= '0' && text[i] <= '9' {
-		i++
 	}
 	if i == len(text) {
 		return "", true
-	}
-	if text[i] != '/' {
-		return "", false
 	}
 	i++
 	start := i
@@ -368,17 +379,42 @@ func stampTenantIDIfEmpty(findings []alert.Finding, account string) []alert.Find
 
 // GetScanHomeDirs returns the list of home directories to scan.
 // When ctx carries an account scope (via ContextWithAccountScope), only
-// that account is returned. Otherwise every entry under /home is read.
-// Nil ctx is tolerated for legacy callers and treated as host-wide.
+// that account is returned. Otherwise every entry under every account root
+// is read. Nil ctx is tolerated for legacy callers and treated as host-wide.
+// Callers that need the directory path use scanHomeDirPath on each entry.
 func GetScanHomeDirs(ctx context.Context) ([]os.DirEntry, error) {
 	if account := AccountFromContext(ctx); account != "" {
-		info, err := osFS.Stat(filepath.Join("/home", account))
+		info, err := osFS.Stat(accountHomeDir(account))
 		if err != nil {
 			return nil, err
 		}
 		return []os.DirEntry{fakeDirEntry{info}}, nil
 	}
-	return osFS.ReadDir("/home")
+	homes, err := listAccountHomes()
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]os.DirEntry, 0, len(homes))
+	for _, h := range homes {
+		entries = append(entries, rootedDirEntry{DirEntry: h.Entry, root: h.Root})
+	}
+	return entries, nil
+}
+
+// rootedDirEntry remembers which account root an entry came from.
+type rootedDirEntry struct {
+	os.DirEntry
+	root string
+}
+
+// scanHomeDirPath returns the home directory for an entry returned by
+// GetScanHomeDirs (or any account enumeration): the entry's own root when it
+// carries one, otherwise the root that holds the account.
+func scanHomeDirPath(entry os.DirEntry) string {
+	if r, ok := entry.(rootedDirEntry); ok {
+		return filepath.Join(r.root, r.Name())
+	}
+	return accountHomeDir(entry.Name())
 }
 
 // WebRootPatterns returns the configured web-root globs, including the
@@ -388,7 +424,7 @@ func WebRootPatterns(cfg *config.Config) []string {
 	case cfg != nil && len(cfg.AccountRoots) > 0:
 		return append([]string(nil), cfg.AccountRoots...)
 	case platform.Detect().IsCPanel():
-		return []string{"/home/*/public_html"}
+		return accountHomeSubPatterns("public_html")
 	default:
 		return nil
 	}
@@ -445,7 +481,7 @@ func (f fakeDirEntry) Info() (os.FileInfo, error) { return f.fi, nil }
 func makeAccountSSHKeyCheck(account string) CheckFunc {
 	return func(_ context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 		var findings []alert.Finding
-		keyFile := filepath.Join("/home", account, ".ssh", "authorized_keys")
+		keyFile := filepath.Join(accountHomeDir(account), ".ssh", "authorized_keys")
 		hash, err := hashFileContent(keyFile)
 		if err != nil {
 			return nil
@@ -498,8 +534,8 @@ func makeAccountBackdoorCheck(account string) CheckFunc {
 		}
 
 		patterns := []string{
-			filepath.Join("/home", account, ".config", "htop", "*"),
-			filepath.Join("/home", account, ".config", "*", "*"),
+			filepath.Join(accountHomeDir(account), ".config", "htop", "*"),
+			filepath.Join(accountHomeDir(account), ".config", "*", "*"),
 		}
 
 		for _, pattern := range patterns {

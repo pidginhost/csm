@@ -105,7 +105,7 @@ func isVirtualPatchableExposedCheck(check string) bool { return vpExposedChecks[
 // directory is denied. Returns Success=false with an "already" error when all
 // applicable rules are already present (idempotent no-op).
 func VirtualPatchExposedFile(filePath string) RemediationResult {
-	resolved, targetInfo, err := resolveExistingFixPath(filePath, fixHtaccessAllowedRoots)
+	resolved, targetInfo, err := resolveExistingFixPath(filePath, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -165,7 +165,7 @@ func VirtualPatchExposedFile(filePath string) RemediationResult {
 // whether an earlier CSM block had been removed or damaged in that file.
 func applyHtaccessDeny(dir string, block []byte) (bool, error) {
 	htaccess := filepath.Join(dir, ".htaccess")
-	if _, err := sanitizeFixPath(htaccess, fixHtaccessAllowedRoots); err != nil {
+	if _, err := sanitizeFixPath(htaccess, effectiveFixRoots(fixHtaccessAllowedRoots)); err != nil {
 		return false, err
 	}
 	state, err := readHtaccessState(htaccess, dir)

@@ -1833,7 +1833,7 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		if !homeEntry.IsDir() {
 			continue
 		}
-		homeDir := filepath.Join("/home", homeEntry.Name())
+		homeDir := scanHomeDirPath(homeEntry)
 
 		// Get all potential document roots
 		docRoots := []string{filepath.Join(homeDir, "public_html")}

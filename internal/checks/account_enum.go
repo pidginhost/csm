@@ -31,11 +31,12 @@ func EnumerateScanAccounts(_ *config.Config) ([]string, error) {
 		return enumerateFromHome()
 	}
 
-	// Build a set of names present under /home for the intersection step.
-	homeEntries, _ := osFS.ReadDir("/home")
-	homeSet := make(map[string]struct{}, len(homeEntries))
-	for _, e := range homeEntries {
-		homeSet[e.Name()] = struct{}{}
+	// Build a set of names present under the account roots for the
+	// intersection step.
+	homes, _ := listAccountHomes()
+	homeSet := make(map[string]struct{}, len(homes))
+	for _, h := range homes {
+		homeSet[h.Name()] = struct{}{}
 	}
 
 	seen := make(map[string]struct{}, len(registryEntries))
@@ -67,9 +68,13 @@ func EnumerateScanAccounts(_ *config.Config) ([]string, error) {
 // truth in this path, a hard read error (anything other than os.ErrNotExist) is
 // propagated so callers can distinguish a broken enumeration from an empty host.
 func enumerateFromHome() ([]string, error) {
-	homeEntries, err := osFS.ReadDir("/home")
+	homes, err := listAccountHomes()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
+	}
+	homeEntries := make([]os.DirEntry, 0, len(homes))
+	for _, h := range homes {
+		homeEntries = append(homeEntries, h.Entry)
 	}
 
 	seen := make(map[string]struct{}, len(homeEntries))

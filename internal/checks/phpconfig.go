@@ -258,7 +258,7 @@ func CheckPHPConfigChanges(ctx context.Context, cfg *config.Config, store *state
 			}
 		}
 
-		roots := []string{filepath.Join("/home", user, "public_html")}
+		roots := []string{filepath.Join(accountHomeDir(user), "public_html")}
 		rootSet := map[string]struct{}{roots[0]: {}}
 		addRoot := func(root string) bool {
 			root = filepath.Clean(root)
@@ -422,7 +422,7 @@ func phpIniFallbackRoots(
 	if maxRoots <= 0 || maxEntries <= 0 {
 		return nil, false, nil
 	}
-	home := filepath.Join("/home", user)
+	home := accountHomeDir(user)
 	var roots []string
 	entriesSeen := 0
 	complete, err := forEachPHPIniDirEntry(ctx, home, func(entry os.DirEntry) bool {
@@ -793,8 +793,11 @@ func PHPConfigRealtimeRootPatterns(cfg *config.Config) []string {
 		return nil
 	}
 
-	patterns := []string{"/home/*"}
-	seen := map[string]struct{}{patterns[0]: {}}
+	patterns := accountHomePatterns()
+	seen := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		seen[p] = struct{}{}
+	}
 	data, err := osFS.ReadFile(userdataDomainsPath)
 	if err != nil {
 		return patterns

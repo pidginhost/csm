@@ -527,8 +527,7 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		if !homeEntry.IsDir() {
 			continue
 		}
-		user := homeEntry.Name()
-		homeDir := filepath.Join("/home", user)
+		homeDir := scanHomeDirPath(homeEntry)
 
 		// Scan wp-content/uploads for PHP files
 		uploadDirs := []string{

@@ -147,7 +147,7 @@ func autoPrependTargetSuspicious(target, htaccessPath string) bool {
 			return true
 		}
 	}
-	if !strings.HasSuffix(lower, ".php") || !strings.HasPrefix(lower, "/") || strings.HasPrefix(lower, "/home/") {
+	if !strings.HasSuffix(lower, ".php") || !strings.HasPrefix(lower, "/") || underAccountRoot(lower) {
 		return true
 	}
 	if tree := htaccessAccountTree(htaccessPath); tree != "" && strings.HasPrefix(lower, strings.ToLower(tree)+"/") {
@@ -779,7 +779,7 @@ func CleanHtaccessFile(path string) RemediationResult {
 	if filepath.Base(path) != ".htaccess" {
 		return RemediationResult{Error: "automated .htaccess remediation only applies to .htaccess files"}
 	}
-	resolved, _, err := resolveExistingFixPath(path, fixHtaccessAllowedRoots)
+	resolved, _, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}

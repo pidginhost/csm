@@ -31,7 +31,7 @@ const credentialReuseMinAccounts = 2
 // a truncated one-way fingerprint is used to group identical hashes, and
 // findings report the affected accounts and a count -- not the hash.
 func CheckCredentialReuse(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
+	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
 
 	// fingerprint -> set of distinct accounts carrying that admin hash.
 	byFingerprint := map[string]map[string]struct{}{}

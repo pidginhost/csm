@@ -113,6 +113,17 @@ func (i Info) CronSpoolDir() string {
 	return "/var/spool/cron"
 }
 
+// AccountHomeRoots returns the directories whose children are hosting
+// accounts: /home on cPanel, DirectAdmin and plain hosts, /var/www/vhosts
+// on Plesk. Every account-scoped check, remediation and re-check resolves
+// "<root>/<account>" through this instead of assuming /home.
+func (i Info) AccountHomeRoots() []string {
+	if i.Panel == PanelPlesk {
+		return []string{"/var/www/vhosts"}
+	}
+	return []string{"/home"}
+}
+
 // WebServerUsers returns the account(s) the web server serves requests as
 // on this platform: cPanel's nobody, DirectAdmin's apache (plus nobody for
 // its suEXEC fallback), Plesk's distribution web user, and for a panel-less

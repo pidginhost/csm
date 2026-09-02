@@ -108,7 +108,7 @@ func getCageFSDisabledUsers(mode string) map[string]bool {
 
 func hasOpenBasedir(user string) bool {
 	// Check .user.ini in public_html
-	userIni := filepath.Join("/home", user, "public_html", ".user.ini")
+	userIni := filepath.Join(accountHomeDir(user), "public_html", ".user.ini")
 	if data, err := osFS.ReadFile(userIni); err == nil {
 		if strings.Contains(strings.ToLower(string(data)), "open_basedir") {
 			return true
@@ -116,7 +116,7 @@ func hasOpenBasedir(user string) bool {
 	}
 
 	// Check .htaccess for php_value open_basedir
-	htaccess := filepath.Join("/home", user, "public_html", ".htaccess")
+	htaccess := filepath.Join(accountHomeDir(user), "public_html", ".htaccess")
 	if data, err := osFS.ReadFile(htaccess); err == nil {
 		if strings.Contains(strings.ToLower(string(data)), "open_basedir") {
 			return true
@@ -149,7 +149,7 @@ func CheckSymlinkAttacks(ctx context.Context, _ *config.Config, _ *state.Store) 
 			continue
 		}
 		user := homeEntry.Name()
-		homeDir := filepath.Join("/home", user)
+		homeDir := scanHomeDirPath(homeEntry)
 		docRoot := filepath.Join(homeDir, "public_html")
 
 		scanForMaliciousSymlinks(docRoot, user, homeDir, 4, &findings)
@@ -197,14 +197,13 @@ func scanForMaliciousSymlinks(dir, user, homeDir string, maxDepth int, findings 
 		}
 
 		// Check if target points to another user's home
-		if strings.HasPrefix(target, "/home/") {
-			parts := strings.SplitN(target[6:], "/", 2)
-			if len(parts) > 0 && parts[0] != user {
+		if _, targetUser, ok := accountRootOf(target); ok {
+			if targetUser != user {
 				*findings = append(*findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "symlink_attack",
 					Message:  fmt.Sprintf("Symlink to another user's directory: %s -> %s", fullPath, target),
-					Details:  fmt.Sprintf("User: %s, target user: %s\nThis could be used to read other accounts' files", user, parts[0]),
+					Details:  fmt.Sprintf("User: %s, target user: %s\nThis could be used to read other accounts' files", user, targetUser),
 				})
 				continue
 			}

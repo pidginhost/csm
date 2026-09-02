@@ -119,7 +119,7 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 	}
 
 	var findings []alert.Finding
-	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
+	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
 	if len(wpConfigs) == 0 {
 		return nil
 	}

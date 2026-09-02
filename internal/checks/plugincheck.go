@@ -258,10 +258,11 @@ func CheckOutdatedPlugins(ctx context.Context, cfg *config.Config, _ *state.Stor
 // findAllWPInstalls discovers all wp-config.php files under /home, deduplicating
 // and skipping cache/backup/staging/trash paths.
 func findAllWPInstalls() []string {
+	// Relative to each account root; see accountHomeGlob.
 	patterns := []string{
-		"/home/*/public_html/wp-config.php",
-		"/home/*/public_html/*/wp-config.php",
-		"/home/*/*/wp-config.php",
+		"*/public_html/wp-config.php",
+		"*/public_html/*/wp-config.php",
+		"*/*/wp-config.php",
 	}
 
 	seen := make(map[string]bool)
@@ -270,7 +271,7 @@ func findAllWPInstalls() []string {
 	skipSubstrings := []string{"/cache/", "/backup", "/staging", "/.trash/"}
 
 	for _, pattern := range patterns {
-		matches, _ := osFS.Glob(pattern)
+		matches, _ := accountHomeGlob(pattern)
 		for _, m := range matches {
 			m = canonicalWPInstallPath(m)
 			skip := false

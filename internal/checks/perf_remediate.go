@@ -12,8 +12,8 @@ import (
 
 // fixPerfAllowedRoots scopes performance remediations to per-account web
 // content. Same shape as the other fix*AllowedRoots so tests can swap in
-// a t.TempDir().
-var fixPerfAllowedRoots = []string{"/home"}
+// a t.TempDir(); nil means the platform's account roots.
+var fixPerfAllowedRoots []string
 
 // FixErrorLogBloat truncates an account-owned error_log file in place.
 // Truncating preserves the inode and file ownership so any PHP process
@@ -21,7 +21,7 @@ var fixPerfAllowedRoots = []string{"/home"}
 // open/reopen race; this is also the safest action because nothing in
 // the host needs the historical lines to keep serving traffic.
 func FixErrorLogBloat(path string) RemediationResult {
-	return FixErrorLogBloatInRoots(path, fixPerfAllowedRoots)
+	return FixErrorLogBloatInRoots(path, effectiveFixRoots(fixPerfAllowedRoots))
 }
 
 // FixErrorLogBloatInRoots is FixErrorLogBloat with caller-supplied roots.
@@ -65,7 +65,7 @@ func FixErrorLogBloatInRoots(path string, allowedRoots []string) RemediationResu
 // other PHP source files require code-level edits this routine does not
 // attempt. The caller (web UI) should not advertise the fix for those.
 func FixDisplayErrorsOn(path string) RemediationResult {
-	return FixDisplayErrorsOnInRoots(path, fixPerfAllowedRoots)
+	return FixDisplayErrorsOnInRoots(path, effectiveFixRoots(fixPerfAllowedRoots))
 }
 
 // FixDisplayErrorsOnInRoots is FixDisplayErrorsOn with caller-supplied

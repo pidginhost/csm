@@ -258,7 +258,7 @@ func CheckVulnerableTimThumb(ctx context.Context, cfg *config.Config, _ *state.S
 		if !homeEntry.IsDir() {
 			continue
 		}
-		homeDir := filepath.Join("/home", homeEntry.Name())
+		homeDir := scanHomeDirPath(homeEntry)
 		docRoots := []string{filepath.Join(homeDir, "public_html")}
 		subDirs, _ := osFS.ReadDir(homeDir)
 		for _, sd := range subDirs {

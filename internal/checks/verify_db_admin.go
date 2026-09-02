@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -28,8 +29,8 @@ func findWPAdminVerifyPrefixes(account, dbName, details string) ([]string, bool)
 	}
 	var prefixes []string
 	seen := map[string]bool{}
-	patterns := []string{fmt.Sprintf("/home/%s/public_html/wp-config.php", account)}
-	addon, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
+	patterns := []string{filepath.Join(accountHomeDir(account), "public_html", "wp-config.php")}
+	addon, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*", "wp-config.php"))
 	patterns = append(patterns, addon...)
 	for _, path := range patterns {
 		creds := parseWPConfig(path)

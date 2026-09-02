@@ -32,13 +32,13 @@ func AccountFromContext(ctx context.Context) string {
 	return v
 }
 
+// homeGlob globs elem under every account (or the scoped account) across
+// every account root.
 func homeGlob(ctx context.Context, elem ...string) ([]string, error) {
-	parts := []string{"/home"}
-	if account := AccountFromContext(ctx); account != "" {
-		parts = append(parts, account)
-	} else {
-		parts = append(parts, "*")
+	account := AccountFromContext(ctx)
+	if account == "" {
+		account = "*"
 	}
-	parts = append(parts, elem...)
-	return osFS.Glob(filepath.Join(parts...))
+	parts := append([]string{account}, elem...)
+	return accountHomeGlob(filepath.Join(parts...))
 }

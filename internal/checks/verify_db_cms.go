@@ -36,7 +36,7 @@ func discoverDrupalSchema(account string) (schema string, ok bool) {
 	if !validAccountName.MatchString(account) {
 		return "", false
 	}
-	publicHTML := fmt.Sprintf("/home/%s/public_html", account)
+	publicHTML := filepath.Join(accountHomeDir(account), "public_html")
 	if !looksLikeDrupal8Plus(publicHTML) {
 		return "", false
 	}
@@ -77,7 +77,7 @@ func discoverJoomlaSchema(account string) (schema, prefix string, ok bool) {
 	if !validAccountName.MatchString(account) {
 		return "", "", false
 	}
-	path := fmt.Sprintf("/home/%s/public_html/configuration.php", account)
+	path := filepath.Join(accountHomeDir(account), "public_html", "configuration.php")
 	if !looksLikeJoomlaConfig(path) {
 		return "", "", false
 	}
@@ -127,7 +127,7 @@ func discoverMagentoSchema(account string) (schema, prefix string, ok bool) {
 	if !validAccountName.MatchString(account) {
 		return "", "", false
 	}
-	base := fmt.Sprintf("/home/%s/public_html/app/etc", account)
+	base := filepath.Join(accountHomeDir(account), "public_html", "app", "etc")
 	if creds := parseMagentoM2(filepath.Join(base, "env.php")); creds.dbName != "" {
 		return magentoVerifyFinalize(creds)
 	}
@@ -197,7 +197,7 @@ func discoverOpenCartSchema(account string) (schema, prefix string, ok bool) {
 	if !validAccountName.MatchString(account) {
 		return "", "", false
 	}
-	path := fmt.Sprintf("/home/%s/public_html/config.php", account)
+	path := filepath.Join(accountHomeDir(account), "public_html", "config.php")
 	if !looksLikeOpenCart(path) {
 		return "", "", false
 	}

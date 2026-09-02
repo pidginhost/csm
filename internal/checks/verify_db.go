@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -117,8 +118,8 @@ func findWPVerifyPrefixes(account, dbName, details string) (prefixes []string, o
 	if !validAccountName.MatchString(account) || dbName == "" {
 		return nil, false
 	}
-	patterns := []string{fmt.Sprintf("/home/%s/public_html/wp-config.php", account)}
-	addon, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
+	patterns := []string{filepath.Join(accountHomeDir(account), "public_html", "wp-config.php")}
+	addon, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*", "wp-config.php"))
 	patterns = append(patterns, addon...)
 
 	targetPrefix := detailField(details, "Table prefix")

@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -387,9 +388,9 @@ func splitSpamCandidate(line string) (id, text string, ok bool) {
 // wp-config.php passwords (which are often stale on cPanel servers).
 func findCredsForAccount(account string) (wpDBCreds, string) {
 	patterns := []string{
-		fmt.Sprintf("/home/%s/public_html/wp-config.php", account),
+		filepath.Join(accountHomeDir(account), "public_html", "wp-config.php"),
 	}
-	addonConfigs, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
+	addonConfigs, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*", "wp-config.php"))
 	patterns = append(patterns, addonConfigs...)
 
 	for _, path := range patterns {

@@ -131,7 +131,8 @@ func safeManagedWPCronDocroot(owner, docroot string) bool {
 	if owner == "" || !safeWPCronDocroot(docroot) {
 		return false
 	}
-	return strings.HasPrefix(docroot, "/home/"+owner+"/")
+	_, account, ok := accountRootOf(docroot)
+	return ok && account == owner
 }
 
 func safeManagedWPCronPHPBin(path string) bool {
@@ -215,7 +216,7 @@ func safeCrontabHome(value string) bool {
 	if !safeCronCommandString(value) || !filepath.IsAbs(value) || filepath.Clean(value) != value {
 		return false
 	}
-	return value == "/root" || strings.HasPrefix(value, "/home/") || strings.HasPrefix(value, "/root/")
+	return value == "/root" || underAccountRoot(value) || strings.HasPrefix(value, "/root/")
 }
 
 // suppressedAsManagedWPCron reports whether a sensitive-file finding for a user

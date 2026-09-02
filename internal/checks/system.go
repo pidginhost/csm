@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -333,7 +334,7 @@ func CheckGroupWritablePHP(ctx context.Context, _ *config.Config, _ *state.Store
 		if !homeEntry.IsDir() {
 			continue
 		}
-		docRoot := fmt.Sprintf("/home/%s/public_html", homeEntry.Name())
+		docRoot := filepath.Join(scanHomeDirPath(homeEntry), "public_html")
 		scanGroupWritablePHP(docRoot, 4, webGroupGIDs, &findings)
 	}
 

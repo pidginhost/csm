@@ -1084,8 +1084,8 @@ func truncateDB(s string, maxLen int) string {
 func CleanDatabaseSpam(account string) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, _ := osFS.Glob(filepath.Join("/home", account, "*/wp-config.php"))
-	wpConfigs2, _ := osFS.Glob(filepath.Join("/home", account, "public_html/wp-config.php"))
+	wpConfigs, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*/wp-config.php"))
+	wpConfigs2, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "public_html/wp-config.php"))
 	wpConfigs = append(wpConfigs, wpConfigs2...)
 
 	for _, wpConfig := range wpConfigs {

@@ -47,7 +47,7 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 	}
 	now := time.Now()
 
-	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
+	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
 	for _, wpConfig := range wpConfigs {
 		if ctx.Err() != nil {
 			return nil

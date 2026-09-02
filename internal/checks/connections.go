@@ -416,7 +416,7 @@ func CheckNulledPlugins(ctx context.Context, _ *config.Config, _ *state.Store) [
 		if !homeEntry.IsDir() {
 			continue
 		}
-		pluginsDir := filepath.Join("/home", homeEntry.Name(), "public_html", "wp-content", "plugins")
+		pluginsDir := filepath.Join(scanHomeDirPath(homeEntry), "public_html", "wp-content", "plugins")
 		plugins, err := osFS.ReadDir(pluginsDir)
 		if err != nil {
 			continue

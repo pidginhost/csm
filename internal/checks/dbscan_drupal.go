@@ -98,7 +98,7 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, _ *state.Store)
 	}
 	var findings []alert.Finding
 
-	settings, _ := osFS.Glob("/home/*/public_html/sites/default/settings.php")
+	settings, _ := accountHomeGlob("*/public_html/sites/default/settings.php")
 	if len(settings) == 0 {
 		return nil
 	}

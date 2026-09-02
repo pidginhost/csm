@@ -81,7 +81,7 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		if !homeEntry.IsDir() {
 			continue
 		}
-		homeDir := filepath.Join("/home", homeEntry.Name())
+		homeDir := scanHomeDirPath(homeEntry)
 		docRoot := filepath.Join(homeDir, "public_html")
 		scanHtaccess(ctx, docRoot, htaccessScanMaxDepth, suspiciousPatterns, safePatterns, cfg, &findings)
 

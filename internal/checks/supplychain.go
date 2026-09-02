@@ -145,10 +145,11 @@ func discoverLockfiles(ctx context.Context) []lockfile {
 		glob  string
 		parse func([]byte) []supplyChainPkg
 	}{
-		{"/home/*/public_html/composer.lock", parseComposerLock},
-		{"/home/*/composer.lock", parseComposerLock},
-		{"/home/*/public_html/package-lock.json", parsePackageLock},
-		{"/home/*/package-lock.json", parsePackageLock},
+		// Relative to each account root; see accountHomeGlob.
+		{"*/public_html/composer.lock", parseComposerLock},
+		{"*/composer.lock", parseComposerLock},
+		{"*/public_html/package-lock.json", parsePackageLock},
+		{"*/package-lock.json", parsePackageLock},
 	}
 	var out []lockfile
 	seen := map[string]struct{}{}
@@ -156,7 +157,7 @@ func discoverLockfiles(ctx context.Context) []lockfile {
 		if ctx != nil && ctx.Err() != nil {
 			return out
 		}
-		matches, _ := osFS.Glob(p.glob)
+		matches, _ := accountHomeGlob(p.glob)
 		for _, m := range matches {
 			if _, dup := seen[m]; dup {
 				continue

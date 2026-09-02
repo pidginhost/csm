@@ -232,7 +232,7 @@ func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 			continue
 		}
 
-		homeDir := filepath.Join("/home", user)
+		homeDir := scanHomeDirPath(homeEntry)
 		docRoots := []string{filepath.Join(homeDir, "public_html")}
 		subDirs, _ := osFS.ReadDir(homeDir)
 		for _, sd := range subDirs {

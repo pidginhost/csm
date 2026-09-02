@@ -3,6 +3,7 @@ package checks
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -185,9 +186,9 @@ func DBDropObject(account, schema, kind, name string, preview bool) DBCleanResul
 // operator input before opening any connection.
 func findAccountSchemas(account string) []string {
 	patterns := []string{
-		fmt.Sprintf("/home/%s/public_html/wp-config.php", account),
+		filepath.Join(accountHomeDir(account), "public_html", "wp-config.php"),
 	}
-	addonConfigs, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
+	addonConfigs, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*", "wp-config.php"))
 	patterns = append(patterns, addonConfigs...)
 
 	seen := map[string]struct{}{}

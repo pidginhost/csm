@@ -70,7 +70,7 @@ func verifySuidCleared(path string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, info, exists, err := readOnlyFixPath(path, fixQuarantineAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(path, effectiveFixRoots(fixQuarantineAllowedRoots, quarantineExtraRoots...))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}

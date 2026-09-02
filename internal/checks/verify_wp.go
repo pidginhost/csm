@@ -11,8 +11,9 @@ import (
 )
 
 // wpVerifyAllowedRoots bounds where a WordPress re-check may run wp-cli. It is a
-// var so tests can redirect under t.TempDir(); production stays at /home.
-var wpVerifyAllowedRoots = []string{"/home"}
+// var so tests can redirect under t.TempDir(); nil means the platform's
+// account roots.
+var wpVerifyAllowedRoots []string
 
 // wpVerifyTimeout bounds the synchronous wp-cli re-scan a Re-check click runs.
 const wpVerifyTimeout = 30 * time.Second
@@ -83,7 +84,7 @@ func verifyOutdatedPlugins(details string) VerifyResult {
 	if wpPath == "" {
 		return VerifyResult{Checked: false, Detail: "could not determine the WordPress path from the finding"}
 	}
-	clean, _, exists, err := readOnlyFixPath(wpPath, wpVerifyAllowedRoots)
+	clean, _, exists, err := readOnlyFixPath(wpPath, effectiveFixRoots(wpVerifyAllowedRoots))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
@@ -91,7 +92,7 @@ func verifyOutdatedPlugins(details string) VerifyResult {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("WordPress install no longer exists: %s", clean)}
 	}
 
-	wpConfig, info, exists, err := readOnlyFixPath(filepath.Join(clean, "wp-config.php"), wpVerifyAllowedRoots)
+	wpConfig, info, exists, err := readOnlyFixPath(filepath.Join(clean, "wp-config.php"), effectiveFixRoots(wpVerifyAllowedRoots))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
@@ -127,14 +128,14 @@ func verifyWPCoreIntegrity(details string) VerifyResult {
 	if wpPath == "" {
 		return VerifyResult{Checked: false, Detail: "could not determine the WordPress path from the finding"}
 	}
-	clean, _, exists, err := readOnlyFixPath(wpPath, wpVerifyAllowedRoots)
+	clean, _, exists, err := readOnlyFixPath(wpPath, effectiveFixRoots(wpVerifyAllowedRoots))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
 	if !exists {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("WordPress install no longer exists: %s", clean)}
 	}
-	_, info, exists, err := readOnlyFixPath(filepath.Join(clean, "wp-config.php"), wpVerifyAllowedRoots)
+	_, info, exists, err := readOnlyFixPath(filepath.Join(clean, "wp-config.php"), effectiveFixRoots(wpVerifyAllowedRoots))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
