@@ -840,8 +840,8 @@ reputation:
 suppressions:
   upcp_window_start: "00:30"
   upcp_window_end: "02:00"
-  known_api_tokens:
-    - "phclient"
+  known_api_tokens: []
+  suppress_webmail_alerts: true
   ignore_paths:
     - "*/imunify-security/*"
     - "*/cache/*"

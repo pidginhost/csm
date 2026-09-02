@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -367,6 +368,12 @@ func (c *ControlListener) handleHistorySince(argsRaw json.RawMessage) (any, erro
 // daemon is the single source of truth for paths; the CLI only supplies
 // where to write the archive. Import deliberately does NOT route through
 // the socket -- it requires a stopped daemon.
+// exportStagingPath places a staged export under the daemon's state
+// directory, named after the operator's requested file.
+func exportStagingPath(statePath, dstPath string) string {
+	return filepath.Join(statePath, "exports", filepath.Base(dstPath))
+}
+
 func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error) {
 	var args control.StoreExportArgs
 	if len(argsRaw) > 0 {
@@ -385,10 +392,18 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 	hostname, _ := os.Hostname()
 	pi := platform.Detect()
 
+	dstPath := args.DstPath
+	if args.Stage {
+		dstPath = exportStagingPath(cfg.StatePath, args.DstPath)
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0o700); err != nil {
+			return nil, fmt.Errorf("creating export staging dir: %w", err)
+		}
+	}
+
 	res, err := sdb.Export(store.ExportOptions{
 		StatePath: cfg.StatePath,
 		RulesPath: cfg.Signatures.RulesDir,
-		DstPath:   args.DstPath,
+		DstPath:   dstPath,
 		Manifest: store.Manifest{
 			CSMVersion:     c.d.version,
 			SourceHostname: hostname,

@@ -283,6 +283,10 @@ type FirewallListResult struct {
 // it.
 type StoreExportArgs struct {
 	DstPath string `json:"dst_path"`
+	// Stage asks the daemon to write the archive under its own state
+	// directory (the one place its sandbox guarantees writable) instead of
+	// DstPath; the result's Path names the staged file for the CLI to move.
+	Stage bool `json:"stage,omitempty"`
 }
 
 // HistorySinceArgs configures CmdHistorySince. Since is RFC 3339; an

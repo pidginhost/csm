@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Store export now stages the archive under the daemon's state directory and the CLI moves it to the requested path, copying and verifying the digest across filesystems, so destinations outside the daemon's sandbox such as /var/backups work again.
+- Validate's deep probes now read the installed service unit and reject a state path outside its ReadWritePaths grants, which used to pass validation and then crash-loop the daemon under ProtectSystem=strict.
+- suppress_webmail_alerts now defaults to true in code as it does in the shipped templates and documentation, an explicit false is kept, and the installer template no longer ships a placeholder API token name.
+- Store restore now stages the archive next to the state directory instead of the system temp directory, so the final rename stays on one filesystem and a small tmpfs cannot fill up.
 - The hardening audit's web-user crontab check and the group-writable PHP scan now use the detected platform's web server account (www-data, apache, nginx) alongside nobody instead of assuming cPanel's nobody.
 - ModSecurity serial-format audit logs are now parsed per transaction, so the denial in the H section is attributed to the client on the A header and high-volume attackers are reported; the check also reads enough of the log to reach its threshold.
 - The DNS connection check now treats the upstreams behind a loopback stub resolver as configured and skips systemd-resolved and dnsmasq themselves, so a systemd-resolved host no longer reports every upstream query.

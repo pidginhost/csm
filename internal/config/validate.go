@@ -1045,6 +1045,7 @@ func ValidateDeep(cfg *Config) []ValidationResult {
 
 	// State directory
 	results = append(results, probeStatePath(cfg.StatePath)...)
+	results = append(results, probeStatePathSandbox(cfg.StatePath)...)
 
 	// Signature rules directory
 	if cfg.Signatures.RulesDir != "" {
@@ -1125,6 +1126,74 @@ func ValidateDeepSection(cfg *Config, section string) []ValidationResult {
 		return nil
 	}
 	return nil
+}
+
+// systemdUnitFile is the installed service unit the sandbox probe reads.
+var systemdUnitFile = "/etc/systemd/system/csm.service"
+
+// probeStatePathSandbox checks that the daemon, not just this CLI process,
+// can write state_path: under ProtectSystem=strict only StateDirectory and
+// ReadWritePaths grants are writable, and a state_path outside them makes
+// the daemon crash-loop on its first write while validate passes.
+func probeStatePathSandbox(statePath string) []ValidationResult {
+	data, err := os.ReadFile(systemdUnitFile)
+	if err != nil {
+		return nil
+	}
+	covered, known := unitCoversStatePath(string(data), statePath)
+	if !known || covered {
+		return nil
+	}
+	return []ValidationResult{{"error", "state_path", fmt.Sprintf("%s is outside the service unit's ReadWritePaths; the daemon cannot write it under ProtectSystem=strict (unit: %s)", statePath, systemdUnitFile)}}
+}
+
+// unitCoversStatePath parses a systemd unit and reports whether statePath
+// is writable to the service: covered is true when ProtectSystem is not
+// strict or the path sits under a StateDirectory or ReadWritePaths grant;
+// known is false when the unit text carries no sandbox directives at all.
+func unitCoversStatePath(unit, statePath string) (covered, known bool) {
+	statePath = filepath.Clean(statePath)
+	strict := false
+	var grants []string
+	for _, raw := range strings.Split(unit, "\n") {
+		line := strings.TrimSpace(raw)
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		switch key {
+		case "ProtectSystem":
+			known = true
+			strict = value == "strict"
+		case "StateDirectory":
+			known = true
+			for _, name := range strings.Fields(value) {
+				grants = append(grants, filepath.Join("/var/lib", name))
+			}
+		case "ReadWritePaths":
+			known = true
+			for _, p := range strings.Fields(value) {
+				p = strings.TrimLeft(p, "-+")
+				if p != "" {
+					grants = append(grants, filepath.Clean(p))
+				}
+			}
+		}
+	}
+	if !known {
+		return false, false
+	}
+	if !strict {
+		return true, true
+	}
+	for _, g := range grants {
+		if statePath == g || strings.HasPrefix(statePath, g+"/") {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // probeStatePath checks that the state directory exists and is writable.

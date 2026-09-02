@@ -1533,6 +1533,7 @@ type defaultPresence struct {
 	httpASNCrawlReverseProxy   bool
 	xmlrpcThreshold            bool
 	integrityImmutable         bool
+	suppressWebmail            bool
 	autoResponse               autoResponsePresence
 	// firewall records which firewall: keys the operator wrote, so a
 	// partial block keeps the defaults for everything unlisted. nil means
@@ -1604,6 +1605,12 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	// must not read as "disable protection". Explicit false is kept.
 	if !presence.integrityImmutable {
 		cfg.Integrity.Immutable = true
+	}
+	// Webmail login suppression defaults on, as both shipped templates and
+	// the documentation say; a config that omits the key must not start
+	// alerting on every webmail login. Explicit false is kept.
+	if !presence.suppressWebmail {
+		cfg.Suppressions.SuppressWebmail = true
 	}
 	if cfg.Alerts.AuditLog.File.Enabled && cfg.Alerts.AuditLog.File.Path == "" {
 		cfg.Alerts.AuditLog.File.Path = "/var/log/csm/audit.jsonl"
@@ -2197,6 +2204,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		} `yaml:"alerts"`
 		Retention    map[string]yaml.Node `yaml:"retention"`
 		Integrity    map[string]yaml.Node `yaml:"integrity"`
+		Suppressions map[string]yaml.Node `yaml:"suppressions"`
 		AutoResponse map[string]yaml.Node `yaml:"auto_response"`
 		Firewall     map[string]yaml.Node `yaml:"firewall"`
 	}
@@ -2215,6 +2223,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		}
 	}
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
+	_, presence.suppressWebmail = raw.Suppressions["suppress_webmail_alerts"]
 	if node, ok := raw.AutoResponse["block_expiry"]; ok && !yamlNodeIsNull(&node) {
 		presence.autoResponse.blockExpiry = true
 	}

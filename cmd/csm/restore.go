@@ -31,7 +31,7 @@ var renameRestorePath = os.Rename
 // with `../` components or absolute paths are rejected, and existing
 // symlinks under the configured destination trees are not followed.
 func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
-	stageRoot, err := os.MkdirTemp("", "csm-restore-*")
+	stageRoot, err := restoreStagingRoot(dst)
 	if err != nil {
 		return fmt.Errorf("creating restore staging directory: %w", err)
 	}
@@ -41,6 +41,21 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 		return err
 	}
 	return commitBackupRestore(staged, dst)
+}
+
+// restoreStagingRoot creates the staging directory next to the state
+// directory's parent, so the final rename onto the destination stays on
+// one filesystem. os.TempDir() is often a small tmpfs on another device:
+// a multi-GB extraction there filled it, and the rename failed with EXDEV.
+// Without a state directory the system temp dir is the only option.
+func restoreStagingRoot(dst BackupSources) (string, error) {
+	if dst.StateDir != "" {
+		parent := filepath.Dir(filepath.Clean(dst.StateDir))
+		if info, err := os.Stat(parent); err == nil && info.IsDir() {
+			return os.MkdirTemp(parent, ".csm-restore-*")
+		}
+	}
+	return os.MkdirTemp("", "csm-restore-*")
 }
 
 type stagedBackupRestore struct {

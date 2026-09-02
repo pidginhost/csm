@@ -380,7 +380,12 @@ func runStoreExportCLI() {
 		os.Exit(2)
 	}
 
-	raw, err := sendControlWithTimeout(control.CmdStoreExport, control.StoreExportArgs{DstPath: dstPath}, 30*time.Minute)
+	// The daemon runs under ProtectSystem=strict, where the usual backup
+	// destinations are read-only. It stages the archive under its state
+	// directory; this unsandboxed process moves it into place. An older
+	// daemon ignores Stage and writes dstPath directly, which res.Path
+	// reflects, so the move is skipped in that case.
+	raw, err := sendControlWithTimeout(control.CmdStoreExport, control.StoreExportArgs{DstPath: dstPath, Stage: true}, 30*time.Minute)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "csm store export: %v\n", err)
 		os.Exit(1)
@@ -389,6 +394,13 @@ func runStoreExportCLI() {
 	if err := json.Unmarshal(raw, &res); err != nil {
 		fmt.Fprintf(os.Stderr, "csm store export: decoding response: %v\n", err)
 		os.Exit(1)
+	}
+	if res.Path != dstPath {
+		if err := moveExportedArchive(res.Path, dstPath, res.ArchiveSHA256); err != nil {
+			fmt.Fprintf(os.Stderr, "csm store export: archive staged at %s but not moved: %v\n", res.Path, err)
+			os.Exit(1)
+		}
+		res.Path = dstPath
 	}
 	fmt.Printf("export: %s (%d bytes)\n", res.Path, res.Bytes)
 	fmt.Printf("  archive sha256: %s\n", res.ArchiveSHA256)
