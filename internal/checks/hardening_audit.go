@@ -326,26 +326,11 @@ func auditOS() []store.AuditResult {
 	// Distro EOL
 	results = append(results, checkDistroEOL()...)
 
-	// nobody crontab
-	nobodyCrontab := filepath.Join(cronSpoolDir(), "nobody")
-	if info, err := osFS.Stat(nobodyCrontab); err != nil {
-		// absent is fine
-		results = append(results, store.AuditResult{
-			Category: "os", Name: "os_nobody_cron", Title: "Nobody Crontab",
-			Status: "pass", Message: "No crontab for nobody user",
-		})
-	} else if info.Size() == 0 {
-		results = append(results, store.AuditResult{
-			Category: "os", Name: "os_nobody_cron", Title: "Nobody Crontab",
-			Status: "pass", Message: "Nobody crontab is empty",
-		})
-	} else {
-		results = append(results, store.AuditResult{
-			Category: "os", Name: "os_nobody_cron", Title: "Nobody Crontab",
-			Status: "fail", Message: "nobody user has a crontab with content",
-			Fix: "Review and remove: crontab -u nobody -r",
-		})
-	}
+	// Web-server user crontab: the web server's account (cPanel nobody,
+	// Debian www-data, RHEL apache/nginx) never needs a crontab; one with
+	// content is a persistence mechanism planted through the web tier.
+	// nobody is always included: it is the suEXEC/CGI fallback everywhere.
+	results = append(results, auditWebUserCrontab(cronSpoolDir(), webUsersWithNobody(webServerUsers())))
 
 	// Unnecessary services
 	results = append(results, checkUnnecessaryServices()...)
@@ -1947,6 +1932,34 @@ func cpanelSecureAuthDisabled(data []byte) (disabled, valid bool) {
 		}
 	}
 	return disabled, valid
+}
+
+func webUsersWithNobody(users []string) []string {
+	if slices.Contains(users, "nobody") {
+		return users
+	}
+	return append(append([]string(nil), users...), "nobody")
+}
+
+// auditWebUserCrontab reports a crontab with content for any web-server
+// user. The result keeps the historical os_nobody_cron name so stored
+// audits and dashboards stay comparable across platforms.
+func auditWebUserCrontab(spoolDir string, users []string) store.AuditResult {
+	for _, user := range users {
+		info, err := osFS.Stat(filepath.Join(spoolDir, user))
+		if err != nil || info.Size() == 0 {
+			continue
+		}
+		return store.AuditResult{
+			Category: "os", Name: "os_nobody_cron", Title: "Web User Crontab",
+			Status: "fail", Message: fmt.Sprintf("web server user %s has a crontab with content", user),
+			Fix: fmt.Sprintf("Review and remove: crontab -u %s -r", user),
+		}
+	}
+	return store.AuditResult{
+		Category: "os", Name: "os_nobody_cron", Title: "Web User Crontab",
+		Status: "pass", Message: fmt.Sprintf("No crontab with content for web server user(s) %s", strings.Join(users, ", ")),
+	}
 }
 
 // checkFirewallDefaultPolicy audits the default policy of the chain that

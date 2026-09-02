@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -391,6 +392,12 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 	}
 }
 
+// webServerGroupNames are group names that belong to a web server on any
+// platform; the detected platform's own users are added at lookup time.
+var webServerGroupNames = map[string]bool{
+	"nobody": true, "www-data": true, "apache": true, "www": true, "nginx": true,
+}
+
 func getWebServerGIDs() map[uint32]bool {
 	gids := make(map[uint32]bool)
 	data, err := osFS.ReadFile("/etc/group")
@@ -403,7 +410,7 @@ func getWebServerGIDs() map[uint32]bool {
 			continue
 		}
 		name := fields[0]
-		if name == "nobody" || name == "www-data" || name == "apache" || name == "www" {
+		if webServerGroupNames[name] || slices.Contains(webServerUsers(), name) {
 			gid := uint32(0)
 			fmt.Sscanf(fields[2], "%d", &gid)
 			gids[gid] = true

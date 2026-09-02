@@ -113,6 +113,31 @@ func (i Info) CronSpoolDir() string {
 	return "/var/spool/cron"
 }
 
+// WebServerUsers returns the account(s) the web server serves requests as
+// on this platform: cPanel's nobody, DirectAdmin's apache (plus nobody for
+// its suEXEC fallback), Plesk's distribution web user, and for a panel-less
+// host the distribution user of the detected server. Checks that audit
+// "the web server's" crontab or group ownership must use this instead of
+// assuming cPanel's nobody.
+func (i Info) WebServerUsers() []string {
+	switch i.Panel {
+	case PanelCPanel:
+		return []string{"nobody"}
+	case PanelDA:
+		return []string{"apache", "nobody"}
+	}
+	if i.WebServer == WSLiteSpeed {
+		return []string{"nobody"}
+	}
+	if i.IsDebianFamily() {
+		return []string{"www-data"}
+	}
+	if i.WebServer == WSNginx {
+		return []string{"nginx"}
+	}
+	return []string{"apache"}
+}
+
 // MailLogPath returns the platform-default mail log file. Empty string
 // means "no file source available" (operator must use journal).
 func (i Info) MailLogPath() string {

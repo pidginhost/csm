@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1136,14 +1137,14 @@ func autoUpdateWAFRules() bool {
 func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	logPaths := platform.Detect().ModSecAuditLogPaths
+	logPaths := modsecAuditLogPaths()
 	if len(logPaths) == 0 {
 		return nil
 	}
 
 	var lines []string
 	for _, path := range logPaths {
-		lines = tailFile(path, 200)
+		lines = tailFile(path, modsecAuditTailLines)
 		if len(lines) > 0 {
 			break
 		}
@@ -1153,14 +1154,10 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 	}
 
 	// Count blocked attacks per IP
-	blocked := make(map[string]int)
-	for _, line := range lines {
-		if strings.Contains(line, "403") || strings.Contains(line, "Access denied") ||
-			strings.Contains(line, "MODSEC") || strings.Contains(line, "mod_security") {
-			ip := extractIPFromLog(line)
-			if ip != "" && !isInfraIP(ip, cfg.InfraIPs) {
-				blocked[ip]++
-			}
+	blocked := countModSecDenials(lines)
+	for ip := range blocked {
+		if isInfraIP(ip, cfg.InfraIPs) {
+			delete(blocked, ip)
 		}
 	}
 
@@ -1178,4 +1175,107 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 	}
 
 	return findings
+}
+
+// modsecAuditLogPaths yields the audit log candidates; a seam for tests.
+var modsecAuditLogPaths = func() []string { return platform.Detect().ModSecAuditLogPaths }
+
+// modsecAuditTailLines is how much of the audit log one cycle inspects.
+// The serial format spends ten or more lines per transaction, so 200 lines
+// could never hold the 20 denials the threshold asks for.
+const modsecAuditTailLines = 4000
+
+// countModSecDenials counts denied transactions per client address.
+//
+// In the serial audit format one transaction spans lettered sections
+// between "--<id>-A--" and "--<id>-Z--"; the client address is on the A
+// header and the denial message in H, so the address is carried across the
+// transaction and each denied transaction counts once. Lines outside a
+// transaction (concurrent format summaries, error-log style lines) keep
+// the per-line rule: a denial marker plus an address on the same line.
+func countModSecDenials(lines []string) map[string]int {
+	blocked := make(map[string]int)
+	var (
+		txID     string
+		txIP     string
+		txDenied bool
+		wantA    bool
+	)
+	flush := func() {
+		if txID != "" && txIP != "" && txDenied {
+			blocked[txIP]++
+		}
+		txID, txIP, txDenied, wantA = "", "", false, false
+	}
+	for _, line := range lines {
+		if id, section, ok := modsecSectionBoundary(line); ok {
+			switch section {
+			case 'A':
+				flush()
+				txID, wantA = id, true
+			case 'Z':
+				if id == txID {
+					flush()
+				}
+			}
+			continue
+		}
+		if wantA {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			wantA = false
+			txIP = modsecAuditClientIP(line)
+			continue
+		}
+		if txID != "" {
+			if modsecDenialLine(line) {
+				txDenied = true
+			}
+			continue
+		}
+		if modsecDenialLine(line) {
+			if ip := extractIPFromLog(line); ip != "" {
+				blocked[ip]++
+			}
+		}
+	}
+	flush()
+	return blocked
+}
+
+func modsecDenialLine(line string) bool {
+	return strings.Contains(line, "403") || strings.Contains(line, "Access denied") ||
+		strings.Contains(line, "MODSEC") || strings.Contains(line, "mod_security")
+}
+
+// modsecSectionBoundary parses a serial-format "--<id>-<letter>--" line.
+func modsecSectionBoundary(line string) (id string, section byte, ok bool) {
+	line = strings.TrimSpace(line)
+	if len(line) < 7 || !strings.HasPrefix(line, "--") || !strings.HasSuffix(line, "--") {
+		return "", 0, false
+	}
+	body := line[2 : len(line)-2]
+	dash := strings.LastIndexByte(body, '-')
+	if dash <= 0 || dash != len(body)-2 {
+		return "", 0, false
+	}
+	section = body[dash+1]
+	if section < 'A' || section > 'Z' {
+		return "", 0, false
+	}
+	return body[:dash], section, true
+}
+
+// modsecAuditClientIP reads the client address from an A-section header:
+// "[timestamp] uniqueid client-ip client-port server-ip server-port".
+func modsecAuditClientIP(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) < 5 || !strings.HasPrefix(fields[0], "[") {
+		return ""
+	}
+	if net.ParseIP(fields[3]) == nil {
+		return ""
+	}
+	return fields[3]
 }

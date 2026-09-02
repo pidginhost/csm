@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The hardening audit's web-user crontab check and the group-writable PHP scan now use the detected platform's web server account (www-data, apache, nginx) alongside nobody instead of assuming cPanel's nobody.
+- ModSecurity serial-format audit logs are now parsed per transaction, so the denial in the H section is attributed to the client on the A header and high-volume attackers are reported; the check also reads enough of the log to reach its threshold.
 - The DNS connection check now treats the upstreams behind a loopback stub resolver as configured and skips systemd-resolved and dnsmasq themselves, so a systemd-resolved host no longer reports every upstream query.
 - The status command's JSON output now carries a status field, prints the offline stub only when the daemon is not running, and exits non-zero on any other control socket error.
 - The systemd service unit is now replaced atomically on install and rehash instead of being truncated and rewritten in place.
