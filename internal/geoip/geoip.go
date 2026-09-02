@@ -4,7 +4,9 @@ package geoip
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"os"
@@ -42,7 +44,22 @@ type DB struct {
 type rdapCacheEntry struct {
 	info    Info
 	fetched time.Time
+	// failed marks a lookup that did not complete (transport error,
+	// non-200, undecodable body). Such an entry is retried after
+	// rdapNegativeTTL instead of standing as an empty answer for a day.
+	failed bool
 }
+
+// rdapBaseURL is the RDAP bootstrap endpoint; var so tests can point it at
+// a local server. rdapNegativeTTL bounds how long a failed lookup is kept
+// before the address is tried again.
+var (
+	rdapBaseURL             = "https://rdap.org/ip/"
+	rdapNegativeTTL         = 10 * time.Minute
+	rdapPositiveTTL         = 24 * time.Hour
+	rdapMaxResponseBytes    = int64(1 << 20)
+	errRDAPLookupIncomplete = errors.New("rdap lookup did not complete")
+)
 
 // MaxMind GeoLite2 record structures
 type cityRecord struct {
@@ -207,24 +224,31 @@ func (db *DB) LookupWithRDAP(ip string) Info {
 
 	// Check RDAP cache
 	db.rdapMu.Lock()
-	if cached, ok := db.rdapTTL[ip]; ok && time.Since(cached.fetched) < 24*time.Hour {
-		db.rdapMu.Unlock()
-		info.RDAPOrg = cached.info.RDAPOrg
-		info.RDAPName = cached.info.RDAPName
-		info.RDAPCountry = cached.info.RDAPCountry
-		return info
+	if cached, ok := db.rdapTTL[ip]; ok {
+		ttl := rdapPositiveTTL
+		if cached.failed {
+			ttl = rdapNegativeTTL
+		}
+		if time.Since(cached.fetched) < ttl {
+			db.rdapMu.Unlock()
+			info.RDAPOrg = cached.info.RDAPOrg
+			info.RDAPName = cached.info.RDAPName
+			info.RDAPCountry = cached.info.RDAPCountry
+			return info
+		}
 	}
 	db.rdapMu.Unlock()
 
-	// Fetch from RDAP
-	rdapInfo := fetchRDAP(ip)
+	// Fetch from RDAP. A failure is cached only briefly so an outage does
+	// not blank the registry data for a day.
+	rdapInfo, err := fetchRDAP(ip)
 	info.RDAPOrg = rdapInfo.RDAPOrg
 	info.RDAPName = rdapInfo.RDAPName
 	info.RDAPCountry = rdapInfo.RDAPCountry
 
 	// Cache
 	db.rdapMu.Lock()
-	db.rdapTTL[ip] = rdapCacheEntry{info: rdapInfo, fetched: time.Now()}
+	db.rdapTTL[ip] = rdapCacheEntry{info: rdapInfo, fetched: time.Now(), failed: err != nil}
 	db.evictRDAPLocked()
 	db.rdapMu.Unlock()
 
@@ -264,19 +288,19 @@ func (db *DB) evictRDAPLocked() {
 }
 
 // RDAP lookup - fetches from the appropriate RIR
-func fetchRDAP(ip string) Info {
+func fetchRDAP(ip string) (Info, error) {
 	var info Info
-	url := fmt.Sprintf("https://rdap.org/ip/%s", ip)
+	url := rdapBaseURL + ip
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return info
+		return info, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return info
+		return info, fmt.Errorf("%w: HTTP %d", errRDAPLookupIncomplete, resp.StatusCode)
 	}
 
 	var rdap struct {
@@ -289,8 +313,10 @@ func fetchRDAP(ip string) Info {
 		} `json:"entities"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&rdap); err != nil {
-		return info
+	// Bounded: the service answer is small; a hostile or broken upstream
+	// must not stream into an unbounded decoder buffer.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, rdapMaxResponseBytes)).Decode(&rdap); err != nil {
+		return info, fmt.Errorf("%w: %v", errRDAPLookupIncomplete, err)
 	}
 
 	info.RDAPName = rdap.Name
@@ -317,5 +343,5 @@ func fetchRDAP(ip string) Info {
 		}
 	}
 
-	return info
+	return info, nil
 }

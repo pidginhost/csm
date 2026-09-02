@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- A failed registry (RDAP) lookup is retried after ten minutes instead of standing as an empty answer for a day, and the registry response is read with a size limit.
 - Threat-feed caches are written atomically, and a cached feed that holds fewer entries than its minimum is ignored and refreshed at the next cycle instead of being served for up to twenty hours. A crash during the old in-place write could leave a few hundred entries of a feed on disk with the update marker intact.
 - The rule for a decoded request parameter fed to a command sink now matches its `call_user_func` and backtick forms in both scanning engines. A double-escaped dollar sign made those two forms unmatchable, so a shell using either was only caught by the direct-call form.
 - Quarantine bulk delete only removes real quarantine entries (those with a metadata sidecar) and never the pre-clean backup or email quarantine subtrees. An ID equal to one of those directory names used to resolve to the directory itself and delete it whole.
