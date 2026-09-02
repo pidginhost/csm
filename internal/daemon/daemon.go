@@ -1228,10 +1228,7 @@ func (d *Daemon) Run() error {
 	d.flushPendingAlertsOnShutdown()
 	alert.ClosePhpanelQueues()
 	d.stopAbuseReporting()
-	if d.findingBus != nil {
-		d.findingBus.Close()
-		alert.FindingBus = nil
-	}
+	d.closeFindingBus()
 	for i := len(d.phpRelayShutdown) - 1; i >= 0; i-- {
 		d.phpRelayShutdown[i]()
 	}

@@ -968,6 +968,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Too many login attempts", http.StatusTooManyRequests)
 		return
 	}
+	if _, tracked := s.loginAttempts[ip]; !tracked {
+		boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
+	}
 	s.loginAttempts[ip] = append(recent, now)
 	s.loginMu.Unlock()
 
@@ -1110,6 +1113,9 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 				s.apiMu.Unlock()
 				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 				return
+			}
+			if _, tracked := s.apiRequests[ip]; !tracked {
+				boundRateLimitMap(s.apiRequests, cutoff)
 			}
 			s.apiRequests[ip] = append(recent, now)
 			s.apiMu.Unlock()
