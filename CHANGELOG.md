@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Signed YAML rule updates now refuse a downgrade: a download with an older version than the installed rules, or fewer than half as many rules, is rejected and logged instead of silently replacing the ruleset.
 - The `bad_asn_egress` abuse-report class now actually reports: its only detector emits high-severity findings while the report gate demanded critical ones, so enabling the class silently sent nothing.
 - External intelligence inputs are bounded and validated: a country CIDR download is size-limited and installed only when it actually contains CIDR entries, an upstream reputation answer can shorten but no longer extend the configured cache lifetime, and the known-bad script host list matches whole domain labels so a name that merely ends in the same characters is not reported.
 - A failed registry (RDAP) lookup is retried after ten minutes instead of standing as an empty answer for a day, and the registry response is read with a size limit.

@@ -1,6 +1,7 @@
 package signatures
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,6 +68,11 @@ func Update(rulesDir, url, signingKey string) (int, error) {
 		}
 	}
 
+	destPath := filepath.Join(rulesDir, "malware.yml")
+	if err := refuseRollback(destPath, rf); err != nil {
+		return 0, err
+	}
+
 	// Ensure rules directory exists
 	if err := os.MkdirAll(rulesDir, 0700); err != nil {
 		return 0, fmt.Errorf("creating rules dir: %w", err)
@@ -74,10 +80,47 @@ func Update(rulesDir, url, signingKey string) (int, error) {
 
 	// Atomic write: write-temp, fsync, rename, dir-fsync. The daemon reloads
 	// these rules on the next tick, so a torn write must never be observable.
-	destPath := filepath.Join(rulesDir, "malware.yml")
 	if err := atomicio.AtomicWrite(destPath, 0600, data); err != nil {
 		return 0, fmt.Errorf("installing rules: %w", err)
 	}
 
 	return len(rf.Rules), nil
+}
+
+// refuseRollback rejects a validly signed update that would move the
+// installed ruleset backwards: an older version number is a replayed release,
+// and a rule count that collapses to under half of what is installed is a
+// stale mirror or a truncated publish rather than ordinary churn. Either
+// would silently strip detection while reporting a successful update. A
+// missing or unparsable installed file gives nothing to compare against and
+// is not protected: the signed update is the recovery path out of that state.
+func refuseRollback(destPath string, next RuleFile) error {
+	current, err := os.ReadFile(destPath) // #nosec G304 -- operator-configured rules dir.
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading installed rules: %w", err)
+	}
+	installed, ok := parseInstalledRules(current)
+	if !ok {
+		return nil
+	}
+	if next.Version < installed.Version {
+		return fmt.Errorf("refusing rules downgrade: update is version %d, installed rules are version %d", next.Version, installed.Version)
+	}
+	if len(next.Rules)*2 < len(installed.Rules) {
+		return fmt.Errorf("refusing rules rollback: update carries %d rules, installed rules carry %d", len(next.Rules), len(installed.Rules))
+	}
+	return nil
+}
+
+// parseInstalledRules reports false for an unparsable or empty installed
+// file: the states a signed update must be allowed to repair.
+func parseInstalledRules(data []byte) (RuleFile, bool) {
+	var installed RuleFile
+	if yaml.Unmarshal(data, &installed) != nil || len(installed.Rules) == 0 {
+		return RuleFile{}, false
+	}
+	return installed, true
 }
