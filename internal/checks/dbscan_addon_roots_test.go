@@ -180,10 +180,20 @@ func TestWPConfigPaths_RejectsCrossAccountCPanelRoot(t *testing.T) {
 		t.Errorf("cross-account map root entered alice's scope: %v", got)
 	}
 
-	got, _ := wpConfigPaths(context.Background())
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	got, served, domains := wpConfigPathsWithDomains(ctx)
 	want := []string{"/home/bob/shop.example.com/wp-config.php"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("host-wide scan = %v, want the root owned by bob %v", got, want)
+	}
+	if state := served[want[0]]; state != servedUnknown {
+		t.Errorf("home-walk path after rejected map row = %v, want servedUnknown", state)
+	}
+	if domains != nil {
+		t.Errorf("all-rejected map exposed domain ownership: %v", domains)
+	}
+	if !incomplete.contains("db_content") {
+		t.Fatal("all-rejected map did not mark the database scan incomplete")
 	}
 }
 
@@ -239,13 +249,16 @@ func TestWPConfigPaths_AcceptsNumberedCPanelHome(t *testing.T) {
 	}
 	t.Cleanup(func() { osFS = old })
 
-	got, _ := wpConfigPaths(context.Background())
+	got, _, domains := wpConfigPathsWithDomains(context.Background())
 	want := []string{"/home2/alice/shop.example.com/wp-config.php"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("wp-config paths = %v, want numbered-home root %v", got, want)
 	}
 	if user := wpConfigUser(filepath.Dir(got[0])); user != "alice" {
 		t.Errorf("addon root account = %q, want alice", user)
+	}
+	if got := domains["alice"]; len(got) != 1 || got[0] != "shop.example.com" {
+		t.Errorf("numbered-home account domains = %v, want shop.example.com", domains)
 	}
 }
 

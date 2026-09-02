@@ -91,9 +91,9 @@ func wpConfigPathsWithDomains(ctx context.Context) ([]string, map[string]servedS
 	seen := make(map[string]bool)
 	var out []string
 	served := make(map[string]servedState)
-	owned := make(map[string][]string)
-	state := servedUnknown
-	add := func(missingIsIncomplete bool, paths ...string) {
+	panelDomains := make(map[string][]string)
+	mappedRoots := make(map[string]bool)
+	add := func(state servedState, missingIsIncomplete bool, paths ...string) {
 		for _, p := range paths {
 			if seen[p] {
 				continue
@@ -119,28 +119,62 @@ func wpConfigPathsWithDomains(ctx context.Context) ([]string, map[string]servedS
 	// authoritative for SERVED roots and reaches layouts the home-directory
 	// walk below cannot see, so it is consulted first.
 	vhostData, vhostErr := osFS.ReadFile(userdataDomainsPath)
+	domainMapComplete := false
 	switch {
 	case vhostErr == nil:
 		vhosts, complete := parseUserdataDomainRootsChecked(string(vhostData))
-		if !complete || len(vhosts) == 0 {
+		wildcardVhosts, wildcardComplete := parseWildcardUserdataDomainRootsChecked(string(vhostData))
+		vhosts = append(vhosts, wildcardVhosts...)
+		domainMapComplete = complete && wildcardComplete && len(vhosts) > 0
+		if !domainMapComplete {
 			markCheckIncomplete(ctx, "db_content")
 		}
+		domainOwners := make(map[string]string, len(vhosts))
 		accountScope := AccountFromContext(ctx)
 		for _, vh := range vhosts {
-			if accountScope != "" && vh.user != accountScope {
-				continue
-			}
 			root := filepath.Clean(vh.docroot)
 			if !docrootBelongsToCPanelUser(root, vh.user) {
 				markCheckIncomplete(ctx, "db_content")
+				domainMapComplete = false
 				continue
 			}
-			owned[vh.user] = append(owned[vh.user], vh.domain)
-			state = servedByPanel
-			add(false, filepath.Join(root, "wp-config.php"))
+			wildcard := strings.HasPrefix(vh.domain, "*.")
+			domain := normalizeHost(strings.TrimPrefix(vh.domain, "*."))
+			if domain == "" {
+				markCheckIncomplete(ctx, "db_content")
+				domainMapComplete = false
+			} else {
+				domainKey := domain
+				if wildcard {
+					domainKey = "*." + domain
+				}
+				owner, exists := domainOwners[domainKey]
+				if exists && owner != vh.user {
+					// The map is meant to have one authoritative owner per domain.
+					// An ambiguous owner cannot safely support a tenant-boundary check.
+					markCheckIncomplete(ctx, "db_content")
+					domainMapComplete = false
+				} else if !exists {
+					domainOwners[domainKey] = vh.user
+					panelDomains[vh.user] = append(panelDomains[vh.user], domainKey)
+				}
+			}
+
+			if accountScope != "" && vh.user != accountScope {
+				continue
+			}
+			wpConfig := filepath.Join(root, "wp-config.php")
+			mappedRoots[wpConfig] = true
+			add(servedByPanel, false, wpConfig)
 		}
 	case vhostMapFailureIsIncomplete(vhostErr):
 		markCheckIncomplete(ctx, "db_content")
+	}
+	if !domainMapComplete {
+		// A partial ownership map can turn a legitimate domain omitted by the
+		// bad row into a foreign-host finding. Keep served roots discovered from
+		// valid rows, but do not make any ownership claims from partial input.
+		panelDomains = nil
 	}
 
 	// The served map is not sufficient on its own. A document root the panel
@@ -152,27 +186,55 @@ func wpConfigPathsWithDomains(ctx context.Context) ([]string, map[string]servedS
 	// out of the result.
 	// Anything the map did not name is not served today -- but only when the
 	// map could be read at all.
-	state = notServed
-	if vhostErr != nil {
-		state = servedUnknown
+	homeState := notServed
+	if !domainMapComplete {
+		homeState = servedUnknown
 	}
 	primary, _ := homeGlob(ctx, "public_html", "wp-config.php")
-	add(true, primary...)
+	for _, p := range primary {
+		state := homeState
+		if mappedRoots[p] {
+			// Preserve the panel's declaration even if the first Lstat failed
+			// and the file appeared before the home walk (or a later retry).
+			state = servedByPanel
+		}
+		add(state, true, p)
+	}
 	addon, _ := homeGlob(ctx, "*", "wp-config.php")
 	for _, p := range addon {
 		dir := filepath.Base(filepath.Dir(p))
 		if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") || seen[p] {
 			continue
 		}
-		add(true, p)
+		state := homeState
+		if mappedRoots[p] {
+			state = servedByPanel
+		}
+		add(state, true, p)
 	}
-	return out, served, owned
+	return out, served, panelDomains
 }
 
-// accountDomainsFor is the panel's list of domains for one account, used to
-// decide whether a WordPress address points off the account.
-func accountDomainsFor(owned map[string][]string, wpConfig string) []string {
-	return owned[wpConfigUser(filepath.Dir(wpConfig))]
+// The shared vhost parser omits wildcard names because they cannot be used as
+// an HTTP Host for exposure probes. They still declare a served document root
+// and tenant ownership, so the database scan parses those rows separately.
+func parseWildcardUserdataDomainRootsChecked(content string) ([]vhost, bool) {
+	var out []vhost
+	complete := true
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "*.") {
+			continue
+		}
+		parsed, lineComplete := parseUserdataDomainRootsChecked(strings.TrimPrefix(line, "*.") + "\n")
+		if !lineComplete || len(parsed) != 1 {
+			complete = false
+			continue
+		}
+		parsed[0].domain = "*." + parsed[0].domain
+		out = append(out, parsed[0])
+	}
+	return out, complete
 }
 
 func docrootBelongsToCPanelUser(root, user string) bool {
@@ -219,10 +281,11 @@ func spamCountLabel(n int, truncated bool) string {
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, servedRoots, ownedDomains := wpConfigPathsWithDomains(ctx)
+	wpConfigs, servedRoots, panelDomains := wpConfigPathsWithDomains(ctx)
 	if len(wpConfigs) == 0 {
 		return appendDatabaseScanIncompleteFinding(ctx, nil)
 	}
+	domainOwnership := newPanelDomainOwnership(panelDomains)
 
 	seenDatabases := make(map[string]struct{}, len(wpConfigs))
 	for _, wpConfig := range wpConfigs {
@@ -250,7 +313,7 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		}
 		creds.tablePrefix = prefix
 		creds.docrootServed = servedRoots[wpConfig]
-		creds.accountDomains = accountDomainsFor(ownedDomains, wpConfig)
+		creds.panelDomains = domainOwnership
 		databaseKey := strings.Join([]string{
 			user, creds.dbHost, creds.dbName, creds.dbUser, creds.dbPass, prefix,
 			strconv.FormatBool(creds.multisite),
@@ -400,9 +463,10 @@ type wpDBCreds struct {
 	// docrootServed records whether the panel serves this install's document
 	// root, so a finding says whether it is reachable today.
 	docrootServed servedState
-	// accountDomains are the domains the panel maps to this account, used to
-	// decide whether a WordPress address points off the account entirely.
-	accountDomains []string
+	// panelDomains is the complete panel domain ownership map. The foreign-host
+	// check needs every account, not just this one, so a more-specific domain
+	// delegated to another tenant wins over this account's parent domain.
+	panelDomains *panelDomainOwnership
 	// queryCtx ties scheduled database work to the runner's deadline. Command
 	// paths leave it nil and retain the per-query timeout below.
 	queryCtx context.Context
@@ -712,6 +776,7 @@ func isScriptPath(path string) bool {
 // checkWPOptions checks for siteurl/home hijacking and injected JavaScript.
 func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	var findings []alert.Finding
+	foreignByOption := make(map[string]*alert.Finding, 2)
 
 	// Check siteurl and home for hijacking
 	query := fmt.Sprintf(
@@ -739,8 +804,6 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 					Details: dbContentFindingDetails(creds, prefix,
 						fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
 				})
-			} else if foreign := foreignSiteURLFinding(user, creds, prefix, optName, parts[1]); foreign != nil {
-				findings = append(findings, *foreign)
 			} else if reason, bad := siteURLPoisonReason(parts[1]); bad {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
@@ -750,7 +813,19 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 						fmt.Sprintf("%s = %s\nWordPress builds every asset URL from this value, so the address it names is loaded on every page.",
 							optName, truncateDB(parts[1], 200))),
 				})
+			} else if foreign := foreignSiteURLFinding(user, creds, prefix, optName, parts[1]); foreign != nil {
+				// siteurl and home commonly hold the same address. Emit one stable
+				// condition per blog, preferring siteurl regardless of row order.
+				if current := foreignByOption[optName]; current == nil || foreign.Details < current.Details {
+					foreignByOption[optName] = foreign
+				}
 			}
+		}
+	}
+	for _, option := range []string{"siteurl", "home"} {
+		if foreign := foreignByOption[option]; foreign != nil {
+			findings = append(findings, *foreign)
+			break
 		}
 	}
 
