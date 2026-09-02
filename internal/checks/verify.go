@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/jstaint"
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/signatures"
@@ -230,7 +231,10 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 		if s == nil || s.RuleCount() == 0 {
 			return false, "", "", fmt.Errorf("signature scanner unavailable")
 		}
-		snap, err := readContentSnapshotForReverify(path, info)
+		// Bounded like the deep scan: the sweep runs unattended over every
+		// stored content finding, and a flagged file an attacker has since
+		// grown must leave the finding unresolved, not be read whole.
+		snap, err := readContentSnapshotForReverifyBounded(path, info, FullScanMaxFileBytes(config.Active()))
 		if err != nil {
 			return false, "", "", fmt.Errorf("cannot read file: %v", err)
 		}
@@ -243,7 +247,7 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 		if y == nil || y.RuleCount() == 0 {
 			return false, "", "", fmt.Errorf("YARA scanner unavailable")
 		}
-		snap, err := readContentSnapshotForReverify(path, info)
+		snap, err := readContentSnapshotForReverifyBounded(path, info, FullScanMaxFileBytes(config.Active()))
 		if err != nil {
 			return false, "", "", fmt.Errorf("cannot read file: %v", err)
 		}
