@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Realtime findings raised during the startup baseline scan are no longer silently dropped: the alert dispatcher now starts before the watchers and holds its batch until the baseline has published, instead of starting afterwards with producers already discarding anything past the channel buffer.
 - `reputation.whitelist` changes now take effect on config reload: the threat database replaces its configured whitelist on SIGHUP instead of keeping the startup list, while runtime-added whitelist entries are kept separate and untouched.
 - Signed YAML rule updates now refuse a downgrade: a download with an older version than the installed rules, or fewer than half as many rules, is rejected and logged instead of silently replacing the ruleset.
 - The `bad_asn_egress` abuse-report class now actually reports: its only detector emits high-severity findings while the report gate demanded critical ones, so enabling the class silently sent nothing.

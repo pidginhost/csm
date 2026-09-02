@@ -83,6 +83,13 @@ type Daemon struct {
 	version          string
 	blockDigest      *blockdigest.Collector
 	alertCh          chan alert.Finding
+	// alertHold, while open, keeps the dispatcher draining alertCh into its
+	// batch without dispatching, so realtime producers (which never block)
+	// lose nothing during the synchronous startup baseline. Closed by
+	// releaseAlertDispatch once the baseline has published; nil means the
+	// dispatcher never holds.
+	alertHold        chan struct{}
+	alertReleaseOnce sync.Once
 	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
 	stopCh           chan struct{}
 	scanCtx          context.Context
@@ -730,6 +737,14 @@ func (d *Daemon) Run() error {
 	// Create password hijack detector
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh, d.stopCh)
 
+	// Start the alert dispatcher before any producer, held until the baseline
+	// scan below has published. Producers send non-blocking, so a dispatcher
+	// that started only after the baseline silently lost every realtime
+	// finding beyond the channel buffer during those minutes.
+	d.holdAlertDispatch()
+	d.wg.Add(1)
+	obs.Go("alert-dispatcher", d.alertDispatcher)
+
 	// Start inotify log watchers
 	d.startLogWatchers()
 
@@ -903,9 +918,9 @@ func (d *Daemon) Run() error {
 	checks.StoreLatestScanFindings(d.store, initialPurge, initialFindings)
 	csmlog.Info("initial scan complete", "findings", len(initialFindings), "new", len(newFindings))
 
-	// NOW start the alert dispatcher - no more race with initial scan
-	d.wg.Add(1)
-	obs.Go("alert-dispatcher", d.alertDispatcher)
+	// NOW let the dispatcher dispatch - no more race with the initial scan,
+	// and nothing queued while it ran was lost.
+	d.releaseAlertDispatch()
 
 	// Retrospective cloud-relay scan: replay the last 24h of exim_mainlog
 	// through the compromise-detection rule so any in-progress credential
@@ -1279,14 +1294,39 @@ func (d *Daemon) FindingBus() *broadcast.Bus {
 }
 
 // alertDispatcher batches and dispatches alerts.
+// alertBatchInterval is how long the dispatcher collects findings before
+// dispatching them as one batch. A variable so tests can shorten it.
+var alertBatchInterval = 5 * time.Second
+
+// alertHoldMaxBatch bounds the batch the dispatcher accumulates while held.
+// Beyond it, further findings are dropped and counted rather than growing
+// memory without limit on a host whose baseline runs for minutes.
+const alertHoldMaxBatch = 5000
+
+// holdAlertDispatch arms the startup hold. Must run before the dispatcher
+// goroutine starts.
+func (d *Daemon) holdAlertDispatch() {
+	d.alertHold = make(chan struct{})
+}
+
+// releaseAlertDispatch lets the dispatcher start dispatching its batches.
+// Idempotent; a no-op when no hold was armed.
+func (d *Daemon) releaseAlertDispatch() {
+	if d.alertHold == nil {
+		return
+	}
+	d.alertReleaseOnce.Do(func() { close(d.alertHold) })
+}
+
 func (d *Daemon) alertDispatcher() {
 	defer d.wg.Done()
 
-	// Batch alerts: collect for 5 seconds, then dispatch
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(alertBatchInterval)
 	defer ticker.Stop()
 
 	var batch []alert.Finding
+	held := d.alertHold // nil: never selected, so the dispatcher runs freely
+	heldDropped := 0
 
 	for {
 		select {
@@ -1296,9 +1336,22 @@ func (d *Daemon) alertDispatcher() {
 			return
 
 		case f := <-d.alertCh:
+			if held != nil && len(batch) >= alertHoldMaxBatch {
+				heldDropped++
+				continue
+			}
 			batch = append(batch, f)
 
+		case <-held:
+			held = nil
+			if heldDropped > 0 {
+				fmt.Fprintf(os.Stderr, "[%s] Alert dispatcher: %d realtime findings dropped while dispatch was held for the baseline scan\n", ts(), heldDropped)
+			}
+
 		case <-ticker.C:
+			if held != nil {
+				continue
+			}
 			if len(batch) > 0 {
 				d.dispatchBatch(batch)
 				batch = nil
