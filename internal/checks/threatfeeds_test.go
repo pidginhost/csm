@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"os"
