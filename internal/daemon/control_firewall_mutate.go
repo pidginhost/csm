@@ -94,7 +94,13 @@ func (c *ControlListener) handleFirewallUnblock(argsRaw json.RawMessage) (any, e
 		return nil, fmt.Errorf("unblock %s: %w", args.IP, err)
 	}
 	dropAutoBlockThreatRow(args.IP)
-	return control.FirewallAckResult{Message: fmt.Sprintf("Unblocked %s", args.IP)}, nil
+	msg := fmt.Sprintf("Unblocked %s", args.IP)
+	// A blocked subnet covering the address keeps dropping it whatever
+	// happens to the per-IP element; say so instead of reporting success.
+	if cidr, covered := c.d.fwEngine.BlockedSubnetCovering(args.IP); covered {
+		msg += fmt.Sprintf(" (still dropped by blocked subnet %s; unblock that subnet to restore access)", cidr)
+	}
+	return control.FirewallAckResult{Message: msg}, nil
 }
 
 func (c *ControlListener) handleFirewallAllow(argsRaw json.RawMessage) (any, error) {

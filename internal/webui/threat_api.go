@@ -205,12 +205,24 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	// 4. Flush cphulk
 	flushCphulk(req.IP)
 
-	s.auditLog(r, "whitelist_ip", req.IP, "permanent whitelist")
-	writeJSON(w, map[string]interface{}{
+	warning := ""
+	if s.blocker != nil {
+		warning = coveringSubnetWarning(s.blocker, req.IP)
+	}
+	detail := "permanent whitelist"
+	if warning != "" {
+		detail += "; " + warning
+	}
+	s.auditLog(r, "whitelist_ip", req.IP, detail)
+	resp := map[string]interface{}{
 		"status":  "whitelisted",
 		"ip":      req.IP,
 		"actions": actions,
-	})
+	}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	writeJSON(w, resp)
 }
 
 // GET /api/v1/threat/whitelist - list all whitelisted IPs
@@ -490,6 +502,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 	count := 0
 	succeeded := make([]string, 0, len(req.IPs))
 	var removedThreats []undoThreatRow
+	var warnings []string
 	for _, ipStr := range req.IPs {
 		parsedIP, err := parseAndValidateIP(ipStr)
 		if err != nil {
@@ -529,6 +542,9 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 				}); ok {
 					_ = allower.AllowIP(ipStr, "CSM bulk whitelist")
 				}
+				if warning := coveringSubnetWarning(s.blocker, ipStr); warning != "" {
+					warnings = append(warnings, ipStr+": "+warning)
+				}
 			}
 			if tdb := checks.GetThreatDB(); tdb != nil {
 				tdb.RemovePermanent(ipStr)
@@ -563,6 +579,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 		"ok":         true,
 		"count":      count,
 		"undo_token": undoToken,
+		"warnings":   warnings,
 	})
 }
 

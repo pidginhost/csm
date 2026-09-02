@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Whitelisting or unblocking an address that a blocked subnet still covers now says so (web UI single and bulk whitelist responses carry a warning naming the subnet, and the CLI unblock message does the same) instead of reporting plain success while the address stays dropped.
 - Firewall allow, flush and unban, whitelist removal, ModSecurity rule apply and escalation changes, verified-bots saves and rule reloads now leave entries in the web UI audit log like the other state-changing actions.
 - The email quarantine handle and the AV watcher mode the daemon installs into the web UI after its listener is already serving are now held atomically; request handlers read them through accessors instead of racing plain field writes.
 - Suppression rules imported through the web UI bundle are now validated like rules added by hand: a rule without a check is dropped and a rule without an ID gets one, so imported rules can always be deleted from the UI.
