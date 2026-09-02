@@ -254,6 +254,7 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 		}
 		tdb.RemoveWhitelist(req.IP)
 	}
+	s.auditLog(r, "unwhitelist_ip", req.IP, "removed from runtime whitelist and firewall allow list")
 
 	// Also remove from firewall allow list
 	if s.blocker != nil {

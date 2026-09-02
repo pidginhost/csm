@@ -248,5 +248,6 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	s.auditLog(r, "modsec_rules_apply", "custom rules", "rules file written and reloaded")
 	writeJSON(w, map[string]interface{}{"ok": true})
 }

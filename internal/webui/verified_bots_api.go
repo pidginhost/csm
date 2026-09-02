@@ -150,6 +150,7 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "save: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.auditLog(r, "verified_bots_save", "reputation.verified_bots", "csm.yaml rewritten")
 
 	newIntegrity := clone.Integrity
 	// reputation is a hot-reload-safe section: apply to the live config now.

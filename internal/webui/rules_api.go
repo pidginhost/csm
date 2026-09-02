@@ -138,6 +138,7 @@ func (s *Server) apiRulesReload(w http.ResponseWriter, r *http.Request) {
 	if len(errors) > 0 {
 		result["errors"] = errors
 	}
+	s.auditLog(r, "rules_reload", "signatures", fmt.Sprintf("errors: %d", len(errors)))
 
 	writeJSON(w, result)
 }
@@ -166,6 +167,7 @@ func (s *Server) apiModSecEscalation(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, fmt.Sprintf("Save failed: %v", err), http.StatusInternalServerError)
 			return
 		}
+		s.auditLog(r, "modsec_escalation", "no-escalate rules", fmt.Sprintf("%d rule id(s)", len(rules)))
 		writeJSON(w, map[string]interface{}{"ok": true, "count": len(rules)})
 		return
 	}

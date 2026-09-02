@@ -237,6 +237,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, fmt.Sprintf("Allow failed: %v", err), http.StatusInternalServerError)
 			return
 		}
+		s.auditLog(r, "firewall_allow", req.IP, fmt.Sprintf("temporary allow %s: %s", dur, req.Reason))
 		writeJSON(w, map[string]string{"status": "temp_allowed", "ip": req.IP})
 		return
 	}
@@ -252,6 +253,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, fmt.Sprintf("Allow failed: %v", err), http.StatusInternalServerError)
 		return
 	}
+	s.auditLog(r, "firewall_allow", req.IP, "permanent allow: "+req.Reason)
 	writeJSON(w, map[string]string{"status": "allowed", "ip": req.IP})
 }
 
@@ -486,6 +488,7 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.auditLog(r, "firewall_flush", "blocked set", fmt.Sprintf("flushed: %v", result.Flushed))
 	writeJSON(w, map[string]string{"status": "flushed"})
 }
 
@@ -698,5 +701,6 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	if subnetRemoved != "" {
 		result["subnet_removed"] = subnetRemoved
 	}
+	s.auditLog(r, "firewall_unban", req.IP, "unblock, clear auto-block state, flush cPHulk")
 	writeJSON(w, result)
 }
