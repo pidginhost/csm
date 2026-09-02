@@ -195,6 +195,11 @@ var (
 	// matching one of these names is what makes a UA-keyed redirect
 	// suspicious.
 	crawlerUARegex = regexp.MustCompile(`(?i)(googlebot|bingbot|baiduspider|yandex|facebookexternalhit|slurp|duckduckbot)`)
+	// searchCrawlerUARegex names the indexers a cloak targets. Operator
+	// blocklists are made of scrapers and SEO tools; a list whose members
+	// are mostly search engines is a cloak whatever its length, because no
+	// site blocks Googlebot, Bingbot, Yandex and Baidu together.
+	searchCrawlerUARegex = regexp.MustCompile(`(?i)googlebot|bingbot|baiduspider|yandex|slurp|duckduckbot|applebot|sogou|seznambot|petalbot`)
 )
 
 // htaccessDetectors is the registry. Detectors run in slice order for
@@ -1036,9 +1041,16 @@ const uaCloakBlocklistThreshold = 4
 // branches in a UA cond regex pattern, ignoring "|" characters inside
 // nested parentheses. Used to identify long bot blocklists.
 func uaCloakAlternationCount(pattern string) int {
+	return len(uaCloakAlternationBranches(pattern))
+}
+
+// uaCloakAlternationBranches splits a UA cond regex pattern on its
+// top-level "|" alternations, ignoring "|" inside nested parentheses.
+func uaCloakAlternationBranches(pattern string) []string {
 	depth := 0
-	count := 1
 	prevEscape := false
+	start := 0
+	var branches []string
 	for i := 0; i < len(pattern); i++ {
 		c := pattern[i]
 		if prevEscape {
@@ -1056,11 +1068,29 @@ func uaCloakAlternationCount(pattern string) int {
 			}
 		case '|':
 			if depth <= 1 {
-				count++
+				branches = append(branches, pattern[start:i])
+				start = i + 1
 			}
 		}
 	}
-	return count
+	return append(branches, pattern[start:])
+}
+
+// uaCloakSearchCrawlerMajority reports whether at least half of the UA
+// alternatives across the given cond patterns name search-engine crawlers.
+// Such a chain is a cloak target list, not a scraper blocklist, so the
+// long-list gates must not silence it.
+func uaCloakSearchCrawlerMajority(patterns []string) bool {
+	total, search := 0, 0
+	for _, p := range patterns {
+		for _, branch := range uaCloakAlternationBranches(p) {
+			total++
+			if searchCrawlerUARegex.MatchString(branch) {
+				search++
+			}
+		}
+	}
+	return total > 0 && search*2 >= total
 }
 
 // uaCloakPairedRuleIsDefensive scans forward from condEnd for the
@@ -1212,6 +1242,22 @@ func htaccessDirectiveName(line string) string {
 func detectUserAgentCloak(content []byte, _ string) []htaccessMatch {
 	idxs := reUACloakCond.FindAllSubmatchIndex(content, -1)
 	chainSize := uaCloakChainSizes(content, idxs)
+	// A chain whose UA alternatives are mostly search-engine crawlers is a
+	// cloak target list, not a scraper blocklist: gates 2 and 3 do not
+	// apply to it and only the paired rule (gate 4) can clear it.
+	searchList := make([]bool, len(idxs))
+	for _, group := range uaCloakChainGroups(content, idxs) {
+		patterns := make([]string, 0, len(group))
+		for _, i := range group {
+			if len(idxs[i]) >= 4 {
+				patterns = append(patterns, string(content[idxs[i][2]:idxs[i][3]]))
+			}
+		}
+		majority := uaCloakSearchCrawlerMajority(patterns)
+		for _, i := range group {
+			searchList[i] = majority
+		}
+	}
 	var out []htaccessMatch
 	for i, idx := range idxs {
 		if len(idx) < 4 {
@@ -1227,11 +1273,11 @@ func detectUserAgentCloak(content []byte, _ string) []htaccessMatch {
 			continue
 		}
 		// Gate 2: long alternation list = bot blocklist.
-		if uaCloakAlternationCount(uaPattern) >= uaCloakBlocklistThreshold {
+		if !searchList[i] && uaCloakAlternationCount(uaPattern) >= uaCloakBlocklistThreshold {
 			continue
 		}
 		// Gate 3: long multi-line chain = bot blocklist.
-		if chainSize[i] >= uaCloakBlocklistThreshold {
+		if !searchList[i] && chainSize[i] >= uaCloakBlocklistThreshold {
 			continue
 		}
 		// Gate 4: paired RewriteRule is defensive.
@@ -1299,25 +1345,30 @@ func uaCondChainStart(content []byte, condStart int) int {
 // conds onto the next RewriteRule.
 func uaCloakChainSizes(content []byte, idxs [][]int) []int {
 	sizes := make([]int, len(idxs))
-	if len(idxs) == 0 {
-		return sizes
-	}
-	runStart := 0
-	for i := 1; i < len(idxs); i++ {
-		if uaCondsAreAdjacent(content, idxs[i-1][1], idxs[i][0]) {
-			continue
+	for _, group := range uaCloakChainGroups(content, idxs) {
+		for _, i := range group {
+			sizes[i] = len(group)
 		}
-		runLen := i - runStart
-		for j := runStart; j < i; j++ {
-			sizes[j] = runLen
-		}
-		runStart = i
-	}
-	runLen := len(idxs) - runStart
-	for j := runStart; j < len(idxs); j++ {
-		sizes[j] = runLen
 	}
 	return sizes
+}
+
+// uaCloakChainGroups partitions the UA cond matches into chains (see
+// uaCloakChainSizes) and returns each chain as the match indexes it holds.
+func uaCloakChainGroups(content []byte, idxs [][]int) [][]int {
+	var groups [][]int
+	var current []int
+	for i := range idxs {
+		if i > 0 && !uaCondsAreAdjacent(content, idxs[i-1][1], idxs[i][0]) {
+			groups = append(groups, current)
+			current = nil
+		}
+		current = append(current, i)
+	}
+	if len(current) > 0 {
+		groups = append(groups, current)
+	}
+	return groups
 }
 
 // uaCondsAreAdjacent reports whether the gap between two UA cond matches
