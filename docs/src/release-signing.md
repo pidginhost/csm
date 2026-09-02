@@ -107,7 +107,7 @@ sudo env CSM_REQUIRE_SIGNATURES=1 bash /tmp/csm-install.sh
 
 Strict detached verification requires OpenSSL 3.0 or newer because the Ed25519 command uses `pkeyutl -rawin`. On older supported hosts, use the signed APT/DNF repository or verify the artifacts on a separate trusted system before transfer.
 
-If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`.
+If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`. A missing `.sig` (HTTP 404) is tolerated only for releases published before signing began (v2.2.0); for any later release the scripts abort even without `CSM_REQUIRE_SIGNATURES`, because every such release ships a signature and its absence means the download is incomplete or tampered.
 
 The same policy applies to the `csm-assets.tar.gz.sha256` checksum: releases published before checksums existed produce a warning and skip the checksum step, while `CSM_REQUIRE_SIGNATURES=1` makes the missing checksum fatal. A checksum that exists but does not match always aborts.
 

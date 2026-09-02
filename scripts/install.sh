@@ -48,8 +48,28 @@ if [ -z "$CSM_SIGNING_KEY_PEM" ] && [ -n "$EMBEDDED_SIGNING_KEY" ]; then
     CSM_SIGNING_KEY_PEM="$EMBEDDED_SIGNING_KEY"
 fi
 
+# Releases up to v2.1.x were published before detached signatures existed;
+# every release from v2.2.0 on ships a .sig, so a missing signature for one
+# of those is a broken or tampered download, never a legacy artifact.
+missing_signature_allowed() {
+    local version="${1#v}"
+    local major minor
+    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+        return 1
+    fi
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    if [ "$major" -lt 2 ]; then
+        return 0
+    fi
+    if [ "$major" -eq 2 ] && [ "$minor" -lt 2 ]; then
+        return 0
+    fi
+    return 1
+}
+
 verify_signature() {
-    local file="$1" sig_url="$2"
+    local file="$1" sig_url="$2" release_version="${3:-}"
     if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
         if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
             die "CSM_REQUIRE_SIGNATURES=1 but no signing key configured"
@@ -83,9 +103,12 @@ verify_signature() {
     local sig_http
     sig_http=$(curl -sS -w '%{http_code}' -L -o "$sig_file" "$sig_url")
     if [ "$sig_http" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ]; then
-        echo "  WARNING: signature not published for this release (404), skipping verification" >&2
         rm -f "$sig_file"
-        return 0
+        if missing_signature_allowed "$release_version"; then
+            echo "  WARNING: signature not published for this pre-signing release (404), skipping verification" >&2
+            return 0
+        fi
+        die "signature not published for ${release_version:-an unknown release} (HTTP 404): every release since v2.2.0 is signed, refusing the unverified artifact"
     fi
     if [ "$sig_http" != "200" ]; then
         die "Signature download failed (HTTP ${sig_http}) from ${sig_url}"
@@ -272,7 +295,7 @@ HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/csm.sha256" "$CHECKSUM_U
 info "Verifying checksum..."
 verify_checksum "${TMPDIR}/csm" "${TMPDIR}/csm.sha256"
 
-verify_signature "${TMPDIR}/csm" "${BINARY_URL}.sig"
+verify_signature "${TMPDIR}/csm" "${BINARY_URL}.sig" "${ARG_VERSION:-}"
 
 chmod +x "${TMPDIR}/csm"
 VERSION=$("${TMPDIR}/csm" version 2>/dev/null || die "Binary failed to execute")
@@ -293,7 +316,7 @@ elif [ "$HTTP_CODE" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ] && missing
 else
     die "Assets checksum download failed (HTTP ${HTTP_CODE})"
 fi
-verify_signature "${TMPDIR}/assets.tar.gz" "${ASSETS_URL}.sig"
+verify_signature "${TMPDIR}/assets.tar.gz" "${ASSETS_URL}.sig" "$RELEASE_VERSION"
 validate_assets_archive "${TMPDIR}/assets.tar.gz"
 tar xzf "${TMPDIR}/assets.tar.gz" -C "$INSTALL_DIR" --no-same-owner --no-same-permissions || die "Asset archive extraction failed"
 for required in ui configs pam deploy.sh; do

@@ -47,8 +47,28 @@ if [ -z "$CSM_SIGNING_KEY_PEM" ] && [ -n "$EMBEDDED_SIGNING_KEY" ]; then
     CSM_SIGNING_KEY_PEM="$EMBEDDED_SIGNING_KEY"
 fi
 
+# Releases up to v2.1.x were published before detached signatures existed;
+# every release from v2.2.0 on ships a .sig, so a missing signature for one
+# of those is a broken or tampered download, never a legacy artifact.
+missing_signature_allowed() {
+    local version="${1#v}"
+    local major minor
+    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+        return 1
+    fi
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    if [ "$major" -lt 2 ]; then
+        return 0
+    fi
+    if [ "$major" -eq 2 ] && [ "$minor" -lt 2 ]; then
+        return 0
+    fi
+    return 1
+}
+
 verify_signature() {
-    local file="$1" sig_url="$2"
+    local file="$1" sig_url="$2" release_version="${3:-}"
     if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
         if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
             die "CSM_REQUIRE_SIGNATURES=1 but no signing key configured"
@@ -81,9 +101,12 @@ verify_signature() {
     local sig_http
     sig_http=$(curl -sS -w '%{http_code}' -L -o "$sig_file" "$sig_url")
     if [ "$sig_http" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ]; then
-        echo "WARNING: signature not published for this release (404), skipping verification" >&2
         rm -f "$sig_file"
-        return 0
+        if missing_signature_allowed "$release_version"; then
+            echo "WARNING: signature not published for this pre-signing release (404), skipping verification" >&2
+            return 0
+        fi
+        die "signature not published for ${release_version:-an unknown release} (HTTP 404): every release since v2.2.0 is signed, refusing the unverified artifact"
     fi
     if [ "$sig_http" != "200" ]; then
         die "Signature download failed (HTTP ${sig_http}) from ${sig_url}"
@@ -147,7 +170,7 @@ download_package() {
     verify_checksum "${tmpdir}/${ARTIFACT_NAME}" "${tmpdir}/${ARTIFACT_NAME}.sha256"
     echo "Checksum OK" >&2
 
-    verify_signature "${tmpdir}/${ARTIFACT_NAME}" "$(get_download_url "${ARTIFACT_NAME}.sig" "$version")"
+    verify_signature "${tmpdir}/${ARTIFACT_NAME}" "$(get_download_url "${ARTIFACT_NAME}.sig" "$version")" "$version"
 
     chmod +x "${tmpdir}/${ARTIFACT_NAME}"
     if ! "${tmpdir}/${ARTIFACT_NAME}" version > /dev/null 2>&1; then
@@ -243,7 +266,7 @@ download_and_stage_assets() {
     else
         die "Assets checksum download failed (HTTP ${code})"
     fi
-    verify_signature "$archive" "$(get_download_url "csm-assets.tar.gz.sig" "$version")"
+    verify_signature "$archive" "$(get_download_url "csm-assets.tar.gz.sig" "$version")" "$release_version"
     validate_assets_archive "$archive"
 
     local stage="${tmpdir}/assets-stage"
@@ -438,6 +461,36 @@ do_install() {
     echo "  4. Test:           ${BINARY_PATH} check"
 }
 
+# version_key turns "csm 3.30.0 (build: ...)" or "v3.30.0" into a key that
+# sorts numerically; prints nothing when no x.y.z version is present.
+version_key() {
+    local text="$1"
+    if [[ "$text" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+        printf '%08d%08d%08d\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    fi
+}
+
+# refuse_downgrade stops an upgrade that would install an older release than
+# the one running unless CSM_ALLOW_DOWNGRADE=1: a stale pinned tag or a
+# rolled-back release page must not silently undo newer fixes. Unknown
+# versions cannot be compared and never block.
+refuse_downgrade() {
+    local current_key target_key
+    current_key=$(version_key "$1")
+    target_key=$(version_key "$2")
+    if [ -z "$current_key" ] || [ -z "$target_key" ]; then
+        return 0
+    fi
+    if [ "$target_key" \< "$current_key" ]; then
+        if [ "${CSM_ALLOW_DOWNGRADE:-0}" = "1" ]; then
+            echo "WARNING: downgrade from ${1} to ${2} allowed by CSM_ALLOW_DOWNGRADE=1" >&2
+            return 0
+        fi
+        die "refusing downgrade from ${1} to ${2}; set CSM_ALLOW_DOWNGRADE=1 to install an older release"
+    fi
+    return 0
+}
+
 do_upgrade() {
     if [ "$(id -u)" -ne 0 ]; then die "Must be run as root"; fi
     if [ ! -f "$BINARY_PATH" ]; then die "CSM not installed. Run: $0 install"; fi
@@ -467,6 +520,7 @@ do_upgrade() {
         start_services
         return
     fi
+    refuse_downgrade "$old_version" "$new_version"
 
     local assets_stage asset_backup binary_backup
     assets_stage=$(download_and_stage_assets "$release_tag" "$tmpdir")

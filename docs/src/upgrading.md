@@ -17,6 +17,9 @@ The package preserves the operator config and state, updates runtime assets, re-
 sudo /opt/csm/deploy.sh upgrade
 ```
 
+The upgrade refuses to install a release older than the one running. To roll back deliberately, run it with `CSM_ALLOW_DOWNGRADE=1`.
+
+
 The helper:
 
 1. Downloads and verifies the binary and supporting assets
