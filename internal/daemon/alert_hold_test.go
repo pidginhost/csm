@@ -11,6 +11,15 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
+// alertHoldTestBudget is the budget for one phase of these tests, not for a
+// whole test. Pushing thousands of findings through a held dispatcher takes
+// far longer under the race detector and coverage instrumentation than it
+// does locally, and a single deadline spanning both the enqueue and the
+// assertion lets a slow runner consume the budget before the assertion loop
+// runs even once -- which reads as "nothing was dispatched" rather than as
+// the timeout it is. Each phase restarts the clock.
+const alertHoldTestBudget = 60 * time.Second
+
 // Realtime producers send to the alert channel non-blocking from the moment
 // the watchers start, but the dispatcher used to start only after the
 // synchronous baseline scan, so every finding past the channel buffer during
@@ -43,7 +52,7 @@ func TestAlertDispatcherHoldsBatchWithoutDroppingUntilReleased(t *testing.T) {
 	})
 
 	produced := 3 * cap(d.alertCh)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(alertHoldTestBudget)
 	for i := 0; i < produced; i++ {
 		f := alert.Finding{
 			Severity:  alert.Critical,
@@ -72,6 +81,7 @@ func TestAlertDispatcherHoldsBatchWithoutDroppingUntilReleased(t *testing.T) {
 	}
 
 	d.releaseAlertDispatch()
+	deadline = time.Now().Add(alertHoldTestBudget)
 	for time.Now().Before(deadline) {
 		if int(dispatched.Load()) == produced {
 			return
@@ -108,7 +118,7 @@ func TestAlertDispatcherCountsHeldBatchOverflow(t *testing.T) {
 	})
 
 	produced := alertHoldMaxBatch + 3
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(alertHoldTestBudget)
 	for i := 0; i < produced; i++ {
 		f := alert.Finding{
 			Severity: alert.Critical, Check: "webshell_realtime",
@@ -129,6 +139,7 @@ func TestAlertDispatcherCountsHeldBatchOverflow(t *testing.T) {
 		}
 	}
 
+	deadline = time.Now().Add(alertHoldTestBudget)
 	for time.Now().Before(deadline) && d.DroppedAlerts() != 3 {
 		time.Sleep(time.Millisecond)
 	}
@@ -136,6 +147,7 @@ func TestAlertDispatcherCountsHeldBatchOverflow(t *testing.T) {
 		t.Fatalf("held overflow was not drained before release: dropped = %d", got)
 	}
 	d.releaseAlertDispatch()
+	deadline = time.Now().Add(alertHoldTestBudget)
 	for time.Now().Before(deadline) {
 		if dispatched.Load() == alertHoldMaxBatch {
 			break
