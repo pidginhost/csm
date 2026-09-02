@@ -294,7 +294,7 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 		// learn the site's own address, so answer that one row and let the
 		// count reflect the full per-scan cost.
 		if strings.Contains(query, "'siteurl', 'home'") {
-			return []string{"site\tsiteurl\thttps://alice.example"}
+			return []string{"site\tsiteurl\thttps://alice.example\t\t21\tsite"}
 		}
 		return nil
 	}

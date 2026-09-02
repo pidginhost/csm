@@ -2,12 +2,19 @@ package checks
 
 import (
 	"fmt"
+	"math"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/tdewolff/parse/v2"
+	cssparser "github.com/tdewolff/parse/v2/css"
 	"golang.org/x/net/html"
+	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/mysqlclient"
@@ -30,14 +37,18 @@ const (
 	// maxHiddenLinkRows bounds the rows pulled per table.
 	maxHiddenLinkRows = 200
 	// maxHiddenLinkValueBytes bounds one row's markup. Injected blocks sit at
-	// the top or bottom of the content; a row larger than this is truncated by
-	// SQL rather than pulled whole into memory.
-	maxHiddenLinkValueBytes = 128 * 1024
+	// the top or bottom of the content, so half is read from each end rather
+	// than letting padding at the front hide a trailing block.
+	maxHiddenLinkValueBytes  = 128 * 1024
+	maxHiddenLinkSampleBytes = maxHiddenLinkValueBytes / 2
+	// maxHiddenLinkSiteURLBytes prevents a poisoned site address from making
+	// the otherwise bounded candidate query return an attacker-sized value.
+	maxHiddenLinkSiteURLBytes = 4 * 1024
 	// maxHiddenLinkNodes bounds one row's parsed markup. The walk is iterative
 	// so nesting cannot exhaust the stack, but a hostile row must not be able
 	// to spend unbounded time either.
 	maxHiddenLinkNodes = 200000
-	// maxHiddenLinkHostsShown bounds the domains named in the finding.
+	// maxHiddenLinkHostsShown bounds the hosts named in the finding.
 	maxHiddenLinkHostsShown = 12
 	// maxHiddenLinkRowsShown bounds the rows named in the finding.
 	maxHiddenLinkRowsShown = 10
@@ -45,12 +56,33 @@ const (
 	// it is cloaking rather than layout. Real layouts nudge elements by a few
 	// pixels; the kits observed used four- and five-digit offsets.
 	offScreenPixels = 1000
+	// Font-relative offsets reach the same distance with smaller numbers. The
+	// threshold remains high enough to exclude ordinary indentation.
+	offScreenFontUnits = 100
 )
 
-// hiddenLinkCandidateSQL prefilters rows worth parsing. Spacing after the
-// colon varies between kits, so it cannot be a LIKE.
-const hiddenLinkCandidateSQL = `'(display|visibility)[[:space:]]*:[[:space:]]*(none|hidden|collapse)` +
-	`|(text-indent|left|top|right|bottom)[[:space:]]*:[[:space:]]*-[0-9]'`
+// hiddenLinkCandidatePattern mirrors the CSS forms the parser understands.
+// Otherwise the database prefilter could discard a row before parsing it.
+const hiddenLinkCSSCommentPattern = `/[*]([^*]|[*]+[^*/])*[*]+/`
+const hiddenLinkCSSGapPattern = `([[:space:]]|` + hiddenLinkCSSCommentPattern + `)*`
+const hiddenLinkEncodedStylePattern = `style[[:space:]]*=[^>]*[&](#(x[0-9a-f]+|[0-9]+)|colon);?`
+const hiddenLinkCandidatePattern = `(display|visibility)` + hiddenLinkCSSGapPattern + `:` +
+	hiddenLinkCSSGapPattern + `(none|hidden|collapse)` +
+	`|opacity` + hiddenLinkCSSGapPattern + `:` + hiddenLinkCSSGapPattern +
+	`([+]?0+|[+]?[.]0+|-[0-9]+|-[.][0-9]+)([^0-9]|$)` +
+	`|(text-indent|left|top|right|bottom|margin-left|margin-top)` + hiddenLinkCSSGapPattern + `:` +
+	hiddenLinkCSSGapPattern + `(calc` + hiddenLinkCSSGapPattern + `[(]` + hiddenLinkCSSGapPattern + `)?` +
+	`-([0-9]|[.][0-9])|` + hiddenLinkEncodedStylePattern
+
+const hiddenLinkCandidateSQL = "'" + hiddenLinkCandidatePattern + "'"
+
+func hiddenLinkCandidateCondition(column string) string {
+	// CSS escapes need two backslashes in the regular expression. Build them
+	// with CHAR() so the result does not depend on MySQL's string-escape mode.
+	escapedStyle := `style[[:space:]]*=[^>]*`
+	return fmt.Sprintf("(LOWER(%s) REGEXP %s OR LOWER(%s) REGEXP CONCAT('%s', CHAR(92), CHAR(92)))",
+		column, hiddenLinkCandidateSQL, column, escapedStyle)
+}
 
 // hiddenLinkHit is what one row's markup revealed.
 type hiddenLinkHit struct {
@@ -60,6 +92,12 @@ type hiddenLinkHit struct {
 	// hosts are the distinct off-site hosts linked from inside hidden
 	// containers, sorted.
 	hosts []string
+	// domains are the distinct registrable domains behind hosts. Severity is
+	// based on these so subdomains of one target do not look like a link farm.
+	domains []string
+	// multiDomain records that one hidden container, rather than merely one
+	// database row, links to at least two registrable domains.
+	multiDomain bool
 	// spammy records gambling or pharmacy vocabulary in the hidden anchors.
 	spammy bool
 }
@@ -74,30 +112,64 @@ type hiddenLinkHit struct {
 // open elements on an explicit heap stack keeps attacker-controlled nesting off
 // the goroutine stack, where an overflow is fatal and unrecoverable.
 func hiddenOffsiteLinks(markup, siteHost string) hiddenLinkHit {
-	siteLabel := registrableLabel(siteHost)
-	if siteLabel == "" {
+	return hiddenOffsiteLinksForSites(markup, []string{siteHost})
+}
+
+func hiddenOffsiteLinksForSites(markup string, siteHosts []string) hiddenLinkHit {
+	siteDomains := make(map[string]bool, len(siteHosts))
+	for _, host := range siteHosts {
+		if domain := registrableDomain(host); domain != "" {
+			siteDomains[domain] = true
+		}
+	}
+	if len(siteDomains) == 0 {
 		return hiddenLinkHit{}
 	}
 
 	type openElement struct {
-		name      string
-		hidden    bool
-		offScreen bool
+		name             string
+		hidden           bool
+		hiddenGroup      int
+		visibilityHidden bool
+		visibilityGroup  int
+		offScreen        bool
 	}
 	var stack []openElement
-	inherited := func() (bool, bool) {
+	inherited := func() openElement {
 		if len(stack) == 0 {
-			return false, false
+			return openElement{}
 		}
-		top := stack[len(stack)-1]
-		return top.hidden, top.offScreen
+		return stack[len(stack)-1]
 	}
 
 	var hit hiddenLinkHit
-	seen := make(map[string]bool)
+	seenHosts := make(map[string]bool)
+	seenDomains := make(map[string]bool)
+	nextHiddenGroup := 1
+	groupDomains := make(map[int]map[string]bool)
+	newHiddenGroup := func() int {
+		group := nextHiddenGroup
+		nextHiddenGroup++
+		return group
+	}
+	recordGroupDomain := func(group int, domain string) {
+		if group == 0 {
+			return
+		}
+		domains := groupDomains[group]
+		if domains == nil {
+			domains = make(map[string]bool)
+			groupDomains[group] = domains
+		}
+		domains[domain] = true
+		if len(domains) >= 2 {
+			hit.multiDomain = true
+		}
+	}
 	// anchorHost is the host of the hidden anchor currently open, so its link
 	// text can be graded when the anchor closes.
 	anchorHost, anchorText := "", strings.Builder{}
+	anchorDepth := -1
 	closeAnchor := func() {
 		if anchorHost == "" {
 			return
@@ -106,6 +178,20 @@ func hiddenOffsiteLinks(markup, siteHost string) hiddenLinkHit {
 			hit.spammy = true
 		}
 		anchorHost, anchorText = "", strings.Builder{}
+		anchorDepth = -1
+	}
+	popOpenElement := func(name string) bool {
+		for i := len(stack) - 1; i >= 0; i-- {
+			if stack[i].name != name {
+				continue
+			}
+			if anchorDepth >= i {
+				closeAnchor()
+			}
+			stack = stack[:i]
+			return true
+		}
+		return false
 	}
 
 	z := html.NewTokenizer(strings.NewReader(markup))
@@ -114,59 +200,88 @@ func hiddenOffsiteLinks(markup, siteHost string) hiddenLinkHit {
 		case html.ErrorToken:
 			closeAnchor()
 			sort.Strings(hit.hosts)
+			sort.Strings(hit.domains)
 			return hit
 		case html.TextToken:
-			if anchorHost != "" && anchorText.Len() < 512 {
-				anchorText.Write(z.Text())
+			if anchorHost != "" && anchorText.Len() < 512 &&
+				(len(stack) == 0 || !rawTextHTMLElements[stack[len(stack)-1].name]) {
+				text := z.Text()
+				remaining := 512 - anchorText.Len()
+				if len(text) > remaining {
+					text = text[:remaining]
+				}
+				anchorText.Write(text)
 			}
 		case html.StartTagToken, html.SelfClosingTagToken:
 			name, style, href := tokenAttrs(z)
-			hidden, offScreen := inherited()
+			if name == "a" {
+				popOpenElement("a")
+				closeAnchor()
+			}
+			state := inherited()
 			if style != "" {
-				if cssOffScreen(style) {
-					hidden, offScreen = true, true
-				} else if cssDeclarationsHide(style) {
-					hidden = true
+				styleState := parseHiddenCSSState(style)
+				if styleState.hidden {
+					if !state.hidden {
+						state.hiddenGroup = newHiddenGroup()
+					}
+					state.hidden = true
+				}
+				if styleState.visibilitySet {
+					if styleState.visibilityHidden {
+						if !state.visibilityHidden {
+							state.visibilityGroup = newHiddenGroup()
+						}
+					} else {
+						state.visibilityGroup = 0
+					}
+					state.visibilityHidden = styleState.visibilityHidden
+				}
+				if styleState.offScreen {
+					state.offScreen = true
 				}
 			}
-			if name == "a" && hidden && href != "" {
-				if host, ok := absoluteLinkHost(href); ok && offSiteHost(host, siteLabel) {
-					if !seen[host] {
-						seen[host] = true
-						hit.hosts = append(hit.hosts, host)
+			if name == "a" && (state.hidden || state.visibilityHidden) && href != "" {
+				if host, ok := absoluteLinkHost(href); ok {
+					domain := registrableDomain(host)
+					if domain != "" && !siteDomains[domain] {
+						if !seenHosts[host] {
+							seenHosts[host] = true
+							hit.hosts = append(hit.hosts, host)
+						}
+						if !seenDomains[domain] {
+							seenDomains[domain] = true
+							hit.domains = append(hit.domains, domain)
+						}
+						recordGroupDomain(state.hiddenGroup, domain)
+						recordGroupDomain(state.visibilityGroup, domain)
+						if state.offScreen {
+							hit.offScreen = true
+						}
+						anchorHost = host
+						anchorDepth = len(stack)
 					}
-					if offScreen {
-						hit.offScreen = true
-					}
-					anchorHost = host
 				}
 			}
-			if len(stack) < maxHiddenLinkDepth && !voidHTMLElements[name] {
-				stack = append(stack, openElement{name: name, hidden: hidden, offScreen: offScreen})
+			if !voidHTMLElements[name] {
+				state.name = name
+				stack = append(stack, state)
 			}
 		case html.EndTagToken:
 			name, _, _ := tokenAttrs(z)
-			if name == "a" {
-				closeAnchor()
-			}
 			// Unclosed tags are ordinary in real content, so pop back to the
 			// nearest matching element rather than assuming balance.
-			for i := len(stack) - 1; i >= 0; i-- {
-				if stack[i].name == name {
-					stack = stack[:i]
-					break
-				}
+			popOpenElement(name)
+			if name == "a" {
+				closeAnchor()
 			}
 		}
 	}
 	closeAnchor()
 	sort.Strings(hit.hosts)
+	sort.Strings(hit.domains)
 	return hit
 }
-
-// maxHiddenLinkDepth bounds the open-element stack. Content nested deeper than
-// this stops contributing containment, but tokenizing continues.
-const maxHiddenLinkDepth = 4096
 
 // voidHTMLElements never have an end tag, so they must not be pushed onto the
 // open-element stack.
@@ -174,6 +289,10 @@ var voidHTMLElements = map[string]bool{
 	"area": true, "base": true, "br": true, "col": true, "embed": true,
 	"hr": true, "img": true, "input": true, "link": true, "meta": true,
 	"param": true, "source": true, "track": true, "wbr": true,
+}
+
+var rawTextHTMLElements = map[string]bool{
+	"script": true, "style": true, "textarea": true, "title": true,
 }
 
 // tokenAttrs returns the current token's lowercased tag name plus the two
@@ -203,50 +322,225 @@ func absoluteLinkHost(href string) (string, bool) {
 	}
 	switch strings.ToLower(parsed.Scheme) {
 	case "http", "https", "":
-		return strings.ToLower(parsed.Hostname()), true
+		return normalizeHost(parsed.Hostname()), true
 	default:
 		return "", false
 	}
 }
 
-// offSiteHost reports whether a link leaves the site. siteLabel is non-empty
-// by construction: hiddenOffsiteLinks refuses to scan a row without one,
-// because an unknown site address makes every absolute link look external.
-func offSiteHost(host, siteLabel string) bool {
-	label := registrableLabel(host)
-	return label != "" && label != siteLabel
+// registrableDomain canonicalizes a host to the public suffix plus one. IP and
+// single-label hosts remain their own identity so sites served on either can
+// still distinguish their own links from external ones.
+func registrableDomain(host string) string {
+	host = normalizeHost(host)
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	domain, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
+		return host
+	}
+	return domain
+}
+
+func normalizeHost(host string) string {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(ascii)
 }
 
 // cssOffScreen reports whether inline declarations move content outside the
 // canvas rather than merely hiding it.
 func cssOffScreen(declarations string) bool {
-	for _, declaration := range strings.Split(strings.ToLower(declarations), ";") {
-		property, value, found := strings.Cut(declaration, ":")
-		if !found {
-			continue
-		}
-		switch strings.TrimSpace(property) {
-		case "text-indent", "left", "top", "right", "bottom", "margin-left", "margin-top":
-		default:
-			continue
-		}
-		if px, ok := cssPixels(value); ok && px <= -offScreenPixels {
-			return true
-		}
-	}
-	return false
+	return parseHiddenCSSState(declarations).offScreen
 }
 
-// cssPixels reads a pixel-valued declaration. Units other than px are not the
-// shape these kits use and are not guessed at.
-func cssPixels(value string) (float64, bool) {
-	v := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "!important"))
-	v = strings.TrimSpace(strings.TrimSuffix(v, "px"))
-	px, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return 0, false
+type cssDeclaration struct {
+	value     string
+	important bool
+}
+
+type hiddenCSSState struct {
+	hidden           bool
+	visibilitySet    bool
+	visibilityHidden bool
+	offScreen        bool
+}
+
+func parseHiddenCSSState(declarations string) hiddenCSSState {
+	effective := make(map[string]cssDeclaration)
+	parser := cssparser.NewParser(parse.NewInputString(declarations), true)
+	for {
+		grammar, _, propertyBytes := parser.Next()
+		if grammar == cssparser.ErrorGrammar {
+			break
+		}
+		if grammar != cssparser.DeclarationGrammar {
+			continue
+		}
+		property := strings.ToLower(cssUnescape(string(propertyBytes)))
+		var rawValue strings.Builder
+		for _, token := range parser.Values() {
+			rawValue.Write(token.Data)
+		}
+		value, important := cssDeclarationValue(strings.ToLower(cssUnescape(rawValue.String())))
+		previous, exists := effective[property]
+		if exists && previous.important && !important {
+			continue
+		}
+		effective[property] = cssDeclaration{value: value, important: important}
 	}
-	return px, true
+
+	var state hiddenCSSState
+	if declaration, ok := effective["display"]; ok && declaration.value == "none" {
+		state.hidden = true
+	}
+	if declaration, ok := effective["visibility"]; ok {
+		switch declaration.value {
+		case "hidden", "collapse":
+			state.visibilitySet = true
+			state.visibilityHidden = true
+		case "visible", "initial":
+			state.visibilitySet = true
+		}
+	}
+	if declaration, ok := effective["opacity"]; ok && cssOpacityIsHidden(declaration.value) {
+		state.hidden = true
+	}
+	for _, property := range []string{
+		"text-indent", "left", "top", "right", "bottom", "margin-left", "margin-top",
+	} {
+		if declaration, ok := effective[property]; ok && cssLengthIsOffScreen(declaration.value) {
+			state.hidden = true
+			state.offScreen = true
+			break
+		}
+	}
+	return state
+}
+
+func cssUnescape(value string) string {
+	if !strings.ContainsRune(value, '\\') {
+		return value
+	}
+	var out strings.Builder
+	out.Grow(len(value))
+	for i := 0; i < len(value); i++ {
+		if value[i] != '\\' {
+			out.WriteByte(value[i])
+			continue
+		}
+		i++
+		if i >= len(value) {
+			break
+		}
+		if isCSSHex(value[i]) {
+			codePoint := uint32(0)
+			digits := 0
+			for i < len(value) && digits < 6 && isCSSHex(value[i]) {
+				codePoint = codePoint*16 + uint32(cssHexValue(value[i]))
+				i++
+				digits++
+			}
+			if codePoint == 0 || codePoint > utf8.MaxRune || 0xD800 <= codePoint && codePoint <= 0xDFFF {
+				out.WriteRune(utf8.RuneError)
+			} else {
+				out.WriteRune(rune(codePoint))
+			}
+			if i < len(value) && isCSSWhitespace(value[i]) {
+				if value[i] == '\r' && i+1 < len(value) && value[i+1] == '\n' {
+					i++
+				}
+			} else {
+				i--
+			}
+			continue
+		}
+		if value[i] == '\r' && i+1 < len(value) && value[i+1] == '\n' {
+			i++
+			continue
+		}
+		if value[i] == '\n' || value[i] == '\r' || value[i] == '\f' {
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(value[i:])
+		out.WriteRune(r)
+		i += size - 1
+	}
+	return out.String()
+}
+
+func isCSSHex(value byte) bool {
+	return value >= '0' && value <= '9' || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
+}
+
+func cssHexValue(value byte) byte {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0'
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10
+	default:
+		return value - 'A' + 10
+	}
+}
+
+func isCSSWhitespace(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\n' || value == '\r' || value == '\f'
+}
+
+func cssOpacityIsHidden(value string) bool {
+	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(strings.TrimSuffix(value, "%"))
+	number, err := strconv.ParseFloat(value, 64)
+	return err == nil && number <= 0 || math.IsInf(number, -1)
+}
+
+func cssDeclarationValue(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	marker := strings.LastIndexByte(value, '!')
+	if marker < 0 || strings.TrimSpace(value[marker+1:]) != "important" {
+		return value, false
+	}
+	return strings.TrimSpace(value[:marker]), true
+}
+
+func cssLengthIsOffScreen(value string) bool {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "calc(") && strings.HasSuffix(value, ")") {
+		value = strings.TrimSpace(value[len("calc(") : len(value)-1])
+	}
+
+	unit := ""
+	for _, candidate := range []string{"vmin", "vmax", "rem", "px", "em", "vw", "vh", "%"} {
+		if strings.HasSuffix(value, candidate) {
+			unit = candidate
+			value = strings.TrimSpace(strings.TrimSuffix(value, candidate))
+			break
+		}
+	}
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return math.IsInf(number, -1)
+	}
+
+	threshold := float64(offScreenPixels)
+	if unit == "em" || unit == "rem" {
+		threshold = offScreenFontUnits
+	}
+	return number <= -threshold
 }
 
 // hiddenLinkRow is one database row that carried a hidden link block.
@@ -257,8 +551,8 @@ type hiddenLinkRow struct {
 
 // checkWPHiddenLinks reports link blocks the page hides from its readers.
 func checkWPHiddenLinks(user string, creds wpDBCreds, prefix string) []alert.Finding {
-	siteHost, optionRows := hiddenLinkOptionRows(creds, prefix)
-	if siteHost == "" {
+	siteHosts, optionRows := hiddenLinkOptionRows(creds, prefix)
+	if len(siteHosts) == 0 {
 		// Every absolute link would look external. Report nothing rather than
 		// flood, and let the incomplete marker say why.
 		markCheckIncomplete(creds.queryCtx, "db_content")
@@ -267,66 +561,176 @@ func checkWPHiddenLinks(user string, creds wpDBCreds, prefix string) []alert.Fin
 
 	rows := make([]hiddenLinkRow, 0, len(optionRows))
 	for _, row := range optionRows {
-		if hit := hiddenOffsiteLinks(row.markup, siteHost); len(hit.hosts) > 0 {
-			rows = append(rows, hiddenLinkRow{label: "option " + row.label, hit: hit})
+		if hit := hiddenOffsiteLinkSamples(row, siteHosts); len(hit.hosts) > 0 {
+			rows = append(rows, hiddenLinkRow{label: "option " + strconv.Quote(row.label), hit: hit})
 		}
 	}
 	for _, row := range hiddenLinkPostRows(creds, prefix) {
-		if hit := hiddenOffsiteLinks(row.markup, siteHost); len(hit.hosts) > 0 {
-			rows = append(rows, hiddenLinkRow{label: "post " + row.label, hit: hit})
+		if hit := hiddenOffsiteLinkSamples(row, siteHosts); len(hit.hosts) > 0 {
+			rows = append(rows, hiddenLinkRow{label: "post " + strconv.Quote(row.label), hit: hit})
 		}
 	}
 	return buildHiddenLinkFindings(user, creds, prefix, rows)
 }
 
 type hiddenLinkSource struct {
-	label  string
-	markup string
+	label      string
+	markup     string
+	tailMarkup string
+	valueBytes int
+}
+
+func hiddenOffsiteLinkSamples(source hiddenLinkSource, siteHosts []string) hiddenLinkHit {
+	if source.valueBytes > 0 && source.valueBytes <= maxHiddenLinkValueBytes && source.tailMarkup != "" {
+		overlap := len(source.markup) + len(source.tailMarkup) - source.valueBytes
+		if overlap >= 0 && overlap <= len(source.markup) && overlap <= len(source.tailMarkup) &&
+			source.markup[len(source.markup)-overlap:] == source.tailMarkup[:overlap] {
+			source.markup += source.tailMarkup[overlap:]
+			source.tailMarkup = ""
+		}
+	}
+	// Treat the two samples as separate fragments. Concatenating them could
+	// carry an unclosed hidden container across the omitted middle and turn a
+	// visible trailing link into a false positive.
+	hit := hiddenOffsiteLinksForSites(source.markup, siteHosts)
+	if source.tailMarkup == "" || source.tailMarkup == source.markup {
+		return hit
+	}
+	return mergeHiddenLinkHits(hit, hiddenOffsiteLinksForSites(source.tailMarkup, siteHosts))
+}
+
+func mergeHiddenLinkHits(left, right hiddenLinkHit) hiddenLinkHit {
+	merged := hiddenLinkHit{
+		offScreen:   left.offScreen || right.offScreen,
+		multiDomain: left.multiDomain || right.multiDomain,
+		spammy:      left.spammy || right.spammy,
+	}
+	for _, values := range [][]string{left.hosts, right.hosts} {
+		for _, value := range values {
+			if len(merged.hosts) == 0 || merged.hosts[len(merged.hosts)-1] != value {
+				merged.hosts = append(merged.hosts, value)
+			}
+		}
+	}
+	for _, values := range [][]string{left.domains, right.domains} {
+		for _, value := range values {
+			if len(merged.domains) == 0 || merged.domains[len(merged.domains)-1] != value {
+				merged.domains = append(merged.domains, value)
+			}
+		}
+	}
+	sort.Strings(merged.hosts)
+	merged.hosts = compactSortedStrings(merged.hosts)
+	sort.Strings(merged.domains)
+	merged.domains = compactSortedStrings(merged.domains)
+	return merged
+}
+
+func compactSortedStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	out := values[:1]
+	for _, value := range values[1:] {
+		if value != out[len(out)-1] {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // hiddenLinkOptionRows reads the site address and the option rows worth
 // parsing in one round trip.
-func hiddenLinkOptionRows(creds wpDBCreds, prefix string) (string, []hiddenLinkSource) {
+func hiddenLinkOptionRows(creds wpDBCreds, prefix string) ([]string, []hiddenLinkSource) {
 	query := fmt.Sprintf(
-		"(SELECT 'site' AS kind, option_name, option_value FROM %soptions "+
+		"(SELECT 'site' AS kind, option_name, LEFT(CAST(option_value AS BINARY), %d), "+
+			"'', OCTET_LENGTH(option_value), 'site' FROM %soptions "+
 			"WHERE option_name IN ('siteurl', 'home') LIMIT 4) UNION ALL "+
-			"(SELECT 'opt', option_name, LEFT(option_value, %d) FROM %soptions "+
-			"WHERE option_value REGEXP %s LIMIT %d)",
-		prefix, maxHiddenLinkValueBytes, prefix, hiddenLinkCandidateSQL, maxHiddenLinkRows+1)
+			"(SELECT 'opt', option_name, LEFT(CAST(option_value AS BINARY), %d), "+
+			"RIGHT(CAST(option_value AS BINARY), %d), OCTET_LENGTH(option_value), 'opt' FROM %soptions "+
+			"WHERE %s LIMIT %d)",
+		maxHiddenLinkSiteURLBytes, prefix, maxHiddenLinkSampleBytes, maxHiddenLinkSampleBytes, prefix,
+		hiddenLinkCandidateCondition("option_value"), maxHiddenLinkRows+1)
 
-	siteHost := ""
+	var siteHosts []string
+	seenSiteHosts := make(map[string]bool)
 	var out []hiddenLinkSource
 	rows := runMySQLQuery(creds, query)
+	optionRowsSeen := 0
+	truncated := false
 	for _, line := range rows {
-		parts := strings.SplitN(strings.TrimRight(line, "\r\n"), "\t", 3)
-		if len(parts) != 3 {
+		// Column separators are literal tabs while tabs and newlines inside a
+		// value remain batch escapes. Split that transport form before decoding
+		// individual columns or an embedded tab becomes indistinguishable from
+		// a separator.
+		parts := strings.SplitN(strings.TrimRight(line, "\r\n"), "\t", 6)
+		if len(parts) != 6 {
 			markCheckIncomplete(creds.queryCtx, "db_content")
 			continue
 		}
+		kind := strings.TrimSpace(parts[0])
+		if kind != "site" {
+			optionRowsSeen++
+			if optionRowsSeen > maxHiddenLinkRows {
+				if !truncated {
+					markCheckIncomplete(creds.queryCtx, "db_content")
+					truncated = true
+				}
+				continue
+			}
+		}
 		name := strings.TrimSpace(mysqlclient.BatchUnescape(parts[1]))
-		value := mysqlclient.BatchUnescape(parts[2])
-		if strings.TrimSpace(parts[0]) == "site" {
-			if siteHost == "" {
-				if parsed, err := url.Parse(strings.TrimSpace(value)); err == nil {
-					siteHost = parsed.Hostname()
+		encodedValue := parts[2]
+		value := mysqlclient.BatchUnescape(encodedValue)
+		valueBytes, err := strconv.Atoi(strings.TrimSpace(parts[4]))
+		if err != nil || valueBytes < 0 {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+			continue
+		}
+		if kind == "site" {
+			if valueBytes > maxHiddenLinkSiteURLBytes || len(value) != valueBytes {
+				markCheckIncomplete(creds.queryCtx, "db_content")
+				continue
+			}
+			if reason, _ := siteURLPoisonReason(encodedValue); reason != "" {
+				continue
+			}
+			if parsed, err := url.Parse(strings.TrimSpace(value)); err == nil {
+				host := normalizeHost(parsed.Hostname())
+				if registrableDomain(host) != "" && !seenSiteHosts[host] {
+					seenSiteHosts[host] = true
+					siteHosts = append(siteHosts, host)
 				}
 			}
 			continue
 		}
-		if len(out) >= maxHiddenLinkRows {
-			markCheckIncomplete(creds.queryCtx, "db_content")
-			break
+		tailMarkup := mysqlclient.BatchUnescape(parts[3])
+		expectedSampleBytes := valueBytes
+		if expectedSampleBytes > maxHiddenLinkSampleBytes {
+			expectedSampleBytes = maxHiddenLinkSampleBytes
 		}
-		out = append(out, hiddenLinkSource{label: name, markup: value})
+		if len(value) != expectedSampleBytes || len(tailMarkup) != expectedSampleBytes {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+			continue
+		}
+		if valueBytes > maxHiddenLinkValueBytes {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+		}
+		out = append(out, hiddenLinkSource{
+			label: name, markup: value, tailMarkup: tailMarkup, valueBytes: valueBytes,
+		})
 	}
-	return siteHost, out
+	return siteHosts, out
 }
 
 func hiddenLinkPostRows(creds wpDBCreds, prefix string) []hiddenLinkSource {
 	query := fmt.Sprintf(
-		"SELECT ID, LEFT(post_content, %d) FROM %sposts WHERE post_status = 'publish' "+
-			"AND post_type NOT IN (%s) AND post_content REGEXP %s LIMIT %d",
-		maxHiddenLinkValueBytes, prefix, nonScannablePostTypesSQLList(), hiddenLinkCandidateSQL, maxHiddenLinkRows+1)
+		"SELECT ID, LEFT(CAST(post_content AS BINARY), %d), "+
+			"RIGHT(CAST(post_content AS BINARY), %d), OCTET_LENGTH(post_content), 'post' "+
+			"FROM %sposts WHERE post_status = 'publish' "+
+			"AND post_type NOT IN (%s) AND %s LIMIT %d",
+		maxHiddenLinkSampleBytes, maxHiddenLinkSampleBytes, prefix,
+		nonScannablePostTypesSQLList(), hiddenLinkCandidateCondition("post_content"), maxHiddenLinkRows+1)
 
 	rows := runMySQLQuery(creds, query)
 	if len(rows) > maxHiddenLinkRows {
@@ -335,14 +739,34 @@ func hiddenLinkPostRows(creds wpDBCreds, prefix string) []hiddenLinkSource {
 	}
 	out := make([]hiddenLinkSource, 0, len(rows))
 	for _, line := range rows {
-		parts := strings.SplitN(strings.TrimRight(line, "\r\n"), "\t", 2)
-		if len(parts) != 2 {
+		parts := strings.SplitN(strings.TrimRight(line, "\r\n"), "\t", 5)
+		if len(parts) != 5 {
 			markCheckIncomplete(creds.queryCtx, "db_content")
 			continue
 		}
+		markup := mysqlclient.BatchUnescape(parts[1])
+		tailMarkup := mysqlclient.BatchUnescape(parts[2])
+		valueBytes, err := strconv.Atoi(strings.TrimSpace(parts[3]))
+		if err != nil || valueBytes < 0 {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+			continue
+		}
+		expectedSampleBytes := valueBytes
+		if expectedSampleBytes > maxHiddenLinkSampleBytes {
+			expectedSampleBytes = maxHiddenLinkSampleBytes
+		}
+		if len(markup) != expectedSampleBytes || len(tailMarkup) != expectedSampleBytes {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+			continue
+		}
+		if valueBytes > maxHiddenLinkValueBytes {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+		}
 		out = append(out, hiddenLinkSource{
-			label:  strings.TrimSpace(mysqlclient.BatchUnescape(parts[0])),
-			markup: mysqlclient.BatchUnescape(parts[1]),
+			label:      strings.TrimSpace(mysqlclient.BatchUnescape(parts[0])),
+			markup:     markup,
+			tailMarkup: tailMarkup,
+			valueBytes: valueBytes,
 		})
 	}
 	return out
@@ -356,8 +780,9 @@ func buildHiddenLinkFindings(user string, creds wpDBCreds, prefix string, rows [
 	var reported []hiddenLinkRow
 	offScreen := false
 	hosts := make(map[string]bool)
+	domains := make(map[string]bool)
 	for _, row := range rows {
-		if !row.hit.offScreen && len(row.hit.hosts) < 2 && !row.hit.spammy {
+		if !row.hit.offScreen && !row.hit.multiDomain && !row.hit.spammy {
 			continue
 		}
 		reported = append(reported, row)
@@ -366,6 +791,9 @@ func buildHiddenLinkFindings(user string, creds wpDBCreds, prefix string, rows [
 		}
 		for _, host := range row.hit.hosts {
 			hosts[host] = true
+		}
+		for _, domain := range row.hit.domains {
+			domains[domain] = true
 		}
 	}
 	if len(reported) == 0 {
@@ -394,7 +822,7 @@ func buildHiddenLinkFindings(user string, creds wpDBCreds, prefix string, rows [
 		"A container the page hides from readers wraps links to other domains. " +
 			"Crawlers still follow them, which is the point: the site's ranking " +
 			"is lent to the linked domains without a visitor ever seeing it.",
-		hiddenLinkSample("Linked domains", shownHosts, len(named)),
+		hiddenLinkSample("Linked hosts", shownHosts, len(named)),
 		hiddenLinkSample("Rows", labels, len(reported)),
 	}
 
@@ -408,8 +836,8 @@ func buildHiddenLinkFindings(user string, creds wpDBCreds, prefix string, rows [
 	return []alert.Finding{{
 		Severity: severity,
 		Check:    "db_hidden_link_injection",
-		Message: fmt.Sprintf("%d WordPress rows hide outbound links to %d domains (account: %s)",
-			len(reported), len(named), user),
+		Message: fmt.Sprintf("%d WordPress rows hide outbound links to %d hosts across %d domains (account: %s)",
+			len(reported), len(named), len(domains), user),
 		Details: dbContentFindingDetails(creds.dbName, prefix, details...),
 	}}
 }
