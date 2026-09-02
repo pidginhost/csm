@@ -993,6 +993,10 @@ type Config struct {
 		TLSCert      string `yaml:"tls_cert"`
 		TLSKey       string `yaml:"tls_key"`
 		UIDir        string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
+		// AllowedOrigins lists extra browser origins ("https://host[:port]")
+		// whose API requests are accepted besides https://<hostname>:<port>.
+		// Loopback origins (SSH tunnels) are always accepted. Hot-reloadable.
+		AllowedOrigins []string `yaml:"allowed_origins,omitempty" hotreload:"safe"`
 
 		// Tokens is the multi-credential model added in v2.12.0. Each entry has
 		// a stable name (for audit), an opaque secret, and a scope that gates

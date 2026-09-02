@@ -119,6 +119,11 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 
 	// --- WebUI ---
+	for _, origin := range cfg.WebUI.AllowedOrigins {
+		if err := validateBrowserOrigin(origin); err != nil {
+			results = append(results, ValidationResult{"error", "webui.allowed_origins", fmt.Sprintf("%q: %v", origin, err)})
+		}
+	}
 	if cfg.WebUI.Enabled {
 		if err := validateWebUITokens(cfg); err != nil {
 			results = append(results, ValidationResult{"error", "webui.tokens", err.Error()})
@@ -1195,6 +1200,25 @@ func probeWebhook(url string) []ValidationResult {
 	}
 	resp.Body.Close()
 	return []ValidationResult{{"ok", "alerts.webhook.url", fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)}}
+}
+
+// validateBrowserOrigin checks that raw has the shape of a browser Origin
+// header value the web UI can match: https://host[:port] and nothing else.
+func validateBrowserOrigin(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("must be an https origin")
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("missing host")
+	}
+	if u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("must be a bare https://host[:port] origin")
+	}
+	return nil
 }
 
 func validateSignatureURL(raw string, allowTemplates bool) error {

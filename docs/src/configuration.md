@@ -535,6 +535,7 @@ webui:
   tls_cert: ""                          # path to TLS certificate PEM file
   tls_key: ""                           # path to TLS private key PEM file
   ui_dir: ""                            # path to UI files on disk (default: /opt/csm/ui)
+  allowed_origins: []                   # extra browser origins ("https://host[:port]") allowed to call the API; loopback is always allowed
 
 # --- Email AV ---
 email_av:

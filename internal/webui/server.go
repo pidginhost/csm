@@ -571,6 +571,39 @@ func webUIListenPort(listen string) string {
 	return ""
 }
 
+// originAllowed reports whether a browser Origin may call the API: the
+// canonical https://<hostname>:<port>, any https loopback origin (an SSH
+// tunnel is always local, and no cross-site page can carry a loopback
+// origin), or an operator-listed webui.allowed_origins entry. The request's
+// Host header is never consulted, so a forged Host cannot vouch for a
+// forged Origin.
+func (s *Server) originAllowed(origin string) bool {
+	if sameOrigin(origin, s.canonicalAllowedOrigin()) {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || !originHeaderURL(u) || !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	if isLoopbackOriginHost(u.Hostname()) {
+		return true
+	}
+	for _, listed := range s.liveCfg().WebUI.AllowedOrigins {
+		if sameOrigin(origin, listed) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLoopbackOriginHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func sameOrigin(got, want string) bool {
 	gotURL, err := url.Parse(got)
 	if err != nil || !originHeaderURL(gotURL) {
@@ -1043,8 +1076,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				allowed := s.canonicalAllowedOrigin()
-				if !sameOrigin(origin, allowed) {
+				if !s.originAllowed(origin) {
 					http.Error(w, "Cross-origin request blocked", http.StatusForbidden)
 					return
 				}

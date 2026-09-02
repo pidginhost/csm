@@ -104,3 +104,5 @@ aggregates and dependency findings require a new account or full scan.
 ## WHM Plugin
 
 CSM installs a WHM plugin (`addon_csm.cgi`) that redirects operators from WHM to the daemon Web UI. After the redirect, API calls are same-origin requests to the daemon.
+
+API requests that carry a browser `Origin` header are accepted from `https://<hostname>:<port>` (the configured `hostname` and `webui.listen` port), from any https loopback origin such as `https://localhost:9443` over an SSH tunnel, and from every origin listed in `webui.allowed_origins` (bare `https://host[:port]` entries, hot-reloadable). Any other origin gets `403 Cross-origin request blocked`, which shows up as a read-only UI: pages load but every action fails. The request's `Host` header is never used for this decision.

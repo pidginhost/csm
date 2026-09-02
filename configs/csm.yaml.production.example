@@ -56,6 +56,9 @@ webui:
   tls_cert: ""
   tls_key: ""
   ui_dir: "/opt/csm/ui"
+  # Extra browser origins ("https://host[:port]") allowed to call the API
+  # besides https://<hostname>:<port>. Loopback (SSH tunnel) is always allowed.
+  allowed_origins: []
 
 challenge:
   listen_addr: "0.0.0.0"
