@@ -254,6 +254,7 @@ func scanWPBlog(user string, creds wpDBCreds, sitePrefix, usersPrefix string) []
 	findings = append(findings, checkWPStoredCode(user, creds, sitePrefix)...)
 	findings = append(findings, checkWPSpamTaxonomy(user, creds, sitePrefix)...)
 	findings = append(findings, checkWPHiddenLinks(user, creds, sitePrefix)...)
+	findings = append(findings, checkWPCloakConfig(user, creds, sitePrefix)...)
 	// Rate change rather than vocabulary: the next kit will use different
 	// words, but it will still publish a flood onto a long-quiet site.
 	findings = append(findings, checkWPPostVolumeBurst(user, creds, sitePrefix)...)
