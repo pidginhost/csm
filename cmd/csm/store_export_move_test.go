@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -138,11 +139,21 @@ func TestMoveExportedArchiveKeepsExistingArchiveOnFailedCopy(t *testing.T) {
 	}
 	forceCrossDeviceRename(t)
 
-	if err := moveExportedArchive(src, dst, sha256Hex("other")); err == nil {
+	err := moveExportedArchive(src, dst, sha256Hex("other"))
+	if err == nil {
 		t.Fatal("digest mismatch after copy must fail")
+	}
+	if !strings.Contains(err.Error(), "does not match export digest") {
+		t.Fatalf("failed for the wrong reason: %v", err)
 	}
 	if data, err := os.ReadFile(dst); err != nil || string(data) != "previous-export" {
 		t.Fatalf("previous export destroyed: %q, %v", data, err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("staged archive not kept: %v", err)
+	}
+	if _, err := os.Stat(src + ".sha256"); err != nil {
+		t.Fatalf("staged companion not kept: %v", err)
 	}
 	leftovers, err := filepath.Glob(filepath.Join(dir, ".*"))
 	if err != nil {
@@ -150,6 +161,60 @@ func TestMoveExportedArchiveKeepsExistingArchiveOnFailedCopy(t *testing.T) {
 	}
 	if len(leftovers) != 0 {
 		t.Fatalf("temporary files left behind: %v", leftovers)
+	}
+}
+
+// Verifying the copy proves nothing if another account can rename the
+// verified file out of the way before it is moved into place, so a
+// destination directory that account can write to is refused outright.
+func TestMoveExportedArchiveRefusesSharedDestinationDir(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staged.csmbak")
+	dstDir := filepath.Join(dir, "shared")
+	dst := filepath.Join(dstDir, "final.csmbak")
+	writeExportFixture(t, src, "archive-bytes")
+	if err := os.Mkdir(dstDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dstDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	err := moveExportedArchive(src, dst, sha256Hex("archive-bytes"))
+	if err == nil {
+		t.Fatal("export into a world-writable directory must be refused")
+	}
+	if !strings.Contains(err.Error(), "writable by other accounts") {
+		t.Fatalf("failed for the wrong reason: %v", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatal("archive was written into the shared directory anyway")
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("staged archive not kept: %v", err)
+	}
+}
+
+// The sticky bit is what makes /tmp usable: another account can create
+// entries there but cannot rename or remove root's.
+func TestMoveExportedArchiveAllowsStickyDestinationDir(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staged.csmbak")
+	dstDir := filepath.Join(dir, "sticky")
+	dst := filepath.Join(dstDir, "final.csmbak")
+	writeExportFixture(t, src, "archive-bytes")
+	if err := os.Mkdir(dstDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dstDir, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := moveExportedArchive(src, dst, sha256Hex("archive-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(dst); err != nil || string(data) != "archive-bytes" {
+		t.Fatalf("destination content = %q, %v", data, err)
 	}
 }
 

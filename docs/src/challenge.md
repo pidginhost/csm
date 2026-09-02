@@ -283,7 +283,7 @@ Positive results cache for `cache_ttl`; negative results cache for one-fifth tha
 
 ### Backups
 
-`csm store export` and `csm store import` capture the bbolt store, state JSON files (baseline file hashes), and signature-rules cache into a single tar+zstd archive. Use these for re-provisioning, cluster cloning, and disaster recovery rather than re-baselining a 200k-file account tree from scratch. The daemon writes the archive under its state directory (the only tree its systemd sandbox can write) and the CLI moves it to the path you give, so any destination the CLI can write works, including `/var/backups`.
+`csm store export` and `csm store import` capture the bbolt store, state JSON files (baseline file hashes), and signature-rules cache into a single tar+zstd archive. Use these for re-provisioning, cluster cloning, and disaster recovery rather than re-baselining a 200k-file account tree from scratch. The daemon writes the archive under its state directory (the only tree its systemd sandbox can write) and the CLI moves it to the path you give, so any destination the CLI can write works, including `/var/backups`. The destination directory must not be writable by other accounts, and must be owned by the account running the command, unless it carries the sticky bit as `/tmp` does; otherwise that account could swap the archive out after the CLI has verified it, and the export is refused.
 
 ```bash
 csm store export /var/backups/csm-$(date +%F).csmbak

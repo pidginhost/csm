@@ -28,6 +28,9 @@ func moveExportedArchive(src, dst, wantSHA string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
+	if err := assertExportDirPrivate(filepath.Dir(dst)); err != nil {
+		return err
+	}
 	if err := renameExportFile(src, dst); err == nil {
 		_ = renameExportFile(src+".sha256", dst+".sha256")
 		return nil
@@ -52,6 +55,33 @@ func moveExportedArchive(src, dst, wantSHA string) error {
 
 func isCrossDevice(err error) bool {
 	return errors.Is(err, syscall.EXDEV)
+}
+
+// assertExportDirPrivate refuses a destination directory another account can
+// write to. Verifying the copy proves nothing there: whoever can write to
+// the directory can rename the verified file out of the way between the
+// digest check and the rename that commits it, and would end up choosing
+// what the operator receives as the export.
+//
+// The sticky bit is the exception that keeps /tmp working -- entries can be
+// created but only their owner may rename or remove them.
+//
+// #nosec G703 -- dir is the parent of the destination the operator named.
+func assertExportDirPrivate(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("checking destination directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("export destination %s is not a directory", dir)
+	}
+	if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+		return fmt.Errorf("refusing to export into %s: it is writable by other accounts", dir)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("refusing to export into %s: it is owned by uid %d, which can replace the archive after it is verified", dir, stat.Uid)
+	}
+	return nil
 }
 
 // copyFileVerified copies src into a private temporary file beside dst,
@@ -103,7 +133,9 @@ func copyFileVerified(src, dst, wantSHA string) error {
 		return fmt.Errorf("moving archive into place: %w", err)
 	}
 	committed = true
-	return nil
+	// The staged copy is removed right after this, so the destination
+	// directory entry has to survive a crash on its own.
+	return syncParentDir(filepath.Dir(dst))
 }
 
 // writeExportFileAtomic writes the companion digest the same way, so a
@@ -136,7 +168,7 @@ func writeExportFileAtomic(path string, data []byte) error {
 		return err
 	}
 	committed = true
-	return nil
+	return syncParentDir(filepath.Dir(path))
 }
 
 // createExportTemp opens a 0600 temporary file in the destination's own
