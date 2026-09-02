@@ -566,11 +566,9 @@ func fwUpdateGeoIP() {
 		os.Exit(1)
 	}
 
-	dbPath := fwCfg.CountryDBPath
-	if dbPath == "" {
-		dbPath = filepath.Join(cfg.StatePath, "geoip")
-		fmt.Fprintf(os.Stderr, "No country_db_path configured, using: %s\n", dbPath)
-	}
+	// Same resolution as the engine, so the files land where the country
+	// sets are read from.
+	dbPath := firewall.CountryDBDir(fwCfg, cfg.StatePath)
 
 	fmt.Fprintf(os.Stderr, "Downloading GeoIP data for %d countries...\n", len(codes))
 	updated, err := firewall.UpdateGeoIPDB(dbPath, codes)
@@ -640,11 +638,7 @@ func fwLookup() {
 	}
 
 	// GeoIP lookup
-	dbPath := cfg.Firewall.CountryDBPath
-	if dbPath == "" {
-		dbPath = filepath.Join(cfg.StatePath, "geoip")
-	}
-	countries := firewall.LookupIP(dbPath, ip)
+	countries := firewall.LookupIP(firewall.CountryDBDir(cfg.Firewall, cfg.StatePath), ip)
 	if len(countries) > 0 {
 		fmt.Printf("COUNTRY  %s\n", strings.Join(countries, ", "))
 		for _, code := range countries {

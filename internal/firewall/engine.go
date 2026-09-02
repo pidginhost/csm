@@ -763,7 +763,7 @@ func (e *Engine) createSets() error {
 	}
 
 	// Country-blocked IPs set (interval for CIDR ranges)
-	if len(e.cfg.CountryBlock) > 0 && e.cfg.CountryDBPath != "" {
+	if countryBlockingActive(e.cfg) {
 		e.setCountry = &nftables.Set{
 			Table:    e.table,
 			Name:     "country_blocked",
@@ -773,7 +773,7 @@ func (e *Engine) createSets() error {
 
 		var countryElements []nftables.SetElement
 		for _, code := range e.cfg.CountryBlock {
-			countryElements = append(countryElements, loadCountryCIDRs(e.cfg.CountryDBPath, code)...)
+			countryElements = append(countryElements, loadCountryCIDRs(CountryDBDir(e.cfg, e.statePath), code)...)
 		}
 
 		if err := e.conn.AddSet(e.setCountry, countryElements); err != nil {
@@ -822,14 +822,14 @@ func (e *Engine) createSets() error {
 
 		// IPv6 country-block set, mirroring the IPv4 set above. Without it an
 		// attacker on an IPv6 address from a blocked country was never dropped.
-		if len(e.cfg.CountryBlock) > 0 && e.cfg.CountryDBPath != "" {
+		if countryBlockingActive(e.cfg) {
 			e.setCountry6 = &nftables.Set{
 				Table: e.table, Name: "country_blocked6",
 				KeyType: nftables.TypeIP6Addr, Interval: true,
 			}
 			var country6Elements []nftables.SetElement
 			for _, code := range e.cfg.CountryBlock {
-				country6Elements = append(country6Elements, loadCountryCIDRs6(e.cfg.CountryDBPath, code)...)
+				country6Elements = append(country6Elements, loadCountryCIDRs6(CountryDBDir(e.cfg, e.statePath), code)...)
 			}
 			if err := e.conn.AddSet(e.setCountry6, country6Elements); err != nil {
 				fmt.Fprintf(os.Stderr, "firewall: warning creating IPv6 country set: %v\n", err)

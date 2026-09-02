@@ -511,7 +511,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "deny_temp_ip_limit", Type: "int", Label: "Temporary block cap", Min: int64p(0), Max: int64p(1000000), FieldGroup: FieldGroupLimits},
 
 			{YAMLPath: "country_block", Type: "[]string", Label: "Country block (ISO-3166)", Help: "Two-letter codes, one per line.", FieldGroup: FieldGroupGeoDynDNS},
-			{YAMLPath: "country_db_path", Type: "string", Label: "Country DB path override", Placeholder: "(uses geoip section if empty)", FieldGroup: FieldGroupGeoDynDNS},
+			{YAMLPath: "country_db_path", Type: "string", Label: "Country DB path override", Placeholder: "(default: <state_path>/geoip)", FieldGroup: FieldGroupGeoDynDNS},
 			{YAMLPath: "dyndns_hosts", Type: "[]string", Label: "DynDNS hosts", Help: "Resolved every 5 minutes and merged into the trusted set.", FieldGroup: FieldGroupGeoDynDNS},
 
 			{YAMLPath: "smtp_block", Type: "bool", Label: "Block outbound SMTP", Help: "When enabled, only smtp_allow_users may originate outbound mail. Verify allow list first.", FieldGroup: FieldGroupSMTPControls},

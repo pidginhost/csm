@@ -665,7 +665,7 @@ firewall:
 
   # Country blocking
   country_block: []                     # ISO country codes to block
-  country_db_path: ""                   # path to MaxMind DB (uses geoip config if empty)
+  country_db_path: ""                   # country CIDR directory (default: <state_path>/geoip, filled by `csm firewall update-geoip`)
 
   # Silent drop (no logging)
   drop_nolog: [23,67,68,111,113,135,136,137,138,139,445,500,513,520]
