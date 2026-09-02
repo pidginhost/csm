@@ -1963,9 +1963,15 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 }
 
 func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string) bool {
+	// Both engines see every file. A .yml hit used to end the scan here, so
+	// a file matching a High .yml rule never met the Critical YARA rule and
+	// the inline quarantine that only a Critical match triggers. Only a file
+	// the .yml path already moved to quarantine is not handed to YARA.
+	matched := false
 	if scanner := signatures.Global(); scanner != nil {
 		matches := scanner.ScanContentWithSize(data, ext, contentSize)
 		if len(matches) > 0 {
+			matched = true
 			m := matches[0]
 			sev := alert.High
 			if m.Severity == "critical" {
@@ -1974,39 +1980,40 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 			// Non-critical: dedup by rule+directory so 30 files in the same
 			// plugin matching the same rule produce one alert, not 30.
 			// Critical matches always alert per-file (real path for quarantine).
+			suppressed := false
 			if sev != alert.Critical {
 				dirKey := m.RuleName + ":" + filepath.Dir(path)
-				if !fm.shouldAlert("signature_match_realtime", dirKey) {
-					return true // suppressed by dedup, but still counts as "matched"
-				}
+				suppressed = !fm.shouldAlert("signature_match_realtime", dirKey)
 			}
-			details := fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
-				m.Category, m.Description, strings.Join(m.Matched, ", "))
-			fm.sendAlertWithPath(sev, "signature_match_realtime",
-				fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
-				details, path, procInfo)
+			if !suppressed {
+				details := fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
+					m.Category, m.Description, strings.Join(m.Matched, ", "))
+				fm.sendAlertWithPath(sev, "signature_match_realtime",
+					fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
+					details, path, procInfo)
 
-			// Inline quarantine: move high-confidence malware to quarantine
-			// immediately instead of waiting for the 5-second batch dispatcher.
-			// Uses the same 3-gate validation as AutoQuarantineFiles (category +
-			// library exclusion + entropy >= 5.5) to prevent false positives,
-			// and the same auto-response policy gate (enabled + quarantine_files)
-			// so the realtime path never moves files the batch path would not.
-			if sev == alert.Critical {
-				finding := alert.Finding{
-					Severity: sev,
-					Check:    "signature_match_realtime",
-					Details:  details,
-					FilePath: path,
-				}
-				if qPath, ok := checks.InlineQuarantineGated(fm.currentCfg(), finding, path, data); ok {
-					fm.recordDropperQuarantine(path, qPath)
-					fm.sendAlert(alert.Critical, "auto_response",
-						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
-						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
+				// Inline quarantine: move high-confidence malware to quarantine
+				// immediately instead of waiting for the 5-second batch dispatcher.
+				// Uses the same 3-gate validation as AutoQuarantineFiles (category +
+				// library exclusion + entropy >= 5.5) to prevent false positives,
+				// and the same auto-response policy gate (enabled + quarantine_files)
+				// so the realtime path never moves files the batch path would not.
+				if sev == alert.Critical {
+					finding := alert.Finding{
+						Severity: sev,
+						Check:    "signature_match_realtime",
+						Details:  details,
+						FilePath: path,
+					}
+					if qPath, ok := checks.InlineQuarantineGated(fm.currentCfg(), finding, path, data); ok {
+						fm.recordDropperQuarantine(path, qPath)
+						fm.sendAlert(alert.Critical, "auto_response",
+							fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
+							fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
+						return true
+					}
 				}
 			}
-			return true
 		}
 	}
 
@@ -2014,7 +2021,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 		matches, err := yara.ScanBytesChecked(yaraScanner, path, data)
 		if err != nil {
 			fm.reportYARAScanError(path, err)
-			return false
+			return matched
 		}
 		if len(matches) > 0 {
 			fm.sendAlertWithPath(alert.Critical, "yara_match_realtime",
@@ -2024,7 +2031,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 		}
 	}
 
-	return false
+	return matched
 }
 
 func (fm *FileMonitor) reportYARAScanError(path string, err error) {
