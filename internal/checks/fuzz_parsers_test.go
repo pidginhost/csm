@@ -596,6 +596,38 @@ func FuzzSiteURLPoisonReason(f *testing.F) {
 	})
 }
 
+func FuzzHiddenOffsiteLinks(f *testing.F) {
+	f.Add(`<div style="left:-9999px"><a href="https://spam.example/">casino</a></div>`, "shop.example")
+	f.Add(`<textarea><a href="https://spam.example/">x</a></textarea>`, "shop.example")
+	f.Add(`</div><a href="//other.example/">x`, "shop.example")
+	f.Add("", "")
+	f.Fuzz(func(t *testing.T, markup, siteHost string) {
+		hit := hiddenOffsiteLinks(markup, siteHost)
+		assertSortedUnique := func(name string, values []string) {
+			seen := make(map[string]bool, len(values))
+			previous := ""
+			for _, value := range values {
+				if value == "" || seen[value] {
+					t.Fatalf("hiddenOffsiteLinks returned invalid %s: %v", name, values)
+				}
+				if previous > value {
+					t.Fatalf("hiddenOffsiteLinks returned unsorted %s: %v", name, values)
+				}
+				seen[value] = true
+				previous = value
+			}
+		}
+		assertSortedUnique("hosts", hit.hosts)
+		assertSortedUnique("domains", hit.domains)
+		if len(hit.domains) > len(hit.hosts) {
+			t.Fatalf("more domains than hosts: %+v", hit)
+		}
+		if hit.multiDomain && len(hit.domains) < 2 {
+			t.Fatalf("multi-domain corroboration without two domains: %+v", hit)
+		}
+	})
+}
+
 func FuzzDBAdminRowID(f *testing.F) {
 	f.Add("Account: bob\nRow: 42\tadmin\tx@y\nReview: confirm")
 	f.Add("Account: bob\nRow: 7 admin x")

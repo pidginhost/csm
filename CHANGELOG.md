@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP snippets stored in the database by WPCode are now scanned. Code kept in a database row is invisible to every filesystem scan, and an active backdoor was running from one while a full file sweep of the same site came back clean.
 - Code that builds its own function and constant names by XOR-ing two binary strings is now reported. The technique exists only to keep those names out of the file, so keyword-based rules never saw it, and it was hiding an active backdoor stored in a site's database rather than in a file.
 - An active known-vulnerable plugin is now reported as unprotected, and raised to Critical, when ModSecurity does not filter its traffic; where CSM ships a virtual patch for that CVE the alert says the patch cannot run. A cPanel addon domain is matched to its exact associated subdomain, so a disabled flag recorded against either name covers the site, without treating every vhost that happens to share a document root as the same site.
+- Link blocks a page hides from its readers are now found in the database. A container pushed off the canvas, or hidden outright, that wraps links to other domains lends the site's ranking to those domains while a visitor sees nothing; subdomains of one target count as one domain.
 
 ### Changed
 
@@ -24,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
 - PHP Shield alerts now name the request URI and user agent, so an event identifies the scanner that sent it instead of showing only a parameter name. A command parameter that was merely observed is no longer rated the same as an execution the Shield actually blocked, and one scanner sweeping many accounts now raises a single alert per source address rather than one per site.
 - WordPress database scans now inspect server-executed WPCode snippets and spam taxonomy on every active multisite blog, bound finding evidence, and report incomplete row or byte samples.
 

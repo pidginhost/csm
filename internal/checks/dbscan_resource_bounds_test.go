@@ -288,8 +288,14 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 
 	previous := runMySQLQuery
 	queries := 0
-	runMySQLQuery = func(_ wpDBCreds, _ string) []string {
+	runMySQLQuery = func(_ wpDBCreds, query string) []string {
 		queries++
+		// The hidden-link check stops before its post query when it cannot
+		// learn the site's own address, so answer that one row and let the
+		// count reflect the full per-scan cost.
+		if strings.Contains(query, "'siteurl', 'home'") {
+			return []string{"site\tsiteurl\thttps://alice.example\t\t21\tsite"}
+		}
 		return nil
 	}
 	t.Cleanup(func() { runMySQLQuery = previous })
@@ -299,8 +305,8 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 	t.Cleanup(func() { contentSignatureScanner = previousScanner })
 
 	CheckDatabaseContent(context.Background(), nil, nil)
-	if queries != 11 {
-		t.Errorf("queries for two paths sharing one database = %d, want 11 for one scan", queries)
+	if queries != 13 {
+		t.Errorf("queries for two paths sharing one database = %d, want 13 for one scan", queries)
 	}
 }
 
