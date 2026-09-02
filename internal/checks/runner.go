@@ -512,6 +512,12 @@ func deepChecks() []namedCheck {
 func reducedDeepChecks() []namedCheck {
 	return []namedCheck{
 		{"yara_deep", CheckYARADeep},
+		// The file monitor sees close-after-write only. A shell written under
+		// a temporary name and renamed into place, or written through a bind
+		// mount outside the mount mark, never produces an event, so the
+		// budgeted rolling YAML content scan keeps running beside the
+		// rolling YARA scan instead of being dropped as "covered".
+		{"php_content", CheckPHPContent},
 		{"wp_core", CheckWPCore},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
