@@ -2,6 +2,7 @@ package wpcheck
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -78,20 +79,36 @@ func RelativePath(root, path string) string {
 var (
 	reVersion = regexp.MustCompile(`\$wp_version\s*=\s*'([^']+)'`)
 	reLocale  = regexp.MustCompile(`\$wp_local_package\s*=\s*'([^']+)'`)
+
+	// version.php is tenant-writable and its strings name a root-written
+	// cache file and a query string, so both are held to the shapes
+	// WordPress actually ships: "6.5", "6.5.2", "6.7-RC1", "6.8-alpha-59245"
+	// and locales such as "en_US", "de_DE_formal", "ary".
+	reValidVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){0,3}(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$`)
+	reValidLocale  = regexp.MustCompile(`^[a-z]{2,3}(?:_[A-Za-z0-9]{2,10}){0,2}$`)
 )
 
 // ParseVersionContent extracts the WP version and locale from version.php content.
-// Locale defaults to "en_US" if $wp_local_package is not present.
+// Locale defaults to "en_US" if $wp_local_package is not present. A version or
+// locale outside the shapes WordPress ships is an error: the install is then
+// treated as unverifiable rather than letting tenant-chosen text reach the
+// checksum cache path or the API query.
 func ParseVersionContent(data []byte) (version, locale string, err error) {
 	m := reVersion.FindSubmatch(data)
 	if m == nil {
 		return "", "", errors.New("wp_version not found in version.php")
 	}
 	version = string(m[1])
+	if !reValidVersion.MatchString(version) {
+		return "", "", fmt.Errorf("wp_version %q in version.php is not a WordPress version string", version)
+	}
 
 	locale = "en_US"
 	if lm := reLocale.FindSubmatch(data); lm != nil {
 		locale = string(lm[1])
+	}
+	if !reValidLocale.MatchString(locale) {
+		return "", "", fmt.Errorf("wp_local_package %q in version.php is not a WordPress locale", locale)
 	}
 	return version, locale, nil
 }

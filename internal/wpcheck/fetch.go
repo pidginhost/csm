@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
-// checksumAPIURL returns the WordPress.org checksum API URL for a version and locale.
+// checksumAPIURL returns the WordPress.org checksum API URL for a version and
+// locale. Both values are validated at parse time; escaping them here keeps
+// the query shape independent of that validation.
 func checksumAPIURL(version, locale string) string {
-	return fmt.Sprintf("https://api.wordpress.org/core/checksums/1.0/?version=%s&locale=%s", version, locale)
+	return fmt.Sprintf("https://api.wordpress.org/core/checksums/1.0/?version=%s&locale=%s", url.QueryEscape(version), url.QueryEscape(locale))
 }
 
 // checksumResponse is the JSON structure returned by the WP checksum API.
