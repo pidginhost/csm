@@ -83,7 +83,7 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		}
 		homeDir := filepath.Join("/home", homeEntry.Name())
 		docRoot := filepath.Join(homeDir, "public_html")
-		scanHtaccess(ctx, docRoot, 5, suspiciousPatterns, safePatterns, cfg, &findings)
+		scanHtaccess(ctx, docRoot, htaccessScanMaxDepth, suspiciousPatterns, safePatterns, cfg, &findings)
 
 		// Also check addon domains
 		subDirs, _ := osFS.ReadDir(homeDir)
@@ -91,13 +91,20 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
 				sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
-				scanHtaccess(ctx, filepath.Join(homeDir, sd.Name()), 5, suspiciousPatterns, safePatterns, cfg, &findings)
+				scanHtaccess(ctx, filepath.Join(homeDir, sd.Name()), htaccessScanMaxDepth, suspiciousPatterns, safePatterns, cfg, &findings)
 			}
 		}
 	}
 
 	return findings
 }
+
+// htaccessScanMaxDepth is how deep below a document root the scheduled
+// .htaccess scan walks. Five levels stopped short of every uploads tree
+// (wp-content/uploads/YYYY/MM/<dir> is already five), which is where a
+// dropper plants the handler-enabling .htaccess that makes its .jpg run.
+// Matched to the rolling content scan's depth so both see the same tree.
+const htaccessScanMaxDepth = rollingWalkMaxDepth
 
 func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, safe []string, cfg *config.Config, findings *[]alert.Finding) {
 	if ctx.Err() != nil {

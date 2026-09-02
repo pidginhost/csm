@@ -706,7 +706,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 
 	// Path 1: External script URLs in any option — only flag non-safe domains.
 	query = fmt.Sprintf(
-		"SELECT option_name, option_value FROM %soptions WHERE option_value LIKE '%%<script%%src=%%' LIMIT 20",
+		"SELECT option_name, option_value FROM %soptions WHERE option_value LIKE '%%<script%%src%%' LIMIT 20",
 		prefix)
 	lines = runMySQLQuery(creds, query)
 	firstSeen := storeFirstSeen(externalScriptSiteKey(creds.dbName, prefix))

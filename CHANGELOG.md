@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The scheduled `.htaccess` scan now walks twelve levels below a document root instead of five, reaching uploads trees where droppers plant the handler-enabling `.htaccess` next to their payload.
+- The `wp_options` script-loader pre-filter no longer requires a literal `src=`, so a loader written as `src = "..."` is fetched and classified like any other.
 - A version-control directory served from a document root (`.git/`, `.svn/`) is now detected as a Critical `web_exposed_repo_metadata` finding and virtual-patched by denying the whole directory; the exposure walker used to skip those directories entirely, so a checked-out repository handing out the site's source and credentials was never reported.
 - The threat, whitelist and reputation prune helpers now report zero rows removed when their database transaction fails to commit, instead of the count they had tallied inside the rolled-back transaction.
 - Scheduled `.htaccess` reads are now bounded to 1 MiB everywhere (audit, handler overlay reconstruction, executable-name resolution). An oversized file is reported as a High finding instead of being loaded whole, so a tenant can no longer park a multi-gigabyte `.htaccess` and turn the deep scan into an out-of-memory crash loop.
