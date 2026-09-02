@@ -104,6 +104,21 @@ func TestForeignSiteURL_PublicSuffixDoesNotOwnItsChildren(t *testing.T) {
 	}
 }
 
+// A panel row naming a bare public suffix is malformed, but it must not be
+// allowed to claim every name beneath it -- that would silently mark an
+// attacker's domain as owned and turn the check off for that account.
+func TestForeignSiteURL_PublicSuffixRowCannotClaimEveryDomain(t *testing.T) {
+	ownership := newPanelDomainOwnership(map[string][]string{
+		"alice": {"com", "karmaboutique.example"},
+	})
+	if panelHostOwnedByAccount(ownership, "alice", "attacker.com") {
+		t.Fatal("a bare public-suffix row claimed an unrelated domain beneath it")
+	}
+	if !panelHostOwnedByAccount(ownership, "alice", "karmaboutique.example") {
+		t.Fatal("the account's real domain stopped being recognised")
+	}
+}
+
 func TestForeignSiteURL_IPOwnershipRequiresExactAddress(t *testing.T) {
 	domains := map[string][]string{
 		"alice": {"192.0.2.10", "*.192.0.2.10", "2.3.4"},
