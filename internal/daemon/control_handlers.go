@@ -383,6 +383,8 @@ func prepareExportStagingPath(statePath, dstPath string, now time.Time) (string,
 	if err := os.MkdirAll(exportDir, 0o700); err != nil {
 		return "", err
 	}
+	// #nosec G302 -- exportDir is a directory; 0700 is already the tightest
+	// mode that still lets the daemon traverse into it.
 	if err := os.Chmod(exportDir, 0o700); err != nil {
 		return "", err
 	}

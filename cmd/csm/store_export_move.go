@@ -85,7 +85,7 @@ func moveExportedArchive(src, dst, wantSHA string) error {
 // the staged bytes match what the daemon reported before the archive is
 // committed anywhere.
 func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path) // #nosec G304 -- path is the staged archive returned by the local daemon.
+	f, err := os.Open(path) // #nosec G304 G703 -- path is the staged archive returned by the local daemon.
 	if err != nil {
 		return "", fmt.Errorf("opening staged archive: %w", err)
 	}

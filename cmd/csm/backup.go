@@ -137,8 +137,11 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 	return syncParentDir(filepath.Dir(outAbs))
 }
 
+// #nosec G304 G703 -- srcPath is the fixed csm.db name under the configured
+// state directory, and the snapshot is a private temporary file this
+// function creates under tempDir.
 func disarmedStateDBSnapshot(srcPath, tempDir string) (_ string, err error) {
-	in, err := os.Open(srcPath) // #nosec G304 -- fixed csm.db name under the configured state directory.
+	in, err := os.Open(srcPath)
 	if err != nil {
 		return "", err
 	}
@@ -175,7 +178,7 @@ func disarmedStateDBSnapshot(srcPath, tempDir string) (_ string, err error) {
 }
 
 func addFile(tw *tar.Writer, path, name string) error {
-	f, err := os.Open(path) // #nosec G304 -- operator-supplied / programmatic walk
+	f, err := os.Open(path) // #nosec G304 G703 -- operator-supplied / programmatic walk
 	if err != nil {
 		return err
 	}

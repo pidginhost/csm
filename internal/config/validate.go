@@ -1147,6 +1147,8 @@ func probeStatePathSandbox(statePath string) []ValidationResult {
 	return []ValidationResult{{"error", "state_path", fmt.Sprintf("%s is not writable under the service unit's ProtectSystem and ReadWritePaths settings (unit: %s)", statePath, systemdUnitFile)}}
 }
 
+// #nosec G304 -- path is the installed service unit's package-constant path,
+// and the drop-ins come from globbing that unit's own .d directory.
 func readSystemdUnitAndDropIns(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
