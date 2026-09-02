@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -798,6 +799,7 @@ func (db *ThreatDB) loadFeedCache() {
 		db.feedIPs = make(map[string]map[string]struct{})
 	}
 	feedNames := make(map[string]bool, len(threatFeeds))
+	incomplete := false
 	for _, feed := range threatFeeds {
 		feedNames[feed.name] = true
 		db.feedIPs[feed.name] = make(map[string]struct{})
@@ -815,6 +817,25 @@ func (db *ThreatDB) loadFeedCache() {
 			}
 			db.feedIPs[feed.name][line] = struct{}{}
 		}
+		// The download path refuses a feed below its floor; a cache below it
+		// is a truncated write, not a smaller feed. Serve nothing from it and
+		// drop the update marker so the next cycle downloads instead of
+		// honouring the 20-hour skip.
+		if minExpected := feedMinEntries[feed.name]; minExpected > 0 {
+			if n := len(db.feedIPs[feed.name]) + len(db.feedNets[feed.name]); n < minExpected {
+				if n > 0 {
+					fmt.Fprintf(os.Stderr, "threatdb: WARNING cached %s holds only %d entries (expected >%d); ignoring it until refreshed\n", feed.name, n, minExpected)
+				}
+				db.feedIPs[feed.name] = make(map[string]struct{})
+				db.feedNets[feed.name] = nil
+				incomplete = true
+			}
+		}
+	}
+	if incomplete {
+		db.lastUpdate = time.Time{}
+		db.LastFeedUpdate = time.Time{}
+		db.LastUpdated = time.Time{}
 	}
 	db.FeedIPCount, db.FeedNetCount = db.rebuildFeedLookup(feedNames)
 
@@ -903,17 +924,15 @@ func downloadFeed(client *http.Client, url, name string) ([]string, []*net.IPNet
 
 func saveLines(path string, lines []string) {
 	sort.Strings(lines) // sorted for diffing
-	// #nosec G304 -- path is filepath.Join under operator-configured statePath.
-	f, err := os.Create(path)
-	if err != nil {
-		return
+	// Written whole and renamed into place: an in-place truncate left a
+	// crash mid-write serving a partial feed for the next 20 hours.
+	data := strings.Join(lines, "\n")
+	if len(lines) > 0 {
+		data += "\n"
 	}
-	defer func() { _ = f.Close() }()
-	w := bufio.NewWriter(f)
-	for _, line := range lines {
-		fmt.Fprintln(w, line)
+	if err := atomicio.AtomicWrite(path, 0o600, []byte(data)); err != nil {
+		fmt.Fprintf(os.Stderr, "threatdb: error saving %s: %v\n", path, err)
 	}
-	_ = w.Flush()
 }
 
 func loadLines(path string) []string {

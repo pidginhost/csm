@@ -726,9 +726,15 @@ func TestThreatDBLoadFeedCacheReadsTimestampAndFeeds(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "last_update"), []byte(ts), 0600); err != nil {
 		t.Fatalf("write last_update: %v", err)
 	}
-	// Write a cache file for the first real feed name so loadFeedCache picks it up.
+	// Write a cache file for the first real feed name so loadFeedCache picks it
+	// up. The cache must hold at least the feed's minimum entry count, or the
+	// loader treats it as a truncated write and ignores it.
 	feedName := threatFeeds[0].name
-	saveLines(filepath.Join(dir, feedName+".txt"), []string{"203.0.113.50", "203.0.113.51"})
+	lines := make([]string, 0, feedMinEntries[feedName])
+	for i := 0; i < feedMinEntries[feedName]; i++ {
+		lines = append(lines, fmt.Sprintf("203.0.113.%d", i))
+	}
+	saveLines(filepath.Join(dir, feedName+".txt"), lines)
 
 	db := &ThreatDB{
 		badIPs: make(map[string]string),
@@ -739,11 +745,11 @@ func TestThreatDBLoadFeedCacheReadsTimestampAndFeeds(t *testing.T) {
 	if db.LastUpdated.IsZero() {
 		t.Error("LastUpdated not set from last_update file")
 	}
-	if src, ok := db.badIPs["203.0.113.50"]; !ok || src != feedName {
+	if src, ok := db.badIPs["203.0.113.5"]; !ok || src != feedName {
 		t.Errorf("feed IP not loaded with source %q, got %q", feedName, src)
 	}
-	if db.FeedIPCount != 2 {
-		t.Errorf("FeedIPCount = %d, want 2", db.FeedIPCount)
+	if db.FeedIPCount != len(lines) {
+		t.Errorf("FeedIPCount = %d, want %d", db.FeedIPCount, len(lines))
 	}
 }
 
