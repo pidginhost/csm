@@ -1401,14 +1401,22 @@ func probeSMTP(addr string) []ValidationResult {
 	return []ValidationResult{{"ok", "alerts.email.smtp", fmt.Sprintf("connected to %s", addr)}}
 }
 
-// probeClamd attempts to connect to the ClamAV unix socket.
+// probeClamd attempts to connect to the ClamAV unix socket, falling back to the
+// well-known locations so a host whose setting names the wrong path is told
+// which one actually answers instead of only that mail is not being scanned.
 func probeClamd(socket string) []ValidationResult {
-	conn, err := net.DialTimeout("unix", socket, 3*time.Second)
+	resolved, discovered := ResolveClamdSocket(socket)
+	conn, err := net.DialTimeout("unix", resolved, 3*time.Second)
 	if err != nil {
-		return []ValidationResult{{"error", "email_av.clamd_socket", fmt.Sprintf("cannot connect to %s: %v", socket, err)}}
+		return []ValidationResult{{"error", "email_av.clamd_socket", fmt.Sprintf("cannot connect to %s: %v", resolved, err)}}
 	}
 	_ = conn.Close()
-	return []ValidationResult{{"ok", "email_av.clamd_socket", fmt.Sprintf("connected to %s", socket)}}
+	if discovered {
+		return []ValidationResult{{"warn", "email_av.clamd_socket", fmt.Sprintf(
+			"nothing is listening on the configured %s; using %s, which is answering. Set clamd_socket to it so the fallback is not needed",
+			socket, resolved)}}
+	}
+	return []ValidationResult{{"ok", "email_av.clamd_socket", fmt.Sprintf("connected to %s", resolved)}}
 }
 
 // probeWebhook performs an HTTP HEAD request to verify the webhook endpoint is reachable.

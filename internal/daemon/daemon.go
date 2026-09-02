@@ -2461,8 +2461,16 @@ func (d *Daemon) startSpoolWatcher() {
 		return
 	}
 
-	// Create ClamAV scanner
-	clamScanner := emailav.NewClamdScanner(d.cfg.EmailAV.ClamdSocket)
+	// Create ClamAV scanner. The socket path belongs to whoever packaged
+	// clamd, so a setting naming the wrong one falls back to a location that
+	// is actually answering: mail that is silently never scanned looks exactly
+	// like mail that came back clean.
+	clamdSocket, discovered := config.ResolveClamdSocket(d.cfg.EmailAV.ClamdSocket)
+	if discovered {
+		csmlog.Warn("email av: configured clamd socket is not answering; using a discovered one",
+			"configured", d.cfg.EmailAV.ClamdSocket, "using", clamdSocket)
+	}
+	clamScanner := emailav.NewClamdScanner(clamdSocket)
 
 	// YARA-X scanner over whichever backend initYaraBackend installs.
 	// The worker backend can come online after startup through the boot-retry

@@ -1272,10 +1272,16 @@ try {
         }
     }
     // 3. Command parameter backed by an exec sink in the inspected script.
-    $cmds = array('cmd','command','exec','execute','c','e','shell');
-    foreach ($cmds as $p) {
+    // Single letters collide with legitimate parameters (WordPress core's own
+    // load-styles.php takes c=0), so those are logged only when the value
+    // looks like a command. Blocking still keys on the exec sink.
+    $cmds = array('cmd','command','exec','execute','shell');
+    $weak = array('c','e');
+    foreach (array_merge($cmds, $weak) as $p) {
         if (isset($_REQUEST[$p])) {
-            csm_log_event('WEBSHELL_PARAM', $csm_script, $p);
+            if (in_array($p, $cmds, true) || csm_is_command_value($_REQUEST[$p])) {
+                csm_log_event('WEBSHELL_PARAM', $csm_script, $p);
+            }
             if ($csm_code !== null && csm_has_exec_sink($csm_code)) {
                 csm_log_event('BLOCK_WEBSHELL', $csm_script, 'Command parameter with exec sink: ' . $p);
                 csm_deny();
@@ -1309,6 +1315,20 @@ function csm_code_only($src) {
         }
     }
     return $out;
+}
+function csm_is_command_value($value) {
+    if (is_array($value)) {
+        foreach ($value as $item) {
+            if (csm_is_command_value($item)) return true;
+        }
+        return false;
+    }
+    if (!is_string($value)) return false;
+    $v = trim($value);
+    if ($v === '' || strlen($v) > 4096) return false;
+    if (preg_match('/[;|&\x60$(){}<>\\\\\s\'"]/', $v)) return true;
+    if (strpos($v, '/') !== false || strpos($v, '..') !== false) return true;
+    return (bool) preg_match('/^(?:ls|id|pwd|whoami|uname|cat|head|tail|wget|curl|nc|ncat|sh|bash|zsh|python[0-9.]*|perl|ruby|php|chmod|chown|rm|mv|cp|kill|ps|netstat|ifconfig|ipconfig|dir|type|systeminfo|net|tasklist)$/i', $v);
 }
 function csm_has_exec_sink($src) {
     $sinks = array_fill_keys(array('system','passthru','shell_exec','proc_open','popen','exec'), true);

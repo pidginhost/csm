@@ -44,13 +44,49 @@ func writeFakeProc(t *testing.T, cages []bool) string {
 
 func withFakeProc(t *testing.T, cages []bool) {
 	t.Helper()
-	oldProc, oldUID := procPath, cagefsMinUID
+	oldProc, oldUID, oldHome := procPath, cagefsMinUID, cagefsAccountHomeForUID
 	procPath = writeFakeProc(t, cages)
 	// The fixture's /proc entries are owned by whoever runs the test, which is
-	// root in CI and an ordinary user locally. Sample every uid so the test
-	// exercises the namespace logic rather than the host's uid numbering.
+	// root in CI and an ordinary user locally. Sample every uid, and treat it
+	// as a hosting account, so the test exercises the namespace logic rather
+	// than the host's uid numbering or passwd file.
 	cagefsMinUID = 0
-	t.Cleanup(func() { procPath, cagefsMinUID = oldProc, oldUID })
+	cagefsAccountHomeForUID = func(uint64) (string, bool) { return "/home/alice", true }
+	t.Cleanup(func() {
+		procPath, cagefsMinUID, cagefsAccountHomeForUID = oldProc, oldUID, oldHome
+	})
+}
+
+// CloudLinux in "Enable All" mode cages every uid above the minimum, service
+// accounts included. rspamd, chrony and memcached each get a mount namespace
+// and none of them will ever execute PHP, so counting them as cages missing
+// the event mount inflates the number and points the operator at accounts
+// where a remount would achieve nothing.
+func TestSampleCageShieldMountsCountsOnlyHostingAccounts(t *testing.T) {
+	withFakeProc(t, []bool{false, false})
+	cagefsAccountHomeForUID = func(uint64) (string, bool) { return "/var/lib/rspamd", true }
+
+	missing, sampled, err := sampleCageShieldMounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sampled != 0 || missing != 0 {
+		t.Fatalf("sampled = %d, missing = %d; service-account cages must not be counted", sampled, missing)
+	}
+}
+
+// A uid with no passwd entry is not an account either.
+func TestSampleCageShieldMountsSkipsUnknownUIDs(t *testing.T) {
+	withFakeProc(t, []bool{false, false})
+	cagefsAccountHomeForUID = func(uint64) (string, bool) { return "", false }
+
+	_, sampled, err := sampleCageShieldMounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sampled != 0 {
+		t.Fatalf("sampled = %d, want 0 for uids with no passwd entry", sampled)
+	}
 }
 
 // The bug this replaced: keying on the cage skeleton reported "applied" for the

@@ -513,7 +513,7 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 					if rel := wpChecksumModifiedCoreFile(line); rel != "" {
 						mu.Lock()
 						findings = append(findings, alert.Finding{
-							Severity: alert.Critical,
+							Severity: wpCoreModifiedSeverity(rel),
 							Check:    "wp_core_integrity",
 							Message:  fmt.Sprintf("WordPress core file modified for %s", user),
 							Details:  fmt.Sprintf("Path: %s\nFile: %s\n%s", wpPath, rel, line),

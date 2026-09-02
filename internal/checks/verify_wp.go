@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -61,6 +63,26 @@ func wpChecksumModifiedCoreFile(line string) string {
 		return ""
 	}
 	return rel
+}
+
+// wpCoreModifiedSeverity grades a modified core file by what an attacker could
+// do with it.
+//
+// Critical is what auto-response acts on, so it is reserved for files that can
+// carry executable content to a visitor: anything a PHP handler runs, and the
+// scripts and templates served into the browser. Everything else -- stylesheets,
+// images, translations, fonts -- still gets a finding, but a mismatch there is
+// far more often an asset optimiser or an install whose version.php no longer
+// names the release its files came from than it is an appended backdoor.
+func wpCoreModifiedSeverity(rel string) alert.Severity {
+	if contenttype.IsExecutablePHPName(strings.ToLower(rel)) {
+		return alert.Critical
+	}
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".js", ".mjs", ".html", ".htm", ".htaccess":
+		return alert.Critical
+	}
+	return alert.High
 }
 
 // wpCoreFilePathWithin joins a wp-cli reported relative path onto the install

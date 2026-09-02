@@ -64,6 +64,52 @@ func TestCheckWPCoreReportsModifiedCoreFile(t *testing.T) {
 	}
 }
 
+// Critical drives auto-response, which kills processes and quarantines files.
+// A core asset that PHP never executes cannot be the appended backdoor this
+// check exists to catch, and on real hosts these mismatch for dull reasons: an
+// SVG or CSS run through an optimiser, or an install whose version.php no
+// longer matches the release its files came from. Those still deserve a
+// finding, just not one that acts on its own.
+func TestCheckWPCoreGradesNonExecutableCoreFilesBelowCritical(t *testing.T) {
+	wpCoreCheckMocks(t, "Warning: File doesn't verify against checksum: wp-includes/js/mediaelement/controls.svg\n"+
+		"Warning: File doesn't verify against checksum: wp-includes/css/dashicons.css\n"+
+		"Warning: File doesn't verify against checksum: wp-includes/plugin.php\n")
+
+	got := coreIntegrityFindings(CheckWPCore(context.Background(), &config.Config{}, nil))
+	if len(got) != 3 {
+		t.Fatalf("findings = %d, want 3: %+v", len(got), got)
+	}
+	bySeverity := map[string]alert.Severity{}
+	for _, f := range got {
+		bySeverity[f.FilePath] = f.Severity
+	}
+	for _, path := range []string{
+		"/home/alice/public_html/wp-includes/js/mediaelement/controls.svg",
+		"/home/alice/public_html/wp-includes/css/dashicons.css",
+	} {
+		if got := bySeverity[path]; got != alert.High {
+			t.Errorf("severity for %s = %v, want High", path, got)
+		}
+	}
+	if got := bySeverity["/home/alice/public_html/wp-includes/plugin.php"]; got != alert.Critical {
+		t.Errorf("severity for the PHP core file = %v, want Critical", got)
+	}
+}
+
+// A core .js file is not executed by PHP but is served to every visitor, so a
+// skimmer spliced into one is exactly as reachable as a PHP backdoor.
+func TestCheckWPCoreKeepsScriptCoreFilesCritical(t *testing.T) {
+	wpCoreCheckMocks(t, "Warning: File doesn't verify against checksum: wp-includes/js/jquery/jquery.js\n")
+
+	got := coreIntegrityFindings(CheckWPCore(context.Background(), &config.Config{}, nil))
+	if len(got) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].Severity != alert.Critical {
+		t.Errorf("severity = %v, want Critical for a served script", got[0].Severity)
+	}
+}
+
 // Older wp-cli releases put the file name first.
 func TestCheckWPCoreReportsModifiedCoreFileLegacyLineShape(t *testing.T) {
 	wpCoreCheckMocks(t, "Warning: wp-includes/x.php doesn't verify against checksum.\n")

@@ -82,8 +82,10 @@ $_SERVER['REQUEST_URI'] = '/shield-test';
 $_SERVER['HTTP_USER_AGENT'] = 'shield-test';
 $param = getenv('CSM_SHIELD_TEST_PARAM');
 if ($param !== false && $param !== '') {
-    $_GET[$param] = 'test';
-    $_REQUEST[$param] = 'test';
+    $value = getenv('CSM_SHIELD_TEST_PARAM_VALUE');
+    if ($value === false || $value === '') { $value = 'test'; }
+    $_GET[$param] = $value;
+    $_REQUEST[$param] = $value;
 }
 require getenv('CSM_SHIELD_TEST_FILE');
 `
@@ -96,39 +98,62 @@ require getenv('CSM_SHIELD_TEST_FILE');
 		rel          string
 		body         string
 		requestParam string
+		requestValue string
 		blocked      bool
 		logged       bool
 	}{
 		{"exec_sink_shell", "wp-content/plugins/galex_x/cox.php",
-			"<?php if ($_REQUEST['px'] === 'k') { system($_REQUEST['c']); }", "", true, true},
+			"<?php if ($_REQUEST['px'] === 'k') { system($_REQUEST['c']); }", "", "", true, true},
 		{"exec_sink_exec", "wp-content/plugins/evil/exec.php",
-			"<?php function run() { exec($_GET['c']); } echo 'UNSAFE';", "", true, true},
+			"<?php function run() { exec($_GET['c']); } echo 'UNSAFE';", "", "", true, true},
 		{"fully_qualified_exec_sink", "wp-content/plugins/evil/qualified.php",
-			"<?php function run() { \\exec($_GET['c']); } echo 'UNSAFE';", "", true, true},
+			"<?php function run() { \\exec($_GET['c']); } echo 'UNSAFE';", "", "", true, true},
 		{"packed_eval_in_cache", "wp-content/cache/rrhe.php",
-			"<?php eval(gzinflate(base64_decode('AAAA')));", "", true, true},
+			"<?php eval(gzinflate(base64_decode('AAAA')));", "", "", true, true},
 		{"packed_eval_openssl_decrypt", "wp-content/cache/enc.php",
-			"<?php eval(openssl_decrypt('x', 'aes-256-cbc', 'k'));", "", true, true},
+			"<?php eval(openssl_decrypt('x', 'aes-256-cbc', 'k'));", "", "", true, true},
 		{"blocked_upload_index", "wp-content/uploads/index.php",
-			"<?php echo 'SAFE';", "", true, true},
+			"<?php echo 'SAFE';", "", "", true, true},
 		{"index_named_plugin_webshell", "wp-content/plugins/evil/index.php",
-			"<?php function run() { system($_GET['c']); } echo 'UNSAFE';", "", true, true},
+			"<?php function run() { system($_GET['c']); } echo 'UNSAFE';", "", "", true, true},
+
+		// A weak single-letter parameter carrying an ordinary value is not a
+		// webshell probe. These used to be logged and buried the real ones.
 		{"legit_get_only_plugin_endpoint", "wp-content/plugins/woocommerce/api.php",
-			"<?php echo isset($_GET['c']) ? 'SAFE' : 'MISSING';", "c", false, true},
+			"<?php echo isset($_GET['c']) ? 'SAFE' : 'MISSING';", "c", "", false, false},
 		{"legit_pdo_method_exec", "wp-content/plugins/foo/db.php",
-			"<?php function save($pdo) { $pdo->exec('SELECT 1'); } echo $_GET['c'] ? 'SAFE' : 'MISSING';", "c", false, true},
+			"<?php function save($pdo) { $pdo->exec('SELECT 1'); } echo $_GET['c'] ? 'SAFE' : 'MISSING';", "c", "", false, false},
 		{"legit_spaced_method_exec", "wp-content/plugins/foo/spaced-db.php",
-			"<?php function save($pdo) { $pdo -> /* driver method */ exec('SELECT 1'); } echo $_GET['c'] ? 'SAFE' : 'MISSING';", "c", false, true},
+			"<?php function save($pdo) { $pdo -> /* driver method */ exec('SELECT 1'); } echo $_GET['c'] ? 'SAFE' : 'MISSING';", "c", "", false, false},
 		{"legit_static_method_exec", "wp-content/plugins/foo/static-db.php",
-			"<?php function save() { Database :: exec('SELECT 1'); } echo $_GET['c'] ? 'SAFE' : 'MISSING';", "c", false, true},
+			"<?php function save() { Database :: exec('SELECT 1'); } echo $_GET['c'] ? 'SAFE' : 'MISSING';", "c", "", false, false},
 		{"legit_exec_function_declaration", "wp-content/plugins/foo/namespaced.php",
-			"<?php namespace ShieldTest; function exec($value) { return $value; } echo $_GET['c'] ? 'SAFE' : 'MISSING';", "c", false, true},
+			"<?php namespace ShieldTest; function exec($value) { return $value; } echo $_GET['c'] ? 'SAFE' : 'MISSING';", "c", "", false, false},
 		{"legit_sink_names_in_comments_and_strings", "wp-content/plugins/foo/help.php",
-			"<?php // Never call exec(\n$help = 'eval(base64_decode('; echo $_GET['c'] ? 'SAFE' : $help;", "c", false, true},
+			"<?php // Never call exec(\n$help = 'eval(base64_decode('; echo $_GET['c'] ? 'SAFE' : $help;", "c", "", false, false},
 		{"legit_base64_decode_without_eval", "wp-content/plugins/foo/decode.php",
-			"<?php echo base64_decode('U0FGRQ==');", "", false, false},
+			"<?php echo base64_decode('U0FGRQ==');", "", "", false, false},
 		{"normal_wordpress_front_controller", "index.php",
-			"<?php function dormant_shell() { system($_GET['c']); } echo 'SAFE';", "c", false, true},
+			"<?php function dormant_shell() { system($_GET['c']); } echo 'SAFE';", "c", "", false, false},
+
+		// WordPress core's own asset loaders take c=0 as a compression flag.
+		// Every admin page view hit this, which is how one scanner probe got
+		// lost among thousands of ordinary requests.
+		{"wordpress_core_style_loader", "wp-admin/load-styles.php",
+			"<?php echo isset($_GET['c']) ? 'SAFE' : 'MISSING';", "c", "0", false, false},
+
+		// A weak name still counts once the value looks like a command.
+		{"weak_param_shell_metacharacter", "wp-content/plugins/foo/api.php",
+			"<?php echo 'SAFE';", "c", ";id", false, true},
+		{"weak_param_binary_path", "wp-content/plugins/foo/api2.php",
+			"<?php echo 'SAFE';", "c", "/bin/sh", false, true},
+		{"weak_param_bare_binary_name", "wp-content/plugins/foo/api3.php",
+			"<?php echo 'SAFE';", "c", "whoami", false, true},
+
+		// A parameter actually named cmd is a webshell convention whatever it
+		// carries, so it is logged on its name alone.
+		{"strong_param_name_always_logged", "wp-content/plugins/foo/api4.php",
+			"<?php echo 'SAFE';", "cmd", "1", false, true},
 	}
 	for _, shieldCase := range shields {
 		t.Run(shieldCase.name, func(t *testing.T) {
@@ -153,6 +178,7 @@ require getenv('CSM_SHIELD_TEST_FILE');
 					cmd.Env = append(os.Environ(),
 						"CSM_SHIELD_TEST_FILE="+shield,
 						"CSM_SHIELD_TEST_PARAM="+tc.requestParam,
+						"CSM_SHIELD_TEST_PARAM_VALUE="+tc.requestValue,
 					)
 					out, err := cmd.CombinedOutput()
 					if err != nil {

@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PHP Shield no longer records a webshell command parameter for the single-letter names `c` and `e` unless the value looks like a command; WordPress core's own load-styles.php and load-scripts.php take `c=0`, so every admin page view raised an event and buried the real probes. A parameter actually named cmd, command, exec, execute or shell is still recorded on its name alone, and blocking is unchanged.
+- A modified WordPress core file that PHP never executes and the browser never runs as script is now High rather than Critical, so auto-response no longer acts on a stylesheet or image that an optimiser touched, or on an install whose version.php no longer names the release its files came from. Core PHP, JavaScript and HTML stay Critical.
+- The clamd socket is now discovered when the configured one is not answering: the path belongs to whoever packaged clamd, and a host naming the wrong one scanned no mail at all while every health signal still reported the watcher running. Validate says which socket answered and asks for the setting to be corrected.
+- The CageFS event-mount check now counts only cages belonging to hosting accounts. CloudLinux in "Enable All" mode cages service accounts too, and rspamd, chrony and memcached inflated the number with cages that will never execute PHP.
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
 - Backup and restore no longer retain pending rollback state or expose in-progress exports. Detection now preserves security state on incomplete scans and handles credential-bearing process data and platform-specific inputs safely.
 - Quarantine captures now remain private when the source has other names, incomplete forensic snapshots are removed, and persistent missing-rule states no longer repeat the same alert on every reload.

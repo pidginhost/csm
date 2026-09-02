@@ -71,10 +71,19 @@ try {
     }
 
     // --- 3. Command parameter backed by an exec sink in the inspected script ---
-    $csm_cmd_params = array('cmd', 'command', 'exec', 'execute', 'c', 'e', 'shell');
-    foreach ($csm_cmd_params as $param) {
+    // A named parameter like cmd= or shell= is a webshell convention on its
+    // own. The single letters are not: WordPress core's own load-styles.php
+    // and load-scripts.php take c=0 as a compression flag, so logging every
+    // one of those buried real probes under ordinary admin traffic. For the
+    // weak names the value has to look like a command before it is worth
+    // recording. Blocking is unchanged and still keyed on the exec sink.
+    $csm_cmd_params = array('cmd', 'command', 'exec', 'execute', 'shell');
+    $csm_weak_cmd_params = array('c', 'e');
+    foreach (array_merge($csm_cmd_params, $csm_weak_cmd_params) as $param) {
         if (isset($_REQUEST[$param])) {
-            csm_shield_log('WEBSHELL_PARAM', $csm_script, 'Request contains command parameter: ' . $param);
+            if (in_array($param, $csm_cmd_params, true) || csm_shield_is_command_value($_REQUEST[$param])) {
+                csm_shield_log('WEBSHELL_PARAM', $csm_script, 'Request contains command parameter: ' . $param);
+            }
             if ($csm_code !== null && csm_shield_has_exec_sink($csm_code)) {
                 csm_shield_log('BLOCK_WEBSHELL', $csm_script, 'Command parameter with exec sink: ' . $param);
                 csm_shield_deny();
@@ -141,6 +150,32 @@ function csm_shield_code_only($src) {
         }
     }
     return $out;
+}
+
+/**
+ * True if a request value looks like a command rather than an ordinary
+ * argument. Used only for the single-letter parameter names, which collide
+ * with legitimate application parameters (WordPress core's own c=0).
+ *
+ * A shell command needs a separator, a path, or the name of a binary. A bare
+ * number or word is none of those.
+ */
+function csm_shield_is_command_value($value) {
+    if (is_array($value)) {
+        foreach ($value as $item) {
+            if (csm_shield_is_command_value($item)) return true;
+        }
+        return false;
+    }
+    if (!is_string($value)) return false;
+    $v = trim($value);
+    if ($v === '' || strlen($v) > 4096) return false;
+    // Shell metacharacters, or anything the shell would read as more than one word.
+    if (preg_match('/[;|&\x60$(){}<>\\\\\s\'"]/', $v)) return true;
+    // A path, absolute or traversing.
+    if (strpos($v, '/') !== false || strpos($v, '..') !== false) return true;
+    // A bare binary name.
+    return (bool) preg_match('/^(?:ls|id|pwd|whoami|uname|cat|head|tail|wget|curl|nc|ncat|sh|bash|zsh|python[0-9.]*|perl|ruby|php|chmod|chown|rm|mv|cp|kill|ps|netstat|ifconfig|ipconfig|dir|type|systeminfo|net|tasklist)$/i', $v);
 }
 
 /**

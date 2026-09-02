@@ -4,9 +4,13 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // cagefsCageMountSample reports how many live cages lack the PHP Shield event
@@ -86,6 +90,35 @@ var procPath = "/proc"
 // floor for which processes are worth sampling.
 var cagefsMinUID uint64 = 500
 
+// cagefsAccountHomeForUID resolves a uid to its home directory. A var so tests
+// can supply one without a passwd entry.
+var cagefsAccountHomeForUID = accountHomeForUID
+
+func accountHomeForUID(uid uint64) (string, bool) {
+	u, err := user.LookupId(strconv.FormatUint(uid, 10))
+	if err != nil {
+		return "", false
+	}
+	return u.HomeDir, true
+}
+
+// isHostingAccountHome reports whether a home directory is a hosting account's.
+//
+// CloudLinux in "Enable All" mode cages every uid above the minimum, service
+// accounts included, so a mount namespace alone does not make a cage worth
+// counting: rspamd, chrony and memcached each get one and none of them will
+// ever execute PHP. Only an account whose home sits under the panel's account
+// root can run the code PHP Shield inspects.
+func isHostingAccountHome(home string, roots []string) bool {
+	clean := filepath.Clean(home)
+	for _, root := range roots {
+		if strings.HasPrefix(clean, filepath.Clean(root)+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // sampleCageShieldMounts inspects one running process per cage and reports how
 // many of those cages are missing the event mount.
 //
@@ -101,6 +134,8 @@ func sampleCageShieldMounts() (missing, sampled int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
+
+	accountRoots := platform.Detect().AccountHomeRoots()
 
 	// One sample per mount namespace: that is exactly one per cage, however
 	// many processes the account is running.
@@ -120,6 +155,10 @@ func sampleCageShieldMounts() (missing, sampled int, err error) {
 		// counted as cages that lost the mount.
 		uid, ok := fileOwnerUID(info)
 		if !ok || uid < cagefsMinUID {
+			continue
+		}
+		home, known := cagefsAccountHomeForUID(uid)
+		if !known || !isHostingAccountHome(home, accountRoots) {
 			continue
 		}
 		// A process sharing init's namespace is outside every cage.
