@@ -79,6 +79,7 @@ signatures:
   auto_update: true
   update_url: ""
   signing_key: ""
+  allow_rule_count_decrease: false   # permit a deliberate drop below half the installed YAML rule count
   yara_forge:
     enabled: false
     tier: "core"

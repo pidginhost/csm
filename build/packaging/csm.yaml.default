@@ -80,6 +80,7 @@ signatures:
   auto_update: false
   update_url: ""
   signing_key: ""   # required for any remote signature update path
+  allow_rule_count_decrease: false   # permit a deliberate drop below half the installed YAML rule count
   yara_forge:
     enabled: false
     tier: "core"
