@@ -727,16 +727,20 @@ type evaluator struct {
 	scripts               *perScriptWindow
 	ips                   *perIPWindow
 	accounts              *perAccountWindow
-	cfg                   *config.Config
-	metrics               *phpRelayMetrics // optional; nil in unit tests
+	cfgFn                 func() *config.Config // live config; see liveConfigFn
+	metrics               *phpRelayMetrics      // optional; nil in unit tests
 	policies              *emailspool.Policies
 	msgIndex              *msgIDIndex // optional; nil in unit tests
 	effectiveAccountLimit int
 }
 
 func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *config.Config, m *phpRelayMetrics) *evaluator {
-	return &evaluator{scripts: s, ips: i, accounts: a, cfg: cfg, metrics: m}
+	return &evaluator{scripts: s, ips: i, accounts: a, cfgFn: liveConfigFn(cfg), metrics: m}
 }
+
+// config returns the live config so a reload that retunes or disables the
+// relay detector reaches every evaluation; cfg was a startup snapshot before.
+func (e *evaluator) config() *config.Config { return e.cfgFn() }
 
 // SetPolicies is called by daemon wiring once the policies file has loaded.
 func (e *evaluator) SetPolicies(p *emailspool.Policies) { e.policies = p }
@@ -745,18 +749,18 @@ func (e *evaluator) SetPolicies(p *emailspool.Policies) { e.policies = p }
 // returns the set of findings that fire at this moment. Cooldowns prevent
 // duplicate emissions per (script, path).
 func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time.Time) []alert.Finding {
-	if !e.cfg.EmailProtection.PHPRelay.Enabled {
+	if !e.config().EmailProtection.PHPRelay.Enabled {
 		return nil
 	}
 	var findings []alert.Finding
 	s := e.scripts.getOrCreate(k)
 
 	// Path 1: sustained qualifying events.
-	win := time.Duration(e.cfg.EmailProtection.PHPRelay.RateWindowMin) * time.Minute
+	win := time.Duration(e.config().EmailProtection.PHPRelay.RateWindowMin) * time.Minute
 	qualifying := s.qualifyingCount(now.Add(-win), func(ev scriptEvent) bool {
 		return ev.FromMismatch && ev.AdditionalSignal
 	})
-	if qualifying >= e.cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin {
+	if qualifying >= e.config().EmailProtection.PHPRelay.HeaderScoreVolumeMin {
 		if s.shouldFire("header", now, phpRelayPathCooldown) {
 			f := e.makeFinding(k, "header", sourceIP, cpuser, s, fmtHeaderMessage(qualifying, win), now)
 			f.RelayTotal = qualifying
@@ -772,7 +776,7 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 
 	// Path 2: absolute volume per script in the last 60 min.
 	absVol := s.volumeCount(now.Add(-60 * time.Minute))
-	if absVol >= e.cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour &&
+	if absVol >= e.config().EmailProtection.PHPRelay.AbsoluteVolumePerHour &&
 		!e.scriptIsLowDiversityNotification(s, now.Add(-60*time.Minute)) {
 		if s.shouldFire("volume", now, phpRelayPathCooldown) {
 			f := e.makeFinding(k, "volume", sourceIP, cpuser, s,
@@ -791,9 +795,9 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	// Path 4: HTTP-IP fanout. Skipped silently for proxy IPs.
 	if sourceIP != "" {
 		if e.policies == nil || !e.policies.IsProxyIP(sourceIP) {
-			fwin := time.Duration(e.cfg.EmailProtection.PHPRelay.FanoutWindowMin) * time.Minute
+			fwin := time.Duration(e.config().EmailProtection.PHPRelay.FanoutWindowMin) * time.Minute
 			distinct := e.ips.distinctScriptsSince(sourceIP, now.Add(-fwin))
-			if distinct >= e.cfg.EmailProtection.PHPRelay.FanoutDistinctScripts &&
+			if distinct >= e.config().EmailProtection.PHPRelay.FanoutDistinctScripts &&
 				!e.fanoutIsLowDiversityNotification(sourceIP, now.Add(-fwin)) {
 				if s.shouldFire("fanout", now, phpRelayPathCooldown) {
 					f := e.makeFinding(k, "fanout", sourceIP, cpuser, s,
@@ -818,7 +822,7 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 // admin addresses; relay abuse reaches many distinct victims. Unknown or
 // partially parsed recipients leave the gate failing open.
 func (e *evaluator) scriptIsLowDiversityNotification(s *scriptState, since time.Time) bool {
-	minRcpt := e.cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients
+	minRcpt := e.config().EmailProtection.PHPRelay.FanoutDistinctRecipients
 	if minRcpt <= 0 || s == nil {
 		return false
 	}
@@ -834,7 +838,7 @@ func (e *evaluator) scriptIsLowDiversityNotification(s *scriptState, since time.
 // diverse (real relay) or unknown (recipient parsing gap -- fail open). A
 // non-positive threshold disables the gate and preserves the original behavior.
 func (e *evaluator) fanoutIsLowDiversityNotification(sourceIP string, since time.Time) bool {
-	minRcpt := e.cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients
+	minRcpt := e.config().EmailProtection.PHPRelay.FanoutDistinctRecipients
 	if minRcpt <= 0 || e.ips == nil {
 		return false
 	}

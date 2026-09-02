@@ -1019,7 +1019,9 @@ type Config struct {
 		// sentinels such as AccountVolumePerHour auto-derive and
 		// FanoutDistinctRecipients disabling only that gate.
 		PHPRelay struct {
-			Enabled                  bool    `yaml:"enabled"`
+			// The relay pipeline is wired once at startup; a reload can retune
+			// it but cannot start or stop it, so toggling it needs a restart.
+			Enabled                  bool    `yaml:"enabled" hotreload:"restart"`
 			RateWindowMin            int     `yaml:"rate_window_min"`
 			HeaderScoreVolumeMin     int     `yaml:"header_score_volume_min"`
 			AbsoluteVolumePerHour    int     `yaml:"absolute_volume_per_hour"`

@@ -210,7 +210,7 @@ type auditor interface {
 //nolint:unused // wired in O2 by daemon controller
 type autoFreezer struct {
 	scripts   *perScriptWindow
-	cfg       *config.Config
+	cfgFn     func() *config.Config // live config; see liveConfigFn
 	spoolRoot string
 	eximBin   string
 	runner    runner
@@ -219,6 +219,10 @@ type autoFreezer struct {
 	metrics   *phpRelayMetrics
 	dryRunFn  func() bool
 }
+
+// config returns the live config so a reload that disables auto-response or
+// the freeze action stops the next Apply; cfg was a startup snapshot before.
+func (a *autoFreezer) config() *config.Config { return a.cfgFn() }
 
 //nolint:unused // wired in O2 by daemon controller
 func newAutoFreezer(scripts *perScriptWindow, cfg *config.Config, spoolRoot, eximBin string, r runner, a auditor, m *phpRelayMetrics, dryRunFn func() bool) *autoFreezer {
@@ -235,7 +239,7 @@ func newAutoFreezer(scripts *perScriptWindow, cfg *config.Config, spoolRoot, exi
 		dryRunFn = cfg.PHPRelayDryRunEnabled
 	}
 	return &autoFreezer{
-		scripts: scripts, cfg: cfg, spoolRoot: spoolRoot, eximBin: eximBin,
+		scripts: scripts, cfgFn: liveConfigFn(cfg), spoolRoot: spoolRoot, eximBin: eximBin,
 		runner: r, auditor: a, rateLim: rl, metrics: m, dryRunFn: dryRunFn,
 	}
 }
@@ -249,7 +253,7 @@ func newAutoFreezer(scripts *perScriptWindow, cfg *config.Config, spoolRoot, exi
 //nolint:unused // wired in O2 by daemon controller
 func (a *autoFreezer) Apply(findings []alert.Finding) []alert.Finding {
 	var emitted []alert.Finding
-	if !a.cfg.AutoResponse.Enabled || !a.cfg.PHPRelayFreezeEnabled() {
+	if !a.config().AutoResponse.Enabled || !a.config().PHPRelayFreezeEnabled() {
 		return nil
 	}
 	if a.eximBin == "" {

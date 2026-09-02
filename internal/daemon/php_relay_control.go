@@ -61,8 +61,8 @@ func (c *PHPRelayController) effectiveDryRun() (bool, string) {
 			return v, "bbolt"
 		}
 	}
-	if c.eng != nil && c.eng.cfg != nil {
-		return c.eng.cfg.PHPRelayDryRunEnabled(), "csm.yaml"
+	if c.eng != nil && c.eng.config() != nil {
+		return c.eng.config().PHPRelayDryRunEnabled(), "csm.yaml"
 	}
 	return true, "default"
 }
