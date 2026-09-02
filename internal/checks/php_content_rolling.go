@@ -53,17 +53,21 @@ func rollingContentEnabled(ctx context.Context, cfg *config.Config, forcedFull b
 // .htaccess handler (the LEVIATHAN trick) is NOT enumerated here; the fixed
 // suspicious-dir scan (which layers per-directory overlays as it descends) and
 // realtime fanotify still cover those.
-func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpContentScan, account string, docRoots []string, findings *[]alert.Finding) {
+// It reports whether this cycle covered the account's whole file list. A
+// window that did not wrap leaves files from earlier windows unvisited, and
+// their findings are not re-emitted this cycle, so the caller must mark the
+// check incomplete or the runner purges them from the latest set.
+func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpContentScan, account string, docRoots []string, findings *[]alert.Finding) bool {
 	db := store.Global()
 	if db == nil {
 		// Cannot persist a cursor, so rolling would scan from the start every
 		// cycle without making progress. Skip rather than spin in place.
-		return
+		return true
 	}
 
 	files := enumeratePHPFiles(ctx, cfg, docRoots)
 	if len(files) == 0 {
-		return
+		return true
 	}
 
 	limit := accountScanMaxFiles(ctx, cfg)
@@ -76,8 +80,9 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	}
 	selected, newLast, wrapped := rollingCandidatesAfter(files, cur.LastPath, limit)
 	if len(selected) == 0 {
-		return
+		return true
 	}
+	complete := wrapped || len(selected) == len(files)
 
 	// Reconstruct the .htaccess handler overlay once per directory: every file
 	// in the slice that shares a directory shares the same overlay, and reading
@@ -105,12 +110,12 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	// ctx cancellation leaves the prior cursor so the next cycle resumes where
 	// this one stopped instead of skipping the unscanned tail.
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	cur.Account = account
 	cur.Check = rollingScanCheck
 	cur.LastPath = newLast
-	if wrapped || len(selected) == len(files) {
+	if complete {
 		now := time.Now().UTC()
 		cur.LastFullCycleTS = now
 		if wrapped {
@@ -120,6 +125,7 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	if err := db.PutScanCursor(cur); err != nil {
 		fmt.Fprintf(os.Stderr, "php_content rolling: cursor write for %s: %v\n", account, err)
 	}
+	return complete
 }
 
 func rollingRegularCandidate(file string) bool {

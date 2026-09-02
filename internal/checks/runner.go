@@ -723,10 +723,21 @@ func checksForTier(tier Tier) []namedCheck {
 }
 
 func latestPurgeCheckNamesForChecks(toScan []namedCheck) []string {
+	ran := make(map[string]struct{}, len(toScan))
+	for _, nc := range toScan {
+		ran[nc.name] = struct{}{}
+	}
 	seen := make(map[string]struct{})
 	for _, nc := range toScan {
 		seen[nc.name] = struct{}{}
 		for _, name := range runnerFindingNames[nc.name] {
+			// A finding name owned by several checks (php_content and
+			// file_index both emit obfuscated_php) is purged only once all
+			// its owners ran this cycle; otherwise one check completing
+			// wipes the other's live findings.
+			if !allFindingOwnersRan(name, ran) {
+				continue
+			}
 			seen[name] = struct{}{}
 		}
 	}
@@ -736,6 +747,22 @@ func latestPurgeCheckNamesForChecks(toScan []namedCheck) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// allFindingOwnersRan reports whether every check that emits finding name
+// is in ran.
+func allFindingOwnersRan(name string, ran map[string]struct{}) bool {
+	for check, names := range runnerFindingNames {
+		if _, ok := ran[check]; ok {
+			continue
+		}
+		for _, n := range names {
+			if n == name {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // RunTier runs only the specified tier of checks. The second return value

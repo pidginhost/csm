@@ -1860,7 +1860,11 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		}
 
 		if rollingContentEnabled(ctx, cfg, forcedFull) {
-			rollingContentCoverage(ctx, cfg, scan, homeEntry.Name(), docRoots, &findings)
+			if !rollingContentCoverage(ctx, cfg, scan, homeEntry.Name(), docRoots, &findings) {
+				// Earlier windows' findings are not re-emitted this cycle;
+				// completing the check would purge them (mirrors yara_deep).
+				markCheckIncomplete(ctx, "php_content")
+			}
 			if ctx.Err() != nil {
 				return findings
 			}
