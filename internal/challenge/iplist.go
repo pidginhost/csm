@@ -237,7 +237,7 @@ func sortedIPKeys(ips map[string]challengeEntry) []string {
 }
 
 func writeMapFileIfChanged(path string, data []byte) (bool, error) {
-	// #nosec G304 -- path is the daemon-owned challenge map under /run/csm
+	// #nosec G304 -- path is the daemon-owned challenge map under /var/cache/csm
 	// (DefaultNginxMapPath or operator-set via SetNginxMap), never
 	// attacker-controlled. Read only to diff the rendered map and skip
 	// rewrite when content is unchanged.
@@ -248,7 +248,7 @@ func writeMapFileIfChanged(path string, data []byte) (bool, error) {
 }
 
 func ensureMapDir(path string) error {
-	// /run/csm must be world-readable so the webserver user
+	// /var/cache/csm must be world-readable so the webserver user
 	// (www-data / nobody / lsws) can stat + read the map underneath.
 	// The directory holds no sensitive data; only CSM-owned IP files
 	// live inside.

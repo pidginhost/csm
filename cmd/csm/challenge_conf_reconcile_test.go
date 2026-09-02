@@ -41,12 +41,14 @@ func useChallengeConfPaths(t *testing.T) (srcPath, destPath string) {
 		t.Fatal(err)
 	}
 	prevSrc, prevDest := challengeConfSrc, challengeConfDest
-	prevEnsureMap := ensureChallengeMapFile
+	prevEnsureMap, prevEnsureNginxMap := ensureChallengeMapFile, ensureChallengeNginxMapFile
 	challengeConfSrc, challengeConfDest = srcPath, destPath
 	ensureChallengeMapFile = func() error { return nil }
+	ensureChallengeNginxMapFile = func() error { return nil }
 	t.Cleanup(func() {
 		challengeConfSrc, challengeConfDest = prevSrc, prevDest
 		ensureChallengeMapFile = prevEnsureMap
+		ensureChallengeNginxMapFile = prevEnsureNginxMap
 	})
 	return srcPath, destPath
 }

@@ -71,11 +71,18 @@ type scanJobRequest struct {
 	quarantine bool               // when true, annotateQuarantine runs on each finding
 	cancelCtx  context.Context    // per-job cancellable context
 	cancelFn   context.CancelFunc // allows Cancel() to stop the runner
-	// quarantined records the action taken per file path within this job, so
-	// a second check flagging the same file reports the move already made
-	// instead of a failed attempt on a file that is no longer there. Shared
-	// by every copy of the request; only the worker goroutine touches it.
-	quarantined map[string]string
+	// remediated records the successful disposition per file path within this
+	// job, so a second check flagging the same file reports the action already
+	// taken instead of attempting it again. The map is shared by every copy of
+	// the request; only the worker goroutine touches it. It can contain at most
+	// maxScanJobFindingsPerJob entries because
+	// annotateQuarantine runs only for findings admitted under that cap.
+	remediated map[string]scanJobRemediation
+}
+
+type scanJobRemediation struct {
+	status string
+	detail string
 }
 
 // ScanJobManager runs full-scan jobs as background work in the daemon.
@@ -223,12 +230,12 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 	m.cancelFns[id] = jobCancel
 
 	req := scanJobRequest{
-		id:          id,
-		opts:        opts,
-		quarantine:  quarantine,
-		quarantined: make(map[string]string),
-		cancelCtx:   jobCtx,
-		cancelFn:    jobCancel,
+		id:         id,
+		opts:       opts,
+		quarantine: quarantine,
+		remediated: make(map[string]scanJobRemediation),
+		cancelCtx:  jobCtx,
+		cancelFn:   jobCancel,
 	}
 
 	select {
@@ -601,23 +608,23 @@ func (m *ScanJobManager) setTerminal(id, jobState, errMsg string) {
 	_ = m.db.PutScanJob(rec)
 }
 
-// annotateQuarantine runs a pure file quarantine on f when the job's quarantine
-// flag is set, and stamps the finding's RemediationStatus / RemediationDetail
-// fields with the outcome. When the flag is false (report-only) f is returned
-// unchanged so existing consumers see no JSON diff.
+// annotateQuarantine runs the full-scan file remediation on f when the job's
+// quarantine flag is set, and stamps the finding's RemediationStatus /
+// RemediationDetail fields with the outcome. When the flag is false
+// (report-only) f is returned unchanged so existing consumers see no JSON diff.
 //
-// Only findings that QuarantineFindingFile considers eligible (pure
-// malware/webshell file moves) are quarantined. Ineligible findings — process
-// kill, DB cleanup, htaccess edits, etc. — are marked "left_for_review".
+// Eligible standalone malware files are quarantined, while eligible WordPress
+// core, plugin and theme files are cleaned in place. Ineligible findings such
+// as process kills, DB cleanup and htaccess edits are marked "left_for_review".
 // This method never calls alert.Dispatch, state.AppendHistory, or
-// StoreLatestScanFindings; quarantine is a filesystem move, not an alert.
+// StoreLatestScanFindings; remediation is not an alert.
 func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding) alert.Finding {
 	if !req.quarantine {
 		return f
 	}
-	if action, done := req.quarantined[f.FilePath]; done && f.FilePath != "" {
-		f.RemediationStatus = "quarantined"
-		f.RemediationDetail = action
+	if prior, done := req.remediated[f.FilePath]; done && f.FilePath != "" {
+		f.RemediationStatus = prior.status
+		f.RemediationDetail = prior.detail
 		return f
 	}
 	result, eligible := m.quarantineFile(f)
@@ -626,10 +633,16 @@ func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding)
 		return f
 	}
 	if result.Success {
-		f.RemediationStatus = "quarantined"
+		f.RemediationStatus = result.RemediationStatus
+		if f.RemediationStatus == "" {
+			f.RemediationStatus = "quarantined"
+		}
 		f.RemediationDetail = result.Action
-		if req.quarantined != nil {
-			req.quarantined[f.FilePath] = result.Action
+		if req.remediated != nil {
+			req.remediated[f.FilePath] = scanJobRemediation{
+				status: f.RemediationStatus,
+				detail: result.Action,
+			}
 		}
 	} else {
 		f.RemediationStatus = "failed"

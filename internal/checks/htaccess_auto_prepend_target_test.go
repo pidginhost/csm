@@ -49,22 +49,57 @@ func TestDetectorAutoPrependFlagsAccountTargets(t *testing.T) {
 // is account-controlled.
 func TestCheckHtaccessFileAutoPrependParsesQuotedTarget(t *testing.T) {
 	for _, tc := range []struct {
-		target string
-		want   int
+		directive string
+		target    string
+		want      int
 	}{
-		{`"/etc/csm/prelude file.php"`, 0},
-		{`"/home/victim/prelude file.php"`, 1},
+		{"auto_prepend_file", `"/etc/csm/prelude file.php"`, 0},
+		{"auto_prepend_file", `"/home/victim/prelude file.php"`, 1},
+		{"auto_append_file", `"/etc/csm/append file.php"`, 0},
+		{"auto_append_file", `"/home/victim/append file.php"`, 1},
 	} {
 		tmp := t.TempDir() + "/.htaccess"
-		if err := os.WriteFile(tmp, []byte("php_value auto_prepend_file "+tc.target+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(tmp, []byte("php_value "+tc.directive+" "+tc.target+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(tmp) }})
 
 		var findings []alert.Finding
-		checkHtaccessFile(tmp, []string{"auto_prepend_file"}, nil, &findings)
+		checkHtaccessFile(tmp, []string{"auto_prepend_file", "auto_append_file"}, nil, &findings)
 		if len(findings) != tc.want {
-			t.Errorf("target %q: findings = %d, want %d", tc.target, len(findings), tc.want)
+			t.Errorf("%s target %q: findings = %d, want %d", tc.directive, tc.target, len(findings), tc.want)
+		}
+	}
+}
+
+// An uncontinued newline terminates an Apache directive. The detector must
+// not consume the next directive as the missing target and then remove both
+// lines during cleaning.
+func TestDetectAutoPrependDoesNotCrossUncontinuedLine(t *testing.T) {
+	content := []byte("php_value auto_prepend_file\nphp_value memory_limit 256M\n")
+	if got := detectAutoPrepend(content, "/home/alice/public_html/.htaccess"); len(got) != 0 {
+		t.Fatalf("target parser crossed a directive boundary: %+v", got)
+	}
+}
+
+func TestDetectAutoPrependAcceptsExplicitContinuation(t *testing.T) {
+	content := []byte("php_value auto_prepend_file \\\n  \"/home/alice/prelude file.php\"\n")
+	if got := detectAutoPrepend(content, "/home/alice/public_html/.htaccess"); len(got) != 1 {
+		t.Fatalf("continued target findings = %+v, want one", got)
+	}
+}
+
+func TestDetectAutoAppendUsesParsedTarget(t *testing.T) {
+	for _, tc := range []struct {
+		target string
+		want   int
+	}{
+		{target: `"/etc/csm/append file.php"`, want: 0},
+		{target: `"/home/alice/append file.php"`, want: 1},
+	} {
+		content := []byte("php_admin_value auto_append_file " + tc.target + "\n")
+		if got := detectAutoPrepend(content, "/home/alice/public_html/.htaccess"); len(got) != tc.want {
+			t.Errorf("auto_append_file target %q: findings = %+v, want %d", tc.target, got, tc.want)
 		}
 	}
 }

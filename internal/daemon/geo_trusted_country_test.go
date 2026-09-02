@@ -32,15 +32,23 @@ func TestGeoAlertFiresAfterTrustedCountryLogins(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Suppressions.TrustedCountries = []string{"RO"}
 
-	withGlobalStore(t, func(_ *store.DB) {
+	withGlobalStore(t, func(db *store.DB) {
 		for i := 0; i < geoMinLoginCount+1; i++ {
 			if got := parseDovecotLogLine(dovecotLoginLine("alice@example.com", "203.0.113.5"), cfg); len(got) != 0 {
 				t.Fatalf("trusted-country login %d produced findings: %+v", i, got)
 			}
 		}
+		history, found := db.GetGeoHistory("alice@example.com")
+		if !found || history.LoginCount != geoMinLoginCount+1 || history.Countries["RO"] == 0 {
+			t.Fatalf("trusted login history = %+v (found=%v), want count and RO country persisted", history, found)
+		}
 		findings := parseDovecotLogLine(dovecotLoginLine("alice@example.com", "198.51.100.7"), cfg)
 		if len(findings) != 1 || findings[0].Check != "email_suspicious_geo" {
 			t.Fatalf("first foreign login after trusted history: findings = %+v, want one email_suspicious_geo", findings)
+		}
+		history, found = db.GetGeoHistory("alice@example.com")
+		if !found || history.Countries["CN"] == 0 {
+			t.Fatalf("foreign country was not persisted after alert: %+v (found=%v)", history, found)
 		}
 	})
 }

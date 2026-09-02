@@ -102,9 +102,13 @@ var htaccessSuspiciousAutoPrependPaths = []string{
 // after the parser has found the complete target.
 const htaccessPreludeTargetPattern = `("[^"\r\n]*"|'[^'\r\n]*'|\S+)`
 
+// A raw newline ends the directive. Apache continuation is explicit, so only
+// horizontal whitespace or a backslash-newline may separate its arguments.
+const htaccessPreludeSeparatorPattern = `(?:[\t ]|\\\r?\n)+`
+
 // reAutoPrependTarget captures the argument of either prelude directive in
 // any of the forms .htaccess and php.ini fragments use.
-var reAutoPrependTarget = regexp.MustCompile(`(?i)auto_(?:prepend|append)_file\s*=?\s*` + htaccessPreludeTargetPattern)
+var reAutoPrependTarget = regexp.MustCompile(`(?i)auto_(?:prepend|append)_file(?:[\t ]*=[\t ]*|[\t ]+)` + htaccessPreludeTargetPattern)
 
 // autoPrependTargetIsKnownPrelude reports whether target names a prelude
 // script shipped by a security plugin. Only the basename is consulted: every
@@ -181,7 +185,7 @@ var (
 	rePHPHandlerMap = regexp.MustCompile(`(?im)^\s*(?:(?:SetHandler|ForceType)\s+\S*php\S*(?:\s+\S[^\n]*)?|AddHandler\s+\S*php\S*\s+\S[^\n]*)\s*$`)
 	// Match both forms because mod_php and some LSAPI builds honor either
 	// directive in .htaccess.
-	reAutoPrepend     = regexp.MustCompile(`(?im)^\s*php(?:_admin)?_value\s+auto_prepend_file\s+` + htaccessPreludeTargetPattern)
+	reAutoPrepend     = regexp.MustCompile(`(?im)^[\t ]*php(?:_admin)?_value[\t ]+auto_(?:prepend|append)_file` + htaccessPreludeSeparatorPattern + htaccessPreludeTargetPattern)
 	reUACloakCond     = regexp.MustCompile(`(?im)^\s*RewriteCond\s+%\{HTTP_USER_AGENT\}\s+([^\n]+)`)
 	reSpamRedirect    = regexp.MustCompile(`(?im)^\s*RewriteRule\s+\S+\s+(https?://[^\s\[]+)`)
 	reFilesMatchOpen  = regexp.MustCompile(`(?im)^\s*<FilesMatch\s+["']?[^"'>]*\\\.(php|phtml|ph[2-7])[^"'>]*["']?\s*>`)
@@ -990,8 +994,9 @@ func pathInNonScriptDir(path string) bool {
 	return false
 }
 
-// detectAutoPrepend flags PHP auto_prepend_file directives whose target the
-// account owner can write to (see autoPrependTargetSuspicious).
+// detectAutoPrepend flags PHP auto_prepend_file and auto_append_file
+// directives whose target the account owner can write to (see
+// autoPrependTargetSuspicious).
 func detectAutoPrepend(content []byte, path string) []htaccessMatch {
 	idxs := reAutoPrepend.FindAllSubmatchIndex(content, -1)
 	var out []htaccessMatch

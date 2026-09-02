@@ -33,9 +33,16 @@ func TestDBDropObjectBackupHoldsBareCreateStatement(t *testing.T) {
 		{
 			kind: "procedure",
 			row: "sp_x\tSTRICT_TRANS_TABLES\t" +
-				"CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_x`()\\nBEGIN\\n  SELECT 1;\\nEND\t" +
+				"CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_x`()\\nBEGIN\\n  SELECT 'left\\tright';\\nEND\t" +
 				"utf8mb4\tutf8mb4_0900_ai_ci\tutf8mb4_0900_ai_ci\n",
-			want: "CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_x`()\nBEGIN\n  SELECT 1;\nEND",
+			want: "CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_x`()\nBEGIN\n  SELECT 'left\tright';\nEND",
+		},
+		{
+			kind: "function",
+			row: "fn_x\tSTRICT_TRANS_TABLES\t" +
+				"CREATE DEFINER=`root`@`localhost` FUNCTION `fn_x`() RETURNS text RETURN 'line1\\nline2\\tend'\t" +
+				"utf8mb4\tutf8mb4_0900_ai_ci\tutf8mb4_0900_ai_ci\n",
+			want: "CREATE DEFINER=`root`@`localhost` FUNCTION `fn_x`() RETURNS text RETURN 'line1\nline2\tend'",
 		},
 	}
 	for _, c := range cases {
@@ -93,5 +100,17 @@ func TestDBDropObjectRefusesUnexpectedShowCreateShape(t *testing.T) {
 	}
 	if dropCalled {
 		t.Fatal("DROP was issued although no restorable backup could be captured")
+	}
+}
+
+func TestShowCreateStatementRequiresCreateKeyword(t *testing.T) {
+	for _, row := range []string{
+		"trg_audit\tSTRICT_TRANS_TABLES\tCREATEX TRIGGER `trg_audit` BEFORE INSERT ON `x` FOR EACH ROW SET NEW.a=1",
+		"trg_audit\tSTRICT_TRANS_TABLES\tCREATE",
+		"trg_audit\tSTRICT_TRANS_TABLES\tCREATE DEFINER=`root`@`localhost` EVENT `not_the_trigger` ON SCHEDULE EVERY 1 HOUR DO SELECT 1",
+	} {
+		if stmt, err := showCreateStatement("trigger", row); err == nil {
+			t.Errorf("showCreateStatement accepted %q as %q", row, stmt)
+		}
 	}
 }

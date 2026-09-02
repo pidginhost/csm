@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,6 +36,29 @@ func TestSystemdServiceUnitKeepsChallengeMapsAcrossStops(t *testing.T) {
 	}
 }
 
+func TestPrepareChallengeConfEnsuresBothPersistentMaps(t *testing.T) {
+	origApache, origNginx := ensureChallengeMapFile, ensureChallengeNginxMapFile
+	origDest, origNew := challengeConfDest, newWebserverIntegration
+	var apacheCalls, nginxCalls int
+	ensureChallengeMapFile = func() error { apacheCalls++; return nil }
+	ensureChallengeNginxMapFile = func() error { nginxCalls++; return nil }
+	challengeConfDest = filepath.Join(t.TempDir(), "absent.conf")
+	newWebserverIntegration = func(*config.Config) (*webserver.Installer, error) {
+		return nil, webserver.ErrUnknownWebserver
+	}
+	t.Cleanup(func() {
+		ensureChallengeMapFile, ensureChallengeNginxMapFile = origApache, origNginx
+		challengeConfDest, newWebserverIntegration = origDest, origNew
+	})
+
+	if _, err := prepareChallengeConf(nil); err != nil {
+		t.Fatal(err)
+	}
+	if apacheCalls != 1 || nginxCalls != 1 {
+		t.Fatalf("persistent map ensure calls = Apache %d, Nginx %d; want 1 each", apacheCalls, nginxCalls)
+	}
+}
+
 // Snippets written before the maps left the runtime directory keep pointing
 // at files nothing creates any more. Until such a snippet is refreshed the
 // daemon has to keep those files present, or the web server fails its
@@ -51,6 +75,15 @@ func TestRuntimeChallengeMapPathsFindsStaleReferences(t *testing.T) {
 	}
 	if got := runtimeChallengeMapPaths(current); len(got) != 0 {
 		t.Fatalf("current snippets reported stale paths %v", got)
+	}
+}
+
+func TestRuntimeChallengeMapPathsRejectsLookalikeNames(t *testing.T) {
+	snippets := []byte("include /run/csm/challenge_ips.nginx.map.backup;\n" +
+		"RewriteMap csm_challenge txt:/var/run/csm/challenge_ips.txt.old\n" +
+		"include /srv/run/csm/challenge_ips.nginx.map;\n")
+	if got := runtimeChallengeMapPaths(snippets); len(got) != 0 {
+		t.Fatalf("lookalike runtime map references = %v, want none", got)
 	}
 }
 
@@ -72,7 +105,7 @@ func (h *fakeWebserverHandler) PostInstallInstructions() string { return "" }
 // challengeRefreshFixture routes every side effect of prepareChallengeConf
 // into a temp tree: the legacy snippet path, the integration installer, the
 // daemon map and the runtime-map fallback.
-func challengeRefreshFixture(t *testing.T, snippetBody string) (*fakeWebserverHandler, string, *[]string) {
+func challengeRefreshFixture(t *testing.T, snippetBody string) (*fakeWebserverHandler, string, *[]string, *webserver.Installer) {
 	t.Helper()
 	dir := t.TempDir()
 	snippet := filepath.Join(dir, "csm-challenge.conf")
@@ -97,15 +130,18 @@ func challengeRefreshFixture(t *testing.T, snippetBody string) (*fakeWebserverHa
 	}
 
 	var ensured []string
-	origEnsure, origDest, origNew, origRuntime := ensureChallengeMapFile, challengeConfDest, newWebserverIntegration, ensureRuntimeChallengeMap
+	origEnsure, origEnsureNginx := ensureChallengeMapFile, ensureChallengeNginxMapFile
+	origDest, origNew, origRuntime := challengeConfDest, newWebserverIntegration, ensureRuntimeChallengeMap
 	ensureChallengeMapFile = func() error { return nil }
+	ensureChallengeNginxMapFile = func() error { return nil }
 	challengeConfDest = filepath.Join(dir, "absent-legacy.conf")
 	newWebserverIntegration = func(*config.Config) (*webserver.Installer, error) { return inst, nil }
 	ensureRuntimeChallengeMap = func(path string) error { ensured = append(ensured, path); return nil }
 	t.Cleanup(func() {
-		ensureChallengeMapFile, challengeConfDest, newWebserverIntegration, ensureRuntimeChallengeMap = origEnsure, origDest, origNew, origRuntime
+		ensureChallengeMapFile, ensureChallengeNginxMapFile = origEnsure, origEnsureNginx
+		challengeConfDest, newWebserverIntegration, ensureRuntimeChallengeMap = origDest, origNew, origRuntime
 	})
-	return h, snippet, &ensured
+	return h, snippet, &ensured, inst
 }
 
 // Binary-swap upgrades never re-run the integration installer. A CSM-managed
@@ -114,7 +150,7 @@ func challengeRefreshFixture(t *testing.T, snippetBody string) (*fakeWebserverHa
 // depending on files the daemon no longer maintains.
 func TestPrepareChallengeConfRefreshesStaleIntegrationSnippet(t *testing.T) {
 	old := "# csm-managed-version: " + strconv.Itoa(webserver.TemplateVersion-1) + "\nRewriteMap csm_chal \"txt:/run/csm/challenge_ips.txt\"\n"
-	h, snippet, ensured := challengeRefreshFixture(t, old)
+	h, snippet, ensured, _ := challengeRefreshFixture(t, old)
 
 	changed, err := prepareChallengeConf(nil)
 	if err != nil {
@@ -146,7 +182,7 @@ func TestPrepareChallengeConfRefreshesStaleIntegrationSnippet(t *testing.T) {
 // keeps validating, exactly as it did before the maps moved.
 func TestPrepareChallengeConfKeepsRuntimeMapsForOperatorEditedSnippet(t *testing.T) {
 	edited := "RewriteMap csm_chal \"txt:/run/csm/challenge_ips.txt\"\n# tuned by hand\n"
-	h, snippet, ensured := challengeRefreshFixture(t, edited)
+	h, snippet, ensured, _ := challengeRefreshFixture(t, edited)
 
 	if _, err := prepareChallengeConf(nil); err != nil {
 		t.Fatalf("prepareChallengeConf: %v", err)
@@ -163,5 +199,37 @@ func TestPrepareChallengeConfKeepsRuntimeMapsForOperatorEditedSnippet(t *testing
 	}
 	if want := []string{"/run/csm/challenge_ips.txt"}; !slices.Equal(*ensured, want) {
 		t.Fatalf("runtime maps kept = %v, want %v", *ensured, want)
+	}
+}
+
+func TestPrepareChallengeConfKeepsRuntimeMapWhenRefreshIsReadOnly(t *testing.T) {
+	old := "# csm-managed-version: " + strconv.Itoa(webserver.TemplateVersion-1) + "\nRewriteMap csm_chal \"txt:/run/csm/challenge_ips.txt\"\n"
+	h, snippet, ensured, inst := challengeRefreshFixture(t, old)
+	inst.WriteAt = func(path string, data []byte, mode os.FileMode) error {
+		if path == snippet {
+			return os.ErrPermission
+		}
+		return os.WriteFile(path, data, mode)
+	}
+
+	changed, err := prepareChallengeConf(nil)
+	if err == nil || !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("read-only integration refresh error = %v, want permission error", err)
+	}
+	if changed {
+		t.Fatal("read-only integration refresh reported a rewrite")
+	}
+	body, readErr := os.ReadFile(snippet)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(body) != old {
+		t.Fatalf("read-only integration snippet changed:\n%s", body)
+	}
+	if h.validated != 0 || h.reloaded != 0 {
+		t.Fatalf("read-only refresh reached configtest/reload: %d/%d", h.validated, h.reloaded)
+	}
+	if want := []string{"/run/csm/challenge_ips.txt"}; !slices.Equal(*ensured, want) {
+		t.Fatalf("runtime maps kept after failed refresh = %v, want %v", *ensured, want)
 	}
 }

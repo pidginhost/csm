@@ -43,22 +43,62 @@ remove_csm_modsec_sections() {
 # snippet left pointing at a deleted map fails the web server's configtest
 # host-wide, so the maps stay whenever a snippet has to stay.
 remove_challenge_snippets() {
-    local nginx_snippet=/etc/nginx/conf.d/csm-challenge.conf
-    rm -f /etc/apache2/conf.d/csm_challenge.conf \
-          /etc/apache2/conf.d/csm-challenge.conf \
-          /etc/apache2/conf-enabled/csm-challenge.conf \
-          /etc/httpd/conf.d/csm-challenge.conf \
-          /usr/local/lsws/conf/templates/csm-challenge.conf 2>/dev/null || true
-    if [ -f "$nginx_snippet" ]; then
+    local nginx_snippet=/etc/nginx/conf.d/csm-challenge.conf snippet
+    local removal_failed=0 grep_status nginx_ref nginx_in_use
+    local nginx_file_list nginx_scan_failed
+    for snippet in \
+        /etc/apache2/conf.d/csm_challenge.conf \
+        /etc/apache2/conf.d/csm-challenge.conf \
+        /etc/apache2/conf-enabled/csm-challenge.conf \
+        /etc/httpd/conf.d/csm-challenge.conf \
+        /usr/local/lsws/conf/templates/csm-challenge.conf; do
+        rm -f -- "$snippet" 2>/dev/null || true
+        if [ -e "$snippet" ] || [ -L "$snippet" ]; then
+            echo "WARNING: could not remove $snippet; leaving /var/cache/csm in place" >&2
+            removal_failed=1
+        fi
+    done
+    if [ -e "$nginx_snippet" ] || [ -L "$nginx_snippet" ]; then
         # server{} blocks that include the documented if-block use the map's
         # variable; nginx refuses to start without its definition.
-        if grep -rlq --exclude=csm-challenge.conf 'csm_challenged' /etc/nginx 2>/dev/null; then
-            echo "WARNING: nginx server blocks still use \$csm_challenged; leaving $nginx_snippet and /var/cache/csm in place" >&2
-            return 1
+        nginx_in_use=0
+        nginx_scan_failed=0
+        nginx_file_list=$(mktemp) || nginx_scan_failed=1
+        if [ "$nginx_scan_failed" -eq 0 ]; then
+            if ! find -L /etc/nginx -type f -print0 > "$nginx_file_list" 2>/dev/null; then
+                nginx_scan_failed=1
+            else
+                while IFS= read -r -d '' nginx_ref; do
+                    [ "$nginx_ref" = "$nginx_snippet" ] && continue
+                    grep -Fq '$csm_challenged' "$nginx_ref" 2>/dev/null
+                    grep_status=$?
+                    if [ "$grep_status" -eq 0 ]; then
+                        nginx_in_use=1
+                        break
+                    fi
+                    if [ "$grep_status" -gt 1 ]; then
+                        nginx_scan_failed=1
+                        break
+                    fi
+                done < "$nginx_file_list"
+            fi
+            rm -f -- "$nginx_file_list" 2>/dev/null || true
         fi
-        rm -f "$nginx_snippet" 2>/dev/null || true
+        if [ "$nginx_scan_failed" -ne 0 ]; then
+            echo "WARNING: could not inspect nginx references; leaving $nginx_snippet and /var/cache/csm in place" >&2
+            removal_failed=1
+        elif [ "$nginx_in_use" -ne 0 ]; then
+            echo "WARNING: nginx server blocks still use \$csm_challenged; leaving $nginx_snippet and /var/cache/csm in place" >&2
+            removal_failed=1
+        else
+            rm -f -- "$nginx_snippet" 2>/dev/null || true
+            if [ -e "$nginx_snippet" ] || [ -L "$nginx_snippet" ]; then
+                echo "WARNING: could not remove $nginx_snippet; leaving /var/cache/csm in place" >&2
+                removal_failed=1
+            fi
+        fi
     fi
-    return 0
+    return "$removal_failed"
 }
 
 systemctl daemon-reload 2>/dev/null || true

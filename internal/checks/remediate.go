@@ -39,6 +39,10 @@ type RemediationResult struct {
 	Action      string `json:"action"`      // human-readable description of what was done
 	Description string `json:"description"` // what fix was applied
 	Error       string `json:"error,omitempty"`
+	// RemediationStatus lets a caller that supports more than one successful
+	// disposition distinguish an in-place clean from whole-file quarantine.
+	// It is transport metadata, not part of the generic remediation API.
+	RemediationStatus string `json:"-"`
 	// Reverted marks a virtual patch that had to be written again because
 	// something removed or damaged CSM's earlier block -- typically a backup
 	// plugin rewriting the .htaccess it owns.

@@ -115,6 +115,33 @@ func copyLegacyConfigIfNeeded(preferred, legacy string) error {
 		return fmt.Errorf("checking preferred config %s: %w", preferred, preferredErr)
 	}
 	if preferredInfo.Mode()&os.ModeSymlink != 0 {
+		preferredStat, statErr := os.Stat(preferred)
+		legacyStat, legacyStatErr := os.Stat(legacy)
+		if statErr != nil {
+			return fmt.Errorf("checking preferred config target %s: %w", preferred, statErr)
+		}
+		if legacyStatErr != nil {
+			return fmt.Errorf("checking legacy config %s: %w", legacy, legacyStatErr)
+		}
+		if os.SameFile(preferredStat, legacyStat) {
+			// Some transitional installs linked the new path back to the old
+			// file. Replacing the old file with the normal compatibility link
+			// without first materialising the new path would create a symlink
+			// cycle and make both config paths unreadable.
+			target, err := os.Readlink(preferred)
+			if err != nil {
+				return err
+			}
+			if err := os.Remove(preferred); err != nil {
+				return fmt.Errorf("removing reverse config symlink %s: %w", preferred, err)
+			}
+			if err := copyFilePreserveMeta(legacy, preferred); err != nil {
+				if restoreErr := os.Symlink(target, preferred); restoreErr != nil {
+					return fmt.Errorf("materialising preferred config: %w (restoring reverse symlink failed: %v)", err, restoreErr)
+				}
+				return fmt.Errorf("materialising preferred config: %w", err)
+			}
+		}
 		return nil
 	}
 
@@ -278,7 +305,9 @@ func divergesOnlyByIntegrityHashes(preferred, legacy string) (bool, error) {
 		if preferredLines[i] == legacyLines[i] {
 			continue
 		}
-		if !isIntegrityHashLine(preferredLines[i]) || !isIntegrityHashLine(legacyLines[i]) {
+		preferredKey, preferredHash := integrityHashLineKey(preferredLines[i])
+		legacyKey, legacyHash := integrityHashLineKey(legacyLines[i])
+		if !preferredHash || !legacyHash || preferredKey != legacyKey {
 			return false, nil
 		}
 		sawHashDifference = true
@@ -287,13 +316,23 @@ func divergesOnlyByIntegrityHashes(preferred, legacy string) (bool, error) {
 }
 
 func isIntegrityHashLine(line string) bool {
-	key, _, found := strings.Cut(strings.TrimSpace(line), ":")
+	_, ok := integrityHashLineKey(line)
+	return ok
+}
+
+func integrityHashLineKey(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "-") {
+		return "", false
+	}
+	key, _, found := strings.Cut(trimmed, ":")
 	if !found {
-		return false
+		return "", false
 	}
-	switch strings.TrimSpace(key) {
+	key = strings.TrimSpace(key)
+	switch key {
 	case "binary_hash", "config_hash", "confd_hash":
-		return true
+		return key, true
 	}
-	return false
+	return "", false
 }

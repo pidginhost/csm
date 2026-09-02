@@ -48,7 +48,7 @@ func QuarantineFindingFile(f alert.Finding) (RemediationResult, bool) {
 		return RemediationResult{}, false
 	}
 	info, err := osFS.Lstat(f.FilePath)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return RemediationResult{}, false
 	}
 	if ShouldCleanInsteadOfQuarantine(f.FilePath) {
@@ -56,17 +56,21 @@ func QuarantineFindingFile(f alert.Finding) (RemediationResult, bool) {
 		switch {
 		case clean.Cleaned:
 			return RemediationResult{
-				Success:     true,
-				Action:      fmt.Sprintf("cleaned %s in place", f.FilePath),
-				Description: fmt.Sprintf("Removed: %s (backup: %s)", strings.Join(clean.Removals, "; "), clean.BackupPath),
+				Success:           true,
+				Action:            fmt.Sprintf("cleaned %s in place", f.FilePath),
+				Description:       fmt.Sprintf("Removed: %s (backup: %s)", strings.Join(clean.Removals, "; "), clean.BackupPath),
+				RemediationStatus: "cleaned",
 			}, true
 		case clean.Error == "":
 			// Nothing the cleaner recognises: a core file with no removable
 			// injection is an operator decision, not a move.
 			return RemediationResult{}, false
+		default:
+			// Moving a WordPress core, plugin or theme file after the safer
+			// clean failed defeats this branch's purpose and can take the site
+			// down. Leave the file in place and report the failed remediation.
+			return RemediationResult{Error: fmt.Sprintf("cleaning %s in place: %s", f.FilePath, clean.Error)}, true
 		}
-		// The cleaner could not do its job (unreadable, too large): the
-		// scheduled path falls back to quarantine here too.
 	}
 	return fixQuarantine(f.FilePath), true
 }

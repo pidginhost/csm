@@ -27,8 +27,19 @@ func showCreateStatement(kind, row string) (string, error) {
 		return "", fmt.Errorf("expected at least %d columns, got %d", idx+1, len(cols))
 	}
 	stmt := mysqlclient.BatchUnescape(cols[idx])
-	if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(stmt)), "CREATE") {
+	fields := strings.Fields(stmt)
+	if len(fields) < 2 || !strings.EqualFold(fields[0], "CREATE") {
 		return "", errors.New("statement column does not hold a CREATE statement")
+	}
+	objectIdx := 1
+	if len(fields) > objectIdx+1 && strings.EqualFold(fields[objectIdx], "OR") && strings.EqualFold(fields[objectIdx+1], "REPLACE") {
+		objectIdx += 2
+	}
+	if len(fields) > objectIdx && strings.HasPrefix(strings.ToUpper(fields[objectIdx]), "DEFINER=") {
+		objectIdx++
+	}
+	if len(fields) <= objectIdx || !strings.EqualFold(fields[objectIdx], kind) {
+		return "", fmt.Errorf("CREATE statement is not for a %s", kind)
 	}
 	return stmt, nil
 }

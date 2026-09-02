@@ -57,8 +57,8 @@ var (
 // only inspects bounded head and tail windows, so an attacker can match a
 // signature inside those windows and pad the rest to many gigabytes. Reading
 // that whole file with io.ReadAll plus the strings.Split and regex passes
-// below would OOM the root daemon. Above this ceiling we refuse, and the
-// caller falls back to quarantine-by-rename, which never reads content.
+// below would OOM the root daemon. Above this ceiling we refuse; the caller
+// decides whether whole-file quarantine is safe for that remediation path.
 // Legitimate plugin/theme PHP files are far smaller than this. Var, not
 // const, so tests can lower it. 8 MiB.
 var cleanMaxFileSize int64 = 8 << 20
@@ -82,7 +82,7 @@ func CleanInfectedFile(path string) CleanResult {
 	defer target.Close()
 
 	if sz := target.Info.Size(); sz > cleanMaxFileSize {
-		result.Error = fmt.Sprintf("file too large to clean (%d bytes > %d), quarantining instead", sz, cleanMaxFileSize)
+		result.Error = fmt.Sprintf("file too large to clean (%d bytes > %d)", sz, cleanMaxFileSize)
 		return result
 	}
 

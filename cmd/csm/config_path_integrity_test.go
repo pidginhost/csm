@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -98,4 +99,63 @@ func TestConvergeDefaultConfigCopiesAfterRehash(t *testing.T) {
 			t.Fatalf("preferred path created for a legacy-only install: %v", err)
 		}
 	})
+	t.Run("reverse compatibility link is normalised", func(t *testing.T) {
+		preferred, legacy := testConfigPaths(t)
+		writeConfig(t, legacy, signedConfig)
+		if err := os.MkdirAll(filepath.Dir(preferred), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(legacy, preferred); err != nil {
+			t.Fatal(err)
+		}
+		if err := convergeDefaultConfigCopies(preferred, false, preferred, legacy); err != nil {
+			t.Fatalf("converge: %v", err)
+		}
+		if info, err := os.Lstat(preferred); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("preferred config was not materialised: %v %v", info, err)
+		}
+		if target, err := os.Readlink(legacy); err != nil || target != preferred {
+			t.Fatalf("legacy = %q (%v), want link to %q", target, err, preferred)
+		}
+		body, err := os.ReadFile(preferred)
+		if err != nil || string(body) != signedConfig {
+			t.Fatalf("materialised config = %q, err = %v", body, err)
+		}
+	})
+}
+
+func TestIntegrityHashLineRejectsCommentsAndOtherKeys(t *testing.T) {
+	for _, line := range []string{
+		"  # config_hash: operator note",
+		"#confd_hash: old",
+		"integrity_hash: value",
+		"- binary_hash: value",
+	} {
+		if isIntegrityHashLine(line) {
+			t.Errorf("isIntegrityHashLine(%q) = true", line)
+		}
+	}
+	for _, line := range []string{
+		"binary_hash: sha256:bin",
+		"  config_hash: sha256:cfg",
+		"\tconfd_hash: sha256:confd # generated",
+	} {
+		if !isIntegrityHashLine(line) {
+			t.Errorf("isIntegrityHashLine(%q) = false", line)
+		}
+	}
+}
+
+func TestIntegrityHashDivergenceRequiresMatchingKeys(t *testing.T) {
+	preferred, legacy := testConfigPaths(t)
+	writeConfig(t, preferred, "integrity:\n  binary_hash: sha256:bin\n  config_hash: sha256:cfg\n")
+	writeConfig(t, legacy, "integrity:\n  config_hash: sha256:bin\n  binary_hash: sha256:cfg\n")
+
+	same, err := divergesOnlyByIntegrityHashes(preferred, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Fatal("different integrity keys at the same line positions were treated as hash-value-only divergence")
+	}
 }

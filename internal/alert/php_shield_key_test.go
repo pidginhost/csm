@@ -40,4 +40,7 @@ func TestPHPShieldEscalationIsDistinctFromObservation(t *testing.T) {
 	if again.Key() != blocked.Key() {
 		t.Fatalf("two blocks from one IP must share a Key, got %q vs %q", again.Key(), blocked.Key())
 	}
+	if again.Fingerprint() != blocked.Fingerprint() {
+		t.Fatalf("two blocks from one IP must share the alert-window fingerprint, got %q vs %q", again.Fingerprint(), blocked.Fingerprint())
+	}
 }

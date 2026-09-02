@@ -128,7 +128,7 @@ type Finding struct {
 	// Full-scan quarantine outcome (Phase 2). Set ONLY on findings produced by a
 	// `--full --quarantine` job; empty for all report-only findings so existing
 	// consumers see no JSON diff.
-	RemediationStatus string `json:"remediation_status,omitempty"` // "quarantined" | "left_for_review" | "failed"
+	RemediationStatus string `json:"remediation_status,omitempty"` // "quarantined" | "cleaned" | "left_for_review" | "failed"
 	RemediationDetail string `json:"remediation_detail,omitempty"` // action description or error
 }
 

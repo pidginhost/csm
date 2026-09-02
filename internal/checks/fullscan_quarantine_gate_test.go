@@ -5,9 +5,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
+
+type fullScanFileInfo struct {
+	mode os.FileMode
+}
+
+func (i fullScanFileInfo) Name() string       { return "special" }
+func (i fullScanFileInfo) Size() int64        { return 0 }
+func (i fullScanFileInfo) Mode() os.FileMode  { return i.mode }
+func (i fullScanFileInfo) ModTime() time.Time { return time.Time{} }
+func (i fullScanFileInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i fullScanFileInfo) Sys() any           { return nil }
+
+type fullScanLstatOS struct {
+	OS
+	info os.FileInfo
+}
+
+func (f fullScanLstatOS) Lstat(string) (os.FileInfo, error) { return f.info, nil }
 
 // `csm scan --full --quarantine` runs unattended, so it gets the same bar the
 // scheduled auto-response applies: only a Critical finding (two converging
@@ -91,6 +110,9 @@ func TestQuarantineFindingFile_CleansPluginFileInsteadOfMoving(t *testing.T) {
 	if !eligible || !result.Success {
 		t.Fatalf("plugin file must be cleaned in place, got eligible=%v result=%+v", eligible, result)
 	}
+	if result.RemediationStatus != "cleaned" {
+		t.Fatalf("plugin remediation status = %q, want cleaned", result.RemediationStatus)
+	}
 	after, err := os.ReadFile(src)
 	if err != nil {
 		t.Fatalf("plugin file must still exist after cleaning: %v", err)
@@ -106,5 +128,59 @@ func TestQuarantineFindingFile_CleansPluginFileInsteadOfMoving(t *testing.T) {
 		if !e.IsDir() && e.Name() != "pre_clean" {
 			t.Fatalf("plugin file was moved into quarantine instead of cleaned: %s", e.Name())
 		}
+	}
+}
+
+// A WordPress file is never moved merely because surgical cleaning could not
+// complete. Taking a plugin or core file out of the site is exactly the outage
+// this branch is meant to avoid; a failed clean stays in place for review.
+func TestQuarantineFindingFile_DoesNotMoveWordPressFileWhenCleaningFails(t *testing.T) {
+	root, _ := redirectQuarantineForFullScan(t)
+	pluginDir := filepath.Join(root, "public_html", "wp-content", "plugins", "example")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(pluginDir, "example.php")
+	if err := os.WriteFile(src, []byte("<?php\n@include('/tmp/.x.php');\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldMax := cleanMaxFileSize
+	cleanMaxFileSize = 1
+	t.Cleanup(func() { cleanMaxFileSize = oldMax })
+
+	result, eligible := QuarantineFindingFile(alert.Finding{
+		Severity: alert.Critical,
+		Check:    "obfuscated_php",
+		FilePath: src,
+	})
+	if !eligible || result.Success || result.Error == "" {
+		t.Fatalf("failed clean = eligible %v, result %+v; want an attempted but failed remediation", eligible, result)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("WordPress file moved after cleaning failed: %v", err)
+	}
+}
+
+// Full-scan findings are file findings. A FIFO, device, or socket must be
+// rejected at the Lstat gate instead of reaching a path open that may block or
+// act on a non-file object.
+func TestQuarantineFindingFile_RefusesNonRegularObjects(t *testing.T) {
+	root, _ := redirectQuarantineForFullScan(t)
+	path := filepath.Join(root, "looks-like-php.php")
+	if err := os.WriteFile(path, []byte("placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldOS := osFS
+	osFS = fullScanLstatOS{OS: oldOS, info: fullScanFileInfo{mode: os.ModeNamedPipe | 0o600}}
+	t.Cleanup(func() { osFS = oldOS })
+
+	_, eligible := QuarantineFindingFile(alert.Finding{
+		Severity: alert.Critical,
+		Check:    "webshell",
+		FilePath: path,
+	})
+	if eligible {
+		t.Fatal("a non-regular filesystem object must be left for review")
 	}
 }

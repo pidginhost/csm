@@ -79,6 +79,9 @@ func TestBlockIPReportsStateRestoreFailure(t *testing.T) {
 		statePath:  t.TempDir(),
 		cfg:        &FirewallConfig{Enabled: true},
 		setBlocked: anonymousIPv4Set("blocked_ips"),
+		liveBlockLookup: func(*nftables.Set, []byte) (bool, error) {
+			return false, nil
+		},
 	}
 
 	err := e.BlockIPForce("203.0.113.4", "manual block", time.Hour)

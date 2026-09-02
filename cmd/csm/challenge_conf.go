@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/config"
@@ -23,6 +24,10 @@ var ensureChallengeMapFile = func() error {
 	return challenge.EnsureMapFile(challenge.DefaultMapPath)
 }
 
+var ensureChallengeNginxMapFile = func() error {
+	return challenge.EnsureMapFile(challenge.DefaultNginxMapPath)
+}
+
 // newWebserverIntegration builds the integration installer for the detected
 // webserver. Var so tests can supply one wired to a temp tree.
 var newWebserverIntegration = func(cfg *config.Config) (*webserver.Installer, error) {
@@ -35,15 +40,19 @@ var ensureRuntimeChallengeMap = challenge.EnsureMapFile
 
 // runtimeChallengeMapRef matches the map paths CSM used to keep under the
 // service's runtime directory, which systemd deletes on every stop.
-var runtimeChallengeMapRef = regexp.MustCompile(`(?:/var)?/run/csm/challenge_ips(?:\.nginx\.map|\.txt)\b`)
+var runtimeChallengeMapRef = regexp.MustCompile(`(?:/var)?/run/csm/challenge_ips(?:\.nginx\.map|\.txt)`)
 
 // runtimeChallengeMapPaths returns, sorted and de-duplicated, every
 // runtime-directory map path the snippets still reference.
 func runtimeChallengeMapPaths(snippets ...[]byte) []string {
 	seen := make(map[string]struct{})
 	for _, data := range snippets {
-		for _, m := range runtimeChallengeMapRef.FindAll(data, -1) {
-			seen[string(m)] = struct{}{}
+		for _, idx := range runtimeChallengeMapRef.FindAllIndex(data, -1) {
+			startOK := idx[0] == 0 || strings.ContainsRune("\t\r\n \"'=:;(", rune(data[idx[0]-1]))
+			endOK := idx[1] == len(data) || strings.ContainsRune("\t\r\n \"';)", rune(data[idx[1]]))
+			if startOK && endOK {
+				seen[string(data[idx[0]:idx[1]])] = struct{}{}
+			}
 		}
 	}
 	paths := make([]string, 0, len(seen))
@@ -94,9 +103,13 @@ func prepareChallengeConf(cfg *config.Config) (bool, error) {
 	}
 
 	rewritten := false
-	if err := ensureChallengeMapFile(); err != nil {
+	mapErr := errors.Join(
+		ensureChallengeMapFile(),
+		ensureChallengeNginxMapFile(),
+	)
+	if mapErr != nil {
 		// A snippet must never be pointed at a map that does not exist.
-		errs = append(errs, fmt.Errorf("ensure daemon map %s: %w", challenge.DefaultMapPath, err))
+		errs = append(errs, fmt.Errorf("ensure daemon challenge maps: %w", mapErr))
 	} else {
 		repinned, err := reconcileChallengeConf()
 		if err != nil {
@@ -132,7 +145,7 @@ func refreshWebserverIntegration(inst *webserver.Installer) (bool, error) {
 	}
 	res, err := inst.Upgrade()
 	if err != nil {
-		return false, fmt.Errorf("webserver integration upgrade %s: %s (fix the cause, then run `csm webserver-integration upgrade`)", path, res.Message)
+		return false, fmt.Errorf("webserver integration upgrade %s: %s: %w (fix the cause, then run `csm webserver-integration upgrade`)", path, res.Message, err)
 	}
 	fmt.Fprintf(os.Stderr, "challenge: %s %s\n", path, res.Message)
 	return true, nil

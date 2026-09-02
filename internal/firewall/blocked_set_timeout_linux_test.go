@@ -66,6 +66,9 @@ func newBlockedSetWireTestEngine(t *testing.T, conn *nftables.Conn) *Engine {
 		Table: table, Name: "blocked_ips",
 		KeyType: nftables.TypeIPAddr, HasTimeout: true,
 	}
+	// Most wire tests model a new block. Avoid turning their synthetic ACK-only
+	// connection into a set-dump fixture; replacement tests override this seam.
+	e.liveBlockLookup = func(*nftables.Set, []byte) (bool, error) { return false, nil }
 	return e
 }
 

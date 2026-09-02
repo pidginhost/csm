@@ -2283,6 +2283,17 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 	// deleted and re-added in the same batch, as PromoteToPermanentBlock does;
 	// otherwise state.json and every CSM surface disagree with the kernel.
 	replaceExisting := !skipExisting && firewallStateHasBlocked(priorState, ip)
+	if !skipExisting && !replaceExisting {
+		// State is normally written before the kernel batch, but older builds
+		// and partial recovery can leave a live kernel element without a state
+		// row. A plain add would be acknowledged without replacing its timeout,
+		// recreating the state/kernel drift this path is meant to repair.
+		live, liveErr := e.isBlockedLiveLocked(ip)
+		if liveErr != nil {
+			return false, fmt.Errorf("checking existing block for %s: %w", ip, liveErr)
+		}
+		replaceExisting = live
+	}
 	nextState := copyFirewallState(priorState)
 	if evictTempIP != "" {
 		removeBlockedIPFromState(&nextState, evictTempIP)
@@ -2316,11 +2327,11 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 		}
 	}
 	if err := e.conn.Flush(); err != nil {
-		if replaceExisting && isNftNotFound(err) {
+		if (replaceExisting || evictSet != nil) && isNftNotFound(err) {
 			// state.json said blocked but the kernel had already expired the
-			// element, so the whole batch was rejected on the delete. Nothing
-			// to replace: add the new element on its own.
-			err = e.retryBlockAddAfterMissingElement(targetSet, elem, evictSet, evictKey)
+			// replacement or eviction element, so the whole batch was rejected
+			// on that delete. Retry without whichever stale delete failed.
+			err = e.retryBlockAddAfterMissingElement(targetSet, elem, evictSet, evictKey, replaceExisting)
 		}
 		if err != nil {
 			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
@@ -2339,19 +2350,66 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 
 // retryBlockAddAfterMissingElement re-queues a block batch without the
 // delete of an element the kernel no longer holds. Caller must hold e.mu.
-func (e *Engine) retryBlockAddAfterMissingElement(targetSet *nftables.Set, elem []nftables.SetElement, evictSet *nftables.Set, evictKey []byte) error {
-	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
-		return fmt.Errorf("retry adding to blocked set: %w", err)
+func (e *Engine) retryBlockAddAfterMissingElement(targetSet *nftables.Set, elem []nftables.SetElement, evictSet *nftables.Set, evictKey []byte, replaceExisting bool) error {
+	queueAdd := func() error {
+		if err := e.conn.SetAddElements(targetSet, elem); err != nil {
+			return fmt.Errorf("retry adding to blocked set: %w", err)
+		}
+		return nil
+	}
+	flush := func(stage string) error {
+		if err := e.conn.Flush(); err != nil {
+			return fmt.Errorf("%s: %w", stage, err)
+		}
+		return nil
+	}
+
+	if !replaceExisting {
+		// The only delete in the rejected batch was the expired eviction
+		// victim. Re-add the new target without repeating that stale delete.
+		if err := queueAdd(); err != nil {
+			return err
+		}
+		return flush("retry flushing block without eviction")
+	}
+
+	// First assume the replacement target expired but the eviction victim is
+	// still live. Adding the target and evicting the victim remains atomic.
+	if err := queueAdd(); err != nil {
+		return err
 	}
 	if evictSet != nil {
 		if err := e.conn.SetDeleteElements(evictSet, []nftables.SetElement{{Key: evictKey}}); err != nil {
 			return fmt.Errorf("retry evicting temp block: %w", err)
 		}
 	}
-	if err := e.conn.Flush(); err != nil {
-		return fmt.Errorf("retry flushing block: %w", err)
+	if err := flush("retry flushing block after missing replacement"); err == nil {
+		return nil
+	} else if !isNftNotFound(err) {
+		return err
 	}
-	return nil
+
+	// The eviction victim was the stale element instead. Replace the target
+	// without repeating the eviction delete, keeping a live target blocked for
+	// the whole atomic transaction.
+	if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: elem[0].Key}}); err != nil {
+		return fmt.Errorf("retry deleting replacement target: %w", err)
+	}
+	if err := queueAdd(); err != nil {
+		return err
+	}
+	if err := flush("retry flushing block without eviction"); err == nil {
+		return nil
+	} else if !isNftNotFound(err) {
+		return err
+	}
+
+	// Both deletes raced expired elements. No live target remains to preserve,
+	// so an add-only transaction is the final bounded retry.
+	if err := queueAdd(); err != nil {
+		return err
+	}
+	return flush("retry flushing add-only block")
 }
 
 func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting bool) (bool, error) {
@@ -2430,9 +2488,22 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	// (existing behaviour) if the live query is unavailable.
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
 		perm, temp, ok := e.livePermTempCountsLocked(st)
+		stateEntry, replacingStateEntry := blockedStateEntry(st, ip)
+		if ok && !skipExisting && replacingStateEntry {
+			// Replacing an element already occupying a limit slot is not a new
+			// block. Only subtract it when the kernel confirms the state entry
+			// is still live; stale state must not hide some other live element.
+			if live, liveErr := e.isBlockedLiveLocked(ip); liveErr == nil && live {
+				if stateEntry.ExpiresAt.IsZero() && perm > 0 {
+					perm--
+				} else if !stateEntry.ExpiresAt.IsZero() && temp > 0 {
+					temp--
+				}
+			}
+		}
 		if !ok {
 			excludeIP := ""
-			if cachedBlockMissingLive {
+			if cachedBlockMissingLive || (!skipExisting && replacingStateEntry) {
 				excludeIP = ip
 			}
 			perm, temp = blockedStatePermTempCounts(st, excludeIP)
@@ -2476,12 +2547,17 @@ func soonestExpiringTempIP(st FirewallState, excludeIP string) (string, bool) {
 }
 
 func firewallStateHasBlocked(state FirewallState, ip string) bool {
+	_, ok := blockedStateEntry(state, ip)
+	return ok
+}
+
+func blockedStateEntry(state FirewallState, ip string) (BlockedEntry, bool) {
 	for _, entry := range state.Blocked {
 		if sameIPString(entry.IP, ip) {
-			return true
+			return entry, true
 		}
 	}
-	return false
+	return BlockedEntry{}, false
 }
 
 func countPermanentBlockedEntries(state FirewallState) int {
