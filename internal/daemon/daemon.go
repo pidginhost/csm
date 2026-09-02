@@ -678,6 +678,9 @@ func (d *Daemon) Run() error {
 	if err := d.initYaraBackend(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}
+	// A realtime engine with zero rules is a silent outage; say so now that
+	// both engines have had their startup load.
+	d.reportRealtimeRuleCoverageNow()
 	if err := d.initPHPTaintAnalyzer(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] PHP taint worker init: %v\n", ts(), err)
 	} else {
@@ -3383,13 +3386,17 @@ func (d *Daemon) reloadSignatures() {
 			}
 		}
 	}
+	yaraRules, yaraActive := 0, false
 	if yaraScanner := yara.Active(); yaraScanner != nil {
 		if err := yaraScanner.Reload(); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] YARA rule reload error: %v\n", ts(), err)
 		} else {
 			fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rule file(s)\n", ts(), yaraScanner.RuleCount())
+			yaraActive = true
+			yaraRules = yaraScanner.RuleCount()
 		}
 	}
+	d.reportRealtimeRuleCoverage(yamlRuleCount(), yaraRules, yaraActive)
 }
 
 // deployConfigs writes embedded config files to their system locations on startup.

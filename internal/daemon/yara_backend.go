@@ -119,6 +119,7 @@ func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
 		ts(), sup.RuleCount(), sup.ChildPID())
 
 	d.reportYaraCompileStatus(sup.CompileError())
+	d.reportRealtimeRuleCoverage(yamlRuleCount(), sup.RuleCount(), sup.CompileError() == "")
 }
 
 // retryYaraStart re-attempts a failed worker start with capped exponential

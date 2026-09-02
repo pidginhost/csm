@@ -2,7 +2,11 @@
 
 CSM uses YAML rules for real-time scanning and finding re-checks. Optional
 YARA-X rules also run during deep scans and email attachment scanning. Rules
-are stored in `/opt/csm/rules/`.
+are stored in `/opt/csm/rules/`. An engine that loads zero rules (a mistyped
+`signatures.rules_dir`, an empty rule sync) raises a `realtime_rules_missing`
+finding at startup and after every reload, because both engines otherwise
+treat an empty directory as a successful load and scan every write against
+nothing.
 
 Deep scans are rolling: each scheduled run resumes from a persisted cursor and scans as much as fits in its time budget, so the whole content set is covered across runs even when a single run cannot finish it. A warning finding is raised if no full pass has completed within 30 days.
 
