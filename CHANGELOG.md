@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The rule for a decoded request parameter fed to a command sink now matches its `call_user_func` and backtick forms in both scanning engines. A double-escaped dollar sign made those two forms unmatchable, so a shell using either was only caught by the direct-call form.
 - Quarantine bulk delete only removes real quarantine entries (those with a metadata sidecar) and never the pre-clean backup or email quarantine subtrees. An ID equal to one of those directory names used to resolve to the directory itself and delete it whole.
 - The web UI threat actions (whitelist, un-whitelist, clear, temporary whitelist) now act on the canonical form of the address. A pasted address with a stray space or an upper-case IPv6 spelling passed validation but matched nothing in the firewall, threat or attack databases while the page still reported success.
 - IPv6 addresses that end in `::` are now extracted intact from log lines and finding messages. The old extractors trimmed those trailing colons, so the mangled address burned reputation lookups on a non-existent host while the real source could never be blocked.
