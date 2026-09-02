@@ -587,12 +587,13 @@ func removeInstalledModSecRules() error {
 	return removeErr
 }
 
+// #nosec G301 G703 -- path is the installer's own package-constant command
+// path; its parent is a system bin dir (/usr/sbin) that must stay
+// world-readable and world-executable, and the mode only applies if it is absent.
 func ensureCommandSymlink(path, target string) error {
 	if path == "" {
 		return nil
 	}
-	// #nosec G301 -- the parent is a system bin dir (/usr/sbin) that must stay
-	// world-readable and world-executable; the mode only applies if it is absent.
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -616,6 +617,8 @@ func ensureCommandSymlink(path, target string) error {
 	return fmt.Errorf("refusing to replace symlink %s -> %s", path, got)
 }
 
+// #nosec G703 -- path is the installer's own package-constant command path,
+// and the symlink is removed only after it is confirmed to point at target.
 func removeCommandSymlink(path, target string) error {
 	if path == "" {
 		return nil

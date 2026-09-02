@@ -28,7 +28,7 @@ func snapshotFirewallState(rollbackFile string) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("reading firewall state for rollback: %w", err)
 	}
-	// #nosec G306 -- root-only state dir.
+	// #nosec G306 G703 -- root-only state dir.
 	if err := os.WriteFile(firewallStateSnapshotPath(rollbackFile), data, 0o600); err != nil {
 		return fmt.Errorf("writing firewall state snapshot: %w", err)
 	}
@@ -51,7 +51,7 @@ func restoreFirewallStateSnapshot(rollbackFile string) error {
 		if err := os.Remove(stateFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("removing firewall state written inside the window: %w", err)
 		}
-	} else if err := os.WriteFile(stateFile, data, 0o600); err != nil { // #nosec G306 -- root-only state dir.
+	} else if err := os.WriteFile(stateFile, data, 0o600); err != nil { // #nosec G306 G703 -- root-only state dir.
 		return fmt.Errorf("restoring firewall state: %w", err)
 	}
 	return removeFileIfExists(snap)

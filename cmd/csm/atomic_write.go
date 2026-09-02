@@ -17,6 +17,11 @@ import (
 // removed so the target directory does not accumulate junk. Existing
 // files keep their mode and owner; mode applies when path does not
 // already exist.
+//
+// #nosec G304 G703 -- path is a caller-owned root-only system file (a systemd
+// unit, a PAM service file, a CSM config path); the temp file has to be
+// created in that same directory because an atomic rename cannot cross
+// filesystems.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	targetPath, targetInfo, err := atomicWriteTarget(path)
 	if err != nil {
@@ -29,7 +34,7 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 
 	dir := filepath.Dir(targetPath)
 	base := filepath.Base(targetPath)
-	tmp, err := os.CreateTemp(dir, "."+base+".csm-*.tmp") // #nosec G304 -- temp must be in target dir for atomic rename.
+	tmp, err := os.CreateTemp(dir, "."+base+".csm-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp for %s: %w", path, err)
 	}
@@ -86,6 +91,8 @@ func syncParentDir(dir string) error {
 	return nil
 }
 
+// #nosec G703 -- path is the same caller-owned root-only target writeFileAtomic
+// was handed; this only resolves it through a symlink.
 func atomicWriteTarget(path string) (string, os.FileInfo, error) {
 	info, err := os.Lstat(path)
 	if err != nil {

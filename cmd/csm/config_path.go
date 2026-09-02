@@ -95,6 +95,8 @@ func sameOperatorConfig(preferred, legacy string) (bool, error) {
 	return divergesOnlyByIntegrityHashes(preferred, legacy)
 }
 
+// #nosec G703 -- preferred and legacy are the two package-constant default
+// config paths (or test-injected temp paths), never caller-supplied strings.
 func copyLegacyConfigIfNeeded(preferred, legacy string) error {
 	legacyInfo, legacyErr := os.Lstat(legacy)
 	if legacyErr != nil {
@@ -169,6 +171,8 @@ func copyLegacyConfigIfNeeded(preferred, legacy string) error {
 	return fmt.Errorf("both %s and %s exist with different content; refusing automatic config migration", preferred, legacy)
 }
 
+// #nosec G703 -- preferred and legacy are the two package-constant default
+// config paths (or test-injected temp paths), never caller-supplied strings.
 func ensureLegacyConfigSymlink(preferred, legacy string) error {
 	if _, err := os.Stat(preferred); err != nil {
 		if os.IsNotExist(err) {
@@ -224,13 +228,12 @@ func sameLinkTarget(target, preferred, linkDir string) bool {
 	return filepath.Clean(filepath.Join(linkDir, target)) == filepath.Clean(preferred)
 }
 
+// #nosec G304 G703 -- a and b are package-constant config paths or test-injected temp paths.
 func filesEqual(a, b string) (bool, error) {
-	// #nosec G304 -- a and b are package-constant config paths or test-injected temp paths.
 	aData, err := os.ReadFile(a)
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", a, err)
 	}
-	// #nosec G304 -- a and b are package-constant config paths or test-injected temp paths.
 	bData, err := os.ReadFile(b)
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", b, err)
@@ -238,8 +241,8 @@ func filesEqual(a, b string) (bool, error) {
 	return bytes.Equal(aData, bData), nil
 }
 
+// #nosec G304 G703 -- path is a package-constant config path or test-injected temp path.
 func isPlaceholderConfig(path string) (bool, error) {
-	// #nosec G304 -- path is a package-constant config path or test-injected temp path.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", path, err)
@@ -252,8 +255,9 @@ func isPlaceholderConfig(path string) (bool, error) {
 		bytes.Contains(data, []byte("SET_EMAIL_HERE")), nil
 }
 
+// #nosec G304 G703 -- src and dst are package-constant config paths or
+// test-injected temp paths.
 func copyFilePreserveMeta(src, dst string) error {
-	// #nosec G304 -- src is a package-constant config path or test-injected temp path.
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", src, err)
@@ -284,11 +288,11 @@ func copyFilePreserveMeta(src, dst string) error {
 // values CSM itself rewrote, while any real setting divergence must still
 // be surfaced.
 func divergesOnlyByIntegrityHashes(preferred, legacy string) (bool, error) {
-	preferredData, err := os.ReadFile(preferred) // #nosec G304 -- operator-owned config paths
+	preferredData, err := os.ReadFile(preferred) // #nosec G304 G703 -- operator-owned config paths
 	if err != nil {
 		return false, err
 	}
-	legacyData, err := os.ReadFile(legacy) // #nosec G304 -- operator-owned config paths
+	legacyData, err := os.ReadFile(legacy) // #nosec G304 G703 -- operator-owned config paths
 	if err != nil {
 		return false, err
 	}

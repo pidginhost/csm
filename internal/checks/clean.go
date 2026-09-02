@@ -277,6 +277,8 @@ func sameUnixStatIdentity(info os.FileInfo, stat unix.Stat_t) bool {
 	if !ok {
 		return false
 	}
+	// #nosec G115 -- Dev is signed on darwin and unsigned on linux; widening
+	// both sides to uint64 is what makes the comparison portable.
 	return uint64(want.Dev) == uint64(stat.Dev) && uint64(want.Ino) == uint64(stat.Ino)
 }
 

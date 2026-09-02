@@ -398,6 +398,11 @@ func prepareRestoreReplacement(source, target string, isDir bool) (string, error
 	return prepared, nil
 }
 
+// #nosec G304 G703 -- source and target are private sibling staging
+// directories created by the restore command. Archive members are read
+// through os.OpenRoot so a crafted entry cannot escape source, every
+// destination is filepath.Rel-joined under target, symlinks are rejected
+// outright and files are created with O_EXCL.
 func copyRestoreTree(source, target string) error {
 	sourceRoot, err := os.OpenRoot(source)
 	if err != nil {
@@ -423,7 +428,7 @@ func copyRestoreTree(source, target string) error {
 		if err != nil {
 			return err
 		}
-		out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- destination is under a private sibling staging directory.
+		out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			_ = in.Close()
 			return err

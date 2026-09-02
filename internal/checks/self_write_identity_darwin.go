@@ -13,6 +13,8 @@ func selfWriteIdentityFromFileInfo(info os.FileInfo) (selfWriteFileIdentity, boo
 		return selfWriteFileIdentity{}, false
 	}
 	return selfWriteFileIdentity{
+		// #nosec G115 -- darwin's Dev is int32; the widening is deliberate and
+		// only ever compared against another identity built the same way.
 		Device:     uint64(st.Dev),
 		Inode:      st.Ino,
 		ChangeSec:  st.Ctimespec.Sec,
