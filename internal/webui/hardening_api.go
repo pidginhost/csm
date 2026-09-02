@@ -40,7 +40,7 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Now().Add(3 * time.Minute))
 
-	report := checks.RunHardeningAudit(s.cfg)
+	report := checks.RunHardeningAudit(s.liveCfg())
 
 	if db := store.Global(); db != nil {
 		if err := db.SaveHardeningReport(report); err != nil {

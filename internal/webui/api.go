@@ -1706,7 +1706,7 @@ func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
 		Details:   fmt.Sprintf("Sent by admin at %s", time.Now().Format("2006-01-02 15:04:05")),
 		Timestamp: time.Now(),
 	}}
-	err := alert.Dispatch(s.cfg, testFinding)
+	err := alert.Dispatch(s.liveCfg(), testFinding)
 	if err != nil {
 		writeJSON(w, map[string]interface{}{"status": "error", "error": err.Error()})
 		return
@@ -1750,7 +1750,7 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 	_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Minute))
 
 	start := time.Now()
-	findings := checks.RunAccountScan(s.cfg, s.store, req.Account)
+	findings := checks.RunAccountScan(s.liveCfg(), s.store, req.Account)
 	elapsed := time.Since(start).Round(time.Millisecond)
 
 	result := map[string]interface{}{

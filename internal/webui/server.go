@@ -150,6 +150,18 @@ type Server struct {
 }
 
 // New creates a new web UI server.
+// liveCfg returns the configuration a handler should act on: the last
+// reloaded one, or the startup snapshot before any reload. The server keeps
+// s.cfg for restart-required wiring (listener, TLS, tokens, state paths);
+// thresholds, firewall policy, scan options and alert routing change under a
+// SIGHUP and must be read here, or the UI shows and applies stale settings.
+func (s *Server) liveCfg() *config.Config {
+	if live := config.Active(); live != nil {
+		return live
+	}
+	return s.cfg
+}
+
 func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	s := &Server{
 		cfg:              cfg,
@@ -681,12 +693,12 @@ func (s *Server) csmConfigJSON() string {
 func (s *Server) csmConfig() map[string]interface{} {
 	return map[string]interface{}{
 		"version":      s.version,
-		"emailAV":      s.cfg.EmailAV.Enabled,
-		"firewall":     s.cfg.Firewall != nil && s.cfg.Firewall.Enabled,
-		"autoResponse": s.cfg.AutoResponse.Enabled,
-		"threatIntel":  s.cfg.Reputation.AbuseIPDBKey != "",
-		"signatures":   s.cfg.Signatures.RulesDir != "",
-		"challenge":    s.cfg.Challenge.Difficulty > 0,
+		"emailAV":      s.liveCfg().EmailAV.Enabled,
+		"firewall":     s.liveCfg().Firewall != nil && s.liveCfg().Firewall.Enabled,
+		"autoResponse": s.liveCfg().AutoResponse.Enabled,
+		"threatIntel":  s.liveCfg().Reputation.AbuseIPDBKey != "",
+		"signatures":   s.liveCfg().Signatures.RulesDir != "",
+		"challenge":    s.liveCfg().Challenge.Difficulty > 0,
 		"fanotify":     s.fanotifyActive,
 		"hostname":     s.cfg.Hostname,
 		"authScope":    "admin",

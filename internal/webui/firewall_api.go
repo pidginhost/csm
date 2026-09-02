@@ -70,7 +70,7 @@ func formatRemaining(expiresAt time.Time) string {
 
 // apiFirewallStatus returns the firewall engine configuration and state summary.
 func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
-	cfg := config.EffectiveFirewallConfig(s.cfg)
+	cfg := config.EffectiveFirewallConfig(s.liveCfg())
 	state, err := firewall.LoadState(s.cfg.StatePath)
 	if err != nil {
 		writeJSONError(w, "firewall state unavailable (corrupt state file)", http.StatusInternalServerError)

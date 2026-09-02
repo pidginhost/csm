@@ -37,7 +37,7 @@ func (s *Server) handleModSecRules(w http.ResponseWriter, _ *http.Request) {
 
 // GET /api/v1/modsec/rules - list all CSM rules with status
 func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.cfg.ModSec
+	cfg := s.liveCfg().ModSec
 
 	// Check all three config fields
 	var missing []string
@@ -145,7 +145,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	s.modSecApplyMu.Lock()
 	defer s.modSecApplyMu.Unlock()
 
-	cfg := s.cfg.ModSec
+	cfg := s.liveCfg().ModSec
 	if cfg.RulesFile == "" || cfg.OverridesFile == "" || cfg.ReloadCommand == "" {
 		writeJSONError(w, "ModSecurity not configured", http.StatusBadRequest)
 		return

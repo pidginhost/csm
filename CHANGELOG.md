@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The web UI now reads the live configuration after a reload: email thresholds, firewall policy, ModSecurity settings, scan options, the hardening audit, the test alert and the feature flags followed the startup snapshot until a restart.
 - `signatures.update_url` and the YARA Forge download URL must now use https; a plain-http URL fails validation.
 - A credential-spray trip now promotes the per-IP incident that the same attacker already had open instead of opening a second incident under the same key, which left the first one open forever with nothing able to merge into or close it.
 - Sub-threshold findings waiting in the incident correlator and stale spray-detector state are now pruned on every auto-close tick instead of only by the daily retention sweep.

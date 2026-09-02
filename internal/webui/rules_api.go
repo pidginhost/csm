@@ -37,17 +37,17 @@ func (s *Server) apiRulesStatus(w http.ResponseWriter, _ *http.Request) {
 		"yara_rules":      yaraCount,
 		"yara_available":  yara.Available(),
 		"yaml_version":    yamlVersion,
-		"rules_dir":       s.cfg.Signatures.RulesDir,
-		"auto_update":     s.cfg.Signatures.UpdateURL != "",
-		"update_url":      s.cfg.Signatures.UpdateURL,
-		"update_interval": s.cfg.Signatures.UpdateInterval,
+		"rules_dir":       s.liveCfg().Signatures.RulesDir,
+		"auto_update":     s.liveCfg().Signatures.UpdateURL != "",
+		"update_url":      s.liveCfg().Signatures.UpdateURL,
+		"update_interval": s.liveCfg().Signatures.UpdateInterval,
 	}
 	writeJSON(w, result)
 }
 
 // GET /api/v1/rules/list
 func (s *Server) apiRulesList(w http.ResponseWriter, _ *http.Request) {
-	rulesDir := s.cfg.Signatures.RulesDir
+	rulesDir := s.liveCfg().Signatures.RulesDir
 
 	type ruleFileInfo struct {
 		Name string `json:"name"`

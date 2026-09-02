@@ -497,24 +497,24 @@ func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) wpCronFixOptions() checks.WPCronFixOptions {
-	if s.cfg == nil {
+	if s.liveCfg() == nil {
 		return checks.WPCronFixOptions{}
 	}
 	return checks.WPCronFixOptions{
-		IntervalMinutes: s.cfg.Performance.WPCronFix.IntervalMinutes,
-		PHPBin:          s.cfg.Performance.WPCronFix.PHPBin,
+		IntervalMinutes: s.liveCfg().Performance.WPCronFix.IntervalMinutes,
+		PHPBin:          s.liveCfg().Performance.WPCronFix.PHPBin,
 	}
 }
 
 func (s *Server) perfFixAllowedRoots() []string {
-	if s.cfg == nil {
+	if s.liveCfg() == nil {
 		return []string{"/home"}
 	}
-	return checks.ResolveWebRoots(s.cfg)
+	return checks.ResolveWebRoots(s.liveCfg())
 }
 
 func (s *Server) wpCronFixAllowedRoots() []string {
-	return checks.ResolveWPCronRoots(s.cfg)
+	return checks.ResolveWPCronRoots(s.liveCfg())
 }
 
 func (s *Server) dismissPerfFinding(key string) {

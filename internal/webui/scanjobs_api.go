@@ -146,7 +146,7 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := checks.FullScanOptions(s.cfg, body.RespectIgnores)
+	opts := checks.FullScanOptions(s.liveCfg(), body.RespectIgnores)
 
 	switch body.Scope {
 	case "account":
