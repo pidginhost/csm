@@ -45,6 +45,8 @@ import (
 // opencart_admin_injection.
 
 type opencartCreds struct {
+	// ctx ties every query for this install to the runner's deadline.
+	ctx      context.Context
 	dbName   string
 	dbUser   string
 	dbPass   string
@@ -60,6 +62,7 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 		dbPass:      c.dbPass,
 		dbHost:      c.dbHost,
 		tablePrefix: c.dbPrefix,
+		queryCtx:    c.ctx,
 	}
 }
 
@@ -67,13 +70,13 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 // four canonical attacker-touched tables. Mirrors the other CMS
 // scanners; the discovery and credentials parsing are the only
 // OC-specific bits.
-func CheckOpenCartContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var findings []alert.Finding
 
-	configs, _ := accountHomeGlob("*/public_html/config.php")
+	configs := cmsDiscover("*/public_html/config.php", "*/*/config.php")
 	if len(configs) == 0 {
 		return nil
 	}
@@ -92,6 +95,7 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, _ *state.Stor
 		if creds.dbName == "" {
 			continue
 		}
+		creds.ctx = ctx
 		prefix := creds.dbPrefix
 		if prefix == "" {
 			prefix = "oc_"
@@ -101,7 +105,7 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, _ *state.Stor
 		findings = append(findings, scanOpenCartSettings(account, creds)...)
 		findings = append(findings, scanOpenCartContentTable(account, creds, "product_description", "description")...)
 		findings = append(findings, scanOpenCartContentTable(account, creds, "information_description", "description")...)
-		findings = append(findings, scanOpenCartAdmins(account, creds)...)
+		findings = append(findings, scanOpenCartAdmins(store, account, creds)...)
 	}
 	return findings
 }
@@ -171,7 +175,7 @@ func scanOpenCartSettings(account string, creds opencartCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT `key`, value FROM %ssetting WHERE %s",
 		creds.dbPrefix, paramsLikeClause("value"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	var findings []alert.Finding
 	for _, row := range rows {
 		key, body := splitTabRow(row)
@@ -214,7 +218,7 @@ func scanOpenCartContentTable(account string, creds opencartCreds, table, valueC
 	query := fmt.Sprintf(
 		"SELECT %s, %s FROM %s%s WHERE language_id = 1 AND %s",
 		idCol, valueCol, creds.dbPrefix, table, paramsLikeClause(valueCol))
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	var findings []alert.Finding
 	for _, row := range rows {
 		id, body := splitTabRow(row)
@@ -238,26 +242,13 @@ func scanOpenCartContentTable(account string, creds opencartCreds, table, valueC
 // scanOpenCartAdmins enumerates the oc_user table (admins/staff,
 // not customers -- customers live in oc_customer). Same Warning
 // per row as the other CMS adapters.
-func scanOpenCartAdmins(account string, creds opencartCreds) []alert.Finding {
+func scanOpenCartAdmins(store *state.Store, account string, creds opencartCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT user_id, username, email FROM %suser",
 		creds.dbPrefix)
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
-	if len(rows) == 0 {
-		return nil
-	}
-	var findings []alert.Finding
-	for _, row := range rows {
-		fields := strings.Split(row, "\t")
-		if len(fields) < 1 {
-			continue
-		}
-		findings = append(findings, alert.Finding{
-			Severity: alert.Warning,
-			Check:    "opencart_admin_injection",
-			Message:  fmt.Sprintf("OpenCart admin account on %s: user_id=%s", account, fields[0]),
-			Details:  fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, row),
-		})
-	}
-	return findings
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	return cmsAdminFindings(store, "opencart", "opencart_admin_injection", account, rows, func(fields []string) (string, string) {
+		return fmt.Sprintf("OpenCart admin account on %s: user_id=%s", account, fields[0]),
+			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
+	})
 }

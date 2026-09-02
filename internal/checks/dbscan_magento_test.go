@@ -217,8 +217,10 @@ func TestCheckMagentoContentM2EmitsAcrossSettingsContentAndAdmin(t *testing.T) {
 	if categories["magento_content_injection"] < 1 {
 		t.Errorf("magento_content_injection = %d, want >= 1", categories["magento_content_injection"])
 	}
-	if categories["magento_admin_injection"] != 1 {
-		t.Errorf("magento_admin_injection = %d, want 1", categories["magento_admin_injection"])
+	// The first pass over an install baselines its administrators silently;
+	// only an admin that appears later is reported (see cmsAdminFindings).
+	if categories["magento_admin_injection"] != 0 {
+		t.Errorf("magento_admin_injection = %d, want 0 on the baseline pass", categories["magento_admin_injection"])
 	}
 }
 

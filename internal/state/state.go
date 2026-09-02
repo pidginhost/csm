@@ -504,6 +504,11 @@ func (s *Store) ClaimRawTimestamp(key string, now time.Time, interval time.Durat
 }
 
 func (s *Store) setRawLocked(key, value string) bool {
+	if s.entries == nil {
+		// A zero-value Store (tests, ad-hoc callers) must not panic on its
+		// first write; it simply has nothing persisted yet.
+		s.entries = make(map[string]*Entry)
+	}
 	entry, exists := s.entries[key]
 	if !exists {
 		s.entries[key] = &Entry{

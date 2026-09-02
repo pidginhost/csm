@@ -254,8 +254,10 @@ func TestCheckJoomlaContentEmitsExtensionsAndContentFindings(t *testing.T) {
 	if categories["joomla_content_injection"] != 1 {
 		t.Errorf("joomla_content_injection = %d, want 1", categories["joomla_content_injection"])
 	}
-	if categories["joomla_admin_injection"] != 1 {
-		t.Errorf("joomla_admin_injection = %d, want 1", categories["joomla_admin_injection"])
+	// The first pass over an install baselines its administrators silently;
+	// only an admin that appears later is reported (see cmsAdminFindings).
+	if categories["joomla_admin_injection"] != 0 {
+		t.Errorf("joomla_admin_injection = %d, want 0 on the baseline pass", categories["joomla_admin_injection"])
 	}
 }
 

@@ -184,8 +184,10 @@ func TestCheckOpenCartContentEmitsAcrossThreeScans(t *testing.T) {
 	if categories["opencart_content_injection"] < 1 {
 		t.Errorf("opencart_content_injection = %d, want >= 1", categories["opencart_content_injection"])
 	}
-	if categories["opencart_admin_injection"] != 1 {
-		t.Errorf("opencart_admin_injection = %d, want 1", categories["opencart_admin_injection"])
+	// The first pass over an install baselines its administrators silently;
+	// only an admin that appears later is reported (see cmsAdminFindings).
+	if categories["opencart_admin_injection"] != 0 {
+		t.Errorf("opencart_admin_injection = %d, want 0 on the baseline pass", categories["opencart_admin_injection"])
 	}
 }
 

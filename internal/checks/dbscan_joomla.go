@@ -60,6 +60,8 @@ const joomlaSuperUserGroupID = 8
 // kept distinct because Joomla configuration.php and WordPress
 // wp-config.php are not interchangeable.
 type jConfigCreds struct {
+	// ctx ties every query for this install to the runner's deadline.
+	ctx      context.Context
 	dbName   string
 	dbUser   string
 	dbPass   string
@@ -78,6 +80,7 @@ func (c jConfigCreds) asWPDBCreds() wpDBCreds {
 		dbPass:      c.dbPass,
 		dbHost:      c.dbHost,
 		tablePrefix: c.dbPrefix,
+		queryCtx:    c.ctx,
 	}
 }
 
@@ -87,13 +90,13 @@ func (c jConfigCreds) asWPDBCreds() wpDBCreds {
 // CheckDatabaseContent without sharing code -- the credentials and
 // table layout differ enough that a generic dispatcher is more
 // abstraction than this point in the codebase needs.
-func CheckJoomlaContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckJoomlaContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var findings []alert.Finding
 
-	configs, _ := accountHomeGlob("*/public_html/configuration.php")
+	configs := cmsDiscover("*/public_html/configuration.php", "*/*/configuration.php")
 	if len(configs) == 0 {
 		return nil
 	}
@@ -112,6 +115,7 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, _ *state.Store)
 		if creds.dbName == "" || creds.dbUser == "" {
 			continue
 		}
+		creds.ctx = ctx
 		prefix := creds.dbPrefix
 		if prefix == "" {
 			prefix = "jos_"
@@ -119,7 +123,7 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, _ *state.Store)
 
 		findings = append(findings, scanJoomlaExtensions(account, creds, prefix)...)
 		findings = append(findings, scanJoomlaContent(account, creds, prefix)...)
-		findings = append(findings, scanJoomlaSuperUsers(account, creds, prefix)...)
+		findings = append(findings, scanJoomlaSuperUsers(store, account, creds, prefix)...)
 	}
 	return findings
 }
@@ -199,7 +203,7 @@ func scanJoomlaExtensions(account string, creds jConfigCreds, prefix string) []a
 	query := fmt.Sprintf(
 		"SELECT name, params FROM %sextensions WHERE %s",
 		prefix, paramsLikeClause("params"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	var findings []alert.Finding
 	for _, row := range rows {
 		name, body := splitTabRow(row)
@@ -235,7 +239,7 @@ func scanJoomlaContent(account string, creds jConfigCreds, prefix string) []aler
 	query := fmt.Sprintf(
 		"SELECT id, title, introtext FROM %scontent WHERE %s",
 		prefix, paramsLikeClause("introtext"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	var findings []alert.Finding
 	for _, row := range rows {
 		fields := strings.SplitN(row, "\t", 3)
@@ -305,32 +309,17 @@ func classifyMalwareRow(body string, inPostContext bool) (alert.Severity, string
 // group (group_id = 8 by default). The two-table join is necessary
 // because Joomla stores group membership separately from the user
 // row; a single rogue admin shows up only when the join fires.
-func scanJoomlaSuperUsers(account string, creds jConfigCreds, prefix string) []alert.Finding {
+func scanJoomlaSuperUsers(store *state.Store, account string, creds jConfigCreds, prefix string) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT u.id, u.username, u.email FROM %susers u JOIN %suser_usergroup_map m ON u.id = m.user_id WHERE m.group_id = %d",
 		prefix, prefix, joomlaSuperUserGroupID)
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
-	if len(rows) == 0 {
-		return nil
-	}
-	// Operator-review territory: the legitimate site admin shows up
-	// here too. We emit a Warning per row so operators can confirm.
-	// A separate Critical detector for accounts created in the last
-	// hour is a follow-up; v1 emits visibility only.
-	var findings []alert.Finding
-	for _, row := range rows {
-		fields := strings.Split(row, "\t")
-		if len(fields) < 1 {
-			continue
-		}
-		findings = append(findings, alert.Finding{
-			Severity: alert.Warning,
-			Check:    "joomla_admin_injection",
-			Message:  fmt.Sprintf("Joomla Super User account on %s: %s", account, fields[0]),
-			Details:  fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, row),
-		})
-	}
-	return findings
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	// The legitimate site admin is in this set too: the store baseline
+	// keeps known Super Users quiet and reports only a newcomer.
+	return cmsAdminFindings(store, "joomla", "joomla_admin_injection", account, rows, func(fields []string) (string, string) {
+		return fmt.Sprintf("Joomla Super User account on %s: %s", account, fields[0]),
+			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
+	})
 }
 
 // paramsLikeClause builds an OR'd LIKE clause over the supplied

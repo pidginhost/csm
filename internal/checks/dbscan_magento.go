@@ -50,6 +50,8 @@ import (
 // jConfigCreds / drupalCreds; the version field tells the scanner
 // which discovery path produced the creds (useful for messages).
 type magentoCreds struct {
+	// ctx ties every query for this install to the runner's deadline.
+	ctx      context.Context
 	dbName   string
 	dbUser   string
 	dbPass   string
@@ -66,6 +68,7 @@ func (c magentoCreds) asWPDBCreds() wpDBCreds {
 		dbPass:      c.dbPass,
 		dbHost:      c.dbHost,
 		tablePrefix: c.dbPrefix,
+		queryCtx:    c.ctx,
 	}
 }
 
@@ -114,7 +117,7 @@ var (
 // where M2 found zero malware findings (a clean install). Without
 // this, a half-migrated host with both env.php and stale local.xml
 // would scan the database twice with different credential sets.
-func CheckMagentoContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -124,7 +127,7 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, _ *state.Store
 	// M2 discovery first (active version). Rank by mtime desc so recently
 	// touched installs are processed first when the check timeout cuts
 	// iteration short.
-	m2Files, _ := accountHomeGlob("*/public_html/app/etc/env.php")
+	m2Files := cmsDiscover("*/public_html/app/etc/env.php", "*/*/app/etc/env.php")
 	for _, path := range rankPathsByMtimeDesc(ctx, m2Files, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
@@ -134,12 +137,13 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, _ *state.Store
 		if creds.dbName == "" {
 			continue
 		}
+		creds.ctx = ctx
 		seenAccounts[account] = true
-		findings = append(findings, scanMagentoAll(account, creds)...)
+		findings = append(findings, scanMagentoAll(store, account, creds)...)
 	}
 
 	// M1 fallback for hosts where env.php is absent or unparseable.
-	m1Files, _ := accountHomeGlob("*/public_html/app/etc/local.xml")
+	m1Files := cmsDiscover("*/public_html/app/etc/local.xml", "*/*/app/etc/local.xml")
 	for _, path := range rankPathsByMtimeDesc(ctx, m1Files, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
@@ -152,7 +156,8 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, _ *state.Store
 		if creds.dbName == "" {
 			continue
 		}
-		findings = append(findings, scanMagentoAll(account, creds)...)
+		creds.ctx = ctx
+		findings = append(findings, scanMagentoAll(store, account, creds)...)
 	}
 	return findings
 }
@@ -232,13 +237,13 @@ func parseMagentoM2(path string) magentoCreds {
 // scanMagentoAll runs the four scan paths against one Magento
 // install. Helper exists so M1 and M2 dispatch through the same
 // post-creds code path.
-func scanMagentoAll(account string, creds magentoCreds) []alert.Finding {
+func scanMagentoAll(store *state.Store, account string, creds magentoCreds) []alert.Finding {
 	var findings []alert.Finding
 	findings = append(findings, scanMagentoSettings(account, creds)...)
 	findings = append(findings, scanMagentoContent(account, creds, "catalog_product_entity_text", "value")...)
 	findings = append(findings, scanMagentoContent(account, creds, "cms_block", "content")...)
 	findings = append(findings, scanMagentoContent(account, creds, "cms_page", "content")...)
-	findings = append(findings, scanMagentoAdmins(account, creds)...)
+	findings = append(findings, scanMagentoAdmins(store, account, creds)...)
 	return findings
 }
 
@@ -250,7 +255,7 @@ func scanMagentoSettings(account string, creds magentoCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT path, value FROM %score_config_data WHERE %s",
 		creds.dbPrefix, paramsLikeClause("value"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	var findings []alert.Finding
 	for _, row := range rows {
 		cfgPath, body := splitTabRow(row)
@@ -288,7 +293,7 @@ func scanMagentoContent(account string, creds magentoCreds, table, valueCol stri
 	query := fmt.Sprintf(
 		"SELECT %s, %s FROM %s%s WHERE %s",
 		idCol, valueCol, creds.dbPrefix, table, paramsLikeClause(valueCol))
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	var findings []alert.Finding
 	for _, row := range rows {
 		id, body := splitTabRow(row)
@@ -312,26 +317,13 @@ func scanMagentoContent(account string, creds magentoCreds, table, valueCol stri
 // scanMagentoAdmins enumerates the admin_user table. Rows include
 // the legitimate site admin -- one Warning per row, operator
 // review territory.
-func scanMagentoAdmins(account string, creds magentoCreds) []alert.Finding {
+func scanMagentoAdmins(store *state.Store, account string, creds magentoCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT user_id, username, email FROM %sadmin_user",
 		creds.dbPrefix)
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
-	if len(rows) == 0 {
-		return nil
-	}
-	var findings []alert.Finding
-	for _, row := range rows {
-		fields := strings.Split(row, "\t")
-		if len(fields) < 1 {
-			continue
-		}
-		findings = append(findings, alert.Finding{
-			Severity: alert.Warning,
-			Check:    "magento_admin_injection",
-			Message:  fmt.Sprintf("Magento %s admin account on %s: user_id=%s", creds.version, account, fields[0]),
-			Details:  fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, row),
-		})
-	}
-	return findings
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	return cmsAdminFindings(store, "magento", "magento_admin_injection", account, rows, func(fields []string) (string, string) {
+		return fmt.Sprintf("Magento %s admin account on %s: user_id=%s", creds.version, account, fields[0]),
+			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
+	})
 }

@@ -71,6 +71,8 @@ var (
 // jConfigCreds shape so existing helpers (runMySQLQuery,
 // asWPDBCreds) work uniformly.
 type drupalCreds struct {
+	// ctx ties every query for this install to the runner's deadline.
+	ctx    context.Context
 	dbName string
 	dbUser string
 	dbPass string
@@ -80,10 +82,11 @@ type drupalCreds struct {
 
 func (c drupalCreds) asWPDBCreds() wpDBCreds {
 	return wpDBCreds{
-		dbName: c.dbName,
-		dbUser: c.dbUser,
-		dbPass: c.dbPass,
-		dbHost: c.dbHost,
+		dbName:   c.dbName,
+		dbUser:   c.dbUser,
+		dbPass:   c.dbPass,
+		dbHost:   c.dbHost,
+		queryCtx: c.ctx,
 	}
 }
 
@@ -92,13 +95,13 @@ func (c drupalCreds) asWPDBCreds() wpDBCreds {
 // without sharing code -- the credential layout and table set are
 // distinct enough that a generic dispatcher would be more
 // abstraction than a 4-CMS pipeline calls for.
-func CheckDrupalContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var findings []alert.Finding
 
-	settings, _ := accountHomeGlob("*/public_html/sites/default/settings.php")
+	settings := cmsDiscover("*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php")
 	if len(settings) == 0 {
 		return nil
 	}
@@ -120,10 +123,11 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, _ *state.Store)
 		if creds.dbName == "" || creds.dbUser == "" {
 			continue
 		}
+		creds.ctx = ctx
 
 		findings = append(findings, scanDrupalConfig(account, creds)...)
 		findings = append(findings, scanDrupalContent(account, creds)...)
-		findings = append(findings, scanDrupalAdmins(account, creds)...)
+		findings = append(findings, scanDrupalAdmins(store, account, creds)...)
 	}
 	return findings
 }
@@ -176,7 +180,7 @@ func scanDrupalConfig(account string, creds drupalCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT name, data FROM config WHERE %s",
 		paramsLikeClause("data"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	var findings []alert.Finding
 	for _, row := range rows {
 		name, body := splitTabRow(row)
@@ -205,7 +209,7 @@ func scanDrupalContent(account string, creds drupalCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT entity_id, body_value FROM node_revision__body WHERE %s",
 		paramsLikeClause("body_value"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	var findings []alert.Finding
 	for _, row := range rows {
 		entityID, body := splitTabRow(row)
@@ -236,26 +240,13 @@ func scanDrupalContent(account string, creds drupalCreds) []alert.Finding {
 // once per language code on translated sites. The default_langcode
 // = 1 filter keeps each admin to exactly one finding regardless of
 // how many translations the site has.
-func scanDrupalAdmins(account string, creds drupalCreds) []alert.Finding {
+func scanDrupalAdmins(store *state.Store, account string, creds drupalCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT u.uid, u.name, u.mail FROM users_field_data u JOIN user__roles r ON u.uid = r.entity_id WHERE r.roles_target_id = '%s' AND u.default_langcode = 1",
 		drupalAdminRoleID)
-	rows := runMySQLQuery(creds.asWPDBCreds(), query)
-	if len(rows) == 0 {
-		return nil
-	}
-	var findings []alert.Finding
-	for _, row := range rows {
-		fields := strings.Split(row, "\t")
-		if len(fields) < 1 {
-			continue
-		}
-		findings = append(findings, alert.Finding{
-			Severity: alert.Warning,
-			Check:    "drupal_admin_injection",
-			Message:  fmt.Sprintf("Drupal administrator account on %s: %s", account, fields[0]),
-			Details:  fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, row),
-		})
-	}
-	return findings
+	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	return cmsAdminFindings(store, "drupal", "drupal_admin_injection", account, rows, func(fields []string) (string, string) {
+		return fmt.Sprintf("Drupal administrator account on %s: %s", account, fields[0]),
+			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
+	})
 }
