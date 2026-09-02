@@ -459,6 +459,10 @@ func writeFirewallRollbackFile(rollbackFile string) error {
 		_ = removeFileIfExists(rollbackFile)
 		return fmt.Errorf("writing rollback ruleset: %w", err)
 	}
+	if err := snapshotFirewallState(rollbackFile); err != nil {
+		_ = removeFileIfExists(rollbackFile)
+		return err
+	}
 	return nil
 }
 
@@ -503,13 +507,22 @@ func applyFirewallRollbackFile(rollbackFile string) error {
 		}
 		return fmt.Errorf("restoring rollback ruleset: %w", err)
 	}
-	return nil
+	// Kernel is back on the snapshot; state.json must follow, or the UI
+	// keeps describing the window's mutations as live.
+	return restoreFirewallStateSnapshot(rollbackFile)
 }
 
 func removeFirewallRollbackFiles(paths ...string) error {
 	for _, path := range paths {
 		if err := removeFileIfExists(path); err != nil {
 			return err
+		}
+		// A confirmed or superseded window drops its state snapshot with
+		// its ruleset snapshot.
+		if filepath.Base(path) == "rollback.nft" {
+			if err := removeFileIfExists(firewallStateSnapshotPath(path)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

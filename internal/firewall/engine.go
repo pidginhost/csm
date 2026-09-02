@@ -29,7 +29,10 @@ import (
 type Engine struct {
 	mu   sync.Mutex
 	conn *nftables.Conn
-	cfg  *FirewallConfig
+	// listTables, when set, replaces conn.ListTables (tests inject a
+	// failing listing).
+	listTables func() ([]*nftables.Table, error)
+	cfg        *FirewallConfig
 
 	// dryRunRecorder is called by BlockIP when auto_response.dry_run is
 	// active. Set by SetDryRunRecorder after construction so the firewall
@@ -389,6 +392,19 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 // auto_response.dry_run is active. The daemon calls this after construction
 // to wire in store.RecordDryRunBlock without creating an import cycle between
 // internal/firewall and internal/store.
+// errTableListing marks an Apply aborted because the kernel table listing
+// failed; nothing was changed.
+var errTableListing = errors.New("listing nftables tables")
+
+// listTablesFn returns the table lister: the injected seam when a test set
+// one, else the live connection.
+func (e *Engine) listTablesFn() func() ([]*nftables.Table, error) {
+	if e.listTables != nil {
+		return e.listTables
+	}
+	return e.conn.ListTables
+}
+
 // SetConfig replaces the ruleset input the next Apply builds from. The
 // engine was constructed with a value copy of the firewall block taken at
 // daemon start, so every re-apply path (`csm firewall restart`,
@@ -637,7 +653,13 @@ func (e *Engine) Apply() error {
 
 	// Check if existing CSM table needs replacing.
 	// If so, include the delete in the same atomic batch as the new table.
-	tables, _ := e.conn.ListTables()
+	// A listing that fails must abort: AddTable is create-only, so without
+	// the delete every rule below would be appended a second time to the
+	// live chains (doubled meters, halved rate limits).
+	tables, err := e.listTablesFn()()
+	if err != nil {
+		return fmt.Errorf("%w: %v", errTableListing, err)
+	}
 	for _, t := range tables {
 		if t.Name == "csm" && t.Family == nftables.TableFamilyINet {
 			e.conn.DelTable(t)
