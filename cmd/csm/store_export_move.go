@@ -36,11 +36,10 @@ func moveExportedArchive(src, dst, wantSHA string) error {
 	}
 
 	if err := copyFileVerified(src, dst, wantSHA); err != nil {
-		_ = os.Remove(dst)
 		return err
 	}
 	if companion, err := os.ReadFile(src + ".sha256"); err == nil {
-		if err := os.WriteFile(dst+".sha256", companion, 0o600); err != nil {
+		if err := writeExportFileAtomic(dst+".sha256", companion); err != nil {
 			return fmt.Errorf("writing companion digest: %w", err)
 		}
 	}
@@ -55,8 +54,17 @@ func isCrossDevice(err error) bool {
 	return errors.Is(err, syscall.EXDEV)
 }
 
-// copyFileVerified copies src to dst, syncs it, and checks the SHA-256 of
-// the bytes written against wantSHA (skipped when wantSHA is empty).
+// copyFileVerified copies src into a private temporary file beside dst,
+// syncs it, checks the SHA-256 of the bytes written against wantSHA
+// (skipped when wantSHA is empty) and only then renames it over dst.
+//
+// Opening dst directly would follow a symlink a local account planted at
+// that path -- the destination is often /tmp, which is both world-writable
+// and on a different filesystem from the daemon's state directory, so it
+// always takes this path -- and would inherit whatever mode an existing
+// object already had. Renaming replaces the object at dst instead of
+// writing through it, and leaves a previous export intact when the copy
+// cannot be verified.
 //
 // #nosec G304 G703 -- same root-only src and dst as moveExportedArchive.
 func copyFileVerified(src, dst, wantSHA string) error {
@@ -66,17 +74,23 @@ func copyFileVerified(src, dst, wantSHA string) error {
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	out, tmpPath, err := createExportTemp(dst)
 	if err != nil {
 		return fmt.Errorf("creating destination archive: %w", err)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = out.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
 	h := sha256.New()
 	if _, err = io.Copy(io.MultiWriter(out, h), in); err != nil {
-		_ = out.Close()
 		return fmt.Errorf("copying archive: %w", err)
 	}
 	if err = out.Sync(); err != nil {
-		_ = out.Close()
 		return fmt.Errorf("syncing destination archive: %w", err)
 	}
 	if err = out.Close(); err != nil {
@@ -85,5 +99,54 @@ func copyFileVerified(src, dst, wantSHA string) error {
 	if got := hex.EncodeToString(h.Sum(nil)); wantSHA != "" && got != wantSHA {
 		return fmt.Errorf("copied archive digest %s does not match export digest %s", got, wantSHA)
 	}
+	if err = os.Rename(tmpPath, dst); err != nil {
+		return fmt.Errorf("moving archive into place: %w", err)
+	}
+	committed = true
 	return nil
+}
+
+// writeExportFileAtomic writes the companion digest the same way, so a
+// planted symlink at dst.sha256 is replaced rather than written through.
+//
+// #nosec G304 G703 -- same root-only destination as moveExportedArchive.
+func writeExportFileAtomic(path string, data []byte) error {
+	out, tmpPath, err := createExportTemp(path)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = out.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err = out.Write(data); err != nil {
+		return err
+	}
+	if err = out.Sync(); err != nil {
+		return err
+	}
+	if err = out.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// createExportTemp opens a 0600 temporary file in the destination's own
+// directory, which is what makes the rename that follows atomic.
+//
+// #nosec G304 G703 -- same root-only destination as moveExportedArchive.
+func createExportTemp(dst string) (*os.File, string, error) {
+	out, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".csm-*.part")
+	if err != nil {
+		return nil, "", err
+	}
+	return out, out.Name(), nil
 }
