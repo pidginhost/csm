@@ -458,6 +458,12 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.CredStuffingDistinctAccounts != 0 && (t.CredStuffingDistinctAccounts < 2 || t.CredStuffingDistinctAccounts > 200) {
 		results = append(results, ValidationResult{"error", "thresholds.cred_stuffing_distinct_accounts", "cred_stuffing_distinct_accounts must be between 2 and 200"})
 	}
+	if t.PAMBruteforceThreshold != 0 && (t.PAMBruteforceThreshold < 2 || t.PAMBruteforceThreshold > 1000) {
+		results = append(results, ValidationResult{"error", "thresholds.pam_bruteforce_threshold", "pam_bruteforce_threshold must be between 2 and 1000"})
+	}
+	if t.PAMBruteforceWindowMin != 0 && (t.PAMBruteforceWindowMin < 1 || t.PAMBruteforceWindowMin > 1440) {
+		results = append(results, ValidationResult{"error", "thresholds.pam_bruteforce_window_min", "pam_bruteforce_window_min must be between 1 and 1440"})
+	}
 	if t.HTTPScannerMinRequests < 0 {
 		results = append(results, ValidationResult{"error", "thresholds.http_scanner_min_requests", "http_scanner_min_requests must be >= 0 (0 disables the detector)"})
 	}

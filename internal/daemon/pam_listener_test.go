@@ -30,7 +30,7 @@ func TestPAMListenerEmitsCredentialStuffing(t *testing.T) {
 	cfg := &config.Config{}
 	// Keep the count-based brute trigger quiet so this asserts the
 	// distinct-account breadth path specifically.
-	cfg.Thresholds.MultiIPLoginThreshold = 100
+	cfg.Thresholds.PAMBruteforceThreshold = 100
 	cfg.Thresholds.CredStuffingDistinctAccounts = 3
 
 	p := &PAMListener{
@@ -73,7 +73,7 @@ func TestSpraySuppressionDefaultChecksAreEmittedByProductionParsers(t *testing.T
 
 	alertCh := make(chan alert.Finding, 8)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 2
+	cfg.Thresholds.PAMBruteforceThreshold = 2
 	cfg.Thresholds.CredStuffingDistinctAccounts = 3
 	p := &PAMListener{
 		cfg:      cfg,
@@ -112,7 +112,7 @@ func TestSpraySuppressionDefaultChecksAreEmittedByProductionParsers(t *testing.T
 func TestPAMListenerRepeatedSingleAccountIsNotStuffing(t *testing.T) {
 	alertCh := make(chan alert.Finding, 8)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 100 // keep brute quiet
+	cfg.Thresholds.PAMBruteforceThreshold = 100 // keep brute quiet
 	cfg.Thresholds.CredStuffingDistinctAccounts = 3
 
 	p := &PAMListener{
@@ -135,7 +135,7 @@ func TestPAMListenerRepeatedSingleAccountIsNotStuffing(t *testing.T) {
 func TestPAMListenerOKClearsCredentialStuffingState(t *testing.T) {
 	alertCh := make(chan alert.Finding, 8)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 100
+	cfg.Thresholds.PAMBruteforceThreshold = 100
 	cfg.Thresholds.CredStuffingDistinctAccounts = 3
 
 	p := &PAMListener{
@@ -161,11 +161,11 @@ func TestPAMListenerUsesActiveCredentialStuffingThreshold(t *testing.T) {
 
 	alertCh := make(chan alert.Finding, 8)
 	startup := &config.Config{}
-	startup.Thresholds.MultiIPLoginThreshold = 100
+	startup.Thresholds.PAMBruteforceThreshold = 100
 	startup.Thresholds.CredStuffingDistinctAccounts = 5
 
 	active := &config.Config{}
-	active.Thresholds.MultiIPLoginThreshold = 100
+	active.Thresholds.PAMBruteforceThreshold = 100
 	active.Thresholds.CredStuffingDistinctAccounts = 3
 	config.SetActive(active)
 
@@ -189,7 +189,7 @@ func TestPAMListenerUsesActiveCredentialStuffingThreshold(t *testing.T) {
 func TestPAMListenerOKClearsFailures(t *testing.T) {
 	alertCh := make(chan alert.Finding, 4)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 2
+	cfg.Thresholds.PAMBruteforceThreshold = 2
 
 	p := &PAMListener{
 		cfg:      cfg,

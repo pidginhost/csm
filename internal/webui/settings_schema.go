@@ -151,6 +151,8 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "multi_ip_login_threshold", Type: "int", Label: "Multi-IP login threshold", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
 			{YAMLPath: "multi_ip_login_window_min", Type: "int", Label: "Multi-IP login window (min)", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
 			{YAMLPath: "cred_stuffing_distinct_accounts", Type: "int", Label: "Credential stuffing distinct accounts", Min: int64p(2), Max: int64p(200), FieldGroup: FieldGroupAccountSpray, Help: "Distinct failed accounts from one source IP inside the auth window before credential_stuffing fires. Default 5."},
+			{YAMLPath: "pam_bruteforce_threshold", Type: "int", Label: "PAM brute-force threshold", Min: int64p(2), Max: int64p(1000), FieldGroup: FieldGroupAccountSpray, Help: "PAM authentication failures from one source IP inside the window before pam_bruteforce fires and the address is auto-blocked. Default 5."},
+			{YAMLPath: "pam_bruteforce_window_min", Type: "int", Label: "PAM brute-force window (min)", Min: int64p(1), Max: int64p(1440), FieldGroup: FieldGroupAccountSpray, Help: "Minutes over which PAM failures from one source IP are counted. Default 10."},
 			{YAMLPath: "plugin_check_interval_min", Type: "int", Label: "Plugin check interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
 			{YAMLPath: "brute_force_window", Type: "int", Label: "Brute force window", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
 			{YAMLPath: "domlog_max_files", Type: "int", Label: "Domlog max files", Min: int64p(1), Max: int64p(100000), FieldGroup: FieldGroupWebBruteForce},

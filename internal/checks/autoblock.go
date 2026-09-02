@@ -283,6 +283,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"admin_panel_bruteforce":      true,
 		"ssh_login_unknown_ip":        true,
 		"ssh_login_realtime":          true,
+		"pam_bruteforce":              true,
+		"credential_stuffing":         true,
 		"c2_connection":               true,
 		"ip_reputation":               true,
 		"local_threat_score":          true,

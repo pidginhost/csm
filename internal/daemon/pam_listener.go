@@ -385,11 +385,11 @@ func pamThresholds(cfg *config.Config) (threshold int, window time.Duration, dis
 	windowMin := defaultPAMFailureWindowMin
 	distinct = defaultCredStuffingDistinctAccounts
 	if cfg != nil {
-		if cfg.Thresholds.MultiIPLoginThreshold > 0 {
-			threshold = cfg.Thresholds.MultiIPLoginThreshold
+		if cfg.Thresholds.PAMBruteforceThreshold > 0 {
+			threshold = cfg.Thresholds.PAMBruteforceThreshold
 		}
-		if cfg.Thresholds.MultiIPLoginWindowMin > 0 {
-			windowMin = cfg.Thresholds.MultiIPLoginWindowMin
+		if cfg.Thresholds.PAMBruteforceWindowMin > 0 {
+			windowMin = cfg.Thresholds.PAMBruteforceWindowMin
 		}
 		if cfg.Thresholds.CredStuffingDistinctAccounts > 0 {
 			distinct = cfg.Thresholds.CredStuffingDistinctAccounts

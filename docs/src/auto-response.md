@@ -12,7 +12,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
-| **PAM blocking** | Instant IP block on brute force threshold breach. |
+| **PAM blocking** | Instant IP block when one address breaches `thresholds.pam_bruteforce_threshold` failures inside `pam_bruteforce_window_min` minutes, or fails against `cred_stuffing_distinct_accounts` distinct accounts. |
 | **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range attack. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |

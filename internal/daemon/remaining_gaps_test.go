@@ -130,8 +130,8 @@ func TestPAMProcessEventUnknownEventType(t *testing.T) {
 func TestPAMRecordFailureWindowExpiration(t *testing.T) {
 	alertCh := make(chan alert.Finding, 2)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginWindowMin = 1 // 1 minute window
-	cfg.Thresholds.MultiIPLoginThreshold = 5
+	cfg.Thresholds.PAMBruteforceWindowMin = 1 // 1 minute window
+	cfg.Thresholds.PAMBruteforceThreshold = 5
 	p := &PAMListener{
 		cfg:      cfg,
 		alertCh:  alertCh,

@@ -17,7 +17,7 @@ func TestPAMListenerEmitDoesNotHoldLock(t *testing.T) {
 	alertCh := make(chan alert.Finding, 1)
 	alertCh <- alert.Finding{Check: "blocker"}
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 3          // trigger brute-force quickly
+	cfg.Thresholds.PAMBruteforceThreshold = 3         // trigger brute-force quickly
 	cfg.Thresholds.CredStuffingDistinctAccounts = 100 // keep stuffing path quiet
 
 	p := &PAMListener{

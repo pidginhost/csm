@@ -255,8 +255,14 @@ type Config struct {
 		// detector does not catch. Default 5 when unset or <=0, matching the
 		// always-on posture of the sibling multi_ip_login_threshold.
 		CredStuffingDistinctAccounts int `yaml:"cred_stuffing_distinct_accounts"`
-		PluginCheckIntervalMin       int `yaml:"plugin_check_interval_min"`
-		BruteForceWindow             int `yaml:"brute_force_window"`
+		// PAMBruteforceThreshold is the number of PAM authentication
+		// failures (SSH, mail, FTP via pam_csm) from one source IP inside
+		// PAMBruteforceWindowMin minutes before pam_bruteforce fires and the
+		// address is auto-blocked. Defaults 5 failures in 10 minutes.
+		PAMBruteforceThreshold int `yaml:"pam_bruteforce_threshold"`
+		PAMBruteforceWindowMin int `yaml:"pam_bruteforce_window_min"`
+		PluginCheckIntervalMin int `yaml:"plugin_check_interval_min"`
+		BruteForceWindow       int `yaml:"brute_force_window"`
 
 		// DomlogMaxFiles caps how many per-domain access logs the WP brute
 		// force check scans per cycle. Sites are ranked by recent mtime so
@@ -1703,6 +1709,12 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.CredStuffingDistinctAccounts == 0 {
 		cfg.Thresholds.CredStuffingDistinctAccounts = 5
+	}
+	if cfg.Thresholds.PAMBruteforceThreshold == 0 {
+		cfg.Thresholds.PAMBruteforceThreshold = 5
+	}
+	if cfg.Thresholds.PAMBruteforceWindowMin == 0 {
+		cfg.Thresholds.PAMBruteforceWindowMin = 10
 	}
 	if cfg.Thresholds.ModSecEscalationHits == 0 {
 		cfg.Thresholds.ModSecEscalationHits = 3

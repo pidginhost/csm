@@ -118,7 +118,7 @@ func TestProcessEvent_OKAlertContainsUserAndService(t *testing.T) {
 func TestProcessEvent_FAILThenOKThenFAILResetsCounter(t *testing.T) {
 	alertCh := make(chan alert.Finding, 20)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 3
+	cfg.Thresholds.PAMBruteforceThreshold = 3
 	p := &PAMListener{
 		cfg:      cfg,
 		alertCh:  alertCh,
@@ -163,8 +163,8 @@ func TestProcessEvent_FAILThenOKThenFAILResetsCounter(t *testing.T) {
 func TestRecordFailure_CustomWindowMin(t *testing.T) {
 	alertCh := make(chan alert.Finding, 10)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 3
-	cfg.Thresholds.MultiIPLoginWindowMin = 2 // 2 minute window
+	cfg.Thresholds.PAMBruteforceThreshold = 3
+	cfg.Thresholds.PAMBruteforceWindowMin = 2 // 2 minute window
 	p := &PAMListener{
 		cfg:      cfg,
 		alertCh:  alertCh,
@@ -199,8 +199,8 @@ func TestRecordFailure_CustomWindowMin(t *testing.T) {
 func TestRecordFailure_WindowExpiryResetsUsersAndServices(t *testing.T) {
 	alertCh := make(chan alert.Finding, 10)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 5
-	cfg.Thresholds.MultiIPLoginWindowMin = 1
+	cfg.Thresholds.PAMBruteforceThreshold = 5
+	cfg.Thresholds.PAMBruteforceWindowMin = 1
 	p := &PAMListener{
 		cfg:      cfg,
 		alertCh:  alertCh,
@@ -235,7 +235,7 @@ func TestRecordFailure_WindowExpiryResetsUsersAndServices(t *testing.T) {
 func TestRecordFailure_AlertDetailsContainUsersAndServices(t *testing.T) {
 	alertCh := make(chan alert.Finding, 10)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 3
+	cfg.Thresholds.PAMBruteforceThreshold = 3
 	p := &PAMListener{
 		cfg:      cfg,
 		alertCh:  alertCh,

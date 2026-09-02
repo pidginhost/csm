@@ -272,7 +272,7 @@ func TestRecordFailure_TracksMultipleUsers(t *testing.T) {
 func TestRecordFailure_CustomThreshold(t *testing.T) {
 	alertCh := make(chan alert.Finding, 10)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 3
+	cfg.Thresholds.PAMBruteforceThreshold = 3
 	p := &PAMListener{
 		cfg:      cfg,
 		alertCh:  alertCh,
@@ -300,8 +300,8 @@ func TestRecordFailure_CustomThreshold(t *testing.T) {
 func TestRecordFailure_WindowExpiry(t *testing.T) {
 	alertCh := make(chan alert.Finding, 10)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 3
-	cfg.Thresholds.MultiIPLoginWindowMin = 1 // 1 minute window
+	cfg.Thresholds.PAMBruteforceThreshold = 3
+	cfg.Thresholds.PAMBruteforceWindowMin = 1 // 1 minute window
 	p := &PAMListener{
 		cfg:      cfg,
 		alertCh:  alertCh,
@@ -1072,8 +1072,8 @@ func TestIsPrivateOrLoopback_172Boundary(t *testing.T) {
 func TestProcessEvent_FullBruteForceFlow(t *testing.T) {
 	alertCh := make(chan alert.Finding, 20)
 	cfg := &config.Config{}
-	cfg.Thresholds.MultiIPLoginThreshold = 3
-	cfg.Thresholds.MultiIPLoginWindowMin = 10
+	cfg.Thresholds.PAMBruteforceThreshold = 3
+	cfg.Thresholds.PAMBruteforceWindowMin = 10
 
 	p := &PAMListener{
 		cfg:      cfg,
