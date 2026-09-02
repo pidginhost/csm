@@ -350,11 +350,14 @@ func wafRulesStaleHint(info platform.Info) string {
 	return "Vendor rules should be updated at least monthly."
 }
 
-// checkEngineMode determines the host-wide SecRuleEngine setting. cPanel's
-// generated global configuration is authoritative there: choosing the first
-// directive from a mixture of cPanel and distro-package files can report an
-// inactive file as the effective host setting. Returns "on", "detectiononly",
-// "off", or "" if unknown.
+// checkEngineMode determines the host-wide SecRuleEngine setting. On cPanel
+// the generated configuration is authoritative: modsec2.conf turns the
+// engine on and then includes modsec2.cpanel.conf (WHM "Edit Global
+// Directive") and modsec2.user.conf, and Apache applies the last directive
+// it parses, so the mode is whatever the last file in that chain says. A
+// distro package's file is never consulted on cPanel: an inactive file
+// reported as the host setting would manufacture a false unprotected
+// Critical. Returns "on", "detectiononly", "off", or "" if unknown.
 func checkEngineMode(info platform.Info) string {
 	if info.IsCPanel() {
 		return cPanelEngineMode(info)
@@ -375,57 +378,106 @@ func checkEngineMode(info platform.Info) string {
 	return ""
 }
 
-// cPanelEngineMode reads the engine setting from cPanel's own generated
-// configuration. EA4 and the older /usr/local/apache layout disagree on where
-// that file sits and the modsec include directory is spelled both ways on
-// hosts CSM already writes virtual patches to, so every known spelling is
-// tried. When none of them can be read the answer is unknown rather than a
-// distro package's file: an inactive file reported as the host setting would
-// manufacture a false unprotected Critical.
+// cPanelModsecEngineChain lists, in include order, the cPanel files that can
+// set SecRuleEngine at server scope under the Apache-compatible config
+// directory (cPanel + LiteSpeed reads the same tree through loadApacheConf).
+// The modsec include directory is spelled both ways across EA4 and the
+// older /usr/local/apache layout, and CSM already writes virtual patches to
+// both, so each link tries every known spelling and uses the first that
+// exists.
+func cPanelModsecEngineChain(configDir string) [][]string {
+	return [][]string{
+		{filepath.Join(configDir, "conf.d", "modsec2.conf")},
+		{
+			filepath.Join(configDir, "conf.d", "modsec", "modsec2.cpanel.conf"),
+			filepath.Join(configDir, "conf.d", "modsec2.cpanel.conf"),
+			filepath.Join(configDir, "modsec2.cpanel.conf"),
+		},
+		{
+			filepath.Join(configDir, "conf.d", "modsec", "modsec2.user.conf"),
+			filepath.Join(configDir, "conf.d", "modsec2.user.conf"),
+		},
+	}
+}
+
+// cPanelEngineMode walks the include chain and returns the last engine
+// directive. A chain file that exists but cannot be read, or that carries a
+// value this check does not understand, makes the effective mode unknown:
+// guessing from the files around it could hide a DetectionOnly set through
+// WHM or report a stale On.
 func cPanelEngineMode(info platform.Info) string {
 	configDir := filepath.Clean(info.ApacheCompatibleConfigDir())
 	if configDir == "." || configDir == string(filepath.Separator) {
 		return ""
 	}
-	for _, path := range []string{
-		filepath.Join(configDir, "conf.d", "modsec", "modsec2.cpanel.conf"),
-		filepath.Join(configDir, "conf.d", "modsec2.cpanel.conf"),
-		filepath.Join(configDir, "modsec2.cpanel.conf"),
-	} {
-		if mode := engineModeInFile(path); mode != "" {
-			return mode
+	mode := ""
+	for _, spellings := range cPanelModsecEngineChain(configDir) {
+		for _, path := range spellings {
+			m, found, err := engineDirectiveInFile(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return ""
+			}
+			if found {
+				if m == "" {
+					return ""
+				}
+				mode = m
+			}
+			// The first spelling that exists is the file Apache reads.
+			break
 		}
 	}
-	return ""
+	return mode
 }
 
+// engineModeInFile is the distro-package form of engineDirectiveInFile: a
+// missing, unreadable or unparseable file simply yields unknown.
 func engineModeInFile(path string) string {
-	f, err := osFS.Open(path)
+	mode, _, err := engineDirectiveInFile(path)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	return mode
+}
+
+// engineDirectiveInFile returns the value of the last uncommented
+// SecRuleEngine directive in path, lower-cased. found reports whether the
+// file has such a directive at all; a directive whose value this check does
+// not understand yields found with an empty mode. err carries the open or
+// read failure so callers can tell a missing file from an unreadable one.
+func engineDirectiveInFile(path string) (mode string, found bool, err error) {
+	f, err := osFS.Open(path)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
-	mode := ""
+	invalid := false
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") ||
 			!strings.EqualFold(fields[0], "SecRuleEngine") {
 			continue
 		}
-		value := strings.ToLower(fields[1])
-		switch value {
+		found = true
+		switch value := strings.ToLower(fields[1]); value {
 		case "on", "detectiononly", "off":
 			mode = value
 		default:
-			return ""
+			invalid = true
 		}
 	}
-	if scanner.Err() != nil {
-		return ""
+	if scanErr := scanner.Err(); scanErr != nil {
+		return "", false, scanErr
 	}
-	return mode
+	if invalid {
+		return "", found, nil
+	}
+	return mode, found, nil
 }
 
 // checkRuleAge returns the age of the rules that protect the host, or 0 when

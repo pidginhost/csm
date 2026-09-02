@@ -104,8 +104,11 @@ func TestCheckEngineMode_RejectsDirectiveNamePrefix(t *testing.T) {
 
 func TestCheckEngineMode_CPanelUsesGeneratedGlobalConfig(t *testing.T) {
 	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) {
-		if name != "/etc/apache2/conf.d/modsec/modsec2.cpanel.conf" {
+		if !strings.HasPrefix(name, "/etc/apache2/") {
 			t.Fatalf("cPanel engine mode read unexpected candidate %s", name)
+		}
+		if name != "/etc/apache2/conf.d/modsec/modsec2.cpanel.conf" {
+			return nil, os.ErrNotExist
 		}
 		tmp := t.TempDir() + "/modsec.conf"
 		if err := os.WriteFile(tmp, []byte("SecRuleEngine DetectionOnly\n"), 0644); err != nil {
@@ -145,8 +148,11 @@ func TestCheckEngineMode_CPanelGlobalConfigFailureStaysUnknown(t *testing.T) {
 	// cPanel's effective file cannot be read, treating a distro candidate as
 	// host-wide would create a false unprotected Critical.
 	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) {
-		if !strings.HasSuffix(name, "modsec2.cpanel.conf") {
+		if !strings.HasPrefix(name, "/etc/apache2/") {
 			t.Fatalf("cPanel engine mode fell through to candidate file %s", name)
+		}
+		if !strings.HasSuffix(name, "modsec2.cpanel.conf") {
+			return nil, os.ErrNotExist
 		}
 		return nil, os.ErrPermission
 	}})
