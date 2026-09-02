@@ -1,8 +1,6 @@
 package webui
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"net/http"
 	"time"
 
@@ -29,10 +27,7 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Generate unique ID
-		b := make([]byte, 8)
-		_, _ = rand.Read(b)
-		id := hex.EncodeToString(b)
+		id := newSuppressionID()
 
 		rules := s.store.LoadSuppressions()
 		rules = append(rules, state.SuppressionRule{
