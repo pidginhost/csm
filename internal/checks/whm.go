@@ -117,53 +117,61 @@ func accessLogQuotedFieldCount(line string) int {
 
 var authLogPath = func() string { return platform.Detect().AuthLogPath() }
 
-// CheckSSHLogins parses the platform authentication log for SSH logins from non-infra IPs.
-func CheckSSHLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+// CheckSSHLogins parses the platform authentication log for SSH logins from
+// non-infra IPs. With a state store it reads the log forward-only from where
+// the previous cycle stopped; without one it falls back to a per-cycle tail.
+func CheckSSHLogins(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	if store != nil {
+		return checkSSHLoginsFollow(cfg, store)
+	}
 	var findings []alert.Finding
-
-	lines := tailFile(authLogPath(), 100)
-
-	for _, line := range lines {
+	for _, line := range tailFile(authLogPath(), 100) {
 		if !strings.Contains(line, "Accepted") {
 			continue
 		}
-
-		// Extract IP - format: "Accepted publickey for root from 1.2.3.4 port 12345"
-		parts := strings.Fields(line)
-		ipIdx := -1
-		for i, p := range parts {
-			if p == "from" && i+1 < len(parts) {
-				ipIdx = i + 1
-				break
-			}
+		if f, ok := sshAcceptedLoginFinding(line, cfg); ok {
+			findings = append(findings, f)
 		}
-		if ipIdx < 0 || ipIdx >= len(parts) {
-			continue
-		}
-		ip := parts[ipIdx]
+	}
+	return findings
+}
 
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-			continue
+// sshAcceptedLoginFinding parses an sshd "Accepted <method> for <user> from
+// <ip> port <n>" line and reports it unless the address is infrastructure.
+func sshAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
+	parts := strings.Fields(line)
+	ipIdx := -1
+	for i, p := range parts {
+		if p == "from" && i+1 < len(parts) {
+			ipIdx = i + 1
+			break
 		}
-
-		// Extract user
-		user := "unknown"
-		for i, p := range parts {
-			if p == "for" && i+1 < len(parts) {
-				user = parts[i+1]
-				break
-			}
-		}
-
-		findings = append(findings, alert.Finding{
-			Severity: alert.Critical,
-			Check:    "ssh_login_unknown_ip",
-			Message:  fmt.Sprintf("SSH login from non-infra IP: %s (user: %s)", ip, user),
-			Details:  truncateString(line, 200),
-		})
+	}
+	if ipIdx < 0 || ipIdx >= len(parts) {
+		return alert.Finding{}, false
+	}
+	ip := parts[ipIdx]
+	if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
+		return alert.Finding{}, false
 	}
 
-	return findings
+	user := "unknown"
+	for i, p := range parts {
+		if p == "for" && i+1 < len(parts) {
+			user = parts[i+1]
+			break
+		}
+	}
+	return alert.Finding{
+		Severity: alert.Critical,
+		Check:    "ssh_login_unknown_ip",
+		Message:  fmt.Sprintf("SSH login from non-infra IP: %s (user: %s)", ip, user),
+		Details:  truncateString(line, 200),
+		SourceIP: ip,
+	}, true
 }
 
 // tailFile reads the last N lines of a file efficiently.

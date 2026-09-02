@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The scheduled SSH login check now reads the authentication log forward from where it last stopped instead of looking at a fixed number of trailing lines each cycle, so a login is no longer hidden by the brute-force noise that follows it. Logins older than an hour found on a first run are treated as history rather than reported as new.
 - User crontabs on Debian and Ubuntu, which live one directory deeper than on RHEL-family hosts, are now covered by the scheduled crontab check, the per-account scan, the sensitive-file watch list and the real-time crontab watcher. Until now every one of them looked only in the cronie location and was blind on those systems.
 - FTP brute-force detection now counts each failed login at the time the system log recorded it. The first run after an install or upgrade, or a large gap in reading, could replay days of scattered failures as one burst and auto-block an address that was never brute-forcing.
 - Email attachment scanning now watches every hash subdirectory of a split Exim spool, the cPanel default layout, instead of only the spool root, so messages are no longer delivered without a scan on such hosts. Hash directories Exim creates later are picked up within a minute.
