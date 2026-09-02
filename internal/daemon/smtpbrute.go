@@ -28,6 +28,22 @@ type smtpIPEntry struct {
 	lastSeen        time.Time
 }
 
+// evictionRank places a source entry for enforceMaxTracked: failures inside
+// the fast window or slow-brute evidence (including a recorded success)
+// inside the slow window make it active tracking that goes last.
+func (e *smtpIPEntry) evictionRank(now time.Time, window, slowWindow time.Duration) int {
+	if hasTimeAfter(e.times, now.Add(-window)) {
+		return evictionRankActiveIP
+	}
+	if slowWindow > 0 {
+		cutoff := now.Add(-slowWindow)
+		if (!e.slowLastSuccess.IsZero() && e.slowLastSuccess.After(cutoff)) || hasTimeAfter(e.slowTimes, cutoff) {
+			return evictionRankActiveIP
+		}
+	}
+	return evictionRankIdleIP
+}
+
 // smtpSubnetEntry tracks unique attacker IPs within a /24.
 type smtpSubnetEntry struct {
 	ips        map[string]time.Time // ip -> firstSeen in window
@@ -468,23 +484,34 @@ func (t *smtpAuthTracker) enforceMaxTracked() {
 	if total <= t.maxTracked {
 		return
 	}
+	now := t.now()
 
+	// Ranked like the mail tracker: attacker-chosen account and subnet keys
+	// go first, idle sources next, sources with in-window failures or
+	// slow-brute evidence last, so a flood of unique mailbox names cannot
+	// evict the evidence that governs a source's auto-block decision.
 	type victim struct {
 		kind string // "ip" | "subnet" | "account"
 		key  string
 		seen time.Time
+		rank int
 	}
 	victims := make([]victim, 0, total)
 	for k, v := range t.ips {
-		victims = append(victims, victim{"ip", k, v.lastSeen})
+		victims = append(victims, victim{"ip", k, v.lastSeen, v.evictionRank(now, t.window, t.slowWindow)})
 	}
 	for k, v := range t.subnets {
-		victims = append(victims, victim{"subnet", k, v.lastSeen})
+		victims = append(victims, victim{"subnet", k, v.lastSeen, evictionRankSubnet})
 	}
 	for k, v := range t.accounts {
-		victims = append(victims, victim{"account", k, v.lastSeen})
+		victims = append(victims, victim{"account", k, v.lastSeen, evictionRankAccount})
 	}
-	sort.Slice(victims, func(i, j int) bool { return victims[i].seen.Before(victims[j].seen) })
+	sort.Slice(victims, func(i, j int) bool {
+		if victims[i].rank != victims[j].rank {
+			return victims[i].rank < victims[j].rank
+		}
+		return victims[i].seen.Before(victims[j].seen)
+	})
 
 	// Evict to 95% of cap so subsequent inserts don't re-trigger the sort.
 	target := t.maxTracked * 95 / 100

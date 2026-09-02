@@ -1146,23 +1146,38 @@ func (t *mailAuthTracker) enforceMaxTracked() {
 
 	// Evict to 95% of cap so subsequent inserts don't re-trigger the sort.
 	target := t.maxTracked * 95 / 100
+	now := t.now()
 
+	// Victims are ranked by what they cost to lose, then by age. Account
+	// and subnet keys are attacker-chosen (any string after "user=<...>",
+	// any /24), so a flood of unique mailbox names used to run one LRU over
+	// the IP entries too and evict a source's good-source standing or
+	// slow-brute evidence, exactly the state that keeps a legitimate client
+	// exempt from auto-block. Accounts go first, then subnets, then sources
+	// with no live failures, and sources with in-window failure or
+	// slow-brute evidence last.
 	type victim struct {
 		kind string // "ip" | "subnet" | "account"
 		key  string
 		seen time.Time
+		rank int
 	}
 	victims := make([]victim, 0, total)
 	for k, v := range t.ips {
-		victims = append(victims, victim{"ip", k, v.lastSeen})
+		victims = append(victims, victim{"ip", k, v.lastSeen, v.evictionRank(now, t.window, t.slowWindow)})
 	}
 	for k, v := range t.subnets {
-		victims = append(victims, victim{"subnet", k, v.lastSeen})
+		victims = append(victims, victim{"subnet", k, v.lastSeen, evictionRankSubnet})
 	}
 	for k, v := range t.accounts {
-		victims = append(victims, victim{"account", k, v.lastSeen})
+		victims = append(victims, victim{"account", k, v.lastSeen, evictionRankAccount})
 	}
-	sort.Slice(victims, func(i, j int) bool { return victims[i].seen.Before(victims[j].seen) })
+	sort.Slice(victims, func(i, j int) bool {
+		if victims[i].rank != victims[j].rank {
+			return victims[i].rank < victims[j].rank
+		}
+		return victims[i].seen.Before(victims[j].seen)
+	})
 
 	for i := 0; i < len(victims); i++ {
 		if len(t.ips)+len(t.subnets)+len(t.accounts) <= target {
@@ -1178,6 +1193,40 @@ func (t *mailAuthTracker) enforceMaxTracked() {
 			delete(t.accounts, v.key)
 		}
 	}
+}
+
+// Eviction ranks, lowest evicted first.
+const (
+	evictionRankAccount = iota
+	evictionRankSubnet
+	evictionRankIdleIP
+	evictionRankActiveIP
+)
+
+// evictionRank places a source entry: one with failures inside the fast
+// window or slow-brute evidence inside the slow window is active tracking
+// and goes last; an idle source, good-source history or not, goes before
+// it but after every account and subnet key.
+func (e *mailIPEntry) evictionRank(now time.Time, window, slowWindow time.Duration) int {
+	if hasTimeAfter(e.times, now.Add(-window)) {
+		return evictionRankActiveIP
+	}
+	if slowWindow > 0 {
+		cutoff := now.Add(-slowWindow)
+		if (!e.slowLastSuccess.IsZero() && e.slowLastSuccess.After(cutoff)) || hasTimeAfter(e.slowTimes, cutoff) {
+			return evictionRankActiveIP
+		}
+	}
+	return evictionRankIdleIP
+}
+
+func hasTimeAfter(times []time.Time, cutoff time.Time) bool {
+	for _, ts := range times {
+		if ts.After(cutoff) {
+			return true
+		}
+	}
+	return false
 }
 
 // isMailAuthBackendError reports whether a dovecot log line shows the auth
