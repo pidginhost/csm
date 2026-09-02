@@ -325,6 +325,39 @@ func FuzzExtractPHPString(f *testing.F) {
 	})
 }
 
+func FuzzCloakOptionParsers(f *testing.F) {
+	f.Add("YTowOnt9")
+	f.Add(`a:1:{s:14:"sitemap7\.xml$";s:26:"index.php?feed=xmlsitemap7";}`)
+	f.Add("a:1:{\x00")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, input string) {
+		decoded, decodedOK := decodeBase64Payload(input)
+		if decodedOK {
+			if len(input) > maxCloakOptionBytes || len(decoded) > maxCloakOptionBytes {
+				t.Fatalf("base64 decoder exceeded its byte bound: input=%d decoded=%d", len(input), len(decoded))
+			}
+			_ = isPHPSerializedArray(decoded)
+		}
+
+		routes, complete := doorwaySitemapRoutesChecked(input)
+		if !complete && len(routes) != 0 {
+			t.Fatalf("incomplete rewrite rules returned routes: %v", routes)
+		}
+		for _, route := range routes {
+			if route == "" || len(route) > 10 || len(route) > 1 && route[0] == '0' {
+				t.Fatalf("non-canonical route number returned: %q", route)
+			}
+			for _, digit := range route {
+				if digit < '0' || digit > '9' {
+					t.Fatalf("non-numeric route number returned: %q", route)
+				}
+			}
+		}
+
+		_, _, _ = parseCloakOptionRow(input)
+	})
+}
+
 func FuzzParseSessionTokenIPs(f *testing.F) {
 	f.Add(`a:1:{s:5:"token";a:4:{s:10:"expiration";i:1775817506;s:2:"ip";s:11:"203.0.113.7";s:2:"ua";s:11:"Mozilla/5.0";s:5:"login";i:1775644706;}}`)
 	f.Add(`a:1:{s:2:"ip";s:1:"203.0.113.7";}`)
