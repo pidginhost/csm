@@ -1484,14 +1484,28 @@ var reFilesMatchExtensionTail = regexp.MustCompile(`(?i)\\\.(?:php|phtml|ph[2-7]
 // specific. A pattern composed only of regex meta-characters (".",
 // "*", "^", "$", "[", "]", "(", ")", "|", "+", "?", "\\") is treated
 // as a wildcard and continues to the wildcard-context check.
+//
+// The test is applied per alternative: `^(a|.*)\.php$` carries a literal
+// yet still matches every .php through its second branch, and treating it
+// as targeted let an attacker write a shield the detector skipped. Every
+// top-level alternative (after unwrapping one outer group) must name
+// something; escapes such as `\w` and character classes do not count.
 func filesMatchPatternIsTargeted(pattern string) bool {
 	stripped := reFilesMatchExtensionTail.ReplaceAllString(pattern, "")
-	for _, c := range stripped {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
-			return true
+	stripped = strings.TrimSuffix(strings.TrimPrefix(stripped, "^"), "$")
+	if inner, ok := unwrapOuterGroup(stripped); ok {
+		stripped = inner
+	}
+	alternatives := topLevelAlternatives(stripped)
+	if len(alternatives) == 0 {
+		return false
+	}
+	for _, alt := range alternatives {
+		if !regexAlternativeNamesSomething(alt) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // htaccessParentPHPFileCount counts ".php" files (and other handler
@@ -1598,7 +1612,10 @@ func detectFilesMatchShield(content []byte, path string) []htaccessMatch {
 		}
 		// Bare wildcard: check sibling PHP count. A directory with
 		// multiple stock PHP dispatchers is a legitimate plugin layout.
-		if path != "" && htaccessParentPHPFileCount(path) >= filesMatchShieldSiblingThreshold {
+		// Not inside an upload-style tree, though: there the siblings
+		// are whatever the uploader chose to drop, and three dummy .php
+		// files are the cheapest way to silence this finding.
+		if path != "" && !htaccessInUploadTree(path) && htaccessParentPHPFileCount(path) >= filesMatchShieldSiblingThreshold {
 			continue
 		}
 
