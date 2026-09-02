@@ -622,6 +622,12 @@ func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding)
 	if !req.quarantine {
 		return f
 	}
+	// A cancelled job keeps its partial findings but stops acting on them:
+	// the operator withdrew consent, and findings produced during teardown
+	// are the least verified of the batch.
+	if req.cancelCtx != nil && req.cancelCtx.Err() != nil {
+		return f
+	}
 	if prior, done := req.remediated[f.FilePath]; done && f.FilePath != "" {
 		f.RemediationStatus = prior.status
 		f.RemediationDetail = prior.detail

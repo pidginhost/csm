@@ -157,33 +157,7 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 	scanCtx, truncations := withAccountScanTruncationCollector(ctx)
 	scanCtx = ContextWithAccountScope(scanCtx, account)
 	scanCtx = ContextWithScanOptions(scanCtx, opts)
-	var mu sync.Mutex
-	var findings []alert.Finding
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4) // max 4 concurrent checks
-
-	for _, nc := range accountChecks {
-		wg.Add(1)
-		c := nc
-		// Account checks run against user filesystem content (unparsed PHP,
-		// crafted archives, foreign encodings) so a panic is plausible.
-		// runAccountScanCheck surfaces it as check_panic, keeping the scan and
-		// daemon alive.
-		obs.SafeGo("account-scan-runner", func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			results := runAccountScanCheck(scanCtx, c, cfg, store, timeoutFor(c.name))
-			if len(results) > 0 {
-				mu.Lock()
-				findings = append(findings, results...)
-				mu.Unlock()
-			}
-		})
-	}
-
-	wg.Wait()
+	findings := runAccountChecksBounded(scanCtx, cfg, store, accountChecks, 4)
 
 	now := time.Now()
 	findings = append(findings, truncations.findings(now)...)
@@ -204,7 +178,49 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 	return stampTenantIDIfEmpty(filtered, account)
 }
 
+// runAccountChecksBounded runs checks with at most parallel of them at once.
+// A check still waiting for a slot when ctx is cancelled never starts: the
+// slot wait used to ignore the context, so an operator's cancel left every
+// queued check running to its (immediate) end and reporting a timeout.
+func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *state.Store, checks []namedCheck, parallel int) []alert.Finding {
+	var mu sync.Mutex
+	var findings []alert.Finding
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, parallel)
+
+	for _, nc := range checks {
+		wg.Add(1)
+		c := nc
+		// Account checks run against user filesystem content (unparsed PHP,
+		// crafted archives, foreign encodings) so a panic is plausible.
+		// runAccountScanCheck surfaces it as check_panic, keeping the scan and
+		// daemon alive.
+		obs.SafeGo("account-scan-runner", func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+
+			results := runAccountScanCheck(ctx, c, cfg, store, timeoutFor(c.name))
+			if len(results) > 0 {
+				mu.Lock()
+				findings = append(findings, results...)
+				mu.Unlock()
+			}
+		})
+	}
+
+	wg.Wait()
+	return findings
+}
+
 // runAccountScanCheck runs one check under a timeout, recovering any panic.
+// A check cut short because the scan itself was cancelled reports nothing:
+// that is not a timeout, and the warning would be persisted with the partial
+// results the cancel keeps.
 func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, store *state.Store, timeout time.Duration) []alert.Finding {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -226,6 +242,9 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 		}
 		return outcome.findings
 	case <-cctx.Done():
+		if ctx.Err() != nil {
+			return nil
+		}
 		return []alert.Finding{{
 			Severity:  alert.Warning,
 			Check:     "check_timeout",
