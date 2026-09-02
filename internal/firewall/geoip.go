@@ -52,8 +52,32 @@ func updateGeoIPDBWithClient(dbPath string, countryCodes []string, client *http.
 	return updated, nil
 }
 
+// countryCIDRMaxBytes bounds one country CIDR download.
+const countryCIDRMaxBytes = 16 << 20
+
+// countCIDRLines returns how many lines of path parse as a CIDR, skipping
+// blanks and comments.
+func countCIDRLines(path string) int {
+	// #nosec G304 -- path is the download's own temp file under dbPath.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(line); err == nil {
+			count++
+		}
+	}
+	return count
+}
+
 // downloadCIDRFile fetches url into outPath atomically. Returns false (and
-// logs) on any HTTP, write, or too-small-payload condition so the caller can
+// logs) on any HTTP, write, or invalid-payload condition so the caller can
 // treat each family independently.
 func downloadCIDRFile(client *http.Client, url, outPath string) bool {
 	resp, err := client.Get(url)
@@ -74,7 +98,9 @@ func downloadCIDRFile(client *http.Client, url, outPath string) bool {
 		fmt.Fprintf(os.Stderr, "geoip: error creating %s: %v\n", tmpPath, err)
 		return false
 	}
-	n, copyErr := io.Copy(f, resp.Body)
+	// Bounded: a country list is well under a megabyte; an upstream that
+	// streams more is not serving the list.
+	n, copyErr := io.Copy(f, io.LimitReader(resp.Body, countryCIDRMaxBytes))
 	closeErr := f.Close()
 	if copyErr != nil {
 		_ = os.Remove(tmpPath)
@@ -86,9 +112,13 @@ func downloadCIDRFile(client *http.Client, url, outPath string) bool {
 		fmt.Fprintf(os.Stderr, "geoip: error closing %s: %v\n", tmpPath, closeErr)
 		return false
 	}
-	if n < 10 {
+	// Validate before install: a 200 with no parseable CIDR (an HTML
+	// interstitial, a moved path) must not replace the last good file, or
+	// the next restart builds an empty country set while the update
+	// reported success.
+	if cidrs := countCIDRLines(tmpPath); cidrs == 0 {
 		_ = os.Remove(tmpPath)
-		fmt.Fprintf(os.Stderr, "geoip: %s too small (%d bytes), skipping\n", url, n)
+		fmt.Fprintf(os.Stderr, "geoip: %s holds no CIDR entries (%d bytes), keeping previous file\n", url, n)
 		return false
 	}
 	if err := os.Rename(tmpPath, outPath); err != nil {

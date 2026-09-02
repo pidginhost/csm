@@ -177,9 +177,14 @@ func (u *UpstreamSource) Score(ctx context.Context, ip string) (int, error) {
 	}
 
 	u.breakerObserve(true)
+	// The response may shorten the cache lifetime, never extend it past the
+	// operator's cache_ttl: an unbounded ttl_sec pinned a score for as long
+	// as the daemon ran.
 	ttl := u.cfg.CacheTTL
 	if body.TTLSec > 0 {
-		ttl = time.Duration(body.TTLSec) * time.Second
+		if responseTTL := time.Duration(body.TTLSec) * time.Second; responseTTL < ttl {
+			ttl = responseTTL
+		}
 	}
 	u.cachePut(ip, body.Score, ttl)
 	return body.Score, nil

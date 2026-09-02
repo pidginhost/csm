@@ -156,10 +156,10 @@ func scriptSrcStrongReason(rawURL string) (bool, string) {
 	}
 
 	for _, bad := range knownBadExfilHosts {
-		if host == strings.TrimPrefix(bad, ".") {
-			return true, "known-bad exfil host: " + bad
-		}
-		if strings.HasSuffix(host, bad) {
+		// Match the host itself or a subdomain of it, never a longer name
+		// that merely ends in the same characters (orbit.ly is not bit.ly).
+		bare := strings.TrimPrefix(bad, ".")
+		if host == bare || strings.HasSuffix(host, "."+bare) {
 			return true, "known-bad exfil host: " + bad
 		}
 	}
