@@ -724,9 +724,18 @@ func AuditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange) {
 	if filepath.Base(path) != ".htaccess" {
 		return nil, nil
 	}
-	// #nosec G304 -- path resolved by the caller via ResolveWebRoots / scanHtaccess; the operator's file tree, not attacker input.
-	content, err := os.ReadFile(path)
-	if err != nil {
+	content, ok, err := readHtaccessBounded(path)
+	if htaccessOversized(ok, err) {
+		return []alert.Finding{{
+			Severity:  alert.High,
+			Check:     "htaccess_injection",
+			Message:   fmt.Sprintf(".htaccess too large to audit: %s", path),
+			Details:   fmt.Sprintf("File exceeds %d bytes; a real .htaccess is a few kilobytes. Inspect it by hand.", htaccessMaxFileBytes),
+			FilePath:  path,
+			Timestamp: time.Now(),
+		}}, nil
+	}
+	if err != nil || !ok {
 		return nil, nil
 	}
 	return AuditHtaccessContent(path, content)

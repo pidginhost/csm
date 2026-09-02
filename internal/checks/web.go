@@ -227,6 +227,18 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 		return
 	}
 	defer func() { _ = f.Close() }()
+	// The per-line ceiling below bounds one token, not the file: a
+	// .htaccess of a million short lines still had to be held whole.
+	if info, statErr := f.Stat(); statErr == nil && info.Size() > htaccessMaxFileBytes {
+		*findings = append(*findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "htaccess_injection",
+			Message:  fmt.Sprintf(".htaccess too large to audit: %s", path),
+			Details:  fmt.Sprintf("File: %s\nSize: %d bytes exceeds the %d byte ceiling; a real .htaccess is a few kilobytes. Inspect it by hand.", path, info.Size(), htaccessMaxFileBytes),
+			FilePath: path,
+		})
+		return
+	}
 
 	// Read entire file to check cross-line context (e.g., AddHandler + Options -ExecCGI)
 	var lines []string

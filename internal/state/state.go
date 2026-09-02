@@ -83,34 +83,52 @@ func Open(path string) (*Store, error) {
 	}
 
 	stateFile := filepath.Join(path, "state.json")
-	// #nosec G304 -- operator-configured statePath + fixed filename.
-	data, err := os.ReadFile(stateFile)
-	if err == nil {
-		// Backup state file before loading in case of corruption
-		// #nosec G703 -- stateFile is filepath.Join(path, "state.json") where
-		// path is the operator-configured statePath from csm.yaml.
-		_ = os.WriteFile(stateFile+".bak", data, 0600)
-		if unmarshalErr := json.Unmarshal(data, &s.entries); unmarshalErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to parse %s: %v (backup saved to %s.bak)\n", stateFile, unmarshalErr, stateFile)
-		}
+	loadJSONWithBackup(stateFile, &s.entries)
+	if s.entries == nil {
+		s.entries = make(map[string]*Entry)
 	}
 
 	// Load latest findings from disk (survives restart)
 	latestFile := filepath.Join(path, "latest_findings.json")
-	// #nosec G304 -- operator-configured statePath + fixed filename.
-	if latestData, err := os.ReadFile(latestFile); err == nil {
-		// Backup latest findings before loading
-		// #nosec G703 -- latestFile derived the same way as stateFile above.
-		_ = os.WriteFile(latestFile+".bak", latestData, 0600)
-		var findings []alert.Finding
-		if unmarshalErr := json.Unmarshal(latestData, &findings); unmarshalErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to parse %s: %v (backup saved to %s.bak)\n", latestFile, unmarshalErr, latestFile)
-		} else {
-			s.latestFindings = findings
-		}
+	var findings []alert.Finding
+	if loadJSONWithBackup(latestFile, &findings) {
+		s.latestFindings = findings
 	}
 
 	return s, nil
+}
+
+// loadJSONWithBackup parses file into v. The backup copy is refreshed only
+// after a successful parse, so a corrupt file can never overwrite the last
+// good one; on a parse failure the backup is parsed instead. Copying the
+// file over its backup before parsing, as this used to, destroyed the
+// backup exactly when it was needed and silently reset the alert dedup
+// state, re-alerting every known finding. Returns true when v was loaded
+// from either source.
+func loadJSONWithBackup(file string, v any) bool {
+	bakFile := file + ".bak"
+	// #nosec G304 -- operator-configured statePath + fixed filename.
+	data, err := os.ReadFile(file)
+	if err == nil {
+		if unmarshalErr := json.Unmarshal(data, v); unmarshalErr == nil {
+			// #nosec G703 -- file is filepath.Join(statePath, <fixed name>).
+			_ = os.WriteFile(bakFile, data, 0600)
+			return true
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: failed to parse %s: %v (trying %s)\n", file, unmarshalErr, bakFile)
+		}
+	}
+	// #nosec G304 -- same fixed name with a .bak suffix.
+	bak, err := os.ReadFile(bakFile)
+	if err != nil {
+		return false
+	}
+	if unmarshalErr := json.Unmarshal(bak, v); unmarshalErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to parse %s: %v\n", bakFile, unmarshalErr)
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "warning: restored %s from %s\n", file, bakFile)
+	return true
 }
 
 func (s *Store) Close() error {

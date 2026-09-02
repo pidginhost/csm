@@ -231,8 +231,10 @@ func pathIsIgnored(cfg *config.Config, fullPath string) bool {
 func reconstructOverlay(rootDir, fileDir string) phpHandlerOverlay {
 	overlay := phpHandlerOverlay{}
 	if rootDir == "" {
-		if data, err := osFS.ReadFile(filepath.Join(fileDir, ".htaccess")); err == nil {
+		if data, ok, err := readHtaccessBounded(filepath.Join(fileDir, ".htaccess")); err == nil && ok {
 			overlay = overlay.mergeHtaccess(data)
+		} else if htaccessOversized(ok, err) {
+			overlay.unrestricted = true
 		}
 		return overlay
 	}
@@ -251,8 +253,12 @@ func reconstructOverlay(rootDir, fileDir string) phpHandlerOverlay {
 	}
 
 	for _, d := range dirs {
-		if data, err := osFS.ReadFile(filepath.Join(d, ".htaccess")); err == nil {
+		if data, ok, err := readHtaccessBounded(filepath.Join(d, ".htaccess")); err == nil && ok {
 			overlay = overlay.mergeHtaccess(data)
+		} else if htaccessOversized(ok, err) {
+			// Unreadable handler configuration: scan every name rather
+			// than assume the default extension set.
+			overlay.unrestricted = true
 		}
 	}
 	return overlay

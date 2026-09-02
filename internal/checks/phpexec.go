@@ -671,7 +671,13 @@ func phpPathExecutes(path, nameLower string) bool {
 
 	overlay := phpHandlerOverlay{}
 	for _, dir := range htaccessAncestorDirs(path) {
-		if htaccess, err := osFS.ReadFile(filepath.Join(dir, ".htaccess")); err == nil {
+		htaccess, ok, err := readHtaccessBounded(filepath.Join(dir, ".htaccess"))
+		if htaccessOversized(ok, err) {
+			// A .htaccess too large to read may carry any handler: fail
+			// toward coverage and treat the name as executable.
+			return true
+		}
+		if err == nil && ok {
 			overlay = overlay.mergeHtaccess(htaccess)
 		}
 	}

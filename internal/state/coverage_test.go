@@ -102,9 +102,10 @@ func TestOpenTolerantOfCorruptStateJSON(t *testing.T) {
 	if len(s.entries) != 0 {
 		t.Errorf("corrupt state should yield empty entries, got %d", len(s.entries))
 	}
-	// Backup file should have been written.
-	if _, err := os.Stat(filepath.Join(dir, "state.json.bak")); err != nil {
-		t.Errorf("backup file not created: %v", err)
+	// A corrupt file must never become the backup: with no earlier good
+	// state there is nothing to back up, so no .bak may appear.
+	if _, err := os.Stat(filepath.Join(dir, "state.json.bak")); !os.IsNotExist(err) {
+		t.Errorf("backup written from a corrupt state file: %v", err)
 	}
 }
 

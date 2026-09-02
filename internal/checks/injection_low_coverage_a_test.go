@@ -910,13 +910,17 @@ func TestCheckHtaccessFileOversizedLineFailsClosed(t *testing.T) {
 
 	var findings []alert.Finding
 	checkHtaccessFile(tmp, []string{"auto_prepend_file"}, nil, &findings)
-	var sawUnparseable bool
+	// A line past the ceiling also puts the file past the file-size ceiling,
+	// so either fail-closed finding (too large, or unparseable line) is the
+	// required High htaccess_injection report; a clean partial scan is not.
+	var sawFailClosed bool
 	for _, f := range findings {
-		if strings.Contains(f.Message, "Unparseable .htaccess") {
-			sawUnparseable = true
+		if f.Check == "htaccess_injection" && f.Severity == alert.High &&
+			(strings.Contains(f.Message, "Unparseable .htaccess") || strings.Contains(f.Message, "too large to audit")) {
+			sawFailClosed = true
 		}
 	}
-	if !sawUnparseable {
+	if !sawFailClosed {
 		t.Fatalf("oversized line did not fail closed; findings=%+v", findings)
 	}
 }
