@@ -131,3 +131,32 @@ func isTopLevelYAMLKey(line string) bool {
 	}
 	return strings.HasSuffix(line, ":")
 }
+
+func TestReleaseGithubRendersNotesThroughTheChangelogScript(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", ".gitlab-ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := gitlabJobBlock(t, string(body), "release:github")
+
+	if !strings.Contains(release, `BODY=$(./scripts/release-notes.sh CHANGELOG.md "${VERSION}" "${TAG}" pidginhost/csm)`) {
+		t.Fatal("release:github must render the release body with scripts/release-notes.sh")
+	}
+	if strings.Contains(release, `sed -n "/^## \[${VERSION}\]/`) {
+		t.Fatal("release:github still extracts the changelog inline instead of using the tested script")
+	}
+	// A changelog the script cannot read has to fail the job. Publishing a
+	// placeholder body leaves a public release page with no notes on it.
+	if strings.Contains(release, `BODY="Release ${TAG}"`) {
+		t.Fatal("release:github must not fall back to a placeholder body")
+	}
+
+	script := filepath.Join("..", "..", "scripts", "release-notes.sh")
+	info, err := os.Stat(script)
+	if err != nil {
+		t.Fatalf("stat release-notes.sh: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("release-notes.sh is not executable (mode %v)", info.Mode().Perm())
+	}
+}
