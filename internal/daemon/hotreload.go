@@ -172,6 +172,10 @@ func (d *Daemon) reloadConfig() {
 	// thresholds is a safe block; push the new SMTP/mail brute-force thresholds
 	// into the live trackers so a SIGHUP takes effect without a restart.
 	d.reconcileBruteThresholds()
+
+	// reputation.whitelist is a safe field; replace the threat database's
+	// configured whitelist so additions and removals apply at once.
+	d.reconcileReputationWhitelist()
 }
 
 // activeOrStartupCfg returns the current live config, falling back

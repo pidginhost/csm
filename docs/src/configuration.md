@@ -874,13 +874,13 @@ in-memory state at daemon startup. Restart the daemon if you need the
 running process to use the new value:
 
 - `reputation.whitelist` -- seeded into the threat database at
-  startup. The threat database exposes its own runtime API for
-  adding and removing whitelist entries (via the Threat
-  Intelligence page in the Web UI or the `/api/v1/threat/*`
-  endpoints); those paths survive restarts because the threat
-  database persists the runtime list to disk. Reloading
-  `reputation.whitelist` from csm.yaml does not automatically
-  propagate to the running threat database.
+  startup and replaced on every successful reload, so editing the
+  list in csm.yaml and sending SIGHUP takes effect at once. The
+  threat database also exposes its own runtime API for adding and
+  removing whitelist entries (via the Threat Intelligence page in
+  the Web UI or the `/api/v1/threat/*` endpoints); those entries
+  are persisted to disk and are kept separate from the configured
+  list, so a reload never drops them.
 - `email_protection.known_forwarders` -- captured by the forwarder
   watcher at startup and read by scheduled forwarder and mail-filter
   checks. No runtime API yet; send a restart if you edit this list.

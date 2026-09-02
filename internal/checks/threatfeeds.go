@@ -28,10 +28,14 @@ type ThreatDB struct {
 	badNets       []*net.IPNet                   // flat CIDR list for Lookup, rebuilt from feedNets
 	feedIPs       map[string]map[string]struct{} // feed name -> IPs, so overlapping feeds retain ownership
 	feedNets      map[string][]*net.IPNet        // feed name -> CIDRs, so a failed feed keeps coverage
-	whitelist     map[string]bool                // IPs to never flag
+	whitelist     map[string]bool                // operator-managed (persisted) IPs to never flag
 	whitelistMeta map[string]*whitelistEntry     // expiry metadata
-	lastUpdate    time.Time
-	dbPath        string
+	// configWhitelist mirrors reputation.whitelist from csm.yaml. It is
+	// replaced wholesale on config reload and never persisted, so the
+	// file stays the source of truth for these entries.
+	configWhitelist map[string]bool
+	lastUpdate      time.Time
+	dbPath          string
 
 	// Stats for WebUI
 	PermanentCount int
@@ -68,16 +72,12 @@ var threatFeeds = []struct {
 // InitThreatDB initializes the global threat database.
 func InitThreatDB(statePath string, whitelistIPs []string) *ThreatDB {
 	threatDBOnce.Do(func() {
-		wl := make(map[string]bool)
-		for _, ip := range whitelistIPs {
-			wl[ip] = true
-		}
-
 		db := &ThreatDB{
-			badIPs:      make(map[string]string),
-			badIPExpiry: make(map[string]time.Time),
-			whitelist:   wl,
-			dbPath:      filepath.Join(statePath, "threat_db"),
+			badIPs:          make(map[string]string),
+			badIPExpiry:     make(map[string]time.Time),
+			whitelist:       make(map[string]bool),
+			configWhitelist: configWhitelistSet(whitelistIPs),
+			dbPath:          filepath.Join(statePath, "threat_db"),
 		}
 		_ = os.MkdirAll(db.dbPath, 0700)
 		db.loadPermanentBlocklist()
@@ -100,14 +100,33 @@ func GetThreatDB() *ThreatDB {
 func SetGlobalThreatDBForTest(statePath string) func() {
 	prev := globalThreatDB
 	db := &ThreatDB{
-		badIPs:      make(map[string]string),
-		badIPExpiry: make(map[string]time.Time),
-		whitelist:   make(map[string]bool),
-		dbPath:      filepath.Join(statePath, "threat_db"),
+		badIPs:          make(map[string]string),
+		badIPExpiry:     make(map[string]time.Time),
+		whitelist:       make(map[string]bool),
+		configWhitelist: make(map[string]bool),
+		dbPath:          filepath.Join(statePath, "threat_db"),
 	}
 	_ = os.MkdirAll(db.dbPath, 0700)
 	globalThreatDB = db
 	return func() { globalThreatDB = prev }
+}
+
+func configWhitelistSet(ips []string) map[string]bool {
+	set := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		set[ip] = true
+	}
+	return set
+}
+
+// SetConfigWhitelist replaces the entries that come from reputation.whitelist
+// in csm.yaml. Called on config reload; the hot-reload path reported success
+// for that field while lookups kept honouring the startup list. Operator-
+// managed entries added at runtime are untouched.
+func (db *ThreatDB) SetConfigWhitelist(ips []string) {
+	db.mu.Lock()
+	db.configWhitelist = configWhitelistSet(ips)
+	db.mu.Unlock()
 }
 
 // Lookup checks if an IP is in the local threat database.
@@ -118,7 +137,7 @@ func (db *ThreatDB) Lookup(ip string) (string, bool) {
 	defer db.mu.RUnlock()
 
 	// Never flag whitelisted IPs
-	if db.whitelist[ip] {
+	if db.whitelist[ip] || db.configWhitelist[ip] {
 		return "", false
 	}
 
@@ -318,6 +337,9 @@ func (db *ThreatDB) RemoveWhitelist(ip string) {
 	db.mu.Lock()
 	delete(db.whitelist, ip)
 	delete(db.whitelistMeta, ip)
+	// A configured entry removed at runtime stays gone until the next
+	// reload or restart re-reads csm.yaml, as before.
+	delete(db.configWhitelist, ip)
 	db.mu.Unlock()
 
 	if sdb := store.Global(); sdb != nil {
@@ -419,6 +441,11 @@ func (db *ThreatDB) WhitelistedIPs() []WhitelistIP {
 	var ips []string
 	for ip := range db.whitelist {
 		ips = append(ips, ip)
+	}
+	for ip := range db.configWhitelist {
+		if !db.whitelist[ip] {
+			ips = append(ips, ip)
+		}
 	}
 	sort.Strings(ips)
 
