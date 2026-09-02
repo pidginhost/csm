@@ -55,6 +55,7 @@ func CheckDatabaseDumps(ctx context.Context, _ *config.Config, _ *state.Store) [
 			continue
 		}
 		cmdStr := strings.ReplaceAll(string(cmdline), "\x00", " ")
+		safeCmdStr := redactProcCommandLine(cmdline)
 
 		for _, tool := range dumpTools {
 			if strings.Contains(cmdStr, tool) {
@@ -63,7 +64,7 @@ func CheckDatabaseDumps(ctx context.Context, _ *config.Config, _ *state.Store) [
 					Severity: alert.Critical,
 					Check:    "database_dump",
 					Message:  fmt.Sprintf("Database dump by non-root user: %s (%s)", user, tool),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, alert.RedactCommandLine(strings.TrimSpace(cmdStr))),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, safeCmdStr),
 				})
 				break
 			}
@@ -108,6 +109,7 @@ func CheckOutboundPasteSites(ctx context.Context, cfg *config.Config, _ *state.S
 			continue
 		}
 		cmdStr := strings.ToLower(strings.ReplaceAll(string(cmdline), "\x00", " "))
+		safeCmdStr := redactProcCommandLine(cmdline)
 
 		// Check if process is connecting to paste sites
 		for _, site := range pasteSites {
@@ -117,7 +119,7 @@ func CheckOutboundPasteSites(ctx context.Context, cfg *config.Config, _ *state.S
 					Severity: alert.Critical,
 					Check:    "exfiltration_paste_site",
 					Message:  fmt.Sprintf("Process connecting to paste/exfiltration site: %s (user: %s)", site, user),
-					Details:  fmt.Sprintf("PID: %s, cmdline: %s", pid, alert.RedactCommandLine(strings.TrimSpace(cmdStr))),
+					Details:  fmt.Sprintf("PID: %s, cmdline: %s", pid, safeCmdStr),
 				})
 				break
 			}

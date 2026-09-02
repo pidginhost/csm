@@ -10,9 +10,19 @@ import (
 	"path"
 	"path/filepath"
 	"time"
+
+	csmstore "github.com/pidginhost/csm/internal/store"
 )
 
 const daemonStateLockFileName = "csm.lock"
+
+var daemonStateTransientPaths = []string{
+	"firewall/confirm_pending",
+	"firewall/rollback.nft",
+	"firewall/rollback.nft.state.json",
+	"firewall/rollback.nft.config.json",
+	"firewall/rollback.sh",
+}
 
 var errBackupDaemonLive = errors.New("daemon is running; stop it first (systemctl stop csm)")
 
@@ -80,8 +90,25 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		}
 	}
 	if src.StateDir != "" {
-		if err := addDir(tw, src.StateDir, "state", []string{outAbs, tmpPath}, daemonStateLockFileName); err != nil && !os.IsNotExist(err) {
+		stateDBSnapshot, snapshotErr := disarmedStateDBSnapshot(filepath.Join(src.StateDir, "csm.db"), filepath.Dir(outAbs))
+		if snapshotErr != nil && !os.IsNotExist(snapshotErr) {
+			return snapshotErr
+		}
+		if stateDBSnapshot != "" {
+			defer os.Remove(stateDBSnapshot)
+		}
+		skip := append([]string{"csm.db", daemonStateLockFileName, "exports"}, daemonStateTransientPaths...)
+		excludeAbs := []string{outAbs, tmpPath}
+		if stateDBSnapshot != "" {
+			excludeAbs = append(excludeAbs, stateDBSnapshot)
+		}
+		if err := addDir(tw, src.StateDir, "state", excludeAbs, skip...); err != nil && !os.IsNotExist(err) {
 			return err
+		}
+		if stateDBSnapshot != "" {
+			if err := addFile(tw, stateDBSnapshot, "state/csm.db"); err != nil {
+				return err
+			}
 		}
 	}
 	body := fmt.Sprintf("backup_ts=%s\nschema=1\n", time.Now().UTC().Format(time.RFC3339))
@@ -108,6 +135,43 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		return fmt.Errorf("installing backup: %w", err)
 	}
 	return syncParentDir(filepath.Dir(outAbs))
+}
+
+func disarmedStateDBSnapshot(srcPath, tempDir string) (_ string, err error) {
+	in, err := os.Open(srcPath) // #nosec G304 -- fixed csm.db name under the configured state directory.
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.CreateTemp(tempDir, ".csm-backup-db-*.snap")
+	if err != nil {
+		return "", err
+	}
+	path := out.Name()
+	ok := false
+	defer func() {
+		_ = out.Close()
+		if !ok {
+			_ = os.Remove(path)
+		}
+	}()
+	if err := out.Chmod(0o600); err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		return "", err
+	}
+	if err := out.Sync(); err != nil {
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	if err := csmstore.DisarmFirewallRollbackSnapshot(path); err != nil {
+		return "", err
+	}
+	ok = true
+	return path, nil
 }
 
 func addFile(tw *tar.Writer, path, name string) error {
@@ -154,6 +218,17 @@ func addDir(tw *tar.Writer, dir, prefix string, excludeAbs []string, skipRelPath
 		if err != nil {
 			return err
 		}
+		rel, err := filepath.Rel(dir, filePath)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if skip[rel] {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if info.IsDir() {
 			return nil
 		}
@@ -173,14 +248,6 @@ func addDir(tw *tar.Writer, dir, prefix string, excludeAbs []string, skipRelPath
 					return nil
 				}
 			}
-		}
-		rel, err := filepath.Rel(dir, filePath)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		if skip[rel] {
-			return nil
 		}
 		return addFile(tw, filePath, path.Join(prefix, rel))
 	})

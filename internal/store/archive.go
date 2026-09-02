@@ -49,6 +49,14 @@ const (
 	stateLockFileName  = "csm.lock"
 )
 
+var transientStatePaths = []string{
+	"firewall/confirm_pending",
+	"firewall/rollback.nft",
+	"firewall/rollback.nft.state.json",
+	"firewall/rollback.nft.config.json",
+	"firewall/rollback.sh",
+}
+
 // Sentinel errors so callers can branch on the failure mode instead of
 // matching strings.
 var (
@@ -139,9 +147,8 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	snapPath := snap.Name()
 	defer os.Remove(snapPath)
 
-	bboltHash := sha256.New()
 	err = db.bolt.View(func(tx *bolt.Tx) error {
-		_, werr := tx.WriteTo(io.MultiWriter(snap, bboltHash))
+		_, werr := tx.WriteTo(snap)
 		return werr
 	})
 	if err != nil {
@@ -151,7 +158,13 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	if err = snap.Close(); err != nil {
 		return nil, fmt.Errorf("closing bbolt snapshot: %w", err)
 	}
-	man.BboltSHA256 = hex.EncodeToString(bboltHash.Sum(nil))
+	if err = DisarmFirewallRollbackSnapshot(snapPath); err != nil {
+		return nil, err
+	}
+	man.BboltSHA256, err = sha256File(snapPath)
+	if err != nil {
+		return nil, fmt.Errorf("hashing bbolt snapshot: %w", err)
+	}
 
 	// Build the archive on disk; hash it as we write. Close is called
 	// explicitly below so any close error after fsync is surfaced --
@@ -205,7 +218,8 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	}
 
 	// 3. state files (skip runtime-owned files captured separately or not at all).
-	if _, err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, []string{"csm.db", stateLockFileName}, man.ExportTS); err != nil {
+	stateSkip := append([]string{"csm.db", stateLockFileName, "exports"}, transientStatePaths...)
+	if _, err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, stateSkip, man.ExportTS); err != nil {
 		return nil, err
 	}
 
@@ -346,7 +360,7 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 			return nil, fmt.Errorf("%w: unsafe entry name %q", ErrCorruptArchive, nextHdr.Name)
 		}
-		if clean == stateEntryPrefix+stateLockFileName {
+		if isTransientStateArchiveEntry(clean) {
 			continue
 		}
 		if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
@@ -392,6 +406,11 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		}
 		if gotHash != man.BboltSHA256 {
 			return nil, fmt.Errorf("%w: bbolt snapshot hash mismatch (archive manifest %s, staged %s)", ErrCorruptArchive, man.BboltSHA256, gotHash)
+		}
+	}
+	if (only == "all" || only == "firewall") && stagedBbolt != "" {
+		if err := DisarmFirewallRollbackSnapshot(stagedBbolt); err != nil {
+			return nil, err
 		}
 	}
 
@@ -445,12 +464,35 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("merging firewall buckets: %w", err)
 		}
+		// The merge deliberately keeps destination-only firewall keys, but a
+		// tentative config rollback is process-lifetime state, not durable
+		// firewall data. Clear any local pending record as well as the one
+		// removed from the imported snapshot.
+		if err := DisarmFirewallRollbackSnapshot(filepath.Join(opts.StatePath, "csm.db")); err != nil {
+			return nil, fmt.Errorf("disarming target firewall rollback: %w", err)
+		}
 		res.BucketsRestored = restored
 	case "baseline":
 		// no bbolt work
 	}
 
 	return res, nil
+}
+
+func isTransientStateArchiveEntry(name string) bool {
+	rel, ok := strings.CutPrefix(name, stateEntryPrefix)
+	if !ok {
+		return false
+	}
+	if rel == stateLockFileName || rel == "exports" || strings.HasPrefix(rel, "exports/") {
+		return true
+	}
+	for _, transient := range transientStatePaths {
+		if rel == transient {
+			return true
+		}
+	}
+	return false
 }
 
 // platformMatches compares the archive's stored platform map against the
@@ -552,7 +594,8 @@ func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time) er
 }
 
 // walkDirIntoTar streams every regular file under srcDir into the tar
-// under entryPrefix, skipping any base names in the skip list. Returns
+// under entryPrefix, skipping relative paths in the skip list. A skipped
+// directory excludes its complete tree. Returns
 // how many files were written.
 func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, modTime time.Time) (int, error) {
 	skipSet := map[string]bool{}
@@ -564,15 +607,19 @@ func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, m
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
-			return nil
-		}
-		if skipSet[info.Name()] {
-			return nil
-		}
 		rel, err := filepath.Rel(srcDir, path)
 		if err != nil {
 			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if skipSet[rel] {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() {
+			return nil
 		}
 		entry := entryPrefix + filepath.ToSlash(rel)
 		if err := streamFileToTar(tw, entry, path, modTime); err != nil {

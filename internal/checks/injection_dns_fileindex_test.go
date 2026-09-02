@@ -91,6 +91,48 @@ func TestParseResolversMissingFileReturnsNil(t *testing.T) {
 	}
 }
 
+func TestParseResolversIncludesDNSMasqUpstreams(t *testing.T) {
+	tmp := t.TempDir()
+	write := func(name, content string) string {
+		t.Helper()
+		path := filepath.Join(tmp, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	resolv := write("resolv.conf", "nameserver 127.0.0.1\n")
+	mainConf := write("dnsmasq.conf", "server=1.1.1.1\nserver=/corp.example/9.9.9.9#5353\n")
+	dropIn := write("10-upstream.conf", "server=[2001:4860:4860::8888]#53\n")
+
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			switch name {
+			case "/etc/resolv.conf":
+				return os.Open(resolv)
+			case dnsmasqConfigPath:
+				return os.Open(mainConf)
+			case dropIn:
+				return os.Open(dropIn)
+			}
+			return nil, os.ErrNotExist
+		},
+		glob: func(pattern string) ([]string, error) {
+			if pattern == dnsmasqConfigGlob {
+				return []string{dropIn}, nil
+			}
+			return nil, nil
+		},
+	})
+
+	got := parseResolvers()
+	for _, want := range []string{"127.0.0.1", "1.1.1.1", "9.9.9.9", "2001:4860:4860::8888"} {
+		if !containsString(got, want) {
+			t.Errorf("parseResolvers = %v, missing dnsmasq upstream %s", got, want)
+		}
+	}
+}
+
 // --- scanDirForExecutables --------------------------------------------
 
 func TestScanDirForExecutablesDepthZero(t *testing.T) {

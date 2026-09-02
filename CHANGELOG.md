@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Backup and restore no longer retain pending rollback state or expose in-progress exports. Detection now preserves security state on incomplete scans and handles credential-bearing process data and platform-specific inputs safely.
 - Quarantine captures now remain private when the source has other names, incomplete forensic snapshots are removed, and persistent missing-rule states no longer repeat the same alert on every reload.
 - The cPanel credential-phishing rule now accepts normal whitespace and quote variations in password and form-action attributes without weakening its three-part match.
 - Pending findings are dispatched only after their saved batch clears, database injection re-checks page through every candidate, cancelled scans do not start more checks, and successful PAM logins subtract that account's failures.

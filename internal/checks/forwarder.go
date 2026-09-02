@@ -66,6 +66,20 @@ func splitValiasDests(dest string) []string {
 			cur.WriteByte(c)
 		}
 	}
+	if quote != 0 {
+		// A malformed unmatched quote must not turn every later comma into
+		// quoted data and hide a pipe or external forwarder. Fall back to a
+		// conservative raw split; false positives are preferable to dropping
+		// the rest of an attacker-controlled valias line.
+		parts := strings.Split(dest, ",")
+		out = out[:0]
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			part = strings.TrimSpace(strings.Trim(part, "\"'"))
+			out = append(out, part)
+		}
+		return out
+	}
 	out = append(out, unquoteValiasDest(cur.String()))
 	return out
 }

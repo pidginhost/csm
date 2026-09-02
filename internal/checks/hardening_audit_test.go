@@ -517,3 +517,46 @@ func TestAuditAlgifAEAD_PassesWhenLivepatchCoversCopyFail(t *testing.T) {
 		t.Errorf("Message should attribute the protection to KernelCare; got %q", got.Message)
 	}
 }
+
+func TestNftInputDefaultDenyAcceptsPolicyBeforeHook(t *testing.T) {
+	rules := `table inet filter {
+    chain inbound {
+        policy drop;
+        type filter hook input priority filter;
+    }
+}`
+	if !nftInputDefaultDeny(rules) {
+		t.Fatal("input chain policy printed before hook was not detected")
+	}
+}
+
+func TestNftInputDefaultDenyDoesNotResetAtNestedBlock(t *testing.T) {
+	rules := `table inet filter {
+    chain inbound {
+        type filter hook input priority filter;
+        jump {
+            counter
+        }
+        policy drop;
+    }
+}`
+	if !nftInputDefaultDeny(rules) {
+		t.Fatal("nested block close reset input-chain state before policy")
+	}
+}
+
+func TestNftInputDefaultDenyIgnoresRuleComments(t *testing.T) {
+	rules := `table inet filter {
+    chain inbound {
+        type filter hook input priority filter; policy accept;
+        counter comment "policy drop"
+    }
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        counter comment "hook input"
+    }
+}`
+	if nftInputDefaultDeny(rules) {
+		t.Fatal("nft rule comments were mistaken for input-chain policy metadata")
+	}
+}

@@ -114,8 +114,9 @@ func loadJSONWithBackup(file string, v any) bool {
 	data, err := os.ReadFile(file)
 	if err == nil {
 		if unmarshalErr := json.Unmarshal(data, v); unmarshalErr == nil {
-			// #nosec G703 -- file is filepath.Join(statePath, <fixed name>).
-			_ = os.WriteFile(bakFile, data, 0600)
+			// Refresh atomically so a crash while copying a good primary cannot
+			// destroy the last usable backup.
+			_ = atomicio.AtomicWrite(bakFile, 0o600, data)
 			return true
 		} else {
 			fmt.Fprintf(os.Stderr, "warning: failed to parse %s: %v (trying %s)\n", file, unmarshalErr, bakFile)
@@ -1110,7 +1111,7 @@ func (s *Store) DismissLatestFinding(key string) {
 		}
 	}
 	s.latestFindings = filtered
-	_ = atomicio.AtomicWriteJSON(filepath.Join(s.path, "latest_findings.json"), 0o600, s.latestFindings)
+	s.persistLatestLocked()
 }
 
 // DismissFinding marks a finding as baseline (acknowledged/dismissed).

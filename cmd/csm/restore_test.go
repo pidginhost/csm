@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"net"
@@ -9,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/state"
+	csmstore "github.com/pidginhost/csm/internal/store"
 )
 
 // A live daemon holds state/csm.db open and mmap'd; bbolt's flock is
@@ -30,9 +33,7 @@ func TestRestoreArchiveGuarded_RefusesWhenDaemonLive(t *testing.T) {
 	if err := os.WriteFile(src+"/csm.yaml", []byte("h: from-archive\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(src+"/state/csm.db", []byte("ARCHIVE-DB"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	createRestoreTestDB(t, src+"/state")
 	// Sentinel standing in for the daemon's open database file.
 	if err := os.WriteFile(dst+"/state/csm.db", []byte("LIVE-DB"), 0o600); err != nil {
 		t.Fatal(err)
@@ -94,9 +95,7 @@ func TestRestoreArchiveGuarded_ProceedsWhenDaemonDown(t *testing.T) {
 	if err := os.WriteFile(src+"/csm.yaml", []byte("h: from-archive\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(src+"/state/csm.db", []byte("ARCHIVE-DB"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	archiveDB := createRestoreTestDB(t, src+"/state")
 
 	archive := filepath.Join(src, "backup.tar.gz")
 	if err := WriteBackupArchive(archive, BackupSources{
@@ -119,8 +118,8 @@ func TestRestoreArchiveGuarded_ProceedsWhenDaemonDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "ARCHIVE-DB" {
-		t.Fatalf("state not restored, got %q", got)
+	if !bytes.Equal(got, archiveDB) {
+		t.Fatal("state database was not restored byte-for-byte")
 	}
 	if _, err := os.Stat(dst + "/csm.yaml"); err != nil {
 		t.Fatalf("config not restored: %v", err)
@@ -144,9 +143,7 @@ func TestRestoreArchiveGuarded_RefusesWhenStateLockHeld(t *testing.T) {
 	if err := os.WriteFile(src+"/csm.yaml", []byte("h: from-archive\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(src+"/state/csm.db", []byte("ARCHIVE-DB"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	createRestoreTestDB(t, src+"/state")
 	archive := filepath.Join(src, "backup.tar.gz")
 	if err := WriteBackupArchive(archive, BackupSources{
 		ConfigPath: src + "/csm.yaml", ConfDir: src + "/conf.d", StateDir: src + "/state",
@@ -200,6 +197,55 @@ func TestRestoreArchive_SkipsStateLockFile(t *testing.T) {
 	}
 }
 
+func TestRestoreArchiveSkipsTransientStateFromOlderBackup(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "backup.tar.gz")
+	dbDir := filepath.Join(dir, "source-db")
+	db, openErr := csmstore.Open(dbDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if err := db.SaveFirewallRollback(csmstore.FirewallRollback{PrevYAML: []byte("old"), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dbBytes, readErr := os.ReadFile(filepath.Join(dbDir, "csm.db"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	entries := []archiveTestEntry{
+		{name: "state/csm.db", size: int64(len(dbBytes)), body: dbBytes},
+		{name: "state/latest_findings.json", size: 2, body: []byte("[]")},
+		{name: "state/firewall/confirm_pending", size: 7, body: []byte("pending")},
+		{name: "state/exports/export-old/staged.csmbak", size: 7, body: []byte("partial")},
+	}
+	if err := writeArchiveEntries(archive, entries); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "restored-state")
+	if err := RestoreBackupArchive(archive, BackupSources{StateDir: dst}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "latest_findings.json")); err != nil {
+		t.Fatalf("ordinary state file not restored: %v", err)
+	}
+	for _, rel := range []string{"firewall/confirm_pending", "exports/export-old/staged.csmbak"} {
+		if _, err := os.Stat(filepath.Join(dst, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("restore imported transient state %q: %v", rel, err)
+		}
+	}
+	restoredDB, openErr := csmstore.Open(dst)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = restoredDB.Close() })
+	if _, ok := restoredDB.GetFirewallRollback(); ok {
+		t.Fatal("restore re-armed a pending firewall configuration rollback from the archive")
+	}
+}
+
 func TestRestoreArchive_RoundTrip(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()
@@ -215,9 +261,7 @@ func TestRestoreArchive_RoundTrip(t *testing.T) {
 	if err := os.WriteFile(src+"/conf.d/10.yaml", []byte("k: v\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(src+"/state/csm.db", []byte("DB"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	createRestoreTestDB(t, src+"/state")
 
 	archive := filepath.Join(src, "backup.tar.gz")
 	if err := WriteBackupArchive(archive, BackupSources{
@@ -634,4 +678,35 @@ func writeArchiveWithoutManifest(archivePath, name string, body []byte) error {
 		return err
 	}
 	return f.Close()
+}
+
+func TestRestoreStagingRootRejectsSymlinkedStateParent(t *testing.T) {
+	dir := t.TempDir()
+	realParent := filepath.Join(dir, "real")
+	if err := os.Mkdir(realParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := filepath.Join(dir, "linked")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restoreStagingRoot(BackupSources{StateDir: filepath.Join(linkParent, "state")}); err == nil {
+		t.Fatal("restore staging followed a symlinked state parent")
+	}
+}
+
+func createRestoreTestDB(t *testing.T, stateDir string) []byte {
+	t.Helper()
+	db, openErr := csmstore.Open(stateDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, "csm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

@@ -10,6 +10,9 @@ package sshdconf
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -69,6 +72,7 @@ type Config struct {
 	present bool
 	values  map[string]string
 	files   []string
+	digests [][sha256.Size]byte
 
 	ports           []int
 	listenAddresses []listenAddress
@@ -85,7 +89,7 @@ type listenAddress struct {
 // here at all".
 func Parse(fsys FS, path string) *Config {
 	c := &Config{values: make(map[string]string)}
-	c.present = c.parseFile(fsys, path, filepath.Dir(path), 0, make(map[string]struct{}))
+	c.present = c.parseFile(fsys, path, filepath.Dir(path), 0, make(map[string]struct{}), false)
 	return c
 }
 
@@ -97,6 +101,20 @@ func (c *Config) Present() bool { return c.present }
 // a drop-in can flip a setting without touching the root file.
 func (c *Config) Files() []string {
 	return append([]string(nil), c.files...)
+}
+
+// Digest identifies the file paths and exact bytes consumed by Parse, in
+// read order. Hashing through the parser keeps the effective values and the
+// change-detection digest on one coherent filesystem snapshot.
+func (c *Config) Digest() string {
+	h := sha256.New()
+	for i, file := range c.files {
+		h.Write([]byte(file))
+		h.Write([]byte{0})
+		h.Write(c.digests[i][:])
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Value returns the effective value of keyword, lowercased, falling back to
@@ -128,7 +146,7 @@ func (c *Config) RemoteListenPorts() (ipv4, ipv6 []int) {
 
 // parseFile reads one config file, following Include directives relative to
 // rootDir. It reports whether the file was readable.
-func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[string]struct{}) bool {
+func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[string]struct{}, collectOnly bool) bool {
 	if depth > maxIncludeDepth {
 		return false
 	}
@@ -147,9 +165,13 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[st
 	}
 	defer func() { _ = f.Close() }()
 	c.files = append(c.files, path)
+	c.digests = append(c.digests, [sha256.Size]byte{})
+	digestIndex := len(c.digests) - 1
+	contentHash := sha256.New()
+	defer func() { copy(c.digests[digestIndex][:], contentHash.Sum(nil)) }()
 
 	inMatch := false
-	reader := bufio.NewReader(f)
+	reader := bufio.NewReader(io.TeeReader(f, contentHash))
 	for {
 		rawLine, more := readLine(reader)
 		if !more {
@@ -165,20 +187,14 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[st
 			continue
 		}
 
-		// A Match block runs to the next Match keyword or EOF regardless of
-		// indentation, per sshd_config(5). Everything inside it is
-		// connection-scoped, so the global view skips it -- including any
-		// Include, whose contents would also be Match-scoped.
+		// A Match block runs to EOF in the effective global view. Its
+		// directives do not apply globally, but Include targets are still read
+		// by sshd and must be recorded for change detection.
 		if keyword == "match" {
 			inMatch = true
 			continue
 		}
-		if inMatch {
-			continue
-		}
-
-		switch keyword {
-		case "include":
+		if keyword == "include" {
 			// sshd resolves a relative Include against its config directory,
 			// not against the including file, so nested drop-ins agree with
 			// the top-level file.
@@ -191,9 +207,16 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[st
 					continue
 				}
 				for _, m := range matches {
-					c.parseFile(fsys, m, rootDir, depth+1, seen)
+					c.parseFile(fsys, m, rootDir, depth+1, seen, collectOnly || inMatch)
 				}
 			}
+			continue
+		}
+		if inMatch || collectOnly {
+			continue
+		}
+
+		switch keyword {
 		case "port":
 			if port, valid := parsePort(args[0]); valid {
 				c.ports = append(c.ports, port)

@@ -289,4 +289,7 @@ func TestCheckCrontabs_CronDReadErrorLeavesBaseline(t *testing.T) {
 	if !ok || got != "oldhash" {
 		t.Fatalf("cron.d baseline = %q, %v; want oldhash, true", got, ok)
 	}
+	if _, ok := store.GetRaw(cronDBaselineKey); ok {
+		t.Fatal("incomplete cron.d scan recorded a completed baseline")
+	}
 }

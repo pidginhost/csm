@@ -3,7 +3,6 @@ package alert
 import (
 	"path"
 	"strings"
-	"unicode"
 )
 
 const redactedToken = "[REDACTED]"
@@ -18,15 +17,15 @@ func RedactCommandLine(s string) string {
 	if s == "" {
 		return s
 	}
-	tokens := splitTokens(s)
+	display, tokens := splitTokens(s)
 	if len(tokens) == 0 {
-		return s
+		return display
 	}
 
 	mysqlAt := -1
 	sshpassAt := -1
 	for i, tok := range tokens {
-		base := strings.ToLower(path.Base(tok.text))
+		base := strings.ToLower(path.Base(strings.Trim(tok.text, "\"'")))
 		if mysqlAt < 0 && mysqlFamily[base] {
 			mysqlAt = i
 		}
@@ -46,19 +45,15 @@ func RedactCommandLine(s string) string {
 		switch {
 		case redactNext:
 			redactNext = false
-			if !strings.HasPrefix(text, "-") {
-				tok.text = redactedToken
-				changed = changed || tok.text != text
-				continue
-			}
+			tok.text = redactedToken
+			changed = changed || tok.text != text
+			continue
 		case redactNextPair:
 			redactNextPair = false
-			if !strings.HasPrefix(text, "-") {
-				if r, ok := redactPair(text); ok {
-					tok.text = r
-					changed = true
-					continue
-				}
+			if r, ok := redactPair(text); ok {
+				tok.text = r
+				changed = true
+				continue
 			}
 		}
 
@@ -69,6 +64,12 @@ func RedactCommandLine(s string) string {
 		}
 		if sshpassAt >= 0 && i == sshpassAt {
 			sshpassPending = true
+		}
+		if sshpassPending && i > sshpassAt && len(text) > 2 && strings.HasPrefix(text, "-p") && text[2] != '-' {
+			sshpassPending = false
+			tok.text = "-p" + redactedToken
+			changed = true
+			continue
 		}
 		if sshpassPending && i > sshpassAt && text == "-p" {
 			sshpassPending = false
@@ -83,12 +84,27 @@ func RedactCommandLine(s string) string {
 			redactNextPair = true
 			continue
 		}
-		if strings.Contains(text, "://") {
+		hasURL := strings.Contains(text, "://")
+		if !hasURL {
+			if r, ok := redactAssignments(text); ok {
+				tok.text = r
+				changed = true
+				continue
+			}
+		}
+		if tok.argv && strings.ContainsAny(text, " \t\n\r\v\f") {
+			if r := RedactCommandLine(text); r != text {
+				tok.text = r
+				changed = true
+				continue
+			}
+		}
+		if hasURL {
 			if r := redactURLToken(text); r != text {
 				tok.text = r
 				changed = true
+				continue
 			}
-			continue
 		}
 		if r, ok := redactAssignments(text); ok {
 			tok.text = r
@@ -96,33 +112,86 @@ func RedactCommandLine(s string) string {
 		}
 	}
 	if !changed {
-		return s
+		return display
 	}
 
 	var b strings.Builder
-	b.Grow(len(s))
+	b.Grow(len(display))
 	last := 0
 	for _, tok := range tokens {
-		b.WriteString(s[last:tok.start])
+		b.WriteString(display[last:tok.start])
 		b.WriteString(tok.text)
 		last = tok.end
 	}
-	b.WriteString(s[last:])
+	b.WriteString(display[last:])
 	return b.String()
 }
 
 type cmdToken struct {
 	start, end int
 	text       string
+	argv       bool
 }
 
-func splitTokens(s string) []cmdToken {
+func splitTokens(s string) (string, []cmdToken) {
+	if strings.IndexByte(s, 0) >= 0 {
+		for strings.HasSuffix(s, "\x00") {
+			s = strings.TrimSuffix(s, "\x00")
+		}
+		display := strings.ReplaceAll(s, "\x00", " ")
+		var tokens []cmdToken
+		start := 0
+		for start <= len(s) {
+			end := strings.IndexByte(s[start:], 0)
+			if end < 0 {
+				end = len(s)
+			} else {
+				end += start
+			}
+			if end > start {
+				tokens = append(tokens, cmdToken{start: start, end: end, text: display[start:end], argv: true})
+			}
+			if end == len(s) {
+				break
+			}
+			start = end + 1
+		}
+		return display, tokens
+	}
+
 	var tokens []cmdToken
 	start := -1
-	for i, r := range s {
-		if unicode.IsSpace(r) {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f' {
 			if start >= 0 {
-				tokens = append(tokens, cmdToken{start, i, s[start:i]})
+				tokens = append(tokens, cmdToken{start: start, end: i, text: s[start:i]})
 				start = -1
 			}
 			continue
@@ -132,9 +201,9 @@ func splitTokens(s string) []cmdToken {
 		}
 	}
 	if start >= 0 {
-		tokens = append(tokens, cmdToken{start, len(s), s[start:]})
+		tokens = append(tokens, cmdToken{start: start, end: len(s), text: s[start:]})
 	}
-	return tokens
+	return s, tokens
 }
 
 var mysqlFamily = map[string]bool{
@@ -214,11 +283,13 @@ func sensitiveKey(key string) bool {
 	parts := strings.FieldsFunc(lower, func(r rune) bool { return r == '_' || r == '-' || r == '.' })
 	hasKey := false
 	hasKeyQualifier := false
-	for _, p := range parts {
+	for i, p := range parts {
 		switch {
-		case strings.Contains(p, "password"), strings.Contains(p, "passwd"),
-			p == "pass", strings.HasSuffix(p, "pwd"),
-			strings.Contains(p, "secret"), strings.Contains(p, "token"),
+		case p == "password", strings.HasSuffix(p, "password"),
+			p == "passwd", strings.HasSuffix(p, "passwd"),
+			p == "pass" && i == len(parts)-1, p == "pwd", strings.HasSuffix(p, "pwd"),
+			p == "secret", strings.HasSuffix(p, "secret"),
+			p == "token", strings.HasSuffix(p, "token"),
 			p == "apikey", p == "credential", p == "credentials":
 			return true
 		case p == "key":

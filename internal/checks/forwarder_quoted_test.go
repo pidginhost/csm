@@ -28,3 +28,20 @@ func TestParseValiasLineKeepsSafeQuotedBuiltins(t *testing.T) {
 		t.Fatalf("cPanel autoresponder flagged as pipe forwarder: %q", dest)
 	}
 }
+
+func TestSplitValiasDestsDoesNotHideAfterUnterminatedQuote(t *testing.T) {
+	dests := splitValiasDests(`"local@example.com, attacker@external.test`)
+	if len(dests) != 2 {
+		t.Fatalf("dests = %#v, want two conservatively split destinations", dests)
+	}
+	if dests[1] != "attacker@external.test" {
+		t.Fatalf("second destination = %q, want attacker address", dests[1])
+	}
+}
+
+func TestSplitValiasDestsExposesPipeAfterUnterminatedQuote(t *testing.T) {
+	dests := splitValiasDests(`"|/home/bob/dropper, local@example.com`)
+	if len(dests) != 2 || !isPipeForwarder(dests[0]) {
+		t.Fatalf("unterminated quote hid pipe destination: %#v", dests)
+	}
+}

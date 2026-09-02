@@ -30,28 +30,71 @@ func moveExportedArchive(src, dst, wantSHA string) error {
 	if err != nil {
 		return err
 	}
-	if err := renameExportFile(src, dst); err == nil {
-		_ = renameExportFile(src+".sha256", dst+".sha256")
-		// Nothing else references the staged copy after this, so the new
-		// directory entries have to survive a crash on their own.
-		return syncParentDir(filepath.Dir(dst))
-	} else if !isCrossDevice(err) {
-		return fmt.Errorf("moving archive into place: %w", err)
-	}
-
-	if err := copyFileVerified(src, dst, wantSHA); err != nil {
+	// Verify the staged archive before anything commits it. The rename path
+	// never reads the bytes, so a staged file damaged or replaced between
+	// the daemon's write and this move would be published unchecked; only
+	// the cross-filesystem copy used to be verified.
+	gotSHA, err := fileSHA256(src)
+	if err != nil {
 		return err
 	}
-	if companion, err := os.ReadFile(src + ".sha256"); err == nil {
-		if err := writeExportFileAtomic(dst+".sha256", companion); err != nil {
-			return fmt.Errorf("writing companion digest: %w", err)
+	wantSHA = strings.ToLower(strings.TrimSpace(wantSHA))
+	if wantSHA == "" {
+		wantSHA = gotSHA
+	}
+	if len(wantSHA) != sha256.Size*2 {
+		return fmt.Errorf("invalid export digest %q", wantSHA)
+	}
+	if _, err := hex.DecodeString(wantSHA); err != nil {
+		return fmt.Errorf("invalid export digest %q: %w", wantSHA, err)
+	}
+	if gotSHA != wantSHA {
+		return fmt.Errorf("staged archive digest %s does not match export digest %s", gotSHA, wantSHA)
+	}
+
+	if renameErr := renameExportFile(src, dst); renameErr == nil {
+		// Nothing else references the staged copy after this, so the new
+		// directory entries have to survive a crash on their own.
+		if syncErr := syncParentDir(filepath.Dir(dst)); syncErr != nil {
+			return syncErr
 		}
+	} else if !isCrossDevice(renameErr) {
+		return fmt.Errorf("moving archive into place: %w", renameErr)
+	} else if copyErr := copyFileVerified(src, dst, wantSHA); copyErr != nil {
+		return copyErr
+	}
+
+	// Write the companion from the digest just verified rather than moving
+	// the staged one: a stale or planted companion must not travel with a
+	// good archive, and it has to name the destination file.
+	companion := []byte(fmt.Sprintf("%s  %s\n", wantSHA, filepath.Base(dst)))
+	if err := writeExportFileAtomic(dst+".sha256", companion); err != nil {
+		return fmt.Errorf("writing companion digest: %w", err)
 	}
 	_ = os.Remove(src + ".sha256")
-	if err := os.Remove(src); err != nil {
+	if err := os.Remove(src); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing staged archive: %w", err)
 	}
+	// The daemon stages each export in its own directory; drop it once the
+	// archive has moved. A directory still holding another export stays.
+	_ = os.Remove(filepath.Dir(src))
 	return nil
+}
+
+// fileSHA256 hashes a file already in CSM's own hands, so the move can prove
+// the staged bytes match what the daemon reported before the archive is
+// committed anywhere.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path) // #nosec G304 -- path is the staged archive returned by the local daemon.
+	if err != nil {
+		return "", fmt.Errorf("opening staged archive: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hashing staged archive: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func isCrossDevice(err error) bool {

@@ -147,6 +147,7 @@ func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Stor
 		// Read cmdline - real kernel threads have empty cmdline
 		cmdline, _ := osFS.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 		cmdStr := strings.TrimRight(strings.ReplaceAll(string(cmdline), "\x00", " "), " ")
+		safeCmdStr := redactProcCommandLine(cmdline)
 
 		// Check if the process name contains brackets (faking kernel thread)
 		// or if cmdline starts with [
@@ -160,7 +161,7 @@ func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Stor
 				Severity: alert.Critical,
 				Check:    "fake_kernel_thread",
 				Message:  fmt.Sprintf("Non-root process masquerading as kernel thread: [%s]", name),
-				Details:  fmt.Sprintf("PID: %s, UID: %d, exe: %s, cmdline: %s", pid, uidInt, exe, alert.RedactCommandLine(cmdStr)),
+				Details:  fmt.Sprintf("PID: %s, UID: %d, exe: %s, cmdline: %s", pid, uidInt, exe, safeCmdStr),
 				PID:      pidInt,
 			})
 		}
@@ -198,6 +199,7 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 		exe, _ := osFS.Readlink(exePath)
 		cmdline, _ := osFS.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 		cmdStr := strings.TrimRight(strings.ReplaceAll(string(cmdline), "\x00", " "), " ")
+		safeCmdStr := redactProcCommandLine(cmdline)
 
 		// Check executable name
 		exeName := filepath.Base(exe)
@@ -207,7 +209,7 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 					Severity: alert.Critical,
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Suspicious process name: %s", exeName),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, alert.RedactCommandLine(cmdStr)),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, safeCmdStr),
 					PID:      pidInt,
 				})
 			}
@@ -221,7 +223,7 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 					Severity: alert.Critical,
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Suspicious cmdline pattern: %s", s),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, alert.RedactCommandLine(cmdStr)),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, safeCmdStr),
 					PID:      pidInt,
 				})
 				break
@@ -235,7 +237,7 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 					Severity: alert.High,
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Process running from suspicious path: %s", exe),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, alert.RedactCommandLine(cmdStr)),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, safeCmdStr),
 					PID:      pidInt,
 				})
 				break
@@ -268,6 +270,7 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 			continue
 		}
 		cmdStr := strings.ReplaceAll(string(cmdline), "\x00", " ")
+		safeCmdStr := redactProcCommandLine(cmdline)
 
 		// Only check lsphp processes
 		if !strings.Contains(cmdStr, "lsphp") {
@@ -295,7 +298,7 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 					Severity: alert.Critical,
 					Check:    "php_suspicious_execution",
 					Message:  fmt.Sprintf("PHP executing from suspicious path: %s", sus),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uidText, alert.RedactCommandLine(strings.TrimSpace(cmdStr))),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uidText, safeCmdStr),
 					PID:      pidInt,
 					Process:  proc,
 				})
@@ -305,4 +308,8 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 	}
 
 	return findings
+}
+
+func redactProcCommandLine(raw []byte) string {
+	return strings.TrimSpace(alert.RedactCommandLine(string(raw)))
 }

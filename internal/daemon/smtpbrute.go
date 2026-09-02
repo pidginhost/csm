@@ -28,18 +28,18 @@ type smtpIPEntry struct {
 	lastSeen        time.Time
 }
 
-// evictionRank places a source entry for enforceMaxTracked: failures inside
-// the fast window or slow-brute evidence (including a recorded success)
-// inside the slow window make it active tracking that goes last.
+// evictionRank keeps recent successful clients and meaningful accumulated
+// evidence behind disposable one-shot failure entries. This prevents a fresh
+// one-failure-per-IP flood from evicting legitimate source history.
 func (e *smtpIPEntry) evictionRank(now time.Time, window, slowWindow time.Duration) int {
-	if hasTimeAfter(e.times, now.Add(-window)) {
-		return evictionRankActiveIP
-	}
 	if slowWindow > 0 {
 		cutoff := now.Add(-slowWindow)
-		if (!e.slowLastSuccess.IsZero() && e.slowLastSuccess.After(cutoff)) || hasTimeAfter(e.slowTimes, cutoff) {
-			return evictionRankActiveIP
+		if (!e.slowLastSuccess.IsZero() && !e.slowLastSuccess.Before(cutoff)) || countTimesAtOrAfter(e.slowTimes, cutoff) > 1 {
+			return evictionRankProtectedIP
 		}
+	}
+	if hasTimeAtOrAfter(e.times, now.Add(-window)) {
+		return evictionRankActiveIP
 	}
 	return evictionRankIdleIP
 }

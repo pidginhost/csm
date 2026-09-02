@@ -258,3 +258,16 @@ func TestProbeWebhookUnreachable(t *testing.T) {
 		t.Fatalf("probeWebhook :1 = %+v, want error", results)
 	}
 }
+
+func TestProbeWebhookErrorRedactsOriginalURL(t *testing.T) {
+	rawURL := "http://user:secret@127.0.0.1:1/private/path?token=topsecret"
+	results := probeWebhook(rawURL)
+	if len(results) != 1 || results[0].Level != "error" {
+		t.Fatalf("probeWebhook = %+v, want error", results)
+	}
+	for _, secret := range []string{"secret", "/private/path", "topsecret"} {
+		if strings.Contains(results[0].Message, secret) {
+			t.Fatalf("probe error leaked %q in %q", secret, results[0].Message)
+		}
+	}
+}

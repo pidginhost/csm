@@ -1274,8 +1274,10 @@ func modsecAuditClientIP(line string) string {
 	if len(fields) < 5 || !strings.HasPrefix(fields[0], "[") {
 		return ""
 	}
-	if net.ParseIP(fields[3]) == nil {
+	clientIP := strings.Trim(fields[3], "[]")
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
 		return ""
 	}
-	return fields[3]
+	return ip.String()
 }

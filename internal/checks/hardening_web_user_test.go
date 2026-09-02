@@ -62,3 +62,19 @@ func TestGetWebServerGIDsIncludesPlatformUsers(t *testing.T) {
 		t.Fatalf("nobody must stay in the set: %v", gids)
 	}
 }
+
+func TestGetWebServerGIDsIgnoresMalformedGroupIDs(t *testing.T) {
+	withWebServerUsers(t, []string{"nginx"}, "/var/spool/cron")
+	withMockOS(t, &mockOS{
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/group" {
+				return []byte("nginx:x:not-a-number:\nwww-data:x:4294967296:\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	if gids := getWebServerGIDs(); len(gids) != 0 {
+		t.Fatalf("malformed web group IDs were accepted: %v", gids)
+	}
+}

@@ -1136,15 +1136,37 @@ var systemdUnitFile = "/etc/systemd/system/csm.service"
 // ReadWritePaths grants are writable, and a state_path outside them makes
 // the daemon crash-loop on its first write while validate passes.
 func probeStatePathSandbox(statePath string) []ValidationResult {
-	data, err := os.ReadFile(systemdUnitFile)
+	unit, err := readSystemdUnitAndDropIns(systemdUnitFile)
 	if err != nil {
 		return nil
 	}
-	covered, known := unitCoversStatePath(string(data), statePath)
+	covered, known := unitCoversStatePath(unit, statePath)
 	if !known || covered {
 		return nil
 	}
-	return []ValidationResult{{"error", "state_path", fmt.Sprintf("%s is outside the service unit's ReadWritePaths; the daemon cannot write it under ProtectSystem=strict (unit: %s)", statePath, systemdUnitFile)}}
+	return []ValidationResult{{"error", "state_path", fmt.Sprintf("%s is not writable under the service unit's ProtectSystem and ReadWritePaths settings (unit: %s)", statePath, systemdUnitFile)}}
+}
+
+func readSystemdUnitAndDropIns(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var unit strings.Builder
+	unit.Write(data)
+	matches, err := filepath.Glob(filepath.Join(path+".d", "*.conf"))
+	if err != nil {
+		return "", err
+	}
+	for _, dropIn := range matches {
+		data, err = os.ReadFile(dropIn)
+		if err != nil {
+			return "", err
+		}
+		unit.WriteByte('\n')
+		unit.Write(data)
+	}
+	return unit.String(), nil
 }
 
 // unitCoversStatePath parses a systemd unit and reports whether statePath
@@ -1153,10 +1175,18 @@ func probeStatePathSandbox(statePath string) []ValidationResult {
 // known is false when the unit text carries no sandbox directives at all.
 func unitCoversStatePath(unit, statePath string) (covered, known bool) {
 	statePath = filepath.Clean(statePath)
-	strict := false
-	var grants []string
-	for _, raw := range strings.Split(unit, "\n") {
+	protectSystem := "false"
+	var stateGrants, pathGrants []string
+	section := ""
+	for _, raw := range systemdLogicalLines(unit) {
 		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+			continue
+		}
+		if section != "service" {
+			continue
+		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
@@ -1166,18 +1196,37 @@ func unitCoversStatePath(unit, statePath string) (covered, known bool) {
 		switch key {
 		case "ProtectSystem":
 			known = true
-			strict = value == "strict"
+			protectSystem = strings.ToLower(strings.Trim(value, "\"'"))
 		case "StateDirectory":
 			known = true
-			for _, name := range strings.Fields(value) {
-				grants = append(grants, filepath.Join("/var/lib", name))
+			if value == "" {
+				stateGrants = nil
+				continue
+			}
+			words, valid := splitSystemdWords(value)
+			if !valid {
+				continue
+			}
+			for _, name := range words {
+				name, _, _ = strings.Cut(name, ":")
+				if name != "" {
+					stateGrants = append(stateGrants, filepath.Join("/var/lib", name))
+				}
 			}
 		case "ReadWritePaths":
 			known = true
-			for _, p := range strings.Fields(value) {
-				p = strings.TrimLeft(p, "-+")
+			if value == "" {
+				pathGrants = nil
+				continue
+			}
+			words, valid := splitSystemdWords(value)
+			if !valid {
+				continue
+			}
+			for _, p := range words {
+				p = strings.TrimLeft(p, "-+!")
 				if p != "" {
-					grants = append(grants, filepath.Clean(p))
+					pathGrants = append(pathGrants, filepath.Clean(p))
 				}
 			}
 		}
@@ -1185,15 +1234,116 @@ func unitCoversStatePath(unit, statePath string) (covered, known bool) {
 	if !known {
 		return false, false
 	}
-	if !strict {
-		return true, true
-	}
-	for _, g := range grants {
-		if statePath == g || strings.HasPrefix(statePath, g+"/") {
+	for _, g := range append(stateGrants, pathGrants...) {
+		if pathContains(g, statePath) {
 			return true, true
 		}
 	}
-	return false, true
+	switch protectSystem {
+	case "strict":
+		return false, true
+	case "full":
+		return !pathUnderAny(statePath, "/usr", "/boot", "/efi", "/etc"), true
+	case "true", "yes":
+		return !pathUnderAny(statePath, "/usr", "/boot", "/efi"), true
+	default:
+		return true, true
+	}
+}
+
+func systemdLogicalLines(unit string) []string {
+	var lines []string
+	var logical strings.Builder
+	for _, raw := range strings.Split(unit, "\n") {
+		raw = strings.TrimSuffix(raw, "\r")
+		trailingSlashes := 0
+		for i := len(raw) - 1; i >= 0 && raw[i] == '\\'; i-- {
+			trailingSlashes++
+		}
+		continued := trailingSlashes%2 == 1
+		if continued {
+			raw = raw[:len(raw)-1]
+		}
+		logical.WriteString(raw)
+		if continued {
+			logical.WriteByte(' ')
+			continue
+		}
+		lines = append(lines, logical.String())
+		logical.Reset()
+	}
+	if logical.Len() > 0 {
+		lines = append(lines, logical.String())
+	}
+	return lines
+}
+
+func splitSystemdWords(value string) ([]string, bool) {
+	var words []string
+	var word strings.Builder
+	var quote byte
+	escaped := false
+	flush := func() {
+		if word.Len() > 0 {
+			words = append(words, word.String())
+			word.Reset()
+		}
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if escaped {
+			word.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			} else {
+				word.WriteByte(c)
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			continue
+		}
+		if c == ' ' || c == '\t' {
+			flush()
+			continue
+		}
+		word.WriteByte(c)
+	}
+	if escaped {
+		word.WriteByte('\\')
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return words, true
+}
+
+func pathContains(parent, child string) bool {
+	parent = filepath.Clean(parent)
+	child = filepath.Clean(child)
+	if parent == string(filepath.Separator) {
+		return filepath.IsAbs(child)
+	}
+	return child == parent || strings.HasPrefix(child, parent+string(filepath.Separator))
+}
+
+func pathUnderAny(path string, roots ...string) bool {
+	for _, root := range roots {
+		if pathContains(root, path) {
+			return true
+		}
+	}
+	return false
 }
 
 // probeStatePath checks that the state directory exists and is writable.
@@ -1261,11 +1411,15 @@ func probeClamd(socket string) []ValidationResult {
 
 // probeWebhook performs an HTTP HEAD request to verify the webhook endpoint is reachable.
 // DNS/TCP/TLS failures are errors; HTTP status codes (even 401/403/404/405) mean reachable.
-func probeWebhook(url string) []ValidationResult {
+func probeWebhook(rawURL string) []ValidationResult {
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Head(url)
+	resp, err := client.Head(rawURL)
 	if err != nil {
-		return []ValidationResult{{"error", "alerts.webhook.url", fmt.Sprintf("cannot reach %s: %v", RedactURL(url), err)}}
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return []ValidationResult{{"error", "alerts.webhook.url", fmt.Sprintf("cannot reach %s: %v", RedactURL(rawURL), err)}}
 	}
 	resp.Body.Close()
 	return []ValidationResult{{"ok", "alerts.webhook.url", fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)}}

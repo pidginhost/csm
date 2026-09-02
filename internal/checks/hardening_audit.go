@@ -1996,19 +1996,75 @@ func checkFirewallDefaultPolicy(hasNft bool, nftRules string, hasIpt bool, iptRu
 // policy on a chain hooked at input. nft prints the hook and the policy on
 // one line; a policy on a following line inside the same chain also counts.
 func nftInputDefaultDeny(nftRules string) bool {
-	inInputChain := false
+	inChain := false
+	chainDepth := 0
+	inputHook := false
+	denyPolicy := false
 	for _, raw := range strings.Split(nftRules, "\n") {
-		line := strings.ToLower(strings.TrimSpace(raw))
-		switch {
-		case strings.HasPrefix(line, "chain "):
-			inInputChain = false
-		case line == "}":
-			inInputChain = false
+		line := strings.ToLower(strings.TrimSpace(nftCodeOnly(raw)))
+		opens := strings.Count(line, "{")
+		closes := strings.Count(line, "}")
+		if strings.HasPrefix(line, "chain ") {
+			inChain = true
+			chainDepth = 0
+			inputHook = false
+			denyPolicy = false
 		}
-		if strings.Contains(line, "hook input") {
-			inInputChain = true
+		if !inChain {
+			continue
 		}
-		if inInputChain && (strings.Contains(line, "policy drop") || strings.Contains(line, "policy reject")) {
+		inputHook = inputHook || nftHasWordPair(line, "hook", "input")
+		denyPolicy = denyPolicy || nftHasWordPair(line, "policy", "drop") || nftHasWordPair(line, "policy", "reject")
+		if inputHook && denyPolicy {
+			return true
+		}
+		chainDepth += opens - closes
+		if chainDepth <= 0 && closes > 0 {
+			inChain = false
+		}
+	}
+	return false
+}
+
+func nftCodeOnly(line string) string {
+	var b strings.Builder
+	var quote byte
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '#' {
+			break
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func nftHasWordPair(line, first, second string) bool {
+	words := strings.FieldsFunc(line, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
+	})
+	for i := 1; i < len(words); i++ {
+		if words[i-1] == first && words[i] == second {
 			return true
 		}
 	}

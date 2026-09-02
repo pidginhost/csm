@@ -101,11 +101,12 @@ func (s *Server) apiEmailQuarantineList(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.emailQuarantineHandle() == nil {
+	quarantine := s.emailQuarantineHandle()
+	if quarantine == nil {
 		writeJSON(w, []emailav.QuarantineMetadata{})
 		return
 	}
-	msgs, err := s.emailQuarantineHandle().ListMessages()
+	msgs, err := quarantine.ListMessages()
 	if err != nil {
 		writeJSONError(w, "Failed to list quarantine", http.StatusInternalServerError)
 		return
@@ -138,7 +139,8 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if s.emailQuarantineHandle() == nil {
+	quarantine := s.emailQuarantineHandle()
+	if quarantine == nil {
 		writeJSONError(w, "Email quarantine not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -149,7 +151,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Unknown action", http.StatusBadRequest)
 			return
 		}
-		meta, err := s.emailQuarantineHandle().GetMessage(msgID)
+		meta, err := quarantine.GetMessage(msgID)
 		if err != nil {
 			writeJSONError(w, "Message not found", http.StatusNotFound)
 			return
@@ -161,7 +163,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Unknown action; use /release", http.StatusBadRequest)
 			return
 		}
-		if err := s.emailQuarantineHandle().ReleaseMessage(msgID); err != nil {
+		if err := quarantine.ReleaseMessage(msgID); err != nil {
 			writeJSONError(w, "Failed to release message: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -172,7 +174,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Unknown action", http.StatusBadRequest)
 			return
 		}
-		if err := s.emailQuarantineHandle().DeleteMessage(msgID); err != nil {
+		if err := quarantine.DeleteMessage(msgID); err != nil {
 			writeJSONError(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -229,8 +231,8 @@ func (s *Server) apiEmailAVStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Count of currently quarantined messages.
-	if s.emailQuarantineHandle() != nil {
-		msgs, err := s.emailQuarantineHandle().ListMessages()
+	if quarantine := s.emailQuarantineHandle(); quarantine != nil {
+		msgs, err := quarantine.ListMessages()
 		if err == nil {
 			resp.Quarantined = len(msgs)
 		}

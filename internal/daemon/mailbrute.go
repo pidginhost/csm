@@ -1201,32 +1201,48 @@ const (
 	evictionRankSubnet
 	evictionRankIdleIP
 	evictionRankActiveIP
+	evictionRankProtectedIP
 )
 
-// evictionRank places a source entry: one with failures inside the fast
-// window or slow-brute evidence inside the slow window is active tracking
-// and goes last; an idle source, good-source history or not, goes before
-// it but after every account and subnet key.
+// evictionRank keeps established legitimate sources and meaningful slow
+// evidence behind disposable one-shot failure entries. Otherwise an attacker
+// can send one failure from each fresh IP, make every attacker entry "active",
+// and evict the older good-source standing that prevents false blocks.
 func (e *mailIPEntry) evictionRank(now time.Time, window, slowWindow time.Duration) int {
-	if hasTimeAfter(e.times, now.Add(-window)) {
-		return evictionRankActiveIP
+	for _, last := range e.goodLast {
+		if !last.Before(now.Add(-mailGoodSourceTTL)) {
+			return evictionRankProtectedIP
+		}
 	}
 	if slowWindow > 0 {
 		cutoff := now.Add(-slowWindow)
-		if (!e.slowLastSuccess.IsZero() && e.slowLastSuccess.After(cutoff)) || hasTimeAfter(e.slowTimes, cutoff) {
-			return evictionRankActiveIP
+		if (!e.slowLastSuccess.IsZero() && !e.slowLastSuccess.Before(cutoff)) || countTimesAtOrAfter(e.slowTimes, cutoff) > 1 {
+			return evictionRankProtectedIP
 		}
+	}
+	if hasTimeAtOrAfter(e.times, now.Add(-window)) {
+		return evictionRankActiveIP
 	}
 	return evictionRankIdleIP
 }
 
-func hasTimeAfter(times []time.Time, cutoff time.Time) bool {
+func hasTimeAtOrAfter(times []time.Time, cutoff time.Time) bool {
 	for _, ts := range times {
-		if ts.After(cutoff) {
+		if !ts.Before(cutoff) {
 			return true
 		}
 	}
 	return false
+}
+
+func countTimesAtOrAfter(times []time.Time, cutoff time.Time) int {
+	n := 0
+	for _, ts := range times {
+		if !ts.Before(cutoff) {
+			n++
+		}
+	}
+	return n
 }
 
 // isMailAuthBackendError reports whether a dovecot log line shows the auth

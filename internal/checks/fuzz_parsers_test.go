@@ -103,6 +103,20 @@ func FuzzParseFTPLoginAccount(f *testing.F) {
 	})
 }
 
+func FuzzSplitValiasDests(f *testing.F) {
+	for _, seed := range []string{
+		`local@example.test,"|/usr/bin/handler --arg=a,b"`,
+		`"unterminated,attacker@external.test,|/tmp/run`,
+		`'quoted@example.test',plain@example.test`,
+		"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		_ = splitValiasDests(input)
+	})
+}
+
 func FuzzFirstField(f *testing.F) {
 	f.Add("203.0.113.5 - - [14/Apr/2026:10:00:00 +0000] \"GET /\"")
 	f.Add("2001:db8::1 rest of line")

@@ -339,3 +339,49 @@ func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+func TestMoveExportedArchiveDigestMismatchPreservesDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "stage", "final.csmbak")
+	if err := os.Mkdir(filepath.Dir(src), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "final.csmbak")
+	writeExportFixture(t, src, "new-archive")
+	if err := os.WriteFile(dst, []byte("known-good"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := moveExportedArchive(src, dst, sha256Hex("wrong")); err == nil {
+		t.Fatal("same-filesystem move accepted a digest mismatch")
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil || string(data) != "known-good" {
+		t.Fatalf("existing destination was damaged: %q, %v", data, err)
+	}
+}
+
+func TestMoveExportedArchiveWritesFinalBasenameToCompanion(t *testing.T) {
+	dir := t.TempDir()
+	stageDir := filepath.Join(dir, "exports", "export-1")
+	if err := os.MkdirAll(stageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(stageDir, "final.csmbak")
+	dst := filepath.Join(dir, "backup", "final.csmbak")
+	writeExportFixture(t, src, "archive-bytes")
+	if err := moveExportedArchive(src, dst, sha256Hex("archive-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	companion, err := os.ReadFile(dst + ".sha256")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256Hex("archive-bytes") + "  final.csmbak\n"
+	if string(companion) != want {
+		t.Fatalf("companion = %q, want %q", companion, want)
+	}
+	if _, err := os.Stat(stageDir); !os.IsNotExist(err) {
+		t.Fatalf("empty staging directory was not removed: %v", err)
+	}
+}

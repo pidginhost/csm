@@ -368,10 +368,40 @@ func (c *ControlListener) handleHistorySince(argsRaw json.RawMessage) (any, erro
 // daemon is the single source of truth for paths; the CLI only supplies
 // where to write the archive. Import deliberately does NOT route through
 // the socket -- it requires a stopped daemon.
-// exportStagingPath places a staged export under the daemon's state
-// directory, named after the operator's requested file.
-func exportStagingPath(statePath, dstPath string) string {
-	return filepath.Join(statePath, "exports", filepath.Base(dstPath))
+const exportStagingMaxAge = 24 * time.Hour
+
+// prepareExportStagingPath creates a private per-request directory so
+// concurrent exports of the same basename cannot overwrite each other. Old
+// request directories are removed here so a client that dies after the daemon
+// replies cannot leave state storage growing forever.
+func prepareExportStagingPath(statePath, dstPath string, now time.Time) (string, error) {
+	base := filepath.Base(dstPath)
+	if base == "." || base == ".." || base == string(filepath.Separator) || base == "" {
+		return "", fmt.Errorf("destination must name an archive file")
+	}
+	exportDir := filepath.Join(statePath, "exports")
+	if err := os.MkdirAll(exportDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(exportDir, 0o700); err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(exportDir)
+	if err != nil {
+		return "", err
+	}
+	cutoff := now.Add(-exportStagingMaxAge)
+	for _, entry := range entries {
+		info, infoErr := entry.Info()
+		if infoErr == nil && info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(filepath.Join(exportDir, entry.Name()))
+		}
+	}
+	requestDir, err := os.MkdirTemp(exportDir, "export-")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(requestDir, base), nil
 }
 
 func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error) {
@@ -393,11 +423,14 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 	pi := platform.Detect()
 
 	dstPath := args.DstPath
+	staged := false
+	var err error
 	if args.Stage {
-		dstPath = exportStagingPath(cfg.StatePath, args.DstPath)
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0o700); err != nil {
+		dstPath, err = prepareExportStagingPath(cfg.StatePath, args.DstPath, time.Now())
+		if err != nil {
 			return nil, fmt.Errorf("creating export staging dir: %w", err)
 		}
+		staged = true
 	}
 
 	res, err := sdb.Export(store.ExportOptions{
@@ -416,6 +449,9 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 		},
 	})
 	if err != nil {
+		if staged {
+			_ = os.RemoveAll(filepath.Dir(dstPath))
+		}
 		return nil, err
 	}
 	return control.StoreExportResult{

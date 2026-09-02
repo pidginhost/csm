@@ -744,8 +744,11 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
 		})
 	}
-	if sdb := store.Global(); sdb != nil {
-		_ = sdb.FinishExternalScriptBaseline(externalScriptSiteKey(creds.dbName, prefix), time.Now())
+	queryComplete := creds.queryFailed == nil || !*creds.queryFailed
+	if queryComplete {
+		if sdb := store.Global(); sdb != nil {
+			_ = sdb.FinishExternalScriptBaseline(externalScriptSiteKey(creds.dbName, prefix), time.Now())
+		}
 	}
 
 	// Path 2: Inline script/code injection in core WP options that should

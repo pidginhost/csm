@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -69,4 +71,47 @@ func (db *DB) ClearFirewallRollback() error {
 		b := tx.Bucket([]byte(fwRollbackBucket))
 		return b.Delete([]byte(fwRollbackKey))
 	})
+}
+
+// DisarmFirewallRollbackSnapshot removes process-lifetime rollback intent
+// from a stopped, private bbolt snapshot. Backup and restore artifacts keep
+// durable firewall state, but must not make an old tentative configuration
+// write active again on a later daemon start.
+func DisarmFirewallRollbackSnapshot(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	snapshot, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		return fmt.Errorf("opening state snapshot: %w", err)
+	}
+	pending := false
+	if err := snapshot.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(fwRollbackBucket))
+		pending = bucket != nil && bucket.Get([]byte(fwRollbackKey)) != nil
+		return nil
+	}); err != nil {
+		_ = snapshot.Close()
+		return fmt.Errorf("checking firewall rollback snapshot: %w", err)
+	}
+	if !pending {
+		if err := snapshot.Close(); err != nil {
+			return fmt.Errorf("closing state snapshot: %w", err)
+		}
+		return nil
+	}
+	if err := snapshot.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(fwRollbackBucket))
+		if bucket == nil {
+			return nil
+		}
+		return bucket.Delete([]byte(fwRollbackKey))
+	}); err != nil {
+		_ = snapshot.Close()
+		return fmt.Errorf("disarming firewall rollback snapshot: %w", err)
+	}
+	if err := snapshot.Close(); err != nil {
+		return fmt.Errorf("closing state snapshot: %w", err)
+	}
+	return nil
 }

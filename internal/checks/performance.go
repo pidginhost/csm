@@ -255,6 +255,7 @@ func phpWorkersByUser() map[string][]string {
 		}
 		cmdStr := strings.ReplaceAll(string(data), "\x00", " ")
 		cmdStr = strings.TrimSpace(cmdStr)
+		safeCmdStr := redactProcCommandLine(data)
 
 		if !isPHPWorkerCommand(cmdStr) {
 			continue
@@ -277,7 +278,7 @@ func phpWorkersByUser() map[string][]string {
 		}
 
 		username := uidStringToUser(uid)
-		userProcs[username] = append(userProcs[username], cmdStr)
+		userProcs[username] = append(userProcs[username], safeCmdStr)
 	}
 	return userProcs
 }

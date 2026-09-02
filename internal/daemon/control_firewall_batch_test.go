@@ -2,15 +2,18 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func TestWriteFirewallRollbackFileCapturesEmptyRuleset(t *testing.T) {
@@ -196,6 +199,37 @@ func TestRecoverFirewallApplyConfirmedExpiredRestoresPreviousRuleset(t *testing.
 	requirePathMissing(t, legacyRollbackFile)
 }
 
+// A daemon restart lost the in-memory rollback hook installed by
+// apply-confirmed. The kernel snapshot was restored at expiry, but the
+// engine kept the unconfirmed configuration and rebuilt it on its next
+// Apply. Recovery must reinstall the hook from a persisted configuration
+// snapshot before restoring the ruleset.
+func TestRecoverFirewallApplyConfirmedRestoresPersistedEngineConfig(t *testing.T) {
+	d, confirmFile, rollbackFile, _, _ := setupFirewallDeadmanState(t)
+	writeTestFile(t, confirmFile, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	writeTestFile(t, rollbackFile, "flush ruleset\n")
+	previous := &firewall.FirewallConfig{Enabled: true, TCPIn: []int{22, 443}}
+	raw, err := json.Marshal(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(firewallConfigSnapshotPath(rollbackFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var restored *firewall.FirewallConfig
+	oldRestore := restoreFirewallEngineConfig
+	restoreFirewallEngineConfig = func(_ *Daemon, cfg *firewall.FirewallConfig) { restored = cfg }
+	t.Cleanup(func() { restoreFirewallEngineConfig = oldRestore })
+
+	d.recoverFirewallApplyConfirmed()
+
+	if restored == nil || !restored.Enabled || !slices.Equal(restored.TCPIn, previous.TCPIn) {
+		t.Fatalf("restored config = %+v, want %+v", restored, previous)
+	}
+	requirePathMissing(t, firewallConfigSnapshotPath(rollbackFile))
+}
+
 func TestRecoverFirewallApplyConfirmedFutureKeepsWindowFiles(t *testing.T) {
 	d, confirmFile, rollbackFile, _, seenFile := setupFirewallDeadmanState(t)
 	writeTestFile(t, confirmFile, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
@@ -306,6 +340,36 @@ func TestApplyFirewallDeadmanRejectsPendingWindowWithoutRemovingFiles(t *testing
 	requireFileContent(t, confirmFile, "existing-window")
 	requireFileContent(t, rollbackFile, "old snapshot")
 	requireFileContent(t, legacyRollbackFile, "old legacy")
+}
+
+func TestApplyFirewallDeadmanPendingKeepsExistingRollbackHook(t *testing.T) {
+	_, confirmFile, rollbackFile, legacyRollbackFile, _ := setupFirewallDeadmanState(t)
+	writeTestFile(t, confirmFile, "existing-window")
+	writeTestFile(t, rollbackFile, "old snapshot")
+
+	originalHookCalled := false
+	setFirewallDeadmanOnRollback(func() { originalHookCalled = true })
+	t.Cleanup(func() { setFirewallDeadmanOnRollback(nil) })
+	prepareCalled := false
+
+	err := applyFirewallDeadmanPrepared(confirmFile, rollbackFile, legacyRollbackFile, time.Minute,
+		func() (*firewall.FirewallConfig, error) {
+			prepareCalled = true
+			return &firewall.FirewallConfig{Enabled: true}, nil
+		}, func(*firewall.FirewallConfig) {}, func() error { return nil })
+	if err == nil {
+		t.Fatal("applyFirewallDeadmanPrepared succeeded with a pending window")
+	}
+	if prepareCalled {
+		t.Fatal("candidate configuration installed before the pending-window check")
+	}
+
+	firewallDeadmanMu.Lock()
+	runFirewallDeadmanOnRollbackLocked()
+	firewallDeadmanMu.Unlock()
+	if !originalHookCalled {
+		t.Fatal("pending attempt replaced the active window's rollback hook")
+	}
 }
 
 func TestApplyFirewallDeadmanHonorsPersistedDeadlineAfterSlowApply(t *testing.T) {

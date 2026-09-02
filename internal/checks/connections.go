@@ -2,7 +2,6 @@ package checks
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -320,24 +319,6 @@ func parseHex6Addr(s string) (net.IP, int) {
 	return ip, port
 }
 
-// hashSSHDConfigFiles hashes the effective sshd configuration: each file's
-// path and content in read order, so an added, removed or edited drop-in
-// changes the digest.
-func hashSSHDConfigFiles(paths []string) (string, error) {
-	h := sha256.New()
-	for _, p := range paths {
-		data, err := osFS.ReadFile(p)
-		if err != nil {
-			return "", err
-		}
-		h.Write([]byte(p))
-		h.Write([]byte{0})
-		h.Write(data)
-		h.Write([]byte{0})
-	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
 // CheckSSHDConfig monitors sshd_config for dangerous changes.
 func CheckSSHDConfig(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
@@ -348,10 +329,7 @@ func CheckSSHDConfig(ctx context.Context, _ *config.Config, store *state.Store) 
 	}
 	// Hash every file sshd reads, not only the root: a drop-in under an
 	// Include can flip PermitRootLogin while the root file stays identical.
-	hash, err := hashSSHDConfigFiles(parsed.Files())
-	if err != nil {
-		return nil
-	}
+	hash := parsed.Digest()
 
 	current := settingsFromSSHDConfig(parsed)
 

@@ -127,12 +127,14 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 	// only gets baselined; afterwards a file with no stored hash appeared
 	// since the last run and is reported, not silently absorbed.
 	_, cronDBaselined := store.GetRaw(cronDBaselineKey)
+	cronDBaselineComplete := globErr == nil
 	for _, path := range rankedCronDFiles {
 		if ctx.Err() != nil {
 			return findings
 		}
 		data, err := osFS.ReadFile(path)
 		if err != nil {
+			cronDBaselineComplete = false
 			continue
 		}
 		if ctx.Err() != nil {
@@ -158,7 +160,7 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 		}
 		store.SetRaw(key, hash)
 	}
-	if globErr == nil && ctx.Err() == nil {
+	if cronDBaselineComplete && ctx.Err() == nil {
 		store.SetRaw(cronDBaselineKey, "1")
 	}
 

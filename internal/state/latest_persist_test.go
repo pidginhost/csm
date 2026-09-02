@@ -87,3 +87,26 @@ func TestLatestFindingsPersistIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestDismissLatestFindingUpdatesPersistedDigest(t *testing.T) {
+	s := openTestStore(t)
+	findings := sampleFindings(2)
+	s.PurgeAndMergeFindings(nil, findings)
+
+	writes := 0
+	old := latestFindingsWriter
+	latestFindingsWriter = func(path string, perm os.FileMode, data []byte) error {
+		writes++
+		return old(path, perm, data)
+	}
+	t.Cleanup(func() { latestFindingsWriter = old })
+
+	s.DismissLatestFinding(findings[0].Key())
+	if writes != 1 {
+		t.Fatalf("dismiss writes = %d, want one digest-aware persist", writes)
+	}
+	s.PurgeAndMergeFindings(nil, nil)
+	if writes != 1 {
+		t.Fatalf("unchanged merge rewrote after dismiss: writes = %d", writes)
+	}
+}

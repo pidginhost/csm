@@ -1752,6 +1752,7 @@ func TestSettingsPageRendersFieldsetsAndSearch(t *testing.T) {
 		"Restart not confirmed.",
 		"settings-rollback-footer",
 		"settings-secret-set",
+		`data.error || ("Save failed: " + resp.status)`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("settings.js missing phase-6 hook %q", want)

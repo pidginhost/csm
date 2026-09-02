@@ -36,3 +36,15 @@ func TestStatusJSONCarriesStatusField(t *testing.T) {
 		t.Fatalf("snapshot fields not flattened: %v", m)
 	}
 }
+
+func TestStatusJSONHandlesNilSnapshot(t *testing.T) {
+	var buf bytes.Buffer
+	writeStatusJSON(&buf, nil, "offline")
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	if len(m) != 1 || m["status"] != "offline" {
+		t.Fatalf("nil snapshot JSON = %v, want only offline status", m)
+	}
+}

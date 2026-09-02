@@ -26,6 +26,11 @@ var dnsServerUsers = map[string]bool{
 // names the systemd-resolved stub.
 const resolvedUpstreamsPath = "/run/systemd/resolve/resolv.conf"
 
+const (
+	dnsmasqConfigPath = "/etc/dnsmasq.conf"
+	dnsmasqConfigGlob = "/etc/dnsmasq.d/*.conf"
+)
+
 // CheckDNSConnections looks for established connections to port 53 on
 // DNS servers that are NOT in /etc/resolv.conf. This catches DNS
 // tunneling, GSocket relay discovery, and malware using hardcoded resolvers.
@@ -125,13 +130,31 @@ func resolveDNSServerUIDs() map[string]bool {
 // host is expected to.
 func parseResolvers() []string {
 	resolvers := parseResolverFile("/etc/resolv.conf")
+	loopback := false
 	for _, r := range resolvers {
 		if ip := net.ParseIP(r); ip != nil && ip.IsLoopback() {
-			resolvers = append(resolvers, parseResolverFile(resolvedUpstreamsPath)...)
+			loopback = true
 			break
 		}
 	}
-	return resolvers
+	if loopback {
+		resolvers = append(resolvers, parseResolverFile(resolvedUpstreamsPath)...)
+		resolvers = append(resolvers, parseDNSMasqServerFile(dnsmasqConfigPath)...)
+		if paths, err := osFS.Glob(dnsmasqConfigGlob); err == nil {
+			for _, path := range paths {
+				resolvers = append(resolvers, parseDNSMasqServerFile(path)...)
+			}
+		}
+	}
+	seen := make(map[string]bool, len(resolvers))
+	unique := resolvers[:0]
+	for _, resolver := range resolvers {
+		if !seen[resolver] {
+			seen[resolver] = true
+			unique = append(unique, resolver)
+		}
+	}
+	return unique
 }
 
 func parseResolverFile(path string) []string {
@@ -153,4 +176,54 @@ func parseResolverFile(path string) []string {
 		}
 	}
 	return resolvers
+}
+
+func parseDNSMasqServerFile(path string) []string {
+	f, err := osFS.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+
+	var resolvers []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "server" {
+			continue
+		}
+		if fields := strings.Fields(value); len(fields) > 0 {
+			if ip := dnsmasqServerIP(fields[0]); ip != "" {
+				resolvers = append(resolvers, ip)
+			}
+		}
+	}
+	return resolvers
+}
+
+func dnsmasqServerIP(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "/") {
+		if slash := strings.LastIndexByte(value, '/'); slash >= 0 {
+			value = value[slash+1:]
+		}
+	}
+	if at := strings.IndexByte(value, '@'); at >= 0 {
+		value = value[:at]
+	}
+	if strings.HasPrefix(value, "[") {
+		if close := strings.IndexByte(value, ']'); close > 1 {
+			value = value[1:close]
+		}
+	} else if hash := strings.LastIndexByte(value, '#'); hash > 0 {
+		value = value[:hash]
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.String()
+	}
+	return ""
 }

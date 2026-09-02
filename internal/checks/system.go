@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -412,9 +413,11 @@ func getWebServerGIDs() map[uint32]bool {
 		}
 		name := fields[0]
 		if webServerGroupNames[name] || slices.Contains(webServerUsers(), name) {
-			gid := uint32(0)
-			fmt.Sscanf(fields[2], "%d", &gid)
-			gids[gid] = true
+			gid, parseErr := strconv.ParseUint(fields[2], 10, 32)
+			if parseErr != nil {
+				continue
+			}
+			gids[uint32(gid)] = true
 		}
 	}
 	return gids

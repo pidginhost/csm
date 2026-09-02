@@ -97,10 +97,13 @@ csm firewall rollback confirm
 csm firewall rollback revert
 ```
 
-Rollback state survives daemon restarts (the snapshot is persisted in
-bbolt). On startup the daemon checks for a pending rollback: if the
-deadline has already passed it restores the previous config and restarts;
-otherwise it rearms the timer for the remaining window.
+Rollback state survives daemon restarts (the snapshot and its firewall
+configuration are persisted in the state directory). On startup the daemon
+checks for a pending rollback: if the deadline has already passed it restores
+the previous config and restarts; otherwise it restores the running firewall
+configuration and rearms the timer for the remaining window. Backup and store
+export omit this transient state, so restoring an archive cannot re-arm an old
+confirmation window.
 
 ```yaml
 firewall:

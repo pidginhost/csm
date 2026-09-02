@@ -85,3 +85,10 @@ func TestCheckModSecAuditLogSerialFormatCountsTransactionsNotLines(t *testing.T)
 		t.Fatalf("19 transactions must stay under the threshold of 20, got %+v", findings)
 	}
 }
+
+func TestModSecAuditClientIPAcceptsBracketedIPv6(t *testing.T) {
+	line := "[03/Sep/2026:10:00:00 +0000] tx1 [2001:db8::17] 54321 2001:db8::1 443"
+	if got := modsecAuditClientIP(line); got != "2001:db8::17" {
+		t.Fatalf("modsecAuditClientIP = %q, want canonical IPv6 address", got)
+	}
+}

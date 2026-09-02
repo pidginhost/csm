@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/state"
+	csmstore "github.com/pidginhost/csm/internal/store"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,6 +41,14 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 	if err != nil {
 		return err
 	}
+	stagedDB := filepath.Join(stageRoot, "state", "csm.db")
+	if _, statErr := os.Stat(stagedDB); statErr == nil {
+		if err := csmstore.DisarmFirewallRollbackSnapshot(stagedDB); err != nil {
+			return fmt.Errorf("disarming restored firewall rollback: %w", err)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspecting restored state database: %w", statErr)
+	}
 	return commitBackupRestore(staged, dst)
 }
 
@@ -51,7 +60,11 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 func restoreStagingRoot(dst BackupSources) (string, error) {
 	if dst.StateDir != "" {
 		parent := filepath.Dir(filepath.Clean(dst.StateDir))
-		if info, err := os.Stat(parent); err == nil && info.IsDir() {
+		info, err := os.Lstat(parent)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("state directory parent is a symlink: %s", parent)
+		}
+		if err == nil && info.IsDir() {
 			return os.MkdirTemp(parent, ".csm-restore-*")
 		}
 	}
@@ -114,6 +127,9 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 			return staged, fmt.Errorf("rejecting duplicate archive entry: %q", hdr.Name)
 		}
 		seen[clean] = struct{}{}
+		if isTransientBackupStateEntry(clean) {
+			continue
+		}
 		if hdr.Typeflag == tar.TypeDir {
 			switch clean {
 			case "conf.d":
@@ -129,10 +145,6 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 			}
 			continue
 		}
-		if clean == "state/"+daemonStateLockFileName {
-			continue
-		}
-
 		var target, anchor string
 		switch {
 		case clean == "csm.yaml":
@@ -178,6 +190,22 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 			return staged, closeErr
 		}
 	}
+}
+
+func isTransientBackupStateEntry(name string) bool {
+	rel, ok := strings.CutPrefix(name, "state/")
+	if !ok {
+		return false
+	}
+	if rel == daemonStateLockFileName || rel == "exports" || strings.HasPrefix(rel, "exports/") {
+		return true
+	}
+	for _, transient := range daemonStateTransientPaths {
+		if rel == transient {
+			return true
+		}
+	}
+	return false
 }
 
 func validBackupManifest(manifest []byte) bool {

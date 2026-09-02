@@ -117,8 +117,8 @@ func StartAFAlgLiveMonitor(alertCh chan<- alert.Finding, cfg *config.Config) AFA
 		}
 	}
 
-	listener, err := NewAFAlgAuditListener(alertCh, cfg)
-	if err != nil {
+	listener, err := NewAFAlgAuditListener(alertCh, cfg) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+	if err != nil {                                      //nolint:staticcheck // The Linux constructor can also succeed.
 		csmlog.Warn("af_alg live monitor: auditd fallback unavailable", "err", err)
 		setAFAlgBackendMetric("none")
 		if bpfErr != nil {

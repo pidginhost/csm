@@ -963,7 +963,11 @@
                 toast("Validation errors. Review the highlighted fields.", "error");
                 return;
             }
-            if (!resp.ok) { toast("Save failed: " + resp.status, "error"); return; }
+            if (!resp.ok) {
+                const data = await resp.json().catch(function () { return {}; });
+                toast(data.error || ("Save failed: " + resp.status), "error");
+                return;
+            }
             const data = await resp.json();
             currentETag = data.new_etag;
             dirty = false;

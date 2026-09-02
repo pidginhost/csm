@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -113,6 +116,24 @@ func TestHandleFirewallRestartErrorsWhenEngineNil(t *testing.T) {
 	_, err := c.handleFirewallRestart(nil)
 	if err == nil || !strings.Contains(err.Error(), "engine not running") {
 		t.Errorf("want engine-not-running error, got %v", err)
+	}
+}
+
+func TestHandleFirewallRestartRejectsPendingConfirmation(t *testing.T) {
+	c := newListenerForTest(t)
+	c.d.fwEngine = new(firewall.Engine)
+	c.d.cfg.StatePath = t.TempDir()
+	confirmFile, _, _ := firewallRollbackFiles(c.d.cfg.StatePath)
+	if err := os.MkdirAll(filepath.Dir(confirmFile), 0o700); err != nil {
+		t.Fatalf("mkdir rollback dir: %v", err)
+	}
+	if err := os.WriteFile(confirmFile, newFirewallConfirmMarker(time.Now().Add(time.Minute)), 0o600); err != nil {
+		t.Fatalf("write confirm marker: %v", err)
+	}
+
+	_, err := c.handleFirewallRestart(nil)
+	if err == nil || !strings.Contains(err.Error(), "confirmation already pending") {
+		t.Fatalf("handleFirewallRestart error = %v, want pending-confirmation error", err)
 	}
 }
 

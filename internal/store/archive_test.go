@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,6 +249,37 @@ func archiveEntryNames(t *testing.T, src string) map[string]bool {
 		names[hdr.Name] = true
 	}
 	return names
+}
+
+func archiveEntryBytes(t *testing.T, src, want string) []byte {
+	t.Helper()
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	zr, err := zstd.NewReader(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			t.Fatalf("archive entry %q not found", want)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == want {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return data
+		}
+	}
 }
 
 func rewriteArchiveAppendingFile(t *testing.T, src, dst, name string, data []byte) {
@@ -791,6 +824,9 @@ func TestArchiveImportOnlyFirewallRestoresOnlyFirewallBuckets(t *testing.T) {
 	}); upErr != nil {
 		t.Fatalf("seed target history: %v", upErr)
 	}
+	if saveErr := d2.SaveFirewallRollback(FirewallRollback{PrevYAML: []byte("local pending"), ExpiresAt: time.Now().Add(time.Hour)}); saveErr != nil {
+		t.Fatalf("seed target rollback: %v", saveErr)
+	}
 	_ = d2.Close()
 
 	imp, err := Import(ImportOptions{
@@ -832,6 +868,9 @@ func TestArchiveImportOnlyFirewallRestoresOnlyFirewallBuckets(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatalf("verify: %v", err)
+	}
+	if _, ok := d3.GetFirewallRollback(); ok {
+		t.Fatal("firewall-only import retained a local pending config rollback")
 	}
 }
 
@@ -1049,5 +1088,142 @@ func TestArchiveImportTimestampPreserved(t *testing.T) {
 	}
 	if !imp.Manifest.ExportTS.Equal(expected) {
 		t.Errorf("ExportTS = %v, want %v", imp.Manifest.ExportTS, expected)
+	}
+}
+
+func TestArchiveExportInsideStateDoesNotIncludeStagingTree(t *testing.T) {
+	statePath := t.TempDir()
+	db, openErr := Open(statePath)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	seedStateDir(t, statePath)
+	exportDir := filepath.Join(statePath, "exports", "request-1")
+	if err := os.MkdirAll(exportDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(exportDir, "snapshot.csmbak")
+
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		DstPath:   archivePath,
+		Manifest:  defaultManifest(),
+	}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	for name := range archiveEntryNames(t, archivePath) {
+		if strings.HasPrefix(name, stateEntryPrefix+"exports/") {
+			t.Fatalf("archive included its own staging tree as %q", name)
+		}
+	}
+}
+
+func TestArchiveExportSkipsPendingFirewallRollback(t *testing.T) {
+	statePath := t.TempDir()
+	db, err := Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.SaveFirewallRollback(FirewallRollback{PrevYAML: []byte("old"), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range transientStatePaths {
+		path := filepath.Join(statePath, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("pending"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archivePath := filepath.Join(t.TempDir(), "snapshot.csmbak")
+	if _, err := db.Export(ExportOptions{StatePath: statePath, DstPath: archivePath, Manifest: defaultManifest()}); err != nil {
+		t.Fatal(err)
+	}
+	names := archiveEntryNames(t, archivePath)
+	for _, rel := range transientStatePaths {
+		if names[stateEntryPrefix+rel] {
+			t.Fatalf("archive included transient rollback state %q", rel)
+		}
+	}
+	snapshotDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(snapshotDir, "csm.db"), archiveEntryBytes(t, archivePath, bboltSnapshotEntry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, openErr := Open(snapshotDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+	if _, ok := snapshot.GetFirewallRollback(); ok {
+		t.Fatal("exported bbolt snapshot retained a pending firewall configuration rollback")
+	}
+}
+
+func TestArchiveImportSkipsTransientStateFromOlderArchive(t *testing.T) {
+	statePath, rulesPath, archivePath, db, _, _, _ := mustExportSetup(t)
+	if _, err := db.Export(ExportOptions{StatePath: statePath, RulesPath: rulesPath, DstPath: archivePath, Manifest: defaultManifest()}); err != nil {
+		t.Fatal(err)
+	}
+	pendingDir := t.TempDir()
+	pendingDB, openErr := Open(pendingDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if err := pendingDB.SaveFirewallRollback(FirewallRollback{PrevYAML: []byte("old"), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pendingBytes, readErr := os.ReadFile(filepath.Join(pendingDir, "csm.db"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	pendingHash := sha256.Sum256(pendingBytes)
+	withPendingDB := filepath.Join(t.TempDir(), "with-pending-db.csmbak")
+	rewriteArchive(t, archivePath, withPendingDB, func(name string, data []byte) ([]byte, bool) {
+		switch name {
+		case manifestEntry:
+			var man Manifest
+			if err := json.Unmarshal(data, &man); err != nil {
+				t.Fatal(err)
+			}
+			man.BboltSHA256 = hex.EncodeToString(pendingHash[:])
+			encoded, marshalErr := json.Marshal(man)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			return encoded, true
+		case bboltSnapshotEntry:
+			return pendingBytes, true
+		default:
+			return data, true
+		}
+	})
+	withRollback := filepath.Join(t.TempDir(), "with-rollback.csmbak")
+	rewriteArchiveAppendingFile(t, withPendingDB, withRollback, stateEntryPrefix+"firewall/confirm_pending", []byte("pending"))
+	legacyArchive := filepath.Join(t.TempDir(), "legacy.csmbak")
+	rewriteArchiveAppendingFile(t, withRollback, legacyArchive, stateEntryPrefix+"exports/export-old/staged.csmbak", []byte("partial"))
+	_ = db.Close()
+
+	restoredState := filepath.Join(t.TempDir(), "state")
+	if _, err := Import(ImportOptions{SrcPath: legacyArchive, StatePath: restoredState, Only: "all", CurrentPlatform: defaultPlatform()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"firewall/confirm_pending", "exports/export-old/staged.csmbak"} {
+		if _, err := os.Stat(filepath.Join(restoredState, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("import restored transient state %q: %v", rel, err)
+		}
+	}
+	restoredDB, openErr := Open(restoredState)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = restoredDB.Close() })
+	if _, ok := restoredDB.GetFirewallRollback(); ok {
+		t.Fatal("import re-armed a pending firewall configuration rollback from the archive")
 	}
 }

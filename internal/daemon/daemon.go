@@ -2439,8 +2439,8 @@ func (d *Daemon) startControlListener() {
 }
 
 func (d *Daemon) startFileMonitor() {
-	fm, err := NewFileMonitor(d.cfg, d.alertCh)
-	if err != nil {
+	fm, err := NewFileMonitor(d.cfg, d.alertCh) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+	if err != nil {                             //nolint:staticcheck // The Linux constructor can also succeed.
 		csmlog.Warn("fanotify not available, falling back to periodic deep scan", "err", err)
 		d.MarkWatcher("fanotify", false)
 		return
@@ -2479,8 +2479,8 @@ func (d *Daemon) startSpoolWatcher() {
 	d.emailQuarantine = quar
 
 	// Create and start spool watcher
-	sw, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar)
-	if err != nil {
+	sw, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+	if err != nil {                                          //nolint:staticcheck // The Linux constructor can also succeed.
 		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher not available: %v\n", ts(), err)
 		d.MarkWatcher("email_av_spool", false)
 		return
@@ -2530,8 +2530,8 @@ type spoolWatcherRuntime interface {
 
 func (d *Daemon) runSpoolWatcherLoop(sw *SpoolWatcher, orch *emailav.Orchestrator, quar *emailav.Quarantine) {
 	d.runSpoolWatcherLoopWithFactory(sw, 2*time.Second, func() (spoolWatcherRuntime, error) {
-		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar)
-		if err != nil {
+		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+		if err != nil {                                            //nolint:staticcheck // The Linux constructor can also succeed.
 			return nil, err
 		}
 		d.setSpoolWatcher(next)
@@ -2583,8 +2583,8 @@ func (d *Daemon) getSpoolWatcher() *SpoolWatcher {
 
 // startForwarderWatcher starts the inotify watcher for /etc/valiases/.
 func (d *Daemon) startForwarderWatcher() {
-	fw, err := NewForwarderWatcher(d.alertCh, d.cfg.EmailProtection.KnownForwarders)
-	if err != nil {
+	fw, err := NewForwarderWatcher(d.alertCh, d.cfg.EmailProtection.KnownForwarders) //nolint:staticcheck // The Linux constructor is fallible; the non-Linux stub always returns an error.
+	if err != nil {                                                                  //nolint:staticcheck // The Linux constructor can also succeed.
 		fmt.Fprintf(os.Stderr, "[%s] Warning: forwarder watcher not started: %v\n", ts(), err)
 		d.MarkWatcher("forwarder", false)
 		return

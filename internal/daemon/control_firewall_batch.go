@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -181,6 +182,14 @@ func (c *ControlListener) handleFirewallRestart(_ json.RawMessage) (any, error) 
 	if c.d.fwEngine == nil {
 		return nil, fmt.Errorf("firewall engine not running; restart the csm daemon")
 	}
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+
+	cfg := c.d.currentCfg()
+	confirmFile, _, _ := firewallRollbackFiles(cfg.StatePath)
+	if err := rejectPendingFirewallConfirmation(confirmFile); err != nil {
+		return nil, err
+	}
 	// Re-read the firewall block from disk: the engine holds the copy taken
 	// at daemon start, and a restart that re-applied it reported success
 	// while the operator's edit stayed unapplied.
@@ -192,7 +201,7 @@ func (c *ControlListener) handleFirewallRestart(_ json.RawMessage) (any, error) 
 		c.d.fwEngine.SetConfig(previous)
 		return nil, fmt.Errorf("applying ruleset: %w", err)
 	}
-	state, _ := firewall.LoadState(c.d.currentCfg().StatePath)
+	state, _ := firewall.LoadState(cfg.StatePath)
 	return control.FirewallAckResult{
 		Message: fmt.Sprintf("Firewall restarted. %d blocked, %d allowed IPs restored.", len(state.Blocked), len(state.Allowed)),
 	}, nil
@@ -217,21 +226,14 @@ func (c *ControlListener) handleFirewallApplyConfirmed(argsRaw json.RawMessage) 
 	cfg := c.d.currentCfg()
 	confirmFile, rollbackFile, legacyRollbackFile := firewallRollbackFiles(cfg.StatePath)
 
-	// The command exists to apply an edited csm.yaml firewall block under a
-	// deadman. Read that block from disk (the live config keeps the
-	// startup copy) and remember what the engine held, so an expired
-	// window, a revert, or a failed apply puts the old input back as well
-	// as the old kernel rules.
-	previous, err := c.d.refreshFirewallFromDisk()
-	if err != nil {
-		return nil, err
-	}
-	setFirewallDeadmanOnRollback(func() { c.d.fwEngine.SetConfig(previous) })
-
-	if err := applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile,
-		time.Duration(minutes)*time.Minute, c.d.fwEngine.Apply); err != nil {
-		c.d.fwEngine.SetConfig(previous)
-		setFirewallDeadmanOnRollback(nil)
+	// Read the edited firewall block only after the deadman has established
+	// that no other confirmation window owns the rollback files. The
+	// preparation and snapshot run under one lock so a rejected second
+	// attempt cannot replace the active window's engine rollback hook.
+	if err := applyFirewallDeadmanPrepared(confirmFile, rollbackFile, legacyRollbackFile,
+		time.Duration(minutes)*time.Minute, c.d.refreshFirewallFromDisk,
+		func(previous *firewall.FirewallConfig) { c.d.fwEngine.SetConfig(previous) },
+		c.d.fwEngine.Apply); err != nil {
 		return nil, err
 	}
 
@@ -277,21 +279,50 @@ func (c *ControlListener) handleFirewallConfirm(_ json.RawMessage) (any, error) 
 // whereas the reverse order would leave the candidate applied with no
 // record that it was never confirmed (a permanent lockout).
 func applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile string, window time.Duration, apply func() error) error {
+	return applyFirewallDeadmanPrepared(confirmFile, rollbackFile, legacyRollbackFile, window, nil, nil, apply)
+}
+
+// applyFirewallDeadmanPrepared checks ownership before prepare installs the
+// candidate engine configuration. restore reverses that installation on any
+// pre-apply failure and becomes the live rollback hook once the window is
+// armed. Both callbacks run while firewallDeadmanMu is held.
+func applyFirewallDeadmanPrepared(confirmFile, rollbackFile, legacyRollbackFile string, window time.Duration,
+	prepare func() (*firewall.FirewallConfig, error), restore func(*firewall.FirewallConfig), apply func() error,
+) error {
 	firewallDeadmanMu.Lock()
 	defer firewallDeadmanMu.Unlock()
 
 	if err := os.MkdirAll(filepath.Dir(rollbackFile), 0700); err != nil {
 		return fmt.Errorf("creating firewall rollback dir: %w", err)
 	}
-	if _, err := os.Stat(confirmFile); err == nil {
-		return fmt.Errorf("firewall confirmation already pending; run `csm firewall confirm` or wait for rollback before applying another confirmed ruleset")
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("checking confirm marker: %w", err)
+	if err := rejectPendingFirewallConfirmation(confirmFile); err != nil {
+		return err
+	}
+	var rollbackConfig *firewall.FirewallConfig
+	if prepare != nil {
+		var err error
+		rollbackConfig, err = prepare()
+		if err != nil {
+			return err
+		}
+		firewallDeadmanOnRollback = func() { restore(rollbackConfig) }
+	}
+	restorePrepared := func() {
+		if prepare != nil {
+			runFirewallDeadmanOnRollbackLocked()
+		}
 	}
 	if err := removeFirewallRollbackFiles(rollbackFile, legacyRollbackFile); err != nil {
+		restorePrepared()
 		return err
 	}
 	if err := writeFirewallRollbackFile(rollbackFile); err != nil {
+		restorePrepared()
+		return err
+	}
+	if err := snapshotFirewallConfig(rollbackFile, rollbackConfig); err != nil {
+		_ = removeFirewallRollbackFiles(rollbackFile)
+		restorePrepared()
 		return err
 	}
 
@@ -299,6 +330,7 @@ func applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile string, 
 	marker := newFirewallConfirmMarker(deadline)
 	if err := os.WriteFile(confirmFile, marker, 0600); err != nil {
 		_ = removeFirewallRollbackFiles(confirmFile, rollbackFile)
+		restorePrepared()
 		return fmt.Errorf("writing confirm marker: %w", err)
 	}
 
@@ -313,12 +345,23 @@ func applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile string, 
 			return fmt.Errorf("applying ruleset: %w; rollback restore failed: %v", err, restoreErr)
 		}
 		if cleanupErr := removeFirewallRollbackFiles(confirmFile, rollbackFile); cleanupErr != nil {
+			restorePrepared()
 			return fmt.Errorf("applying ruleset: %w; %v", err, cleanupErr)
 		}
+		restorePrepared()
 		return fmt.Errorf("applying ruleset: %w; previous ruleset restored", err)
 	}
 
 	armFirewallDeadman(confirmFile, rollbackFile, marker, time.Until(deadline))
+	return nil
+}
+
+func rejectPendingFirewallConfirmation(confirmFile string) error {
+	if _, err := os.Stat(confirmFile); err == nil {
+		return fmt.Errorf("firewall confirmation already pending; run `csm firewall confirm` or wait for rollback before applying another ruleset")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking confirm marker: %w", err)
+	}
 	return nil
 }
 
@@ -385,6 +428,9 @@ func (d *Daemon) recoverFirewallApplyConfirmed() {
 			csmlog.Warn("firewall rollback snapshot cleanup failed", "err", cleanupErr)
 		}
 		return
+	}
+	if err := installFirewallConfigRollbackHook(d, rollbackFile); err != nil {
+		csmlog.Warn("firewall configuration rollback snapshot unreadable", "err", err)
 	}
 
 	deadline, parseErr := parseFirewallConfirmDeadline(marker)
@@ -523,8 +569,50 @@ func removeFirewallRollbackFiles(paths ...string) error {
 			if err := removeFileIfExists(firewallStateSnapshotPath(path)); err != nil {
 				return err
 			}
+			if err := removeFileIfExists(firewallConfigSnapshotPath(path)); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
+}
+
+func firewallConfigSnapshotPath(rollbackFile string) string {
+	return rollbackFile + ".config.json"
+}
+
+func snapshotFirewallConfig(rollbackFile string, cfg *firewall.FirewallConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if err := atomicio.AtomicWriteJSON(firewallConfigSnapshotPath(rollbackFile), 0o600, cfg); err != nil {
+		return fmt.Errorf("snapshotting firewall configuration: %w", err)
+	}
+	return nil
+}
+
+var restoreFirewallEngineConfig = func(d *Daemon, cfg *firewall.FirewallConfig) {
+	if d.fwEngine != nil {
+		d.fwEngine.SetConfig(cfg)
+	}
+}
+
+// installFirewallConfigRollbackHook restores the engine input after the
+// kernel and state snapshots. The persisted copy matters only across daemon
+// restart; the original process keeps an equivalent in-memory hook.
+func installFirewallConfigRollbackHook(d *Daemon, rollbackFile string) error {
+	raw, err := os.ReadFile(firewallConfigSnapshotPath(rollbackFile)) // #nosec G304 -- CSM-owned snapshot under the state dir.
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var cfg firewall.FirewallConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("decoding snapshot: %w", err)
+	}
+	firewallDeadmanOnRollback = func() { restoreFirewallEngineConfig(d, &cfg) }
 	return nil
 }
 

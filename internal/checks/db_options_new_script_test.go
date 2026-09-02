@@ -3,8 +3,10 @@ package checks
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // The structural classifier only flags attacker markers (raw IP, abused TLD,
@@ -40,6 +42,30 @@ func TestNewExternalScriptHostsInOptionsReportedOnceAsWarning(t *testing.T) {
 	}
 	if again := newExternalScriptFindings("alice", "alice_wp", "wp_", "widget_text", value, firstSeen); len(again) != 0 {
 		t.Fatalf("host reported again on the next scan: %+v", again)
+	}
+}
+
+func TestExternalScriptBaselineWaitsForSuccessfulQuery(t *testing.T) {
+	withFreshStore(t)
+	sdb := store.Global()
+	failed := false
+	previous := runMySQLQuery
+	runMySQLQuery = func(_ wpDBCreds, query string) []string {
+		if strings.Contains(query, "option_value LIKE '%<script%src%'") {
+			failed = true
+		}
+		return nil
+	}
+	t.Cleanup(func() { runMySQLQuery = previous })
+
+	creds := wpDBCreds{dbName: "alice_wp", queryFailed: &failed}
+	_ = checkWPOptions("alice", creds, "wp_")
+	isNew, err := sdb.MarkExternalScriptSeen(externalScriptSiteKey(creds.dbName, "wp_"), "widget_text", "cdn.example", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isNew {
+		t.Fatal("failed wp_options query incorrectly completed the external-script baseline")
 	}
 }
 
