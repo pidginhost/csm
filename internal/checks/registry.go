@@ -223,6 +223,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "db_stored_cloak_logic", Category: CategoryDatabase},
 	{Name: "db_rogue_admin", Category: CategoryDatabase},
 	{Name: "db_siteurl_hijack", Category: CategoryDatabase},
+	{Name: "db_siteurl_foreign_host", Category: CategoryDatabase},
 	{Name: "db_siteurl_invalid", Category: CategoryDatabase},
 	{Name: "db_spam_cleaned", Category: CategoryDatabase},
 	{Name: "db_spam_found", Category: CategoryDatabase},

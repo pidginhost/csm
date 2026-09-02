@@ -75,7 +75,7 @@ func checkWPPostVolumeBurst(user string, creds wpDBCreds, prefix string) []alert
 		Check:    "db_post_volume_burst",
 		Message: fmt.Sprintf("WordPress published %d posts in the last year against %d in the %d years before (account: %s)",
 			recent, prior, ageDays/365, user),
-		Details: dbContentFindingDetails(creds.dbName, prefix,
+		Details: dbContentFindingDetails(creds, prefix,
 			fmt.Sprintf("Site has been publishing for %d days. A sudden flood on a long-quiet site is how "+
 				"doorway spam arrives, and it is visible without knowing what language or vocabulary the "+
 				"spam uses.\nReview the recent posts before acting: a genuine content migration looks the same.",
