@@ -200,7 +200,7 @@ func TestAPIEmailQuarantineListMethodNotAllowedPost(t *testing.T) {
 func TestAPIEmailQuarantineListWithQuarantine(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	s.apiEmailQuarantineList(w, httptest.NewRequest("GET", "/", nil))
@@ -235,7 +235,7 @@ func TestAPIEmailQuarantineActionDotID(t *testing.T) {
 
 func TestAPIEmailQuarantineActionNotConfiguredAllMethods(t *testing.T) {
 	s := newTestServer(t, "tok")
-	s.emailQuarantine = nil
+	s.SetEmailQuarantine(nil)
 
 	for _, method := range []string{"GET", "POST", "DELETE"} {
 		w := httptest.NewRecorder()
@@ -250,7 +250,7 @@ func TestAPIEmailQuarantineActionNotConfiguredAllMethods(t *testing.T) {
 func TestAPIEmailQuarantineActionGetNotFound(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/email/quarantine/nonexistent", nil)
@@ -263,7 +263,7 @@ func TestAPIEmailQuarantineActionGetNotFound(t *testing.T) {
 func TestAPIEmailQuarantineActionPostBadAction(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/v1/email/quarantine/testmsg/badaction", nil)
@@ -276,7 +276,7 @@ func TestAPIEmailQuarantineActionPostBadAction(t *testing.T) {
 func TestAPIEmailQuarantineActionPostReleaseNotFound(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/v1/email/quarantine/nonexistent/release", nil)
@@ -289,7 +289,7 @@ func TestAPIEmailQuarantineActionPostReleaseNotFound(t *testing.T) {
 func TestAPIEmailQuarantineActionDeleteSuccess(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 	// Create a fake quarantine directory to delete
 	msgDir := filepath.Join(dir, "testmsg123")
 	if err := os.MkdirAll(msgDir, 0755); err != nil {
@@ -310,7 +310,7 @@ func TestAPIEmailQuarantineActionDeleteSuccess(t *testing.T) {
 func TestAPIEmailQuarantineActionMethodNotAllowed(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/api/v1/email/quarantine/testmsg", nil)
@@ -331,9 +331,9 @@ func TestAPIEmailAVStatusNotAllowedPost(t *testing.T) {
 
 func TestAPIEmailAVStatusFieldsPresent(t *testing.T) {
 	s := newTestServer(t, "tok")
-	s.emailAVWatcherMode = "fanotify"
+	s.SetEmailAVWatcherMode("fanotify")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	s.apiEmailAVStatus(w, httptest.NewRequest("GET", "/", nil))

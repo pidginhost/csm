@@ -158,7 +158,7 @@ func TestAPIEmailQuarantineListReadDirFails(t *testing.T) {
 	if err := os.WriteFile(notADir, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	s.emailQuarantine = emailav.NewQuarantine(notADir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(notADir))
 
 	w := httptest.NewRecorder()
 	s.apiEmailQuarantineList(w, httptest.NewRequest("GET", "/", nil))
@@ -222,7 +222,7 @@ func TestAPIEmailStatsThresholds(t *testing.T) {
 func TestAPIEmailQuarantineActionGETNonexistentID(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/email/quarantine/no-such-id", nil)
@@ -236,7 +236,7 @@ func TestAPIEmailQuarantineActionGETNonexistentID(t *testing.T) {
 func TestAPIEmailQuarantineActionPOSTUnknownAction(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/v1/email/quarantine/abc/deflate", nil)
@@ -254,7 +254,7 @@ func TestAPIEmailQuarantineActionPOSTUnknownAction(t *testing.T) {
 func TestAPIEmailQuarantineActionPOSTReleaseNonexistent(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/v1/email/quarantine/missing/release", nil)
@@ -268,7 +268,7 @@ func TestAPIEmailQuarantineActionPOSTReleaseNonexistent(t *testing.T) {
 func TestAPIEmailQuarantineActionPUTRejected(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/api/v1/email/quarantine/abc", nil)
@@ -282,7 +282,7 @@ func TestAPIEmailQuarantineActionPUTRejected(t *testing.T) {
 func TestAPIEmailQuarantineActionDotMsgID(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/email/quarantine/.", nil)

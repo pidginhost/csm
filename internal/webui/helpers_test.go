@@ -785,7 +785,7 @@ func TestMustBeWithinRejectsEscapes(t *testing.T) {
 func TestEmailQuarantineActionRejectsTraversalMessageID(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	for _, tc := range []struct {
 		method string

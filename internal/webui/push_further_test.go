@@ -404,7 +404,7 @@ func TestAPIEmailStatsSMTPPort465Flood(t *testing.T) {
 func TestAPIEmailQuarantineActionDeleteRealMessage(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	// Pre-create a quarantine message subdir (the Quarantine treats it as message id)
 	msgDir := filepath.Join(dir, "msg999")
@@ -432,7 +432,7 @@ func TestAPIEmailQuarantineActionDeleteRealMessage(t *testing.T) {
 func TestAPIEmailQuarantineActionTraversalSanitized(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
-	s.emailQuarantine = emailav.NewQuarantine(dir)
+	s.SetEmailQuarantine(emailav.NewQuarantine(dir))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/email/quarantine/../../etc/passwd", nil)

@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The email quarantine handle and the AV watcher mode the daemon installs into the web UI after its listener is already serving are now held atomically; request handlers read them through accessors instead of racing plain field writes.
 - Suppression rules imported through the web UI bundle are now validated like rules added by hand: a rule without a check is dropped and a rule without an ID gets one, so imported rules can always be deleted from the UI.
 - The web UI's unauthenticated per-IP rate-limit maps are now capped at ten thousand addresses at insert time instead of only shrinking on the five-minute prune, so a scan from many addresses cannot grow them without bound in between.
 - Shutdown no longer clears the finding broadcast bus after closing it; late publishers on untracked goroutines read that global without a lock, and a closed bus already drops what they publish.

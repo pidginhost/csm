@@ -100,11 +100,11 @@ func (s *Server) apiEmailQuarantineList(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.emailQuarantine == nil {
+	if s.emailQuarantineHandle() == nil {
 		writeJSON(w, []emailav.QuarantineMetadata{})
 		return
 	}
-	msgs, err := s.emailQuarantine.ListMessages()
+	msgs, err := s.emailQuarantineHandle().ListMessages()
 	if err != nil {
 		writeJSONError(w, "Failed to list quarantine", http.StatusInternalServerError)
 		return
@@ -137,7 +137,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if s.emailQuarantine == nil {
+	if s.emailQuarantineHandle() == nil {
 		writeJSONError(w, "Email quarantine not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -148,7 +148,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Unknown action", http.StatusBadRequest)
 			return
 		}
-		meta, err := s.emailQuarantine.GetMessage(msgID)
+		meta, err := s.emailQuarantineHandle().GetMessage(msgID)
 		if err != nil {
 			writeJSONError(w, "Message not found", http.StatusNotFound)
 			return
@@ -160,7 +160,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Unknown action; use /release", http.StatusBadRequest)
 			return
 		}
-		if err := s.emailQuarantine.ReleaseMessage(msgID); err != nil {
+		if err := s.emailQuarantineHandle().ReleaseMessage(msgID); err != nil {
 			writeJSONError(w, "Failed to release message: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -171,7 +171,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Unknown action", http.StatusBadRequest)
 			return
 		}
-		if err := s.emailQuarantine.DeleteMessage(msgID); err != nil {
+		if err := s.emailQuarantineHandle().DeleteMessage(msgID); err != nil {
 			writeJSONError(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -221,14 +221,14 @@ func (s *Server) apiEmailAVStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Watcher mode (set by daemon on startup).
-	resp.WatcherMode = s.emailAVWatcherMode
+	resp.WatcherMode = s.emailAVMode()
 	if resp.WatcherMode == "" {
 		resp.WatcherMode = "disabled"
 	}
 
 	// Count of currently quarantined messages.
-	if s.emailQuarantine != nil {
-		msgs, err := s.emailQuarantine.ListMessages()
+	if s.emailQuarantineHandle() != nil {
+		msgs, err := s.emailQuarantineHandle().ListMessages()
 		if err == nil {
 			resp.Quarantined = len(msgs)
 		}

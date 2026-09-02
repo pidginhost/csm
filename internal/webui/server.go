@@ -90,20 +90,23 @@ func (d noListDir) Open(name string) (http.File, error) {
 // Server is the web UI HTTP server. Serves API always; serves HTML pages
 // and static files only if the UI directory exists on disk.
 type Server struct {
-	cfg                *config.Config
-	store              *state.Store
-	httpSrv            *http.Server
-	templates          map[string]*template.Template
-	hasUI              bool   // true if UI directory with templates exists
-	uiDir              string // path to UI directory on disk
-	startTime          time.Time
-	sigCount           int // loaded signature rule count
-	fanotifyActive     bool
-	logWatcherCount    int
-	blocker            IPBlocker
-	geoIPDB            atomic.Pointer[geoip.DB]
-	emailQuarantine    *emailav.Quarantine
-	emailAVWatcherMode string
+	cfg             *config.Config
+	store           *state.Store
+	httpSrv         *http.Server
+	templates       map[string]*template.Template
+	hasUI           bool   // true if UI directory with templates exists
+	uiDir           string // path to UI directory on disk
+	startTime       time.Time
+	sigCount        int // loaded signature rule count
+	fanotifyActive  bool
+	logWatcherCount int
+	blocker         IPBlocker
+	geoIPDB         atomic.Pointer[geoip.DB]
+	// emailQuarantine and emailAVWatcherMode are installed by the daemon
+	// after the listener already serves; request goroutines read them, so
+	// they are held atomically and read through the accessors below.
+	emailQuarantine    atomic.Pointer[emailav.Quarantine]
+	emailAVWatcherMode atomic.Value // string
 	forwarderSource    inventory.Source
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
@@ -675,12 +678,26 @@ func (s *Server) SetHealthInfo(fanotifyActive bool, logWatchers int) {
 
 // SetEmailQuarantine sets the email quarantine for the email AV API endpoints.
 func (s *Server) SetEmailQuarantine(q *emailav.Quarantine) {
-	s.emailQuarantine = q
+	s.emailQuarantine.Store(q)
 }
 
 // SetEmailAVWatcherMode sets the watcher mode string for the email AV status API.
 func (s *Server) SetEmailAVWatcherMode(mode string) {
-	s.emailAVWatcherMode = mode
+	s.emailAVWatcherMode.Store(mode)
+}
+
+// emailQuarantineHandle returns the installed email quarantine, or nil
+// before the daemon installs one.
+func (s *Server) emailQuarantineHandle() *emailav.Quarantine {
+	return s.emailQuarantine.Load()
+}
+
+// emailAVMode returns the installed AV watcher mode, "" before it is set.
+func (s *Server) emailAVMode() string {
+	if v, ok := s.emailAVWatcherMode.Load().(string); ok {
+		return v
+	}
+	return ""
 }
 
 // SetVersion sets the application version for display in the UI.

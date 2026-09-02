@@ -17,8 +17,8 @@ func TestSetEmailQuarantine(t *testing.T) {
 func TestSetEmailAVWatcherMode(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.SetEmailAVWatcherMode("milter")
-	if s.emailAVWatcherMode != "milter" {
-		t.Errorf("got %q", s.emailAVWatcherMode)
+	if s.emailAVMode() != "milter" {
+		t.Errorf("got %q", s.emailAVMode())
 	}
 }
 
