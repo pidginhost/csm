@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The findings CSV export now neutralises spreadsheet formula triggers: a message or detail starting with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed with a quote so attacker-chosen text (a filename, a User-Agent) cannot execute when the file is opened.
+- The web UI firewall check now compares IPv6 addresses as parsed values, so a block saved in one spelling is found when queried in another.
+- The finding detail view now resolves the stored finding's real key, so findings that carry details show their first-seen and last-seen times instead of blanks.
 - Quarantine and pre-clean backup file names are now shortened (hash plus path tail) when the flattened source path would exceed the filename limit; a deeply nested file used to fail its move with ENAMETOOLONG and stay in place.
 - The PAM listener now reads `infra_ips` from the live configuration, so an infrastructure address added by reload stops counting failures at once.
 - The SMTP account-spray tracker now keys mailboxes case-insensitively and trimmed, so a spray across case variants of one mailbox reaches the distinct-source threshold.

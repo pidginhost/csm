@@ -541,8 +541,11 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	// Compare as parsed addresses: an IPv6 block saved in one spelling
+	// must be found when queried in another.
+	queried := net.ParseIP(ip)
 	for _, b := range state.Blocked {
-		if b.IP == ip {
+		if entryIP := net.ParseIP(b.IP); entryIP != nil && entryIP.Equal(queried) {
 			if b.ExpiresAt.IsZero() {
 				result["permanent"] = b.Reason
 			} else if now.Before(b.ExpiresAt) {

@@ -870,8 +870,17 @@ func (s *Server) apiHistoryCSV(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+// csvEscape quotes a field for CSV and neutralises spreadsheet formula
+// triggers. Finding text is attacker-chosen (a filename, a User-Agent, a
+// mailbox): a field starting with "=", "+", "-", "@", a tab or a carriage
+// return became a live formula when the export was opened in a spreadsheet.
+// Such fields are prefixed with a single quote, the convention spreadsheets
+// use to force text, and quoted so the prefix survives.
 func csvEscape(s string) string {
-	if strings.ContainsAny(s, ",\"\n\r") {
+	if s != "" && strings.ContainsAny(s[:1], "=+-@\t\r") {
+		s = "'" + s
+	}
+	if strings.ContainsAny(s, ",\"\n\r'") {
 		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 	}
 	return s
@@ -1933,7 +1942,14 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Alert state is keyed by Finding.Key(), which folds in a hash of the
+	// details (and the source IP for IP-keyed checks); "check:message" is
+	// only the key of a finding with neither. Resolve the stored finding
+	// first so findings with details get their first/last-seen times.
 	key := check + ":" + message
+	if f, ok := s.latestFindingForVerify(r.URL.Query().Get("key"), check, message); ok {
+		key = f.Key()
+	}
 
 	// Get state entry for this finding (first/last seen)
 	var firstSeen, lastSeen string
