@@ -46,6 +46,12 @@ type phpHandlerOverlay struct {
 	// for the whole directory with no extension filter. Every file in the
 	// subtree then executes as PHP and must be content-analysed.
 	scanAll bool
+	// unrestricted marks a <FilesMatch> context whose pattern selects files
+	// by name rather than by extension ("logo", "^(config|data)$", or any
+	// alternative without a "\." marker). A PHP handler inside it executes
+	// files no extension list describes, so it is treated like a
+	// directory-wide handler.
+	unrestricted bool
 }
 
 func (o phpHandlerOverlay) active() bool {
@@ -318,6 +324,12 @@ func addExtensions(overlay *phpHandlerOverlay, exts []string) {
 func mergeContext(overlay *phpHandlerOverlay, contexts []phpHandlerOverlay) bool {
 	merged := false
 	for _, ctx := range contexts {
+		if ctx.unrestricted {
+			// The container selects files by name: the handler can reach
+			// any file in the directory, so every file must be analysed.
+			overlay.scanAll = true
+			merged = true
+		}
 		if len(ctx.exts) > 0 {
 			if overlay.exts == nil {
 				overlay.exts = make(map[string]struct{}, len(ctx.exts))
@@ -388,7 +400,55 @@ func apacheContainerArgument(line string) string {
 func overlayForFilesMatch(pattern string) phpHandlerOverlay {
 	overlay := phpHandlerOverlay{}
 	addExtensions(&overlay, extensionsFromFilesMatchPattern(pattern))
+	overlay.unrestricted = filesMatchSelectsByName(pattern)
 	return overlay
+}
+
+// filesMatchSelectsByName reports whether any top-level alternative of a
+// FilesMatch pattern lacks a "\." extension marker and therefore selects
+// files by name. An empty pattern matches everything.
+func filesMatchSelectsByName(pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return true
+	}
+	for _, branch := range topLevelAlternatives(pattern) {
+		if !strings.Contains(branch, `\.`) {
+			return true
+		}
+	}
+	return false
+}
+
+// topLevelAlternatives splits a regex on "|" at nesting depth zero only,
+// ignoring "|" inside groups, character classes and after a backslash.
+func topLevelAlternatives(pattern string) []string {
+	var out []string
+	depth := 0
+	inClass := false
+	start := 0
+	for i := 0; i < len(pattern); i++ {
+		switch c := pattern[i]; {
+		case c == '\\':
+			i++
+		case inClass:
+			if c == ']' {
+				inClass = false
+			}
+		case c == '[':
+			inClass = true
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+		case c == '|' && depth == 0:
+			out = append(out, pattern[start:i])
+			start = i + 1
+		}
+	}
+	return append(out, pattern[start:])
 }
 
 func extensionsFromFilesMatchPattern(pattern string) []string {

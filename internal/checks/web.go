@@ -202,6 +202,11 @@ func directiveHandlerContextTargetsNonPHP(directive string, contexts []phpHandle
 		return false
 	}
 	for _, ctx := range contexts {
+		if ctx.unrestricted {
+			// A name-selecting container hands the PHP handler files that
+			// no extension list describes.
+			return true
+		}
 		for ext := range ctx.exts {
 			if !phpExtension(ext) {
 				return true
