@@ -29,7 +29,7 @@ func moveExportedArchive(src, dst, wantSHA string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
-	if err := assertExportDirPrivate(filepath.Dir(dst)); err != nil {
+	if err := assertExportDestination(dst); err != nil {
 		return err
 	}
 	if err := renameExportFile(src, dst); err == nil {
@@ -60,7 +60,7 @@ func isCrossDevice(err error) bool {
 	return errors.Is(err, syscall.EXDEV)
 }
 
-// assertExportDirPrivate refuses a destination another account can write to.
+// assertExportDestination refuses a destination another account can reach.
 // Verifying the copy proves nothing there: whoever can write to the
 // directory can rename the verified file out of the way between the digest
 // check and the rename that commits it, and would end up choosing what the
@@ -69,26 +69,43 @@ func isCrossDevice(err error) bool {
 // Every ancestor is checked, not just the destination directory itself.
 // Renaming a directory entry is governed by the permissions of the
 // directory holding it, so a private directory under a shared parent can be
-// swapped whole. Symlinks are resolved first so a link cannot stand in for
-// a directory that passed the check.
+// swapped whole. Both the literal path and its resolved form are walked:
+// the first catches a symlink another account owns and can re-point, the
+// second catches a shared directory hiding behind a legitimate link.
 //
 // The sticky bit is the exception that keeps /tmp working -- entries can be
 // created there but only their owner may rename or remove them. Components
 // owned by root are accepted because root can write anywhere regardless.
-func assertExportDirPrivate(dir string) error {
+//
+// This is a best-effort check against a path the operator chose: it closes
+// the cases an unprivileged account can set up, not a root-owned one.
+func assertExportDestination(dst string) error {
+	dir := filepath.Dir(dst)
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("export destination %s must be an absolute path", dst)
+	}
+	self := os.Geteuid()
+	if err := assertExportPathPrivate(dir, self); err != nil {
+		return err
+	}
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return fmt.Errorf("checking destination directory: %w", err)
 	}
-	if !filepath.IsAbs(resolved) {
-		return fmt.Errorf("export destination %s must be an absolute path", dir)
+	if resolved != filepath.Clean(dir) {
+		if err := assertExportPathPrivate(resolved, self); err != nil {
+			return err
+		}
 	}
-	self := os.Geteuid()
+	return assertExportLeafPrivate(dst, self)
+}
+
+func assertExportPathPrivate(dir string, self int) error {
 	current := string(filepath.Separator)
 	if err := assertExportPathComponentPrivate(current, self); err != nil {
 		return err
 	}
-	for _, part := range strings.Split(strings.Trim(resolved, string(filepath.Separator)), string(filepath.Separator)) {
+	for _, part := range strings.Split(strings.Trim(filepath.Clean(dir), string(filepath.Separator)), string(filepath.Separator)) {
 		if part == "" {
 			continue
 		}
@@ -106,14 +123,43 @@ func assertExportPathComponentPrivate(path string, self int) error {
 	if err != nil {
 		return fmt.Errorf("checking destination directory: %w", err)
 	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != self && stat.Uid != 0 {
+		return fmt.Errorf("refusing to export into %s: it is owned by uid %d, which can replace the archive after it is verified", path, stat.Uid)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// A symlink's own mode carries no permission; what decides whether
+		// it can be re-pointed is who owns it, checked above, and the
+		// directory holding it, checked as its own component. Where it
+		// leads is covered by the walk over the resolved path.
+		return nil
+	}
 	if !info.IsDir() {
 		return fmt.Errorf("export destination component %s is not a directory", path)
 	}
 	if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
 		return fmt.Errorf("refusing to export into %s: it is writable by other accounts", path)
 	}
+	return nil
+}
+
+// assertExportLeafPrivate rejects a destination name someone else got to
+// first. A sticky directory such as /tmp still lets any account create the
+// name, and an older daemon writes that path itself without O_NOFOLLOW.
+//
+// #nosec G703 -- path is the destination the operator named.
+func assertExportLeafPrivate(path string, self int) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("checking destination: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to export to %s: it is a symlink, and the export would follow it", path)
+	}
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != self && stat.Uid != 0 {
-		return fmt.Errorf("refusing to export into %s: it is owned by uid %d, which can replace the archive after it is verified", path, stat.Uid)
+		return fmt.Errorf("refusing to export to %s: it is owned by uid %d", path, stat.Uid)
 	}
 	return nil
 }

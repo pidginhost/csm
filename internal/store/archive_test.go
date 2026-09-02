@@ -905,6 +905,36 @@ func TestArchiveExportEmptyRulesPathOK(t *testing.T) {
 	}
 }
 
+// The archive holds every recorded finding. A local account that can
+// create the destination name first -- /tmp is the obvious place -- must
+// not be able to have the daemon write it through a symlink into a file
+// that account can read.
+func TestArchiveExportRefusesSymlinkDestination(t *testing.T) {
+	statePath, rulesPath, _, db, _, _, _ := mustExportSetup(t)
+
+	dir := t.TempDir()
+	planted := filepath.Join(dir, "planted")
+	dstPath := filepath.Join(dir, "snapshot.csmbak")
+	if err := os.WriteFile(planted, []byte("planted"), 0o600); err != nil {
+		t.Fatalf("seed planted file: %v", err)
+	}
+	if err := os.Symlink(planted, dstPath); err != nil {
+		t.Fatalf("seed dst as symlink: %v", err)
+	}
+
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		RulesPath: rulesPath,
+		DstPath:   dstPath,
+		Manifest:  defaultManifest(),
+	}); err == nil {
+		t.Fatal("Export: expected error when DstPath is a symlink")
+	}
+	if data, err := os.ReadFile(planted); err != nil || string(data) != "planted" {
+		t.Fatalf("symlink target was written through: %q, %v", data, err)
+	}
+}
+
 func TestArchiveExportCleansUpPartialFileOnError(t *testing.T) {
 	statePath, rulesPath, _, db, _, _, _ := mustExportSetup(t)
 

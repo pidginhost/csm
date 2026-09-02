@@ -77,12 +77,13 @@ func TestMoveExportedArchiveRejectsDigestMismatch(t *testing.T) {
 	}
 }
 
-// Exporting into a directory a customer can write to -- /tmp is the
-// obvious one, and /tmp is also on a different filesystem from the
-// daemon's state directory, so it always takes the copy path -- used to
-// let that customer pre-create the destination as a symlink and have
-// root write the whole findings archive through it.
-func TestMoveExportedArchiveAcrossFilesystemsDoesNotFollowSymlink(t *testing.T) {
+// A local account that gets to create the destination name first -- /tmp
+// is the obvious place, and /tmp is also on a different filesystem from
+// the daemon's state directory -- must not be able to point the export
+// somewhere it can read. A symlink sitting at the destination is a sign
+// of exactly that, so the export is refused rather than quietly replacing
+// the link.
+func TestMoveExportedArchiveRefusesSymlinkDestination(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "staged.csmbak")
 	dst := filepath.Join(dir, "final.csmbak")
@@ -94,36 +95,46 @@ func TestMoveExportedArchiveAcrossFilesystemsDoesNotFollowSymlink(t *testing.T) 
 	if err := os.Symlink(planted, dst); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(planted, dst+".sha256"); err != nil {
-		t.Fatal(err)
-	}
 	forceCrossDeviceRename(t)
 
-	if err := moveExportedArchive(src, dst, sha256Hex("archive-bytes")); err != nil {
-		t.Fatal(err)
+	err := moveExportedArchive(src, dst, sha256Hex("archive-bytes"))
+	if err == nil {
+		t.Fatal("export onto a symlink must be refused")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("failed for the wrong reason: %v", err)
 	}
 	if data, err := os.ReadFile(planted); err != nil || string(data) != "planted" {
 		t.Fatalf("symlink target was written through: %q, %v", data, err)
 	}
-	info, err := os.Lstat(dst)
-	if err != nil {
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("staged archive not kept: %v", err)
+	}
+}
+
+// A symlink the operator did not put there can also stand in for a
+// directory on the path. Its own mode says nothing, so what matters is
+// who owns it.
+func TestMoveExportedArchiveRefusesForeignSymlinkOnPath(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staged.csmbak")
+	real := filepath.Join(dir, "real")
+	link := filepath.Join(dir, "link")
+	dst := filepath.Join(link, "final.csmbak")
+	writeExportFixture(t, src, "archive-bytes")
+	if err := os.Mkdir(real, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("destination is still a symlink")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		t.Fatalf("destination archive mode = %#o, want owner-only", perm)
+
+	// A symlink owned by the caller is fine; the walk must still accept it.
+	if err := moveExportedArchive(src, dst, sha256Hex("archive-bytes")); err != nil {
+		t.Fatalf("export through an own symlink must work: %v", err)
 	}
-	if data, err := os.ReadFile(dst); err != nil || string(data) != "archive-bytes" {
+	if data, err := os.ReadFile(filepath.Join(real, "final.csmbak")); err != nil || string(data) != "archive-bytes" {
 		t.Fatalf("destination content = %q, %v", data, err)
-	}
-	companion, err := os.Lstat(dst + ".sha256")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if companion.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("companion is still a symlink")
 	}
 }
 

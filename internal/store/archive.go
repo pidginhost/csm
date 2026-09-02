@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -140,7 +141,10 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	// explicitly below so any close error after fsync is surfaced --
 	// silently dropping it would mean the operator gets "export
 	// succeeded" for a file that may not be fully persisted.
-	out, err := os.OpenFile(opts.DstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	// O_NOFOLLOW: a local account that gets to create the destination name
+	// first must not have the daemon write the archive through a symlink
+	// into a file it can read.
+	out, err := os.OpenFile(opts.DstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("creating archive: %w", err)
 	}

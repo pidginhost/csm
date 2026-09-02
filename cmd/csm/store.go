@@ -390,7 +390,7 @@ func runStoreExportCLI() {
 		fmt.Fprintf(os.Stderr, "csm store export: creating destination directory: %v\n", err)
 		os.Exit(1)
 	}
-	if err := assertExportDirPrivate(filepath.Dir(dstPath)); err != nil {
+	if err := assertExportDestination(dstPath); err != nil {
 		fmt.Fprintf(os.Stderr, "csm store export: %v\n", err)
 		os.Exit(1)
 	}
