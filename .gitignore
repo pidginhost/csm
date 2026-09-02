@@ -4,8 +4,8 @@ state/state.json
 .claude/
 .remember/
 .superpowers/
-.agents/
-skills-lock.json
+/.agents/
+/skills-lock.json
 /csm
 .cache/
 graphify-out/
