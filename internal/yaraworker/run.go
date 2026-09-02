@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraipc"
@@ -30,6 +31,26 @@ type Config struct {
 // here (bad socket path, permission denied on bind, stale socket that
 // cannot be removed) is returned so systemd sees a non-zero exit and
 // the supervisor escalates through its backoff.
+// listenPrivateUnix binds path under a 0077 umask so the socket is 0600 from
+// the moment it exists. Creating it with the process umask and chmodding
+// afterwards left a window in which any local user could connect, and a
+// connection made in that window survives the chmod because permissions are
+// checked at connect time. The chmod stays as a belt for filesystems that
+// ignore the umask on socket creation.
+func listenPrivateUnix(path string, listen func(string) (net.Listener, error)) (net.Listener, error) {
+	old := syscall.Umask(0o077)
+	ln, err := listen(path)
+	syscall.Umask(old)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("chmod socket: %w", err)
+	}
+	return ln, nil
+}
+
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.SocketPath == "" {
 		return fmt.Errorf("yaraworker: socket path is empty")
@@ -46,13 +67,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("yaraworker: removing stale socket: %w", err)
 	}
 
-	ln, err := net.Listen("unix", cfg.SocketPath)
+	ln, err := listenPrivateUnix(cfg.SocketPath, func(p string) (net.Listener, error) {
+		return net.Listen("unix", p)
+	})
 	if err != nil {
 		return fmt.Errorf("yaraworker: listen: %w", err)
-	}
-	if err := os.Chmod(cfg.SocketPath, 0o600); err != nil {
-		_ = ln.Close()
-		return fmt.Errorf("yaraworker: chmod socket: %w", err)
 	}
 
 	scanner, compileErr := yara.NewScanner(cfg.RulesDir)

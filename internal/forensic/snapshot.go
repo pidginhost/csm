@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -242,17 +243,41 @@ func (s Snapshot) Write() (string, string, error) {
 		return "", "", fmt.Errorf("closing gzip: %w", err)
 	}
 
-	if err := os.WriteFile(s.OutPath, buf.Bytes(), 0o600); err != nil {
+	if err := writeNewFile(s.OutPath, buf.Bytes()); err != nil {
 		return "", "", fmt.Errorf("writing archive: %w", err)
 	}
 	sum := sha256.Sum256(buf.Bytes())
 	hexSum := hex.EncodeToString(sum[:])
 	sidecar := s.OutPath + ".sha256"
 	sidecarBody := fmt.Sprintf("%s  %s\n", hexSum, filepath.Base(s.OutPath))
-	if err := os.WriteFile(sidecar, []byte(sidecarBody), 0o600); err != nil {
+	if err := writeNewFile(sidecar, []byte(sidecarBody)); err != nil {
 		return "", "", fmt.Errorf("writing sidecar: %w", err)
 	}
 	return s.OutPath, hexSum, nil
+}
+
+// writeNewFile creates path as a brand-new 0600 file and writes data to it.
+// The destination is operator-chosen and often sits in a world-writable
+// directory, where the compromised account can pre-plant a symlink; an
+// exclusive, non-following create refuses anything already at the path
+// instead of writing evidence through it.
+func writeNewFile(path string, data []byte) error {
+	// #nosec G304 -- path is the operator's --out argument; O_EXCL|O_NOFOLLOW
+	// refuse a pre-existing file or symlink.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 func writeDiscoveryAudit(b *strings.Builder, audit DiscoveryAudit) {

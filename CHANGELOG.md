@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The YARA worker socket is now created private (0600) from the moment it exists instead of being chmodded after the listen, closing the window in which any local user could connect to the scanner and keep that connection.
+- Forensic snapshots now refuse an output path that already exists, symlink or file: the archive and its checksum sidecar used to be written through whatever sat at the destination, so a symlink planted by the compromised account made root overwrite another file with the tar stream.
 - The three web UI endpoints that rewrite `csm.yaml` (settings save, verified-bots save, tentative firewall apply) now serialize on one lock; they used three different locks, and the firewall path none, so two operators saving from different pages could silently lose one change despite matching `If-Match` headers.
 - The web UI now accepts API requests from loopback origins (an SSH tunnel such as `https://localhost:9443`) and from any origin listed in the new `webui.allowed_origins` setting, instead of only `https://<hostname>:<port>`; reaching the UI through a tunnel or a second name used to leave it read-only because every POST was rejected as cross-origin.
 - Dovecot login failures now count every password attempt the "Login aborted" line reports instead of one per connection, so a client that tries many passwords per connection no longer stays under the brute-force thresholds.
