@@ -125,7 +125,7 @@ func TestCheckFTPLoginsSuccessAfterBruteForceEscalates(t *testing.T) {
 
 	var b strings.Builder
 	for i := 0; i < ftpFailThreshold; i++ {
-		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [mallory]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [mallory]\n")
 	}
 	write(b.String())
 	// Cycle 1: accumulate failures to/over threshold.
@@ -165,7 +165,7 @@ func TestCheckFTPLoginsSameCycleKeepsBruteAndSuccessSignals(t *testing.T) {
 
 	var b strings.Builder
 	for i := 0; i < ftpFailThreshold; i++ {
-		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [mallory]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [mallory]\n")
 	}
 	b.WriteString("Apr 12 10:05:00 server pure-ftpd[1]: (mallory@203.0.113.5) [INFO] mallory is now logged in\n")
 	serveSyslog(t, b.String())
@@ -220,7 +220,7 @@ func TestCheckFTPLoginsSuccessIgnoresStaleFailures(t *testing.T) {
 func TestCheckFTPLoginsLegacySuccessAfterBruteForceEscalates(t *testing.T) {
 	var b strings.Builder
 	for i := 0; i < ftpFailThreshold; i++ {
-		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [mallory]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [mallory]\n")
 	}
 	b.WriteString("Apr 12 10:05:00 server pure-ftpd[1]: (mallory@203.0.113.5) [INFO] mallory is now logged in\n")
 	serveSyslog(t, b.String())

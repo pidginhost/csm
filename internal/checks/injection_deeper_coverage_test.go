@@ -328,7 +328,7 @@ func TestCheckFTPLoginsStoreBackedSlowBruteAcrossCycles(t *testing.T) {
 	var b strings.Builder
 	add5 := func() {
 		for i := 0; i < 5; i++ {
-			b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]\n")
+			b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]\n")
 		}
 	}
 	// Cycle 1: 5 failures -> below threshold, no finding.
@@ -354,7 +354,7 @@ func TestCheckFTPLoginsStoreBackedNoNewBytesNoDoubleCount(t *testing.T) {
 	msgPath := t.TempDir() + "/messages"
 	var b strings.Builder
 	for i := 0; i < 9; i++ { // one below threshold
-		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@198.51.100.9) [WARNING] Authentication failed for user [bob]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@198.51.100.9) [WARNING] Authentication failed for user [bob]\n")
 	}
 	if err := os.WriteFile(msgPath, []byte(b.String()), 0644); err != nil {
 		t.Fatal(err)
@@ -377,9 +377,9 @@ func TestCheckFTPLoginsStoreBackedParserParity(t *testing.T) {
 	msgPath := t.TempDir() + "/messages"
 	var b strings.Builder
 	for i := 0; i < 12; i++ {
-		b.WriteString("Apr 12 10:00:00 server pure-ftpd: 203.0.113.99 [WARNING] auth failed for user [bob]\n")
-		b.WriteString("Apr 12 10:00:00 server not-pure-ftpd: 192.0.2.55 [WARNING] Authentication failed for user [mallory]\n")
-		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@10.0.0.10) [WARNING] Authentication failed for user [infra]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd: 203.0.113.99 [WARNING] auth failed for user [bob]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server not-pure-ftpd: 192.0.2.55 [WARNING] Authentication failed for user [mallory]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@10.0.0.10) [WARNING] Authentication failed for user [infra]\n")
 	}
 	b.WriteString("Apr 12 10:05:00 server pure-ftpd: 198.51.100.20 [INFO] bob is now logged in\n")
 	if err := os.WriteFile(msgPath, []byte(b.String()), 0644); err != nil {
@@ -432,7 +432,7 @@ func TestCheckFTPLoginsStoreBackedPersistsTrackerBeforeClose(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	msgPath := t.TempDir() + "/messages"
-	if err = os.WriteFile(msgPath, []byte("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.44) [WARNING] Authentication failed for user [alice]\n"), 0644); err != nil {
+	if err = os.WriteFile(msgPath, []byte(time.Now().Format("Jan _2 15:04:05")+" server pure-ftpd[1]: (?@203.0.113.44) [WARNING] Authentication failed for user [alice]\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) { return os.Open(msgPath) }})
@@ -462,7 +462,7 @@ func TestCheckFTPLoginsStoreBackedSerializesTrackerState(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	msgPath := t.TempDir() + "/messages"
-	if err = os.WriteFile(msgPath, []byte("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.45) [WARNING] Authentication failed for user [alice]\n"), 0644); err != nil {
+	if err = os.WriteFile(msgPath, []byte(time.Now().Format("Jan _2 15:04:05")+" server pure-ftpd[1]: (?@203.0.113.45) [WARNING] Authentication failed for user [alice]\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -508,11 +508,11 @@ func TestCheckFTPLoginsStoreBackedFirstRunCapSkipsOldBytesAndObservesMetric(t *t
 	msgPath := t.TempDir() + "/messages"
 	var b strings.Builder
 	for i := 0; i < ftpFailThreshold; i++ {
-		b.WriteString("Apr 12 09:00:00 server pure-ftpd[1]: (?@203.0.113.200) [WARNING] Authentication failed for user [old]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@203.0.113.200) [WARNING] Authentication failed for user [old]\n")
 	}
 	b.WriteString(strings.Repeat("Apr 12 09:30:00 server noisy-service: filler\n", maxCatchUpBytes/32+1000))
 	for i := 0; i < ftpFailThreshold; i++ {
-		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.201) [WARNING] Authentication failed for user [new]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@203.0.113.201) [WARNING] Authentication failed for user [new]\n")
 	}
 	if err := os.WriteFile(msgPath, []byte(b.String()), 0644); err != nil {
 		t.Fatal(err)
@@ -544,7 +544,7 @@ func TestCheckFTPLoginsStoreBackedIPv6(t *testing.T) {
 	msgPath := t.TempDir() + "/messages"
 	var b strings.Builder
 	for i := 0; i < 12; i++ {
-		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@2001:db8::1) [WARNING] Authentication failed for user [alice]\n")
+		b.WriteString(time.Now().Format("Jan _2 15:04:05") + " server pure-ftpd[1]: (?@2001:db8::1) [WARNING] Authentication failed for user [alice]\n")
 	}
 	if err := os.WriteFile(msgPath, []byte(b.String()), 0644); err != nil {
 		t.Fatal(err)

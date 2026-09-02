@@ -448,6 +448,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 
 	windowMin := effectiveFTPFailWindowMin(cfg)
 	tracker.evict(now, windowMin)
+	cutoff := now.Add(-time.Duration(windowMin) * time.Minute)
 
 	var findings []alert.Finding
 	for _, line := range lines {
@@ -460,7 +461,18 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 		}
 		switch {
 		case strings.Contains(line, "Authentication failed"), strings.Contains(line, "auth failed"):
-			tracker.record(ip, now)
+			// Count the failure when the log recorded it, not when it was
+			// read: a first run or a large gap catches up on hours or days
+			// of history, and stamping that with now would turn scattered
+			// failures into one burst and auto-block the address.
+			at, ok := syslogLineTime(line, now)
+			if !ok {
+				at = now
+			}
+			if at.Before(cutoff) {
+				continue
+			}
+			tracker.record(ip, at)
 		case strings.Contains(line, "is now logged in"):
 			findings = append(findings, ftpLoginFinding(ip, line, tracker.count(ip)))
 		}
