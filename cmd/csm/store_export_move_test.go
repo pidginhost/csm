@@ -192,14 +192,14 @@ func TestMoveExportedArchiveKeepsExistingArchiveOnFailedCopy(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not match export digest") {
 		t.Fatalf("failed for the wrong reason: %v", err)
 	}
-	if data, err := os.ReadFile(dst); err != nil || string(data) != "previous-export" {
-		t.Fatalf("previous export destroyed: %q, %v", data, err)
+	if data, readErr := os.ReadFile(dst); readErr != nil || string(data) != "previous-export" {
+		t.Fatalf("previous export destroyed: %q, %v", data, readErr)
 	}
-	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("staged archive not kept: %v", err)
+	if _, statErr := os.Stat(src); statErr != nil {
+		t.Fatalf("staged archive not kept: %v", statErr)
 	}
-	if _, err := os.Stat(src + ".sha256"); err != nil {
-		t.Fatalf("staged companion not kept: %v", err)
+	if _, statErr := os.Stat(src + ".sha256"); statErr != nil {
+		t.Fatalf("staged companion not kept: %v", statErr)
 	}
 	leftovers, err := filepath.Glob(filepath.Join(dir, ".*"))
 	if err != nil {
