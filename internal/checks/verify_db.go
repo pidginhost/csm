@@ -303,15 +303,17 @@ func siteurlOptionFromDetails(details string) string {
 	return ""
 }
 
-// verifyDBPostInjection re-reads the affected published posts and resolves the
-// finding when none of them still match the injected pattern (mirrors
-// checkWPPosts' post-status, post-type, and external-script filters).
+// verifyDBPostInjection searches the published posts for the injected pattern
+// again, the way the detector found it, and resolves the finding only when no
+// post still matches (mirrors checkWPPosts' post-status, post-type, and
+// external-script filters). The finding lists at most five example post IDs;
+// re-reading only those resolved a finding whose injection sat in every other
+// post once the examples were cleaned.
 func verifyDBPostInjection(message, details string) VerifyResult {
 	dbName := detailField(details, "Database")
-	ids := parsePostIDList(detailField(details, "Affected post IDs"))
 	pattern := detailField(details, "Pattern")
-	if len(ids) == 0 || pattern == "" {
-		return VerifyResult{Checked: false, Detail: "could not parse the affected posts from the finding"}
+	if pattern == "" {
+		return VerifyResult{Checked: false, Detail: "could not parse the injected pattern from the finding"}
 	}
 	requiresExternalScript, ok := lookupMalwarePattern(pattern)
 	if !ok {
@@ -321,13 +323,13 @@ func verifyDBPostInjection(message, details string) VerifyResult {
 	if !ok {
 		return dbVerifyNotLocatable("WordPress site")
 	}
-	placeholders, args := inClausePlaceholders(ids)
+	like := likeContains(pattern)
 	stillInjected := 0
 	for _, prefix := range prefixes {
 		rows, err := runDBVerifyQueryRoot(dbName,
-			fmt.Sprintf("SELECT ID, post_content, post_content_filtered FROM `%sposts` WHERE ID IN (%s) AND post_status='publish' AND post_type NOT IN (%s)",
-				prefix, placeholders, nonScannablePostTypesSQLList()),
-			args...)
+			fmt.Sprintf("SELECT ID, post_content, post_content_filtered FROM `%sposts` WHERE post_status='publish' AND post_type NOT IN (%s) AND (post_content LIKE ? OR post_content_filtered LIKE ?) LIMIT %d",
+				prefix, nonScannablePostTypesSQLList(), dbVerifyPostSearchLimit),
+			like, like)
 		if err != nil {
 			return dbVerifyQueryError()
 		}
@@ -449,14 +451,14 @@ func parsePostIDList(s string) []string {
 	return out
 }
 
-// inClausePlaceholders builds a "?,?,?" fragment and the matching []any args
-// for a parameterized IN clause.
-func inClausePlaceholders(values []string) (string, []any) {
-	ph := make([]string, len(values))
-	args := make([]any, len(values))
-	for i, v := range values {
-		ph[i] = "?"
-		args[i] = v
-	}
-	return strings.Join(ph, ","), args
+// dbVerifyPostSearchLimit bounds the rows a post re-check reads back; one
+// surviving match is enough to keep the finding open.
+const dbVerifyPostSearchLimit = 50
+
+// likeContains builds a bound LIKE argument that matches rows containing s
+// literally: LIKE wildcards and the escape character inside s are escaped so
+// a pattern such as "base64_decode" cannot match "base64Xdecode".
+func likeContains(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(s) + "%"
 }
