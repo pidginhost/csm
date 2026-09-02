@@ -78,8 +78,8 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Serialize read-validate-write-reload so concurrent saves cannot race.
-	s.verifiedBotsMu.Lock()
-	defer s.verifiedBotsMu.Unlock()
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 
 	ifMatch := r.Header.Get("If-Match")
 	if ifMatch == "" {

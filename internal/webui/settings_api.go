@@ -294,8 +294,8 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.settingsSaveMu.Lock()
-	defer s.settingsSaveMu.Unlock()
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 	if s.settingsSaveHook != nil {
 		s.settingsSaveHook()
 	}

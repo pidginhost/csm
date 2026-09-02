@@ -115,15 +115,19 @@ type Server struct {
 	incidentCorrelator *incident.Correlator
 
 	// Rate limiting
-	loginMu          sync.Mutex
-	loginAttempts    map[string][]time.Time
-	apiMu            sync.Mutex
-	apiRequests      map[string][]time.Time // per-IP API rate limiting
-	scanMu           sync.Mutex
-	scanRunning      bool       // only one scan at a time
-	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
-	verifiedBotsMu   sync.Mutex // serializes verified-bots save (write+reload)
-	settingsSaveMu   sync.Mutex // serializes config ETag check through atomic save
+	loginMu       sync.Mutex
+	loginAttempts map[string][]time.Time
+	apiMu         sync.Mutex
+	apiRequests   map[string][]time.Time // per-IP API rate limiting
+	scanMu        sync.Mutex
+	scanRunning   bool       // only one scan at a time
+	modSecApplyMu sync.Mutex // serializes modsec rules apply (write+reload+rollback)
+	// configWriteMu serializes every read-ETag-edit-write of csm.yaml
+	// (settings save, verified-bots save, tentative firewall apply). One
+	// lock, because If-Match only detects a lost update between requests
+	// that share it: three writers on three locks let two operators on
+	// different pages interleave and one change vanish.
+	configWriteMu    sync.Mutex
 	sigCountMu       sync.RWMutex
 	settingsSaveHook func()
 
@@ -149,7 +153,6 @@ type Server struct {
 	scanJobs ScanJobController
 }
 
-// New creates a new web UI server.
 // liveCfg returns the configuration a handler should act on: the last
 // reloaded one, or the startup snapshot before any reload. The server keeps
 // s.cfg for restart-required wiring (listener, TLS, tokens, state paths);
@@ -162,6 +165,7 @@ func (s *Server) liveCfg() *config.Config {
 	return s.cfg
 }
 
+// New creates a new web UI server.
 func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	s := &Server{
 		cfg:              cfg,

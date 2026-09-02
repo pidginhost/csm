@@ -27,6 +27,10 @@ func (s *Server) apiFirewallTentativeApply(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// This handler rewrites csm.yaml like the settings and verified-bots
+	// saves do; it shares their lock so a concurrent save cannot be lost.
+	s.configWriteMu.Lock()
+	defer s.configWriteMu.Unlock()
 
 	mgr := rollback.Global()
 	if mgr == nil {
