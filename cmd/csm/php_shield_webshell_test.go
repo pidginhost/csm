@@ -154,6 +154,20 @@ require getenv('CSM_SHIELD_TEST_FILE');
 		// carries, so it is logged on its name alone.
 		{"strong_param_name_always_logged", "wp-content/plugins/foo/api4.php",
 			"<?php echo 'SAFE';", "cmd", "1", false, true},
+
+		// A packed webshell builds its sink name at runtime, so source
+		// inspection finds nothing and this event is the only trace. It hands
+		// the command in base64: aWQ= is "id".
+		{"weak_param_base64_command", "wp-content/plugins/foo/api5.php",
+			"<?php echo 'SAFE';", "c", "aWQ=", false, true},
+
+		// Base64 that decodes to nothing command-like stays quiet.
+		{"weak_param_base64_noise", "wp-content/plugins/foo/api6.php",
+			"<?php echo 'SAFE';", "c", "dGVzdA==", false, false},
+
+		// No ordinary flag is kilobytes long.
+		{"weak_param_oversized_value", "wp-content/plugins/foo/api7.php",
+			"<?php echo 'SAFE';", "c", strings.Repeat("A", 900), false, true},
 	}
 	for _, shieldCase := range shields {
 		t.Run(shieldCase.name, func(t *testing.T) {

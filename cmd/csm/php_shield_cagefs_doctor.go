@@ -102,21 +102,50 @@ func accountHomeForUID(uid uint64) (string, bool) {
 	return u.HomeDir, true
 }
 
-// isHostingAccountHome reports whether a home directory is a hosting account's.
+// serviceAccountHomeRoots are the trees a packaged daemon's home lives under.
+// Nothing hosting a website is ever placed in one.
+var serviceAccountHomeRoots = []string{
+	"/var", "/usr", "/etc", "/run", "/opt", "/srv",
+	"/bin", "/sbin", "/lib", "/lib64", "/dev", "/proc", "/sys", "/boot",
+	"/nonexistent",
+}
+
+// isHostingAccountHome reports whether a home directory could belong to an
+// account that serves PHP.
 //
 // CloudLinux in "Enable All" mode cages every uid above the minimum, service
 // accounts included, so a mount namespace alone does not make a cage worth
-// counting: rspamd, chrony and memcached each get one and none of them will
-// ever execute PHP. Only an account whose home sits under the panel's account
-// root can run the code PHP Shield inspects.
-func isHostingAccountHome(home string, roots []string) bool {
+// counting: rspamd, chrony and memcached each get one and none will ever
+// execute PHP.
+//
+// The test is which homes to *exclude*, not which to accept. cPanel spreads
+// accounts over /home, /home2, /home3 and any root the operator configures, so
+// an accept-list keyed on the panel's primary root would silently drop a real
+// cage -- and under-reporting a blind cage is the failure that matters here.
+// An unrecognised home is therefore counted.
+func isHostingAccountHome(home string, panelRoots []string) bool {
 	clean := filepath.Clean(home)
-	for _, root := range roots {
-		if strings.HasPrefix(clean, filepath.Clean(root)+string(filepath.Separator)) {
+	if clean == "" || clean == "." || clean == "/" {
+		return false
+	}
+	// The panel's own account roots win outright. Plesk puts accounts under
+	// /var/www/vhosts, which sits inside a tree service accounts otherwise
+	// occupy, so the exclusions below must not reach it.
+	for _, root := range panelRoots {
+		if pathUnder(clean, filepath.Clean(root)) {
 			return true
 		}
 	}
-	return false
+	for _, root := range serviceAccountHomeRoots {
+		if pathUnder(clean, root) {
+			return false
+		}
+	}
+	return true
+}
+
+func pathUnder(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // sampleCageShieldMounts inspects one running process per cage and reports how
@@ -135,7 +164,7 @@ func sampleCageShieldMounts() (missing, sampled int, err error) {
 		return 0, 0, err
 	}
 
-	accountRoots := platform.Detect().AccountHomeRoots()
+	panelRoots := platform.Detect().AccountHomeRoots()
 
 	// One sample per mount namespace: that is exactly one per cage, however
 	// many processes the account is running.
@@ -157,8 +186,9 @@ func sampleCageShieldMounts() (missing, sampled int, err error) {
 		if !ok || uid < cagefsMinUID {
 			continue
 		}
-		home, known := cagefsAccountHomeForUID(uid)
-		if !known || !isHostingAccountHome(home, accountRoots) {
+		// A uid with no passwd entry is counted: an unreadable account is
+		// not evidence that its cage can be ignored.
+		if home, known := cagefsAccountHomeForUID(uid); known && !isHostingAccountHome(home, panelRoots) {
 			continue
 		}
 		// A process sharing init's namespace is outside every cage.

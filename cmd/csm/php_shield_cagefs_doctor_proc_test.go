@@ -75,17 +75,56 @@ func TestSampleCageShieldMountsCountsOnlyHostingAccounts(t *testing.T) {
 	}
 }
 
-// A uid with no passwd entry is not an account either.
-func TestSampleCageShieldMountsSkipsUnknownUIDs(t *testing.T) {
+// A uid with no passwd entry is still counted: an account CSM cannot resolve
+// is not evidence that its cage can be ignored, and under-reporting a blind
+// cage is the failure that matters.
+func TestSampleCageShieldMountsCountsUnknownUIDs(t *testing.T) {
 	withFakeProc(t, []bool{false, false})
 	cagefsAccountHomeForUID = func(uint64) (string, bool) { return "", false }
 
-	_, sampled, err := sampleCageShieldMounts()
+	missing, sampled, err := sampleCageShieldMounts()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sampled != 0 {
-		t.Fatalf("sampled = %d, want 0 for uids with no passwd entry", sampled)
+	if sampled != 2 || missing != 2 {
+		t.Fatalf("sampled = %d, missing = %d; want 2 and 2 for uids with no passwd entry", sampled, missing)
+	}
+}
+
+// cPanel spreads accounts across /home, /home2 and any root the operator
+// configures. Keying on the panel's primary root would drop a real cage and
+// let Doctor report OK while that account stayed blind.
+func TestSampleCageShieldMountsCountsAccountsOutsideThePrimaryHomeRoot(t *testing.T) {
+	withFakeProc(t, []bool{false, true})
+	cagefsAccountHomeForUID = func(uint64) (string, bool) { return "/home2/alice", true }
+
+	missing, sampled, err := sampleCageShieldMounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sampled != 2 || missing != 1 {
+		t.Fatalf("sampled = %d, missing = %d; want 2 and 1 for an account under /home2", sampled, missing)
+	}
+}
+
+func TestIsHostingAccountHome(t *testing.T) {
+	for home, want := range map[string]bool{
+		"/home/alice":          true,
+		"/home2/alice":         true,
+		"/var/www/vhosts/site": true,
+		"/customers/bob":       true,
+		"/var/lib/rspamd":      false,
+		"/var/lib/chrony":      false,
+		"/run/memcached":       false,
+		"/usr/share/empty":     false,
+		"/nonexistent":         false,
+		"/sbin":                false,
+		"/":                    false,
+		"":                     false,
+	} {
+		if got := isHostingAccountHome(home, []string{"/var/www/vhosts"}); got != want {
+			t.Errorf("isHostingAccountHome(%q) = %v, want %v", home, got, want)
+		}
 	}
 }
 

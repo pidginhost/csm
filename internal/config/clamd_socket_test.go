@@ -28,13 +28,40 @@ func shortTempDir(t *testing.T) string {
 	return dir
 }
 
+// listenUnix starts a fake clamd that answers PING, the way discovery now
+// requires before it will hand mail to a socket.
 func listenUnix(t *testing.T, path string) {
+	t.Helper()
+	listenUnixSpeaking(t, path, true)
+}
+
+// listenUnixSpeaking optionally answers PING, so a test can stand up something
+// that merely accepts connections without speaking clamd.
+func listenUnixSpeaking(t *testing.T, path string, clamd bool) {
 	t.Helper()
 	l, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				buf := make([]byte, 32)
+				if _, err := c.Read(buf); err != nil {
+					return
+				}
+				if clamd {
+					_, _ = c.Write([]byte("PONG\x00"))
+				}
+			}()
+		}
+	}()
 }
 
 // The configured path is authoritative whenever something is actually
@@ -104,6 +131,74 @@ func TestResolveClamdSocketEmptyConfigStillDiscovers(t *testing.T) {
 
 	if got, discovered := ResolveClamdSocket(""); got != live || !discovered {
 		t.Fatalf("ResolveClamdSocket(\"\") = %q, %v; want %q, true", got, discovered, live)
+	}
+}
+
+// Discovery hands every mail attachment to whatever it finds. Something that
+// merely accepts a connection is not clamd: a fake that answers "OK" to every
+// scan would suppress every finding, so the candidate has to speak the
+// protocol before it is trusted with mail.
+func TestResolveClamdSocketRejectsANonClamdListener(t *testing.T) {
+	dir := shortTempDir(t)
+	configured := filepath.Join(dir, "absent.sock")
+	impostor := filepath.Join(dir, "impostor.sock")
+	listenUnixSpeaking(t, impostor, false)
+
+	withClamdCandidates(t, []string{impostor})
+
+	got, discovered := ResolveClamdSocket(configured)
+	if discovered || got != configured {
+		t.Fatalf("ResolveClamdSocket = %q, %v; a listener that does not answer PING must be refused", got, discovered)
+	}
+}
+
+// A candidate in a directory any account can write to is a socket any account
+// can provide.
+func TestResolveClamdSocketRejectsAWorldWritableDirectory(t *testing.T) {
+	dir := shortTempDir(t)
+	shared := filepath.Join(dir, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(shared, "clamd.sock")
+	listenUnix(t, live)
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	withClamdCandidates(t, []string{live})
+
+	configured := filepath.Join(dir, "absent.sock")
+	got, discovered := ResolveClamdSocket(configured)
+	if discovered || got != configured {
+		t.Fatalf("ResolveClamdSocket = %q, %v; a socket under a world-writable directory must be refused", got, discovered)
+	}
+}
+
+// /tmp is world-writable, so it must not be a candidate at all.
+func TestClamdCandidatesExcludeWorldWritableLocations(t *testing.T) {
+	for _, candidate := range clamdSocketCandidates {
+		if strings.HasPrefix(candidate, "/tmp/") || strings.HasPrefix(candidate, "/var/tmp/") {
+			t.Errorf("candidate %q is in a world-writable directory", candidate)
+		}
+	}
+}
+
+// The operator's own setting is still honoured as-is: it is a root-only file,
+// and second-guessing it would break a deliberate non-standard deployment.
+func TestResolveClamdSocketDoesNotSecondGuessTheConfiguredPath(t *testing.T) {
+	dir := shortTempDir(t)
+	shared := filepath.Join(dir, "shared")
+	if err := os.Mkdir(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	configured := filepath.Join(shared, "clamd.sock")
+	listenUnix(t, configured)
+
+	withClamdCandidates(t, nil)
+
+	if got, discovered := ResolveClamdSocket(configured); got != configured || discovered {
+		t.Fatalf("ResolveClamdSocket = %q, %v; want the configured path kept", got, discovered)
 	}
 }
 

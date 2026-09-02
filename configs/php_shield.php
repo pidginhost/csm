@@ -160,22 +160,35 @@ function csm_shield_code_only($src) {
  * A shell command needs a separator, a path, or the name of a binary. A bare
  * number or word is none of those.
  */
-function csm_shield_is_command_value($value) {
+function csm_shield_is_command_value($value, $depth = 0) {
     if (is_array($value)) {
         foreach ($value as $item) {
-            if (csm_shield_is_command_value($item)) return true;
+            if (csm_shield_is_command_value($item, $depth)) return true;
         }
         return false;
     }
     if (!is_string($value)) return false;
     $v = trim($value);
-    if ($v === '' || strlen($v) > 4096) return false;
+    if ($v === '') return false;
+    // No ordinary application flag is this long. Treating an oversized value as
+    // uninteresting would hand an attacker a way to stay silent by padding.
+    if (strlen($v) > 512) return true;
     // Shell metacharacters, or anything the shell would read as more than one word.
     if (preg_match('/[;|&\x60$(){}<>\\\\\s\'"]/', $v)) return true;
     // A path, absolute or traversing.
     if (strpos($v, '/') !== false || strpos($v, '..') !== false) return true;
     // A bare binary name.
-    return (bool) preg_match('/^(?:ls|id|pwd|whoami|uname|cat|head|tail|wget|curl|nc|ncat|sh|bash|zsh|python[0-9.]*|perl|ruby|php|chmod|chown|rm|mv|cp|kill|ps|netstat|ifconfig|ipconfig|dir|type|systeminfo|net|tasklist)$/i', $v);
+    if (preg_match('/^(?:ls|id|pwd|whoami|uname|cat|head|tail|wget|curl|nc|ncat|socat|telnet|ftp|tftp|sh|bash|zsh|dash|python[0-9.]*|perl|ruby|node|php|awk|sed|env|base64|xxd|openssl|busybox|chmod|chown|rm|mv|cp|kill|ps|netstat|ifconfig|ipconfig|dir|type|systeminfo|net|tasklist)$/i', $v)) return true;
+    // A packed webshell builds its sink name at runtime, so the source scan
+    // finds nothing and this event is the only trace it leaves. Those hand the
+    // command in base64, so look one level through it.
+    if ($depth === 0 && preg_match('/^[A-Za-z0-9+\/=]{4,}$/', $v)) {
+        $decoded = base64_decode($v, true);
+        if (is_string($decoded) && $decoded !== '' && $decoded === preg_replace('/[^\x20-\x7e]/', '', $decoded)) {
+            return csm_shield_is_command_value($decoded, 1);
+        }
+    }
+    return false;
 }
 
 /**

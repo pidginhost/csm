@@ -2,7 +2,9 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -74,15 +76,57 @@ func wpChecksumModifiedCoreFile(line string) string {
 // images, translations, fonts -- still gets a finding, but a mismatch there is
 // far more often an asset optimiser or an install whose version.php no longer
 // names the release its files came from than it is an appended backdoor.
-func wpCoreModifiedSeverity(rel string) alert.Severity {
+func wpCoreModifiedSeverity(path, rel string) alert.Severity {
 	if contenttype.IsExecutablePHPName(strings.ToLower(rel)) {
 		return alert.Critical
 	}
 	switch strings.ToLower(filepath.Ext(rel)) {
 	case ".js", ".mjs", ".html", ".htm", ".htaccess":
 		return alert.Critical
+	case ".svg", ".xml", ".xhtml":
+		// Markup, not an image format: SVG carries <script> and event
+		// handlers and the browser runs them. Judge it by what it holds,
+		// because most core SVG mismatches are an optimiser's whitespace.
+		if wpCoreMarkupIsActive(path) {
+			return alert.Critical
+		}
 	}
 	return alert.High
+}
+
+// wpCoreMarkupActiveMarkers are the constructs that make markup executable.
+var wpCoreMarkupActiveMarkers = []string{
+	"<script", "javascript:", "<foreignobject", "<!entity", "<handler", "<set ",
+	"onload=", "onerror=", "onclick=", "onmouseover=", "onbegin=", "onfocus=",
+}
+
+// wpCoreMarkupIsActive reports whether a markup file carries anything the
+// browser would execute. A read failure counts as active: an unreadable file
+// is not evidence of innocence.
+func wpCoreMarkupIsActive(path string) bool {
+	if path == "" {
+		return true
+	}
+	f, err := osFS.Open(path)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = f.Close() }()
+
+	// A core asset is small; a prefix is enough to see active constructs and
+	// bounds what a tenant-grown file can cost.
+	buf := make([]byte, 256*1024)
+	n, err := io.ReadFull(f, buf)
+	if n == 0 && err != nil && !errors.Is(err, io.EOF) {
+		return true
+	}
+	body := strings.ToLower(string(buf[:n]))
+	for _, marker := range wpCoreMarkupActiveMarkers {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // wpCoreFilePathWithin joins a wp-cli reported relative path onto the install
