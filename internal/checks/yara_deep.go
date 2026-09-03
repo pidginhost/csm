@@ -235,6 +235,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 
 	var incomplete int
 	var firstIncomplete string
+	var yaraGapPaths []string
 	jsGaps := newJSTaintGapCollector()
 	phpGaps := newPHPTaintGapCollector()
 	// Set when a walk error makes the JS consumer's unscanned range unknowable
@@ -389,6 +390,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				// after this gate must not move the other consumer past a
 				// file it never received.
 				incomplete++
+				yaraGapPaths = append(yaraGapPaths, path)
 				if firstIncomplete == "" {
 					firstIncomplete = fmt.Sprintf("%s exceeds the %d-byte scan limit", path, maxBytes)
 				}
@@ -433,6 +435,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			if err != nil {
 				if yaraWants {
 					incomplete++
+					yaraGapPaths = append(yaraGapPaths, path)
 					if firstIncomplete == "" {
 						firstIncomplete = fmt.Sprintf("opening %s: %v", path, err)
 					}
@@ -450,6 +453,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				_ = file.Close()
 				if yaraWants {
 					incomplete++
+					yaraGapPaths = append(yaraGapPaths, path)
 					if firstIncomplete == "" {
 						firstIncomplete = fmt.Sprintf("%s changed while it was being opened", path)
 					}
@@ -464,6 +468,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			}
 			if yaraWants && openedInfo.Size() > maxBytes {
 				incomplete++
+				yaraGapPaths = append(yaraGapPaths, path)
 				if firstIncomplete == "" {
 					firstIncomplete = fmt.Sprintf("%s changed while it was being opened", path)
 				}
@@ -496,6 +501,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			if readErr != nil || closeErr != nil || int64(len(data)) > readCap {
 				if yaraWants {
 					incomplete++
+					yaraGapPaths = append(yaraGapPaths, path)
 					if firstIncomplete == "" {
 						firstIncomplete = fmt.Sprintf("reading %s failed or exceeded the scan limit", path)
 					}
@@ -685,7 +691,18 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			markCheckIncomplete(ctx, "yara_deep")
 		}
 		if incomplete > 0 {
-			markCheckIncomplete(ctx, "yara_deep")
+			// A gap that names a file only freezes that file's finding; the
+			// owner can still retire findings for everything it did read.
+			// Gaps with no path (an unreadable directory, a failed Lstat that
+			// may hide a subtree) went through markCheckIncomplete above and
+			// keep the whole owner partial, which is the honest answer when
+			// the unscanned range is unknowable.
+			for _, gap := range yaraGapPaths {
+				markCheckIncompletePath(ctx, "yara_deep", gap)
+			}
+			if len(yaraGapPaths) < incomplete {
+				markCheckIncomplete(ctx, "yara_deep")
+			}
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "yara_scan_incomplete",

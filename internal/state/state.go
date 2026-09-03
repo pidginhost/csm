@@ -941,12 +941,30 @@ func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Fin
 // derivedChecks with derive(merged): the correlation findings a tier cycle
 // rebuilds from the merged set. One file write per cycle instead of two.
 func (s *Store) PurgeAndMergeFindingsDerived(purgeChecks []string, findings []alert.Finding, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
+	s.purgeAndMergeFindingsDerived(purgeChecks, findings, nil, derivedChecks, derive)
+}
+
+// PurgeAndMergeFindingsDerivedWithGaps is PurgeAndMergeFindingsDerived for a
+// scan that could not examine every file it walked. Findings for the files in
+// preservePaths survive the purge.
+func (s *Store) PurgeAndMergeFindingsDerivedWithGaps(purgeChecks []string, findings []alert.Finding, preservePaths map[string]bool, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
+	s.purgeAndMergeFindingsDerived(purgeChecks, findings, preservePaths, derivedChecks, derive)
+}
+
+// PurgeAndMergeFindingsPreservingPaths is PurgeAndMergeFindings for a scan that
+// could not read every file it walked. preservePaths names those files: their
+// findings survive the purge because the scan formed no opinion about them.
+func (s *Store) PurgeAndMergeFindingsPreservingPaths(purgeChecks []string, findings []alert.Finding, preservePaths map[string]bool) {
+	s.purgeAndMergeFindingsDerived(purgeChecks, findings, preservePaths, nil, nil)
+}
+
+func (s *Store) purgeAndMergeFindingsDerived(purgeChecks []string, findings []alert.Finding, preservePaths map[string]bool, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 
-	merged := purgeAndMergeLatest(s.latestFindings, purgeChecks, findings)
+	merged := purgeAndMergeLatest(s.latestFindings, purgeChecks, findings, preservePaths)
 	if derive != nil {
-		merged = purgeAndMergeLatest(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)))
+		merged = purgeAndMergeLatest(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)), nil)
 	}
 	s.latestFindings = merged
 	s.latestScanTime = time.Now()
@@ -956,7 +974,7 @@ func (s *Store) PurgeAndMergeFindingsDerived(purgeChecks []string, findings []al
 // purgeAndMergeLatest drops findings owned by purgeChecks (and the timeout
 // findings those runners produced), merges findings by key, and returns the
 // ordered, capped result.
-func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings []alert.Finding) []alert.Finding {
+func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings []alert.Finding, preservePaths map[string]bool) []alert.Finding {
 	remove := make(map[string]bool, len(purgeChecks))
 	for _, c := range purgeChecks {
 		remove[c] = true
@@ -969,7 +987,13 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 		// file come back at full severity on the next detection, so the
 		// demotion has to outlive a negative scan. A fresh finding with the
 		// same key still replaces it in the merge below.
-		if isAutomaticallyDemotedFinding(f) || !shouldPurgeLatestFinding(f, remove) {
+		//
+		// preservePaths carries the files this cycle could not read at all.
+		// A scan that skipped a file has said nothing about it, so its finding
+		// survives -- including the case that makes this necessary rather than
+		// merely tidy: a flagged file that has since grown past the scan limit
+		// was never re-examined.
+		if preservePaths[f.FilePath] || isAutomaticallyDemotedFinding(f) || !shouldPurgeLatestFinding(f, remove) {
 			existing[f.Key()] = f
 		}
 	}

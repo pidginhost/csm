@@ -661,6 +661,14 @@ var latestDerivedCheckNames = []string{
 // auto-response actions stay in history and alerts, not the active findings
 // view.
 func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []alert.Finding) {
+	StoreLatestScanFindingsWithGaps(st, purgeChecks, findings, nil)
+}
+
+// StoreLatestScanFindingsWithGaps is StoreLatestScanFindings for a scan that
+// reported files it could not examine. Findings for those files survive the
+// purge: the scan formed no opinion about them, so its silence is not evidence
+// they are gone.
+func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, findings []alert.Finding, gapPaths map[string]bool) {
 	if st == nil {
 		return
 	}
@@ -668,9 +676,10 @@ func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []a
 		return
 	}
 	now := time.Now()
-	st.PurgeAndMergeFindingsDerived(
+	st.PurgeAndMergeFindingsDerivedWithGaps(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
+		gapPaths,
 		latestDerivedCheckNames,
 		func(merged []alert.Finding) []alert.Finding {
 			derived := CorrelateFindings(merged)
@@ -899,6 +908,10 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// incompleteRan collects checks that returned within budget but marked
 	// themselves incomplete; their per-run status finding names still purge.
 	incompleteRan := make([]string, 0)
+	// coverageGapPaths are the files a check walked but could not examine.
+	// Their findings survive this cycle's purge; everything else the check
+	// covered is retired normally.
+	coverageGapPaths := make(map[string]bool)
 
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
@@ -986,9 +999,20 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
 				mu.Lock()
-				if !incompleteChecks.contains(c.name) {
+				switch {
+				case !incompleteChecks.contains(c.name):
 					completedChecks = append(completedChecks, c)
-				} else {
+				case incompleteChecks.attributable(c.name):
+					// Every gap named a file. The check covered everything
+					// else, so it purges normally and the named files are
+					// carried forward as preserved paths -- otherwise one
+					// permanently unreadable file freezes the owner's whole
+					// finding set for good.
+					completedChecks = append(completedChecks, c)
+					for path := range incompleteChecks.gapPaths(c.name) {
+						coverageGapPaths[path] = true
+					}
+				default:
 					incompleteRan = append(incompleteRan, c.name)
 				}
 				// A hosted logical owner completes or stays partial on its own
@@ -996,9 +1020,15 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				// budget without a panic; a YARA-side failure must never purge
 				// JS findings the run did not re-emit, and vice versa.
 				for _, owner := range hostedOwners[c.name] {
-					if !incompleteChecks.contains(owner) {
+					switch {
+					case !incompleteChecks.contains(owner):
 						completedOwners = append(completedOwners, owner)
-					} else {
+					case incompleteChecks.attributable(owner):
+						completedOwners = append(completedOwners, owner)
+						for path := range incompleteChecks.gapPaths(owner) {
+							coverageGapPaths[path] = true
+						}
+					default:
 						incompleteRan = append(incompleteRan, owner)
 					}
 				}
