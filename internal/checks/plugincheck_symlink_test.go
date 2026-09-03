@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,9 @@ func TestFindAllWPInstalls_CollapsesWWWSymlink(t *testing.T) {
 			case "/home/alice/public_html", "/home/alice/shop":
 				return accountScanFakeInfo{name: filepath.Base(name), mode: os.ModeDir | 0755, isDir: true}, nil
 			}
+			if filepath.Base(name) == "wp-config.php" {
+				return accountScanFakeInfo{name: "wp-config.php"}, nil
+			}
 			return nil, os.ErrNotExist
 		},
 		readlink: func(name string) (string, error) {
@@ -43,7 +47,7 @@ func TestFindAllWPInstalls_CollapsesWWWSymlink(t *testing.T) {
 		},
 	})
 
-	results := findAllWPInstalls()
+	results := findAllWPInstalls(context.Background())
 	want := map[string]bool{
 		"/home/alice/public_html/wp-config.php": true,
 		"/home/alice/shop/wp-config.php":        true,

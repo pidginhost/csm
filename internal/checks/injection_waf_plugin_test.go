@@ -225,7 +225,7 @@ func TestFindAllWPInstalls_DeduplicatesAndSkips(t *testing.T) {
 			return nil, nil
 		},
 	})
-	results := findAllWPInstalls()
+	results := findAllWPInstalls(context.Background())
 	for _, r := range results {
 		if strings.Contains(strings.ToLower(r), "staging") {
 			t.Errorf("should have skipped staging: %s", r)

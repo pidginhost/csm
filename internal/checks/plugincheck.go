@@ -255,43 +255,20 @@ func CheckOutdatedPlugins(ctx context.Context, cfg *config.Config, _ *state.Stor
 	return evaluatePluginCache(db)
 }
 
-// findAllWPInstalls discovers all wp-config.php files under /home, deduplicating
-// and skipping cache/backup/staging/trash paths.
-func findAllWPInstalls() []string {
-	// Relative to each account root; see accountHomeGlob.
-	patterns := []string{
-		"*/public_html/wp-config.php",
-		"*/public_html/*/wp-config.php",
-		"*/*/wp-config.php",
-	}
-
+// findAllWPInstalls lists the WordPress installs to inventory plugins for.
+// Discovery is shared (wpinstalls.go), which adds the panel's document-root
+// map: a root outside the home layout used to have no plugin coverage, so its
+// vulnerable plugins were never found and never virtually patched.
+func findAllWPInstalls(ctx context.Context) []string {
 	seen := make(map[string]bool)
 	var results []string
-
-	skipSubstrings := []string{"/cache/", "/backup", "/staging", "/.trash/"}
-
-	for _, pattern := range patterns {
-		matches, _ := accountHomeGlob(pattern)
-		for _, m := range matches {
-			m = canonicalWPInstallPath(m)
-			skip := false
-			lower := strings.ToLower(m)
-			for _, sub := range skipSubstrings {
-				if strings.Contains(lower, sub) {
-					skip = true
-					break
-				}
-			}
-			if skip {
-				continue
-			}
-			if !seen[m] {
-				seen[m] = true
-				results = append(results, m)
-			}
+	for _, install := range wpInstalls(ctx, "vulnerable_plugins") {
+		if seen[install.ConfigPath] {
+			continue
 		}
+		seen[install.ConfigPath] = true
+		results = append(results, install.ConfigPath)
 	}
-
 	return results
 }
 
@@ -336,7 +313,7 @@ type wpCLIPluginEntry struct {
 // plugins for each site, enriches free plugins via the WordPress.org API,
 // and stores everything in bbolt.
 func refreshPluginCache(ctx context.Context, db *store.DB) {
-	wpConfigs := findAllWPInstalls()
+	wpConfigs := findAllWPInstalls(ctx)
 	if ctx.Err() != nil {
 		return
 	}

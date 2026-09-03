@@ -267,7 +267,7 @@ func TestFindAllWPInstalls_SkipsCacheBackupTrash(t *testing.T) {
 		},
 	})
 
-	results := findAllWPInstalls()
+	results := findAllWPInstalls(context.Background())
 
 	for _, r := range results {
 		low := strings.ToLower(r)

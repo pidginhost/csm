@@ -51,14 +51,16 @@ var dbMalwarePatterns = []struct {
 	{"pastebin.com/raw", alert.Critical, "Pastebin payload URL", false},
 }
 
-// nonDocRootDirs are common account-data and alias directories that are never
-// candidate document roots during the home-directory walk.
+// nonDocRootDirs are common account-data directories that are never candidate
+// document roots during the home-directory walk. "www" is deliberately absent:
+// where it is cPanel's alias for public_html the discovery walk collapses the
+// symlink (canonicalWPInstallPath), and where it is a real directory it is a
+// document root serving a real site.
 var nonDocRootDirs = map[string]bool{
 	"mail": true, "etc": true, "logs": true, "ssl": true, "tmp": true,
 	"public_ftp": true, "cache": true, ".cagefs": true,
 	"access-logs": true, "access_logs": true, "backups": true,
 	"cgi-bin": true, "perl5": true, "spamassassin": true, "var": true,
-	"www": true,
 }
 
 // servedState records whether the panel currently serves a document root.

@@ -152,7 +152,7 @@ func TestRefreshPluginCacheTimeoutDoesNotDoubleLog(t *testing.T) {
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			// Match findAllWPInstalls()'s "/home/*/*/wp-config.php" pattern.
+			// Match findAllWPInstalls(context.Background())'s "/home/*/*/wp-config.php" pattern.
 			if pattern == "/home/*/*/wp-config.php" {
 				return []string{"/home/alice/www/wp-config.php"}, nil
 			}
@@ -324,7 +324,7 @@ func TestRefreshPluginCacheDropsStderrFromStdout(t *testing.T) {
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			// Match findAllWPInstalls()'s "/home/*/*/wp-config.php" pattern.
+			// Match findAllWPInstalls(context.Background())'s "/home/*/*/wp-config.php" pattern.
 			if pattern == "/home/*/*/wp-config.php" {
 				return []string{"/home/alice/www/wp-config.php"}, nil
 			}
@@ -395,5 +395,26 @@ func TestRunWPCLIUsesRunuserNotSu(t *testing.T) {
 	wantArgs := []string{"-l", "-s", "/bin/bash", "-c", "plugin list --format=json", "--", "alice"}
 	if !slices.Equal(gotArgs, wantArgs) {
 		t.Fatalf("runuser args = %#v, want %#v", gotArgs, wantArgs)
+	}
+}
+
+// Plugin discovery already walked nested roots but never consulted the panel
+// map, so a document root outside the home layout had no plugin coverage at
+// all -- including the vulnerable-plugin findings that drive virtual patching.
+func TestFindAllWPInstalls_UsesPanelMappedRoots(t *testing.T) {
+	old := osFS
+	fs := &mockOSGlobRoots{files: []string{"/home/alice/sites/live/wp-config.php"}}
+	fs.readFile = func(name string) ([]byte, error) {
+		if name == userdataDomainsPath {
+			return []byte("shop.example.com: alice==alice==sub==shop.example.com==/home/alice/sites/live\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	osFS = fs
+	t.Cleanup(func() { osFS = old })
+
+	got := findAllWPInstalls(context.Background())
+	if len(got) != 1 || got[0] != "/home/alice/sites/live/wp-config.php" {
+		t.Errorf("installs = %v, want the panel-mapped root", got)
 	}
 }

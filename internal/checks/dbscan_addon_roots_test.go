@@ -93,7 +93,6 @@ func TestWPConfigPaths_SkipsNonDocumentRoots(t *testing.T) {
 		"/home/alice/perl5/wp-config.php",
 		"/home/alice/spamassassin/wp-config.php",
 		"/home/alice/var/wp-config.php",
-		"/home/alice/www/wp-config.php",
 		"/home/alice/.cpanel/wp-config.php",
 		"/home/alice/.trash/wp-config.php",
 	}}
@@ -305,5 +304,19 @@ func TestWPConfigPaths_IncludesNestedPublicHTMLRoots(t *testing.T) {
 	got, _ := wpConfigPaths(context.Background())
 	if len(got) != 2 {
 		t.Errorf("wp-config paths = %v, want both roots", got)
+	}
+}
+
+// A real www directory serves a real site. Excluding it as an alias hid an
+// entire install from the database scan; the alias case is handled by
+// collapsing the symlink instead.
+func TestWPConfigPaths_KeepsRealWWWDirectory(t *testing.T) {
+	old := osFS
+	osFS = &mockOSGlobRoots{files: []string{"/home/alice/www/wp-config.php"}}
+	t.Cleanup(func() { osFS = old })
+
+	got, _ := wpConfigPaths(context.Background())
+	if len(got) != 1 || got[0] != "/home/alice/www/wp-config.php" {
+		t.Errorf("wp-config paths = %v, want the www document root", got)
 	}
 }

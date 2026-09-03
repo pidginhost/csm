@@ -264,6 +264,10 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 			d.incomplete = true
 		}
 		for _, path := range matches {
+			// A symlinked document root (cPanel's www -> public_html) resolves
+			// to its target first, so one install is not discovered twice and
+			// an alias is not mistaken for a directory that is never a root.
+			path = canonicalWPInstallPath(path)
 			if seen[path] || skipWPDiscoveryPath(path) {
 				continue
 			}
@@ -286,8 +290,9 @@ func skipWPDiscoveryPath(path string) bool {
 	if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") {
 		return true
 	}
+	lower := strings.ToLower(path)
 	for _, skip := range wpSkipSubstrings {
-		if strings.Contains(path, skip) {
+		if strings.Contains(lower, skip) {
 			return true
 		}
 	}
