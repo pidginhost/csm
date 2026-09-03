@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Large PHP logs no longer combine a family name or failed write with unrelated quoted source from another diagnostic record and report the file as malware.
 - The duplicate YARA detectors for a shell download pipeline are now one rule, and commands contained by fenced code or Markdown links are treated as documentation.
 
+### Changed
+
+- The YARA engine moves from YARA-X 1.19.0 to 1.20.0. Both rulesets were compiled and scanned under each version first: the shipped rules produce the same matches file for file, and the warning sets are identical apart from one diagnostic 1.20 adds. Nothing detected today stops being detected, and the version a developer runs locally is now the version that ships.
+
 ### Security
 
 - Branded webshells and plugin-directory droppers stay detectable when padding separates their identifying content from the dangerous operation.
