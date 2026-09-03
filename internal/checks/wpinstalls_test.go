@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -183,6 +184,21 @@ func TestWPInstalls_HonoursAccountScope(t *testing.T) {
 	}
 }
 
+func TestWPInstalls_RejectsInvalidAccountScope(t *testing.T) {
+	old := osFS
+	osFS = &mockOSGlobRoots{files: []string{"/bob/public_html/wp-config.php"}}
+	t.Cleanup(func() { osFS = old })
+
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	ctx = ContextWithAccountScope(ctx, "../bob")
+	if got := wpInstalls(ctx, "db_objects"); len(got) != 0 {
+		t.Fatalf("invalid account scope escaped its home: %v", wpInstallPaths(got))
+	}
+	if !incomplete.contains("db_objects") {
+		t.Fatal("invalid account scope did not mark discovery incomplete")
+	}
+}
+
 // wpInstallsForAccount serves fixers that run outside a scan context and must
 // still be restricted to the account whose finding they are acting on.
 func TestWPInstallsForAccount_RestrictsToAccount(t *testing.T) {
@@ -196,5 +212,292 @@ func TestWPInstallsForAccount_RestrictsToAccount(t *testing.T) {
 	got := wpInstallsForAccount(context.Background(), "db_clean", "bob")
 	if len(got) != 1 || got[0].Account != "bob" {
 		t.Errorf("account discovery = %v, want bob only", wpInstallPaths(got))
+	}
+}
+
+func TestWPInstalls_UnresolvedAliasMarksGapAndIsNotScanned(t *testing.T) {
+	const wpConfig = "/home/alice/www/wp-config.php"
+	old := osFS
+	osFS = &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/*/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case "/home/alice/www":
+				return accountScanFakeInfo{name: "www", mode: os.ModeSymlink}, nil
+			case wpConfig:
+				return fakeFileInfo{name: "wp-config.php"}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		readlink: func(string) (string, error) { return "", os.ErrPermission },
+	}
+	t.Cleanup(func() { osFS = old })
+
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	if got := wpInstalls(ctx, "db_objects"); len(got) != 0 {
+		t.Fatalf("unresolved alias was scanned: %v", wpInstallPaths(got))
+	}
+	if !incomplete.contains("db_objects") {
+		t.Fatal("unresolved alias did not mark discovery incomplete")
+	}
+}
+
+func TestWPInstalls_RejectsPanelAliasOutsideAccount(t *testing.T) {
+	const wpConfig = "/home/alice/www/wp-config.php"
+	old := osFS
+	osFS = &mockOS{
+		readFile: func(name string) ([]byte, error) {
+			if name == userdataDomainsPath {
+				return []byte("alice.example: alice==alice==main==alice.example==/home/alice/www\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+		glob: func(string) ([]string, error) { return nil, nil },
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case "/home/alice/www":
+				return accountScanFakeInfo{name: "www", mode: os.ModeSymlink}, nil
+			case wpConfig:
+				return fakeFileInfo{name: "wp-config.php"}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		readlink: func(name string) (string, error) {
+			if name == "/home/alice/www" {
+				return "/home/bob/public_html", nil
+			}
+			return "", os.ErrNotExist
+		},
+	}
+	t.Cleanup(func() { osFS = old })
+
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	ctx = ContextWithAccountScope(ctx, "alice")
+	if got := wpInstalls(ctx, "db_objects"); len(got) != 0 {
+		t.Fatalf("cross-account panel alias entered alice's scan: %v", wpInstallPaths(got))
+	}
+	if !incomplete.contains("db_objects") {
+		t.Fatal("cross-account panel alias did not mark discovery incomplete")
+	}
+}
+
+func TestWPInstalls_RejectsAncestorAliasOutsideAccount(t *testing.T) {
+	const wpConfig = "/home/alice/public_html/blog/wp-config.php"
+	old := osFS
+	osFS = &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/*/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case "/home/alice/public_html":
+				return accountScanFakeInfo{name: "public_html", mode: os.ModeSymlink}, nil
+			case "/home/alice/public_html/blog", "/home/bob/public_html", wpConfig:
+				if name == wpConfig {
+					return fakeFileInfo{name: "wp-config.php"}, nil
+				}
+				return accountScanFakeInfo{name: filepath.Base(name), mode: os.ModeDir | 0o755, isDir: true}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		readlink: func(name string) (string, error) {
+			if name == "/home/alice/public_html" {
+				return "/home/bob/public_html", nil
+			}
+			return "", os.ErrNotExist
+		},
+	}
+	t.Cleanup(func() { osFS = old })
+
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	if got := wpInstalls(ctx, "db_objects"); len(got) != 0 {
+		t.Fatalf("ancestor alias crossed account boundary: %v", wpInstallPaths(got))
+	}
+	if !incomplete.contains("db_objects") {
+		t.Fatal("rejected ancestor alias did not mark discovery incomplete")
+	}
+}
+
+func TestWPInstalls_RejectsScopedPrimaryAliasOutsideAccount(t *testing.T) {
+	const wpConfig = "/home/alice/public_html/wp-config.php"
+	old := osFS
+	osFS = &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if name == "/home/alice" {
+				return accountScanFakeInfo{name: "alice", mode: os.ModeDir | 0o755, isDir: true}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case "/home/alice/public_html":
+				return accountScanFakeInfo{name: "public_html", mode: os.ModeSymlink}, nil
+			case wpConfig:
+				return fakeFileInfo{name: "wp-config.php"}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		readlink: func(name string) (string, error) {
+			if name == "/home/alice/public_html" {
+				return "/home/bob/public_html", nil
+			}
+			return "", os.ErrNotExist
+		},
+	}
+	t.Cleanup(func() { osFS = old })
+
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	ctx = ContextWithAccountScope(ctx, "alice")
+	if got := wpInstalls(ctx, "db_objects"); len(got) != 0 {
+		t.Fatalf("scoped primary alias crossed account boundary: %v", wpInstallPaths(got))
+	}
+	if !incomplete.contains("db_objects") {
+		t.Fatal("rejected scoped primary alias did not mark discovery incomplete")
+	}
+}
+
+func TestWPInstalls_CanonicalizesAliasInNumberedCPanelHome(t *testing.T) {
+	const (
+		alias  = "/home2/alice/www/wp-config.php"
+		target = "/home2/alice/public_html/wp-config.php"
+	)
+	old := osFS
+	osFS = &mockOS{
+		readFile: func(name string) ([]byte, error) {
+			if name == userdataDomainsPath {
+				return []byte("alice.example: alice==alice==main==alice.example==/home2/alice/www\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case "/home2/alice/www":
+				return accountScanFakeInfo{name: "www", mode: os.ModeSymlink}, nil
+			case "/home2/alice/public_html":
+				return accountScanFakeInfo{name: "public_html", mode: os.ModeDir | 0o755, isDir: true}, nil
+			case target:
+				return fakeFileInfo{name: "wp-config.php"}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		readlink: func(name string) (string, error) {
+			if name == filepath.Dir(alias) {
+				return "public_html", nil
+			}
+			return "", os.ErrNotExist
+		},
+	}
+	t.Cleanup(func() { osFS = old })
+
+	got := wpInstalls(context.Background(), "db_objects")
+	if len(got) != 1 || got[0].ConfigPath != target {
+		t.Fatalf("numbered-home alias was not canonicalized: %v", wpInstallPaths(got))
+	}
+}
+
+func TestWPInstalls_CanonicalizesPanelAliasBeforeDedup(t *testing.T) {
+	const (
+		alias  = "/home/alice/www/wp-config.php"
+		target = "/home/alice/public_html/wp-config.php"
+	)
+	old := osFS
+	osFS = &mockOS{
+		readFile: func(name string) ([]byte, error) {
+			if name == userdataDomainsPath {
+				return []byte("alice.example: alice==alice==main==alice.example==/home/alice/www\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case "/home/*/public_html/wp-config.php":
+				return []string{target}, nil
+			case "/home/*/*/wp-config.php":
+				return []string{alias}, nil
+			default:
+				return nil, nil
+			}
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case "/home/alice/www":
+				return accountScanFakeInfo{name: "www", mode: os.ModeSymlink}, nil
+			case "/home/alice/public_html":
+				return accountScanFakeInfo{name: "public_html", mode: os.ModeDir | 0o755, isDir: true}, nil
+			case alias, target:
+				return fakeFileInfo{name: "wp-config.php"}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		readlink: func(name string) (string, error) {
+			if name == "/home/alice/www" {
+				return "public_html", nil
+			}
+			return "", os.ErrNotExist
+		},
+	}
+	t.Cleanup(func() { osFS = old })
+
+	got := wpInstalls(context.Background(), "db_objects")
+	if len(got) != 1 || got[0].ConfigPath != target {
+		t.Fatalf("panel alias was not deduplicated: %v", wpInstallPaths(got))
+	}
+	if got[0].Served != servedByPanel {
+		t.Fatalf("canonical install state = %v, want servedByPanel", got[0].Served)
+	}
+}
+
+func TestWPInstalls_KeepsSymlinkedConfigForNonDatabaseChecks(t *testing.T) {
+	const wpConfig = "/home/alice/public_html/wp-config.php"
+	old := osFS
+	osFS = &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case filepath.Dir(wpConfig):
+				return accountScanFakeInfo{name: "public_html", mode: os.ModeDir | 0o755, isDir: true}, nil
+			case wpConfig:
+				return accountScanFakeInfo{name: "wp-config.php", mode: os.ModeSymlink}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+	}
+	t.Cleanup(func() { osFS = old })
+
+	got := wpInstalls(context.Background(), "wp_core")
+	if len(got) != 1 || got[0].ConfigPath != wpConfig {
+		t.Fatalf("symlinked wp-config.php hid an otherwise scannable install: %v", wpInstallPaths(got))
+	}
+}
+
+func TestWPInstalls_DoesNotSkipDirectoryWithBackupPrefix(t *testing.T) {
+	const wpConfig = "/home/alice/backup-shop.example/wp-config.php"
+	old := osFS
+	osFS = &mockOSGlobRoots{files: []string{wpConfig}}
+	t.Cleanup(func() { osFS = old })
+
+	got := wpInstalls(context.Background(), "db_objects")
+	if len(got) != 1 || got[0].ConfigPath != wpConfig {
+		t.Fatalf("ordinary document root with backup prefix was skipped: %v", wpInstallPaths(got))
 	}
 }

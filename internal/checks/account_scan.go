@@ -157,6 +157,7 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 	scanCtx, truncations := withAccountScanTruncationCollector(ctx)
 	scanCtx = ContextWithAccountScope(scanCtx, account)
 	scanCtx = ContextWithScanOptions(scanCtx, opts)
+	scanCtx = withWPInstallCache(scanCtx)
 	findings := runAccountChecksBounded(scanCtx, cfg, store, accountChecks, 4)
 
 	now := time.Now()

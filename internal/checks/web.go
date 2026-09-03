@@ -476,7 +476,7 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 					return
 				}
 				wpPath := filepath.Dir(wpConfig)
-				user := extractUser(wpPath)
+				user := wpConfigUser(wpPath)
 
 				out, err := runCmdCombinedContext(ctx, "wp", "core", "verify-checksums",
 					"--path="+wpPath, "--allow-root")

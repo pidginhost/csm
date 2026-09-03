@@ -122,8 +122,9 @@ func TestBlockSessionAttackerIPs_ReturnedActionsStayVolatile(t *testing.T) {
 // a hijack finding drives a real firewall block of the attacker IP found in an
 // active WordPress session.
 func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
-	wpConfig := t.TempDir() + "/wp-config.php"
-	if err := os.WriteFile(wpConfig, []byte(
+	const wpConfig = "/home/alice/public_html/wp-config.php"
+	wpConfigFixture := t.TempDir() + "/wp-config.php"
+	if err := os.WriteFile(wpConfigFixture, []byte(
 		"<?php\n"+
 			"define( 'DB_NAME', 'db1' );\n"+
 			"define( 'DB_USER', 'u' );\n"+
@@ -142,9 +143,12 @@ func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
 		},
 		open: func(name string) (*os.File, error) {
 			if name == wpConfig {
-				return os.Open(wpConfig)
+				return os.Open(wpConfigFixture)
 			}
 			return nil, os.ErrNotExist
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
 		},
 	})
 

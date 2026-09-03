@@ -22,12 +22,7 @@ func (m *mockOSCPanelMap) ReadFile(name string) ([]byte, error) {
 }
 
 func (m *mockOSCPanelMap) Lstat(name string) (os.FileInfo, error) {
-	for _, f := range m.files {
-		if f == name {
-			return fakeFileInfo{name: "wp-config.php"}, nil
-		}
-	}
-	return nil, os.ErrNotExist
+	return mockPathInfo(name, m.files)
 }
 
 func (m *mockOSCPanelMap) Glob(pattern string) ([]string, error) {

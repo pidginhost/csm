@@ -132,12 +132,20 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 		if ctx.Err() != nil {
 			return findings
 		}
-		account := extractUser(filepath.Dir(wpConfig))
-		creds := parseWPConfig(wpConfig)
-		if creds.dbName == "" || creds.dbUser == "" {
+		account := wpConfigUser(filepath.Dir(wpConfig))
+		creds, complete := parseWPConfigChecked(wpConfig)
+		if !complete {
+			markCheckIncomplete(ctx, "db_objects")
 			continue
 		}
-		hits := scanDBObjects(account, creds)
+		if creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_objects")
+			continue
+		}
+		hits, err := scanDBObjects(account, creds)
+		if err != nil {
+			markCheckIncomplete(ctx, "db_objects")
+		}
 		for _, h := range hits {
 			if !h.IsMalw && allowlist[allowlistKey(h)] {
 				continue
@@ -156,7 +164,11 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 			if len(tokens) == 0 {
 				continue
 			}
-			findings = append(findings, scanMagicTokenUsers(account, creds.dbName, creds.tablePrefix, tokens)...)
+			tokenFindings, err := scanMagicTokenUsers(account, creds.dbName, creds.tablePrefix, tokens)
+			if err != nil {
+				markCheckIncomplete(ctx, "db_objects")
+			}
+			findings = append(findings, tokenFindings...)
 		}
 	}
 	return findings
@@ -173,18 +185,22 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 // miss persistence objects on the very platform we care most about.
 // The existing db-clean code (db_clean.go: findCredsForAccount)
 // hits the same constraint and reaches the same conclusion.
-func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
+func scanDBObjects(account string, creds wpDBCreds) ([]dbObjectFinding, error) {
 	if creds.dbName == "" {
-		return nil
+		return nil, nil
 	}
 	schema := creds.dbName
 	schemaLit := mysqlSchemaLiteral(schema)
 	var hits []dbObjectFinding
 
 	// TRIGGERS
-	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
+	rows, err := runMySQLQueryRootWithError(schema, fmt.Sprintf(
 		`SELECT TRIGGER_NAME, ACTION_STATEMENT FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = %s`,
-		schemaLit)) {
+		schemaLit))
+	if err != nil {
+		return hits, err
+	}
+	for _, row := range rows {
 		name, body := splitTabRow(row)
 		if name == "" {
 			continue
@@ -193,9 +209,13 @@ func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
 	}
 
 	// EVENTS
-	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
+	rows, err = runMySQLQueryRootWithError(schema, fmt.Sprintf(
 		`SELECT EVENT_NAME, EVENT_DEFINITION FROM INFORMATION_SCHEMA.EVENTS WHERE EVENT_SCHEMA = %s`,
-		schemaLit)) {
+		schemaLit))
+	if err != nil {
+		return hits, err
+	}
+	for _, row := range rows {
 		name, body := splitTabRow(row)
 		if name == "" {
 			continue
@@ -204,9 +224,13 @@ func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
 	}
 
 	// ROUTINES (procedures + functions)
-	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
+	rows, err = runMySQLQueryRootWithError(schema, fmt.Sprintf(
 		`SELECT ROUTINE_NAME, ROUTINE_TYPE, ROUTINE_DEFINITION FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = %s`,
-		schemaLit)) {
+		schemaLit))
+	if err != nil {
+		return hits, err
+	}
+	for _, row := range rows {
 		name, rtype, body := splitTabRow3(row)
 		if name == "" {
 			continue
@@ -218,7 +242,7 @@ func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
 		hits = append(hits, classifyDBObject(account, schema, kind, name, body))
 	}
 
-	return hits
+	return hits, nil
 }
 
 // classifyDBObject decides whether a row matches the malware
@@ -440,9 +464,9 @@ func validMagicToken(tok string) bool {
 // [A-Za-z0-9_]+ before concatenation. Anything outside those character
 // classes causes the scan to skip the query entirely rather than emit a
 // half-built SQL statement against an untrusted prefix.
-func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) []alert.Finding {
+func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) ([]alert.Finding, error) {
 	if len(tokens) == 0 || tablePrefix == "" || !validTablePrefix.MatchString(tablePrefix) {
-		return nil
+		return nil, nil
 	}
 	var findings []alert.Finding
 	for _, tok := range tokens {
@@ -453,7 +477,10 @@ func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) [
 			"SELECT ID, user_login, user_email, display_name FROM `%susers` WHERE display_name LIKE '%%%s%%'",
 			tablePrefix, tok,
 		)
-		rows := runMySQLQueryRoot(schema, query)
+		rows, err := runMySQLQueryRootWithError(schema, query)
+		if err != nil {
+			return findings, err
+		}
 		for _, row := range rows {
 			parts := strings.SplitN(row, "\t", 4)
 			if len(parts) < 4 {
@@ -469,7 +496,7 @@ func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) [
 			})
 		}
 	}
-	return findings
+	return findings, nil
 }
 
 // dbObjectWPConfigs lists the WordPress installs this check scans. Discovery is

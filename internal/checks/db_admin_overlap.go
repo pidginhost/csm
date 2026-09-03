@@ -52,18 +52,31 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 		if ctx.Err() != nil {
 			return nil
 		}
-		account := extractUser(filepath.Dir(wpConfig))
-		creds := parseWPConfig(wpConfig)
+		account := wpConfigUser(filepath.Dir(wpConfig))
+		creds, complete := parseWPConfigChecked(wpConfig)
+		if !complete {
+			markCheckIncomplete(ctx, "admin_overlap")
+			continue
+		}
 		if creds.dbName == "" {
+			markCheckIncomplete(ctx, "admin_overlap")
 			continue
 		}
 		prefix, ok := resolveTablePrefix(creds)
 		if !ok {
+			markCheckIncomplete(ctx, "admin_overlap")
 			continue
 		}
 		creds.tablePrefix = prefix
-		for _, email := range adminEmailsForSite(creds, prefix) {
-			_ = db.RecordAdminEmail(email, account, creds.dbName, now)
+		emails, err := adminEmailsForSite(creds, prefix)
+		if err != nil {
+			markCheckIncomplete(ctx, "admin_overlap")
+			continue
+		}
+		for _, email := range emails {
+			if err := db.RecordAdminEmail(email, account, creds.dbName, now); err != nil {
+				markCheckIncomplete(ctx, "admin_overlap")
+			}
 		}
 	}
 
@@ -72,7 +85,11 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 		min = cfg.Detection.AdminOverlapMinAccounts
 	}
 	overlaps, err := db.OverlappingAdminEmails(min, adminEmailRetention)
-	if err != nil || len(overlaps) == 0 {
+	if err != nil {
+		markCheckIncomplete(ctx, "admin_overlap")
+		return nil
+	}
+	if len(overlaps) == 0 {
 		return nil
 	}
 	overlaps = filterTrustedAdminOverlaps(overlaps, cfg)
@@ -82,14 +99,17 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 // adminEmailsForSite returns the lowercase admin emails currently
 // configured on the WordPress site. Uses the existing root-MySQL
 // helper so it works on cPanel hosts where wp-config passwords drift.
-func adminEmailsForSite(creds wpDBCreds, prefix string) []string {
+func adminEmailsForSite(creds wpDBCreds, prefix string) ([]string, error) {
 	query := fmt.Sprintf(
 		"SELECT DISTINCT LOWER(u.user_email) FROM `%susers` u "+
 			"JOIN `%susermeta` um ON u.ID = um.user_id "+
 			"WHERE um.meta_key = '%scapabilities' AND um.meta_value LIKE '%%administrator%%'",
 		prefix, prefix, prefix,
 	)
-	rows := runMySQLQueryRoot(creds.dbName, query)
+	rows, err := runMySQLQueryRootWithError(creds.dbName, query)
+	if err != nil {
+		return nil, err
+	}
 	var out []string
 	for _, row := range rows {
 		row = strings.TrimSpace(row)
@@ -97,7 +117,7 @@ func adminEmailsForSite(creds wpDBCreds, prefix string) []string {
 			out = append(out, row)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // buildAdminOverlapFindings collapses each overlap entry into a single

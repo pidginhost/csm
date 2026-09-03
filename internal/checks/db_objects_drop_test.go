@@ -241,6 +241,10 @@ type mockOSWPConfig struct {
 	schema string
 }
 
+func (m *mockOSWPConfig) Lstat(name string) (os.FileInfo, error) {
+	return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
+}
+
 func (m *mockOSWPConfig) Glob(pattern string) ([]string, error) {
 	if strings.Contains(pattern, "/home/alice/") {
 		return []string{"/home/alice/public_html/wp-config.php"}, nil

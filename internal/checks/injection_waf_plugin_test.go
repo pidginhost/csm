@@ -211,6 +211,11 @@ func TestAutoUpdateWAFRules_WithVendors(t *testing.T) {
 // --- findAllWPInstalls (plugincheck.go:185, 0%) ---------------------------
 
 func TestFindAllWPInstalls_DeduplicatesAndSkips(t *testing.T) {
+	paths := []string{
+		"/home/alice/public_html/wp-config.php",
+		"/home/alice/public_html/staging/wp-config.php",
+		"/home/alice/public_html/blog/wp-config.php",
+	}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			if strings.Contains(pattern, "public_html/wp-config") {
@@ -223,6 +228,9 @@ func TestFindAllWPInstalls_DeduplicatesAndSkips(t *testing.T) {
 				return []string{"/home/alice/public_html/blog/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, paths)
 		},
 	})
 	results := findAllWPInstalls(context.Background())

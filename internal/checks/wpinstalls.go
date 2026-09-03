@@ -19,10 +19,12 @@ type wpInstall struct {
 	Served  servedState
 }
 
-// wpSkipSubstrings keep copies of a site out of discovery. A staging or backup
+// wpSkipDirNames keep copies of a site out of discovery. A staging or backup
 // tree holds a complete WordPress install, but scanning it means querying a
 // database the site does not serve and fixing files nobody reaches.
-var wpSkipSubstrings = []string{"/cache/", "/backup", "/staging", "/.trash/"}
+var wpSkipDirNames = map[string]bool{
+	"cache": true, "backup": true, "backups": true, "staging": true, ".trash": true,
+}
 
 // wpDiscovery is one discovery result together with the coverage gap it
 // produced. The gap travels with the result so a cached discovery can credit
@@ -142,6 +144,10 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 	}
 
 	var d wpDiscovery
+	if scope != "" && !validAccountName.MatchString(scope) {
+		d.incomplete = true
+		return d
+	}
 	seen := make(map[string]bool)
 	mappedRoots := make(map[string]bool)
 	panelDomains := make(map[string][]string)
@@ -157,7 +163,11 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 			}
 			return
 		}
-		if !info.Mode().IsRegular() {
+		if info.Mode()&fs.ModeSymlink != 0 {
+			// Core and plugin checks operate on the document root and can still
+			// inspect this install. Database consumers separately use the
+			// no-follow config reader and mark their own read gap.
+		} else if !info.Mode().IsRegular() {
 			d.incomplete = true
 			return
 		}
@@ -221,7 +231,11 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 			if scope != "" && vh.user != scope {
 				continue
 			}
-			wpConfig := filepath.Join(root, "wp-config.php")
+			wpConfig, err := canonicalWPInstallPath(filepath.Join(root, "wp-config.php"))
+			if err != nil {
+				d.incomplete = true
+				continue
+			}
 			mappedRoots[wpConfig] = true
 			add(wpConfig, vh.user, servedByPanel, false)
 		}
@@ -252,7 +266,17 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 		// asked about one account must not lose that account's main install
 		// because the glob returned nothing, and a missing file here is an
 		// account without WordPress, not a coverage gap.
-		add(filepath.Join(accountHomeDir(scope), "public_html", "wp-config.php"), scope, homeState, false)
+		primary := filepath.Join(accountHomeDir(scope), "public_html", "wp-config.php")
+		if _, err := osFS.Lstat(primary); err == nil {
+			canonical, resolveErr := canonicalWPInstallPath(primary)
+			if resolveErr != nil {
+				d.incomplete = true
+			} else {
+				add(canonical, scope, homeState, false)
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			d.incomplete = true
+		}
 	}
 	for _, pattern := range []string{
 		filepath.Join(globScope, "public_html", "wp-config.php"),
@@ -267,7 +291,11 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 			// A symlinked document root (cPanel's www -> public_html) resolves
 			// to its target first, so one install is not discovered twice and
 			// an alias is not mistaken for a directory that is never a root.
-			path = canonicalWPInstallPath(path)
+			path, err = canonicalWPInstallPath(path)
+			if err != nil {
+				d.incomplete = true
+				continue
+			}
 			if seen[path] || skipWPDiscoveryPath(path) {
 				continue
 			}
@@ -290,9 +318,8 @@ func skipWPDiscoveryPath(path string) bool {
 	if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") {
 		return true
 	}
-	lower := strings.ToLower(path)
-	for _, skip := range wpSkipSubstrings {
-		if strings.Contains(lower, skip) {
+	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
+		if wpSkipDirNames[strings.ToLower(part)] {
 			return true
 		}
 	}

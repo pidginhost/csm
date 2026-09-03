@@ -19,12 +19,7 @@ func (m *mockOSGlobRoots) Lstat(name string) (os.FileInfo, error) {
 	if m.lstat != nil {
 		return m.lstat(name)
 	}
-	for _, file := range m.files {
-		if file == name {
-			return fakeFileInfo{name: "wp-config.php"}, nil
-		}
-	}
-	return nil, os.ErrNotExist
+	return mockPathInfo(name, m.files)
 }
 
 func (m *mockOSGlobRoots) Glob(pattern string) ([]string, error) {
@@ -115,12 +110,6 @@ func TestWPConfigPaths_UsesCPanelDocumentRoots(t *testing.T) {
 			readFile: func(name string) ([]byte, error) {
 				if name == userdataDomainsPath {
 					return []byte(vhosts), nil
-				}
-				return nil, os.ErrNotExist
-			},
-			lstat: func(name string) (os.FileInfo, error) {
-				if strings.HasSuffix(name, "/wp-config.php") {
-					return fakeFileInfo{name: "wp-config.php"}, nil
 				}
 				return nil, os.ErrNotExist
 			},

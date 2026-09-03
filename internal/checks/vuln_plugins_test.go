@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"maps"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -281,12 +282,17 @@ func TestCheckVulnerablePluginsHandlesEmptyFreshCache(t *testing.T) {
 func TestCheckVulnerablePluginsRefreshesItsSharedInventory(t *testing.T) {
 	db := setupPluginStore(t)
 	wpConfig := "/home/alice/public_html/wp-config.php"
-	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
-		if pattern == "/home/*/public_html/wp-config.php" {
-			return []string{wpConfig}, nil
-		}
-		return nil, nil
-	}})
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
+		},
+	})
 	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		command := strings.Join(args, " ")
 		if strings.Contains(command, "plugin list") {

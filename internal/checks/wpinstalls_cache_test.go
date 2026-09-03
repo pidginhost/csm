@@ -56,6 +56,23 @@ func TestWPInstalls_CacheReplaysGapsPerCaller(t *testing.T) {
 	}
 }
 
+func TestPluginDiscoveryCreditsBothInventoryConsumers(t *testing.T) {
+	old := osFS
+	fs := &mockOSGlobRoots{}
+	fs.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
+	osFS = fs
+	t.Cleanup(func() { osFS = old })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	ctx = withWPInstallCache(ctx)
+	_ = findAllWPInstalls(ctx)
+
+	if !collectorMarked(collector, "outdated_plugins") ||
+		!collectorMarked(collector, "vulnerable_plugins") {
+		t.Fatal("shared plugin inventory gap was not credited to both checks")
+	}
+}
+
 // Fix and re-check paths build their own context. They must re-discover: they
 // act on the tree they just changed.
 func TestWPInstalls_NoCacheWithoutCycleContext(t *testing.T) {

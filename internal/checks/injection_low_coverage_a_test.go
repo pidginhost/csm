@@ -1111,10 +1111,7 @@ func TestCheckWPCoreVerificationFailure(t *testing.T) {
 			return nil, nil
 		},
 		lstat: func(name string) (os.FileInfo, error) {
-			if name != "/home/alice/public_html/wp-config.php" {
-				return nil, os.ErrNotExist
-			}
-			return fakeFileInfo{name: "wp-config.php"}, nil
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 		},
 	})
 	withMockCmd(t, &mockCmd{

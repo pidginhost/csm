@@ -255,10 +255,7 @@ func (m *fakeMSWPConfig) Glob(pattern string) ([]string, error) {
 }
 
 func (m *fakeMSWPConfig) Lstat(name string) (os.FileInfo, error) {
-	if name == "/home/alice/public_html/wp-config.php" {
-		return fakeFileInfo{name: "wp-config.php"}, nil
-	}
-	return nil, os.ErrNotExist
+	return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 }
 
 func (m *fakeMSWPConfig) Open(name string) (*os.File, error) {

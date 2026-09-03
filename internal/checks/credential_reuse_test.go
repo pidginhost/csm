@@ -83,7 +83,10 @@ func TestAdminPasswordFingerprintsForSiteUsesRootQuery(t *testing.T) {
 	})
 	t.Cleanup(func() { mysqlclient.SetRootQueryForTest(nil) })
 
-	out := adminPasswordFingerprintsForSite(wpDBCreds{dbName: "alice_wp"}, "wp_")
+	out, err := adminPasswordFingerprintsForSite(wpDBCreds{dbName: "alice_wp"}, "wp_")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if gotSchema != "alice_wp" {
 		t.Fatalf("schema = %q, want alice_wp", gotSchema)
 	}
@@ -139,10 +142,11 @@ func TestCheckCredentialReuseScansHostAndDoesNotLeakHash(t *testing.T) {
 			return nil, nil
 		},
 		lstat: func(name string) (os.FileInfo, error) {
-			if _, ok := files[name]; !ok {
-				return nil, os.ErrNotExist
+			paths := make([]string, 0, len(files))
+			for path := range files {
+				paths = append(paths, path)
 			}
-			return fakeFileInfo{name: "wp-config.php"}, nil
+			return mockPathInfo(name, paths)
 		},
 		open: func(name string) (*os.File, error) {
 			return os.Open(files[name])
@@ -205,10 +209,7 @@ func TestCheckCredentialReuseRejectsUnsafeTablePrefix(t *testing.T) {
 			return nil, nil
 		},
 		lstat: func(name string) (os.FileInfo, error) {
-			if name != wpConfig {
-				return nil, os.ErrNotExist
-			}
-			return fakeFileInfo{name: "wp-config.php"}, nil
+			return mockPathInfo(name, []string{wpConfig})
 		},
 		open: func(name string) (*os.File, error) {
 			if name != wpConfig {

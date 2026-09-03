@@ -28,6 +28,10 @@ func (m *wpVerifyOS) Glob(pattern string) ([]string, error) {
 	return nil, nil
 }
 
+func (m *wpVerifyOS) Lstat(name string) (os.FileInfo, error) {
+	return mockPathInfo(name, []string{"/home/" + m.account + "/public_html/wp-config.php"})
+}
+
 func (m *wpVerifyOS) Open(name string) (*os.File, error) {
 	if name != "/home/"+m.account+"/public_html/wp-config.php" {
 		return nil, os.ErrNotExist
@@ -79,6 +83,14 @@ func (m *multiWPVerifyOS) Glob(pattern string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func (m *multiWPVerifyOS) Lstat(name string) (os.FileInfo, error) {
+	paths := make([]string, 0, len(m.sites))
+	for _, site := range m.sites {
+		paths = append(paths, site.path)
+	}
+	return mockPathInfo(name, paths)
 }
 
 func (m *multiWPVerifyOS) Open(name string) (*os.File, error) {

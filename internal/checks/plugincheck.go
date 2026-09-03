@@ -262,7 +262,13 @@ func CheckOutdatedPlugins(ctx context.Context, cfg *config.Config, _ *state.Stor
 func findAllWPInstalls(ctx context.Context) []string {
 	seen := make(map[string]bool)
 	var results []string
-	for _, install := range wpInstalls(ctx, "vulnerable_plugins") {
+	installs := wpInstalls(ctx, "vulnerable_plugins")
+	if checkMarkedIncomplete(ctx, "vulnerable_plugins") {
+		// The same inventory backs both checks, regardless of which one won
+		// the concurrent refresh. Neither may purge after a partial walk.
+		markCheckIncomplete(ctx, "outdated_plugins")
+	}
+	for _, install := range installs {
 		if seen[install.ConfigPath] {
 			continue
 		}
@@ -272,33 +278,89 @@ func findAllWPInstalls(ctx context.Context) []string {
 	return results
 }
 
-func canonicalWPInstallPath(wpConfig string) string {
+func canonicalWPInstallPath(wpConfig string) (string, error) {
 	clean := filepath.Clean(wpConfig)
 	dir := filepath.Dir(clean)
-	info, err := osFS.Lstat(dir)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return clean
+	home := wpInstallAccountRoot(clean)
+	if home == "" {
+		return "", fmt.Errorf("WordPress document root is outside an account home: %s", dir)
+	}
+	rel, err := filepath.Rel(home, dir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("WordPress document root is outside an account home: %s", dir)
 	}
 
-	target, err := osFS.Readlink(dir)
-	if err != nil || target == "" {
-		return clean
-	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(dir), target)
-	}
-	target = filepath.Clean(target)
+	parts := strings.Split(rel, string(filepath.Separator))
+	resolved := home
+	const maxSymlinks = 40
+	symlinks := 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("invalid WordPress document-root component in %s", dir)
+		}
+		candidate := filepath.Join(resolved, part)
+		info, err := osFS.Lstat(candidate)
+		if err != nil {
+			return "", fmt.Errorf("inspect WordPress document root %s: %w", candidate, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			if !info.IsDir() {
+				return "", fmt.Errorf("WordPress document root is not a directory: %s", candidate)
+			}
+			resolved = candidate
+			continue
+		}
 
-	home := homeAccountRoot(clean)
-	if home == "" || !isPathWithinOrEqual(target, home) {
-		return clean
+		symlinks++
+		if symlinks > maxSymlinks {
+			return "", fmt.Errorf("too many symlinks in WordPress document root: %s", dir)
+		}
+		target, err := osFS.Readlink(candidate)
+		if err != nil {
+			return "", fmt.Errorf("resolve WordPress document root %s: %w", candidate, err)
+		}
+		if target == "" {
+			return "", fmt.Errorf("resolve WordPress document root %s: empty symlink target", candidate)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(resolved, target)
+		}
+		target = filepath.Clean(target)
+		if !isPathWithinOrEqual(target, home) {
+			return "", fmt.Errorf("WordPress document root %s resolves outside its account", candidate)
+		}
+		targetRel, err := filepath.Rel(home, target)
+		if err != nil {
+			return "", fmt.Errorf("resolve WordPress document root %s: %w", candidate, err)
+		}
+		var targetParts []string
+		if targetRel != "." {
+			targetParts = strings.Split(targetRel, string(filepath.Separator))
+		}
+		parts = append(targetParts, parts...)
+		resolved = home
 	}
+	return filepath.Join(resolved, filepath.Base(clean)), nil
+}
 
-	targetInfo, err := osFS.Lstat(target)
-	if err != nil || !targetInfo.IsDir() || targetInfo.Mode()&os.ModeSymlink != 0 {
-		return clean
+func wpInstallAccountRoot(path string) string {
+	if home := homeAccountRoot(path); home != "" {
+		return home
 	}
-	return filepath.Join(target, filepath.Base(clean))
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return ""
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	for i, part := range parts {
+		if !isCPanelHomeBase(part) || i+2 >= len(parts) || !validAccountName.MatchString(parts[i+1]) {
+			continue
+		}
+		return filepath.Join(string(filepath.Separator), filepath.Join(parts[1:i+2]...))
+	}
+	return ""
 }
 
 // wpCLIPluginEntry mirrors the JSON output of `wp plugin list --format=json`.
@@ -313,11 +375,18 @@ type wpCLIPluginEntry struct {
 // plugins for each site, enriches free plugins via the WordPress.org API,
 // and stores everything in bbolt.
 func refreshPluginCache(ctx context.Context, db *store.DB) {
+	if incompleteCollectorFrom(ctx) == nil {
+		ctx, _ = withIncompleteCheckCollector(ctx)
+	}
 	wpConfigs := findAllWPInstalls(ctx)
+	discoveryIncomplete := checkMarkedIncomplete(ctx, "vulnerable_plugins")
 	if ctx.Err() != nil {
 		return
 	}
 	if len(wpConfigs) == 0 {
+		if discoveryIncomplete {
+			return
+		}
 		for path := range db.AllSitePlugins() {
 			if err := db.DeleteSitePlugins(path); err != nil {
 				fmt.Fprintf(os.Stderr, "plugincheck: prune failed for %s: %v\n", path, err)
@@ -438,13 +507,15 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 		_ = db.SetPluginInfo(slug, info)
 	}
 
-	// Prune cache entries for WP installs no longer on disk.
-	allCached := db.AllSitePlugins()
-	for path := range allCached {
-		if !discoveredPaths[path] {
-			if err := db.DeleteSitePlugins(path); err != nil {
-				fmt.Fprintf(os.Stderr, "plugincheck: prune failed for %s: %v\n", path, err)
-				cleanupFailCount++
+	// A partial walk cannot prove that an absent path was removed.
+	if !discoveryIncomplete {
+		allCached := db.AllSitePlugins()
+		for path := range allCached {
+			if !discoveredPaths[path] {
+				if err := db.DeleteSitePlugins(path); err != nil {
+					fmt.Fprintf(os.Stderr, "plugincheck: prune failed for %s: %v\n", path, err)
+					cleanupFailCount++
+				}
 			}
 		}
 	}
@@ -473,6 +544,10 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 	if cf > 0 {
 		fmt.Fprintf(os.Stderr, "[%s] plugincheck: refresh incomplete, %d stale cache cleanup(s) failed, not updating timestamp\n",
 			ts, cf)
+		return
+	}
+	if discoveryIncomplete {
+		fmt.Fprintf(os.Stderr, "[%s] plugincheck: discovery incomplete, not updating timestamp\n", ts)
 		return
 	}
 	if failCount > 0 {
@@ -578,7 +653,7 @@ func inventoryWPSiteForVerify(ctx context.Context, wpConfig string) (store.SiteP
 
 func inventoryWPSiteWithDomain(ctx context.Context, wpConfig string, includeDomain bool) (store.SitePlugins, error) {
 	wpPath := filepath.Dir(wpConfig)
-	user := extractUser(wpPath)
+	user := wpConfigUser(wpPath)
 	if !validWPCLIUser(user) {
 		return store.SitePlugins{}, fmt.Errorf("invalid WordPress site owner: %q", user)
 	}

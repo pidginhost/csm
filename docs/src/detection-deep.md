@@ -134,7 +134,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 **cPanel-only** (skipped on plain Linux):
 
 - `htaccess`, `file_index`, `php_content`, `group_writable_php`, `symlink_attacks` -- iterate `/home/*/public_html/**`
-- `wp_core`, `nulled_plugins`, `outdated_plugins`, `db_content` -- find WordPress installs through the shared discovery: the panel document-root map, `/home/*/public_html`, one directory below it, and addon-domain directories in an account home
+- `wp_core`, `outdated_plugins`, `vulnerable_plugins`, `db_content`, `db_objects`, `admin_overlap`, `credential_reuse` -- find WordPress installs through the shared discovery: the panel document-root map, `/home/*/public_html`, one directory below it, and addon-domain directories in an account home. Unresolved document-root aliases retain prior findings and cached plugin inventory instead of treating a partial walk as a clean result.
 - `supply_chain` -- scans `composer.lock` and `package-lock.json` under `/home/*` and `/home/*/public_html`
 - `phishing`, `email_content` -- scan user home directories and Exim spool
 - `dns_zones`, `ssl_certs` -- read cPanel's DNS zone store and SSL installation records

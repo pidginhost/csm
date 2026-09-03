@@ -62,14 +62,7 @@ func (m *mockOS) Lstat(name string) (os.FileInfo, error) {
 	if m.lstat != nil {
 		return m.lstat(name)
 	}
-	if m.stat != nil {
-		return m.stat(name)
-	}
-	// A double that models only globs and reads still describes a filesystem
-	// where those files exist. Answering "nothing exists" here made every
-	// caller that verifies a discovered path before opening it see an empty
-	// host; tests that care about a missing or irregular file set lstat.
-	return fakeFileInfo{name: filepath.Base(name)}, nil
+	return nil, os.ErrNotExist
 }
 
 func (m *mockOS) Readlink(name string) (string, error) {
@@ -116,6 +109,22 @@ func (m *mockOS) Glob(pattern string) ([]string, error) {
 		return m.glob(pattern)
 	}
 	return nil, nil
+}
+
+func mockPathInfo(name string, files []string) (os.FileInfo, error) {
+	clean := filepath.Clean(name)
+	for _, file := range files {
+		file = filepath.Clean(file)
+		if file == clean {
+			return fakeFileInfo{name: filepath.Base(clean)}, nil
+		}
+		if strings.HasPrefix(file, clean+string(filepath.Separator)) {
+			return accountScanFakeInfo{
+				name: filepath.Base(clean), mode: os.ModeDir | 0o755, isDir: true,
+			}, nil
+		}
+	}
+	return nil, os.ErrNotExist
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +408,12 @@ func TestProviderInjectionOS(t *testing.T) {
 	}
 	if !called {
 		t.Error("mock was not called")
+	}
+}
+
+func TestMockOSLstatDefaultsToNotExist(t *testing.T) {
+	if _, err := (&mockOS{}).Lstat("/missing"); !os.IsNotExist(err) {
+		t.Fatalf("Lstat error = %v, want os.ErrNotExist", err)
 	}
 }
 
