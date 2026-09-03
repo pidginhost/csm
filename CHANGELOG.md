@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- File-specific scan gaps no longer block retirement of findings for files that were examined. Findings stay open when their scanner did not examine the file, including interrupted and shared scans.
 - Branded webshells and plugin-directory droppers stay detectable when padding separates their identifying content from the dangerous operation.
 
 ## [3.32.0] - 2026-09-02

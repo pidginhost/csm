@@ -206,13 +206,14 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		purgeChecks []string
 	)
 	cfg := c.d.currentCfg()
+	scanCtx, gaps := checks.WithCoverageGaps(c.d.scanContext())
 	if dryRun {
-		findings, purgeChecks = checks.RunTierDryRun(cfg, c.d.store, tier)
+		findings, purgeChecks = checks.RunTierDryRunWithContext(scanCtx, cfg, c.d.store, tier)
 	} else {
-		findings, purgeChecks = checks.RunTier(cfg, c.d.store, tier)
+		findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, c.d.store, tier)
 	}
 
-	c.recordTierRunFindings(cfg, findings, purgeChecks, !dryRun, args.Alerts)
+	c.recordTierRunFindings(cfg, findings, purgeChecks, gaps.Paths(), !dryRun, args.Alerts)
 
 	// Dry-run history + FindingList: the live path writes history via
 	// Daemon.runPeriodicChecks when the internal scanners fire; the
@@ -241,8 +242,8 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 // recordTierRunFindings persists a control-socket tier run's findings. Auto-fix
 // is gated on a live run so a dry run never edits a customer's wp-config.php,
 // and the alert push is gated separately on whether the caller asked for alerts.
-func (c *ControlListener) recordTierRunFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, live, alerts bool) {
-	checks.StoreLatestScanFindings(c.d.store, purgeChecks, findings)
+func (c *ControlListener) recordTierRunFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]map[string]bool, live, alerts bool) {
+	checks.StoreLatestScanFindingsWithGaps(c.d.store, purgeChecks, findings, gapPaths)
 	if live {
 		c.d.applyWPCronAutoFix(cfg, findings)
 	}

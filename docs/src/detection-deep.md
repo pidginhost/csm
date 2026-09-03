@@ -20,6 +20,8 @@ Deep checks run every 60 minutes and cover thorough filesystem, CMS, email, and 
 
 A finding records what was true when it was raised. The condition behind it is often resolved by someone else -- an operator cleans a file, a virtual patch denies an exposure -- and none of that moves CSM's own rules, so re-verification runs once per deep-scan cycle as well as when the re-check logic changes.
 
+A scan retires a finding it did not raise again only for files it actually examined. Coverage is tracked per file and scanner: a gap that names a file -- one past the scan size limit, or one that could not be opened -- keeps that scanner's findings for the file and nothing else, while a gap with no path, such as a directory the walk could not enter or a stat that may hide a subtree, keeps every finding the scanner owns, because the unscanned range is unknown. This matters more than it sounds: a single oversized log that will never fit under the limit is a permanent gap, and treating it as a whole-scanner gap froze every finding on the host indefinitely.
+
 Each family is re-checked by re-running the test that raised it, giving four outcomes:
 
 - **Cleared.** The condition is provably gone: the file was removed, or the server no longer serves it as an exposure.

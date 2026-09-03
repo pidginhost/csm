@@ -1579,7 +1579,14 @@ var autoFixWPCron = checks.AutoFixWPCron
 // they never page an operator; that is exactly why the WP-Cron auto-fix runs
 // here and not in dispatchBatch, which only ever sees what the channel carries.
 func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, label string) {
-	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
+	d.processScanFindingsWithGaps(cfg, findings, purgeChecks, nil, label)
+}
+
+// processScanFindingsWithGaps is processScanFindings for a scan that reported
+// files it could not examine, so their findings are not retired by a cycle
+// that never looked at them.
+func (d *Daemon) processScanFindingsWithGaps(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]map[string]bool, label string) {
+	checks.StoreLatestScanFindingsWithGaps(d.store, purgeChecks, findings, gapPaths)
 	d.applyWPCronAutoFix(cfg, findings)
 	d.enqueueScanAlerts(findings, label)
 }
@@ -1754,18 +1761,23 @@ func (d *Daemon) deepScanner() {
 			// update would catch the new patterns.
 			cfg := d.currentCfg()
 			rescan := d.forceFullRescan.CompareAndSwap(true, false)
+			// Own the coverage-gap collector for this cycle so the files the
+			// scan could not examine can be read back and kept out of the
+			// purge, instead of one unreadable file freezing every finding
+			// its owner ever raised.
+			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 			var findings []alert.Finding
 			var purgeChecks []string
 			switch {
 			case rescan:
-				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 				observeSignatureRescan()
 			case d.fileMonitor != nil:
-				findings, purgeChecks = checks.RunReducedDeepWithContext(d.scanContext(), cfg, d.store)
+				findings, purgeChecks = checks.RunReducedDeepWithContext(scanCtx, cfg, d.store)
 			default:
-				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 			}
-			d.processScanFindings(cfg, findings, purgeChecks, "deep")
+			d.processScanFindingsWithGaps(cfg, findings, purgeChecks, gaps.Paths(), "deep")
 		}
 	}
 }
