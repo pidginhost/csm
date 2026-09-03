@@ -29,6 +29,15 @@ account_roots:
 #   - <panel ip>
 #   - <agent control plane ip>
 #
+# The agent rewrites 10-phpanel-runtime.yaml on every bootstrap. A static
+# conf.d hash cannot cover a file like that without making each rewrite a
+# failed restart, so list it in the MAIN config (not in a fragment) and
+# rehash once:
+#
+#   confd:
+#     integrity_exempt:
+#       - 10-phpanel-runtime.yaml
+#
 # When the agent enables the firewall, declare the port it dials its control
 # plane on in its fragment so `csm doctor` reports a policy that drops it:
 #

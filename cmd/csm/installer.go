@@ -758,6 +758,12 @@ integrity:
   confd_hash: ""
   immutable: true  # apply chattr +i to /opt/csm/csm during install and rehash
 
+# conf.d drop-in policy. Fragments listed here are left out of confd_hash
+# because their owning integration rewrites them on its own schedule;
+# every other fragment stays covered. Bare filenames only.
+confd:
+  integrity_exempt: []
+
 thresholds:
   mail_queue_warn: 500
   mail_queue_crit: 2000

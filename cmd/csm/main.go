@@ -163,7 +163,11 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `csm - Continuous Security Monitor
+	writeUsage(os.Stderr)
+}
+
+func writeUsage(w io.Writer) {
+	fmt.Fprintf(w, `csm - Continuous Security Monitor
 
 Usage: csm <command>
 
@@ -179,6 +183,7 @@ Commands:
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
   baseline      Reset state - mark current state as "known good" (use --confirm if history exists)
+  rehash        Re-sign binary, csm.yaml and conf.d hashes after an intentional change (no scan)
   validate      Validate config (--deep for connectivity probes)
   config        Config display (config show [--no-redact] [--json])
   verify        Verify binary + config integrity
@@ -204,6 +209,7 @@ Commands:
   restore <archive>  Extract backup archive into csm.yaml + conf.d + state
   webserver-integration  Install/upgrade/remove challenge reverse-proxy snippets
   pam ...       Install or remove the pam_csm.so PAM hook (csm pam --help)
+  phprelay ...  PHP mail relay guard controls (status, ignore-script, unignore, dry-run, thaw)
   report enroll Generate an abuse-reporting node key pair
   virtual-patch Deny HTTP access to confirmed web-exposed files (--apply; needs manual/auto mode)
   version       Version info + build hash

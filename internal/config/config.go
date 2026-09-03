@@ -234,6 +234,19 @@ type Config struct {
 		Immutable bool   `yaml:"immutable"`
 	} `yaml:"integrity"`
 
+	// ConfD holds operator policy for the conf.d drop-in directory. It lives
+	// outside the integrity block on purpose: config_hash skips that block,
+	// so an exemption placed there could be added without tripping
+	// verification. Here it is covered by config_hash like any other key.
+	ConfD struct {
+		// IntegrityExempt names drop-in fragments (bare filenames) whose
+		// content is left out of integrity.confd_hash. A fragment its owning
+		// integration rewrites on its own schedule cannot be pinned by a
+		// static hash without turning every restart into a manual rehash.
+		// Every other fragment stays covered. Fragments cannot set this key.
+		IntegrityExempt []string `yaml:"integrity_exempt,omitempty"`
+	} `yaml:"confd,omitempty" hotreload:"safe"`
+
 	Thresholds struct {
 		MailQueueWarn             int `yaml:"mail_queue_warn"`
 		MailQueueCrit             int `yaml:"mail_queue_crit"`

@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integration/webserver"
+	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -56,11 +57,13 @@ func runDoctor() {
 
 	report := buildDoctorReport(tryLoadConfigLite, func() ([]byte, error) {
 		return sendControl(control.CmdStatus, nil)
+	}, func(cfg *config.Config) error {
+		return integrity.Verify(binaryPath, cfg)
 	})
 	emitDoctor(report, jsonOut)
 }
 
-func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus func() ([]byte, error)) DoctorReport {
+func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus func() ([]byte, error), verifyIntegrity func(*config.Config) error) DoctorReport {
 	report := DoctorReport{}
 
 	// 1. Config validation (offline). Keep this path JSON-friendly: runDoctor
@@ -82,6 +85,13 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.OverallStatus = collapseDoctor(report.Checks)
 		return report
 	}
+
+	// 1b. Integrity baseline (offline). The running daemon keeps its old
+	// hashes, so a drop-in rewritten after the last signing only surfaces
+	// when the next restart refuses to start. Checking here, before the
+	// daemon probe, also puts the remedy in front of an operator whose
+	// daemon is already down for that reason.
+	report.Checks = append(report.Checks, doctorIntegrityCheck(cfg, verifyIntegrity))
 
 	// 2. Daemon reachable
 	resp, err := readStatus()
@@ -158,6 +168,31 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 
 	report.OverallStatus = collapseDoctor(report.Checks)
 	return report
+}
+
+func doctorIntegrityCheck(cfg *config.Config, verify func(*config.Config) error) DoctorCheck {
+	check := DoctorCheck{Name: "integrity baseline"}
+	err := verify(cfg)
+	if err == nil {
+		check.Status = "ok"
+		if cfg.Integrity.BinaryHash == "" {
+			check.Message = "no baseline recorded yet; `csm baseline` or `csm rehash` records one"
+		}
+		return check
+	}
+	check.Status = "fail"
+	check.Message = err.Error()
+	switch {
+	case errors.Is(err, integrity.ErrConfdHashMismatch):
+		check.Fix = "the next restart will refuse to start: run `csm rehash` if the conf.d change was intentional; for a fragment its owning integration rewrites, list it under confd.integrity_exempt in csm.yaml and rehash once"
+	case errors.Is(err, integrity.ErrConfigHashMismatch):
+		check.Fix = "the next restart will refuse to start: run `csm rehash` if you edited csm.yaml on purpose; otherwise treat the edit as tampering"
+	case errors.Is(err, integrity.ErrBinaryHashMismatch):
+		check.Fix = "run `csm rehash` after a deliberate binary upgrade; otherwise treat it as tampering and reinstall from a trusted package"
+	default:
+		check.Fix = "fix the read error, then run `csm verify`"
+	}
+	return check
 }
 
 func doctorConfigValidation(cfg *config.Config) ([]DoctorCheck, bool) {

@@ -1,16 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pidginhost/csm/internal/config"
-	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
-	"github.com/pidginhost/csm/internal/health"
 )
 
 // doctor is where an operator looks before enabling the firewall, so the
@@ -28,19 +24,10 @@ func TestBuildDoctorReportIncludesEgressLockoutWarning(t *testing.T) {
 		ConnRateLimit: 200,
 	}
 
-	snap := &health.Snapshot{
-		StartedAt:    time.Now(),
-		StoreHealthy: true,
-		Watchers:     map[string]bool{"fanotify": true},
-	}
-	payload, err := json.Marshal(control.StatusResult{Version: "test", Snapshot: snap})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return cfg, nil },
-		func() ([]byte, error) { return payload, nil },
+		func() ([]byte, error) { return healthyStatusPayload(t), nil },
+		integrityOK,
 	)
 	for _, check := range report.Checks {
 		if check.Name == "config: firewall.tcp_out" && check.Status == "warn" &&

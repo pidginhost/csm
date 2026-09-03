@@ -62,7 +62,7 @@ func SignAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 	// Cover the conf.d fragments merged on top of this main config. Empty
 	// when there are none, leaving conf.d-free configs byte-identical to
 	// their prior baseline.
-	newConfdHash, err := HashConfDir(confDir)
+	newConfdHash, err := HashConfDir(confDir, intendedClone.ConfD.IntegrityExempt)
 	if err != nil {
 		return fmt.Errorf("hashing conf.d: %w", err)
 	}

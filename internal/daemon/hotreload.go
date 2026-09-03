@@ -111,6 +111,9 @@ func (d *Daemon) reloadConfig() {
 		if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err == nil {
 			resynced := *oldCfg
 			resynced.Integrity = newCfg.Integrity
+			// confd_hash was computed under the edited exemption list, so
+			// the live copy must verify under that same list.
+			resynced.ConfD = newCfg.ConfD
 			resynced.ConfigFile = cfgPath
 			resynced.ConfigDir = oldCfg.ConfigDir
 			publishActiveConfig(&resynced, "SIGHUP")
@@ -228,7 +231,7 @@ func (d *Daemon) signAndSaveReloadedConfig(oldCfg, newCfg *config.Config) error 
 	if err != nil {
 		return err
 	}
-	currentConfd, err := integrity.HashConfDir(oldCfg.ConfigDir)
+	currentConfd, err := integrity.HashConfDir(oldCfg.ConfigDir, oldCfg.ConfD.IntegrityExempt)
 	if err != nil {
 		return err
 	}

@@ -74,6 +74,9 @@ integrity:
   config_hash: ""
   immutable: true
 
+confd:
+  integrity_exempt: []
+
 signatures:
   rules_dir: "/opt/csm/rules"
   auto_update: true

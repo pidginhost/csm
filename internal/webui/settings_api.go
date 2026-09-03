@@ -320,7 +320,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "config changed on disk, reload", http.StatusPreconditionFailed)
 		return
 	}
-	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk.Integrity.ConfdHash) {
+	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk) {
 		return
 	}
 	effectiveDisk, err := config.LoadBytesWithDir(diskBytes, s.cfg.ConfigDir)
@@ -432,13 +432,16 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func rejectIfConfDirChanged(w http.ResponseWriter, confDir, storedHash string) bool {
-	currentHash, err := integrity.HashConfDir(confDir)
+// rejectIfConfDirChanged refuses to bless a save when the drop-ins on disk no
+// longer match what disk (the main config as last signed) recorded. The
+// exemption list of that same on-disk config decides which fragments count.
+func rejectIfConfDirChanged(w http.ResponseWriter, confDir string, disk *config.Config) bool {
+	currentHash, err := integrity.HashConfDir(confDir, disk.ConfD.IntegrityExempt)
 	if err != nil {
 		writeJSONError(w, "hash conf.d: "+err.Error(), http.StatusInternalServerError)
 		return true
 	}
-	if currentHash != storedHash {
+	if currentHash != disk.Integrity.ConfdHash {
 		writeJSONError(w, "conf.d changed on disk, reload", http.StatusPreconditionFailed)
 		return true
 	}

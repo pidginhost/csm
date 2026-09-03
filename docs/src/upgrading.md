@@ -47,7 +47,7 @@ If `systemctl` says CSM is stopped but bbolt still times out, find the process h
 
 **Never delete `csm.db`** -- it contains all historical findings, firewall state, email forwarder baselines, and per-account data. If you delete it, the web UI will show empty data until the next full scan cycle (up to 60 minutes for deep scan findings). Restore from backup when possible; for an intentional reset, run `csm baseline --confirm` rather than removing the database by hand.
 
-**Config changes require rehash** -- After editing a restart-required field in `csm.yaml`, run `csm rehash` once, validate, then restart. Hot-reload-safe changes can use `systemctl reload csm`; the daemon validates and re-signs the accepted config itself.
+**Config changes require rehash** -- After editing a restart-required field in `csm.yaml` or any conf.d drop-in, run `csm rehash` once, validate, then restart. Hot-reload-safe changes can use `systemctl reload csm`; the daemon validates and re-signs the accepted config itself. A restart that fails with `conf.d hash mismatch` means a drop-in changed since the last signing: rehash if the change was intentional, and list fragments an integration rewrites on its own under `confd.integrity_exempt` so they stop needing one. `csm doctor` reports the mismatch while the daemon is still up.
 
 ## FHS migration (state, config, drop-ins, and profiles)
 
