@@ -1100,9 +1100,7 @@ func truncateDB(s string, maxLen int) string {
 func CleanDatabaseSpam(account string) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*/wp-config.php"))
-	wpConfigs2, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "public_html/wp-config.php"))
-	wpConfigs = append(wpConfigs, wpConfigs2...)
+	wpConfigs := spamCleanWPConfigs(account)
 
 	for _, wpConfig := range wpConfigs {
 		creds := parseWPConfig(wpConfig)
@@ -1308,4 +1306,10 @@ func docrootServedNote(state servedState) string {
 	default:
 		return ""
 	}
+}
+
+// spamCleanWPConfigs lists the installs the spam cleaner acts on. Shared
+// discovery: spam left in a nested or panel-mapped install is the same spam.
+func spamCleanWPConfigs(account string) []string {
+	return wpInstallConfigPaths(wpInstallsForAccount(context.Background(), "db_content", account))
 }

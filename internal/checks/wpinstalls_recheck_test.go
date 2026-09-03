@@ -84,3 +84,31 @@ func TestFindCredsForDB_LocatesNestedInstall(t *testing.T) {
 		t.Errorf("findCredsForDB dbName = %q, want alice_blog", creds.dbName)
 	}
 }
+
+// The rogue-admin re-check carried its own copy of the old discovery, so a
+// nested install's administrator finding could never be resolved either.
+func TestFindWPAdminVerifyPrefixes_LocatesNestedInstall(t *testing.T) {
+	const wpConfig = "/home/alice/public_html/blog/wp-config.php"
+	old := osFS
+	osFS = nestedInstallFS(t, wpConfig, nestedWPConfigBody)
+	t.Cleanup(func() { osFS = old })
+
+	prefixes, ok := findWPAdminVerifyPrefixes("alice", "alice_blog", "")
+	if !ok || len(prefixes) == 0 {
+		t.Fatalf("nested install not locatable: prefixes=%v ok=%v", prefixes, ok)
+	}
+}
+
+// The spam cleaner acts on the installs it discovers; spam in a nested install
+// was left in place.
+func TestSpamCleanWPConfigs_IncludesNestedInstall(t *testing.T) {
+	const wpConfig = "/home/alice/public_html/blog/wp-config.php"
+	old := osFS
+	osFS = nestedInstallFS(t, wpConfig, nestedWPConfigBody)
+	t.Cleanup(func() { osFS = old })
+
+	got := spamCleanWPConfigs("alice")
+	if len(got) != 1 || got[0] != wpConfig {
+		t.Errorf("spam-clean configs = %v, want the nested install", got)
+	}
+}

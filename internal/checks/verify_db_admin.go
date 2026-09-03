@@ -1,8 +1,8 @@
 package checks
 
 import (
+	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 )
 
@@ -29,9 +29,9 @@ func findWPAdminVerifyPrefixes(account, dbName, details string) ([]string, bool)
 	}
 	var prefixes []string
 	seen := map[string]bool{}
-	patterns := []string{filepath.Join(accountHomeDir(account), "public_html", "wp-config.php")}
-	addon, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*", "wp-config.php"))
-	patterns = append(patterns, addon...)
+	// Shared discovery (wpinstalls.go): an administrator finding raised on a
+	// nested or panel-mapped install must be re-checkable there too.
+	patterns := wpInstallConfigPaths(wpInstallsForAccount(context.Background(), "db_content", account))
 	for _, path := range patterns {
 		creds := parseWPConfig(path)
 		if creds.dbName != dbName {
