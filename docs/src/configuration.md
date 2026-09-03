@@ -124,6 +124,10 @@ integrity:
   confd_hash: ""                        # populated by baseline/rehash/reload
   immutable: true                       # apply chattr +i to the installed binary during install/rehash
 
+# --- conf.d drop-in policy ---
+confd:
+  integrity_exempt: []                  # fragments an integration rewrites; left out of confd_hash (bare filenames)
+
 # --- Thresholds ---
 thresholds:
   mail_queue_warn: 500                  # default: 500
@@ -624,6 +628,11 @@ firewall:
   # Restricted ports (infra IPs only)
   restricted_tcp: [2086,2087,2325,9443] # WHM and CSM Web UI ports
 
+  # Outbound ports a service on this host needs. Checked, never added to
+  # the policy: validation warns when an effective family policy omits one.
+  # Integrations declare theirs in their own conf.d fragment.
+  required_tcp_out: []
+
   # Passive FTP range
   passive_ftp_start: 49152
   passive_ftp_end: 65534
@@ -832,7 +841,7 @@ depending on which fields you touch.
 
 For fields tagged as hot-reload-safe (`alerts`, `thresholds`,
 `detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
-`reputation`, `email_protection`, `disabled_checks`), the daemon can
+`reputation`, `email_protection`, `disabled_checks`, `confd`), the daemon can
 accept the change without a restart:
 
 ```bash
@@ -965,7 +974,8 @@ Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **d
 - **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order. All-scalar lists drop duplicate entries while keeping the first occurrence; structured lists such as `webui.tokens` keep every entry.
 - **Trust:** override directories must be absolute, must exist, and must be owned by root or the running process. The directory and every loaded fragment must not be group- or world-writable. Safe symlinked fragments are allowed, so packaged profiles can still be linked into `/etc/csm/conf.d/`.
 - **Integrity ownership:** drop-ins cannot set the `integrity` block. Integrity metadata is stored only in the main config.
-- **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-sign after validating the merged config. Rehash re-signs the resolved main file only; when a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift. Web settings saves refuse to bless a drop-in change that has not already been re-signed.
+- **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-sign after validating the merged config. Rehash re-signs the resolved main file only; when a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift. Web settings saves refuse to bless a drop-in change that has not already been re-signed. A mismatch is refused at the next daemon start with an error that names `csm rehash`. Until then the running daemon keeps its old hashes, but its periodic integrity check raises a tamper finding and skips the scheduled checks on every cycle; `csm doctor` reports the same mismatch, so it can be fixed before a restart turns it into an outage.
+- **Integration-owned fragments:** a fragment its owning package rewrites on its own schedule (phpanel-server-agent rewrites `10-phpanel-runtime.yaml` on every bootstrap) cannot be pinned by a static hash without making every one of those rewrites a failed restart. List such fragments by bare filename under `confd.integrity_exempt` in the main config, then run `csm rehash` once. Their content is left out of `confd_hash`; every other fragment stays covered. The list lives in the main config, outside the `integrity` block, so it is itself covered by `config_hash`, and a fragment cannot set `confd` to exempt itself.
 - **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
 
 ```bash

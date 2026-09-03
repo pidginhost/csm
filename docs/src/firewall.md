@@ -191,6 +191,55 @@ firewall save rather than on every load:
   not count because the inbound firewall always accepts loopback traffic.
   Hosts with no sshd config get no warning.
 
+### Egress
+
+`tcp_out` is default-drop as well and ends in a TCP reset, so a host whose
+policy omits a port it dials does not lock an operator out; it goes silent.
+Every heartbeat, finding delivery or intel lookup fails at once with
+"connection refused", which reads like the far end being down, while the host
+looks healthy locally. The same validation pass therefore warns when an
+enabled firewall's outbound policy would refuse a connection the daemon
+itself needs:
+
+- The port of every enabled outbound endpoint in the config is checked
+  against `tcp_out`: `alerts.email.smtp`, `alerts.webhook.url`,
+  `alerts.heartbeat.url`, `alerts.audit_log.syslog.address` (tcp and tls
+  transports), `auto_response.verdict_callback.url`, `reputation.rspamd.url`,
+  `reputation.upstream.url`, `reputation.report.targets[].url`,
+  `reputation.central.set_url`, `signatures.update_url`,
+  `signatures.yara_forge.download_url`, `sentry.dsn` and
+  `updates.github_api_url`. HTTP endpoints use their explicit numeric port,
+  or the scheme default when the port is omitted. SMTP and TCP/TLS syslog
+  addresses also accept TCP service names, matching their dialers. Disabled
+  features are skipped, and so are loopback destinations, which the output
+  chain accepts ahead of any port rule.
+- Port 443 is checked once for the built-in HTTPS endpoints (threat feeds,
+  AbuseIPDB, MaxMind, YARA Forge, AI-crawler range feeds, release check),
+  because dropping it silences all of them at once.
+- Every port under `firewall.required_tcp_out` is checked. That list is a
+  declaration, never added to the policy: a conf.d fragment owned by an
+  integration can state the ports its service needs, and `csm doctor`
+  reports when the effective policy drops one instead of the operator
+  discovering it from a silent node. The check runs against the merged
+  `tcp_out`, so any config layer that permits the port satisfies the
+  declaration.
+
+On a restricted output chain, `smtp_block` installs per-user accepts for the
+mail ports ahead of the port rules, and those ports never get a port rule of
+their own. The daemon runs as root, so its alert mail is not warned about when
+`tcp_out` omits a port that `smtp_block` still lets root reach. A port
+declared for another service still warns under `smtp_block`, because a port
+declaration cannot prove that service's user is allowed. When IPv6 is managed,
+an explicit `tcp6_out` is checked separately; an empty one inherits `tcp_out`,
+and the single warning covers both families. When only the IPv6 lists are set,
+IPv4 egress is accepted wholesale and the warning names `tcp6_out`. A literal
+IPv4 or IPv6 destination is checked only against its own family.
+
+This catches the daemon's own egress and whatever has been declared. It does
+not see what an arbitrary third-party process on the host dials; an agent
+that ships its own conf.d fragment should declare its ports under
+`required_tcp_out` there.
+
 ## Value validation
 
 Unlike the warnings above, these are errors, because the value cannot do what

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Firewall validation now warns when the outbound policy omits the port of an enabled outbound endpoint (webhook, heartbeat, SMTP, syslog, verdict callback, threat-intel and update URLs) or port 443 for the built-in feeds. A host whose policy dropped its control-plane port went silent with "connection refused" while looking healthy locally.
+- A conf.d fragment can declare the outbound ports its service needs under `firewall.required_tcp_out`. The list is checked against the effective policy, never merged, and `csm doctor` reports a drop.
+- Fragments an integration rewrites on its own schedule can be listed under `confd.integrity_exempt` in the main config so each rewrite no longer makes the next restart fail. Every other fragment stays covered by the integrity hash, and a fragment cannot exempt itself.
+- `csm doctor` now reports a binary, `csm.yaml` or conf.d hash mismatch, with the remedy, while the daemon is still running on its old hashes and before a restart refuses to start. A host with no recorded baseline gets a warning instead of a clean report.
+
+### Changed
+
+- `csm rehash` is listed in `csm --help`, and an integrity refusal at startup names it as the fix after an intentional change. It was discoverable only from a source comment.
+
 ### Fixed
 
 - Web-exposed file findings can now be re-checked and are retired after a complete probe against the local origin confirms remediation. Re-checks stay pinned to current vhost routing and fail closed when routing data, either web protocol, or phpinfo body confirmation is incomplete.

@@ -269,6 +269,8 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "retention.compact_fill_ratio", fmt.Sprintf("compact_fill_ratio must be in (0, 1], got %v", cfg.Retention.CompactFillRatio)})
 	}
 
+	results = append(results, confdResults(cfg)...)
+
 	// --- Firewall ---
 	if cfg.Firewall != nil {
 		for _, e := range validateDOSExemptRanges(cfg.Firewall.DOSExemptRanges) {
@@ -292,6 +294,7 @@ func Validate(cfg *Config) []ValidationResult {
 			}
 		}
 		results = append(results, firewallLockoutResults(cfg)...)
+		results = append(results, firewallEgressResults(cfg)...)
 		results = append(results, firewallValueResults(cfg.Firewall)...)
 	}
 	results = append(results, centralActionResults(cfg)...)
@@ -700,6 +703,33 @@ func validateWarnings(cfg *Config) []ValidationResult {
 	return results
 }
 
+// confdResults rejects integrity_exempt entries that can never match a
+// fragment. The digest compares bare filenames, so a path, a glob or a file
+// the loader would not merge leaves the operator believing a fragment is
+// exempt while every rewrite of it still fails the next restart.
+func confdResults(cfg *Config) []ValidationResult {
+	var results []ValidationResult
+	for _, entry := range cfg.ConfD.IntegrityExempt {
+		if err := validateExemptFragmentName(entry); err != nil {
+			results = append(results, ValidationResult{"error", "confd.integrity_exempt", err.Error()})
+		}
+	}
+	return results
+}
+
+func validateExemptFragmentName(name string) error {
+	if name == "" {
+		return errors.New("entries must be conf.d fragment filenames, got an empty entry")
+	}
+	if strings.ContainsAny(name, `/\*?[`) || name == "." || name == ".." {
+		return fmt.Errorf("%q is not a bare fragment filename; list the file name only, without directories or wildcards", name)
+	}
+	if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+		return fmt.Errorf("%q is not a .yaml or .yml fragment, so conf.d never loads it", name)
+	}
+	return nil
+}
+
 // firewallValueResults rejects firewall values the engine would otherwise
 // accept and quietly reinterpret: a port outside 1-65535 cannot select the
 // intended service, an inverted passive-FTP range opens nothing, and a
@@ -718,6 +748,7 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 		{"firewall.udp_out", fw.UDPOut},
 		{"firewall.tcp6_in", fw.TCP6In},
 		{"firewall.tcp6_out", fw.TCP6Out},
+		{"firewall.required_tcp_out", fw.RequiredTCPOut},
 		{"firewall.udp6_in", fw.UDP6In},
 		{"firewall.udp6_out", fw.UDP6Out},
 		{"firewall.restricted_tcp", fw.RestrictedTCP},

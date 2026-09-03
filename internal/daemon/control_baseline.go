@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/store"
@@ -55,18 +56,25 @@ func (c *ControlListener) handleBaseline(argsRaw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hashing binary: %w", err)
 	}
-	configHash, confdHash, err := integrity.SignConfigFilePreserving(cfg.ConfigFile, cfg.ConfigDir, binaryHash)
+	signed, err := integrity.SignConfigFilePreservingSnapshot(cfg.ConfigFile, cfg.ConfigDir, binaryHash)
 	if err != nil {
 		return nil, fmt.Errorf("saving integrity: %w", err)
 	}
-	cfg.Integrity.BinaryHash = binaryHash
-	cfg.Integrity.ConfigHash = configHash
-	cfg.Integrity.ConfdHash = confdHash
+	publishSignedBaselineConfig(cfg, signed)
 
 	return control.BaselineResult{
 		Findings:       len(findings),
 		HistoryCleared: histCount,
 		BinaryHash:     binaryHash,
-		ConfigHash:     cfg.Integrity.ConfigHash,
+		ConfigHash:     signed.Integrity.ConfigHash,
 	}, nil
+}
+
+func publishSignedBaselineConfig(live, signedMain *config.Config) {
+	resynced := *live
+	resynced.Integrity = signedMain.Integrity
+	// confd_hash was selected by the on-disk main config's exemption list.
+	// Publish both together without mutating the config other goroutines read.
+	resynced.ConfD = signedMain.ConfD
+	config.SetActive(&resynced)
 }

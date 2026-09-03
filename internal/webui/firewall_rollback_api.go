@@ -80,7 +80,7 @@ func (s *Server) apiFirewallTentativeApply(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, "config changed on disk, reload", http.StatusPreconditionFailed)
 		return
 	}
-	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk.Integrity.ConfdHash) {
+	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk) {
 		return
 	}
 

@@ -134,6 +134,7 @@ func TestBuildDoctorReportIncludesCageFSMountCheck(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return cfg, nil },
 		func() ([]byte, error) { return payload, nil },
+		integrityOK,
 	)
 	for _, check := range report.Checks {
 		if check.Name == "php shield: cagefs event mount" {
@@ -167,6 +168,7 @@ func TestBuildDoctorReportSkipsCageFSCheckWhenShieldDisabled(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return cfg, nil },
 		func() ([]byte, error) { return payload, nil },
+		integrityOK,
 	)
 	for _, check := range report.Checks {
 		if check.Name == "php shield: cagefs event mount" {

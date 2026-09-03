@@ -25,6 +25,13 @@ type FirewallConfig struct {
 	// Ports restricted to infra IPs only
 	RestrictedTCP []int `yaml:"restricted_tcp"`
 
+	// RequiredTCPOut declares outbound TCP ports a service on this host needs.
+	// It is checked, never merged: validation warns when an effective outbound
+	// family policy omits one, so an integration can state its
+	// requirement in its own conf.d fragment and have `csm doctor` verify it
+	// against the effective policy.
+	RequiredTCPOut []int `yaml:"required_tcp_out"`
+
 	// Passive FTP range
 	PassiveFTPStart int `yaml:"passive_ftp_start"`
 	PassiveFTPEnd   int `yaml:"passive_ftp_end"`

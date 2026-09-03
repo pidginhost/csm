@@ -6,7 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integrity"
 )
 
 func vbotsGet(t *testing.T, s *Server, token string) (string, []map[string]any) {
@@ -141,5 +145,42 @@ func TestVerifiedBots_SaveRejectsStaleConfDir(t *testing.T) {
 	}
 	if reloaded {
 		t.Fatal("stale conf.d save invoked live reloader")
+	}
+}
+
+func TestVerifiedBotsSaveCarriesConfdPolicyWithResignedHash(t *testing.T) {
+	s, _, confDir := newSettingsTestServerWithConfDir(t, "tok", `hostname: t.example.com
+confd:
+  integrity_exempt:
+    - 10-runtime.yaml
+reputation:
+  verified_bots: []
+`, map[string]string{
+		"10-runtime.yaml": "thresholds:\n  mail_queue_warn: 150\n",
+	})
+
+	staleLive := *config.Active()
+	staleLive.ConfD.IntegrityExempt = nil
+	config.SetActive(&staleLive)
+
+	etag, _ := vbotsGet(t, s, "tok")
+	req := settingsAuthedReq("POST", "/api/v1/verified-bots/apply", "tok", `{"bots":[]}`)
+	req.Header.Set("If-Match", etag)
+	w := httptest.NewRecorder()
+	s.apiVerifiedBotsApply(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	live := config.Active()
+	if !reflect.DeepEqual(live.ConfD.IntegrityExempt, []string{"10-runtime.yaml"}) {
+		t.Fatalf("live exemption list = %v", live.ConfD.IntegrityExempt)
+	}
+	currentHash, err := integrity.HashConfDir(confDir, live.ConfD.IntegrityExempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentHash != live.Integrity.ConfdHash {
+		t.Fatalf("live confd state is inconsistent: computed %q, stored %q", currentHash, live.Integrity.ConfdHash)
 	}
 }

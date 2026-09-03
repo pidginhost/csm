@@ -119,7 +119,7 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "config changed on disk, reload", http.StatusPreconditionFailed)
 		return
 	}
-	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk.Integrity.ConfdHash) {
+	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk) {
 		return
 	}
 
@@ -161,7 +161,7 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 	if live := config.Active(); live != nil {
 		liveClone := *live
 		liveClone.Reputation.VerifiedBots = bots
-		liveClone.Integrity = newIntegrity
+		applySignedIntegrityState(&liveClone, &clone)
 		config.SetActive(&liveClone)
 	} else {
 		config.SetActive(&clone)
