@@ -220,6 +220,33 @@ func TestCheckYARADeepPathFallbackDirectoryRaceIsUnknownRange(t *testing.T) {
 	}
 }
 
+func TestCheckYARADeepPathFallbackDeleteRaceIsUnknownRange(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "raced.dat", "padded payload")
+	backend := &oversizeInlineBackend{
+		scanFileErr: errors.New("worker lost the path"),
+		onScanFile: func(string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") {
+		t.Fatal("ENOENT after a failed path fallback must hold the YARA owner")
+	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
+		t.Fatalf("path fallback delete race was not reported as an unknown range: %+v", gap)
+	}
+}
+
 func TestYARADeepRunsWithAndWithoutFanotify(t *testing.T) {
 	for _, checks := range [][]namedCheck{deepChecks(), reducedDeepChecks()} {
 		found := false
@@ -890,6 +917,105 @@ func TestCheckYARADeepPublishesGapForAtomicLatestMerge(t *testing.T) {
 	}
 }
 
+func TestCheckYARADeepFreezesGapAliasesBeforeSymlinkRetarget(t *testing.T) {
+	useRollingStore(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	firstPath := writeYARADeepFile(t, firstRoot, "large.dat", strings.Repeat("x", 2*1024*1024))
+	writeYARADeepFile(t, secondRoot, "large.dat", "replacement")
+	linkRoot := filepath.Join(t.TempDir(), "docroot")
+	if err := os.Symlink(firstRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	prior := alert.Finding{
+		Check: "yara_match_scheduled", Message: "rule on original target", FilePath: firstPath,
+		Severity: alert.Critical, Timestamp: time.Unix(100, 0),
+	}
+	st.SetLatestFindings([]alert.Finding{prior})
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	cfg := &config.Config{AccountRoots: []string{linkRoot}}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	ctx, gaps := WithCoverageGaps(context.Background())
+	findings, purge := runParallelWithContext(ctx, cfg, st, []namedCheck{{name: "yara_deep", fn: CheckYARADeep}}, "deep", true)
+	carried := jsFindingsByCheck(findings, "yara_match_scheduled")
+	if len(carried) != 1 || !carried[0].ScanCarryForward {
+		t.Fatalf("YARA gap did not return its marked carry-forward: %+v", carried)
+	}
+
+	if err := os.Remove(linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secondRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	st.DismissLatestFinding(prior.Key())
+	StoreLatestScanFindingsWithGaps(st, purge, findings, gaps.Paths())
+
+	for _, finding := range st.LatestFindings() {
+		if finding.Key() == prior.Key() {
+			t.Fatalf("symlink retarget resurrected a dismissed carry-forward: %+v", finding)
+		}
+	}
+}
+
+func TestCheckYARADeepSymlinkRetargetDuringAliasCaptureHoldsOwner(t *testing.T) {
+	useRollingStore(t)
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	writeYARADeepFile(t, firstRoot, "large.dat", strings.Repeat("a", 2*1024*1024))
+	writeYARADeepFile(t, secondRoot, "large.dat", strings.Repeat("b", 2*1024*1024))
+	linkRoot := filepath.Join(t.TempDir(), "docroot")
+	if err := os.Symlink(firstRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	path := filepath.Join(linkRoot, "large.dat")
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	lstatCalls := 0
+	fs.lstat = func(name string) (os.FileInfo, error) {
+		if name != path {
+			return fs.OS.Lstat(name)
+		}
+		lstatCalls++
+		if lstatCalls == 2 {
+			if err := os.Remove(linkRoot); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(secondRoot, linkRoot); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return fs.OS.Lstat(name)
+	}
+	withMockOS(t, fs)
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	cfg := &config.Config{
+		AccountRoots:   []string{linkRoot},
+		DisabledChecks: []string{logicalOwnerJSTaintDeep, logicalOwnerPHPTaintDeep},
+	}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	ctx, gaps := WithCoverageGaps(context.Background())
+	_, purge := runParallelWithContext(ctx, cfg, nil, []namedCheck{{name: "yara_deep", fn: CheckYARADeep}}, "deep", true)
+
+	for _, name := range purge {
+		if name == "yara_match_scheduled" {
+			t.Fatalf("unstable alias identity left YARA purgeable: %v", purge)
+		}
+	}
+	if got := gaps.Paths(); len(got["yara_match_scheduled"]) != 0 {
+		t.Fatalf("unstable alias identity published a path-scoped preserve set: %+v", got)
+	}
+}
+
 func TestCheckYARADeepTreatsOpenedDirectoryAsUnknownRange(t *testing.T) {
 	useRollingStore(t)
 	root := t.TempDir()
@@ -909,12 +1035,52 @@ func TestCheckYARADeepTreatsOpenedDirectoryAsUnknownRange(t *testing.T) {
 	ctx, collector := withIncompleteCheckCollector(context.Background())
 	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
 
-	if !collector.contains("yara_deep") {
-		t.Fatal("a path raced into a directory must hold the whole YARA owner")
+	if !collector.contains("yara_deep") || !collector.contains(logicalOwnerJSTaintDeep) {
+		t.Fatal("a path raced into a directory must hold every active consumer owner")
 	}
 	gap := findingByCheck(findings, "yara_scan_incomplete")
 	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
 		t.Fatalf("directory race was not reported as an unknown range: %+v", gap)
+	}
+	jsGap := findingByCheck(findings, "js_taint_scan_incomplete")
+	if !strings.Contains(jsGap.Details, "unreadable-range=1") || !strings.Contains(jsGap.Details, path) {
+		t.Fatalf("JS consumer did not report the shared unknown range: %+v", jsGap)
+	}
+}
+
+func TestCheckYARADeepOpenedStatFailureIsUnknownForEveryConsumer(t *testing.T) {
+	useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "raced.dat", "candidate")
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.open = func(name string) (*os.File, error) {
+		file, err := os.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return file, nil
+	}
+	withMockOS(t, fs)
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	for _, owner := range []string{"yara_deep", logicalOwnerJSTaintDeep, logicalOwnerPHPTaintDeep} {
+		if !collector.contains(owner) {
+			t.Errorf("opened-file stat failure did not hold owner %s", owner)
+		}
+	}
+	for _, check := range []string{"yara_scan_incomplete", "js_taint_scan_incomplete", "php_taint_scan_incomplete"} {
+		gap := findingByCheck(findings, check)
+		if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
+			t.Errorf("%s did not report the shared unknown range: %+v", check, gap)
+		}
 	}
 }
 

@@ -2,7 +2,6 @@ package checks
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -25,6 +24,8 @@ const yaraGapExampleMaxBytes = 200
 type yaraGapCollector struct {
 	paths          map[string]struct{}
 	pathAliases    map[string]struct{}
+	aliasesByPath  map[string][]string
+	resolveAliases func(string) ([]string, bool)
 	byStatus       map[string]int
 	example        map[string]string
 	unknown        int
@@ -34,23 +35,38 @@ type yaraGapCollector struct {
 
 func newYARAGapCollector() *yaraGapCollector {
 	return &yaraGapCollector{
-		paths:       map[string]struct{}{},
-		pathAliases: map[string]struct{}{},
-		byStatus:    map[string]int{},
-		example:     map[string]string{},
+		paths:         map[string]struct{}{},
+		pathAliases:   map[string]struct{}{},
+		aliasesByPath: map[string][]string{},
+		byStatus:      map[string]int{},
+		example:       map[string]string{},
 	}
 }
 
 // record notes one file the scan could not examine, under a status naming why.
-// It reports whether the path is still inside the authoritative retention
-// bound and can therefore be published for an atomic path-scoped purge.
-func (g *yaraGapCollector) record(path, status string) bool {
-	retained := false
+// It returns the aliases captured for an authoritative retained path so the
+// atomic path-scoped purge uses exactly the same identity as carry-forward.
+func (g *yaraGapCollector) record(path, status string) []string {
+	var aliases []string
 	if _, alreadyRetained := g.paths[path]; !alreadyRetained {
 		if len(g.paths) < maxYARAGapPaths {
+			stable := true
+			if g.resolveAliases != nil {
+				aliases, stable = g.resolveAliases(path)
+			} else {
+				aliases = []string{coverageLexicalPath(path)}
+			}
+			if !stable {
+				g.recordUnknownRange(fmt.Sprintf("%s changed while its path identity was captured", path))
+				g.byStatus[status]++
+				if _, ok := g.example[status]; !ok {
+					g.example[status] = sanitizeJSTaintDisplay(path, yaraGapExampleMaxBytes)
+				}
+				return nil
+			}
 			g.paths[path] = struct{}{}
-			retained = true
-			for _, alias := range yaraPathAliases(path) {
+			g.aliasesByPath[path] = aliases
+			for _, alias := range aliases {
 				g.pathAliases[alias] = struct{}{}
 			}
 		} else {
@@ -58,13 +74,13 @@ func (g *yaraGapCollector) record(path, status string) bool {
 			g.pathsTruncated = true
 		}
 	} else {
-		retained = true
+		aliases = g.aliasesByPath[path]
 	}
 	g.byStatus[status]++
 	if _, ok := g.example[status]; !ok {
 		g.example[status] = sanitizeJSTaintDisplay(path, yaraGapExampleMaxBytes)
 	}
-	return retained
+	return aliases
 }
 
 // recordUnknownRange notes coverage lost over a range this walk cannot
@@ -90,36 +106,12 @@ func (g *yaraGapCollector) hasPath(path string) bool {
 	if _, ok := g.paths[path]; ok {
 		return true
 	}
-	for _, alias := range yaraPathAliases(path) {
+	for _, alias := range coveragePathAliases(path) {
 		if _, ok := g.pathAliases[alias]; ok {
 			return true
 		}
 	}
 	return false
-}
-
-// yaraPathAliases makes carry-forward tolerant of the harmless path spelling
-// changes a persisted finding can outlive: relative versus absolute roots,
-// dot/trailing-separator cleanup, and a configured symlink root later replaced
-// by its real path. Exact matching remains the fast path. EvalSymlinks is only
-// an additional identity when it succeeds; an unreadable or vanished path
-// still keeps its lexical identity rather than being treated as clean.
-func yaraPathAliases(path string) []string {
-	if path == "" {
-		return nil
-	}
-	lexical := filepath.Clean(path)
-	if absolute, err := filepath.Abs(lexical); err == nil {
-		lexical = filepath.Clean(absolute)
-	}
-	aliases := []string{lexical}
-	if real, err := filepath.EvalSymlinks(lexical); err == nil {
-		real = filepath.Clean(real)
-		if real != lexical {
-			aliases = append(aliases, real)
-		}
-	}
-	return aliases
 }
 
 func (g *yaraGapCollector) finding() alert.Finding {
@@ -177,7 +169,9 @@ func carryForwardYARAFindings(prior []alert.Finding, gaps *yaraGapCollector) []a
 	sort.Strings(keys)
 	carried := make([]alert.Finding, 0, len(keys))
 	for _, key := range keys {
-		carried = append(carried, byKey[key])
+		finding := byKey[key]
+		finding.ScanCarryForward = true
+		carried = append(carried, finding)
 	}
 	return carried
 }

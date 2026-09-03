@@ -665,8 +665,9 @@ func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []a
 }
 
 // StoreLatestScanFindingsWithGaps preserves the latest state for files a
-// completed scan could not examine while replacing its covered state. The
-// state store applies the preserve set under the same lock as the purge.
+// completed scan could not examine while replacing its covered state. gapPaths
+// contains the lexical and resolved aliases captured when each gap occurred;
+// the state store applies that frozen set under the same lock as the purge.
 func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, findings []alert.Finding, gapPaths map[string]map[string]bool) {
 	if st == nil {
 		return

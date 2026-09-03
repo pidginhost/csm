@@ -2,6 +2,8 @@ package checks
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -33,7 +35,8 @@ type CoverageGaps struct {
 	pathsByCheck map[string]map[string]bool
 }
 
-// Paths returns an isolated snapshot of the completed run's path gaps.
+// Paths returns an isolated snapshot of the completed run's path gaps. Each
+// inner key is a stable lexical or resolved alias captured during the scan.
 func (g *CoverageGaps) Paths() map[string]map[string]bool {
 	if g == nil {
 		return nil
@@ -116,11 +119,11 @@ func markCheckIncomplete(ctx context.Context, name string) {
 	collector.mu.Unlock()
 }
 
-// recordCoverageGapPath records a known file gap without marking the owner
-// incomplete. The owner may retire covered findings; current findings for this
-// path are protected later by the caller's atomic purge-and-merge.
-func recordCoverageGapPath(ctx context.Context, owner, path string) {
-	if ctx == nil || path == "" {
+// recordCoverageGapPaths records the stable aliases captured when a known file
+// gap was observed. The store must consume these aliases as identities, without
+// resolving them again after a symlink may have changed targets.
+func recordCoverageGapPaths(ctx context.Context, owner string, paths []string) {
+	if ctx == nil || len(paths) == 0 {
 		return
 	}
 	collector, _ := ctx.Value(coveragePathCollectorContextKey{}).(*coveragePathCollector)
@@ -131,8 +134,68 @@ func recordCoverageGapPath(ctx context.Context, owner, path string) {
 	if collector.pathsByOwner[owner] == nil {
 		collector.pathsByOwner[owner] = make(map[string]bool)
 	}
-	collector.pathsByOwner[owner][path] = true
+	for _, path := range paths {
+		if path != "" {
+			collector.pathsByOwner[owner][path] = true
+		}
+	}
 	collector.mu.Unlock()
+}
+
+// coveragePathAliases captures every path spelling a Finding.FilePath emitted
+// by this walk can use: its absolute lexical form and, while the observed path
+// still resolves, its symlink-resolved form. Callers retain the returned set so
+// a later symlink retarget cannot change the preservation identity.
+func coveragePathAliases(path string) []string {
+	lexical := coverageLexicalPath(path)
+	if lexical == "" {
+		return nil
+	}
+	aliases := []string{lexical}
+	if real, err := filepath.EvalSymlinks(lexical); err == nil {
+		real = filepath.Clean(real)
+		if real != lexical {
+			aliases = append(aliases, real)
+		}
+	}
+	return aliases
+}
+
+func coverageLexicalPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	lexical := filepath.Clean(path)
+	if absolute, err := filepath.Abs(lexical); err == nil {
+		lexical = filepath.Clean(absolute)
+	}
+	return lexical
+}
+
+// stableCoveragePathAliases binds aliases to the file metadata that caused the
+// scanner's decision. Re-checking both the lexical and resolved paths prevents
+// a symlink retarget during alias construction from preserving a different file
+// while retiring the one that actually went unexamined.
+func stableCoveragePathAliases(path string, expected os.FileInfo) ([]string, bool) {
+	aliases := coveragePathAliases(path)
+	if expected == nil || len(aliases) == 0 {
+		return aliases, false
+	}
+	lexicalInfo, err := osFS.Lstat(aliases[0])
+	if err != nil || lexicalInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, lexicalInfo) {
+		return aliases, false
+	}
+	for _, alias := range aliases[1:] {
+		resolvedInfo, statErr := osFS.Stat(alias)
+		if statErr != nil || !os.SameFile(expected, resolvedInfo) {
+			return aliases, false
+		}
+	}
+	lexicalInfo, err = osFS.Lstat(aliases[0])
+	if err != nil || lexicalInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, lexicalInfo) {
+		return aliases, false
+	}
+	return aliases, true
 }
 
 func incompleteCollectorFrom(ctx context.Context) *incompleteCheckCollector {

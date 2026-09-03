@@ -88,6 +88,10 @@ type Finding struct {
 	// this content finding was emitted. Optional; used for sweep gating and
 	// audit explainability.
 	DetectLogic string `json:"detect_logic,omitempty"`
+	// ScanCarryForward marks an unchanged snapshot re-emitted only because the
+	// current scan could not examine its path. It is process-local provenance for
+	// the atomic latest-state merge, not part of the public finding contract.
+	ScanCarryForward bool `json:"-"`
 
 	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
 	// zero values mean "this finding does not carry that dimension".

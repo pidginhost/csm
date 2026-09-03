@@ -51,9 +51,13 @@ const (
 // the php_taint_scan_incomplete diagnostic. A non-completed status is never
 // counted as a clean file.
 type phpTaintGapCollector struct {
-	paths    map[string]struct{}
-	byStatus map[string]int
-	example  map[string]string
+	paths          map[string]struct{}
+	pathAliases    map[string]struct{}
+	aliasesByPath  map[string][]string
+	byStatus       map[string]int
+	example        map[string]string
+	recordCoverage func([]string)
+	resolveAliases func(string) ([]string, bool)
 	// unknown counts walk failures whose affected paths cannot be enumerated
 	// (an unreadable directory, a failed Lstat that may hide one). They are
 	// kept apart from paths because carry-forward needs exact paths, but they
@@ -69,21 +73,45 @@ type phpTaintGapCollector struct {
 
 func newPHPTaintGapCollector() *phpTaintGapCollector {
 	return &phpTaintGapCollector{
-		paths:    map[string]struct{}{},
-		byStatus: map[string]int{},
-		example:  map[string]string{},
+		paths:         map[string]struct{}{},
+		pathAliases:   map[string]struct{}{},
+		aliasesByPath: map[string][]string{},
+		byStatus:      map[string]int{},
+		example:       map[string]string{},
 	}
 }
 
 func (g *phpTaintGapCollector) record(path, status string) {
-	if _, retained := g.paths[path]; !retained {
+	aliases, retained := g.aliasesByPath[path]
+	if !retained {
 		if len(g.paths) < maxPHPTaintGapPaths {
+			stable := true
+			if g.resolveAliases != nil {
+				aliases, stable = g.resolveAliases(path)
+			} else {
+				aliases = []string{coverageLexicalPath(path)}
+			}
+			if !stable {
+				g.recordUnknownRange(fmt.Sprintf("%s changed while its path identity was captured", path))
+				g.byStatus[status]++
+				if _, ok := g.example[status]; !ok {
+					g.example[status] = sanitizeJSTaintDisplay(path, phpTaintExampleMaxBytes)
+				}
+				return
+			}
 			g.paths[path] = struct{}{}
+			g.aliasesByPath[path] = aliases
+			for _, alias := range aliases {
+				g.pathAliases[alias] = struct{}{}
+			}
 		} else {
 			// Stop retaining paths, but never stop counting: the count is what
 			// tells an operator how much of the host went unexamined.
 			g.pathsTruncated = true
 		}
+	}
+	if len(aliases) > 0 && g.recordCoverage != nil {
+		g.recordCoverage(aliases)
 	}
 	g.byStatus[status]++
 	if _, ok := g.example[status]; !ok {
@@ -113,8 +141,15 @@ func (g *phpTaintGapCollector) recordUnknownRange(detail string) {
 func (g *phpTaintGapCollector) empty() bool { return len(g.byStatus) == 0 && g.unknown == 0 }
 
 func (g *phpTaintGapCollector) hasPath(path string) bool {
-	_, ok := g.paths[path]
-	return ok
+	if _, ok := g.paths[path]; ok {
+		return true
+	}
+	for _, alias := range coveragePathAliases(path) {
+		if _, ok := g.pathAliases[alias]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // isPHPTaintAnalyzerDefeatStatus identifies per-file hard failures.
@@ -210,7 +245,9 @@ func carryForwardPHPTaintFindings(prior []alert.Finding, gaps *phpTaintGapCollec
 	sort.Strings(paths)
 	carried := make([]alert.Finding, 0, len(paths))
 	for _, path := range paths {
-		carried = append(carried, byPath[path])
+		finding := byPath[path]
+		finding.ScanCarryForward = true
+		carried = append(carried, finding)
 	}
 	return carried
 }

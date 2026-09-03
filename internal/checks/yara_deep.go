@@ -235,35 +235,60 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 
 	// The collector owns both the count and the per-status breakdown, so the
 	// finding can say what the gaps were instead of only how many.
-	yaraGaps := newYARAGapCollector()
-	recordYARAPathGap := func(path, status, _ string) {
-		if yaraGaps.record(path, status) {
-			recordCoverageGapPath(ctx, "yara_deep", path)
+	var observedPath string
+	var observedInfo os.FileInfo
+	observePathIdentity := func(path string, info os.FileInfo) {
+		observedPath = path
+		observedInfo = info
+	}
+	resolveObservedAliases := func(path string) ([]string, bool) {
+		if path != observedPath || observedInfo == nil {
+			return coveragePathAliases(path), false
 		}
+		return stableCoveragePathAliases(path, observedInfo)
+	}
+
+	yaraGaps := newYARAGapCollector()
+	yaraGaps.resolveAliases = resolveObservedAliases
+	recordYARAPathGap := func(path, status, _ string) {
+		recordCoverageGapPaths(ctx, "yara_deep", yaraGaps.record(path, status))
 	}
 	recordYARAUnknownRangeGap := func(detail string) {
 		yaraGaps.recordUnknownRange(detail)
+	}
+	pathFailureStillAttributable := func(path string) (os.FileInfo, bool) {
+		info, err := osFS.Lstat(path)
+		// Every metadata error is ambiguous, including ENOENT: a delete can race
+		// this observation and replace the path with a directory immediately after
+		// it. Only an observed non-directory, non-symlink entry is narrow enough to
+		// preserve by exact path.
+		return info, err == nil && !info.IsDir() && info.Mode()&os.ModeSymlink == 0 &&
+			observedPath == path && observedInfo != nil && os.SameFile(observedInfo, info)
 	}
 	recordYARAScanGap := func(path string, scanErr error) {
 		// Inline IPC overflow retries by path. If that path changed into a
 		// directory or symlink before the retry failed, the unscanned range is no
 		// longer just the original file: children or a target subtree may now be
-		// hidden. A missing path is still attributable to the original file, and
-		// an unchanged regular/non-directory entry cannot hide a subtree.
-		info, err := osFS.Lstat(path)
-		if (err != nil && !os.IsNotExist(err)) ||
-			(err == nil && (info.IsDir() || info.Mode()&os.ModeSymlink != 0)) {
+		// hidden. The post-failure Lstat is inherently racy, so every metadata
+		// error takes the conservative unknown-range path.
+		info, attributable := pathFailureStillAttributable(path)
+		if !attributable {
 			recordYARAUnknownRangeGap(fmt.Sprintf("scanning %s failed after the path changed: %v", path, scanErr))
 			return
 		}
+		observePathIdentity(path, info)
 		recordYARAPathGap(path, "scan_error", fmt.Sprintf("scanning %s: %v", path, scanErr))
 	}
 	jsGaps := newJSTaintGapCollector()
 	phpGaps := newPHPTaintGapCollector()
-	// Set when a walk error makes the JS consumer's unscanned range unknowable
-	// (a failed Lstat may hide a directory). PHP tracks the same condition in
-	// its gap collector so it can also report the lost range.
-	jsUnknownRangeGap := false
+	jsGaps.resolveAliases = resolveObservedAliases
+	phpGaps.resolveAliases = resolveObservedAliases
+	jsGaps.recordCoverage = func(paths []string) {
+		recordCoverageGapPaths(ctx, logicalOwnerJSTaintDeep, paths)
+	}
+	phpGaps.recordCoverage = func(paths []string) {
+		recordCoverageGapPaths(ctx, logicalOwnerPHPTaintDeep, paths)
+	}
 	stoppedEarly := false
 	sep := string(filepath.Separator)
 	subtreePrefix := func(path string) string {
@@ -317,7 +342,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				recordYARAUnknownRangeGap(fmt.Sprintf("reading %s: %v", dir, err))
 			}
 			if jsWants {
-				jsUnknownRangeGap = true
+				jsGaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
 			}
 			if phpWants {
 				phpGaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
@@ -386,7 +411,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 					recordYARAUnknownRangeGap(fmt.Sprintf("inspecting %s: %v", path, item.err))
 				}
 				if jsWants {
-					jsUnknownRangeGap = true
+					jsGaps.recordUnknownRange(fmt.Sprintf("inspecting %s: %v", path, item.err))
 				}
 				if phpWants {
 					phpGaps.recordUnknownRange(fmt.Sprintf("inspecting %s: %v", path, item.err))
@@ -399,6 +424,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				advanceAll(path)
 				continue
 			}
+			observePathIdentity(path, info)
 			if yaraWants && info.Size() > maxBytes {
 				// Oversize files are intentionally not opened, but they still
 				// count as covered progress for this rolling cycle. The gap
@@ -445,14 +471,29 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 
 			file, err := osFS.Open(path)
 			if err != nil {
-				if yaraWants {
-					recordYARAPathGap(path, "open_error", fmt.Sprintf("opening %s: %v", path, err))
-				}
-				if jsWants {
-					jsGaps.record(path, "read_error")
-				}
-				if phpWants {
-					phpGaps.record(path, "read_error")
+				detail := fmt.Sprintf("opening %s: %v", path, err)
+				info, attributable := pathFailureStillAttributable(path)
+				if attributable {
+					observePathIdentity(path, info)
+					if yaraWants {
+						recordYARAPathGap(path, "open_error", detail)
+					}
+					if jsWants {
+						jsGaps.record(path, "read_error")
+					}
+					if phpWants {
+						phpGaps.record(path, "read_error")
+					}
+				} else {
+					if yaraWants {
+						recordYARAUnknownRangeGap(detail)
+					}
+					if jsWants {
+						jsGaps.recordUnknownRange(detail)
+					}
+					if phpWants {
+						phpGaps.recordUnknownRange(detail)
+					}
 				}
 				continue
 			}
@@ -463,7 +504,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 					recordYARAUnknownRangeGap(fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
 				}
 				if jsWants {
-					jsUnknownRangeGap = true
+					jsGaps.recordUnknownRange(fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
 				}
 				if phpWants {
 					phpGaps.recordUnknownRange(fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
@@ -480,7 +521,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 						recordYARAUnknownRangeGap(fmt.Sprintf("%s changed into a directory while it was being opened", path))
 					}
 					if jsWants {
-						jsUnknownRangeGap = true
+						jsGaps.recordUnknownRange(fmt.Sprintf("%s changed into a directory while it was being opened", path))
 					}
 					if phpWants {
 						phpGaps.recordUnknownRange(fmt.Sprintf("%s changed into a directory while it was being opened", path))
@@ -498,6 +539,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				}
 				continue
 			}
+			observePathIdentity(path, openedInfo)
 			if yaraWants && openedInfo.Size() > maxBytes {
 				recordYARAPathGap(path, "changed_during_read", fmt.Sprintf("%s changed while it was being opened", path))
 				yaraWants = false
@@ -675,8 +717,8 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	//   yaraWants/jsWants/phpWants and the three size limits govern only the
 	//   matching consumer. The shared read cap is their maximum, so no sibling
 	//   can reduce another's snapshot.
-	//   incomplete/firstIncomplete belong only to YARA; jsGaps plus
-	//   jsUnknownRangeGap belong only to JS; phpGaps belongs only to PHP. Each is
+	//   incomplete/firstIncomplete belong only to YARA; jsGaps belongs only to
+	//   JS; phpGaps belongs only to PHP. Each is
 	//   reported and used for completion/carry-forward only in its owner block.
 	// Genuinely shared state:
 	//   roots, path order, the context/soft deadline, opened snapshots, and
@@ -743,7 +785,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	}
 
 	if jsConsumer.dispatch {
-		jsPartial := stoppedEarly || jsConsumer.resume != "" || jsUnknownRangeGap
+		jsPartial := stoppedEarly || jsConsumer.resume != "" || jsGaps.pathsIncomplete()
 		if jsPartial {
 			// Only a partial or unknown-range window suppresses the normal JS
 			// purge; a known-path gap is handled by the carry-forward below.
