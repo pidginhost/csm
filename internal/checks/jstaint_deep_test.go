@@ -254,7 +254,7 @@ func TestCheckYARADeepForcedJSAdapterPanicStillRunsYARA(t *testing.T) {
 func TestCheckYARADeepYARAErrorRetainsJSResult(t *testing.T) {
 	useRollingStore(t)
 	root := t.TempDir()
-	writeYARADeepFile(t, root, "probe.js", jsKeyloggerFixture)
+	path := writeYARADeepFile(t, root, "probe.js", jsKeyloggerFixture)
 
 	yara.SetActive(&deepYARATestBackend{err: fmt.Errorf("worker unavailable")})
 	t.Cleanup(func() { yara.SetActive(nil) })
@@ -268,11 +268,15 @@ func TestCheckYARADeepYARAErrorRetainsJSResult(t *testing.T) {
 	if !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("findings = %+v, want the YARA coverage gap", findings)
 	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, path) {
+		t.Fatalf("YARA gap did not name %s: %q", path, gap.Details)
+	}
 	// A YARA scan error names the file it happened on, so it is carried
 	// forward rather than suppressing the YARA purge. What must never happen
 	// is a YARA failure marking the JS owner partial.
-	if collector.contains("js_taint_deep") {
-		t.Fatal("a YARA error must not mark the JS owner incomplete")
+	if collector.contains("yara_deep") || collector.contains("js_taint_deep") {
+		t.Fatal("a known-path YARA error must not mark either owner incomplete")
 	}
 }
 

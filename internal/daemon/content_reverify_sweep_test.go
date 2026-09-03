@@ -149,3 +149,22 @@ func TestStartContentReverifySweepRetriesAfterMarkerWriteFailure(t *testing.T) {
 		t.Fatalf("marker failure runs=%d writes=%d stored=%q", runs, db.writes, db.stored)
 	}
 }
+
+func TestContentReverifyOutcomeMessageDistinguishesRestoration(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome checks.ContentReverifyDismissal
+		want    string
+	}{
+		{name: "cleared", want: "stale finding auto-cleared"},
+		{name: "demoted", outcome: checks.ContentReverifyDismissal{Demoted: true}, want: "remediated finding demoted"},
+		{name: "promoted", outcome: checks.ContentReverifyDismissal{Promoted: true}, want: "finding severity restored after re-verification"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := contentReverifyOutcomeMessage(tc.outcome); got != tc.want {
+				t.Fatalf("message = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

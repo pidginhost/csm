@@ -661,6 +661,13 @@ var latestDerivedCheckNames = []string{
 // auto-response actions stay in history and alerts, not the active findings
 // view.
 func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []alert.Finding) {
+	StoreLatestScanFindingsWithGaps(st, purgeChecks, findings, nil)
+}
+
+// StoreLatestScanFindingsWithGaps preserves the latest state for files a
+// completed scan could not examine while replacing its covered state. The
+// state store applies the preserve set under the same lock as the purge.
+func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, findings []alert.Finding, gapPaths map[string]map[string]bool) {
 	if st == nil {
 		return
 	}
@@ -668,9 +675,10 @@ func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []a
 		return
 	}
 	now := time.Now()
-	st.PurgeAndMergeFindingsDerived(
+	st.PurgeAndMergeFindingsDerivedWithGaps(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
+		gapPaths,
 		latestDerivedCheckNames,
 		func(merged []alert.Finding) []alert.Finding {
 			derived := CorrelateFindings(merged)
@@ -866,6 +874,10 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	if parent == nil {
 		parent = context.Background()
 	}
+	coverageGaps := coverageGapsFrom(parent)
+	// Clear a reused handle before work starts. An interrupted run must never
+	// expose the preceding run's path set as its own.
+	coverageGaps.replace(nil)
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
 	// Logical owners hosted by checks in this set: a disabled owner purges
@@ -889,7 +901,12 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		}
 	}
 
-	scanCtx, truncations := withAccountScanTruncationCollector(parent)
+	// Hide the caller's sink from nested runners and late check goroutines. The
+	// private path collector below is copied out only after this runner's workers
+	// completed inside their budgets.
+	scanCtx := context.WithValue(parent, coverageGapsContextKey{}, (*CoverageGaps)(nil))
+	scanCtx, truncations := withAccountScanTruncationCollector(scanCtx)
+	scanCtx, coveragePaths := withCoveragePathCollector(scanCtx)
 	scanCtx, incompleteChecks := withIncompleteCheckCollector(scanCtx)
 	var mu sync.Mutex
 	var findings []alert.Finding
@@ -906,6 +923,24 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// incompleteRan collects checks that returned within budget but marked
 	// themselves incomplete; their per-run status finding names still purge.
 	incompleteRan := make([]string, 0)
+	coverageGapPaths := make(map[string]map[string]bool)
+	addCoverageGapPaths := func(owner string) {
+		paths := coveragePaths.gapPaths(owner)
+		if len(paths) == 0 {
+			return
+		}
+		findingNames := []string{owner}
+		findingNames = append(findingNames, runnerFindingNames[owner]...)
+		findingNames = append(findingNames, logicalOwnerFindingNames[owner]...)
+		for _, findingName := range findingNames {
+			if coverageGapPaths[findingName] == nil {
+				coverageGapPaths[findingName] = make(map[string]bool, len(paths))
+			}
+			for path := range paths {
+				coverageGapPaths[findingName][path] = true
+			}
+		}
+	}
 
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
@@ -995,6 +1030,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				mu.Lock()
 				if !incompleteChecks.contains(c.name) {
 					completedChecks = append(completedChecks, c)
+					addCoverageGapPaths(c.name)
 				} else {
 					incompleteRan = append(incompleteRan, c.name)
 				}
@@ -1005,6 +1041,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				for _, owner := range hostedOwners[c.name] {
 					if !incompleteChecks.contains(owner) {
 						completedOwners = append(completedOwners, owner)
+						addCoverageGapPaths(owner)
 					} else {
 						incompleteRan = append(incompleteRan, owner)
 					}
@@ -1145,6 +1182,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	for owner := range disabledOwnerSet {
 		purgeNames = append(purgeNames, logicalOwnerFindingNames[owner]...)
 	}
+	coverageGaps.replace(coverageGapPaths)
 	return findings, mergePerRunPurgeNames(purgeNames, incompleteRan)
 }
 

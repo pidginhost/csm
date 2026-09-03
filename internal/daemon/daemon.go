@@ -1280,16 +1280,8 @@ func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyD
 	obs.Go("content-reverify-sweep", func() {
 		defer d.wg.Done()
 		outcomes, stats, complete := run()
-		cleared, demoted := 0, 0
 		for _, dm := range outcomes {
-			if dm.Demoted {
-				demoted++
-				csmlog.Info("remediated finding demoted",
-					"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
-				continue
-			}
-			cleared++
-			csmlog.Info("stale finding auto-cleared",
+			csmlog.Info(contentReverifyOutcomeMessage(dm),
 				"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
 		}
 		if !complete {
@@ -1302,10 +1294,21 @@ func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyD
 		// ambiguity cost more than one wrong conclusion about why findings
 		// were not draining.
 		csmlog.Info("finding re-verification sweep complete",
-			"considered", stats.Considered, "cleared", cleared, "demoted", demoted,
+			"considered", stats.Considered, "cleared", stats.Cleared, "demoted", stats.Demoted,
 			"promoted", stats.Promoted, "unchecked", stats.Unchecked,
 			"unchecked_reason", stats.TopUncheckedReason)
 	})
+}
+
+func contentReverifyOutcomeMessage(outcome checks.ContentReverifyDismissal) string {
+	switch {
+	case outcome.Promoted:
+		return "finding severity restored after re-verification"
+	case outcome.Demoted:
+		return "remediated finding demoted"
+	default:
+		return "stale finding auto-cleared"
+	}
 }
 
 // DroppedAlerts returns the total number of alerts dropped due to
@@ -1585,7 +1588,11 @@ var autoFixWPCron = checks.AutoFixWPCron
 // they never page an operator; that is exactly why the WP-Cron auto-fix runs
 // here and not in dispatchBatch, which only ever sees what the channel carries.
 func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, label string) {
-	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
+	d.processScanFindingsWithGaps(cfg, findings, purgeChecks, nil, label)
+}
+
+func (d *Daemon) processScanFindingsWithGaps(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]map[string]bool, label string) {
+	checks.StoreLatestScanFindingsWithGaps(d.store, purgeChecks, findings, gapPaths)
 	d.applyWPCronAutoFix(cfg, findings)
 	d.enqueueScanAlerts(findings, label)
 }
@@ -1760,18 +1767,19 @@ func (d *Daemon) deepScanner() {
 			// update would catch the new patterns.
 			cfg := d.currentCfg()
 			rescan := d.forceFullRescan.CompareAndSwap(true, false)
+			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 			var findings []alert.Finding
 			var purgeChecks []string
 			switch {
 			case rescan:
-				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 				observeSignatureRescan()
 			case d.fileMonitor != nil:
-				findings, purgeChecks = checks.RunReducedDeepWithContext(d.scanContext(), cfg, d.store)
+				findings, purgeChecks = checks.RunReducedDeepWithContext(scanCtx, cfg, d.store)
 			default:
-				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 			}
-			d.processScanFindings(cfg, findings, purgeChecks, "deep")
+			d.processScanFindingsWithGaps(cfg, findings, purgeChecks, gaps.Paths(), "deep")
 		}
 	}
 }
@@ -1817,8 +1825,9 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		sdb.PurgeDryRunBlocksOlderThan(time.Now().Add(-7 * 24 * time.Hour))
 	}
 
-	findings, purgeChecks := checks.RunTierWithContext(d.scanContext(), cfg, d.store, tier)
-	d.processScanFindings(cfg, findings, purgeChecks, "periodic")
+	scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
+	findings, purgeChecks := checks.RunTierWithContext(scanCtx, cfg, d.store, tier)
+	d.processScanFindingsWithGaps(cfg, findings, purgeChecks, gaps.Paths(), "periodic")
 }
 
 func (d *Daemon) verifyPeriodicIntegritySnapshot(cfg *config.Config) (*config.Config, error) {

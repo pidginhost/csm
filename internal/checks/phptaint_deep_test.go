@@ -254,13 +254,17 @@ func TestCheckYARADeepRecordsPHPFileTypeChangeAsGap(t *testing.T) {
 		return phptaint.Report{}
 	})
 
-	findings := CheckYARADeep(context.Background(), &config.Config{
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{
 		AccountRoots:   []string{root},
 		DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
 	}, nil)
 	incomplete := jsFindingsByCheck(findings, "php_taint_scan_incomplete")
-	if len(incomplete) != 1 || !strings.Contains(incomplete[0].Details, "changed_during_read=1") {
-		t.Fatalf("findings = %+v, want one PHP changed_during_read gap", findings)
+	if len(incomplete) != 1 || !strings.Contains(incomplete[0].Details, "unreadable-range=1") {
+		t.Fatalf("findings = %+v, want one PHP unknown-range gap", findings)
+	}
+	if !collector.contains(logicalOwnerPHPTaintDeep) {
+		t.Fatal("a file raced into a directory must preserve the PHP owner's unknown subtree")
 	}
 }
 

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,21 @@ type fakeFindingStore struct {
 	latestCalls int
 	demoted     map[string]alert.Severity
 	promoted    map[string]bool
+}
+
+type rejectingFindingStore struct {
+	findings []alert.Finding
+}
+
+func (s *rejectingFindingStore) LatestFindings() []alert.Finding { return s.findings }
+func (*rejectingFindingStore) DismissFindingIfLatest(alert.Finding) bool {
+	return false
+}
+func (*rejectingFindingStore) DemoteLatestFinding(alert.Finding, alert.Severity) bool {
+	return false
+}
+func (*rejectingFindingStore) RestoreLatestFindingSeverity(alert.Finding) bool {
+	return false
 }
 
 func (s *fakeFindingStore) LatestFindings() []alert.Finding {
@@ -81,5 +97,26 @@ func TestReverifyStaleFindings(t *testing.T) {
 	}
 	if store.dismissed[modF.Key()] {
 		t.Error("modified-since-detection finding must NOT be dismissed")
+	}
+}
+
+func TestReverifyStatsCountOnlyAppliedMutations(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+	malicious := filepath.Join(tmp, "live.php")
+	if err := os.WriteFile(malicious, []byte("<?php eval(base64_decode($_POST['x'])); system($_GET['c']);"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &rejectingFindingStore{findings: []alert.Finding{
+		{Check: "suspicious_php_content", Message: "gone", FilePath: filepath.Join(tmp, "gone.php"), ContentSHA256: "old"},
+		{Check: "obfuscated_php", Message: "live", FilePath: malicious, ContentSHA256: FileContentSHA256(malicious), Severity: alert.Warning, DemotedFrom: alert.Critical},
+	}}
+
+	outcomes, stats, complete := ReverifyStaleFindingsStats(context.Background(), store)
+	if !complete || len(outcomes) != 0 {
+		t.Fatalf("rejected mutations changed outcomes: complete=%v outcomes=%+v", complete, outcomes)
+	}
+	if stats.Considered != 2 || stats.Cleared != 0 || stats.Promoted != 0 || stats.Demoted != 0 {
+		t.Fatalf("stats counted decisions the store rejected: %+v", stats)
 	}
 }

@@ -663,6 +663,80 @@ func TestPurgeAndMergeFindingsAtomic(t *testing.T) {
 	}
 }
 
+func TestPurgeAndMergeFindingsWithGapsPreservesCurrentEquivalentPaths(t *testing.T) {
+	s := openTestStore(t)
+	realRoot := t.TempDir()
+	path := filepath.Join(realRoot, "error_log")
+	if err := os.WriteFile(path, []byte("oversize"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(t.TempDir(), "docroot")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	storedPath := filepath.Join(linkRoot, ".", "error_log")
+	s.SetLatestFindings([]alert.Finding{
+		{Check: "yara_match_scheduled", Message: "rule-a", FilePath: storedPath, Timestamp: time.Unix(100, 0)},
+		{Check: "yara_match_scheduled", Message: "rule-b", FilePath: storedPath, Timestamp: time.Unix(200, 0)},
+		{Check: "yara_match_scheduled", Message: "covered", FilePath: filepath.Join(realRoot, "clean.php")},
+		{Check: "js_keylogger_dataflow", Message: "other owner", FilePath: storedPath},
+	})
+
+	// No carried findings are supplied: the path set must protect the current
+	// state observed under latestMu, including state newer than the scanner's
+	// earlier LatestFindings snapshot.
+	s.PurgeAndMergeFindingsDerivedWithGaps(
+		[]string{"yara_match_scheduled", "js_keylogger_dataflow"},
+		nil,
+		map[string]map[string]bool{"yara_match_scheduled": {path: true}},
+		nil,
+		nil,
+	)
+
+	got := s.LatestFindings()
+	if len(got) != 2 {
+		t.Fatalf("path-scoped atomic purge retained the wrong findings: %+v", got)
+	}
+	want := map[string]time.Time{"rule-a": time.Unix(100, 0), "rule-b": time.Unix(200, 0)}
+	for _, finding := range got {
+		if finding.Check != "yara_match_scheduled" || finding.FilePath != storedPath ||
+			!finding.Timestamp.Equal(want[finding.Message]) {
+			t.Fatalf("preserved finding changed or crossed owner scope: %+v", finding)
+		}
+	}
+}
+
+func TestPurgeAndMergeFindingsWithGapsRejectsStaleCarries(t *testing.T) {
+	s := openTestStore(t)
+	const path = "/home/alice/public_html/error_log"
+	current := alert.Finding{
+		Check: "yara_match_scheduled", Message: "rule-a", FilePath: path,
+		Severity: alert.Warning, DemotedFrom: alert.Critical, Timestamp: time.Unix(100, 0),
+	}
+	stale := current
+	stale.Severity = alert.Critical
+	stale.DemotedFrom = 0
+	dismissedBeforeMerge := alert.Finding{
+		Check: "yara_match_scheduled", Message: "rule-b", FilePath: path,
+		Severity: alert.Critical, Timestamp: time.Unix(200, 0),
+	}
+	s.SetLatestFindings([]alert.Finding{current})
+
+	s.PurgeAndMergeFindingsDerivedWithGaps(
+		[]string{"yara_match_scheduled"},
+		[]alert.Finding{stale, dismissedBeforeMerge},
+		map[string]map[string]bool{"yara_match_scheduled": {path: true}},
+		nil,
+		nil,
+	)
+
+	got := s.LatestFindings()
+	if len(got) != 1 || got[0].Key() != current.Key() || got[0].Severity != alert.Warning ||
+		got[0].DemotedFrom != alert.Critical {
+		t.Fatalf("stale carry overwrote current state or resurrected a dismissal: %+v", got)
+	}
+}
+
 func TestPurgeAndMergeFindingsPurgesWithoutNewFindings(t *testing.T) {
 	s := openTestStore(t)
 	s.SetLatestFindings([]alert.Finding{

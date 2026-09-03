@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -95,19 +97,79 @@ func TestYARACarryForwardReEmitsOnlyGappedPaths(t *testing.T) {
 	}
 }
 
-// One finding per gapped path, newest wins, so a carry-forward cannot multiply
-// findings across cycles.
-func TestYARACarryForwardKeepsOneFindingPerPath(t *testing.T) {
+// Every distinct rule match at a gapped path survives. Duplicate snapshots of
+// one identity collapse to the newest, so repeated carry-forward cannot grow
+// the set or refresh its timestamps.
+func TestYARACarryForwardKeepsEveryRuleAndStableIdentity(t *testing.T) {
 	g := newYARAGapCollector()
 	g.record("/home/b/error_log", "oversize")
 
 	prior := []alert.Finding{
-		{Check: "yara_match_scheduled", FilePath: "/home/b/error_log", Message: "old", Severity: alert.Critical, Timestamp: time.Unix(100, 0)},
-		{Check: "yara_match_scheduled", FilePath: "/home/b/error_log", Message: "new", Severity: alert.Critical, Timestamp: time.Unix(200, 0)},
+		{Check: "yara_match_scheduled", FilePath: "/home/b/error_log", Message: "rule-a", Severity: alert.Critical, Timestamp: time.Unix(100, 0)},
+		{Check: "yara_match_scheduled", FilePath: "/home/b/error_log", Message: "rule-a", Severity: alert.Critical, Timestamp: time.Unix(200, 0)},
+		{Check: "yara_match_scheduled", FilePath: "/home/b/error_log", Message: "rule-b", Severity: alert.High, Timestamp: time.Unix(150, 0)},
 	}
 	carried := carryForwardYARAFindings(prior, g)
-	if len(carried) != 1 || carried[0].Message != "new" {
-		t.Fatalf("want the newest finding only, got %+v", carried)
+	if len(carried) != 2 {
+		t.Fatalf("want both distinct YARA rules, got %+v", carried)
+	}
+	byMessage := map[string]alert.Finding{}
+	for _, finding := range carried {
+		byMessage[finding.Message] = finding
+	}
+	if !byMessage["rule-a"].Timestamp.Equal(time.Unix(200, 0)) ||
+		!byMessage["rule-b"].Timestamp.Equal(time.Unix(150, 0)) {
+		t.Fatalf("carry-forward did not keep the newest stable snapshots: %+v", carried)
+	}
+
+	again := carryForwardYARAFindings(carried, g)
+	if len(again) != len(carried) {
+		t.Fatalf("second carry-forward changed finding count: first=%+v second=%+v", carried, again)
+	}
+	for i := range carried {
+		if again[i].Key() != carried[i].Key() || !again[i].Timestamp.Equal(carried[i].Timestamp) {
+			t.Fatalf("second carry-forward changed identity or timestamp: first=%+v second=%+v", carried, again)
+		}
+	}
+}
+
+func TestYARACarryForwardMatchesEquivalentPathSpellings(t *testing.T) {
+	realRoot := t.TempDir()
+	path := filepath.Join(realRoot, "error_log")
+	if err := os.WriteFile(path, []byte("oversize"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(t.TempDir(), "docroot")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	g := newYARAGapCollector()
+	g.record(path, "oversize")
+	prior := alert.Finding{
+		Check: "yara_match_scheduled", FilePath: linkRoot + string(filepath.Separator) + "." + string(filepath.Separator) + "error_log",
+		Message: "rule through former symlink root", Severity: alert.Critical, Timestamp: time.Unix(100, 0),
+	}
+	carried := carryForwardYARAFindings([]alert.Finding{prior}, g)
+	if len(carried) != 1 || carried[0].Key() != prior.Key() {
+		t.Fatalf("equivalent symlink/clean path spelling lost prior finding: %+v", carried)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{relative, path + string(filepath.Separator)} {
+		candidate := prior
+		candidate.FilePath = spelling
+		candidate.Message = "rule at " + spelling
+		if got := carryForwardYARAFindings([]alert.Finding{candidate}, g); len(got) != 1 {
+			t.Errorf("equivalent spelling %q lost prior finding: %+v", spelling, got)
+		}
 	}
 }
 

@@ -124,8 +124,8 @@ func ReverifyStaleFindingsStats(ctx context.Context, store LatestFindingStore) (
 		}
 		switch {
 		case res.Checked && res.Resolved:
-			stats.Cleared++
 			if store.DismissFindingIfLatest(f) {
+				stats.Cleared++
 				dismissed = append(dismissed, ContentReverifyDismissal{Check: f.Check, Path: f.FilePath, Detail: res.Detail})
 			}
 		case isAutomaticallyDemoted(f) && !res.Demote:
@@ -133,16 +133,16 @@ func ReverifyStaleFindingsStats(ctx context.Context, store LatestFindingStore) (
 			// inert-content gate. Restore on a positive match and on every
 			// uncertain or newly-active shape alike; otherwise a second edit
 			// into a detection gap would leave live malware at Warning.
-			stats.Promoted++
 			if store.RestoreLatestFindingSeverity(f) {
+				stats.Promoted++
 				dismissed = append(dismissed, ContentReverifyDismissal{
 					Check: f.Check, Path: f.FilePath, Detail: res.Detail, Promoted: true})
 			}
 		case res.Checked && res.Demote && f.Severity > alert.Warning:
 			// Remediated but unproven: keep it, stop ranking it beside live
 			// threats. Demoting an already-Warning finding would be churn.
-			stats.Demoted++
 			if store.DemoteLatestFinding(f, alert.Warning) {
+				stats.Demoted++
 				dismissed = append(dismissed, ContentReverifyDismissal{
 					Check: f.Check, Path: f.FilePath, Detail: res.Detail, Demoted: true})
 			}

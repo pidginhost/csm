@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -23,6 +24,7 @@ const yaraGapExampleMaxBytes = 200
 // unreadable file indistinguishable from a lost subtree.
 type yaraGapCollector struct {
 	paths          map[string]struct{}
+	pathAliases    map[string]struct{}
 	byStatus       map[string]int
 	example        map[string]string
 	unknown        int
@@ -32,26 +34,37 @@ type yaraGapCollector struct {
 
 func newYARAGapCollector() *yaraGapCollector {
 	return &yaraGapCollector{
-		paths:    map[string]struct{}{},
-		byStatus: map[string]int{},
-		example:  map[string]string{},
+		paths:       map[string]struct{}{},
+		pathAliases: map[string]struct{}{},
+		byStatus:    map[string]int{},
+		example:     map[string]string{},
 	}
 }
 
 // record notes one file the scan could not examine, under a status naming why.
-func (g *yaraGapCollector) record(path, status string) {
-	if _, retained := g.paths[path]; !retained {
+// It reports whether the path is still inside the authoritative retention
+// bound and can therefore be published for an atomic path-scoped purge.
+func (g *yaraGapCollector) record(path, status string) bool {
+	retained := false
+	if _, alreadyRetained := g.paths[path]; !alreadyRetained {
 		if len(g.paths) < maxYARAGapPaths {
 			g.paths[path] = struct{}{}
+			retained = true
+			for _, alias := range yaraPathAliases(path) {
+				g.pathAliases[alias] = struct{}{}
+			}
 		} else {
 			// Keep counting; stop claiming the path set is complete.
 			g.pathsTruncated = true
 		}
+	} else {
+		retained = true
 	}
 	g.byStatus[status]++
 	if _, ok := g.example[status]; !ok {
 		g.example[status] = sanitizeJSTaintDisplay(path, yaraGapExampleMaxBytes)
 	}
+	return retained
 }
 
 // recordUnknownRange notes coverage lost over a range this walk cannot
@@ -74,8 +87,39 @@ func (g *yaraGapCollector) pathsIncomplete() bool {
 func (g *yaraGapCollector) empty() bool { return len(g.byStatus) == 0 && g.unknown == 0 }
 
 func (g *yaraGapCollector) hasPath(path string) bool {
-	_, ok := g.paths[path]
-	return ok
+	if _, ok := g.paths[path]; ok {
+		return true
+	}
+	for _, alias := range yaraPathAliases(path) {
+		if _, ok := g.pathAliases[alias]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// yaraPathAliases makes carry-forward tolerant of the harmless path spelling
+// changes a persisted finding can outlive: relative versus absolute roots,
+// dot/trailing-separator cleanup, and a configured symlink root later replaced
+// by its real path. Exact matching remains the fast path. EvalSymlinks is only
+// an additional identity when it succeeds; an unreadable or vanished path
+// still keeps its lexical identity rather than being treated as clean.
+func yaraPathAliases(path string) []string {
+	if path == "" {
+		return nil
+	}
+	lexical := filepath.Clean(path)
+	if absolute, err := filepath.Abs(lexical); err == nil {
+		lexical = filepath.Clean(absolute)
+	}
+	aliases := []string{lexical}
+	if real, err := filepath.EvalSymlinks(lexical); err == nil {
+		real = filepath.Clean(real)
+		if real != lexical {
+			aliases = append(aliases, real)
+		}
+	}
+	return aliases
 }
 
 func (g *yaraGapCollector) finding() alert.Finding {
@@ -108,30 +152,32 @@ func (g *yaraGapCollector) finding() alert.Finding {
 	}
 }
 
-// carryForwardYARAFindings keeps at most one prior finding per path this cycle
-// could not examine. A run that covered everything else is eligible to replace
-// the YARA finding set, so a file it could not read must have its existing
-// finding re-emitted or the purge would clear a finding nothing disproved.
+// carryForwardYARAFindings keeps every distinct prior rule finding for paths
+// this cycle could not examine. YARA can emit several rule matches for one
+// file, so collapsing by path would silently retire all but one finding even
+// though the scan formed no opinion about any of them. Duplicate snapshots of
+// the same identity are collapsed by Key, with the newest snapshot winning.
 func carryForwardYARAFindings(prior []alert.Finding, gaps *yaraGapCollector) []alert.Finding {
-	byPath := make(map[string]alert.Finding)
+	byKey := make(map[string]alert.Finding)
 	for _, finding := range prior {
 		if finding.Check != "yara_match_scheduled" || !gaps.hasPath(finding.FilePath) {
 			continue
 		}
-		current, exists := byPath[finding.FilePath]
+		key := finding.Key()
+		current, exists := byKey[key]
 		if !exists || finding.Timestamp.After(current.Timestamp) ||
-			(finding.Timestamp.Equal(current.Timestamp) && finding.Key() < current.Key()) {
-			byPath[finding.FilePath] = finding
+			(finding.Timestamp.Equal(current.Timestamp) && finding.FilePath < current.FilePath) {
+			byKey[key] = finding
 		}
 	}
-	paths := make([]string, 0, len(byPath))
-	for path := range byPath {
-		paths = append(paths, path)
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
 	}
-	sort.Strings(paths)
-	carried := make([]alert.Finding, 0, len(paths))
-	for _, path := range paths {
-		carried = append(carried, byPath[path])
+	sort.Strings(keys)
+	carried := make([]alert.Finding, 0, len(keys))
+	for _, key := range keys {
+		carried = append(carried, byKey[key])
 	}
 	return carried
 }

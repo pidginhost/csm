@@ -237,10 +237,26 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	// finding can say what the gaps were instead of only how many.
 	yaraGaps := newYARAGapCollector()
 	recordYARAPathGap := func(path, status, _ string) {
-		yaraGaps.record(path, status)
+		if yaraGaps.record(path, status) {
+			recordCoverageGapPath(ctx, "yara_deep", path)
+		}
 	}
 	recordYARAUnknownRangeGap := func(detail string) {
 		yaraGaps.recordUnknownRange(detail)
+	}
+	recordYARAScanGap := func(path string, scanErr error) {
+		// Inline IPC overflow retries by path. If that path changed into a
+		// directory or symlink before the retry failed, the unscanned range is no
+		// longer just the original file: children or a target subtree may now be
+		// hidden. A missing path is still attributable to the original file, and
+		// an unchanged regular/non-directory entry cannot hide a subtree.
+		info, err := osFS.Lstat(path)
+		if (err != nil && !os.IsNotExist(err)) ||
+			(err == nil && (info.IsDir() || info.Mode()&os.ModeSymlink != 0)) {
+			recordYARAUnknownRangeGap(fmt.Sprintf("scanning %s failed after the path changed: %v", path, scanErr))
+			return
+		}
+		recordYARAPathGap(path, "scan_error", fmt.Sprintf("scanning %s: %v", path, scanErr))
 	}
 	jsGaps := newJSTaintGapCollector()
 	phpGaps := newPHPTaintGapCollector()
@@ -441,16 +457,44 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				continue
 			}
 			openedInfo, statErr := file.Stat()
-			if statErr != nil || !openedInfo.Mode().IsRegular() {
+			if statErr != nil {
 				_ = file.Close()
 				if yaraWants {
-					recordYARAPathGap(path, "changed_during_read", fmt.Sprintf("%s changed while it was being opened", path))
+					recordYARAUnknownRangeGap(fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
 				}
 				if jsWants {
-					jsGaps.record(path, "changed_during_read")
+					jsUnknownRangeGap = true
 				}
 				if phpWants {
-					phpGaps.record(path, "changed_during_read")
+					phpGaps.recordUnknownRange(fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
+				}
+				continue
+			}
+			if !openedInfo.Mode().IsRegular() {
+				_ = file.Close()
+				if openedInfo.IsDir() {
+					// Lstat admitted a regular file, but Open bound a directory.
+					// Its children were never enumerated, so retaining only the
+					// exact path would purge findings from an unknown subtree.
+					if yaraWants {
+						recordYARAUnknownRangeGap(fmt.Sprintf("%s changed into a directory while it was being opened", path))
+					}
+					if jsWants {
+						jsUnknownRangeGap = true
+					}
+					if phpWants {
+						phpGaps.recordUnknownRange(fmt.Sprintf("%s changed into a directory while it was being opened", path))
+					}
+				} else {
+					if yaraWants {
+						recordYARAPathGap(path, "changed_during_read", fmt.Sprintf("%s changed while it was being opened", path))
+					}
+					if jsWants {
+						jsGaps.record(path, "changed_during_read")
+					}
+					if phpWants {
+						phpGaps.record(path, "changed_during_read")
+					}
 				}
 				continue
 			}
@@ -532,7 +576,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				yaraSHA256 = scannedSHA
 			}
 			if scanErr != nil {
-				recordYARAPathGap(path, "scan_error", fmt.Sprintf("scanning %s: %v", path, scanErr))
+				recordYARAScanGap(path, scanErr)
 				continue
 			}
 			for _, match := range matches {
@@ -672,6 +716,9 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			findings = append(findings, yaraGaps.finding())
 		}
 		if !yaraPartial && st != nil {
+			// Keep the stable carried snapshots in-band so alert deduplication can
+			// retain its normal ongoing-finding re-alert cadence. Daemon callers
+			// also publish the path set for race-safe latest-state persistence.
 			findings = append(findings, carryForwardYARAFindings(st.LatestFindings(), yaraGaps)...)
 		}
 	}

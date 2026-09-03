@@ -96,14 +96,18 @@ type oversizeInlineBackend struct {
 	scanFileCalls int32
 	scanFileErr   error
 	scanFileSHA   string
+	onScanFile    func(string)
 }
 
 func (b *oversizeInlineBackend) ScanFile(string, int) []yara.Match {
 	result, _ := b.ScanFileChecked("", 0)
 	return result.Matches
 }
-func (b *oversizeInlineBackend) ScanFileChecked(string, int) (yara.FileScanResult, error) {
+func (b *oversizeInlineBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
 	atomic.AddInt32(&b.scanFileCalls, 1)
+	if b.onScanFile != nil {
+		b.onScanFile(path)
+	}
 	if b.scanFileErr != nil {
 		return yara.FileScanResult{}, b.scanFileErr
 	}
@@ -180,6 +184,39 @@ func TestCheckYARADeepReportsFailedOversizePathScan(t *testing.T) {
 	}
 	if collector.contains("yara_deep") {
 		t.Fatal("an attributable gap must not suppress the purge for the whole owner")
+	}
+}
+
+func TestCheckYARADeepPathFallbackDirectoryRaceIsUnknownRange(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "raced.dat", "padded payload")
+	backend := &oversizeInlineBackend{
+		scanFileErr: errors.New("worker could not read replacement"),
+		onScanFile: func(scannedPath string) {
+			if scannedPath != path {
+				t.Fatalf("path fallback scanned %q, want %q", scannedPath, path)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") {
+		t.Fatal("a failed path fallback raced to a directory must hold the YARA owner")
+	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
+		t.Fatalf("path fallback directory race was not reported as an unknown range: %+v", gap)
 	}
 }
 
@@ -311,6 +348,7 @@ type faultingYARADeepOS struct {
 	OS
 	lstat   func(string) (os.FileInfo, error)
 	readDir func(string) ([]os.DirEntry, error)
+	open    func(string) (*os.File, error)
 }
 
 func (f *faultingYARADeepOS) Lstat(path string) (os.FileInfo, error) {
@@ -325,6 +363,13 @@ func (f *faultingYARADeepOS) ReadDir(path string) ([]os.DirEntry, error) {
 		return f.readDir(path)
 	}
 	return f.OS.ReadDir(path)
+}
+
+func (f *faultingYARADeepOS) Open(path string) (*os.File, error) {
+	if f.open != nil {
+		return f.open(path)
+	}
+	return f.OS.Open(path)
 }
 
 func writeYARADeepFile(t *testing.T, root string, rel, content string) string {
@@ -749,6 +794,127 @@ func TestCheckYARADeepAttributesOversizeGapToFile(t *testing.T) {
 	gap := findingByCheck(findings, "yara_scan_incomplete")
 	if !strings.Contains(gap.Details, oversize) || !strings.Contains(gap.Details, "oversize=1") {
 		t.Fatalf("oversize gap not attributed to %s: %q", oversize, gap.Details)
+	}
+}
+
+func TestCheckYARADeepCarriesEveryPriorRuleForOversizeFile(t *testing.T) {
+	useRollingStore(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	root := t.TempDir()
+	oversize := writeYARADeepFile(t, root, "large.dat", strings.Repeat("x", 2*1024*1024))
+	covered := writeYARADeepFile(t, root, "clean.dat", "clean")
+	first := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "rule-a", FilePath: oversize, Timestamp: time.Unix(100, 0)}
+	second := alert.Finding{Check: "yara_match_scheduled", Severity: alert.High, Message: "rule-b", FilePath: oversize, Timestamp: time.Unix(200, 0)}
+	stale := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "covered", FilePath: covered, Timestamp: time.Unix(300, 0)}
+	st.SetLatestFindings([]alert.Finding{first, second, stale})
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	cfg := &config.Config{AccountRoots: []string{root}}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	check := namedCheck{name: "yara_deep", fn: CheckYARADeep}
+	findings, purge := runParallelWithContext(context.Background(), cfg, st, []namedCheck{check}, "deep", true)
+	StoreLatestScanFindings(st, purge, findings)
+
+	var got []alert.Finding
+	for _, finding := range st.LatestFindings() {
+		if finding.Check == "yara_match_scheduled" {
+			got = append(got, finding)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("unexamined file did not retain every rule finding: %+v", got)
+	}
+	want := map[string]time.Time{first.Key(): first.Timestamp, second.Key(): second.Timestamp}
+	for _, finding := range got {
+		timestamp, ok := want[finding.Key()]
+		if !ok || !finding.Timestamp.Equal(timestamp) || finding.FilePath != oversize {
+			t.Fatalf("carried finding changed identity, timestamp, or path: %+v", finding)
+		}
+	}
+}
+
+func TestCheckYARADeepPublishesGapForAtomicLatestMerge(t *testing.T) {
+	useRollingStore(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	root := t.TempDir()
+	oversize := writeYARADeepFile(t, root, "large.dat", strings.Repeat("x", 2*1024*1024))
+	first := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "rule-a", FilePath: oversize, Timestamp: time.Unix(100, 0)}
+	second := alert.Finding{Check: "yara_match_scheduled", Severity: alert.High, Message: "rule-b", FilePath: oversize, Timestamp: time.Unix(200, 0)}
+	st.SetLatestFindings([]alert.Finding{first})
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	cfg := &config.Config{AccountRoots: []string{root}}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	ctx, gaps := WithCoverageGaps(context.Background())
+	findings, purge := runParallelWithContext(ctx, cfg, st, []namedCheck{{name: "yara_deep", fn: CheckYARADeep}}, "deep", true)
+
+	carried := make(map[string]alert.Finding)
+	for _, finding := range findings {
+		if finding.Check == "yara_match_scheduled" {
+			carried[finding.Key()] = finding
+		}
+	}
+	if len(carried) != 1 || !carried[first.Key()].Timestamp.Equal(first.Timestamp) {
+		t.Fatalf("scan output did not retain stable carried state for alert deduplication: %+v", carried)
+	}
+	gapPaths := gaps.Paths()
+	if !gapPaths["yara_match_scheduled"][oversize] {
+		t.Fatalf("runner did not publish YARA path gap for atomic merge: %+v", gapPaths)
+	}
+
+	// This update lands after CheckYARADeep read latest state. The locked gap
+	// preservation must retain it even though it was absent from scan output.
+	st.SetLatestFindings([]alert.Finding{second})
+	StoreLatestScanFindingsWithGaps(st, purge, findings, gapPaths)
+	got := make(map[string]alert.Finding)
+	for _, finding := range st.LatestFindings() {
+		if finding.Check == "yara_match_scheduled" {
+			got[finding.Key()] = finding
+		}
+	}
+	if len(got) != 2 || !got[first.Key()].Timestamp.Equal(first.Timestamp) ||
+		!got[second.Key()].Timestamp.Equal(second.Timestamp) {
+		t.Fatalf("atomic gap merge lost or rewrote concurrent YARA state: %+v", got)
+	}
+}
+
+func TestCheckYARADeepTreatsOpenedDirectoryAsUnknownRange(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "raced.dat", "clean")
+	replacementDir := t.TempDir()
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.open = func(name string) (*os.File, error) {
+		if name == path {
+			return os.Open(replacementDir)
+		}
+		return fs.OS.Open(name)
+	}
+	withMockOS(t, fs)
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") {
+		t.Fatal("a path raced into a directory must hold the whole YARA owner")
+	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
+		t.Fatalf("directory race was not reported as an unknown range: %+v", gap)
 	}
 }
 
