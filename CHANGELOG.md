@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Three rules no longer report a file because two unrelated strings happened to share it. A webshell rule matched any PHP error log that named the shell in a failed-include warning, and a dropper rule matched a log quoting a plugin write that failed; in one production log the two strings sat 1.2 MB apart. The brand marker and the command sink, and the write and the PHP opener, must now sit in the same region of the file, which is where they are in real malware and never where they are in a log.
+- The rule for a shell script that downloads and runs a payload no longer reports install instructions that show the same command. Its twin already ignored fenced Markdown; this one did not, and reported a package's own build notes.
+
 ## [3.32.0] - 2026-09-02
 
 ### Highlights

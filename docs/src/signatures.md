@@ -187,6 +187,8 @@ After editing, send SIGHUP or restart the daemon to apply.
 
 Signature rules require **structural nesting**, not co-presence of strings. Two dangerous function calls appearing in the same file but in unrelated code paths won't trigger a rule. The call must directly wrap or chain with the other for a match.
 
+YARA-X rules cannot express nesting, so a rule that needs several strings states how close they have to be instead. A rule whose parts may appear anywhere in the file is only as precise as the largest file it sees: a multi-megabyte PHP error log quotes enough source, paths and function calls to satisfy most combinations by accident, which is how a log naming a webshell in a failed-include warning was reported as that webshell. Where a rule combines a family marker with a behavioural pattern, the two are required within a bounded distance, chosen so real malware -- where the marker sits in the code it belongs to -- still matches at any file size. Anchoring works the same way: a CGI webshell rule requires its shebang at offset 0, because that is where the web server needs it. Neither control refers to a file's name or path.
+
 **Realtime signature auto-quarantine** adds a safety gate: only `webshell` and `dropper` matches are eligible, and the file must be at least 512 bytes and either have Shannon entropy >= 5.5 or hex density > 20% plus an obfuscated-execution signal. Legitimate plugin code (well below 5.5 entropy) passes through; obfuscated malware (5.8+) is caught.
 
 ## Alert Rate Limiting
