@@ -30,7 +30,7 @@ sudo csm doctor
 
 Open `https://<server>:9443/login`. The package generates an initial admin token in `/etc/csm/csm.yaml` and a self-signed certificate under the state directory unless explicit TLS paths are configured.
 
-The baseline signs the binary, `csm.yaml`, and every conf.d drop-in. After a later hand edit, run `sudo csm rehash` before restarting: the daemon refuses a config it did not sign, and `csm doctor` reports the mismatch while the old daemon is still running.
+The baseline signs the binary, `csm.yaml`, and every non-exempt conf.d drop-in. After a later hand edit, run `sudo csm rehash` before restarting: the daemon refuses a config it did not sign, and `csm doctor` reports the mismatch while the old daemon is still running.
 
 Use `/etc/csm/conf.d/*.yaml` for automation-owned overrides. Fragments load in lexicographic order; maps merge, scalars replace, and lists append. A fragment that an integration rewrites on its own schedule can be exempted from the integrity hash. See [Configuration](docs/src/configuration.md#confd-drop-ins) for trust and integrity rules.
 
@@ -54,8 +54,8 @@ Detailed coverage is documented under [Real-time detection](docs/src/detection-r
 
 - Real-time watchers process filesystem, authentication, access-log, mail, PAM, BPF, and ModSecurity events.
 - Critical checks run every 10 minutes; deeper account, CMS, package, content, and database checks run every 60 minutes by default.
-- Findings are re-verified every deep-scan cycle. A finding is cleared only when the remediation is confirmed, and downgraded rather than cleared when a file changed but the proof is incomplete. See [Re-verifying findings](docs/src/detection-deep.md#re-verifying-findings).
-- Signatures ship with the package: YAML and YARA-X rules for real-time, scheduled, and email attachment scanning, signed remote updates, and optional [YARA Forge](docs/src/signatures.md#yara-forge-integration) tiers.
+- Eligible content and exposed-file findings are re-verified every deep-scan cycle. They clear only when the condition is confirmed gone. If flagged content is gone but its file changed, only a replacement proven inert is downgraded; uncertain cases stay open. See [Re-verifying findings](docs/src/detection-deep.md#re-verifying-findings).
+- Signatures ship with the package: YAML rules cover real-time scanning and finding re-checks; optional YARA-X rules also cover scheduled and email attachment scanning. Remote YAML and optional [YARA Forge](docs/src/signatures.md#yara-forge-integration) updates are signature-verified.
 - Platform detection selects the OS, control panel, web server, paths, logs, and applicable checks through `internal/platform`.
 - State is stored in bbolt with optional retention sweeps, automatic compaction, backup/restore, and audit export.
 - CSM has no required SaaS dependency. External reputation, GeoIP, reporting, and panel integrations are optional.
@@ -66,7 +66,7 @@ Production release binaries include YARA-X and journald/BPF support. YARA-X is s
 
 - Auto-response is disabled until explicitly enabled.
 - Automatic IP and subnet blocking starts in dry-run unless `auto_response.dry_run: false` is explicit. This is a network-response guard, not a universal simulation mode for file cleanup or process actions.
-- Exposed-file virtual patches are off by default. Operators can preview or apply them by hand, or enable dry-run-gated automatic enforcement.
+- Exposed-file virtual patches are off by default. Set manual mode to preview or apply them by hand. Automatic mode also requires auto-response and honors its dry-run setting.
 - BPF enforcement and PHP-relay freezing have their own dry-run controls.
 - Infrastructure, local, allowed, and verified-bot addresses are protected from automatic blocking.
 - Process termination excludes root and recognized system services.
@@ -94,15 +94,18 @@ csm doctor [--json]           config, integrity, daemon, watcher, and store diag
 csm check                     run checks through the daemon without auto-response
 csm baseline                  establish known state after first start or an approved reset
 csm rehash                    re-sign binary, csm.yaml, and conf.d after an intentional change
-csm scan <user> [--full]      scan one account; --full creates an uncapped job, --all covers every account
+csm scan <user> [--full]      scan one account; --full creates an uncapped job
+csm scan --all --full         create an uncapped job covering every account
 csm incidents ...             list, show, and update correlated incidents
-csm forensic-snapshot <user>  evidence archive for incident handoff
+csm forensic-snapshot <user> --out <archive.tar.gz>
+                              evidence archive for incident handoff
 csm firewall ...              inspect and manage IP, subnet, port, and rollback state
-csm virtual-patch [--apply]   preview or apply reversible deny rules for confirmed exposed files
+csm virtual-patch [--apply]   preview or apply confirmed exposed-file denies in manual/auto mode
 csm clean <path>              clean a supported infected PHP file with backup
 csm harden ...                audit or apply supported host mitigations
 csm enable --php-shield       turn on PHP runtime protection
-csm backup <out>              bundle csm.yaml, conf.d, and state; csm restore reverses it
+csm backup <out>              bundle csm.yaml, conf.d, and state while the daemon is stopped
+csm restore <archive>         restore a validated backup while the daemon is stopped
 csm validate                  validate the merged main and conf.d configuration
 ```
 
