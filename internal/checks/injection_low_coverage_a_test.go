@@ -1110,6 +1110,9 @@ func TestCheckWPCoreVerificationFailure(t *testing.T) {
 			}
 			return nil, nil
 		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
+		},
 	})
 	withMockCmd(t, &mockCmd{
 		runContext: func(ctx context.Context, name string, args ...string) ([]byte, error) {

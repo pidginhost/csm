@@ -98,8 +98,8 @@ func TestCheckDatabaseContentRejectsOversizedWPConfig(t *testing.T) {
 			return nil, nil
 		},
 		open: func(string) (*os.File, error) { return os.Open(configFile) },
-		lstat: func(string) (os.FileInfo, error) {
-			return os.Stat(configFile)
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 		},
 	})
 
@@ -162,8 +162,8 @@ func TestCheckDatabaseContentReportsQueryFailure(t *testing.T) {
 			return nil, nil
 		},
 		open: func(string) (*os.File, error) { return os.Open(configFile) },
-		lstat: func(string) (os.FileInfo, error) {
-			return os.Stat(configFile)
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 		},
 	})
 	queryCalls := 0
@@ -215,8 +215,8 @@ func TestCheckDatabaseContentReportsUnusableConfig(t *testing.T) {
 					return nil, nil
 				},
 				open: func(string) (*os.File, error) { return os.Open(configFile) },
-				lstat: func(string) (os.FileInfo, error) {
-					return os.Stat(configFile)
+				lstat: func(name string) (os.FileInfo, error) {
+					return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 				},
 			})
 			previous := runMySQLQuery
@@ -282,8 +282,11 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 			}
 		},
 		open: func(string) (*os.File, error) { return os.Open(configFile) },
-		lstat: func(string) (os.FileInfo, error) {
-			return os.Stat(configFile)
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{
+				"/home/alice/public_html/wp-config.php",
+				"/home/alice/shop.example.com/wp-config.php",
+			})
 		},
 	})
 

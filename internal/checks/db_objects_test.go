@@ -253,6 +253,24 @@ func fakeMySQL(responses map[string][]byte) func(string, ...string) ([]byte, err
 	}
 }
 
+func requireDBObjects(t *testing.T, account string, creds wpDBCreds) []dbObjectFinding {
+	t.Helper()
+	hits, err := scanDBObjects(account, creds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hits
+}
+
+func requireMagicTokenUsers(t *testing.T, account, schema, prefix string, tokens []string) []alert.Finding {
+	t.Helper()
+	findings, err := scanMagicTokenUsers(account, schema, prefix, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return findings
+}
+
 func TestScanDBObjectsClassifiesEachKind(t *testing.T) {
 	withMockCmd(t, &mockCmd{
 		run: fakeMySQL(map[string][]byte{
@@ -270,7 +288,7 @@ func TestScanDBObjectsClassifiesEachKind(t *testing.T) {
 		}),
 	})
 
-	hits := scanDBObjects("alice", sampleCreds())
+	hits := requireDBObjects(t, "alice", sampleCreds())
 
 	want := map[string]bool{
 		"db_unexpected_trigger":   true,
@@ -293,7 +311,7 @@ func TestScanDBObjectsClassifiesEachKind(t *testing.T) {
 func TestScanDBObjectsEmptyDBNameReturnsNothing(t *testing.T) {
 	creds := sampleCreds()
 	creds.dbName = ""
-	hits := scanDBObjects("alice", creds)
+	hits := requireDBObjects(t, "alice", creds)
 	if len(hits) != 0 {
 		t.Errorf("hits = %d, want 0 for empty dbName", len(hits))
 	}
@@ -337,10 +355,17 @@ func TestCheckDatabaseObjectsRanksWPConfigsByMtime(t *testing.T) {
 	}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			if pattern != "/home/*/public_html/wp-config.php" {
-				t.Fatalf("unexpected glob pattern %q", pattern)
+			switch pattern {
+			case "/home/*/public_html/wp-config.php":
+				return paths, nil
+			case "/home/*/public_html/*/wp-config.php", "/home/*/*/wp-config.php":
+				return nil, nil
 			}
-			return paths, nil
+			t.Fatalf("unexpected glob pattern %q", pattern)
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, paths)
 		},
 		stat: mtimesByPath(map[string]time.Time{
 			paths[0]: now.Add(-24 * time.Hour),
@@ -401,10 +426,17 @@ func TestCheckDatabaseObjectsUsesAccountScanMaxFilesAfterMtimeRank(t *testing.T)
 	}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			if pattern != "/home/*/public_html/wp-config.php" {
-				t.Fatalf("unexpected glob pattern %q", pattern)
+			switch pattern {
+			case "/home/*/public_html/wp-config.php":
+				return paths, nil
+			case "/home/*/public_html/*/wp-config.php", "/home/*/*/wp-config.php":
+				return nil, nil
 			}
-			return paths, nil
+			t.Fatalf("unexpected glob pattern %q", pattern)
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, paths)
 		},
 		stat: mtimesByPath(map[string]time.Time{
 			paths[0]: now.Add(-24 * time.Hour),
@@ -700,7 +732,7 @@ func TestScanMagicTokenUsers_MatchEmitsCriticalFinding(t *testing.T) {
 		}),
 	})
 
-	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", []string{"Lei5pahtebue"})
+	findings := requireMagicTokenUsers(t, "alice", "alice_wp", "wp_", []string{"Lei5pahtebue"})
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1", len(findings))
 	}
@@ -723,7 +755,7 @@ func TestScanMagicTokenUsers_NoMatchNoFinding(t *testing.T) {
 		}),
 	})
 
-	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", []string{"Lei5pahtebue"})
+	findings := requireMagicTokenUsers(t, "alice", "alice_wp", "wp_", []string{"Lei5pahtebue"})
 	if len(findings) != 0 {
 		t.Errorf("got %d findings, want 0", len(findings))
 	}
@@ -738,7 +770,7 @@ func TestScanMagicTokenUsers_NoTokensSkipsQuery(t *testing.T) {
 		},
 	})
 
-	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", nil)
+	findings := requireMagicTokenUsers(t, "alice", "alice_wp", "wp_", nil)
 	if called {
 		t.Error("MySQL must not be queried when token list is empty")
 	}
@@ -756,7 +788,7 @@ func TestScanMagicTokenUsers_InvalidTokenSkipsQuery(t *testing.T) {
 		},
 	})
 
-	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", []string{"abc12345", "x%' OR 1=1 --"})
+	findings := requireMagicTokenUsers(t, "alice", "alice_wp", "wp_", []string{"abc12345", "x%' OR 1=1 --"})
 	if called {
 		t.Error("MySQL must not be queried for invalid token input")
 	}
@@ -774,7 +806,7 @@ func TestScanMagicTokenUsers_EmptyPrefixSkipsQuery(t *testing.T) {
 		},
 	})
 
-	findings := scanMagicTokenUsers("alice", "alice_wp", "", []string{"abc12345"})
+	findings := requireMagicTokenUsers(t, "alice", "alice_wp", "", []string{"abc12345"})
 	if called {
 		t.Error("MySQL must not be queried when table prefix is empty")
 	}
@@ -795,7 +827,7 @@ func TestScanMagicTokenUsers_RejectsInvalidPrefixWithoutQuery(t *testing.T) {
 		},
 	})
 
-	findings := scanMagicTokenUsers("alice", "alice_wp", "wp';--", []string{"abc12345"})
+	findings := requireMagicTokenUsers(t, "alice", "alice_wp", "wp';--", []string{"abc12345"})
 	if called {
 		t.Error("MySQL must not be queried for an invalid prefix")
 	}

@@ -23,6 +23,9 @@ func wpConfigMockOS(t *testing.T, account, dbName string) *mockOS {
 	want := "/home/" + account + "/public_html/wp-config.php"
 	return &mockOS{
 		glob: func(string) ([]string, error) { return nil, nil },
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{want})
+		},
 		open: func(path string) (*os.File, error) {
 			if path != want {
 				return nil, os.ErrNotExist

@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -118,9 +117,10 @@ func findWPVerifyPrefixes(account, dbName, details string) (prefixes []string, o
 	if !validAccountName.MatchString(account) || dbName == "" {
 		return nil, false
 	}
-	patterns := []string{filepath.Join(accountHomeDir(account), "public_html", "wp-config.php")}
-	addon, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*", "wp-config.php"))
-	patterns = append(patterns, addon...)
+	// Shared discovery (wpinstalls.go): a re-check that cannot re-locate the
+	// install it flagged leaves the finding unresolvable for the life of the
+	// site, so it must see exactly what the detector saw.
+	patterns := wpInstallConfigPaths(wpInstallsForAccount(context.Background(), "db_content", account))
 
 	targetPrefix := detailField(details, "Table prefix")
 	if targetPrefix != "" && !validTablePrefix.MatchString(targetPrefix) {

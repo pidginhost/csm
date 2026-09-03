@@ -31,7 +31,7 @@ const credentialReuseMinAccounts = 2
 // a truncated one-way fingerprint is used to group identical hashes, and
 // findings report the affected accounts and a count -- not the hash.
 func CheckCredentialReuse(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
+	wpConfigs := credentialReuseWPConfigs(ctx)
 
 	// fingerprint -> set of distinct accounts carrying that admin hash.
 	byFingerprint := map[string]map[string]struct{}{}
@@ -39,20 +39,31 @@ func CheckCredentialReuse(ctx context.Context, _ *config.Config, _ *state.Store)
 		if ctx.Err() != nil {
 			return nil
 		}
-		account := extractUser(filepath.Dir(wpConfig))
+		account := wpConfigUser(filepath.Dir(wpConfig))
 		if account == "" {
 			continue
 		}
-		creds := parseWPConfig(wpConfig)
+		creds, complete := parseWPConfigChecked(wpConfig)
+		if !complete {
+			markCheckIncomplete(ctx, "credential_reuse")
+			continue
+		}
 		if creds.dbName == "" {
+			markCheckIncomplete(ctx, "credential_reuse")
 			continue
 		}
 		prefix, ok := resolveTablePrefix(creds)
 		if !ok {
+			markCheckIncomplete(ctx, "credential_reuse")
 			continue
 		}
 		creds.tablePrefix = prefix
-		for _, fp := range adminPasswordFingerprintsForSite(creds, prefix) {
+		fingerprints, err := adminPasswordFingerprintsForSite(creds, prefix)
+		if err != nil {
+			markCheckIncomplete(ctx, "credential_reuse")
+			continue
+		}
+		for _, fp := range fingerprints {
 			if fp == "" {
 				continue
 			}
@@ -70,14 +81,17 @@ func CheckCredentialReuse(ctx context.Context, _ *config.Config, _ *state.Store)
 // user_pass hashes currently stored on the WordPress site. Uses root MySQL
 // because wp-config passwords drift on cPanel hosts (same rationale as
 // adminEmailsForSite).
-func adminPasswordFingerprintsForSite(creds wpDBCreds, prefix string) []string {
+func adminPasswordFingerprintsForSite(creds wpDBCreds, prefix string) ([]string, error) {
 	query := fmt.Sprintf(
 		"SELECT DISTINCT u.user_pass FROM `%susers` u "+
 			"JOIN `%susermeta` um ON u.ID = um.user_id "+
 			"WHERE um.meta_key = '%scapabilities' AND um.meta_value LIKE '%%administrator%%'",
 		prefix, prefix, prefix,
 	)
-	rows := runMySQLQueryRoot(creds.dbName, query)
+	rows, err := runMySQLQueryRootWithError(creds.dbName, query)
+	if err != nil {
+		return nil, err
+	}
 	var out []string
 	for _, row := range rows {
 		fp := credentialHashFingerprint(strings.TrimSpace(row))
@@ -85,7 +99,7 @@ func adminPasswordFingerprintsForSite(creds wpDBCreds, prefix string) []string {
 			out = append(out, fp)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // credentialHashFingerprint maps a raw password hash to a short,
@@ -140,6 +154,17 @@ func buildCredentialReuseFindings(byFingerprint map[string]map[string]struct{}, 
 				strings.Join(accounts, ", ")),
 			Timestamp: time.Now(),
 		})
+	}
+	return out
+}
+
+// credentialReuseWPConfigs lists the WordPress installs this check fingerprints.
+// A hash reused between a primary site and an addon install is still reuse.
+func credentialReuseWPConfigs(ctx context.Context) []string {
+	installs := wpInstalls(ctx, "credential_reuse")
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
 	}
 	return out
 }

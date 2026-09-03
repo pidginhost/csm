@@ -1,9 +1,9 @@
 package checks
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -185,11 +185,7 @@ func DBDropObject(account, schema, kind, name string, preview bool) DBCleanResul
 // but can use several; the CLI relies on this list to validate
 // operator input before opening any connection.
 func findAccountSchemas(account string) []string {
-	patterns := []string{
-		filepath.Join(accountHomeDir(account), "public_html", "wp-config.php"),
-	}
-	addonConfigs, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*", "wp-config.php"))
-	patterns = append(patterns, addonConfigs...)
+	patterns := wpInstallConfigPaths(wpInstallsForAccount(context.Background(), "db_objects", account))
 
 	seen := map[string]struct{}{}
 	var out []string

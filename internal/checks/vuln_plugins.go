@@ -274,14 +274,26 @@ func vulnPluginActive(status string) bool {
 // refresh as CheckOutdatedPlugins and only reports -- it never disables a
 // plugin.
 func CheckVulnerablePlugins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if cfg != nil && !cfg.VulnerablePluginScanningEnabled() {
 		return nil
+	}
+	if incompleteCollectorFrom(ctx) == nil {
+		ctx, _ = withIncompleteCheckCollector(ctx)
 	}
 	db := store.Global()
 	if db == nil {
 		return nil
 	}
-	if !ensurePluginCacheFresh(ctx, cfg, db) {
+	fresh := ensurePluginCacheFresh(ctx, cfg, db)
+	if ctx.Err() != nil {
+		return nil
+	}
+	// Discovery gaps retain the last usable inventory; evaluating it keeps a
+	// broken account map from hiding known vulnerabilities until discovery recovers.
+	if !fresh && !checkMarkedIncomplete(ctx, "vulnerable_plugins") {
 		return nil
 	}
 	feed, err := loadPluginVulnFeed(pluginVulnFeedData)

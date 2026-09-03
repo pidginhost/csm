@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -159,13 +160,16 @@ func TestWPConfigPaths_PreservesWildcardOwnershipAndServedRoot(t *testing.T) {
 
 func TestWPConfigPaths_MapDeclarationSurvivesDiscoveryRace(t *testing.T) {
 	const path = "/home/alice/public_html/wp-config.php"
-	lstatCalls := 0
+	configCalls := 0
 	old := osFS
 	osFS = &servedRootsFS{
 		mockOSGlobRoots: mockOSGlobRoots{
-			mockOS: mockOS{lstat: func(string) (os.FileInfo, error) {
-				lstatCalls++
-				if lstatCalls == 1 {
+			mockOS: mockOS{lstat: func(name string) (os.FileInfo, error) {
+				if name == filepath.Dir(path) {
+					return accountScanFakeInfo{name: "public_html", mode: os.ModeDir | 0o755, isDir: true}, nil
+				}
+				configCalls++
+				if configCalls == 1 {
 					return nil, os.ErrNotExist
 				}
 				return fakeFileInfo{name: "wp-config.php"}, nil

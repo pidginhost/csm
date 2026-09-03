@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"maps"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -281,12 +282,17 @@ func TestCheckVulnerablePluginsHandlesEmptyFreshCache(t *testing.T) {
 func TestCheckVulnerablePluginsRefreshesItsSharedInventory(t *testing.T) {
 	db := setupPluginStore(t)
 	wpConfig := "/home/alice/public_html/wp-config.php"
-	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
-		if pattern == "/home/*/public_html/wp-config.php" {
-			return []string{wpConfig}, nil
-		}
-		return nil, nil
-	}})
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
+		},
+	})
 	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		command := strings.Join(args, " ")
 		if strings.Contains(command, "plugin list") {
@@ -309,5 +315,29 @@ func TestCheckVulnerablePluginsRefreshesItsSharedInventory(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Details, "inactive") {
 		t.Fatalf("inactive refreshed plugin was not annotated: %+v", findings[0])
+	}
+}
+
+func TestCheckVulnerablePluginsEvaluatesCacheAfterDiscoveryGap(t *testing.T) {
+	db := setupPluginStore(t)
+	if err := db.SetSitePlugins("/home/alice/public_html", store.SitePlugins{
+		Account: "alice",
+		Domain:  "alice.example",
+		Plugins: []store.SitePluginEntry{{
+			Slug:             "ultimate-member",
+			Status:           "active",
+			InstalledVersion: "2.4.1",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{
+		readFile: func(string) ([]byte, error) { return nil, os.ErrPermission },
+		glob:     func(string) ([]string, error) { return nil, nil },
+	})
+
+	findings := CheckVulnerablePlugins(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "ultimate-member") {
+		t.Fatalf("cached vulnerable plugin was hidden by the discovery gap: %+v", findings)
 	}
 }

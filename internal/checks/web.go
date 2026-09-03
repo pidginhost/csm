@@ -454,7 +454,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 // GlobalCMSCache so the real-time scanner can skip signature matches
 // on known-clean CMS files.
 func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-	wpConfigs, _ := homeGlob(ctx, "public_html", "wp-config.php")
+	wpConfigs := wpCoreScanRoots(ctx)
 	if len(wpConfigs) == 0 {
 		return nil
 	}
@@ -476,7 +476,7 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 					return
 				}
 				wpPath := filepath.Dir(wpConfig)
-				user := extractUser(wpPath)
+				user := wpConfigUser(wpPath)
 
 				out, err := runCmdCombinedContext(ctx, "wp", "core", "verify-checksums",
 					"--path="+wpPath, "--allow-root")
@@ -589,4 +589,16 @@ func extractUser(path string) string {
 		}
 	}
 	return "unknown"
+}
+
+// wpCoreScanRoots lists the WordPress installs to verify. Discovery is shared
+// (wpinstalls.go): core files are tampered with in subdomain and nested
+// installs as readily as in a primary document root.
+func wpCoreScanRoots(ctx context.Context) []string {
+	installs := wpInstalls(ctx, "wp_core")
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
+	}
+	return out
 }

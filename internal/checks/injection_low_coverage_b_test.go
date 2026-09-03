@@ -17,13 +17,16 @@ import (
 // Returns the mockOS to use with withMockOS.
 func wpConfigFixture(t *testing.T, account, wpConfigContent string) *mockOS {
 	t.Helper()
+	primary := fmt.Sprintf("/home/%s/public_html/wp-config.php", account)
 	return &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			primary := fmt.Sprintf("/home/%s/public_html/wp-config.php", account)
 			if pattern == primary {
 				return []string{primary}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{primary})
 		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
@@ -693,6 +696,9 @@ $table_prefix = 'mywp_';
 			}
 			return nil, nil
 		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/addonacct/addon.com/wp-config.php"})
+		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
 				f, err := os.CreateTemp(t.TempDir(), "wpconfig")
@@ -825,6 +831,9 @@ $table_prefix = 'wp_';
 				return []string{"/home/user1/public_html/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/user1/public_html/wp-config.php"})
 		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
@@ -1132,6 +1141,9 @@ $table_prefix = 'wp_';
 				return []string{"/home/user1/addon.com/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/user1/addon.com/wp-config.php"})
 		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {

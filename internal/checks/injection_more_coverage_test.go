@@ -254,20 +254,24 @@ func TestRefreshPluginCache_NoWPInstallsEarlyReturn(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFindAllWPInstalls_SkipsCacheBackupTrash(t *testing.T) {
+	paths := []string{
+		"/home/alice/public_html/wp-config.php",
+		"/home/alice/public_html/cache/wp-config.php",
+		"/home/alice/public_html/backup/wp-config.php",
+		"/home/alice/public_html/.trash/wp-config.php",
+		"/home/alice/PUBLIC_HTML/Staging/wp-config.php",
+	}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			// Return the same paths for every glob to also exercise dedup.
-			return []string{
-				"/home/alice/public_html/wp-config.php",
-				"/home/alice/public_html/cache/wp-config.php",
-				"/home/alice/public_html/backup/wp-config.php",
-				"/home/alice/public_html/.trash/wp-config.php",
-				"/home/alice/PUBLIC_HTML/Staging/wp-config.php", // Mixed case
-			}, nil
+			return paths, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, paths)
 		},
 	})
 
-	results := findAllWPInstalls()
+	results := findAllWPInstalls(context.Background())
 
 	for _, r := range results {
 		low := strings.ToLower(r)
@@ -280,7 +284,7 @@ func TestFindAllWPInstalls_SkipsCacheBackupTrash(t *testing.T) {
 
 	// After all 3 patterns return the same input, dedup should leave just 1.
 	if len(results) != 1 {
-		t.Errorf("dedup failed: got %d results, want 1; %v", len(results), results)
+		t.Fatalf("dedup failed: got %d results, want 1; %v", len(results), results)
 	}
 	if results[0] != "/home/alice/public_html/wp-config.php" {
 		t.Errorf("unexpected survivor: %q", results[0])

@@ -22,6 +22,9 @@ func wpCoreCheckMocks(t *testing.T, wpOutput string) {
 			}
 			return nil, nil
 		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
+		},
 	})
 	withMockCmd(t, &mockCmd{
 		runContext: func(_ context.Context, name string, _ ...string) ([]byte, error) {
@@ -189,5 +192,22 @@ func TestVerifyWPCoreStillHasModifiedFileUnresolved(t *testing.T) {
 	res := VerifyFinding("wp_core_integrity", "WordPress core file modified for frank", "Path: "+dir)
 	if !res.Checked || res.Resolved {
 		t.Fatalf("a still-modified core file must verify unresolved, got %+v", res)
+	}
+}
+
+// A modified core file in a subdomain or nested install is exactly the
+// compromise wp_core_integrity exists to catch, and public_html-only discovery
+// never saw it.
+func TestCheckWPCore_DiscoversNestedAndAddonInstalls(t *testing.T) {
+	old := osFS
+	osFS = &mockOSGlobRoots{files: []string{
+		"/home/alice/public_html/wp-config.php",
+		"/home/alice/public_html/blog/wp-config.php",
+		"/home/alice/shop.example.com/wp-config.php",
+	}}
+	t.Cleanup(func() { osFS = old })
+
+	if got := wpCoreScanRoots(context.Background()); len(got) != 3 {
+		t.Errorf("core-check roots = %v, want all three installs", got)
 	}
 }

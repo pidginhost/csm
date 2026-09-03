@@ -1,0 +1,348 @@
+package checks
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"path/filepath"
+	"strings"
+	"sync"
+)
+
+// wpInstall is one discovered WordPress installation.
+type wpInstall struct {
+	// ConfigPath is the wp-config.php file; DocRoot is the directory holding it.
+	ConfigPath string
+	DocRoot    string
+	// Account owns the install, empty when the path is not attributable.
+	Account string
+	Served  servedState
+}
+
+// wpSkipDirNames keep copies of a site out of discovery. A staging or backup
+// tree holds a complete WordPress install, but scanning it means querying a
+// database the site does not serve and fixing files nobody reaches.
+var wpSkipDirNames = map[string]bool{
+	"cache": true, "backup": true, "backups": true, "staging": true, ".trash": true,
+}
+
+// wpDiscovery is one discovery result together with the coverage gap it
+// produced. The gap travels with the result so a cached discovery can credit
+// every later caller, not only the one that paid for the walk.
+type wpDiscovery struct {
+	installs     []wpInstall
+	panelDomains map[string][]string
+	// incomplete records that discovery could not see the whole host. Findings
+	// from an incomplete scan must survive the cycle's purge.
+	incomplete bool
+}
+
+// apply credits the coverage gap to the check that asked for the installs.
+// Discovery is shared; completeness is not -- every consumer needs the gap
+// recorded under its own name or its findings are purged as if the scan had
+// been complete.
+func (d wpDiscovery) apply(ctx context.Context, gapCheck string) {
+	if !d.incomplete || gapCheck == "" {
+		return
+	}
+	markCheckIncomplete(ctx, gapCheck)
+}
+
+// wpInstalls returns every WordPress installation visible to CSM, honouring the
+// account scope carried by ctx. gapCheck names the check credited with any
+// coverage gap discovery hits.
+func wpInstalls(ctx context.Context, gapCheck string) []wpInstall {
+	installs, _ := wpInstallsWithDomains(ctx, gapCheck)
+	return installs
+}
+
+// wpInstallsWithDomains additionally returns the panel's account-to-domain map,
+// which the database scan needs for its tenant-boundary checks. The map is nil
+// when the panel's own map could not be parsed completely: a partial ownership
+// map turns a legitimate domain into a foreign-host finding.
+func wpInstallsWithDomains(ctx context.Context, gapCheck string) ([]wpInstall, map[string][]string) {
+	d := lookupWPInstalls(ctx, "")
+	d.apply(ctx, gapCheck)
+	return d.installs, d.panelDomains
+}
+
+// wpInstallsForAccount restricts discovery to one account. Fix, drop and
+// re-check paths use it: they run outside a scan context but act on the
+// account named by the finding they are resolving.
+func wpInstallsForAccount(ctx context.Context, gapCheck, account string) []wpInstall {
+	if !validAccountName.MatchString(account) {
+		return nil
+	}
+	d := lookupWPInstalls(ctx, account)
+	d.apply(ctx, gapCheck)
+	return d.installs
+}
+
+type wpInstallCacheKey struct{}
+
+// wpInstallCache memoises discovery for the length of one scan cycle. Nine
+// WordPress consumers run per cycle and each used to walk every account home
+// for itself.
+type wpInstallCache struct {
+	mu        sync.Mutex
+	byAccount map[string]wpDiscovery
+}
+
+// withWPInstallCache attaches the memo to a scan context. Only the runner does
+// this: fix, drop and re-check paths build their own context, so they always
+// re-discover, which is what a caller that mutates the tree it just walked
+// needs. Invalidation is structural -- no cycle context, no cache.
+func withWPInstallCache(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, wpInstallCacheKey{}, &wpInstallCache{
+		byAccount: make(map[string]wpDiscovery),
+	})
+}
+
+func wpInstallCacheFrom(ctx context.Context) *wpInstallCache {
+	if ctx == nil {
+		return nil
+	}
+	cache, _ := ctx.Value(wpInstallCacheKey{}).(*wpInstallCache)
+	return cache
+}
+
+// lookupWPInstalls answers from the cycle memo when there is one. The cached
+// value carries its coverage gap, which every caller re-applies under its own
+// check name.
+func lookupWPInstalls(ctx context.Context, account string) wpDiscovery {
+	cache := wpInstallCacheFrom(ctx)
+	if cache == nil {
+		return discoverWPInstalls(ctx, account)
+	}
+	key := account
+	if key == "" {
+		key = AccountFromContext(ctx)
+	}
+	// The lock is held across discovery on purpose: two consumers starting at
+	// once should cost one walk, not two.
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cached, ok := cache.byAccount[key]; ok {
+		return cached
+	}
+	d := discoverWPInstalls(ctx, account)
+	cache.byAccount[key] = d
+	return d
+}
+
+// discoverWPInstalls merges cPanel's document-root map with a walk of the
+// account home layout. Neither source is sufficient alone: the map reaches
+// roots no walk can predict, and the walk reaches roots the panel has stopped
+// serving but whose database is still live.
+func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
+	scope := account
+	if scope == "" {
+		scope = AccountFromContext(ctx)
+	}
+
+	var d wpDiscovery
+	if scope != "" && !validAccountName.MatchString(scope) {
+		d.incomplete = true
+		return d
+	}
+	seen := make(map[string]bool)
+	mappedRoots := make(map[string]bool)
+	panelDomains := make(map[string][]string)
+
+	add := func(path, owner string, state servedState, missingIsIncomplete bool) {
+		if seen[path] {
+			return
+		}
+		info, err := osFS.Lstat(path)
+		if err != nil {
+			if missingIsIncomplete || !errors.Is(err, fs.ErrNotExist) {
+				d.incomplete = true
+			}
+			return
+		}
+		if !info.Mode().IsRegular() {
+			// A symlinked wp-config.php is not scannable here. wp-cli runs as
+			// root and follows it, so an account pointing its config at another
+			// account's would have that tenant's database inventoried and
+			// attributed to this one. The install is dropped and the gap
+			// recorded instead.
+			d.incomplete = true
+			return
+		}
+		seen[path] = true
+		if owner == "" {
+			_, owner, _ = accountRootOf(path)
+		}
+		d.installs = append(d.installs, wpInstall{
+			ConfigPath: path,
+			DocRoot:    filepath.Dir(path),
+			Account:    owner,
+			Served:     state,
+		})
+	}
+
+	// cPanel publishes its actual domain-to-document-root map. It is
+	// authoritative for served roots and reaches layouts the home walk below
+	// cannot see, so it is consulted first.
+	vhostData, vhostErr := osFS.ReadFile(userdataDomainsPath)
+	domainMapComplete := false
+	switch {
+	case vhostErr == nil:
+		vhosts, complete := parseUserdataDomainRootsChecked(string(vhostData))
+		wildcardVhosts, wildcardComplete := parseWildcardUserdataDomainRootsChecked(string(vhostData))
+		vhosts = append(vhosts, wildcardVhosts...)
+		domainMapComplete = complete && wildcardComplete && len(vhosts) > 0
+		if !domainMapComplete {
+			d.incomplete = true
+		}
+		domainOwners := make(map[string]string, len(vhosts))
+		for _, vh := range vhosts {
+			root := filepath.Clean(vh.docroot)
+			if !docrootBelongsToCPanelUser(root, vh.user) {
+				d.incomplete = true
+				domainMapComplete = false
+				continue
+			}
+			wildcard := strings.HasPrefix(vh.domain, "*.")
+			domain := normalizeHost(strings.TrimPrefix(vh.domain, "*."))
+			if domain == "" {
+				d.incomplete = true
+				domainMapComplete = false
+			} else {
+				domainKey := domain
+				if wildcard {
+					domainKey = "*." + domain
+				}
+				owner, exists := domainOwners[domainKey]
+				if exists && owner != vh.user {
+					// The map is meant to have one authoritative owner per
+					// domain. An ambiguous owner cannot safely support a
+					// tenant-boundary check.
+					d.incomplete = true
+					domainMapComplete = false
+				} else if !exists {
+					domainOwners[domainKey] = vh.user
+					panelDomains[vh.user] = append(panelDomains[vh.user], domainKey)
+				}
+			}
+
+			if scope != "" && vh.user != scope {
+				continue
+			}
+			wpConfig, err := canonicalWPInstallPath(filepath.Join(root, "wp-config.php"))
+			if err != nil {
+				d.incomplete = true
+				continue
+			}
+			mappedRoots[wpConfig] = true
+			add(wpConfig, vh.user, servedByPanel, false)
+		}
+	case vhostMapFailureIsIncomplete(vhostErr):
+		d.incomplete = true
+	}
+	if domainMapComplete {
+		d.panelDomains = panelDomains
+	}
+
+	// The served map is not sufficient on its own. A document root the panel
+	// has stopped serving still holds a live database, and the compromise this
+	// scan was widened for sat in exactly such a root -- absent from the domain
+	// map, from /etc/userdomains, and from vhost userdata alike. Re-pointing the
+	// domain publishes it again, so the home layout is walked whatever the panel
+	// says. Anything the map did not name is not served today, but only when the
+	// map could be read at all.
+	homeState := notServed
+	if !domainMapComplete {
+		homeState = servedUnknown
+	}
+	globScope := scope
+	if globScope == "" {
+		globScope = "*"
+	}
+	if scope != "" {
+		// The primary document root is checked by name, not by glob. A fixer
+		// asked about one account must not lose that account's main install
+		// because the glob returned nothing, and a missing file here is an
+		// account without WordPress, not a coverage gap.
+		primary := filepath.Join(accountHomeDir(scope), "public_html", "wp-config.php")
+		if _, err := osFS.Lstat(primary); err == nil {
+			canonical, resolveErr := canonicalWPInstallPath(primary)
+			if resolveErr != nil {
+				d.incomplete = true
+			} else {
+				add(canonical, scope, homeState, false)
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			d.incomplete = true
+		}
+	}
+	for _, pattern := range []string{
+		filepath.Join(globScope, "public_html", "wp-config.php"),
+		filepath.Join(globScope, "public_html", "*", "wp-config.php"),
+		filepath.Join(globScope, "*", "wp-config.php"),
+	} {
+		matches, err := accountHomeGlob(pattern)
+		if err != nil {
+			d.incomplete = true
+		}
+		for _, path := range matches {
+			// A symlinked document root (cPanel's www -> public_html) resolves
+			// to its target first, so one install is not discovered twice and
+			// an alias is not mistaken for a directory that is never a root.
+			path, err = canonicalWPInstallPath(path)
+			if err != nil {
+				d.incomplete = true
+				continue
+			}
+			if seen[path] || skipWPDiscoveryPath(path) {
+				continue
+			}
+			state := homeState
+			if mappedRoots[path] {
+				// Preserve the panel's declaration even if the first Lstat
+				// failed and the file appeared before the home walk.
+				state = servedByPanel
+			}
+			add(path, "", state, true)
+		}
+	}
+	return d
+}
+
+// skipWPDiscoveryPath rejects candidates that are not document roots: account
+// data directories, dot-directories, and backup, cache or staging copies.
+func skipWPDiscoveryPath(path string) bool {
+	dir := filepath.Base(filepath.Dir(path))
+	if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") {
+		return true
+	}
+	home := wpInstallAccountRoot(path)
+	if home == "" {
+		return true
+	}
+	rel, err := filepath.Rel(home, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	// Skip names apply inside the account, not to the account name itself.
+	// cPanel permits accounts named backup, backups, cache, and staging.
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if wpSkipDirNames[strings.ToLower(part)] {
+			return true
+		}
+	}
+	return false
+}
+
+// wpInstallConfigPaths projects installs to their wp-config.php paths for
+// callers that work in paths rather than installs.
+func wpInstallConfigPaths(installs []wpInstall) []string {
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
+	}
+	return out
+}
