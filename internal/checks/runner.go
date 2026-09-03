@@ -661,14 +661,6 @@ var latestDerivedCheckNames = []string{
 // auto-response actions stay in history and alerts, not the active findings
 // view.
 func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []alert.Finding) {
-	StoreLatestScanFindingsWithGaps(st, purgeChecks, findings, nil)
-}
-
-// StoreLatestScanFindingsWithGaps is StoreLatestScanFindings for a scan that
-// reported files it could not examine. Each owner's findings for those files
-// survive its purge: the scan formed no opinion about them, so its silence is
-// not evidence they are gone.
-func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, findings []alert.Finding, gapPaths map[string]map[string]bool) {
 	if st == nil {
 		return
 	}
@@ -676,10 +668,9 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 		return
 	}
 	now := time.Now()
-	st.PurgeAndMergeFindingsDerivedWithGaps(
+	st.PurgeAndMergeFindingsDerived(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
-		gapPaths,
 		latestDerivedCheckNames,
 		func(merged []alert.Finding) []alert.Finding {
 			derived := CorrelateFindings(merged)
@@ -875,11 +866,6 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	if parent == nil {
 		parent = context.Background()
 	}
-	coverageGaps := coverageGapsFrom(parent)
-	// A context may be reused for sequential scans. Clear its published result
-	// before this cycle so an interrupted return cannot expose a prior cycle's
-	// paths as if the current scan had reported them.
-	coverageGaps.replace(nil)
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
 	// Logical owners hosted by checks in this set: a disabled owner purges
@@ -903,11 +889,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		}
 	}
 
-	// The sink belongs to this runner invocation. Do not expose it to check
-	// functions: a nested runner or a timed-out check that unwinds late must not
-	// publish over the outer scan's completed snapshot.
-	scanCtx := context.WithValue(parent, coverageGapsContextKey{}, (*CoverageGaps)(nil))
-	scanCtx, truncations := withAccountScanTruncationCollector(scanCtx)
+	scanCtx, truncations := withAccountScanTruncationCollector(parent)
 	scanCtx, incompleteChecks := withIncompleteCheckCollector(scanCtx)
 	var mu sync.Mutex
 	var findings []alert.Finding
@@ -924,30 +906,6 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// incompleteRan collects checks that returned within budget but marked
 	// themselves incomplete; their per-run status finding names still purge.
 	incompleteRan := make([]string, 0)
-	// coverageGapPaths are the files a check walked but could not examine.
-	// Their findings survive this cycle's purge; everything else the check
-	// covered is retired normally.
-	coverageGapPaths := make(map[string]map[string]bool)
-	addCoverageGapPaths := func(owner string) {
-		paths := incompleteChecks.gapPaths(owner)
-		if len(paths) == 0 {
-			return
-		}
-		// Physical check IDs are included for checks that emit under their own
-		// name; registered aliases and hosted logical-owner aliases cover the
-		// normal scheduled-check ownership tables.
-		findingNames := []string{owner}
-		findingNames = append(findingNames, runnerFindingNames[owner]...)
-		findingNames = append(findingNames, logicalOwnerFindingNames[owner]...)
-		for _, findingName := range findingNames {
-			if coverageGapPaths[findingName] == nil {
-				coverageGapPaths[findingName] = make(map[string]bool, len(paths))
-			}
-			for path := range paths {
-				coverageGapPaths[findingName][path] = true
-			}
-		}
-	}
 
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
@@ -1035,18 +993,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
 				mu.Lock()
-				switch {
-				case !incompleteChecks.contains(c.name):
+				if !incompleteChecks.contains(c.name) {
 					completedChecks = append(completedChecks, c)
-				case incompleteChecks.attributable(c.name):
-					// Every gap named a file. The check covered everything
-					// else, so it purges normally and the named files are
-					// carried forward as preserved paths -- otherwise one
-					// permanently unreadable file freezes the owner's whole
-					// finding set for good.
-					completedChecks = append(completedChecks, c)
-					addCoverageGapPaths(c.name)
-				default:
+				} else {
 					incompleteRan = append(incompleteRan, c.name)
 				}
 				// A hosted logical owner completes or stays partial on its own
@@ -1054,13 +1003,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				// budget without a panic; a YARA-side failure must never purge
 				// JS findings the run did not re-emit, and vice versa.
 				for _, owner := range hostedOwners[c.name] {
-					switch {
-					case !incompleteChecks.contains(owner):
+					if !incompleteChecks.contains(owner) {
 						completedOwners = append(completedOwners, owner)
-					case incompleteChecks.attributable(owner):
-						completedOwners = append(completedOwners, owner)
-						addCoverageGapPaths(owner)
-					default:
+					} else {
 						incompleteRan = append(incompleteRan, owner)
 					}
 				}
@@ -1200,10 +1145,6 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	for owner := range disabledOwnerSet {
 		purgeNames = append(purgeNames, logicalOwnerFindingNames[owner]...)
 	}
-	// Publish only after every runner worker has returned and the purge list is
-	// final. Timed-out check goroutines may still unwind after this point, but
-	// they write only to the private per-run collector, never this copied result.
-	coverageGaps.replace(coverageGapPaths)
 	return findings, mergePerRunPurgeNames(purgeNames, incompleteRan)
 }
 

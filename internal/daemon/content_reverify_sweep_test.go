@@ -36,9 +36,9 @@ func TestStartContentReverifySweepIfChangedSkipsOnStoreError(t *testing.T) {
 	d := &Daemon{}
 	ran := false
 
-	d.startContentReverifySweepIfChanged(db, "php=1;sig=2;yara=3", func() ([]checks.ContentReverifyDismissal, bool) {
+	d.startContentReverifySweepIfChanged(db, "php=1;sig=2;yara=3", func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
 		ran = true
-		return nil, true
+		return nil, checks.ReverifySweepStats{}, true
 	})
 
 	if db.reads != 1 {
@@ -68,10 +68,10 @@ func TestStartContentReverifySweepIfChangedTracksWorker(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 
-	d.startContentReverifySweepIfChanged(db, "php=1;sig=2;yara=3", func() ([]checks.ContentReverifyDismissal, bool) {
+	d.startContentReverifySweepIfChanged(db, "php=1;sig=2;yara=3", func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
 		close(entered)
 		<-release
-		return nil, true
+		return nil, checks.ReverifySweepStats{}, true
 	})
 
 	if db.reads != 1 {
@@ -114,9 +114,9 @@ func TestStartContentReverifySweepRetriesAfterInterruptedRun(t *testing.T) {
 	db := &fakeContentLogicVersionStore{stored: "php=0"}
 	d := &Daemon{}
 	runs := 0
-	run := func() ([]checks.ContentReverifyDismissal, bool) {
+	run := func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
 		runs++
-		return nil, false
+		return nil, checks.ReverifySweepStats{}, false
 	}
 
 	d.startContentReverifySweepIfChanged(db, "php=1", run)
@@ -136,9 +136,9 @@ func TestStartContentReverifySweepRetriesAfterMarkerWriteFailure(t *testing.T) {
 	db := &fakeContentLogicVersionStore{stored: "php=0", writeErr: errors.New("write failed")}
 	d := &Daemon{}
 	runs := 0
-	run := func() ([]checks.ContentReverifyDismissal, bool) {
+	run := func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
 		runs++
-		return nil, true
+		return nil, checks.ReverifySweepStats{}, true
 	}
 
 	d.startContentReverifySweepIfChanged(db, "php=1", run)

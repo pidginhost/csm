@@ -78,7 +78,7 @@ func TestRecordTierRunFindingsLiveTriggersWPCronAutoFix(t *testing.T) {
 
 	wpcron := perfWPCronFinding("alice", "/home/alice/public_html/wp-config.php")
 	// live, alerts off: auto-fix is gated on the run being live, not on alerts.
-	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron}, nil, nil, true, false)
+	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron}, nil, true, false)
 
 	if len(seen) != 1 || seen[0].Check != "perf_wp_cron" {
 		t.Fatalf("live control tier run did not invoke WP-Cron auto-fix; got %+v", seen)
@@ -96,7 +96,7 @@ func TestRecordTierRunFindingsDryRunSkipsWPCronAutoFix(t *testing.T) {
 	})()
 
 	wpcron := perfWPCronFinding("alice", "/home/alice/public_html/wp-config.php")
-	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron}, nil, nil, false, false)
+	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron}, nil, false, false)
 
 	if called {
 		t.Fatal("dry-run control tier run must not invoke WP-Cron auto-fix")
@@ -106,30 +106,6 @@ func TestRecordTierRunFindingsDryRunSkipsWPCronAutoFix(t *testing.T) {
 	}
 	if got := drainAlertCh(d); len(got) != 0 {
 		t.Fatalf("dry-run control tier run should not enqueue alerts, got %+v", got)
-	}
-}
-
-func TestRecordTierRunFindingsPreservesOnlyGappedOwner(t *testing.T) {
-	d := newTestDaemon(t)
-	c := &ControlListener{d: d}
-	const path = "/home/shared/public_html/index.php"
-	d.store.PurgeAndMergeFindings(nil, []alert.Finding{
-		{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "prior YARA", FilePath: path},
-		{Check: "js_keylogger_dataflow", Severity: alert.Critical, Message: "prior JS", FilePath: path},
-	})
-
-	c.recordTierRunFindings(
-		&config.Config{},
-		nil,
-		[]string{"yara_match_scheduled", "js_keylogger_dataflow"},
-		map[string]map[string]bool{"yara_match_scheduled": {path: true}},
-		false,
-		false,
-	)
-
-	got := d.store.LatestFindings()
-	if len(got) != 1 || got[0].Check != "yara_match_scheduled" {
-		t.Fatalf("control tier run did not scope its coverage gap: %+v", got)
 	}
 }
 
@@ -148,7 +124,7 @@ func TestRecordTierRunFindingsDryRunWithAlertsSkipsAutoFix(t *testing.T) {
 
 	wpcron := perfWPCronFinding("alice", "/home/alice/public_html/wp-config.php")
 	critical := alert.Finding{Severity: alert.Critical, Check: "webshell", Message: "shell", Timestamp: time.Now()}
-	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron, critical}, nil, nil, false, true)
+	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron, critical}, nil, false, true)
 
 	if called {
 		t.Fatal("dry-run tier run must not invoke WP-Cron auto-fix even with alerts on")

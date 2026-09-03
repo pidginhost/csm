@@ -999,8 +999,8 @@ func (d *Daemon) Run() error {
 	// keeps its own fail-closed dismissal invariant.
 	if db := store.Global(); db != nil && d.store != nil {
 		token := checks.FindingReverifyVersion()
-		d.startContentReverifySweepIfChanged(db, token, func() ([]checks.ContentReverifyDismissal, bool) {
-			return checks.ReverifyStaleFindingsContext(d.scanContext(), d.store)
+		d.startContentReverifySweepIfChanged(db, token, func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+			return checks.ReverifyStaleFindingsStats(d.scanContext(), d.store)
 		})
 	}
 
@@ -1254,32 +1254,32 @@ type contentLogicVersionStore interface {
 	SetContentLogicVersion(token string) error
 }
 
-func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() ([]checks.ContentReverifyDismissal, bool)) {
+func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool)) {
 	changed, err := db.ContentLogicVersionChanged(token)
 	if err != nil {
 		csmlog.Warn("finding re-verification version check failed", "err", err)
 		return
 	}
 	if changed {
-		d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, bool) {
-			dismissed, complete := run()
+		d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+			dismissed, stats, complete := run()
 			if !complete {
-				return dismissed, false
+				return dismissed, stats, false
 			}
 			if err := db.SetContentLogicVersion(token); err != nil {
 				csmlog.Warn("finding re-verification version update failed", "err", err)
-				return dismissed, false
+				return dismissed, stats, false
 			}
-			return dismissed, true
+			return dismissed, stats, true
 		})
 	}
 }
 
-func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyDismissal, bool)) {
+func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool)) {
 	d.wg.Add(1)
 	obs.Go("content-reverify-sweep", func() {
 		defer d.wg.Done()
-		outcomes, complete := run()
+		outcomes, stats, complete := run()
 		cleared, demoted := 0, 0
 		for _, dm := range outcomes {
 			if dm.Demoted {
@@ -1296,9 +1296,15 @@ func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyD
 			csmlog.Info("finding re-verification sweep will retry on next start")
 			return
 		}
-		if len(outcomes) > 0 {
-			csmlog.Info("finding re-verification sweep complete", "cleared", cleared, "demoted", demoted)
-		}
+		// Always log the summary. A sweep that produced nothing used to log
+		// nothing at all, which made "ran and found nothing" indistinguishable
+		// from "never ran" and from "failed on every finding" -- and that
+		// ambiguity cost more than one wrong conclusion about why findings
+		// were not draining.
+		csmlog.Info("finding re-verification sweep complete",
+			"considered", stats.Considered, "cleared", cleared, "demoted", demoted,
+			"promoted", stats.Promoted, "unchecked", stats.Unchecked,
+			"unchecked_reason", stats.TopUncheckedReason)
 	})
 }
 
@@ -1579,14 +1585,7 @@ var autoFixWPCron = checks.AutoFixWPCron
 // they never page an operator; that is exactly why the WP-Cron auto-fix runs
 // here and not in dispatchBatch, which only ever sees what the channel carries.
 func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, label string) {
-	d.processScanFindingsWithGaps(cfg, findings, purgeChecks, nil, label)
-}
-
-// processScanFindingsWithGaps is processScanFindings for a scan that reported
-// files it could not examine, so their findings are not retired by a cycle
-// that never looked at them.
-func (d *Daemon) processScanFindingsWithGaps(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]map[string]bool, label string) {
-	checks.StoreLatestScanFindingsWithGaps(d.store, purgeChecks, findings, gapPaths)
+	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
 	d.applyWPCronAutoFix(cfg, findings)
 	d.enqueueScanAlerts(findings, label)
 }
@@ -1736,8 +1735,8 @@ func (d *Daemon) deepScanner() {
 			// a finding gated only on that would keep its severity until the
 			// next upgrade happened to land.
 			if d.store != nil {
-				d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, bool) {
-					return checks.ReverifyStaleFindingsContext(d.scanContext(), d.store)
+				d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+					return checks.ReverifyStaleFindingsStats(d.scanContext(), d.store)
 				})
 			}
 
@@ -1761,23 +1760,18 @@ func (d *Daemon) deepScanner() {
 			// update would catch the new patterns.
 			cfg := d.currentCfg()
 			rescan := d.forceFullRescan.CompareAndSwap(true, false)
-			// Own the coverage-gap collector for this cycle so the files the
-			// scan could not examine can be read back and kept out of the
-			// purge, instead of one unreadable file freezing every finding
-			// its owner ever raised.
-			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 			var findings []alert.Finding
 			var purgeChecks []string
 			switch {
 			case rescan:
-				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
 				observeSignatureRescan()
 			case d.fileMonitor != nil:
-				findings, purgeChecks = checks.RunReducedDeepWithContext(scanCtx, cfg, d.store)
+				findings, purgeChecks = checks.RunReducedDeepWithContext(d.scanContext(), cfg, d.store)
 			default:
-				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
 			}
-			d.processScanFindingsWithGaps(cfg, findings, purgeChecks, gaps.Paths(), "deep")
+			d.processScanFindings(cfg, findings, purgeChecks, "deep")
 		}
 	}
 }

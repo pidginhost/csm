@@ -268,8 +268,11 @@ func TestCheckYARADeepYARAErrorRetainsJSResult(t *testing.T) {
 	if !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("findings = %+v, want the YARA coverage gap", findings)
 	}
-	if !collector.contains("yara_deep") || collector.contains("js_taint_deep") {
-		t.Fatal("YARA error marks only its own owner incomplete")
+	// A YARA scan error names the file it happened on, so it is carried
+	// forward rather than suppressing the YARA purge. What must never happen
+	// is a YARA failure marking the JS owner partial.
+	if collector.contains("js_taint_deep") {
+		t.Fatal("a YARA error must not mark the JS owner incomplete")
 	}
 }
 

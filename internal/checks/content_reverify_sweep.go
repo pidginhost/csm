@@ -65,22 +65,47 @@ func ReverifyStaleFindings(store LatestFindingStore) []ContentReverifyDismissal 
 // large exposure queue cannot delay shutdown for every remaining probe. The
 // bool is false after cancellation so the daemon leaves the sweep version
 // uncommitted and retries it on the next start.
+// ReverifySweepStats describes what a sweep actually did. A sweep that changed
+// nothing is otherwise silent, which makes "ran and found nothing"
+// indistinguishable from "never ran" and from "could not check a single
+// finding" -- the difference an operator needs when findings are not draining.
+type ReverifySweepStats struct {
+	Considered int
+	Cleared    int
+	Demoted    int
+	Promoted   int
+	Unchecked  int
+	// TopUncheckedReason is the most common reason a finding could not be
+	// re-checked at all, which is where a silent sweep usually goes wrong.
+	TopUncheckedReason string
+}
+
 func ReverifyStaleFindingsContext(ctx context.Context, store LatestFindingStore) ([]ContentReverifyDismissal, bool) {
+	out, _, complete := ReverifyStaleFindingsStats(ctx, store)
+	return out, complete
+}
+
+// ReverifyStaleFindingsStats is ReverifyStaleFindingsContext with a summary of
+// everything the sweep looked at, including the findings it could not check.
+func ReverifyStaleFindingsStats(ctx context.Context, store LatestFindingStore) ([]ContentReverifyDismissal, ReverifySweepStats, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if ctx.Err() != nil {
-		return nil, false
-	}
 	var dismissed []ContentReverifyDismissal
+	var stats ReverifySweepStats
+	if ctx.Err() != nil {
+		return nil, stats, false
+	}
+	uncheckedReasons := map[string]int{}
 	var exposureVhosts *exposureVhostIndex
 	for _, f := range store.LatestFindings() {
 		if ctx.Err() != nil {
-			return dismissed, false
+			return dismissed, stats, false
 		}
 		if !autoReverifiable(f.Check) {
 			continue
 		}
+		stats.Considered++
 		in := VerifyInput{
 			Check: f.Check, Message: f.Message, Details: f.Details, Path: f.FilePath,
 			ContentSHA256: f.ContentSHA256, DetectLogic: f.DetectLogic,
@@ -95,10 +120,11 @@ func ReverifyStaleFindingsContext(ctx context.Context, store LatestFindingStore)
 		}
 		res := VerifyFindingInput(in)
 		if ctx.Err() != nil {
-			return dismissed, false
+			return dismissed, stats, false
 		}
 		switch {
 		case res.Checked && res.Resolved:
+			stats.Cleared++
 			if store.DismissFindingIfLatest(f) {
 				dismissed = append(dismissed, ContentReverifyDismissal{Check: f.Check, Path: f.FilePath, Detail: res.Detail})
 			}
@@ -107,6 +133,7 @@ func ReverifyStaleFindingsContext(ctx context.Context, store LatestFindingStore)
 			// inert-content gate. Restore on a positive match and on every
 			// uncertain or newly-active shape alike; otherwise a second edit
 			// into a detection gap would leave live malware at Warning.
+			stats.Promoted++
 			if store.RestoreLatestFindingSeverity(f) {
 				dismissed = append(dismissed, ContentReverifyDismissal{
 					Check: f.Check, Path: f.FilePath, Detail: res.Detail, Promoted: true})
@@ -114,11 +141,25 @@ func ReverifyStaleFindingsContext(ctx context.Context, store LatestFindingStore)
 		case res.Checked && res.Demote && f.Severity > alert.Warning:
 			// Remediated but unproven: keep it, stop ranking it beside live
 			// threats. Demoting an already-Warning finding would be churn.
+			stats.Demoted++
 			if store.DemoteLatestFinding(f, alert.Warning) {
 				dismissed = append(dismissed, ContentReverifyDismissal{
 					Check: f.Check, Path: f.FilePath, Detail: res.Detail, Demoted: true})
 			}
+		case !res.Checked:
+			// The verifier could not form an opinion at all -- a scanner that
+			// was unavailable, a file that changed under it. This is the
+			// bucket that looks identical to a sweep that never ran.
+			stats.Unchecked++
+			uncheckedReasons[res.Detail]++
 		}
 	}
-	return dismissed, true
+	top, topN := "", 0
+	for reason, n := range uncheckedReasons {
+		if n > topN || (n == topN && reason < top) {
+			top, topN = reason, n
+		}
+	}
+	stats.TopUncheckedReason = top
+	return dismissed, stats, true
 }

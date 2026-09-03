@@ -78,8 +78,13 @@ func TestCheckYARADeepReportsIncompleteScan(t *testing.T) {
 		t.Fatalf("findings = %+v, want one yara_scan_incomplete finding", findings)
 	}
 	path := filepath.Join(root, "index.php")
-	if !collector.attributable("yara_deep") || !collector.gapPaths("yara_deep")[path] {
-		t.Fatalf("file-specific scanner error was not attributed to %s", path)
+	if !strings.Contains(findings[0].Details, path) {
+		t.Fatalf("file-specific scanner error was not attributed to %s: %q", path, findings[0].Details)
+	}
+	// A gap that names a file must leave the owner complete: the scan covered
+	// everything else, and that file's finding is carried forward instead.
+	if collector.contains("yara_deep") {
+		t.Fatal("an attributable gap must not suppress the purge for the whole owner")
 	}
 }
 
@@ -169,8 +174,12 @@ func TestCheckYARADeepReportsFailedOversizePathScan(t *testing.T) {
 	if !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("failed path fallback was reported clean: %+v", findings)
 	}
-	if !collector.attributable("yara_deep") || !collector.gapPaths("yara_deep")[path] {
-		t.Fatalf("failed path scan was not attributed to %s", path)
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, path) {
+		t.Fatalf("failed path scan was not attributed to %s: %q", path, gap.Details)
+	}
+	if collector.contains("yara_deep") {
+		t.Fatal("an attributable gap must not suppress the purge for the whole owner")
 	}
 }
 
@@ -666,8 +675,8 @@ func TestCheckYARADeepAdvancesCursorPastLstatError(t *testing.T) {
 	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("metadata error did not mark the partial scan incomplete: %+v", findings)
 	}
-	if collector.attributable("yara_deep") || len(collector.gapPaths("yara_deep")) != 0 {
-		t.Fatal("failed Lstat may hide a subtree and must remain unattributable")
+	if !collector.contains("yara_deep") {
+		t.Fatal("a failed Lstat may hide a subtree, so it must suppress the purge for the owner")
 	}
 	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
 	if err != nil || !ok {
@@ -734,12 +743,12 @@ func TestCheckYARADeepAttributesOversizeGapToFile(t *testing.T) {
 	if !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("oversize file did not report incomplete coverage: %+v", findings)
 	}
-	if !collector.attributable("yara_deep") {
-		t.Fatal("a completed walk with only an oversize-file gap must remain path-attributable")
+	if collector.contains("yara_deep") {
+		t.Fatal("a completed walk with only an oversize-file gap must not suppress the purge")
 	}
-	paths := collector.gapPaths("yara_deep")
-	if len(paths) != 1 || !paths[oversize] {
-		t.Fatalf("oversize gap paths = %+v, want only %s", paths, oversize)
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, oversize) || !strings.Contains(gap.Details, "oversize=1") {
+		t.Fatalf("oversize gap not attributed to %s: %q", oversize, gap.Details)
 	}
 }
 
@@ -776,8 +785,8 @@ func TestCheckYARADeepAdvancesCursorPastUnreadableDirectory(t *testing.T) {
 	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("directory error did not mark the partial scan incomplete: %+v", findings)
 	}
-	if collector.attributable("yara_deep") || len(collector.gapPaths("yara_deep")) != 0 {
-		t.Fatal("unreadable directory must remain an unattributable range gap")
+	if !collector.contains("yara_deep") {
+		t.Fatal("an unreadable directory is an unknowable range and must suppress the purge")
 	}
 	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
 	if err != nil || !ok {

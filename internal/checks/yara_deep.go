@@ -233,23 +233,14 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		return !softDeadline.IsZero() && !yaraDeepNow().Before(softDeadline)
 	}
 
-	var incomplete int
-	var firstIncomplete string
-	var yaraGapPaths []string
-	yaraUnknownRangeGap := false
-	recordYARAPathGap := func(path, detail string) {
-		incomplete++
-		yaraGapPaths = append(yaraGapPaths, path)
-		if firstIncomplete == "" {
-			firstIncomplete = detail
-		}
+	// The collector owns both the count and the per-status breakdown, so the
+	// finding can say what the gaps were instead of only how many.
+	yaraGaps := newYARAGapCollector()
+	recordYARAPathGap := func(path, status, _ string) {
+		yaraGaps.record(path, status)
 	}
 	recordYARAUnknownRangeGap := func(detail string) {
-		incomplete++
-		yaraUnknownRangeGap = true
-		if firstIncomplete == "" {
-			firstIncomplete = detail
-		}
+		yaraGaps.recordUnknownRange(detail)
 	}
 	jsGaps := newJSTaintGapCollector()
 	phpGaps := newPHPTaintGapCollector()
@@ -398,7 +389,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				// advances only its own consumer: a soft-deadline stop right
 				// after this gate must not move the other consumer past a
 				// file it never received.
-				recordYARAPathGap(path, fmt.Sprintf("%s exceeds the %d-byte scan limit", path, maxBytes))
+				recordYARAPathGap(path, "oversize", fmt.Sprintf("%s exceeds the %d-byte scan limit", path, maxBytes))
 				yaraConsumer.advance(path)
 				yaraWants = false
 			}
@@ -439,7 +430,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			file, err := osFS.Open(path)
 			if err != nil {
 				if yaraWants {
-					recordYARAPathGap(path, fmt.Sprintf("opening %s: %v", path, err))
+					recordYARAPathGap(path, "open_error", fmt.Sprintf("opening %s: %v", path, err))
 				}
 				if jsWants {
 					jsGaps.record(path, "read_error")
@@ -453,7 +444,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			if statErr != nil || !openedInfo.Mode().IsRegular() {
 				_ = file.Close()
 				if yaraWants {
-					recordYARAPathGap(path, fmt.Sprintf("%s changed while it was being opened", path))
+					recordYARAPathGap(path, "changed_during_read", fmt.Sprintf("%s changed while it was being opened", path))
 				}
 				if jsWants {
 					jsGaps.record(path, "changed_during_read")
@@ -464,7 +455,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				continue
 			}
 			if yaraWants && openedInfo.Size() > maxBytes {
-				recordYARAPathGap(path, fmt.Sprintf("%s changed while it was being opened", path))
+				recordYARAPathGap(path, "changed_during_read", fmt.Sprintf("%s changed while it was being opened", path))
 				yaraWants = false
 			}
 			if phpWants && openedInfo.Size() > phpMaxBytes {
@@ -493,7 +484,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			closeErr := file.Close()
 			if readErr != nil || closeErr != nil || int64(len(data)) > readCap {
 				if yaraWants {
-					recordYARAPathGap(path, fmt.Sprintf("reading %s failed or exceeded the scan limit", path))
+					recordYARAPathGap(path, "read_error", fmt.Sprintf("reading %s failed or exceeded the scan limit", path))
 				}
 				if jsWants {
 					jsGaps.record(path, "read_error")
@@ -504,7 +495,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				continue
 			}
 			if yaraWants && int64(len(data)) > maxBytes {
-				recordYARAPathGap(path, fmt.Sprintf("reading %s failed or exceeded the scan limit", path))
+				recordYARAPathGap(path, "read_error", fmt.Sprintf("reading %s failed or exceeded the scan limit", path))
 				yaraWants = false
 			}
 			if phpWants && int64(len(data)) > phpMaxBytes {
@@ -541,7 +532,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				yaraSHA256 = scannedSHA
 			}
 			if scanErr != nil {
-				recordYARAPathGap(path, fmt.Sprintf("scanning %s: %v", path, scanErr))
+				recordYARAPathGap(path, "scan_error", fmt.Sprintf("scanning %s: %v", path, scanErr))
 				continue
 			}
 			for _, match := range matches {
@@ -667,31 +658,21 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	}
 
 	if yaraConsumer.dispatch {
-		// A run that resumed mid-cycle or stopped at the soft deadline saw
-		// only a window of the space; completing it would purge findings
-		// discovered by the other windows of this cycle.
-		if stoppedEarly || yaraConsumer.resume != "" {
+		// Same contract the PHP and JS consumers use. Only a partial window or
+		// an unknown-range loss suppresses the purge; a gap that names a file
+		// is handled by carrying that file's prior finding forward, so the
+		// scan can still retire everything it did examine. Reporting a bare
+		// count here is what made one permanently unreadable file look
+		// identical to a lost subtree, and froze every YARA finding on a host.
+		yaraPartial := stoppedEarly || yaraConsumer.resume != "" || yaraGaps.pathsIncomplete()
+		if yaraPartial {
 			markCheckIncomplete(ctx, "yara_deep")
 		}
-		if incomplete > 0 {
-			// A gap that names a file only freezes that file's finding; the
-			// owner can still retire findings for everything it did read.
-			// Gaps with no path (an unreadable directory, a failed Lstat that
-			// may hide a subtree) set yaraUnknownRangeGap and keep the whole
-			// owner partial, which is the honest answer when the unscanned
-			// range is unknowable.
-			for _, gap := range yaraGapPaths {
-				markCheckIncompletePath(ctx, "yara_deep", gap)
-			}
-			if yaraUnknownRangeGap {
-				markCheckIncomplete(ctx, "yara_deep")
-			}
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "yara_scan_incomplete",
-				Message:  fmt.Sprintf("YARA deep scan could not inspect %d file or directory entries", incomplete),
-				Details:  firstIncomplete,
-			})
+		if !yaraGaps.empty() {
+			findings = append(findings, yaraGaps.finding())
+		}
+		if !yaraPartial && st != nil {
+			findings = append(findings, carryForwardYARAFindings(st.LatestFindings(), yaraGaps)...)
 		}
 	}
 
