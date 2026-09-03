@@ -1133,6 +1133,12 @@ $table_prefix = 'wp_';
 			}
 			return nil, nil
 		},
+		lstat: func(name string) (os.FileInfo, error) {
+			if name != "/home/user1/addon.com/wp-config.php" {
+				return nil, os.ErrNotExist
+			}
+			return fakeFileInfo{name: "wp-config.php"}, nil
+		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
 				f, err := os.CreateTemp(t.TempDir(), "wpconfig")

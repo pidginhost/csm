@@ -165,10 +165,10 @@ func TestWPConfigPaths_RejectsCrossAccountCPanelRoot(t *testing.T) {
 				}
 				return nil, os.ErrNotExist
 			},
-			lstat: func(string) (os.FileInfo, error) {
-				return fakeFileInfo{name: "wp-config.php"}, nil
-			},
 		},
+		// Lstat answers from files below: a double that claims every path
+		// exists would put an install in alice's home that the test never
+		// created.
 		files: []string{"/home/bob/shop.example.com/wp-config.php"},
 	}
 	t.Cleanup(func() { osFS = old })

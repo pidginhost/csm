@@ -62,7 +62,14 @@ func (m *mockOS) Lstat(name string) (os.FileInfo, error) {
 	if m.lstat != nil {
 		return m.lstat(name)
 	}
-	return nil, os.ErrNotExist
+	if m.stat != nil {
+		return m.stat(name)
+	}
+	// A double that models only globs and reads still describes a filesystem
+	// where those files exist. Answering "nothing exists" here made every
+	// caller that verifies a discovered path before opening it see an empty
+	// host; tests that care about a missing or irregular file set lstat.
+	return fakeFileInfo{name: filepath.Base(name)}, nil
 }
 
 func (m *mockOS) Readlink(name string) (string, error) {

@@ -421,9 +421,7 @@ func parseDBFindingDetails(details string) (dbName, optionName string) {
 // values come straight from a cPanel-user-writable file and end up in
 // root-credentialled SQL via handleMaliciousOption / handleSiteurlHijack.
 func findCredsForDB(dbName string) wpDBCreds {
-	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
-	addonConfigs, _ := accountHomeGlob("*/*/wp-config.php")
-	wpConfigs = append(wpConfigs, addonConfigs...)
+	wpConfigs := wpInstallConfigPaths(wpInstalls(context.Background(), "db_content"))
 
 	for _, path := range wpConfigs {
 		creds := parseWPConfig(path)

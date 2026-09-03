@@ -247,6 +247,13 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 	if globScope == "" {
 		globScope = "*"
 	}
+	if scope != "" {
+		// The primary document root is checked by name, not by glob. A fixer
+		// asked about one account must not lose that account's main install
+		// because the glob returned nothing, and a missing file here is an
+		// account without WordPress, not a coverage gap.
+		add(filepath.Join(accountHomeDir(scope), "public_html", "wp-config.php"), scope, homeState, false)
+	}
 	for _, pattern := range []string{
 		filepath.Join(globScope, "public_html", "wp-config.php"),
 		filepath.Join(globScope, "public_html", "*", "wp-config.php"),
@@ -285,4 +292,14 @@ func skipWPDiscoveryPath(path string) bool {
 		}
 	}
 	return false
+}
+
+// wpInstallConfigPaths projects installs to their wp-config.php paths for
+// callers that work in paths rather than installs.
+func wpInstallConfigPaths(installs []wpInstall) []string {
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
+	}
+	return out
 }
