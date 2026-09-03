@@ -30,7 +30,7 @@ func TestWPInstalls_CachePerCycleWalksOnce(t *testing.T) {
 	ctx := withWPInstallCache(context.Background())
 	_ = wpInstalls(ctx, "db_objects")
 	after := fake.globs
-	_ = wpInstalls(ctx, "wp_core_integrity")
+	_ = wpInstalls(ctx, "wp_core")
 	if fake.globs != after {
 		t.Errorf("second consumer re-walked: %d globs after first, %d after second", after, fake.globs)
 	}
@@ -49,9 +49,9 @@ func TestWPInstalls_CacheReplaysGapsPerCaller(t *testing.T) {
 	ctx, collector := withIncompleteCheckCollector(context.Background())
 	ctx = withWPInstallCache(ctx)
 	_ = wpInstalls(ctx, "db_objects")
-	_ = wpInstalls(ctx, "wp_core_integrity")
+	_ = wpInstalls(ctx, "wp_core")
 
-	if !collectorMarked(collector, "db_objects") || !collectorMarked(collector, "wp_core_integrity") {
+	if !collectorMarked(collector, "db_objects") || !collectorMarked(collector, "wp_core") {
 		t.Error("cached discovery did not credit both callers with the gap")
 	}
 }

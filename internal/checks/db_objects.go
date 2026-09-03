@@ -119,7 +119,7 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 	}
 
 	var findings []alert.Finding
-	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
+	wpConfigs := dbObjectWPConfigs(ctx)
 	if len(wpConfigs) == 0 {
 		return nil
 	}
@@ -470,4 +470,16 @@ func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) [
 		}
 	}
 	return findings
+}
+
+// dbObjectWPConfigs lists the WordPress installs this check scans. Discovery is
+// shared (wpinstalls.go): a subdomain or nested install carries the same
+// injected objects as a primary one.
+func dbObjectWPConfigs(ctx context.Context) []string {
+	installs := wpInstalls(ctx, "db_objects")
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
+	}
+	return out
 }

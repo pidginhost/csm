@@ -31,7 +31,7 @@ const credentialReuseMinAccounts = 2
 // a truncated one-way fingerprint is used to group identical hashes, and
 // findings report the affected accounts and a count -- not the hash.
 func CheckCredentialReuse(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
+	wpConfigs := credentialReuseWPConfigs(ctx)
 
 	// fingerprint -> set of distinct accounts carrying that admin hash.
 	byFingerprint := map[string]map[string]struct{}{}
@@ -140,6 +140,17 @@ func buildCredentialReuseFindings(byFingerprint map[string]map[string]struct{}, 
 				strings.Join(accounts, ", ")),
 			Timestamp: time.Now(),
 		})
+	}
+	return out
+}
+
+// credentialReuseWPConfigs lists the WordPress installs this check fingerprints.
+// A hash reused between a primary site and an addon install is still reuse.
+func credentialReuseWPConfigs(ctx context.Context) []string {
+	installs := wpInstalls(ctx, "credential_reuse")
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
 	}
 	return out
 }

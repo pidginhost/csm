@@ -131,11 +131,11 @@ func TestWPInstalls_UnreadableMapMarksCallersGap(t *testing.T) {
 	t.Cleanup(func() { osFS = old })
 
 	ctx, collector := withIncompleteCheckCollector(context.Background())
-	got := wpInstalls(ctx, "wp_core_integrity")
+	got := wpInstalls(ctx, "wp_core")
 	if state := wpInstallState(got, "/home/alice/public_html/wp-config.php"); state != servedUnknown {
 		t.Errorf("served state = %v, want servedUnknown", state)
 	}
-	if !collectorMarked(collector, "wp_core_integrity") {
+	if !collectorMarked(collector, "wp_core") {
 		t.Error("coverage gap not credited to the calling check")
 	}
 	if collectorMarked(collector, "db_content") {

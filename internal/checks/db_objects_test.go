@@ -337,10 +337,20 @@ func TestCheckDatabaseObjectsRanksWPConfigsByMtime(t *testing.T) {
 	}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			if pattern != "/home/*/public_html/wp-config.php" {
-				t.Fatalf("unexpected glob pattern %q", pattern)
+			switch pattern {
+			case "/home/*/public_html/wp-config.php":
+				return paths, nil
+			case "/home/*/public_html/*/wp-config.php", "/home/*/*/wp-config.php":
+				return nil, nil
 			}
-			return paths, nil
+			t.Fatalf("unexpected glob pattern %q", pattern)
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			if _, ok := realFiles[name]; !ok {
+				return nil, os.ErrNotExist
+			}
+			return fakeFileInfo{name: "wp-config.php"}, nil
 		},
 		stat: mtimesByPath(map[string]time.Time{
 			paths[0]: now.Add(-24 * time.Hour),
@@ -401,10 +411,20 @@ func TestCheckDatabaseObjectsUsesAccountScanMaxFilesAfterMtimeRank(t *testing.T)
 	}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			if pattern != "/home/*/public_html/wp-config.php" {
-				t.Fatalf("unexpected glob pattern %q", pattern)
+			switch pattern {
+			case "/home/*/public_html/wp-config.php":
+				return paths, nil
+			case "/home/*/public_html/*/wp-config.php", "/home/*/*/wp-config.php":
+				return nil, nil
 			}
-			return paths, nil
+			t.Fatalf("unexpected glob pattern %q", pattern)
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			if _, ok := realFiles[name]; !ok {
+				return nil, os.ErrNotExist
+			}
+			return fakeFileInfo{name: "wp-config.php"}, nil
 		},
 		stat: mtimesByPath(map[string]time.Time{
 			paths[0]: now.Add(-24 * time.Hour),

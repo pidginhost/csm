@@ -47,7 +47,7 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 	}
 	now := time.Now()
 
-	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
+	wpConfigs := adminOverlapWPConfigs(ctx)
 	for _, wpConfig := range wpConfigs {
 		if ctx.Err() != nil {
 			return nil
@@ -180,4 +180,16 @@ func adminEmailDomain(email string) string {
 		return ""
 	}
 	return email[at+1:]
+}
+
+// adminOverlapWPConfigs lists the WordPress installs this check compares.
+// Overlap between a primary site and a subdomain install is the shape this
+// check exists to catch, so both must be discovered.
+func adminOverlapWPConfigs(ctx context.Context) []string {
+	installs := wpInstalls(ctx, "admin_overlap")
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
+	}
+	return out
 }
