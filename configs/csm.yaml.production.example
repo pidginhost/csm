@@ -348,6 +348,7 @@ firewall:
     - 2087
     - 2325
     - 9443
+  required_tcp_out: []
   passive_ftp_start: 49152
   passive_ftp_end: 65534
   # 200/min and conn_limit 400 are CGNAT-tolerant. Lower if your

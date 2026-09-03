@@ -292,6 +292,7 @@ func Validate(cfg *Config) []ValidationResult {
 			}
 		}
 		results = append(results, firewallLockoutResults(cfg)...)
+		results = append(results, firewallEgressResults(cfg)...)
 		results = append(results, firewallValueResults(cfg.Firewall)...)
 	}
 	results = append(results, centralActionResults(cfg)...)
@@ -718,6 +719,7 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 		{"firewall.udp_out", fw.UDPOut},
 		{"firewall.tcp6_in", fw.TCP6In},
 		{"firewall.tcp6_out", fw.TCP6Out},
+		{"firewall.required_tcp_out", fw.RequiredTCPOut},
 		{"firewall.udp6_in", fw.UDP6In},
 		{"firewall.udp6_out", fw.UDP6Out},
 		{"firewall.restricted_tcp", fw.RestrictedTCP},

@@ -951,6 +951,7 @@ firewall:
     - 2087
     - 2325
     - 9443                      # CSM web UI
+  required_tcp_out: []          # outbound ports a service on this host needs; checked, never merged
   passive_ftp_start: 49152
   passive_ftp_end: 65534
   conn_rate_limit: 200          # new connections per minute per IP (CGNAT-tolerant)

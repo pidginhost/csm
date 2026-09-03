@@ -28,6 +28,13 @@ account_roots:
 # infra_ips:
 #   - <panel ip>
 #   - <agent control plane ip>
+#
+# When the agent enables the firewall, declare the port it dials its control
+# plane on in its fragment so `csm doctor` reports a policy that drops it:
+#
+# firewall:
+#   required_tcp_out:
+#     - <control plane port>
 
 # Webhook + token configuration belongs in the agent's runtime fragment
 # (10-phpanel-runtime.yaml). Do not put active placeholder secrets in this

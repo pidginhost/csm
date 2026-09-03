@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Firewall validation now warns when the outbound policy omits the port of an enabled outbound endpoint (webhook, heartbeat, SMTP, syslog, verdict callback, threat-intel and update URLs) or port 443 for the built-in feeds. A host whose policy dropped its control-plane port went silent with "connection refused" while looking healthy locally.
+- A conf.d fragment can declare the outbound ports its service needs under `firewall.required_tcp_out`. The list is checked against the effective policy, never merged, and `csm doctor` reports a drop.
+
 ## [3.32.0] - 2026-09-02
 
 ### Highlights
