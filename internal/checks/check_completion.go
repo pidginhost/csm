@@ -20,45 +20,45 @@ type incompleteCheckCollector struct {
 
 type incompleteCheckContextKey struct{}
 
-// CoverageGaps exposes the files a scan walked but could not examine, so the
-// caller that persists the scan's findings can keep those findings rather than
-// purging them. The scan itself does not know how its results are stored.
-type CoverageGaps struct{ collector *incompleteCheckCollector }
+type coverageGapsContextKey struct{}
 
-// Paths returns every file this scan could not examine, across all owners.
-func (g *CoverageGaps) Paths() map[string]bool {
-	if g == nil || g.collector == nil {
-		return nil
-	}
-	g.collector.mu.Lock()
-	defer g.collector.mu.Unlock()
-	out := make(map[string]bool)
-	for owner, paths := range g.collector.paths {
-		if _, unattributed := g.collector.unattributed[owner]; unattributed {
-			// The owner has a gap it could not pin to a file, so it purges
-			// nothing this cycle and its per-file gaps are moot.
-			continue
-		}
-		for path := range paths {
-			out[path] = true
-		}
-	}
-	return out
+// CoverageGaps exposes, by finding name, the files a scan walked but could not
+// examine. Scoping paths to the owner prevents one consumer in a shared walk
+// from retaining another consumer's findings for the same file.
+//
+// A handle contains only the most recently completed scan run with its context.
+// Reusing that context for a later run replaces the snapshot instead of carrying
+// old gaps into the new cycle.
+type CoverageGaps struct {
+	mu           sync.Mutex
+	pathsByCheck map[string]map[string]bool
 }
 
-// WithCoverageGaps gives the caller ownership of the collector a scan fills in,
-// so it can read the coverage gaps after the scan returns without widening
-// every runner signature.
+// Paths returns the files this scan could not examine, scoped to the finding
+// names whose purge must preserve them.
+func (g *CoverageGaps) Paths() map[string]map[string]bool {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return cloneCoverageGapPaths(g.pathsByCheck)
+}
+
+// WithCoverageGaps gives the caller a snapshot sink the next runner invocation
+// fills in, so it can read the coverage gaps after the scan returns without
+// widening every runner signature.
 func WithCoverageGaps(ctx context.Context) (context.Context, *CoverageGaps) {
-	ctx, collector := withIncompleteCheckCollector(ctx)
-	return ctx, &CoverageGaps{collector: collector}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gaps := &CoverageGaps{}
+	return context.WithValue(ctx, coverageGapsContextKey{}, gaps), gaps
 }
 
 func withIncompleteCheckCollector(ctx context.Context) (context.Context, *incompleteCheckCollector) {
-	// Reuse a collector the caller already installed, so it can read the gaps
-	// the scan records.
-	if existing := incompleteCollectorFrom(ctx); existing != nil {
-		return ctx, existing
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	collector := &incompleteCheckCollector{
 		names:        make(map[string]struct{}),
@@ -66,6 +66,44 @@ func withIncompleteCheckCollector(ctx context.Context) (context.Context, *incomp
 		unattributed: make(map[string]struct{}),
 	}
 	return context.WithValue(ctx, incompleteCheckContextKey{}, collector), collector
+}
+
+func coverageGapsFrom(ctx context.Context) *CoverageGaps {
+	if ctx == nil {
+		return nil
+	}
+	gaps, _ := ctx.Value(coverageGapsContextKey{}).(*CoverageGaps)
+	return gaps
+}
+
+func (g *CoverageGaps) replace(pathsByCheck map[string]map[string]bool) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.pathsByCheck = cloneCoverageGapPaths(pathsByCheck)
+	g.mu.Unlock()
+}
+
+func cloneCoverageGapPaths(pathsByCheck map[string]map[string]bool) map[string]map[string]bool {
+	if len(pathsByCheck) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]bool, len(pathsByCheck))
+	for check, paths := range pathsByCheck {
+		if len(paths) == 0 {
+			continue
+		}
+		cloned := make(map[string]bool, len(paths))
+		for path := range paths {
+			cloned[path] = true
+		}
+		out[check] = cloned
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // markCheckIncomplete records a coverage gap that cannot be attributed to

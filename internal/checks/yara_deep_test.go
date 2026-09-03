@@ -72,9 +72,14 @@ func TestCheckYARADeepReportsIncompleteScan(t *testing.T) {
 	yara.SetActive(&deepYARATestBackend{err: errors.New("worker unavailable")})
 	t.Cleanup(func() { yara.SetActive(nil) })
 
-	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
 	if len(findings) != 1 || findings[0].Check != "yara_scan_incomplete" {
 		t.Fatalf("findings = %+v, want one yara_scan_incomplete finding", findings)
+	}
+	path := filepath.Join(root, "index.php")
+	if !collector.attributable("yara_deep") || !collector.gapPaths("yara_deep")[path] {
+		t.Fatalf("file-specific scanner error was not attributed to %s", path)
 	}
 }
 
@@ -156,12 +161,16 @@ func TestCheckYARADeepReportsFailedOversizePathScan(t *testing.T) {
 	yara.SetActive(backend)
 	t.Cleanup(func() { yara.SetActive(nil) })
 
-	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
 	if atomic.LoadInt32(&backend.scanFileCalls) == 0 {
 		t.Fatal("oversize-inline file was not retried by path")
 	}
 	if !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("failed path fallback was reported clean: %+v", findings)
+	}
+	if !collector.attributable("yara_deep") || !collector.gapPaths("yara_deep")[path] {
+		t.Fatalf("failed path scan was not attributed to %s", path)
 	}
 }
 
@@ -657,6 +666,9 @@ func TestCheckYARADeepAdvancesCursorPastLstatError(t *testing.T) {
 	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("metadata error did not mark the partial scan incomplete: %+v", findings)
 	}
+	if collector.attributable("yara_deep") || len(collector.gapPaths("yara_deep")) != 0 {
+		t.Fatal("failed Lstat may hide a subtree and must remain unattributable")
+	}
 	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
 	if err != nil || !ok {
 		t.Fatalf("cursor after metadata error: ok=%v err=%v", ok, err)
@@ -707,6 +719,30 @@ func TestCheckYARADeepAdvancesCursorPastOversizeFile(t *testing.T) {
 	}
 }
 
+func TestCheckYARADeepAttributesOversizeGapToFile(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	oversize := writeYARADeepFile(t, root, "large.dat", strings.Repeat("x", 2*1024*1024))
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	cfg := &config.Config{AccountRoots: []string{root}}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	findings := CheckYARADeep(ctx, cfg, nil)
+
+	if !containsFindingCheck(findings, "yara_scan_incomplete") {
+		t.Fatalf("oversize file did not report incomplete coverage: %+v", findings)
+	}
+	if !collector.attributable("yara_deep") {
+		t.Fatal("a completed walk with only an oversize-file gap must remain path-attributable")
+	}
+	paths := collector.gapPaths("yara_deep")
+	if len(paths) != 1 || !paths[oversize] {
+		t.Fatalf("oversize gap paths = %+v, want only %s", paths, oversize)
+	}
+}
+
 func TestCheckYARADeepAdvancesCursorPastUnreadableDirectory(t *testing.T) {
 	db := useRollingStore(t)
 	root := t.TempDir()
@@ -739,6 +775,9 @@ func TestCheckYARADeepAdvancesCursorPastUnreadableDirectory(t *testing.T) {
 
 	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("directory error did not mark the partial scan incomplete: %+v", findings)
+	}
+	if collector.attributable("yara_deep") || len(collector.gapPaths("yara_deep")) != 0 {
+		t.Fatal("unreadable directory must remain an unattributable range gap")
 	}
 	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
 	if err != nil || !ok {

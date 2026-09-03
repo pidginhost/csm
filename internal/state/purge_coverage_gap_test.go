@@ -32,7 +32,9 @@ func TestPurgeRetiresFindingsForFilesTheScanCovered(t *testing.T) {
 	// read error_log at all.
 	s.PurgeAndMergeFindingsPreservingPaths(
 		[]string{"yara_match_scheduled"}, nil,
-		map[string]bool{"/home/b/public_html/error_log": true})
+		map[string]map[string]bool{
+			"yara_match_scheduled": {"/home/b/public_html/error_log": true},
+		})
 
 	got := s.LatestFindings()
 	if len(got) != 1 {
@@ -53,7 +55,9 @@ func TestPurgeKeepsAFindingForAFileThatOutgrewTheScanLimit(t *testing.T) {
 
 	s.PurgeAndMergeFindingsPreservingPaths(
 		[]string{"yara_match_scheduled"}, nil,
-		map[string]bool{"/home/c/public_html/grew.php": true})
+		map[string]map[string]bool{
+			"yara_match_scheduled": {"/home/c/public_html/grew.php": true},
+		})
 
 	if got := s.LatestFindings(); len(got) != 1 {
 		t.Fatalf("an unscanned file's finding must survive the purge, got %+v", got)
@@ -82,10 +86,42 @@ func TestPurgePreservedPathStillAcceptsAFreshFinding(t *testing.T) {
 	fresh.Timestamp = time.Unix(200, 0)
 	s.PurgeAndMergeFindingsPreservingPaths(
 		[]string{"yara_match_scheduled"}, []alert.Finding{fresh},
-		map[string]bool{"/home/b/error_log": true})
+		map[string]map[string]bool{
+			"yara_match_scheduled": {"/home/b/error_log": true},
+		})
 
 	got := s.LatestFindings()
 	if len(got) != 1 || !got[0].Timestamp.Equal(time.Unix(200, 0)) {
 		t.Fatalf("fresh detection must replace the preserved snapshot: %+v", got)
+	}
+}
+
+func TestPurgeCoverageGapIsScopedToItsFindingOwner(t *testing.T) {
+	const path = "/home/shared/public_html/index.php"
+	checks := []string{"yara_match_scheduled", "js_keylogger_dataflow", "php_remote_taint"}
+
+	for _, preserveCheck := range checks {
+		t.Run(preserveCheck, func(t *testing.T) {
+			s := openTestStore(t)
+			var prior []alert.Finding
+			for _, check := range checks {
+				prior = append(prior, alert.Finding{
+					Check: check, Message: "prior " + check, FilePath: path,
+					Severity: alert.Critical, Timestamp: time.Unix(100, 0),
+				})
+			}
+			s.PurgeAndMergeFindings(nil, prior)
+
+			s.PurgeAndMergeFindingsPreservingPaths(
+				checks,
+				nil,
+				map[string]map[string]bool{preserveCheck: {path: true}},
+			)
+
+			got := s.LatestFindings()
+			if len(got) != 1 || got[0].Check != preserveCheck {
+				t.Fatalf("gap for %s preserved sibling-owner findings: %+v", preserveCheck, got)
+			}
+		})
 	}
 }

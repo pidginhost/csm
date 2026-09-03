@@ -1585,7 +1585,7 @@ func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Findin
 // processScanFindingsWithGaps is processScanFindings for a scan that reported
 // files it could not examine, so their findings are not retired by a cycle
 // that never looked at them.
-func (d *Daemon) processScanFindingsWithGaps(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]bool, label string) {
+func (d *Daemon) processScanFindingsWithGaps(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]map[string]bool, label string) {
 	checks.StoreLatestScanFindingsWithGaps(d.store, purgeChecks, findings, gapPaths)
 	d.applyWPCronAutoFix(cfg, findings)
 	d.enqueueScanAlerts(findings, label)
