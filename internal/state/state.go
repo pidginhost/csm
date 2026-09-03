@@ -944,19 +944,12 @@ func (s *Store) PurgeAndMergeFindingsDerived(purgeChecks []string, findings []al
 	s.purgeAndMergeFindingsDerived(purgeChecks, findings, nil, derivedChecks, derive)
 }
 
-// PurgeAndMergeFindingsDerivedWithGaps is PurgeAndMergeFindingsDerived for a
-// scan that could not examine every file it walked. Findings for the files in
-// preservePathsByCheck survive only their owning check's purge.
-func (s *Store) PurgeAndMergeFindingsDerivedWithGaps(purgeChecks []string, findings []alert.Finding, preservePathsByCheck map[string]map[string]bool, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
-	s.purgeAndMergeFindingsDerived(purgeChecks, findings, preservePathsByCheck, derivedChecks, derive)
-}
-
-// PurgeAndMergeFindingsPreservingPaths is PurgeAndMergeFindings for a scan that
-// could not read every file it walked. preservePathsByCheck maps each finding
-// name to those files, so one scanner's gap cannot retain another scanner's
-// finding for the same path.
-func (s *Store) PurgeAndMergeFindingsPreservingPaths(purgeChecks []string, findings []alert.Finding, preservePathsByCheck map[string]map[string]bool) {
-	s.purgeAndMergeFindingsDerived(purgeChecks, findings, preservePathsByCheck, nil, nil)
+// PurgeAndMergeFindingsDerivedWithGaps preserves current findings for path
+// aliases captured when the completed scan observed a coverage gap. Callers
+// must supply both lexical and resolved aliases they accepted at scan time;
+// preservation is evaluated under latestMu without resolving them again.
+func (s *Store) PurgeAndMergeFindingsDerivedWithGaps(purgeChecks []string, findings []alert.Finding, preserveAliasesByCheck map[string]map[string]bool, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
+	s.purgeAndMergeFindingsDerived(purgeChecks, findings, preserveAliasesByCheck, derivedChecks, derive)
 }
 
 func (s *Store) purgeAndMergeFindingsDerived(purgeChecks []string, findings []alert.Finding, preservePathsByCheck map[string]map[string]bool, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
@@ -965,7 +958,7 @@ func (s *Store) purgeAndMergeFindingsDerived(purgeChecks []string, findings []al
 
 	merged := purgeAndMergeLatest(s.latestFindings, purgeChecks, findings, preservePathsByCheck)
 	if derive != nil {
-		merged = purgeAndMergeLatest(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)), nil)
+		merged = purgeAndMergeLatest(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)), preservePathsByCheck)
 	}
 	s.latestFindings = merged
 	s.latestScanTime = time.Now()
@@ -981,29 +974,130 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 		remove[c] = true
 	}
 	existing := make(map[string]alert.Finding, len(current)+len(findings))
+	preserveAliases := normalizedPreservePathAliases(preservePathsByCheck)
+	preservationActive := preservePathsByCheck != nil
+	mismatchedCarryKeys := make(map[string]struct{})
+	holdChecks := make(map[string]bool)
+	if preservationActive {
+		for _, f := range findings {
+			if !f.ScanCarryForward {
+				continue
+			}
+			if pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
+				continue
+			}
+			// Carry-forward and preservation metadata must describe the same
+			// scope. If they ever disagree, retain the whole owner rather than
+			// choosing between a purge and a stale resurrection.
+			holdChecks[f.Check] = true
+			mismatchedCarryKeys[f.Key()] = struct{}{}
+		}
+	}
+	protectedKeys := make(map[string]struct{})
 	for _, f := range current {
 		// A finding this package demoted is waiting on the re-verifier, which
 		// reads the file, not on a scan that merely did not raise it again.
 		// Purging it here would discard the demotion state and let the same
 		// file come back at full severity on the next detection, so the
-		// demotion has to outlive a negative scan. A fresh finding with the
-		// same key still replaces it in the merge below.
-		//
-		// preservePathsByCheck carries the files this cycle could not read,
-		// scoped to the scanner's finding names. A YARA gap at a shared path,
-		// for example, says nothing about whether the JS consumer examined it.
-		// The owning finding survives -- including the case that makes this
-		// necessary rather than merely tidy: a flagged file that has since grown
-		// past the scan limit was never re-examined.
-		preservePath := preservePathsByCheck[f.Check][f.FilePath]
-		if preservePath || isAutomaticallyDemotedFinding(f) || !shouldPurgeLatestFinding(f, remove) {
+		// demotion has to outlive a negative scan. A fresh finding normally
+		// replaces it below; a protected snapshot stays authoritative against a
+		// colliding finding from another path.
+		preserved := holdChecks[f.Check] || pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check])
+		if preserved ||
+			isAutomaticallyDemotedFinding(f) || !shouldPurgeLatestFinding(f, remove) {
 			existing[f.Key()] = f
+			if preserved {
+				protectedKeys[f.Key()] = struct{}{}
+			}
 		}
 	}
 	for _, f := range findings {
-		existing[f.Key()] = f
+		// Marked carry-forward state came from the scanner's earlier snapshot.
+		// The current set under latestMu is authoritative: overwriting it would
+		// undo a concurrent update, and inserting it when absent would resurrect
+		// a concurrent dismissal. A genuinely fresh detection has no marker.
+		if preservationActive && f.ScanCarryForward {
+			continue
+		}
+		key := f.Key()
+		if _, staleSnapshot := mismatchedCarryKeys[key]; staleSnapshot {
+			continue
+		}
+		if _, currentIsAuthoritative := protectedKeys[key]; currentIsAuthoritative &&
+			!pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
+			continue
+		}
+		f.ScanCarryForward = false
+		existing[key] = f
+		if pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
+			protectedKeys[key] = struct{}{}
+		}
 	}
-	return orderAndCapLatest(existing)
+	return orderAndCapLatestPreserving(existing, protectedKeys)
+}
+
+func normalizedPreservePathAliases(pathsByCheck map[string]map[string]bool) map[string]map[string]struct{} {
+	if len(pathsByCheck) == 0 {
+		return nil
+	}
+	aliasesByCheck := make(map[string]map[string]struct{}, len(pathsByCheck))
+	for check, paths := range pathsByCheck {
+		if len(paths) == 0 {
+			continue
+		}
+		aliases := make(map[string]struct{}, len(paths)*2)
+		for path := range paths {
+			// The scanner already captured both lexical and symlink-resolved
+			// identities at gap time. Re-resolving here would let a symlink
+			// retarget between scan and merge change which file is protected.
+			if alias := normalizedLatestFindingPath(path); alias != "" {
+				aliases[alias] = struct{}{}
+			}
+		}
+		aliasesByCheck[check] = aliases
+	}
+	return aliasesByCheck
+}
+
+func pathMatchesPreservedAliases(path string, preserved map[string]struct{}) bool {
+	if path == "" || len(preserved) == 0 {
+		return false
+	}
+	for _, alias := range latestFindingPathAliases(path) {
+		if _, ok := preserved[alias]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func latestFindingPathAliases(path string) []string {
+	if path == "" {
+		return nil
+	}
+	lexical := filepath.Clean(path)
+	if absolute, err := filepath.Abs(lexical); err == nil {
+		lexical = filepath.Clean(absolute)
+	}
+	aliases := []string{lexical}
+	if real, err := filepath.EvalSymlinks(lexical); err == nil {
+		real = filepath.Clean(real)
+		if real != lexical {
+			aliases = append(aliases, real)
+		}
+	}
+	return aliases
+}
+
+func normalizedLatestFindingPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	lexical := filepath.Clean(path)
+	if absolute, err := filepath.Abs(lexical); err == nil {
+		lexical = filepath.Clean(absolute)
+	}
+	return lexical
 }
 
 // latestFindingsCap bounds the active set to keep memory and the persisted
@@ -1014,6 +1108,10 @@ const latestFindingsCap = 15000
 // severity first, then most recent, then key. Map iteration order used to
 // decide both the file bytes and which findings a full set dropped.
 func orderAndCapLatest(existing map[string]alert.Finding) []alert.Finding {
+	return orderAndCapLatestPreserving(existing, nil)
+}
+
+func orderAndCapLatestPreserving(existing map[string]alert.Finding, protected map[string]struct{}) []alert.Finding {
 	merged := make([]alert.Finding, 0, len(existing))
 	for _, f := range existing {
 		merged = append(merged, f)
@@ -1027,10 +1125,40 @@ func orderAndCapLatest(existing map[string]alert.Finding) []alert.Finding {
 		}
 		return merged[i].Key() < merged[j].Key()
 	})
-	if len(merged) > latestFindingsCap {
-		merged = merged[:latestFindingsCap]
+	if len(merged) <= latestFindingsCap {
+		return merged
 	}
-	return merged
+	protectedCount := 0
+	for _, f := range merged {
+		if _, ok := protected[f.Key()]; ok {
+			protectedCount++
+		}
+	}
+	if protectedCount == 0 {
+		return merged[:latestFindingsCap]
+	}
+
+	// A preservation transaction must not retire an unexamined finding merely
+	// because newly merged, higher-severity findings reached the normal cap.
+	// Keep every protected identity, then fill the remaining slots in the same
+	// deterministic priority order. In the pathological case that protected
+	// state alone exceeds the cap, the coverage invariant wins temporarily.
+	unprotectedSlots := latestFindingsCap - protectedCount
+	if unprotectedSlots < 0 {
+		unprotectedSlots = 0
+	}
+	capped := make([]alert.Finding, 0, max(latestFindingsCap, protectedCount))
+	for _, f := range merged {
+		if _, ok := protected[f.Key()]; ok {
+			capped = append(capped, f)
+			continue
+		}
+		if unprotectedSlots > 0 {
+			capped = append(capped, f)
+			unprotectedSlots--
+		}
+	}
+	return capped
 }
 
 // latestFindingsWriter writes the persisted file; a seam for tests.

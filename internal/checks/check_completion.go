@@ -2,40 +2,41 @@ package checks
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
+// incompleteCheckCollector records owners whose coverage this run could not
+// complete. Known file gaps can be preserved in the eventual store transaction;
+// an unknown range prevents the owner from retiring anything.
 type incompleteCheckCollector struct {
-	mu sync.Mutex
-	// names are owners with a coverage gap this run. paths records, per owner,
-	// the specific files the gap is attributable to; an owner whose every gap
-	// names a file can still retire findings for the files it did read.
+	mu    sync.Mutex
 	names map[string]struct{}
-	paths map[string]map[string]bool
-	// unattributed marks an owner whose gap cannot be pinned to files at all
-	// (no rules loaded, a cursor that could not be read). Such an owner says
-	// nothing about any file, so none of its findings may be retired.
-	unattributed map[string]struct{}
 }
 
 type incompleteCheckContextKey struct{}
 
 type coverageGapsContextKey struct{}
 
-// CoverageGaps exposes, by finding name, the files a scan walked but could not
-// examine. Scoping paths to the owner prevents one consumer in a shared walk
-// from retaining another consumer's findings for the same file.
-//
-// A handle contains only the most recently completed scan run with its context.
-// Reusing that context for a later run replaces the snapshot instead of carrying
-// old gaps into the new cycle.
+type coveragePathCollectorContextKey struct{}
+
+type coveragePathCollector struct {
+	mu           sync.Mutex
+	pathsByOwner map[string]map[string]bool
+}
+
+// CoverageGaps is the path-scoped part of a completed scan's coverage result.
+// The caller passes it to the atomic purge-and-merge operation so a concurrent
+// update made after the scanner read LatestFindings cannot be retired by a
+// stale carry-forward snapshot.
 type CoverageGaps struct {
 	mu           sync.Mutex
 	pathsByCheck map[string]map[string]bool
 }
 
-// Paths returns the files this scan could not examine, scoped to the finding
-// names whose purge must preserve them.
+// Paths returns an isolated snapshot of the completed run's path gaps. Each
+// inner key is a stable lexical or resolved alias captured during the scan.
 func (g *CoverageGaps) Paths() map[string]map[string]bool {
 	if g == nil {
 		return nil
@@ -45,9 +46,8 @@ func (g *CoverageGaps) Paths() map[string]map[string]bool {
 	return cloneCoverageGapPaths(g.pathsByCheck)
 }
 
-// WithCoverageGaps gives the caller a snapshot sink the next runner invocation
-// fills in, so it can read the coverage gaps after the scan returns without
-// widening every runner signature.
+// WithCoverageGaps requests an atomic path-preserving store operation from the
+// caller. The runner publishes only its completed snapshot into the handle.
 func WithCoverageGaps(ctx context.Context) (context.Context, *CoverageGaps) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -60,12 +60,13 @@ func withIncompleteCheckCollector(ctx context.Context) (context.Context, *incomp
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	collector := &incompleteCheckCollector{
-		names:        make(map[string]struct{}),
-		paths:        make(map[string]map[string]bool),
-		unattributed: make(map[string]struct{}),
-	}
+	collector := &incompleteCheckCollector{names: make(map[string]struct{})}
 	return context.WithValue(ctx, incompleteCheckContextKey{}, collector), collector
+}
+
+func withCoveragePathCollector(ctx context.Context) (context.Context, *coveragePathCollector) {
+	collector := &coveragePathCollector{pathsByOwner: make(map[string]map[string]bool)}
+	return context.WithValue(ctx, coveragePathCollectorContextKey{}, collector), collector
 }
 
 func coverageGapsFrom(ctx context.Context) *CoverageGaps {
@@ -107,7 +108,7 @@ func cloneCoverageGapPaths(pathsByCheck map[string]map[string]bool) map[string]m
 }
 
 // markCheckIncomplete records a coverage gap that cannot be attributed to
-// particular files. The owner keeps every finding it has until it completes.
+// particular files, so the owner keeps every finding it has until it completes.
 func markCheckIncomplete(ctx context.Context, name string) {
 	collector := incompleteCollectorFrom(ctx)
 	if collector == nil {
@@ -115,27 +116,86 @@ func markCheckIncomplete(ctx context.Context, name string) {
 	}
 	collector.mu.Lock()
 	collector.names[name] = struct{}{}
-	collector.unattributed[name] = struct{}{}
 	collector.mu.Unlock()
 }
 
-// markCheckIncompletePath records a coverage gap for one named file: the scan
-// walked it but could not examine it. Findings for that file survive the
-// cycle's purge, while findings for files the scan did read are retired
-// normally. Without this a single permanently unreadable file -- an error_log
-// past the scan limit, say -- froze the whole owner's findings forever.
-func markCheckIncompletePath(ctx context.Context, name, path string) {
-	collector := incompleteCollectorFrom(ctx)
-	if collector == nil || path == "" {
+// recordCoverageGapPaths records the stable aliases captured when a known file
+// gap was observed. The store must consume these aliases as identities, without
+// resolving them again after a symlink may have changed targets.
+func recordCoverageGapPaths(ctx context.Context, owner string, paths []string) {
+	if ctx == nil || len(paths) == 0 {
+		return
+	}
+	collector, _ := ctx.Value(coveragePathCollectorContextKey{}).(*coveragePathCollector)
+	if collector == nil {
 		return
 	}
 	collector.mu.Lock()
-	collector.names[name] = struct{}{}
-	if collector.paths[name] == nil {
-		collector.paths[name] = make(map[string]bool)
+	if collector.pathsByOwner[owner] == nil {
+		collector.pathsByOwner[owner] = make(map[string]bool)
 	}
-	collector.paths[name][path] = true
+	for _, path := range paths {
+		if path != "" {
+			collector.pathsByOwner[owner][path] = true
+		}
+	}
 	collector.mu.Unlock()
+}
+
+// coveragePathAliases captures every path spelling a Finding.FilePath emitted
+// by this walk can use: its absolute lexical form and, while the observed path
+// still resolves, its symlink-resolved form. Callers retain the returned set so
+// a later symlink retarget cannot change the preservation identity.
+func coveragePathAliases(path string) []string {
+	lexical := coverageLexicalPath(path)
+	if lexical == "" {
+		return nil
+	}
+	aliases := []string{lexical}
+	if real, err := filepath.EvalSymlinks(lexical); err == nil {
+		real = filepath.Clean(real)
+		if real != lexical {
+			aliases = append(aliases, real)
+		}
+	}
+	return aliases
+}
+
+func coverageLexicalPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	lexical := filepath.Clean(path)
+	if absolute, err := filepath.Abs(lexical); err == nil {
+		lexical = filepath.Clean(absolute)
+	}
+	return lexical
+}
+
+// stableCoveragePathAliases binds aliases to the file metadata that caused the
+// scanner's decision. Re-checking both the lexical and resolved paths prevents
+// a symlink retarget during alias construction from preserving a different file
+// while retiring the one that actually went unexamined.
+func stableCoveragePathAliases(path string, expected os.FileInfo) ([]string, bool) {
+	aliases := coveragePathAliases(path)
+	if expected == nil || len(aliases) == 0 {
+		return aliases, false
+	}
+	lexicalInfo, err := osFS.Lstat(aliases[0])
+	if err != nil || lexicalInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, lexicalInfo) {
+		return aliases, false
+	}
+	for _, alias := range aliases[1:] {
+		resolvedInfo, statErr := osFS.Stat(alias)
+		if statErr != nil || !os.SameFile(expected, resolvedInfo) {
+			return aliases, false
+		}
+	}
+	lexicalInfo, err = osFS.Lstat(aliases[0])
+	if err != nil || lexicalInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, lexicalInfo) {
+		return aliases, false
+	}
+	return aliases, true
 }
 
 func incompleteCollectorFrom(ctx context.Context) *incompleteCheckCollector {
@@ -146,35 +206,19 @@ func incompleteCollectorFrom(ctx context.Context) *incompleteCheckCollector {
 	return collector
 }
 
-// attributable reports whether every gap this owner recorded names a file, so
-// the owner may purge findings for the files it did cover.
-func (c *incompleteCheckCollector) attributable(name string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, ok := c.names[name]; !ok {
-		return false
-	}
-	_, unattributed := c.unattributed[name]
-	return !unattributed && len(c.paths[name]) > 0
+func checkMarkedIncomplete(ctx context.Context, name string) bool {
+	collector := incompleteCollectorFrom(ctx)
+	return collector != nil && collector.contains(name)
 }
 
-// gapPaths returns the files an owner could not examine this run.
-func (c *incompleteCheckCollector) gapPaths(name string) map[string]bool {
+func (c *coveragePathCollector) gapPaths(owner string) map[string]bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make(map[string]bool, len(c.paths[name]))
-	for p := range c.paths[name] {
-		out[p] = true
+	out := make(map[string]bool, len(c.pathsByOwner[owner]))
+	for path := range c.pathsByOwner[owner] {
+		out[path] = true
 	}
 	return out
-}
-
-func checkMarkedIncomplete(ctx context.Context, name string) bool {
-	if ctx == nil {
-		return false
-	}
-	collector, _ := ctx.Value(incompleteCheckContextKey{}).(*incompleteCheckCollector)
-	return collector != nil && collector.contains(name)
 }
 
 func (c *incompleteCheckCollector) contains(name string) bool {

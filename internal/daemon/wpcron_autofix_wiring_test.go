@@ -109,18 +109,24 @@ func TestRecordTierRunFindingsDryRunSkipsWPCronAutoFix(t *testing.T) {
 	}
 }
 
-func TestRecordTierRunFindingsPreservesOnlyGappedOwner(t *testing.T) {
+func TestRecordTierRunFindingsAtomicallyPreservesYARAGap(t *testing.T) {
 	d := newTestDaemon(t)
 	c := &ControlListener{d: d}
-	const path = "/home/shared/public_html/index.php"
+	const path = "/home/shared/public_html/error_log"
+	first := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "rule-a", FilePath: path, Timestamp: time.Unix(100, 0)}
+	second := alert.Finding{Check: "yara_match_scheduled", Severity: alert.High, Message: "rule-b", FilePath: path, Timestamp: time.Unix(200, 0)}
 	d.store.PurgeAndMergeFindings(nil, []alert.Finding{
-		{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "prior YARA", FilePath: path},
-		{Check: "js_keylogger_dataflow", Severity: alert.Critical, Message: "prior JS", FilePath: path},
+		first,
+		second,
+		{Check: "js_keylogger_dataflow", Severity: alert.Critical, Message: "covered sibling", FilePath: path},
 	})
 
+	// These findings model state added or refreshed after the scan took its
+	// earlier snapshot. The control path must preserve all current YARA state
+	// under the store lock while still purging a completed sibling owner.
 	c.recordTierRunFindings(
 		&config.Config{},
-		nil,
+		[]alert.Finding{first},
 		[]string{"yara_match_scheduled", "js_keylogger_dataflow"},
 		map[string]map[string]bool{"yara_match_scheduled": {path: true}},
 		false,
@@ -128,8 +134,14 @@ func TestRecordTierRunFindingsPreservesOnlyGappedOwner(t *testing.T) {
 	)
 
 	got := d.store.LatestFindings()
-	if len(got) != 1 || got[0].Check != "yara_match_scheduled" {
-		t.Fatalf("control tier run did not scope its coverage gap: %+v", got)
+	if len(got) != 2 {
+		t.Fatalf("control tier run did not preserve every carried YARA match: %+v", got)
+	}
+	want := map[string]time.Time{first.Key(): first.Timestamp, second.Key(): second.Timestamp}
+	for _, finding := range got {
+		if ts, ok := want[finding.Key()]; !ok || !finding.Timestamp.Equal(ts) {
+			t.Fatalf("control tier run changed carried identity or timestamp: %+v", finding)
+		}
 	}
 }
 

@@ -999,8 +999,8 @@ func (d *Daemon) Run() error {
 	// keeps its own fail-closed dismissal invariant.
 	if db := store.Global(); db != nil && d.store != nil {
 		token := checks.FindingReverifyVersion()
-		d.startContentReverifySweepIfChanged(db, token, func() ([]checks.ContentReverifyDismissal, bool) {
-			return checks.ReverifyStaleFindingsContext(d.scanContext(), d.store)
+		d.startContentReverifySweepIfChanged(db, token, func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+			return checks.ReverifyStaleFindingsStats(d.scanContext(), d.store)
 		})
 	}
 
@@ -1254,52 +1254,61 @@ type contentLogicVersionStore interface {
 	SetContentLogicVersion(token string) error
 }
 
-func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() ([]checks.ContentReverifyDismissal, bool)) {
+func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool)) {
 	changed, err := db.ContentLogicVersionChanged(token)
 	if err != nil {
 		csmlog.Warn("finding re-verification version check failed", "err", err)
 		return
 	}
 	if changed {
-		d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, bool) {
-			dismissed, complete := run()
+		d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+			dismissed, stats, complete := run()
 			if !complete {
-				return dismissed, false
+				return dismissed, stats, false
 			}
 			if err := db.SetContentLogicVersion(token); err != nil {
 				csmlog.Warn("finding re-verification version update failed", "err", err)
-				return dismissed, false
+				return dismissed, stats, false
 			}
-			return dismissed, true
+			return dismissed, stats, true
 		})
 	}
 }
 
-func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyDismissal, bool)) {
+func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool)) {
 	d.wg.Add(1)
 	obs.Go("content-reverify-sweep", func() {
 		defer d.wg.Done()
-		outcomes, complete := run()
-		cleared, demoted := 0, 0
+		outcomes, stats, complete := run()
 		for _, dm := range outcomes {
-			if dm.Demoted {
-				demoted++
-				csmlog.Info("remediated finding demoted",
-					"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
-				continue
-			}
-			cleared++
-			csmlog.Info("stale finding auto-cleared",
+			csmlog.Info(contentReverifyOutcomeMessage(dm),
 				"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
 		}
 		if !complete {
 			csmlog.Info("finding re-verification sweep will retry on next start")
 			return
 		}
-		if len(outcomes) > 0 {
-			csmlog.Info("finding re-verification sweep complete", "cleared", cleared, "demoted", demoted)
-		}
+		// Always log the summary. A sweep that produced nothing used to log
+		// nothing at all, which made "ran and found nothing" indistinguishable
+		// from "never ran" and from "failed on every finding" -- and that
+		// ambiguity cost more than one wrong conclusion about why findings
+		// were not draining.
+		csmlog.Info("finding re-verification sweep complete",
+			"considered", stats.Considered, "cleared", stats.Cleared, "demoted", stats.Demoted,
+			"promoted", stats.Promoted, "unchecked", stats.Unchecked,
+			"unchecked_reason", stats.TopUncheckedReason)
 	})
+}
+
+func contentReverifyOutcomeMessage(outcome checks.ContentReverifyDismissal) string {
+	switch {
+	case outcome.Promoted:
+		return "finding severity restored after re-verification"
+	case outcome.Demoted:
+		return "remediated finding demoted"
+	default:
+		return "stale finding auto-cleared"
+	}
 }
 
 // DroppedAlerts returns the total number of alerts dropped due to
@@ -1582,9 +1591,6 @@ func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Findin
 	d.processScanFindingsWithGaps(cfg, findings, purgeChecks, nil, label)
 }
 
-// processScanFindingsWithGaps is processScanFindings for a scan that reported
-// files it could not examine, so their findings are not retired by a cycle
-// that never looked at them.
 func (d *Daemon) processScanFindingsWithGaps(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]map[string]bool, label string) {
 	checks.StoreLatestScanFindingsWithGaps(d.store, purgeChecks, findings, gapPaths)
 	d.applyWPCronAutoFix(cfg, findings)
@@ -1736,8 +1742,8 @@ func (d *Daemon) deepScanner() {
 			// a finding gated only on that would keep its severity until the
 			// next upgrade happened to land.
 			if d.store != nil {
-				d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, bool) {
-					return checks.ReverifyStaleFindingsContext(d.scanContext(), d.store)
+				d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+					return checks.ReverifyStaleFindingsStats(d.scanContext(), d.store)
 				})
 			}
 
@@ -1761,10 +1767,6 @@ func (d *Daemon) deepScanner() {
 			// update would catch the new patterns.
 			cfg := d.currentCfg()
 			rescan := d.forceFullRescan.CompareAndSwap(true, false)
-			// Own the coverage-gap collector for this cycle so the files the
-			// scan could not examine can be read back and kept out of the
-			// purge, instead of one unreadable file freezing every finding
-			// its owner ever raised.
 			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 			var findings []alert.Finding
 			var purgeChecks []string
@@ -1823,8 +1825,9 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		sdb.PurgeDryRunBlocksOlderThan(time.Now().Add(-7 * 24 * time.Hour))
 	}
 
-	findings, purgeChecks := checks.RunTierWithContext(d.scanContext(), cfg, d.store, tier)
-	d.processScanFindings(cfg, findings, purgeChecks, "periodic")
+	scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
+	findings, purgeChecks := checks.RunTierWithContext(scanCtx, cfg, d.store, tier)
+	d.processScanFindingsWithGaps(cfg, findings, purgeChecks, gaps.Paths(), "periodic")
 }
 
 func (d *Daemon) verifyPeriodicIntegritySnapshot(cfg *config.Config) (*config.Config, error) {

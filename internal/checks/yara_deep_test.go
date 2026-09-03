@@ -78,8 +78,13 @@ func TestCheckYARADeepReportsIncompleteScan(t *testing.T) {
 		t.Fatalf("findings = %+v, want one yara_scan_incomplete finding", findings)
 	}
 	path := filepath.Join(root, "index.php")
-	if !collector.attributable("yara_deep") || !collector.gapPaths("yara_deep")[path] {
-		t.Fatalf("file-specific scanner error was not attributed to %s", path)
+	if !strings.Contains(findings[0].Details, path) {
+		t.Fatalf("file-specific scanner error was not attributed to %s: %q", path, findings[0].Details)
+	}
+	// A gap that names a file must leave the owner complete: the scan covered
+	// everything else, and that file's finding is carried forward instead.
+	if collector.contains("yara_deep") {
+		t.Fatal("an attributable gap must not suppress the purge for the whole owner")
 	}
 }
 
@@ -91,14 +96,18 @@ type oversizeInlineBackend struct {
 	scanFileCalls int32
 	scanFileErr   error
 	scanFileSHA   string
+	onScanFile    func(string)
 }
 
 func (b *oversizeInlineBackend) ScanFile(string, int) []yara.Match {
 	result, _ := b.ScanFileChecked("", 0)
 	return result.Matches
 }
-func (b *oversizeInlineBackend) ScanFileChecked(string, int) (yara.FileScanResult, error) {
+func (b *oversizeInlineBackend) ScanFileChecked(path string, _ int) (yara.FileScanResult, error) {
 	atomic.AddInt32(&b.scanFileCalls, 1)
+	if b.onScanFile != nil {
+		b.onScanFile(path)
+	}
 	if b.scanFileErr != nil {
 		return yara.FileScanResult{}, b.scanFileErr
 	}
@@ -169,8 +178,72 @@ func TestCheckYARADeepReportsFailedOversizePathScan(t *testing.T) {
 	if !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("failed path fallback was reported clean: %+v", findings)
 	}
-	if !collector.attributable("yara_deep") || !collector.gapPaths("yara_deep")[path] {
-		t.Fatalf("failed path scan was not attributed to %s", path)
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, path) {
+		t.Fatalf("failed path scan was not attributed to %s: %q", path, gap.Details)
+	}
+	if collector.contains("yara_deep") {
+		t.Fatal("an attributable gap must not suppress the purge for the whole owner")
+	}
+}
+
+func TestCheckYARADeepPathFallbackDirectoryRaceIsUnknownRange(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "raced.dat", "padded payload")
+	backend := &oversizeInlineBackend{
+		scanFileErr: errors.New("worker could not read replacement"),
+		onScanFile: func(scannedPath string) {
+			if scannedPath != path {
+				t.Fatalf("path fallback scanned %q, want %q", scannedPath, path)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") {
+		t.Fatal("a failed path fallback raced to a directory must hold the YARA owner")
+	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
+		t.Fatalf("path fallback directory race was not reported as an unknown range: %+v", gap)
+	}
+}
+
+func TestCheckYARADeepPathFallbackDeleteRaceIsUnknownRange(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "raced.dat", "padded payload")
+	backend := &oversizeInlineBackend{
+		scanFileErr: errors.New("worker lost the path"),
+		onScanFile: func(string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") {
+		t.Fatal("ENOENT after a failed path fallback must hold the YARA owner")
+	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
+		t.Fatalf("path fallback delete race was not reported as an unknown range: %+v", gap)
 	}
 }
 
@@ -302,6 +375,7 @@ type faultingYARADeepOS struct {
 	OS
 	lstat   func(string) (os.FileInfo, error)
 	readDir func(string) ([]os.DirEntry, error)
+	open    func(string) (*os.File, error)
 }
 
 func (f *faultingYARADeepOS) Lstat(path string) (os.FileInfo, error) {
@@ -316,6 +390,13 @@ func (f *faultingYARADeepOS) ReadDir(path string) ([]os.DirEntry, error) {
 		return f.readDir(path)
 	}
 	return f.OS.ReadDir(path)
+}
+
+func (f *faultingYARADeepOS) Open(path string) (*os.File, error) {
+	if f.open != nil {
+		return f.open(path)
+	}
+	return f.OS.Open(path)
 }
 
 func writeYARADeepFile(t *testing.T, root string, rel, content string) string {
@@ -666,8 +747,8 @@ func TestCheckYARADeepAdvancesCursorPastLstatError(t *testing.T) {
 	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("metadata error did not mark the partial scan incomplete: %+v", findings)
 	}
-	if collector.attributable("yara_deep") || len(collector.gapPaths("yara_deep")) != 0 {
-		t.Fatal("failed Lstat may hide a subtree and must remain unattributable")
+	if !collector.contains("yara_deep") {
+		t.Fatal("a failed Lstat may hide a subtree, so it must suppress the purge for the owner")
 	}
 	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
 	if err != nil || !ok {
@@ -734,12 +815,272 @@ func TestCheckYARADeepAttributesOversizeGapToFile(t *testing.T) {
 	if !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("oversize file did not report incomplete coverage: %+v", findings)
 	}
-	if !collector.attributable("yara_deep") {
-		t.Fatal("a completed walk with only an oversize-file gap must remain path-attributable")
+	if collector.contains("yara_deep") {
+		t.Fatal("a completed walk with only an oversize-file gap must not suppress the purge")
 	}
-	paths := collector.gapPaths("yara_deep")
-	if len(paths) != 1 || !paths[oversize] {
-		t.Fatalf("oversize gap paths = %+v, want only %s", paths, oversize)
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, oversize) || !strings.Contains(gap.Details, "oversize=1") {
+		t.Fatalf("oversize gap not attributed to %s: %q", oversize, gap.Details)
+	}
+}
+
+func TestCheckYARADeepCarriesEveryPriorRuleForOversizeFile(t *testing.T) {
+	useRollingStore(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	root := t.TempDir()
+	oversize := writeYARADeepFile(t, root, "large.dat", strings.Repeat("x", 2*1024*1024))
+	covered := writeYARADeepFile(t, root, "clean.dat", "clean")
+	first := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "rule-a", FilePath: oversize, Timestamp: time.Unix(100, 0)}
+	second := alert.Finding{Check: "yara_match_scheduled", Severity: alert.High, Message: "rule-b", FilePath: oversize, Timestamp: time.Unix(200, 0)}
+	stale := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "covered", FilePath: covered, Timestamp: time.Unix(300, 0)}
+	st.SetLatestFindings([]alert.Finding{first, second, stale})
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	cfg := &config.Config{AccountRoots: []string{root}}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	check := namedCheck{name: "yara_deep", fn: CheckYARADeep}
+	findings, purge := runParallelWithContext(context.Background(), cfg, st, []namedCheck{check}, "deep", true)
+	StoreLatestScanFindings(st, purge, findings)
+
+	var got []alert.Finding
+	for _, finding := range st.LatestFindings() {
+		if finding.Check == "yara_match_scheduled" {
+			got = append(got, finding)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("unexamined file did not retain every rule finding: %+v", got)
+	}
+	want := map[string]time.Time{first.Key(): first.Timestamp, second.Key(): second.Timestamp}
+	for _, finding := range got {
+		timestamp, ok := want[finding.Key()]
+		if !ok || !finding.Timestamp.Equal(timestamp) || finding.FilePath != oversize {
+			t.Fatalf("carried finding changed identity, timestamp, or path: %+v", finding)
+		}
+	}
+}
+
+func TestCheckYARADeepPublishesGapForAtomicLatestMerge(t *testing.T) {
+	useRollingStore(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	root := t.TempDir()
+	oversize := writeYARADeepFile(t, root, "large.dat", strings.Repeat("x", 2*1024*1024))
+	first := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "rule-a", FilePath: oversize, Timestamp: time.Unix(100, 0)}
+	second := alert.Finding{Check: "yara_match_scheduled", Severity: alert.High, Message: "rule-b", FilePath: oversize, Timestamp: time.Unix(200, 0)}
+	st.SetLatestFindings([]alert.Finding{first})
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	cfg := &config.Config{AccountRoots: []string{root}}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	ctx, gaps := WithCoverageGaps(context.Background())
+	findings, purge := runParallelWithContext(ctx, cfg, st, []namedCheck{{name: "yara_deep", fn: CheckYARADeep}}, "deep", true)
+
+	carried := make(map[string]alert.Finding)
+	for _, finding := range findings {
+		if finding.Check == "yara_match_scheduled" {
+			carried[finding.Key()] = finding
+		}
+	}
+	if len(carried) != 1 || !carried[first.Key()].Timestamp.Equal(first.Timestamp) {
+		t.Fatalf("scan output did not retain stable carried state for alert deduplication: %+v", carried)
+	}
+	gapPaths := gaps.Paths()
+	if !gapPaths["yara_match_scheduled"][oversize] {
+		t.Fatalf("runner did not publish YARA path gap for atomic merge: %+v", gapPaths)
+	}
+
+	// This update lands after CheckYARADeep read latest state. The locked gap
+	// preservation must retain it even though it was absent from scan output.
+	st.SetLatestFindings([]alert.Finding{second})
+	StoreLatestScanFindingsWithGaps(st, purge, findings, gapPaths)
+	got := make(map[string]alert.Finding)
+	for _, finding := range st.LatestFindings() {
+		if finding.Check == "yara_match_scheduled" {
+			got[finding.Key()] = finding
+		}
+	}
+	if len(got) != 2 || !got[first.Key()].Timestamp.Equal(first.Timestamp) ||
+		!got[second.Key()].Timestamp.Equal(second.Timestamp) {
+		t.Fatalf("atomic gap merge lost or rewrote concurrent YARA state: %+v", got)
+	}
+}
+
+func TestCheckYARADeepFreezesGapAliasesBeforeSymlinkRetarget(t *testing.T) {
+	useRollingStore(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	firstPath := writeYARADeepFile(t, firstRoot, "large.dat", strings.Repeat("x", 2*1024*1024))
+	writeYARADeepFile(t, secondRoot, "large.dat", "replacement")
+	linkRoot := filepath.Join(t.TempDir(), "docroot")
+	if err := os.Symlink(firstRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	prior := alert.Finding{
+		Check: "yara_match_scheduled", Message: "rule on original target", FilePath: firstPath,
+		Severity: alert.Critical, Timestamp: time.Unix(100, 0),
+	}
+	st.SetLatestFindings([]alert.Finding{prior})
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	cfg := &config.Config{AccountRoots: []string{linkRoot}}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	ctx, gaps := WithCoverageGaps(context.Background())
+	findings, purge := runParallelWithContext(ctx, cfg, st, []namedCheck{{name: "yara_deep", fn: CheckYARADeep}}, "deep", true)
+	carried := jsFindingsByCheck(findings, "yara_match_scheduled")
+	if len(carried) != 1 || !carried[0].ScanCarryForward {
+		t.Fatalf("YARA gap did not return its marked carry-forward: %+v", carried)
+	}
+
+	if err := os.Remove(linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secondRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	st.DismissLatestFinding(prior.Key())
+	StoreLatestScanFindingsWithGaps(st, purge, findings, gaps.Paths())
+
+	for _, finding := range st.LatestFindings() {
+		if finding.Key() == prior.Key() {
+			t.Fatalf("symlink retarget resurrected a dismissed carry-forward: %+v", finding)
+		}
+	}
+}
+
+func TestCheckYARADeepSymlinkRetargetDuringAliasCaptureHoldsOwner(t *testing.T) {
+	useRollingStore(t)
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	writeYARADeepFile(t, firstRoot, "large.dat", strings.Repeat("a", 2*1024*1024))
+	writeYARADeepFile(t, secondRoot, "large.dat", strings.Repeat("b", 2*1024*1024))
+	linkRoot := filepath.Join(t.TempDir(), "docroot")
+	if err := os.Symlink(firstRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	path := filepath.Join(linkRoot, "large.dat")
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	lstatCalls := 0
+	fs.lstat = func(name string) (os.FileInfo, error) {
+		if name != path {
+			return fs.OS.Lstat(name)
+		}
+		lstatCalls++
+		if lstatCalls == 2 {
+			if err := os.Remove(linkRoot); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(secondRoot, linkRoot); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return fs.OS.Lstat(name)
+	}
+	withMockOS(t, fs)
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	cfg := &config.Config{
+		AccountRoots:   []string{linkRoot},
+		DisabledChecks: []string{logicalOwnerJSTaintDeep, logicalOwnerPHPTaintDeep},
+	}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+	ctx, gaps := WithCoverageGaps(context.Background())
+	_, purge := runParallelWithContext(ctx, cfg, nil, []namedCheck{{name: "yara_deep", fn: CheckYARADeep}}, "deep", true)
+
+	for _, name := range purge {
+		if name == "yara_match_scheduled" {
+			t.Fatalf("unstable alias identity left YARA purgeable: %v", purge)
+		}
+	}
+	if got := gaps.Paths(); len(got["yara_match_scheduled"]) != 0 {
+		t.Fatalf("unstable alias identity published a path-scoped preserve set: %+v", got)
+	}
+}
+
+func TestCheckYARADeepTreatsOpenedDirectoryAsUnknownRange(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "raced.dat", "clean")
+	replacementDir := t.TempDir()
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.open = func(name string) (*os.File, error) {
+		if name == path {
+			return os.Open(replacementDir)
+		}
+		return fs.OS.Open(name)
+	}
+	withMockOS(t, fs)
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") || !collector.contains(logicalOwnerJSTaintDeep) {
+		t.Fatal("a path raced into a directory must hold every active consumer owner")
+	}
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
+		t.Fatalf("directory race was not reported as an unknown range: %+v", gap)
+	}
+	jsGap := findingByCheck(findings, "js_taint_scan_incomplete")
+	if !strings.Contains(jsGap.Details, "unreadable-range=1") || !strings.Contains(jsGap.Details, path) {
+		t.Fatalf("JS consumer did not report the shared unknown range: %+v", jsGap)
+	}
+}
+
+func TestCheckYARADeepOpenedStatFailureIsUnknownForEveryConsumer(t *testing.T) {
+	useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "raced.dat", "candidate")
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.open = func(name string) (*os.File, error) {
+		file, err := os.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return file, nil
+	}
+	withMockOS(t, fs)
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	for _, owner := range []string{"yara_deep", logicalOwnerJSTaintDeep, logicalOwnerPHPTaintDeep} {
+		if !collector.contains(owner) {
+			t.Errorf("opened-file stat failure did not hold owner %s", owner)
+		}
+	}
+	for _, check := range []string{"yara_scan_incomplete", "js_taint_scan_incomplete", "php_taint_scan_incomplete"} {
+		gap := findingByCheck(findings, check)
+		if !strings.Contains(gap.Details, "unreadable-range=1") || !strings.Contains(gap.Details, path) {
+			t.Errorf("%s did not report the shared unknown range: %+v", check, gap)
+		}
 	}
 }
 
@@ -776,8 +1117,8 @@ func TestCheckYARADeepAdvancesCursorPastUnreadableDirectory(t *testing.T) {
 	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("directory error did not mark the partial scan incomplete: %+v", findings)
 	}
-	if collector.attributable("yara_deep") || len(collector.gapPaths("yara_deep")) != 0 {
-		t.Fatal("unreadable directory must remain an unattributable range gap")
+	if !collector.contains("yara_deep") {
+		t.Fatal("an unreadable directory is an unknowable range and must suppress the purge")
 	}
 	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
 	if err != nil || !ok {
