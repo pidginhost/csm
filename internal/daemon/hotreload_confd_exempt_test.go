@@ -24,9 +24,9 @@ func TestReloadConfigRestartRequiredCarriesExemptList(t *testing.T) {
 	if err := os.WriteFile(binPath, []byte("stand-in"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bh, err := integrity.HashFile(binPath)
-	if err != nil {
-		t.Fatal(err)
+	bh, hashErr := integrity.HashFile(binPath)
+	if hashErr != nil {
+		t.Fatal(hashErr)
 	}
 
 	orig := &config.Config{}
@@ -34,11 +34,11 @@ func TestReloadConfigRestartRequiredCarriesExemptList(t *testing.T) {
 	orig.Integrity.BinaryHash = bh
 	seedConfigAtPath(t, cfgPath, orig)
 	agent := filepath.Join(confDir, "10-agent-runtime.yaml")
-	if err := os.WriteFile(agent, []byte("alerts:\n  webhook:\n    url: https://panel.example.com/v1\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(agent, []byte("alerts:\n  webhook:\n    url: https://panel.example.com/v1\n"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
 	}
-	if _, _, err := integrity.SignConfigFilePreserving(cfgPath, confDir, bh); err != nil {
-		t.Fatalf("sign with conf.d: %v", err)
+	if _, _, signErr := integrity.SignConfigFilePreserving(cfgPath, confDir, bh); signErr != nil {
+		t.Fatalf("sign with conf.d: %v", signErr)
 	}
 	loaded, err := config.LoadWithDir(cfgPath, confDir)
 	if err != nil {
@@ -55,22 +55,22 @@ func TestReloadConfigRestartRequiredCarriesExemptList(t *testing.T) {
 	seedConfigAtPath(t, cfgPath, next)
 	d.reloadConfig()
 
-	if err := integrity.Verify(d.binaryPath, d.currentCfg()); err != nil {
-		t.Errorf("live config must verify under the exemption it was re-signed with: %v", err)
+	if verifyErr := integrity.Verify(d.binaryPath, d.currentCfg()); verifyErr != nil {
+		t.Errorf("live config must verify under the exemption it was re-signed with: %v", verifyErr)
 	}
 
 	// The agent bootstraps again before the restart happens.
-	if err := os.WriteFile(agent, []byte("alerts:\n  webhook:\n    url: https://panel.example.com/v2\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(agent, []byte("alerts:\n  webhook:\n    url: https://panel.example.com/v2\n"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
 	}
-	if err := integrity.Verify(d.binaryPath, d.currentCfg()); err != nil {
-		t.Errorf("exempt fragment rewrite must not trip the live config: %v", err)
+	if verifyErr := integrity.Verify(d.binaryPath, d.currentCfg()); verifyErr != nil {
+		t.Errorf("exempt fragment rewrite must not trip the live config: %v", verifyErr)
 	}
 	reloaded, err := config.LoadWithDir(cfgPath, confDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := integrity.Verify(d.binaryPath, reloaded); err != nil {
-		t.Errorf("on-disk config must verify for the next restart: %v", err)
+	if verifyErr := integrity.Verify(d.binaryPath, reloaded); verifyErr != nil {
+		t.Errorf("on-disk config must verify for the next restart: %v", verifyErr)
 	}
 }

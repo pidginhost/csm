@@ -54,26 +54,26 @@ func TestHashConfDir_ExemptFragmentHashesAsAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	exempt := []string{"10-agent.yaml"}
-	before, err := HashConfDir(dir, exempt)
-	if err != nil {
-		t.Fatal(err)
+	before, hashErr := HashConfDir(dir, exempt)
+	if hashErr != nil {
+		t.Fatal(hashErr)
 	}
-	if err := os.WriteFile(agent, []byte("hostname: rewritten\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(agent, []byte("hostname: rewritten\n"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
 	}
-	after, err := HashConfDir(dir, exempt)
-	if err != nil {
-		t.Fatal(err)
+	after, hashErr := HashConfDir(dir, exempt)
+	if hashErr != nil {
+		t.Fatal(hashErr)
 	}
 	if before != after {
 		t.Errorf("rewriting an exempt fragment changed the digest: %q -> %q", before, after)
 	}
-	if err := os.Remove(agent); err != nil {
-		t.Fatal(err)
+	if removeErr := os.Remove(agent); removeErr != nil {
+		t.Fatal(removeErr)
 	}
-	without, err := HashConfDir(dir, nil)
-	if err != nil {
-		t.Fatal(err)
+	without, hashErr := HashConfDir(dir, nil)
+	if hashErr != nil {
+		t.Fatal(hashErr)
 	}
 	if without != before {
 		t.Errorf("exempt fragment must hash as if absent: with=%q without=%q", before, without)
@@ -91,16 +91,16 @@ func TestHashConfDir_NonExemptFragmentStillCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	exempt := []string{"10-agent.yaml"}
-	before, err := HashConfDir(dir, exempt)
-	if err != nil {
-		t.Fatal(err)
+	before, hashErr := HashConfDir(dir, exempt)
+	if hashErr != nil {
+		t.Fatal(hashErr)
 	}
-	if err := os.WriteFile(operator, []byte("hostname: c\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(operator, []byte("hostname: c\n"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
 	}
-	after, err := HashConfDir(dir, exempt)
-	if err != nil {
-		t.Fatal(err)
+	after, hashErr := HashConfDir(dir, exempt)
+	if hashErr != nil {
+		t.Fatal(hashErr)
 	}
 	if before == after {
 		t.Error("editing a non-exempt fragment must change the digest")

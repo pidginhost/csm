@@ -407,11 +407,11 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 	effectiveClone.Integrity = newIntegrity
 
 	if liveCandidate != nil {
-		liveCandidate.Integrity = newIntegrity
+		applySignedIntegrityState(liveCandidate, &clone)
 		config.SetActive(liveCandidate)
 	} else if live := config.Active(); live != nil {
 		livePatched := *live
-		livePatched.Integrity = newIntegrity
+		applySignedIntegrityState(&livePatched, &clone)
 		config.SetActive(&livePatched)
 	}
 
@@ -430,6 +430,15 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		"warnings":         warnings,
 		"new_etag":         newETag,
 	})
+}
+
+// applySignedIntegrityState keeps the conf.d digest and the main-config
+// exemption policy that selected it together when an API save updates only a
+// subset of the running config. Pairing a new hash with an older list makes
+// the next periodic Verify report a false mismatch.
+func applySignedIntegrityState(dst, signedMain *config.Config) {
+	dst.Integrity = signedMain.Integrity
+	dst.ConfD = signedMain.ConfD
 }
 
 // rejectIfConfDirChanged refuses to bless a save when the drop-ins on disk no

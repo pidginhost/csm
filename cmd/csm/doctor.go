@@ -174,10 +174,13 @@ func doctorIntegrityCheck(cfg *config.Config, verify func(*config.Config) error)
 	check := DoctorCheck{Name: "integrity baseline"}
 	err := verify(cfg)
 	if err == nil {
-		check.Status = "ok"
-		if cfg.Integrity.BinaryHash == "" {
-			check.Message = "no baseline recorded yet; `csm baseline` or `csm rehash` records one"
+		if cfg.Integrity.BinaryHash == "" || cfg.Integrity.ConfigHash == "" {
+			check.Status = "warn"
+			check.Message = "integrity baseline is incomplete, so the binary and configuration are not fully verified"
+			check.Fix = "run `csm baseline` on a new host, or `csm rehash` to record the current binary and configuration hashes"
+			return check
 		}
+		check.Status = "ok"
 		return check
 	}
 	check.Status = "fail"

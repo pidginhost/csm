@@ -118,6 +118,43 @@ func TestSignConfigFilePreservingFollowsConfigSymlink(t *testing.T) {
 	}
 }
 
+func TestSignConfigFilePreservingSnapshotCarriesConfdPolicy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`hostname: prod
+confd:
+  integrity_exempt:
+    - 10-runtime.yaml
+integrity:
+  binary_hash: ""
+  config_hash: ""
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "10-runtime.yaml"), []byte("thresholds:\n  mail_queue_warn: 500\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	signed, err := SignConfigFilePreservingSnapshot(path, confDir, "sha256:binary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(signed.ConfD.IntegrityExempt, []string{"10-runtime.yaml"}) {
+		t.Fatalf("signed exemption list = %v", signed.ConfD.IntegrityExempt)
+	}
+	wantHash, err := HashConfDir(confDir, signed.ConfD.IntegrityExempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signed.Integrity.ConfdHash != wantHash {
+		t.Fatalf("signed confd_hash = %q, want %q", signed.Integrity.ConfdHash, wantHash)
+	}
+}
+
 func TestSignAndSavePreservingRejectsDrift(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "csm.yaml")

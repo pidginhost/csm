@@ -107,21 +107,33 @@ func SignAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 // conf.d fragments under confDir into integrity.confd_hash so a later edit to
 // any fragment is detected by Verify.
 func SignConfigFilePreserving(path, confDir, binaryHash string) (configHash, confdHash string, err error) {
+	cfg, err := SignConfigFilePreservingSnapshot(path, confDir, binaryHash)
+	if err != nil {
+		return "", "", err
+	}
+	return cfg.Integrity.ConfigHash, cfg.Integrity.ConfdHash, nil
+}
+
+// SignConfigFilePreservingSnapshot signs path and returns the decoded main
+// config whose conf.d exemption policy selected the new ConfdHash. Callers
+// that mirror the new integrity metadata into a running config must carry
+// ConfD from this same snapshot so later Verify calls use the matching list.
+func SignConfigFilePreservingSnapshot(path, confDir, binaryHash string) (*config.Config, error) {
 	// #nosec G304 -- operator-configured config path.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", fmt.Errorf("read config: %w", err)
+		return nil, fmt.Errorf("read config: %w", err)
 	}
 	cfg, err := config.LoadBytes(data)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	cfg.ConfigFile = path
 	cfg.ConfigDir = confDir
 	if err := SignAndSavePreserving(path, confDir, data, cfg, binaryHash); err != nil {
-		return "", "", err
+		return nil, err
 	}
-	return cfg.Integrity.ConfigHash, cfg.Integrity.ConfdHash, nil
+	return cfg, nil
 }
 
 // stripIntegrityBlock removes the top-level `integrity:` mapping and

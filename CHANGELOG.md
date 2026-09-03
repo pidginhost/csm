@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `csm rehash` is listed in `csm --help`, and an integrity refusal at startup names it as the fix after an intentional change. It was discoverable only from a source comment.
 
+### Fixed
+
+- Integrity re-signing keeps the live conf.d exemption policy paired with the digest computed from it, and `csm doctor` warns instead of reporting success when the integrity baseline is incomplete.
+
 ## [3.32.0] - 2026-09-02
 
 ### Highlights

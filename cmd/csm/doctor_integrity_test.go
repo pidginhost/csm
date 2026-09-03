@@ -110,8 +110,11 @@ func TestBuildDoctorReportIntegrityBinaryMismatchWarnsOfTamper(t *testing.T) {
 }
 
 func TestBuildDoctorReportIntegrityOKWhenHashesMatch(t *testing.T) {
+	cfg := validDoctorConfig()
+	cfg.Integrity.BinaryHash = "sha256:binary"
+	cfg.Integrity.ConfigHash = "sha256:config"
 	report := buildDoctorReport(
-		func() (*config.Config, error) { return validDoctorConfig(), nil },
+		func() (*config.Config, error) { return cfg, nil },
 		func() ([]byte, error) { return healthyStatusPayload(t), nil },
 		integrityOK,
 	)
@@ -121,6 +124,45 @@ func TestBuildDoctorReportIntegrityOKWhenHashesMatch(t *testing.T) {
 	}
 	if check.Status != "ok" {
 		t.Errorf("status = %q, want ok", check.Status)
+	}
+}
+
+func TestBuildDoctorReportWarnsWhenIntegrityBaselineIsIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		binaryHash string
+		configHash string
+	}{
+		{name: "no hashes"},
+		{name: "binary hash only", binaryHash: "sha256:binary"},
+		{name: "config hash only", configHash: "sha256:config"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validDoctorConfig()
+			cfg.Integrity.BinaryHash = tc.binaryHash
+			cfg.Integrity.ConfigHash = tc.configHash
+			report := buildDoctorReport(
+				func() (*config.Config, error) { return cfg, nil },
+				func() ([]byte, error) { return healthyStatusPayload(t), nil },
+				integrityOK,
+			)
+			check, ok := findDoctorCheck(report, "integrity baseline")
+			if !ok {
+				t.Fatalf("doctor omitted the integrity check: %+v", report.Checks)
+			}
+			if check.Status != "warn" {
+				t.Errorf("status = %q, want warn", check.Status)
+			}
+			if !strings.Contains(check.Fix, "csm baseline") || !strings.Contains(check.Fix, "csm rehash") {
+				t.Errorf("fix %q should explain how to establish the baseline", check.Fix)
+			}
+			if report.OverallStatus != "warn" {
+				t.Errorf("OverallStatus = %q, want warn", report.OverallStatus)
+			}
+			if _, ok := findDoctorCheck(report, "daemon reachable"); !ok {
+				t.Error("doctor must continue to the daemon probe after an incomplete baseline")
+			}
+		})
 	}
 }
 

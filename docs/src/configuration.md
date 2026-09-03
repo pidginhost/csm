@@ -841,7 +841,7 @@ depending on which fields you touch.
 
 For fields tagged as hot-reload-safe (`alerts`, `thresholds`,
 `detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
-`reputation`, `email_protection`, `disabled_checks`), the daemon can
+`reputation`, `email_protection`, `disabled_checks`, `confd`), the daemon can
 accept the change without a restart:
 
 ```bash

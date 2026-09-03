@@ -47,6 +47,14 @@ func TestLoadConfDirRejectsMergedConfdOverride(t *testing.T) {
 	if !strings.Contains(err.Error(), "confd") {
 		t.Fatalf("error = %v, want confd refusal", err)
 	}
+
+	_, err = ConfDirFragmentDigestInput(dir)
+	if err == nil {
+		t.Fatal("digest input must reject a confd override hidden in a YAML merge")
+	}
+	if !strings.Contains(err.Error(), "confd") {
+		t.Fatalf("digest error = %v, want confd refusal", err)
+	}
 }
 
 // The exemption matches fragment filenames exactly, so anything that is not a
