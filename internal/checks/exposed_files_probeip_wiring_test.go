@@ -19,6 +19,10 @@ func (r *recordingProbe) probe(_ context.Context, _ string, host, _ string) prob
 	return r.result
 }
 
+func (r *recordingProbe) probeComplete(ctx context.Context, domain, host, urlPath string) probeResult {
+	return r.probe(ctx, domain, host, urlPath)
+}
+
 // TestScanVhostsProbesServingIP proves the regression fix: the scan dials the
 // vhost's serving IP, not 127.0.0.1. A loopback probe was returning 403 on
 // LiteSpeed and suppressing every real finding.

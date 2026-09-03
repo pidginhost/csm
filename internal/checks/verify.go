@@ -33,9 +33,12 @@ type VerifyResult struct {
 
 // VerifyInput carries everything a finding verifier may need. ContentSHA256 and
 // DetectLogic are populated only for content findings emitted with a fingerprint.
+// Context is optional; long-running verifiers use Background when it is nil.
 type VerifyInput struct {
 	Check, Message, Details, Path string
 	ContentSHA256, DetectLogic    string
+	Context                       context.Context
+	exposureVhosts                *exposureVhostIndex
 }
 
 // presenceVerifiableChecks are findings whose remediation removes or
@@ -104,6 +107,7 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 		"email_phishing_content")
 	register(func(in VerifyInput) VerifyResult { return verifyCrontabClear(in.Path) },
 		"suspicious_crontab")
+	register(verifyExposedFile, exposedVerifiableChecks...)
 	register(func(in VerifyInput) VerifyResult { return verifyOutdatedPlugins(in.Details) },
 		"outdated_plugins")
 	register(func(in VerifyInput) VerifyResult { return verifyWPCoreIntegrity(in.Details) },

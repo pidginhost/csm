@@ -993,15 +993,14 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	// Auto-clear stale content findings when the detection logic has changed
-	// since the last start (new signatures, YARA rules, or heuristic version).
-	// Runs in a goroutine so it does not block startup; it only dismisses
-	// findings that the re-verifier confirms are no longer flagged AND whose
-	// bytes have not changed since detection.
+	// Auto-clear stale content and web-exposure findings when their re-check
+	// logic has changed since the last start.
+	// Runs in a goroutine so it does not block startup; each allowlisted family
+	// keeps its own fail-closed dismissal invariant.
 	if db := store.Global(); db != nil && d.store != nil {
-		token := checks.ContentDetectionVersion()
-		d.startContentReverifySweepIfChanged(db, token, func() []checks.ContentReverifyDismissal {
-			return checks.ReverifyStaleContentFindings(d.store)
+		token := checks.FindingReverifyVersion()
+		d.startContentReverifySweepIfChanged(db, token, func() ([]checks.ContentReverifyDismissal, bool) {
+			return checks.ReverifyStaleFindingsContext(d.scanContext(), d.store)
 		})
 	}
 
@@ -1251,31 +1250,46 @@ func (d *Daemon) Run() error {
 }
 
 type contentLogicVersionStore interface {
-	EnsureContentLogicVersion(token string) (bool, error)
+	ContentLogicVersionChanged(token string) (bool, error)
+	SetContentLogicVersion(token string) error
 }
 
-func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() []checks.ContentReverifyDismissal) {
-	changed, err := db.EnsureContentLogicVersion(token)
+func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() ([]checks.ContentReverifyDismissal, bool)) {
+	changed, err := db.ContentLogicVersionChanged(token)
 	if err != nil {
-		csmlog.Warn("content logic version check failed", "err", err)
+		csmlog.Warn("finding re-verification version check failed", "err", err)
 		return
 	}
 	if changed {
-		d.startContentReverifySweep(run)
+		d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, bool) {
+			dismissed, complete := run()
+			if !complete {
+				return dismissed, false
+			}
+			if err := db.SetContentLogicVersion(token); err != nil {
+				csmlog.Warn("finding re-verification version update failed", "err", err)
+				return dismissed, false
+			}
+			return dismissed, true
+		})
 	}
 }
 
-func (d *Daemon) startContentReverifySweep(run func() []checks.ContentReverifyDismissal) {
+func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyDismissal, bool)) {
 	d.wg.Add(1)
 	obs.Go("content-reverify-sweep", func() {
 		defer d.wg.Done()
-		dismissed := run()
+		dismissed, complete := run()
 		for _, dm := range dismissed {
-			csmlog.Info("stale content finding auto-cleared",
+			csmlog.Info("stale finding auto-cleared",
 				"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
 		}
+		if !complete {
+			csmlog.Info("finding re-verification sweep will retry on next start")
+			return
+		}
 		if len(dismissed) > 0 {
-			csmlog.Info("content re-verification sweep complete", "cleared", len(dismissed))
+			csmlog.Info("finding re-verification sweep complete", "cleared", len(dismissed))
 		}
 	})
 }

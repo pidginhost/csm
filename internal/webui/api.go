@@ -961,6 +961,7 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in, key := s.verifyFindingInput(req)
+	in.Context = r.Context()
 	res := checks.VerifyFindingInput(in)
 	if res.Checked && res.Resolved {
 		if key == "" {

@@ -91,6 +91,13 @@ func ContentDetectionVersion() string {
 	)
 }
 
+// FindingReverifyVersion identifies every verifier family the startup sweep
+// runs unattended. Including the exposure verifier forces one sweep when that
+// family is first deployed or its fail-closed semantics change.
+func FindingReverifyVersion() string {
+	return fmt.Sprintf("%s;exposed=%d", ContentDetectionVersion(), exposedReverifyLogicVersion)
+}
+
 // contentDetectionVersionToken renders the version components. Pure so a test
 // can pass two different component values and prove the tokens differ.
 func contentDetectionVersionToken(phpVer, scanVer, sigVer, yaraRules, jsTaintVer, phpTaintVer int) string {

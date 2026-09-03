@@ -9,15 +9,19 @@ import (
 )
 
 type fakeFindingStore struct {
-	findings  []alert.Finding
-	dismissed map[string]bool
+	findings    []alert.Finding
+	dismissed   map[string]bool
+	latestCalls int
 }
 
-func (s *fakeFindingStore) LatestFindings() []alert.Finding { return s.findings }
+func (s *fakeFindingStore) LatestFindings() []alert.Finding {
+	s.latestCalls++
+	return s.findings
+}
 func (s *fakeFindingStore) DismissFinding(key string)       { s.dismissed[key] = true }
 func (s *fakeFindingStore) DismissLatestFinding(key string) { s.dismissed[key] = true }
 
-func TestReverifyStaleContentFindings(t *testing.T) {
+func TestReverifyStaleFindings(t *testing.T) {
 	tmp := t.TempDir()
 	withQuarantineAllowedRoots(t, tmp)
 
@@ -47,7 +51,7 @@ func TestReverifyStaleContentFindings(t *testing.T) {
 		dismissed: map[string]bool{},
 	}
 
-	got := ReverifyStaleContentFindings(store)
+	got := ReverifyStaleFindings(store)
 	if len(got) != 1 {
 		t.Fatalf("expected exactly 1 dismissal, got %d: %+v", len(got), got)
 	}

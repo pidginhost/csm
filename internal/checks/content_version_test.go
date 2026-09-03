@@ -23,6 +23,17 @@ func TestContentDetectionVersionFormat(t *testing.T) {
 	}
 }
 
+func TestFindingReverifyVersionIncludesExposureVerifier(t *testing.T) {
+	v := FindingReverifyVersion()
+	if !strings.HasPrefix(v, ContentDetectionVersion()+";") {
+		t.Fatalf("reverify token %q does not include the content token", v)
+	}
+	want := fmt.Sprintf("exposed=%d", exposedReverifyLogicVersion)
+	if !strings.HasSuffix(v, want) {
+		t.Fatalf("reverify token %q missing %q", v, want)
+	}
+}
+
 func TestContentScannerVersionIncludesBackendArchiveGuard(t *testing.T) {
 	const backendArchiveGuardVersion = 2
 	if ContentScannerVersion < backendArchiveGuardVersion {
