@@ -8,7 +8,7 @@ import "testing"
 // script (twig's drupal_test.sh). backdoor_bashrc_injection is documented as a
 // shell-startup-file backdoor, but its YARA-X condition carried no startup-file
 // context at all, so it fired on every shell script that piped a download to a
-// shell -- duplicating dropper_wget_pipe_exec under a misleading name and
+// shell -- duplicating dropper_wget_exec under a misleading name and
 // category. The YAML twin was already scoped by file type; this restores parity.
 
 // twigCIScript is the shape of the real vendored file: a CI harness that
@@ -39,8 +39,8 @@ func TestFPVendorCIScript_NotABashrcBackdoor(t *testing.T) {
 // shipped the script.
 func TestFPVendorCIScript_PipeToShellStillReported(t *testing.T) {
 	s := loadRepoYaraScanner(t)
-	if !hasYaraRule(s.ScanBytes([]byte(twigCIScript)), "dropper_wget_pipe_exec") {
-		t.Error("dropper_wget_pipe_exec regression: download piped to a shell no longer detected")
+	if !hasYaraRule(s.ScanBytes([]byte(twigCIScript)), "dropper_wget_exec") {
+		t.Error("dropper_wget_exec regression: download piped to a shell no longer detected")
 	}
 }
 

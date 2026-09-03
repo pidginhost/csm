@@ -9,8 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Three rules no longer report a file because two unrelated strings happened to share it. A webshell rule matched any PHP error log that named the shell in a failed-include warning, and a dropper rule matched a log quoting a plugin write that failed; in one production log the two strings sat 1.2 MB apart. The brand marker and the command sink, and the write and the PHP opener, must now sit in the same region of the file, which is where they are in real malware and never where they are in a log.
-- The rule for a shell script that downloads and runs a payload no longer reports install instructions that show the same command. Its twin already ignored fenced Markdown; this one did not, and reported a package's own build notes.
+- Large PHP logs no longer combine a family name or failed write with unrelated quoted source from another diagnostic record and report the file as malware.
+- The duplicate YARA detectors for a shell download pipeline are now one rule, and commands contained by fenced code or Markdown links are treated as documentation.
+
+### Security
+
+- Branded webshells and plugin-directory droppers stay detectable when padding separates their identifying content from the dangerous operation.
 
 ## [3.32.0] - 2026-09-02
 
