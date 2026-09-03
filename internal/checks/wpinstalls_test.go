@@ -461,7 +461,11 @@ func TestWPInstalls_CanonicalizesPanelAliasBeforeDedup(t *testing.T) {
 	}
 }
 
-func TestWPInstalls_KeepsSymlinkedConfigForNonDatabaseChecks(t *testing.T) {
+// A symlinked wp-config.php is refused, not scanned: wp-cli runs as root and
+// follows the link, so an account aiming its config at another account's would
+// have that tenant's database inventoried under its own name. Discovery drops
+// the install and records the gap so nothing is silently retired.
+func TestWPInstalls_RefusesSymlinkedConfigAndMarksGap(t *testing.T) {
 	const wpConfig = "/home/alice/public_html/wp-config.php"
 	old := osFS
 	osFS = &mockOS{
@@ -484,9 +488,12 @@ func TestWPInstalls_KeepsSymlinkedConfigForNonDatabaseChecks(t *testing.T) {
 	}
 	t.Cleanup(func() { osFS = old })
 
-	got := wpInstalls(context.Background(), "wp_core")
-	if len(got) != 1 || got[0].ConfigPath != wpConfig {
-		t.Fatalf("symlinked wp-config.php hid an otherwise scannable install: %v", wpInstallPaths(got))
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	if got := wpInstalls(ctx, "wp_core"); len(got) != 0 {
+		t.Fatalf("symlinked wp-config.php entered discovery: %v", wpInstallPaths(got))
+	}
+	if !collectorMarked(collector, "wp_core") {
+		t.Error("refused install did not record a coverage gap")
 	}
 }
 

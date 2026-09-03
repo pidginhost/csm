@@ -163,11 +163,12 @@ func discoverWPInstalls(ctx context.Context, account string) wpDiscovery {
 			}
 			return
 		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			// Core and plugin checks operate on the document root and can still
-			// inspect this install. Database consumers separately use the
-			// no-follow config reader and mark their own read gap.
-		} else if !info.Mode().IsRegular() {
+		if !info.Mode().IsRegular() {
+			// A symlinked wp-config.php is not scannable here. wp-cli runs as
+			// root and follows it, so an account pointing its config at another
+			// account's would have that tenant's database inventoried and
+			// attributed to this one. The install is dropped and the gap
+			// recorded instead.
 			d.incomplete = true
 			return
 		}
