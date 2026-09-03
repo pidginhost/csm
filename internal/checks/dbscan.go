@@ -3,10 +3,8 @@ package checks
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/netip"
 	"net/url"
 	"os"
@@ -80,139 +78,24 @@ const (
 
 // wpConfigPaths returns direct wp-config.php files at account document roots,
 // each with whether the panel currently serves that root.
-// cPanel's map covers addon roots in any supported layout; other panels retain
-// the one-level home-directory fallback.
 func wpConfigPaths(ctx context.Context) ([]string, map[string]servedState) {
 	paths, served, _ := wpConfigPathsWithDomains(ctx)
 	return paths, served
 }
 
+// wpConfigPathsWithDomains projects the shared install seam into the shapes
+// CheckDatabaseContent works in. Discovery itself lives in wpinstalls.go, so
+// this check, the object and overlap scanners, the core verifier and every
+// fixer see the same installs.
 func wpConfigPathsWithDomains(ctx context.Context) ([]string, map[string]servedState, map[string][]string) {
-	seen := make(map[string]bool)
-	var out []string
-	served := make(map[string]servedState)
-	panelDomains := make(map[string][]string)
-	mappedRoots := make(map[string]bool)
-	add := func(state servedState, missingIsIncomplete bool, paths ...string) {
-		for _, p := range paths {
-			if seen[p] {
-				continue
-			}
-			info, err := osFS.Lstat(p)
-			if err != nil {
-				if missingIsIncomplete || !errors.Is(err, fs.ErrNotExist) {
-					markCheckIncomplete(ctx, "db_content")
-				}
-				continue
-			}
-			if !info.Mode().IsRegular() {
-				markCheckIncomplete(ctx, "db_content")
-				continue
-			}
-			seen[p] = true
-			served[p] = state
-			out = append(out, p)
-		}
+	installs, panelDomains := wpInstallsWithDomains(ctx, "db_content")
+	paths := make([]string, 0, len(installs))
+	served := make(map[string]servedState, len(installs))
+	for _, in := range installs {
+		paths = append(paths, in.ConfigPath)
+		served[in.ConfigPath] = in.Served
 	}
-
-	// cPanel publishes its actual domain-to-document-root map. It is
-	// authoritative for SERVED roots and reaches layouts the home-directory
-	// walk below cannot see, so it is consulted first.
-	vhostData, vhostErr := osFS.ReadFile(userdataDomainsPath)
-	domainMapComplete := false
-	switch {
-	case vhostErr == nil:
-		vhosts, complete := parseUserdataDomainRootsChecked(string(vhostData))
-		wildcardVhosts, wildcardComplete := parseWildcardUserdataDomainRootsChecked(string(vhostData))
-		vhosts = append(vhosts, wildcardVhosts...)
-		domainMapComplete = complete && wildcardComplete && len(vhosts) > 0
-		if !domainMapComplete {
-			markCheckIncomplete(ctx, "db_content")
-		}
-		domainOwners := make(map[string]string, len(vhosts))
-		accountScope := AccountFromContext(ctx)
-		for _, vh := range vhosts {
-			root := filepath.Clean(vh.docroot)
-			if !docrootBelongsToCPanelUser(root, vh.user) {
-				markCheckIncomplete(ctx, "db_content")
-				domainMapComplete = false
-				continue
-			}
-			wildcard := strings.HasPrefix(vh.domain, "*.")
-			domain := normalizeHost(strings.TrimPrefix(vh.domain, "*."))
-			if domain == "" {
-				markCheckIncomplete(ctx, "db_content")
-				domainMapComplete = false
-			} else {
-				domainKey := domain
-				if wildcard {
-					domainKey = "*." + domain
-				}
-				owner, exists := domainOwners[domainKey]
-				if exists && owner != vh.user {
-					// The map is meant to have one authoritative owner per domain.
-					// An ambiguous owner cannot safely support a tenant-boundary check.
-					markCheckIncomplete(ctx, "db_content")
-					domainMapComplete = false
-				} else if !exists {
-					domainOwners[domainKey] = vh.user
-					panelDomains[vh.user] = append(panelDomains[vh.user], domainKey)
-				}
-			}
-
-			if accountScope != "" && vh.user != accountScope {
-				continue
-			}
-			wpConfig := filepath.Join(root, "wp-config.php")
-			mappedRoots[wpConfig] = true
-			add(servedByPanel, false, wpConfig)
-		}
-	case vhostMapFailureIsIncomplete(vhostErr):
-		markCheckIncomplete(ctx, "db_content")
-	}
-	if !domainMapComplete {
-		// A partial ownership map can turn a legitimate domain omitted by the
-		// bad row into a foreign-host finding. Keep served roots discovered from
-		// valid rows, but do not make any ownership claims from partial input.
-		panelDomains = nil
-	}
-
-	// The served map is not sufficient on its own. A document root the panel
-	// has stopped serving still holds a live database, and the compromise this
-	// scan was widened for sat in exactly such a root -- absent from the domain
-	// map, from /etc/userdomains, and from vhost userdata alike. Re-pointing the
-	// domain publishes it again, so the home-directory layout is walked whatever
-	// the panel says. nonDocRootDirs keeps account-data and backup directories
-	// out of the result.
-	// Anything the map did not name is not served today -- but only when the
-	// map could be read at all.
-	homeState := notServed
-	if !domainMapComplete {
-		homeState = servedUnknown
-	}
-	primary, _ := homeGlob(ctx, "public_html", "wp-config.php")
-	for _, p := range primary {
-		state := homeState
-		if mappedRoots[p] {
-			// Preserve the panel's declaration even if the first Lstat failed
-			// and the file appeared before the home walk (or a later retry).
-			state = servedByPanel
-		}
-		add(state, true, p)
-	}
-	addon, _ := homeGlob(ctx, "*", "wp-config.php")
-	for _, p := range addon {
-		dir := filepath.Base(filepath.Dir(p))
-		if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") || seen[p] {
-			continue
-		}
-		state := homeState
-		if mappedRoots[p] {
-			state = servedByPanel
-		}
-		add(state, true, p)
-	}
-	return out, served, panelDomains
+	return paths, served, panelDomains
 }
 
 // The shared vhost parser omits wildcard names because they cannot be used as

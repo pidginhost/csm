@@ -291,3 +291,19 @@ func TestWPConfigPaths_DoesNotDuplicatePublicHTML(t *testing.T) {
 		t.Errorf("public_html wp-config returned %d times: %v", len(got), got)
 	}
 }
+
+// db_content used to miss installs nested one level under public_html, the
+// layout every "blog in a subdirectory" site uses.
+func TestWPConfigPaths_IncludesNestedPublicHTMLRoots(t *testing.T) {
+	old := osFS
+	osFS = &mockOSGlobRoots{files: []string{
+		"/home/alice/public_html/wp-config.php",
+		"/home/alice/public_html/blog/wp-config.php",
+	}}
+	t.Cleanup(func() { osFS = old })
+
+	got, _ := wpConfigPaths(context.Background())
+	if len(got) != 2 {
+		t.Errorf("wp-config paths = %v, want both roots", got)
+	}
+}
