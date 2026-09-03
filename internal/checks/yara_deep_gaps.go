@@ -54,7 +54,11 @@ func (g *yaraGapCollector) record(path, status string) []string {
 			if g.resolveAliases != nil {
 				aliases, stable = g.resolveAliases(path)
 			} else {
-				aliases = []string{coverageLexicalPath(path)}
+				// Must stay symmetric with hasPath, which queries by every
+				// alias. Recording only the lexical spelling meant a finding
+				// stored through a symlinked document root never matched its
+				// own gap, and was purged for a file the scan never read.
+				aliases = coveragePathAliases(path)
 			}
 			if !stable {
 				g.recordUnknownRange(fmt.Sprintf("%s changed while its path identity was captured", path))
