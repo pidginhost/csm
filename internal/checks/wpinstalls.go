@@ -319,7 +319,17 @@ func skipWPDiscoveryPath(path string) bool {
 	if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") {
 		return true
 	}
-	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
+	home := wpInstallAccountRoot(path)
+	if home == "" {
+		return true
+	}
+	rel, err := filepath.Rel(home, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	// Skip names apply inside the account, not to the account name itself.
+	// cPanel permits accounts named backup, backups, cache, and staging.
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		if wpSkipDirNames[strings.ToLower(part)] {
 			return true
 		}

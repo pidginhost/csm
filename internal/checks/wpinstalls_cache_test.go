@@ -4,6 +4,10 @@ import (
 	"context"
 	"os"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // countingGlobFS counts how many globs a discovery costs.
@@ -53,6 +57,57 @@ func TestWPInstalls_CacheReplaysGapsPerCaller(t *testing.T) {
 
 	if !collectorMarked(collector, "db_objects") || !collectorMarked(collector, "wp_core") {
 		t.Error("cached discovery did not credit both callers with the gap")
+	}
+}
+
+func TestWPInstalls_CachedOwnerGapPreventsFindingRetirement(t *testing.T) {
+	old := osFS
+	fs := &mockOSGlobRoots{files: []string{"/home/alice/public_html/wp-config.php"}}
+	fs.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
+	osFS = fs
+	t.Cleanup(func() { osFS = old })
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "db_unexpected_trigger", Message: "existing database finding"},
+		{
+			Check:    "wp_core_integrity",
+			Message:  "existing core finding",
+			FilePath: "/home/alice/www/wp-includes/version.php",
+		},
+	})
+
+	parent, gaps := WithCoverageGaps(context.Background())
+	findings, purge := runParallelWithContext(parent, &config.Config{}, st, []namedCheck{
+		{
+			name: "db_objects",
+			fn: func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+				_ = wpInstalls(ctx, "db_objects")
+				return nil
+			},
+		},
+		{
+			name: "wp_core",
+			fn: func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+				_ = wpInstalls(ctx, "wp_core")
+				return nil
+			},
+		},
+	}, "test", true)
+	StoreLatestScanFindingsWithGaps(st, purge, findings, gaps.Paths())
+
+	got := st.LatestFindings()
+	for _, check := range []string{"db_unexpected_trigger", "wp_core_integrity"} {
+		if !containsFindingCheck(got, check) {
+			t.Errorf("cached discovery gap retired %q: findings=%+v purge=%v", check, got, purge)
+		}
+	}
+	if paths := gaps.Paths(); paths != nil {
+		t.Errorf("host-wide discovery gap was narrowed to paths: %v", paths)
 	}
 }
 

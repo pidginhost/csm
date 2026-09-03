@@ -508,3 +508,19 @@ func TestWPInstalls_DoesNotSkipDirectoryWithBackupPrefix(t *testing.T) {
 		t.Fatalf("ordinary document root with backup prefix was skipped: %v", wpInstallPaths(got))
 	}
 }
+
+func TestWPInstalls_DoesNotTreatAccountNameAsSkippedDirectory(t *testing.T) {
+	for _, account := range []string{"backup", "backups", "cache", "staging"} {
+		t.Run(account, func(t *testing.T) {
+			wpConfig := filepath.Join("/home", account, "public_html", "wp-config.php")
+			old := osFS
+			osFS = &mockOSGlobRoots{files: []string{wpConfig}}
+			t.Cleanup(func() { osFS = old })
+
+			got := wpInstalls(context.Background(), "db_objects")
+			if len(got) != 1 || got[0].ConfigPath != wpConfig {
+				t.Fatalf("account name excluded its WordPress install: %v", wpInstallPaths(got))
+			}
+		})
+	}
+}
