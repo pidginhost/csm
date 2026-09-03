@@ -963,7 +963,13 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 	}
 	existing := make(map[string]alert.Finding, len(current)+len(findings))
 	for _, f := range current {
-		if !shouldPurgeLatestFinding(f, remove) {
+		// A finding this package demoted is waiting on the re-verifier, which
+		// reads the file, not on a scan that merely did not raise it again.
+		// Purging it here would discard the demotion state and let the same
+		// file come back at full severity on the next detection, so the
+		// demotion has to outlive a negative scan. A fresh finding with the
+		// same key still replaces it in the merge below.
+		if isAutomaticallyDemotedFinding(f) || !shouldPurgeLatestFinding(f, remove) {
 			existing[f.Key()] = f
 		}
 	}
@@ -1112,6 +1118,116 @@ func (s *Store) DismissLatestFinding(key string) {
 	}
 	s.latestFindings = filtered
 	s.persistLatestLocked()
+}
+
+// DemoteLatestFinding conditionally lowers a finding's severity in the latest
+// scan results. The expected snapshot prevents a completed scan or realtime
+// alert from being overwritten by an older re-verification result.
+//
+// Check, Message and Details never change. Finding.Key() hashes those fields,
+// so an explanation written into the finding would orphan every dismissal,
+// suppression and alert-dedup entry already keyed to it. DemotedFrom records
+// only the severity needed to reverse the operation.
+func (s *Store) DemoteLatestFinding(expected alert.Finding, severity alert.Severity) bool {
+	if severity != alert.Warning || expected.Severity < alert.High || expected.Severity > alert.Critical {
+		return false
+	}
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	for i := range s.latestFindings {
+		current := &s.latestFindings[i]
+		if current.Key() != expected.Key() || current.Severity <= severity {
+			continue
+		}
+		if !sameLatestFindingSnapshot(*current, expected) {
+			return false
+		}
+		current.DemotedFrom = current.Severity
+		current.Severity = severity
+		s.latestFindings = orderAndCapLatest(findingsByKey(s.latestFindings))
+		s.persistLatestLocked()
+		return true
+	}
+	return false
+}
+
+// DismissFindingIfLatest clears only the finding snapshot that was actually
+// verified. A realtime alert or completed scan may refresh the same key while
+// verification is in flight; that newer evidence must remain active.
+func (s *Store) DismissFindingIfLatest(expected alert.Finding) bool {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	for i := range s.latestFindings {
+		if !sameLatestFindingSnapshot(s.latestFindings[i], expected) {
+			continue
+		}
+		s.mu.Lock()
+		if entry, exists := s.entries[expected.Key()]; exists {
+			entry.IsBaseline = true
+			s.dirty = true
+		}
+		s.mu.Unlock()
+		s.latestFindings = append(s.latestFindings[:i], s.latestFindings[i+1:]...)
+		s.persistLatestLocked()
+		return true
+	}
+	return false
+}
+
+// RestoreLatestFindingSeverity reverses an automatic demotion after the exact
+// verifier that owns the finding reports the content as live again.
+func (s *Store) RestoreLatestFindingSeverity(expected alert.Finding) bool {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	for i := range s.latestFindings {
+		current := &s.latestFindings[i]
+		if current.Key() != expected.Key() || !isAutomaticallyDemotedFinding(*current) {
+			continue
+		}
+		if !sameLatestFindingSnapshot(*current, expected) {
+			return false
+		}
+		current.Severity = current.DemotedFrom
+		current.DemotedFrom = alert.Warning
+		s.latestFindings = orderAndCapLatest(findingsByKey(s.latestFindings))
+		s.persistLatestLocked()
+		return true
+	}
+	return false
+}
+
+func isAutomaticallyDemotedFinding(f alert.Finding) bool {
+	return f.Severity == alert.Warning &&
+		f.DemotedFrom >= alert.High && f.DemotedFrom <= alert.Critical
+}
+
+// sameLatestFindingSnapshot reports whether the stored finding is still the one
+// verification looked at. Any field the verifier's decision rested on must
+// match, or a newer detection would be silently overwritten by a stale verdict.
+func sameLatestFindingSnapshot(current, expected alert.Finding) bool {
+	if current.Key() != expected.Key() ||
+		current.Check != expected.Check ||
+		current.Message != expected.Message ||
+		current.Details != expected.Details ||
+		current.Severity != expected.Severity ||
+		!current.Timestamp.Equal(expected.Timestamp) ||
+		current.FilePath != expected.FilePath ||
+		current.ContentSHA256 != expected.ContentSHA256 ||
+		current.DetectLogic != expected.DetectLogic {
+		return false
+	}
+	return current.DemotedFrom == expected.DemotedFrom
+}
+
+func findingsByKey(findings []alert.Finding) map[string]alert.Finding {
+	keyed := make(map[string]alert.Finding, len(findings))
+	for _, finding := range findings {
+		keyed[finding.Key()] = finding
+	}
+	return keyed
 }
 
 // DismissFinding marks a finding as baseline (acknowledged/dismissed).

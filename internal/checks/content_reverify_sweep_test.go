@@ -12,14 +12,32 @@ type fakeFindingStore struct {
 	findings    []alert.Finding
 	dismissed   map[string]bool
 	latestCalls int
+	demoted     map[string]alert.Severity
+	promoted    map[string]bool
 }
 
 func (s *fakeFindingStore) LatestFindings() []alert.Finding {
 	s.latestCalls++
 	return s.findings
 }
-func (s *fakeFindingStore) DismissFinding(key string)       { s.dismissed[key] = true }
-func (s *fakeFindingStore) DismissLatestFinding(key string) { s.dismissed[key] = true }
+func (s *fakeFindingStore) DismissFindingIfLatest(f alert.Finding) bool {
+	s.dismissed[f.Key()] = true
+	return true
+}
+func (s *fakeFindingStore) DemoteLatestFinding(f alert.Finding, sev alert.Severity) bool {
+	if s.demoted == nil {
+		s.demoted = map[string]alert.Severity{}
+	}
+	s.demoted[f.Key()] = sev
+	return true
+}
+func (s *fakeFindingStore) RestoreLatestFindingSeverity(f alert.Finding) bool {
+	if s.promoted == nil {
+		s.promoted = map[string]bool{}
+	}
+	s.promoted[f.Key()] = true
+	return true
+}
 
 func TestReverifyStaleFindings(t *testing.T) {
 	tmp := t.TempDir()

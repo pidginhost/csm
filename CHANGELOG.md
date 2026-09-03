@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A finding whose flagged content is gone, but whose file changed since detection, now drops to Warning instead of staying Critical. It is never cleared, so an attacker cannot retire one by editing the file; what changes is that finished cleanup work stops ranking beside live threats. Only a replacement that can be proven inert qualifies -- an empty file, or a comment-only stub that never reopens into HTML -- and the severity comes straight back if the file stops being inert. An unconfirmed demotion also survives a scan that does not raise the finding again, so the state is not lost before the re-verifier has read the file.
+- Findings are re-verified once per deep-scan cycle as well as when the re-check logic changes. An operator cleaning a file, or a virtual patch closing an exposure, moves the world without moving CSM's rules, and a finding gated only on those sat at its original severity until an unrelated upgrade happened to land.
 - Web-exposed file findings can now be re-checked and are retired after a complete probe against the local origin confirms remediation. Re-checks stay pinned to current vhost routing and fail closed when routing data, either web protocol, or phpinfo body confirmation is incomplete.
 - Large PHP logs no longer combine a family name or failed write with unrelated quoted source from another diagnostic record and report the file as malware.
 - The duplicate YARA detectors for a shell download pipeline are now one rule, and commands contained by fenced code or Markdown links are treated as documentation.

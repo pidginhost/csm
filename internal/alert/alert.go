@@ -60,9 +60,14 @@ func (s Severity) String() string {
 // Finding represents a single security check result.
 type Finding struct {
 	Severity Severity `json:"severity"`
-	Check    string   `json:"check"`
-	Message  string   `json:"message"`
-	Details  string   `json:"details,omitempty"`
+	// DemotedFrom retains the severity an automatically demoted finding came
+	// from, so a later positive re-check can restore it. It is deliberately not
+	// part of Key(): a finding's identity must not change when its severity
+	// does, or every dismissal and dedup entry keyed to it would be orphaned.
+	DemotedFrom Severity `json:"demoted_from,omitempty"`
+	Check       string   `json:"check"`
+	Message     string   `json:"message"`
+	Details     string   `json:"details,omitempty"`
 	// DedupKey, when set, pins the finding's dedup identity (Key and
 	// Fingerprint) regardless of Message/Details content. For findings whose
 	// details embed volatile values (pids, byte counts) that would otherwise

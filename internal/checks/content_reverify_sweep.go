@@ -9,8 +9,12 @@ import (
 // LatestFindingStore is the subset of the state store the sweep needs.
 type LatestFindingStore interface {
 	LatestFindings() []alert.Finding
-	DismissFinding(key string)
-	DismissLatestFinding(key string)
+	// Each mutation takes the snapshot verification actually looked at, so a
+	// scan or realtime alert that refreshed the same key while the re-check was
+	// in flight is never overwritten by the older verdict.
+	DismissFindingIfLatest(expected alert.Finding) bool
+	DemoteLatestFinding(expected alert.Finding, severity alert.Severity) bool
+	RestoreLatestFindingSeverity(expected alert.Finding) bool
 }
 
 // ContentReverifyDismissal records one finding the sweep cleared, for the
@@ -19,6 +23,18 @@ type ContentReverifyDismissal struct {
 	Check  string
 	Path   string
 	Detail string
+	// Demoted and Promoted distinguish the outcomes for the audit log: a
+	// cleared finding is gone, a demoted one is still listed at a lower
+	// severity, a promoted one had an earlier demotion reversed.
+	Demoted  bool
+	Promoted bool
+}
+
+// isAutomaticallyDemoted reports whether this finding is sitting at Warning
+// because a previous sweep lowered it, rather than because it was raised there.
+func isAutomaticallyDemoted(f alert.Finding) bool {
+	return f.Severity == alert.Warning &&
+		f.DemotedFrom >= alert.High && f.DemotedFrom <= alert.Critical
 }
 
 // autoReverifiable reports whether the sweep may re-check and dismiss a finding
@@ -81,11 +97,27 @@ func ReverifyStaleFindingsContext(ctx context.Context, store LatestFindingStore)
 		if ctx.Err() != nil {
 			return dismissed, false
 		}
-		if res.Checked && res.Resolved {
-			key := f.Key()
-			store.DismissFinding(key)
-			store.DismissLatestFinding(key)
-			dismissed = append(dismissed, ContentReverifyDismissal{Check: f.Check, Path: f.FilePath, Detail: res.Detail})
+		switch {
+		case res.Checked && res.Resolved:
+			if store.DismissFindingIfLatest(f) {
+				dismissed = append(dismissed, ContentReverifyDismissal{Check: f.Check, Path: f.FilePath, Detail: res.Detail})
+			}
+		case isAutomaticallyDemoted(f) && !res.Demote:
+			// A demotion holds only while the replacement keeps satisfying the
+			// inert-content gate. Restore on a positive match and on every
+			// uncertain or newly-active shape alike; otherwise a second edit
+			// into a detection gap would leave live malware at Warning.
+			if store.RestoreLatestFindingSeverity(f) {
+				dismissed = append(dismissed, ContentReverifyDismissal{
+					Check: f.Check, Path: f.FilePath, Detail: res.Detail, Promoted: true})
+			}
+		case res.Checked && res.Demote && f.Severity > alert.Warning:
+			// Remediated but unproven: keep it, stop ranking it beside live
+			// threats. Demoting an already-Warning finding would be churn.
+			if store.DemoteLatestFinding(f, alert.Warning) {
+				dismissed = append(dismissed, ContentReverifyDismissal{
+					Check: f.Check, Path: f.FilePath, Detail: res.Detail, Demoted: true})
+			}
 		}
 	}
 	return dismissed, true
