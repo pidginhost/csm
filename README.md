@@ -14,11 +14,36 @@ CSM combines real-time file, authentication, web, mail, and network watchers wit
 
 [Documentation](https://pidginhost.github.io/csm/) | [Installation](docs/src/installation.md) | [Configuration](docs/src/configuration.md) | [CLI](docs/src/cli.md) | [Web UI](docs/src/webui.md) | [Releases](https://github.com/pidginhost/csm/releases)
 
+## What CSM covers
+
+| Problem | Detection and response |
+|---|---|
+| Mailbox takeover and outbound spam | Mail log correlation, account attribution, filter and forwarder audit, PHP relay guard, blocking, mail freeze |
+| WordPress and admin login attacks | Login flood, XML-RPC, and credential-stuffing detection; bundled ModSecurity rules for exploited CVEs |
+| Webshells, phishing, and injected code | YAML and YARA-X signatures, PHP and JavaScript data-flow analysis, PHP Shield runtime blocking, quarantine |
+| Exposed files and vulnerable software | Probe-confirmed exposed dumps, backups, and repositories; known-vulnerable plugin inventory; reversible virtual patches |
+| Vulnerability and URL scanners | Per-source probe profiling, claimed-bot verification, ASN crawl detection, challenge routing, firewall response |
+| Compromised CMS databases | WordPress, Joomla, Drupal, Magento, OpenCart: stored code, hidden links, spam, doorways, rogue admins; reversible cleanup |
+| WAF and firewall operations | ModSecurity event correlation and per-domain coverage gaps, nftables, GeoIP, subnet escalation, rollback-confirmed changes |
+| Host compromise indicators | Process, account, SSH, cron, and package drift, C2 connections, BPF telemetry, hardening audit, CVE mitigations |
+| Fleet observability | HTTPS API, SSE findings, incidents, forensic snapshots, Prometheus, audit log, syslog, webhooks, SIEM backfill |
+
+Detailed coverage is documented under [Real-time detection](docs/src/detection-realtime.md), [Critical checks](docs/src/detection-critical.md), [Deep checks](docs/src/detection-deep.md), and [Incidents](docs/src/incidents.md).
+
+## Platform support
+
+| Platform | Coverage |
+|---|---|
+| cPanel/WHM on CloudLinux, AlmaLinux, or Rocky with Apache/LiteSpeed | Primary target. Full account, WordPress, Exim, WHM plugin, firewall, PHP Shield (CageFS-aware on CloudLinux), and remediation coverage. |
+| Plesk or DirectAdmin on a supported Linux distribution | Panel and web-server paths are detected. Generic host/web checks run; cPanel-only integrations skip. |
+| AlmaLinux, Rocky, RHEL, or CentOS Stream 8+ | Generic checks with RPM integrity on Apache, Nginx, LiteSpeed, or hosts without a web server. |
+| Ubuntu 20.04+ or Debian 11+ | Generic checks with dpkg/debsums integrity on Apache, Nginx, LiteSpeed, or hosts without a web server. |
+
+Packages are published for x86_64 and ARM64; cPanel itself is x86_64-only. Release binaries link YARA-X statically, include journald and BPF support, and need glibc 2.28 or newer.
+
 ## Quick start
 
-Install CSM from the signed APT or DNF repository described in the [installation guide](docs/src/installation.md). Packages include the daemon, Web UI, rules, PAM module, systemd unit, and a `csm` command in `/usr/sbin`.
-
-After installation:
+Install from the signed APT or DNF repository described in the [installation guide](docs/src/installation.md). Packages include the daemon, Web UI, rules, PAM module, systemd unit, and a `csm` command in `/usr/sbin`.
 
 ```bash
 sudo vi /etc/csm/csm.yaml
@@ -30,37 +55,17 @@ sudo csm doctor
 
 Open `https://<server>:9443/login`. The package generates an initial admin token in `/etc/csm/csm.yaml` and a self-signed certificate under the state directory unless explicit TLS paths are configured.
 
-The baseline signs the binary, `csm.yaml`, and every non-exempt conf.d drop-in. After a later hand edit, run `sudo csm rehash` before restarting: the daemon refuses a config it did not sign, and `csm doctor` reports the mismatch while the old daemon is still running.
+The baseline signs the binary, `csm.yaml`, and every non-exempt conf.d drop-in. After a later hand edit, run `sudo csm rehash` before restarting: the daemon refuses a config it did not sign, and `csm doctor` reports the mismatch while the old daemon is still running. Automation-owned overrides go in `/etc/csm/conf.d/*.yaml`; see [Configuration](docs/src/configuration.md#confd-drop-ins) for merge order, trust, and integrity rules.
 
-Use `/etc/csm/conf.d/*.yaml` for automation-owned overrides. Fragments load in lexicographic order; maps merge, scalars replace, and lists append. A fragment that an integration rewrites on its own schedule can be exempted from the integrity hash. See [Configuration](docs/src/configuration.md#confd-drop-ins) for trust and integrity rules.
-
-## What CSM covers
-
-| Problem | Detection and response |
-|---|---|
-| Mailbox takeover and outbound spam | Exim/Postfix/Dovecot log correlation, account attribution, mail-filter and Sieve forwarding audit, PHP mail-relay guard, direct SMTP egress control, IP or subnet blocking, optional mail freeze and forward-copy hold |
-| WordPress and admin login attacks | Access-log and PAM watchers for login floods, XML-RPC abuse, credential stuffing, and distributed campaigns; bundled ModSecurity rules for actively exploited CVEs and mass-exploit tools |
-| Webshells, phishing, and injected code | fanotify plus scheduled content scans, YARA-X and YAML signatures, PHP Shield runtime blocking, PHP remote-source and JavaScript keylogger data-flow analysis, self-deleting dropper detection, quarantine, and bounded cleanup strategies |
-| Exposed files and vulnerable software | Web-root sweep for database dumps, backup archives, config and source backups, phpinfo, and served `.git` directories, each confirmed by a probe; known-vulnerable plugin inventory; alerts when ModSecurity is off for a domain; reversible `.htaccess` virtual patches |
-| Vulnerability and URL scanners | Per-source probe profiling, claimed-bot verification, ASN crawl detection, challenge routing, and firewall response |
-| Compromised CMS databases | WordPress, Joomla, Drupal, Magento, and OpenCart content checks, including PHP snippets stored in the database, hidden link blocks, spam taxonomy and publishing floods, doorway options, site-address hijack, rogue admins, and MySQL triggers, events, and procedures; reversible cleanup for supported rows and objects |
-| WAF and firewall operations | ModSecurity event correlation, nftables management, GeoIP policy, temporary bans, subnet escalation, inbound and outbound lockout warnings, and rollback-confirmed changes |
-| Host compromise indicators | Suspicious processes, account and SSH changes, cron and sshd drift, package integrity, C2 connections, BPF telemetry, CVE-specific mitigations, and a hardening audit covering SSH, firewall, PHP, mail, and web server settings |
-| Fleet observability | HTTPS API, SSE findings, correlated incidents, forensic snapshots, Prometheus metrics, JSONL audit log, RFC 5424 syslog, webhooks, and SIEM backfill |
-
-Detailed coverage is documented under [Real-time detection](docs/src/detection-realtime.md), [Critical checks](docs/src/detection-critical.md), [Deep checks](docs/src/detection-deep.md), and [Incidents](docs/src/incidents.md).
-
-## Operating model
+## How it runs
 
 - Real-time watchers process filesystem, authentication, access-log, mail, PAM, BPF, and ModSecurity events.
 - Critical checks run every 10 minutes; deeper account, CMS, package, content, and database checks run every 60 minutes by default.
 - Eligible content and exposed-file findings are re-verified every deep-scan cycle. They clear only when the condition is confirmed gone. If flagged content is gone but its file changed, only a replacement proven inert is downgraded; uncertain cases stay open. See [Re-verifying findings](docs/src/detection-deep.md#re-verifying-findings).
 - Signatures ship with the package: YAML rules cover real-time scanning and finding re-checks; optional YARA-X rules also cover scheduled and email attachment scanning. Remote YAML and optional [YARA Forge](docs/src/signatures.md#yara-forge-integration) updates are signature-verified.
-- Platform detection selects the OS, control panel, web server, paths, logs, and applicable checks through `internal/platform`.
+- Platform detection picks the OS, control panel, web server, paths, logs, and applicable checks. Panel-specific checks skip where their panel is absent.
 - State is stored in bbolt with optional retention sweeps, automatic compaction, backup/restore, and audit export.
 - CSM has no required SaaS dependency. External reputation, GeoIP, reporting, and panel integrations are optional.
-
-Production release binaries include YARA-X and journald/BPF support. YARA-X is statically linked into the executable, while glibc remains dynamically linked with a build floor of glibc 2.28.
 
 ## Safety defaults
 
@@ -75,41 +80,21 @@ Production release binaries include YARA-X and journald/BPF support. YARA-X is s
 
 Review [Auto-response](docs/src/auto-response.md) before enabling actions on a production host.
 
-## Platform support
-
-| Platform | Coverage |
-|---|---|
-| cPanel/WHM on CloudLinux, AlmaLinux, or Rocky with Apache/LiteSpeed | Primary target. Full account, WordPress, Exim, WHM plugin, firewall, PHP Shield (CageFS-aware on CloudLinux), and remediation coverage. |
-| Plesk or DirectAdmin on a supported Linux distribution | Panel and web-server paths are detected. Generic host/web checks run; cPanel-only integrations skip. |
-| AlmaLinux, Rocky, RHEL, or CentOS Stream 8+ | Generic checks with RPM integrity on Apache, Nginx, LiteSpeed, or hosts without a web server. |
-| Ubuntu 20.04+ or Debian 11+ | Generic checks with dpkg/debsums integrity on Apache, Nginx, LiteSpeed, or hosts without a web server. |
-
-Packages are published for x86_64 and ARM64. cPanel itself is x86_64-only.
-
 ## Common commands
 
 ```text
-csm status [--json]           daemon health, findings, watchers, and rollout state
-csm doctor [--json]           config, integrity, daemon, watcher, and store diagnostics
-csm check                     run checks through the daemon without auto-response
-csm baseline                  establish known state after first start or an approved reset
-csm rehash                    re-sign binary, csm.yaml, and conf.d after an intentional change
-csm scan <user> [--full]      scan one account; --full creates an uncapped job
-csm scan --all --full         create an uncapped job covering every account
-csm incidents ...             list, show, and update correlated incidents
-csm forensic-snapshot <user> --out <archive.tar.gz>
-                              evidence archive for incident handoff
-csm firewall ...              inspect and manage IP, subnet, port, and rollback state
-csm virtual-patch [--apply]   preview or apply confirmed exposed-file denies in manual/auto mode
-csm clean <path>              clean a supported infected PHP file with backup
-csm harden ...                audit or apply supported host mitigations
-csm enable --php-shield       turn on PHP runtime protection
-csm backup <out>              bundle csm.yaml, conf.d, and state while the daemon is stopped
-csm restore <archive>         restore a validated backup while the daemon is stopped
-csm validate                  validate the merged main and conf.d configuration
+csm status [--json]          daemon health, findings, watchers, and rollout state
+csm doctor [--json]          config, integrity, daemon, watcher, and store diagnostics
+csm baseline                 establish known state after first start or an approved reset
+csm rehash                   re-sign binary, csm.yaml, and conf.d after an intentional change
+csm scan <user> [--full]     scan one account, uncapped with --full; --all --full covers every account
+csm incidents ...            list, show, and update correlated incidents
+csm firewall ...             inspect and manage IP, subnet, port, and rollback state
+csm virtual-patch [--apply]  preview or apply confirmed exposed-file denies in manual/auto mode
+csm harden ...               audit or apply supported host mitigations
 ```
 
-See the [CLI reference](docs/src/cli.md) for full commands and maintenance requirements.
+See the [CLI reference](docs/src/cli.md) for backup and restore, forensic snapshots, PHP Shield, cleanup, and every other command.
 
 ## Development
 
