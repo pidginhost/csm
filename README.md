@@ -23,7 +23,7 @@ CSM combines real-time file, authentication, web, mail, and network watchers wit
 | Webshells, phishing, and injected code | YAML and YARA-X signatures, PHP and JavaScript data-flow analysis, PHP Shield runtime blocking, quarantine |
 | Exposed files and vulnerable software | Probe-confirmed exposed dumps, backups, and repositories; known-vulnerable plugin inventory; reversible virtual patches |
 | Vulnerability and URL scanners | Per-source probe profiling, claimed-bot verification, ASN crawl detection, challenge routing, firewall response |
-| Compromised CMS databases | WordPress, Joomla, Drupal, Magento, OpenCart: stored code, hidden links, spam, doorways, rogue admins; reversible cleanup |
+| Compromised CMS databases | WordPress, Joomla, Drupal, Magento, OpenCart: stored code, hidden links, spam, doorways, rogue admins; reversible cleanup for supported rows and objects |
 | WAF and firewall operations | ModSecurity event correlation and per-domain coverage gaps, nftables, GeoIP, subnet escalation, rollback-confirmed changes |
 | Host compromise indicators | Process, account, SSH, cron, and package drift, C2 connections, BPF telemetry, hardening audit, CVE mitigations |
 | Fleet observability | HTTPS API, SSE findings, incidents, forensic snapshots, Prometheus, audit log, syslog, webhooks, SIEM backfill |
@@ -87,14 +87,15 @@ csm status [--json]          daemon health, findings, watchers, and rollout stat
 csm doctor [--json]          config, integrity, daemon, watcher, and store diagnostics
 csm baseline                 establish known state after first start or an approved reset
 csm rehash                   re-sign binary, csm.yaml, and conf.d after an intentional change
-csm scan <user> [--full]     scan one account, uncapped with --full; --all --full covers every account
+csm scan <user> [--full]     scan one account, uncapped with --full
+csm scan --all --full        scan every account without the per-account file cap
 csm incidents ...            list, show, and update correlated incidents
 csm firewall ...             inspect and manage IP, subnet, port, and rollback state
 csm virtual-patch [--apply]  preview or apply confirmed exposed-file denies in manual/auto mode
 csm harden ...               audit or apply supported host mitigations
 ```
 
-See the [CLI reference](docs/src/cli.md) for backup and restore, forensic snapshots, PHP Shield, cleanup, and every other command.
+See the [CLI reference](docs/src/cli.md) for backup and restore, forensic snapshots, PHP Shield, cleanup, and the full operator command reference.
 
 ## Development
 
