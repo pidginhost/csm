@@ -496,7 +496,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "udp6_out", Type: "[]int", Label: "Outbound UDP6 ports", Help: "Empty inherits udp_out.", FieldGroup: FieldGroupIPv6},
 
 			{YAMLPath: "restricted_tcp", Type: "[]int", Label: "Restricted TCP (infra-only)", Help: "Reachable only from infra_ips. Manage infra_ips in its own section.", FieldGroup: FieldGroupAccessPorts},
-			{YAMLPath: "required_tcp_out", Type: "[]int", Label: "Required outbound TCP ports", Help: "Checked, never merged: validation warns when tcp_out omits one of these. Integrations declare the ports they dial in their own conf.d fragment.", FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "required_tcp_out", Type: "[]int", Label: "Required outbound TCP ports", Help: "Checked only, never added to the policy: validation warns when an effective outbound family omits one. Integrations declare the ports they dial in their own conf.d fragment.", FieldGroup: FieldGroupAccessPorts},
 			{YAMLPath: "passive_ftp_start", Type: "int", Label: "Passive FTP range start", Min: int64p(1024), Max: int64p(65535), FieldGroup: FieldGroupAccessPorts},
 			{YAMLPath: "passive_ftp_end", Type: "int", Label: "Passive FTP range end", Min: int64p(1024), Max: int64p(65535), FieldGroup: FieldGroupAccessPorts},
 			{YAMLPath: "drop_nolog", Type: "[]int", Label: "Silent-drop ports", Help: "Dropped without logging to keep scanner noise out of the log.", FieldGroup: FieldGroupLogging},

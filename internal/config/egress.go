@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -13,9 +14,10 @@ import (
 // warning can quote, e.g. "alerts.webhook.url dials panel.example.com on
 // TCP port 8443".
 type outboundDependency struct {
-	what string
-	host string // hostname or literal IP; empty when the endpoints are vendor-fixed
-	port int
+	what       string
+	host       string // hostname or literal IP; empty when the endpoints are vendor-fixed
+	port       int
+	daemonRoot bool // the daemon's root UID can use smtp_block's per-UID accepts
 }
 
 // builtInHTTPSEndpoints names the outbound HTTPS destinations that are not
@@ -29,17 +31,19 @@ const builtInHTTPSEndpoints = "built-in HTTPS endpoints (threat feeds, signature
 // the output chain accepts loopback ahead of any port rule.
 func outboundDependencies(cfg *Config) []outboundDependency {
 	deps := []outboundDependency{{
-		what: builtInHTTPSEndpoints + " need TCP port 443 outbound",
-		port: 443,
+		what:       builtInHTTPSEndpoints + " need TCP port 443 outbound",
+		port:       443,
+		daemonRoot: true,
 	}}
 	add := func(label, host string, port int) {
-		if isLoopbackHost(host) {
+		if egressLoopbackHost(host) {
 			return
 		}
 		deps = append(deps, outboundDependency{
-			what: fmt.Sprintf("%s dials %s on TCP port %d", label, host, port),
-			host: host,
-			port: port,
+			what:       fmt.Sprintf("%s dials %s on TCP port %d", label, host, port),
+			host:       host,
+			port:       port,
+			daemonRoot: true,
 		})
 	}
 	addURL := func(label, raw string) {
@@ -101,14 +105,18 @@ func outboundDependencies(cfg *Config) []outboundDependency {
 
 // urlDialTarget resolves the host and port a URL is dialed on the way the
 // HTTP client does: an explicit port wins, otherwise the scheme default. A
-// URL that yields no port is left to the URL validators.
+// URL that the client cannot dial produces no egress requirement.
 func urlDialTarget(raw string) (host string, port int, ok bool) {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return "", 0, false
 	}
 	host = u.Hostname()
 	if host == "" {
+		return "", 0, false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
 		return "", 0, false
 	}
 	if p := u.Port(); p != "" {
@@ -118,7 +126,7 @@ func urlDialTarget(raw string) (host string, port int, ok bool) {
 		}
 		return host, port, true
 	}
-	switch strings.ToLower(u.Scheme) {
+	switch scheme {
 	case "https":
 		return host, 443, true
 	case "http":
@@ -128,13 +136,19 @@ func urlDialTarget(raw string) (host string, port int, ok bool) {
 }
 
 // hostPortDialTarget splits a host:port dial address. Addresses without a
-// port cannot be dialed at all and are left to the field's own validator.
+// port cannot be dialed and produce no egress requirement.
 func hostPortDialTarget(raw string) (host string, port int, ok bool) {
-	host, portStr, err := net.SplitHostPort(strings.TrimSpace(raw))
+	if raw != strings.TrimSpace(raw) {
+		return "", 0, false
+	}
+	host, portStr, err := net.SplitHostPort(raw)
 	if err != nil || host == "" {
 		return "", 0, false
 	}
-	port, err = strconv.Atoi(portStr)
+	// net.Dial accepts both numeric ports and service names. Resolve through
+	// the same service database so a valid address such as host:smtp cannot
+	// evade the egress-policy warning.
+	port, err = net.LookupPort("tcp", portStr)
 	if err != nil || port < 1 || port > 65535 {
 		return "", 0, false
 	}
@@ -174,13 +188,25 @@ func firewallEgressResults(cfg *Config) []ValidationResult {
 		return nil
 	}
 
-	// smtp_block installs per-UID accepts for the mail ports ahead of the
-	// port rules, and the daemon runs as root, which is always on that list.
-	rootMailPort := func(port int) bool {
+	// smtp_block installs per-UID accepts and then a drop for each mail port
+	// ahead of both the IPv4 bypass and the configured port rules. The daemon
+	// runs as root, which is always accepted; required_tcp_out describes a
+	// separate service whose UID this validator cannot prove is allowed.
+	smtpRestricted := func(port int) bool {
 		return fw.SMTPBlock && containsPort(fw.SMTPPorts, port)
 	}
-	allowed4 := func(port int) bool { return containsPort(fw.TCPOut, port) || rootMailPort(port) }
-	allowed6 := func(port int) bool { return containsPort(tcp6Out, port) || rootMailPort(port) }
+	blocked4 := func(dep outboundDependency) bool {
+		if smtpRestricted(dep.port) {
+			return !dep.daemonRoot
+		}
+		return ipv4Filtered && !containsPort(fw.TCPOut, dep.port)
+	}
+	blocked6 := func(dep outboundDependency) bool {
+		if smtpRestricted(dep.port) {
+			return !dep.daemonRoot
+		}
+		return !containsPort(tcp6Out, dep.port)
+	}
 
 	deps := outboundDependencies(cfg)
 	for _, port := range fw.RequiredTCPOut {
@@ -196,32 +222,59 @@ func firewallEgressResults(cfg *Config) []ValidationResult {
 	var results []ValidationResult
 	for _, dep := range deps {
 		wantV4, wantV6 := dialFamilies(dep.host)
-		if wantV4 && ipv4Filtered && !allowed4(dep.port) {
+		isBlocked4 := wantV4 && blocked4(dep)
+		if isBlocked4 {
 			results = append(results, ValidationResult{"warn", "firewall.tcp_out",
-				fmt.Sprintf("%s but tcp_out does not allow it; once the firewall applies, connections to that port are refused", dep.what)})
+				egressBlockedMessage(dep, "tcp_out", smtpRestricted(dep.port))})
 		}
 		// An inherited tcp6_out is the same list as tcp_out, so the IPv4
-		// warning above already covers a hostname that may resolve either
-		// way. Only an explicit tcp6_out, or a literal IPv6 destination
-		// that never dials over IPv4, needs its own line.
-		if wantV6 && ipv6Filtered && !allowed6(dep.port) && (len(fw.TCP6Out) > 0 || !wantV4) {
+		// warning above covers both families only when IPv4 is filtered too.
+		// With only udp6_out configured, the engine bypasses IPv4 wholesale
+		// but still drops IPv6 TCP, so that shape needs a tcp6_out warning.
+		isBlocked6 := wantV6 && ipv6Filtered && blocked6(dep)
+		if isBlocked6 && (len(fw.TCP6Out) > 0 || !isBlocked4) {
 			results = append(results, ValidationResult{"warn", "firewall.tcp6_out",
-				fmt.Sprintf("IPv6 is managed and tcp6_out does not allow it: %s", dep.what)})
+				egressBlockedMessage(dep, "tcp6_out", smtpRestricted(dep.port))})
 		}
 	}
 	return results
+}
+
+func egressBlockedMessage(dep outboundDependency, policy string, smtpRestricted bool) string {
+	if smtpRestricted {
+		return fmt.Sprintf("%s but smtp_block restricts TCP port %d to allowed UIDs; required_tcp_out does not identify an allowed user", dep.what, dep.port)
+	}
+	if policy == "tcp6_out" {
+		return fmt.Sprintf("IPv6 is managed and tcp6_out does not allow it: %s", dep.what)
+	}
+	return fmt.Sprintf("%s but tcp_out does not allow it; once the firewall applies, connections to that port are refused", dep.what)
 }
 
 // dialFamilies reports which IP families a destination can be dialed over. A
 // literal address pins one family; a hostname (or the vendor endpoints, which
 // have no single host) may resolve to either.
 func dialFamilies(host string) (ipv4, ipv6 bool) {
-	ip := net.ParseIP(host)
-	if ip == nil {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
 		return true, true
 	}
-	if ip.To4() != nil {
+	if ip.Unmap().Is4() {
 		return true, false
 	}
 	return false, true
+}
+
+// egressLoopbackHost recognizes scoped IPv6 literals as well as the common
+// forms handled by isLoopbackHost. URL.Hostname and net.SplitHostPort retain
+// a zone such as "%lo", which net.ParseIP cannot parse even though the
+// kernel still routes ::1 over the output chain's accepted loopback device.
+func egressLoopbackHost(host string) bool {
+	if isLoopbackHost(host) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.Unmap().IsLoopback()
 }

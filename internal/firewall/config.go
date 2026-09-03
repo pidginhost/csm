@@ -26,8 +26,8 @@ type FirewallConfig struct {
 	RestrictedTCP []int `yaml:"restricted_tcp"`
 
 	// RequiredTCPOut declares outbound TCP ports a service on this host needs.
-	// It is checked, never merged: validation warns when tcp_out (or an
-	// explicit tcp6_out) omits one, so an integration can state its
+	// It is checked, never merged: validation warns when an effective outbound
+	// family policy omits one, so an integration can state its
 	// requirement in its own conf.d fragment and have `csm doctor` verify it
 	// against the effective policy.
 	RequiredTCPOut []int `yaml:"required_tcp_out"`

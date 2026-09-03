@@ -208,26 +208,31 @@ itself needs:
   `reputation.upstream.url`, `reputation.report.targets[].url`,
   `reputation.central.set_url`, `signatures.update_url`,
   `signatures.yara_forge.download_url`, `sentry.dsn` and
-  `updates.github_api_url`. The port is resolved the way the dialer resolves
-  it: an explicit `:port`, otherwise 443 for `https` and 80 for `http`.
-  Disabled features are skipped, and so are loopback destinations, which the
-  output chain accepts ahead of any port rule.
+  `updates.github_api_url`. HTTP endpoints use their explicit numeric port,
+  or the scheme default when the port is omitted. SMTP and TCP/TLS syslog
+  addresses also accept TCP service names, matching their dialers. Disabled
+  features are skipped, and so are loopback destinations, which the output
+  chain accepts ahead of any port rule.
 - Port 443 is checked once for the built-in HTTPS endpoints (threat feeds,
   AbuseIPDB, MaxMind, YARA Forge, AI-crawler range feeds, release check),
   because dropping it silences all of them at once.
 - Every port under `firewall.required_tcp_out` is checked. That list is a
-  declaration, never merged into the policy: a conf.d fragment owned by an
+  declaration, never added to the policy: a conf.d fragment owned by an
   integration can state the ports its service needs, and `csm doctor`
   reports when the effective policy drops one instead of the operator
-  discovering it from a silent node. A later fragment or the operator's
-  main config cannot satisfy the requirement by accident, because the check
-  runs against the merged `tcp_out`.
+  discovering it from a silent node. The check runs against the merged
+  `tcp_out`, so any config layer that permits the port satisfies the
+  declaration.
 
-`smtp_block` installs per-user accepts for the mail ports ahead of the port
-rules, and the daemon runs as root, so its alert mail is not warned about
-when `tcp_out` omits a port that `smtp_block` still lets root reach. When
-IPv6 is managed, an explicit `tcp6_out` is checked separately; an empty one
-inherits `tcp_out`, and the single warning covers both families. A literal
+On a restricted output chain, `smtp_block` installs per-user accepts for the
+mail ports ahead of the port rules, and those ports never get a port rule of
+their own. The daemon runs as root, so its alert mail is not warned about when
+`tcp_out` omits a port that `smtp_block` still lets root reach. A port
+declared for another service still warns under `smtp_block`, because a port
+declaration cannot prove that service's user is allowed. When IPv6 is managed,
+an explicit `tcp6_out` is checked separately; an empty one inherits `tcp_out`,
+and the single warning covers both families. When only the IPv6 lists are set,
+IPv4 egress is accepted wholesale and the warning names `tcp6_out`. A literal
 IPv4 or IPv6 destination is checked only against its own family.
 
 This catches the daemon's own egress and whatever has been declared. It does

@@ -628,9 +628,9 @@ firewall:
   # Restricted ports (infra IPs only)
   restricted_tcp: [2086,2087,2325,9443] # WHM and CSM Web UI ports
 
-  # Outbound ports a service on this host needs. Checked, never merged:
-  # validation warns when tcp_out omits one. Integrations declare theirs
-  # in their own conf.d fragment.
+  # Outbound ports a service on this host needs. Checked, never added to
+  # the policy: validation warns when an effective family policy omits one.
+  # Integrations declare theirs in their own conf.d fragment.
   required_tcp_out: []
 
   # Passive FTP range

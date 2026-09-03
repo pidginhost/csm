@@ -107,12 +107,32 @@ func TestValidateEgressWebhookPort(t *testing.T) {
 		}
 	})
 
-	t.Run("unparseable URL is left to the URL validator", func(t *testing.T) {
+	t.Run("unparseable URL produces no egress warning", func(t *testing.T) {
 		cfg := egressTestConfig([]int{443})
 		cfg.Alerts.Webhook.Enabled = true
 		cfg.Alerts.Webhook.URL = "://not a url"
 		if got := egressWarnings(cfg); len(got) != 0 {
 			t.Errorf("no port can be derived, so no egress warning, got %v", got)
+		}
+	})
+
+	t.Run("unsupported URL schemes produce no egress warning", func(t *testing.T) {
+		for _, rawURL := range []string{"ftp://panel.example.com:21/api", "//panel.example.com:8443/api"} {
+			cfg := egressTestConfig([]int{443})
+			cfg.Alerts.Webhook.Enabled = true
+			cfg.Alerts.Webhook.URL = rawURL
+			if got := egressWarnings(cfg); len(got) != 0 {
+				t.Errorf("net/http cannot dial %q, so no egress warning applies, got %v", rawURL, got)
+			}
+		}
+	})
+
+	t.Run("URL whitespace rejected by net/http does not produce a warning", func(t *testing.T) {
+		cfg := egressTestConfig([]int{443})
+		cfg.Alerts.Webhook.Enabled = true
+		cfg.Alerts.Webhook.URL = " https://panel.example.com:8443/api "
+		if got := egressWarnings(cfg); len(got) != 0 {
+			t.Errorf("the HTTP dialer rejects surrounding whitespace, got %v", got)
 		}
 	})
 }
@@ -123,7 +143,9 @@ func TestValidateEgressSkipsLoopback(t *testing.T) {
 	for _, u := range []string{
 		"https://127.0.0.1:8443/api",
 		"http://localhost:8080/api",
+		"http://localhost.:8080/api",
 		"http://[::1]:9/api",
+		"http://[::1%25lo0]:9/api",
 		"http://127.5.5.5:11334",
 	} {
 		t.Run(u, func(t *testing.T) {
@@ -146,6 +168,28 @@ func TestValidateEgressSilentWithoutOutboundPolicy(t *testing.T) {
 	cfg.Alerts.Webhook.URL = "https://panel.example.com:8443/api"
 	if got := egressWarnings(cfg); len(got) != 0 {
 		t.Errorf("no outbound policy means nothing is refused, got %v", got)
+	}
+
+	// createOutputChain returns its accept-all chain before smtp_block rules
+	// are added when every outbound list is empty.
+	cfg.Firewall.SMTPBlock = true
+	cfg.Firewall.SMTPPorts = []int{25, 465, 587}
+	cfg.Firewall.RequiredTCPOut = []int{587}
+	if got := egressWarnings(cfg); len(got) != 0 {
+		t.Errorf("smtp_block does not alter an accept-all output chain, got %v", got)
+	}
+}
+
+func TestValidateEgressUDPOnlyPolicyStillRestrictsTCP(t *testing.T) {
+	cfg := egressTestConfig(nil)
+	cfg.Firewall.UDPOut = []int{53}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = "https://panel.example.com:8443/api"
+	got := egressWarnings(cfg)
+	assertWarnMentions(t, got, "firewall.tcp_out", "built-in", "443")
+	assertWarnMentions(t, got, "firewall.tcp_out", "alerts.webhook.url", "8443")
+	if len(got) != 2 {
+		t.Errorf("UDP policy activates the default-drop chain for TCP too, got %v", got)
 	}
 }
 
@@ -222,6 +266,44 @@ func TestValidateEgressIPv6(t *testing.T) {
 			t.Errorf("IPv4 egress is accepted wholesale in this shape, got %v", got)
 		}
 	})
+
+	t.Run("udp6-only policy still restricts IPv6 TCP", func(t *testing.T) {
+		cfg := egressTestConfig(nil)
+		cfg.Firewall.UDPOut = nil
+		cfg.Firewall.IPv6 = true
+		cfg.Firewall.UDP6Out = []int{53}
+		cfg.Alerts.Webhook.Enabled = true
+		cfg.Alerts.Webhook.URL = "https://panel.example.com:8443/api"
+		got := egressWarnings(cfg)
+		assertWarnMentions(t, got, "firewall.tcp6_out", "8443", "alerts.webhook.url")
+		for _, result := range got {
+			if result.Field == "firewall.tcp_out" {
+				t.Errorf("IPv4 is accepted wholesale in this shape, got %v", got)
+				break
+			}
+		}
+	})
+
+	t.Run("unmanaged IPv6-only lists keep the output chain accept-all", func(t *testing.T) {
+		cfg := egressTestConfig(nil)
+		cfg.Firewall.UDPOut = nil
+		cfg.Firewall.TCP6Out = []int{443}
+		cfg.Alerts.Webhook.Enabled = true
+		cfg.Alerts.Webhook.URL = "https://panel.example.com:8443/api"
+		if got := egressWarnings(cfg); len(got) != 0 {
+			t.Errorf("IPv6 lists have no effect when IPv6 is unmanaged, got %v", got)
+		}
+	})
+
+	t.Run("scoped IPv6 literal is never checked against tcp_out", func(t *testing.T) {
+		cfg := egressTestConfig([]int{443})
+		cfg.Firewall.IPv6 = false
+		cfg.Alerts.Webhook.Enabled = true
+		cfg.Alerts.Webhook.URL = "https://[fe80::1%25en0]:8443/api"
+		if got := egressWarnings(cfg); len(got) != 0 {
+			t.Errorf("unmanaged IPv6 is accepted wholesale, got %v", got)
+		}
+	})
 }
 
 // smtp_block installs a per-UID accept for the mail ports ahead of the port
@@ -238,6 +320,24 @@ func TestValidateEgressSMTPBlockAllowsRootMail(t *testing.T) {
 
 	cfg.Firewall.SMTPBlock = false
 	assertWarnMentions(t, egressWarnings(cfg), "firewall.tcp_out", "alerts.email.smtp", "587")
+}
+
+func TestValidateEgressResolvesNamedTCPServices(t *testing.T) {
+	cfg := egressTestConfig([]int{443})
+	cfg.Alerts.Email.SMTP = "mail.example.com:smtp"
+	assertWarnMentions(t, egressWarnings(cfg), "firewall.tcp_out", "alerts.email.smtp", "25")
+
+	cfg = egressTestConfig([]int{443})
+	cfg.Alerts.AuditLog.Syslog.Enabled = true
+	cfg.Alerts.AuditLog.Syslog.Network = "tcp"
+	cfg.Alerts.AuditLog.Syslog.Address = "logs.example.com:submissions"
+	assertWarnMentions(t, egressWarnings(cfg), "firewall.tcp_out", "alerts.audit_log.syslog.address", "465")
+
+	cfg = egressTestConfig([]int{443})
+	cfg.Alerts.Email.SMTP = " mail.example.com:587 "
+	if got := egressWarnings(cfg); len(got) != 0 {
+		t.Errorf("net.Dial rejects surrounding address whitespace, got %v", got)
+	}
 }
 
 // Every outbound endpoint the daemon reads from its own config is covered,
@@ -372,6 +472,35 @@ func TestValidateFirewallRequiredTCPOut(t *testing.T) {
 		if containsPort(cfg.Firewall.TCPOut, 9100) {
 			t.Error("required_tcp_out must stay a check, not an allow rule")
 		}
+	})
+
+	t.Run("smtp root exception does not satisfy another service", func(t *testing.T) {
+		cfg := egressTestConfig([]int{443})
+		cfg.Firewall.RequiredTCPOut = []int{587}
+		cfg.Firewall.SMTPBlock = true
+		cfg.Firewall.SMTPPorts = []int{25, 465, 587}
+		assertWarnMentions(t, egressWarnings(cfg), "firewall.tcp_out", "required_tcp_out", "587")
+	})
+
+	t.Run("tcp_out cannot override smtp block for another service", func(t *testing.T) {
+		cfg := egressTestConfig([]int{443, 587})
+		cfg.Firewall.RequiredTCPOut = []int{587}
+		cfg.Firewall.SMTPBlock = true
+		cfg.Firewall.SMTPPorts = []int{25, 465, 587}
+		assertWarnMentions(t, egressWarnings(cfg), "firewall.tcp_out", "required_tcp_out", "smtp_block", "587")
+	})
+
+	t.Run("smtp block precedes the IPv4 bypass", func(t *testing.T) {
+		cfg := egressTestConfig(nil)
+		cfg.Firewall.UDPOut = nil
+		cfg.Firewall.IPv6 = true
+		cfg.Firewall.TCP6Out = []int{443}
+		cfg.Firewall.RequiredTCPOut = []int{587}
+		cfg.Firewall.SMTPBlock = true
+		cfg.Firewall.SMTPPorts = []int{25, 465, 587}
+		got := egressWarnings(cfg)
+		assertWarnMentions(t, got, "firewall.tcp_out", "required_tcp_out", "smtp_block", "587")
+		assertWarnMentions(t, got, "firewall.tcp6_out", "required_tcp_out", "smtp_block", "587")
 	})
 
 	t.Run("out of range value is an error", func(t *testing.T) {
