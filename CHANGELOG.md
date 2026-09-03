@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Web-exposed file findings can now be re-checked and are retired after a complete probe against the local origin confirms remediation. Re-checks stay pinned to current vhost routing and fail closed when routing data, either web protocol, or phpinfo body confirmation is incomplete.
+- Large PHP logs no longer combine a family name or failed write with unrelated quoted source from another diagnostic record and report the file as malware.
+- The duplicate YARA detectors for a shell download pipeline are now one rule, and commands contained by fenced code or Markdown links are treated as documentation.
+
+### Security
+
+- Branded webshells and plugin-directory droppers stay detectable when padding separates their identifying content from the dangerous operation.
 
 ## [3.32.0] - 2026-09-02
 

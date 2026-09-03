@@ -187,6 +187,8 @@ After editing, send SIGHUP or restart the daemon to apply.
 
 Signature rules require **structural nesting**, not co-presence of strings. Two dangerous function calls appearing in the same file but in unrelated code paths won't trigger a rule. The call must directly wrap or chain with the other for a match.
 
+YARA-X rules cannot express nesting, so multi-string rules state how their evidence is related. A bounded distance is used when closeness is part of the malicious shape. When valid malware can carry padding between its signals, PHP diagnostic records are kept as separate contexts so one record cannot borrow evidence from another. Anchoring works the same way: a CGI webshell rule requires its shebang at offset 0, because that is where the web server needs it. None of these controls refers to a file's name or path.
+
 **Realtime signature auto-quarantine** adds a safety gate: only `webshell` and `dropper` matches are eligible, and the file must be at least 512 bytes and either have Shannon entropy >= 5.5 or hex density > 20% plus an obfuscated-execution signal. Legitimate plugin code (well below 5.5 entropy) passes through; obfuscated malware (5.8+) is caught.
 
 ## Alert Rate Limiting
