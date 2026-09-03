@@ -79,7 +79,7 @@ func TestStaleSweepDoesNotDismissLivePHPTaintFinding(t *testing.T) {
 		dismissed: map[string]bool{},
 	}
 
-	if got := ReverifyStaleContentFindings(store); len(got) != 0 {
+	if got := ReverifyStaleFindings(store); len(got) != 0 {
 		t.Fatalf("live PHP taint finding was dismissed: %+v", got)
 	}
 	if store.dismissed[finding.Key()] {

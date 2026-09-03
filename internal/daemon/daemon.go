@@ -1001,7 +1001,7 @@ func (d *Daemon) Run() error {
 	if db := store.Global(); db != nil && d.store != nil {
 		token := checks.ContentDetectionVersion()
 		d.startContentReverifySweepIfChanged(db, token, func() []checks.ContentReverifyDismissal {
-			return checks.ReverifyStaleContentFindings(d.store)
+			return checks.ReverifyStaleFindings(d.store)
 		})
 	}
 

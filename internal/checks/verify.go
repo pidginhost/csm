@@ -104,6 +104,7 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 		"email_phishing_content")
 	register(func(in VerifyInput) VerifyResult { return verifyCrontabClear(in.Path) },
 		"suspicious_crontab")
+	register(verifyExposedFile, exposedVerifiableChecks...)
 	register(func(in VerifyInput) VerifyResult { return verifyOutdatedPlugins(in.Details) },
 		"outdated_plugins")
 	register(func(in VerifyInput) VerifyResult { return verifyWPCoreIntegrity(in.Details) },
