@@ -9,11 +9,15 @@ import (
 )
 
 type fakeFindingStore struct {
-	findings  []alert.Finding
-	dismissed map[string]bool
+	findings    []alert.Finding
+	dismissed   map[string]bool
+	latestCalls int
 }
 
-func (s *fakeFindingStore) LatestFindings() []alert.Finding { return s.findings }
+func (s *fakeFindingStore) LatestFindings() []alert.Finding {
+	s.latestCalls++
+	return s.findings
+}
 func (s *fakeFindingStore) DismissFinding(key string)       { s.dismissed[key] = true }
 func (s *fakeFindingStore) DismissLatestFinding(key string) { s.dismissed[key] = true }
 

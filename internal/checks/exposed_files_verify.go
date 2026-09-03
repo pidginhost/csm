@@ -4,23 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 )
 
-// Re-check for the web_exposed_* family.
-//
-// Remediating one of these findings means the file stops being downloadable --
-// usually because CSM's own virtual patch denied it, sometimes because the
-// operator deleted it. Neither outcome changes the finding, so without a
-// verifier the family only ever accumulates: a production host carried 243 of
-// them, every one already answering 403, drowning the live findings they sat
-// next to.
-//
-// The re-check repeats the detection-time probe and clears the finding only
-// when the same rule detection uses (confirmExposure) no longer calls it an
-// exposure. It fails closed everywhere else, because a probe that could not be
-// completed proves nothing.
+// Exposure verification shares the detection-time confirmation rule and only
+// clears a finding after a complete probe pinned to the current local vhost.
 
 // exposedVerifiableChecks is the web_exposed_* family, keyed the same way the
 // findings are.
@@ -33,6 +21,11 @@ var exposedVerifiableChecks = []string{
 	"web_exposed_phpinfo",
 	"web_exposed_sample_sql",
 }
+
+// exposedReverifyLogicVersion is part of the daemon sweep token. Bump it when
+// unattended exposure verification semantics change so existing findings are
+// revisited once after upgrade.
+const exposedReverifyLogicVersion = 1
 
 // isExposedVerifiable reports whether check belongs to the web_exposed_* family,
 // whose findings the automatic sweep may re-probe and dismiss.
@@ -71,64 +64,56 @@ func exposureURLFromMessage(message string) string {
 	return strings.TrimSpace(message[i+len(marker):])
 }
 
-// exposedFilePathFromDetails recovers the on-disk path from the finding details
-// ("File: <path> (<n> bytes), served as ..."), for stored findings that carry
-// no separate path field.
-func exposedFilePathFromDetails(details string) string {
-	const marker = "File: "
-	i := strings.Index(details, marker)
-	if i < 0 {
-		return ""
-	}
-	rest := details[i+len(marker):]
-	j := strings.Index(rest, " (")
-	if j < 0 {
-		return ""
-	}
-	path := strings.TrimSpace(rest[:j])
-	if !strings.HasPrefix(path, "/") {
-		return ""
-	}
-	return path
+type exposureVhostIndex struct {
+	servingIPs map[string]string
+	complete   bool
 }
 
-// servingIPForDomain finds the vhost row for domain and returns the address the
-// probe must dial. An empty result means this host does not serve the domain.
-func servingIPForDomain(domain string) string {
+func loadExposureVhostIndex() exposureVhostIndex {
+	index := exposureVhostIndex{servingIPs: map[string]string{}}
 	content, err := osFS.ReadFile(userdataDomainsPath)
 	if err != nil {
-		return ""
+		return index
 	}
-	domain = strings.ToLower(strings.TrimSpace(domain))
-	for _, vh := range parseUserdataDomains(string(content)) {
-		if vh.domain == domain {
-			return probeHost(vh)
+	vhosts, complete := parseUserdataDomainsChecked(string(content))
+	index.complete = complete
+	for _, vh := range vhosts {
+		host := probeHost(vh)
+		if previous, exists := index.servingIPs[vh.domain]; exists {
+			if previous != host {
+				index.complete = false
+			}
+			continue
 		}
+		index.servingIPs[vh.domain] = host
 	}
-	return ""
+	return index
 }
 
-// verifyExposedFile re-probes a web_exposed_* finding and resolves it when the
-// file is gone or the server no longer serves it as a confirmed exposure.
+func (index exposureVhostIndex) servingIPForDomain(domain string) string {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	return index.servingIPs[domain]
+}
+
+// verifyExposedFile re-probes a web_exposed_* finding and resolves it only when
+// a complete pinned probe says the server no longer serves the exposure.
 func verifyExposedFile(in VerifyInput) VerifyResult {
+	vhosts := in.exposureVhosts
+	if vhosts == nil {
+		loaded := loadExposureVhostIndex()
+		vhosts = &loaded
+	}
+	return verifyExposedFileWithVhosts(in, vhosts)
+}
+
+func verifyExposedFileWithVhosts(in VerifyInput, vhosts *exposureVhostIndex) VerifyResult {
+	ctx := in.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	class, ok := exposedClassForCheck(in.Check)
 	if !ok {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("unknown exposure class for '%s'", in.Check)}
-	}
-
-	// The cheapest and most certain answer: the file is no longer there.
-	path := in.Path
-	if path == "" {
-		path = exposedFilePathFromDetails(in.Details)
-	}
-	if path != "" {
-		if _, err := osFS.Stat(path); err != nil {
-			if os.IsNotExist(err) {
-				return VerifyResult{Checked: true, Resolved: true,
-					Detail: fmt.Sprintf("file no longer present: %s", path)}
-			}
-			return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot stat %s: %v", path, err)}
-		}
 	}
 
 	raw := exposureURLFromMessage(in.Message)
@@ -143,18 +128,22 @@ func verifyExposedFile(in VerifyInput) VerifyResult {
 	if !validProbeDomain(domain) {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("unusable exposure domain %q", domain)}
 	}
+	if !vhosts.complete {
+		return VerifyResult{Checked: false,
+			Detail: "local vhost routing is incomplete; re-check cannot select a trusted serving address"}
+	}
 
 	// Pin to this host's own serving address. Resolving the domain through
 	// public DNS would ask whoever owns it now: a domain that has migrated away
 	// answers from its new provider, and that answer -- 200 with the new site's
 	// HTML, or a clean 404 -- says nothing about what this server exposes.
-	host := servingIPForDomain(domain)
+	host := vhosts.servingIPForDomain(domain)
 	if host == "" {
 		return VerifyResult{Checked: false,
 			Detail: fmt.Sprintf("%s is no longer served by this host; re-check cannot reach the original vhost", domain)}
 	}
 
-	pr := webProber.probe(context.Background(), domain, host, u.Path)
+	pr := webProber.probeComplete(ctx, domain, host, u.Path)
 	if !pr.reachable {
 		return VerifyResult{Checked: false,
 			Detail: fmt.Sprintf("could not reach %s to re-check; leaving the finding open", domain)}
@@ -164,6 +153,19 @@ func verifyExposedFile(in VerifyInput) VerifyResult {
 			Detail: "only one protocol answered; leaving the finding open until a complete probe"}
 	}
 	if confirmExposure(class, pr) {
+		if class == classPHPInfo {
+			_, exposed, complete := confirmPHPInfoBody(ctx, pr.scheme, domain, host, u.Path)
+			switch {
+			case exposed:
+				return VerifyResult{Checked: true, Resolved: false,
+					Detail: "still downloadable: confirmed phpinfo output"}
+			case !complete:
+				return VerifyResult{Checked: false,
+					Detail: "could not complete phpinfo body confirmation; leaving the finding open"}
+			}
+			return VerifyResult{Checked: true, Resolved: true,
+				Detail: "no longer served as confirmed phpinfo output"}
+		}
 		return VerifyResult{Checked: true, Resolved: false,
 			Detail: fmt.Sprintf("still downloadable: HTTP %d %s", pr.status, pr.contentType)}
 	}

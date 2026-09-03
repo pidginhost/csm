@@ -26,6 +26,10 @@ func (f *fakeProbe) probe(_ context.Context, _ string, _ string, urlPath string)
 	return f.byPath[urlPath]
 }
 
+func (f *fakeProbe) probeComplete(ctx context.Context, domain, host, urlPath string) probeResult {
+	return f.probe(ctx, domain, host, urlPath)
+}
+
 func withFakeProbe(t *testing.T, f webProbe) {
 	t.Helper()
 	prev := webProber

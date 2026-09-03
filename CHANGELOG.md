@@ -9,8 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A web-exposed file finding now clears by itself once the file stops being downloadable, and the periodic sweep that already retired stale content findings retires these too. The family had no re-check at all, so a finding survived its own remediation: one host held 243 of them, every one already answering 403 because CSM's virtual patch had denied it, crowding out the live findings beside them. The re-check repeats the detection-time probe against the vhost's own serving address and applies the same confirmation rule the scan uses, so it cannot disagree with the detection that raised the finding, and it leaves the finding open whenever the probe cannot be completed.
-- The exposure re-check never resolves a domain through public DNS. A domain that has moved to another host answers from its new provider, and neither that answer nor a clean 404 says anything about what this server still serves.
+- Web-exposed file findings can now be re-checked and are retired after a complete probe against the local origin confirms remediation. Re-checks stay pinned to current vhost routing and fail closed when routing data, either web protocol, or phpinfo body confirmation is incomplete.
 
 ## [3.32.0] - 2026-09-02
 
