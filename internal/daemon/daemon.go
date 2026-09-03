@@ -1279,8 +1279,16 @@ func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyD
 	d.wg.Add(1)
 	obs.Go("content-reverify-sweep", func() {
 		defer d.wg.Done()
-		dismissed, complete := run()
-		for _, dm := range dismissed {
+		outcomes, complete := run()
+		cleared, demoted := 0, 0
+		for _, dm := range outcomes {
+			if dm.Demoted {
+				demoted++
+				csmlog.Info("remediated finding demoted",
+					"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
+				continue
+			}
+			cleared++
 			csmlog.Info("stale finding auto-cleared",
 				"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
 		}
@@ -1288,8 +1296,8 @@ func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyD
 			csmlog.Info("finding re-verification sweep will retry on next start")
 			return
 		}
-		if len(dismissed) > 0 {
-			csmlog.Info("finding re-verification sweep complete", "cleared", len(dismissed))
+		if len(outcomes) > 0 {
+			csmlog.Info("finding re-verification sweep complete", "cleared", cleared, "demoted", demoted)
 		}
 	})
 }
@@ -1714,6 +1722,18 @@ func (d *Daemon) deepScanner() {
 		case <-d.stopCh:
 			return
 		case <-time.After(interval):
+			// Re-verify findings whose condition someone else resolved. The
+			// startup sweep is gated on the re-check logic version, which only
+			// moves on deploy: an operator cleaning a file, or a virtual patch
+			// closing an exposure, changes the world without changing CSM, and
+			// a finding gated only on that would keep its severity until the
+			// next upgrade happened to land.
+			if d.store != nil {
+				d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, bool) {
+					return checks.ReverifyStaleFindingsContext(d.scanContext(), d.store)
+				})
+			}
+
 			// Update threat intelligence feeds (once per day)
 			if db := checks.GetThreatDB(); db != nil {
 				_ = db.UpdateFeeds()
