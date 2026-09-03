@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // wpInstall is one discovered WordPress installation.
@@ -75,9 +76,59 @@ func wpInstallsForAccount(ctx context.Context, gapCheck, account string) []wpIns
 	return d.installs
 }
 
-// lookupWPInstalls is the seam Task 2 replaces with a cycle-scoped cache.
+type wpInstallCacheKey struct{}
+
+// wpInstallCache memoises discovery for the length of one scan cycle. Nine
+// WordPress consumers run per cycle and each used to walk every account home
+// for itself.
+type wpInstallCache struct {
+	mu        sync.Mutex
+	byAccount map[string]wpDiscovery
+}
+
+// withWPInstallCache attaches the memo to a scan context. Only the runner does
+// this: fix, drop and re-check paths build their own context, so they always
+// re-discover, which is what a caller that mutates the tree it just walked
+// needs. Invalidation is structural -- no cycle context, no cache.
+func withWPInstallCache(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, wpInstallCacheKey{}, &wpInstallCache{
+		byAccount: make(map[string]wpDiscovery),
+	})
+}
+
+func wpInstallCacheFrom(ctx context.Context) *wpInstallCache {
+	if ctx == nil {
+		return nil
+	}
+	cache, _ := ctx.Value(wpInstallCacheKey{}).(*wpInstallCache)
+	return cache
+}
+
+// lookupWPInstalls answers from the cycle memo when there is one. The cached
+// value carries its coverage gap, which every caller re-applies under its own
+// check name.
 func lookupWPInstalls(ctx context.Context, account string) wpDiscovery {
-	return discoverWPInstalls(ctx, account)
+	cache := wpInstallCacheFrom(ctx)
+	if cache == nil {
+		return discoverWPInstalls(ctx, account)
+	}
+	key := account
+	if key == "" {
+		key = AccountFromContext(ctx)
+	}
+	// The lock is held across discovery on purpose: two consumers starting at
+	// once should cost one walk, not two.
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cached, ok := cache.byAccount[key]; ok {
+		return cached
+	}
+	d := discoverWPInstalls(ctx, account)
+	cache.byAccount[key] = d
+	return d
 }
 
 // discoverWPInstalls merges cPanel's document-root map with a walk of the

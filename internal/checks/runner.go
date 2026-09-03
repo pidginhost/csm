@@ -909,6 +909,8 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	scanCtx, truncations := withAccountScanTruncationCollector(scanCtx)
 	scanCtx, coveragePaths := withCoveragePathCollector(scanCtx)
 	scanCtx, incompleteChecks := withIncompleteCheckCollector(scanCtx)
+	// One WordPress discovery per cycle, shared by every check that needs it.
+	scanCtx = withWPInstallCache(scanCtx)
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
