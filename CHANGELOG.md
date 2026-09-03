@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A `www` directory in an account home is scanned as the document root it is, and collapsed into `public_html` when it is the usual cPanel symlink, instead of being excluded as an alias.
 - `csm rehash` is listed in `csm --help`, and an integrity refusal at startup names it as the fix after an intentional change. It was discoverable only from a source comment.
 
 ### Fixed
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Finding re-verification summaries now count only state changes the store accepted and report severity restorations separately from cleared findings.
 - A YARA coverage gap now says what it was -- how many files were oversized, unreadable or changed mid-read, and how much was lost to a directory the walk could not enter -- rather than only how many entries were missed. The kinds are not equivalent: a file that can be named is carried forward, while an unreadable directory hides an unknown range and still holds everything.
 - The finding re-verification sweep always reports what it did, including how many findings it could not check and the commonest reason. A sweep that changed nothing logged nothing, so one failing on every finding looked exactly like one that never ran.
+- WordPress installs on subdomains, on addon domains and one directory below a document root are now scanned by the database-object, admin-overlap, credential-reuse, core-integrity and plugin checks, and findings raised on them can be fixed and re-checked instead of staying unresolvable because the fixer could not re-locate the install.
 - A finding whose flagged content is gone, but whose file changed since detection, now drops to Warning instead of staying Critical. It is never cleared, so an attacker cannot retire one by editing the file; what changes is that finished cleanup work stops ranking beside live threats. Only a replacement that can be proven inert qualifies -- an empty file, or a comment-only stub that never reopens into HTML -- and the severity comes straight back if the file stops being inert. An unconfirmed demotion also survives a scan that does not raise the finding again, so the state is not lost before the re-verifier has read the file.
 - Findings are re-verified once per deep-scan cycle as well as when the re-check logic changes. An operator cleaning a file, or a virtual patch closing an exposure, moves the world without moving CSM's rules, and a finding gated only on those sat at its original severity until an unrelated upgrade happened to land.
 - Web-exposed file findings can now be re-checked and are retired after a complete probe against the local origin confirms remediation. Re-checks stay pinned to current vhost routing and fail closed when routing data, either web protocol, or phpinfo body confirmation is incomplete.
