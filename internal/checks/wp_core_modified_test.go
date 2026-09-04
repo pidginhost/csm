@@ -64,8 +64,40 @@ func TestCheckWPCoreReportsModifiedCoreFile(t *testing.T) {
 	if f.FilePath != "/home/alice/public_html/wp-includes/plugin.php" {
 		t.Errorf("FilePath = %q, want the modified core file", f.FilePath)
 	}
-	if !strings.Contains(f.Details, "Path: /home/alice/public_html") {
-		t.Errorf("Details must carry the install path for Re-check: %q", f.Details)
+	if !strings.HasPrefix(f.Details, "Path: /home/alice/public_html\n") {
+		t.Errorf("Details must start with the install path for Re-check: %q", f.Details)
+	}
+}
+
+func TestCheckWPCoreKeepsModifiedFilesSeparateFromCollapsedExtras(t *testing.T) {
+	wpCoreCheckMocks(t,
+		"Warning: File should not exist: wp-includes/blocks/leftover.php\n"+
+			"Warning: File doesn't verify against checksum: wp-includes/plugin.php\n"+
+			"Warning: File doesn't verify against checksum: wp-includes/version.php\n")
+
+	got := coreIntegrityFindings(CheckWPCore(context.Background(), &config.Config{}, nil))
+	if len(got) != 3 {
+		t.Fatalf("findings = %d, want one collapsed extra and two modified files: %+v", len(got), got)
+	}
+	modified := map[string]bool{}
+	extraneous := 0
+	for _, f := range got {
+		if f.FilePath == "" {
+			extraneous++
+			continue
+		}
+		modified[f.FilePath] = true
+	}
+	if extraneous != 1 {
+		t.Errorf("collapsed extraneous findings = %d, want 1", extraneous)
+	}
+	for _, path := range []string{
+		"/home/alice/public_html/wp-includes/plugin.php",
+		"/home/alice/public_html/wp-includes/version.php",
+	} {
+		if !modified[path] {
+			t.Errorf("modified core file lost its actionable finding: %s", path)
+		}
 	}
 }
 
@@ -230,8 +262,8 @@ func TestCheckWPCoreCollapsesExtraneousFilesIntoOneFinding(t *testing.T) {
 		t.Fatalf("findings = %d, want 1", len(got))
 	}
 	f := got[0]
-	if !strings.Contains(f.Details, "Path: /home/alice/public_html") {
-		t.Errorf("Details must carry the install path for Re-check: %q", f.Details)
+	if !strings.HasPrefix(f.Details, "Path: /home/alice/public_html\n") {
+		t.Errorf("collapsed Details must start with the install path for Re-check: %q", f.Details)
 	}
 	if !strings.Contains(f.Details, "1200") {
 		t.Errorf("Details must state how many files were reported: %q", f.Details)

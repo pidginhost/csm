@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -248,5 +249,31 @@ func TestBuildAdminOverlapFindings_KeyTracksAccountMembership(t *testing.T) {
 	})
 	if two[0].Key() == three[0].Key() {
 		t.Errorf("key ignored a new account joining the overlap: %q", two[0].Key())
+	}
+}
+
+func TestAdminOverlapDedupKeyIsBoundedAndUnambiguous(t *testing.T) {
+	// Delimiter concatenation cannot distinguish these two account lists.
+	// Keep the identity safe even if a future platform permits punctuation in
+	// account names or malformed persisted data reaches the finding builder.
+	one := adminOverlapDedupKey("contractor@example.test", []string{"alice,bob", "carol"})
+	two := adminOverlapDedupKey("contractor@example.test", []string{"alice", "bob", "carol"})
+	if one == two {
+		t.Fatalf("distinct account lists share dedup key %q", one)
+	}
+	if one == adminOverlapDedupKey("other@example.test", []string{"alice,bob", "carol"}) {
+		t.Fatalf("distinct administrator emails share dedup key %q", one)
+	}
+
+	many := make([]string, 3000)
+	for i := range many {
+		many[i] = fmt.Sprintf("account-%04d", i)
+	}
+	key := adminOverlapDedupKey("contractor@example.test", many)
+	if len(key) > 64 {
+		t.Fatalf("dedup key grows with the account set: len = %d", len(key))
+	}
+	if strings.Contains(key, "contractor@example.test") {
+		t.Fatalf("dedup key exposes its unhashed identity: %q", key)
 	}
 }

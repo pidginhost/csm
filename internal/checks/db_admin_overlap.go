@@ -2,6 +2,8 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -164,9 +166,21 @@ func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []al
 
 // adminOverlapDedupKey pins the finding identity to the fact the message
 // states: this email administers this set of accounts. Account membership
-// changing is a new fact; the observation timestamps moving is not.
+// changing is a new fact; the observation timestamps moving is not. Length
+// prefixes keep arbitrary field contents unambiguous, while the digest keeps
+// a large shared-admin set from turning into an unbounded state-map key.
 func adminOverlapDedupKey(email string, sortedAccounts []string) string {
-	return email + "|" + strings.Join(sortedAccounts, ",")
+	identity := make([]byte, 0, len(email)+len(sortedAccounts)*16)
+	appendField := func(value string) {
+		identity = binary.BigEndian.AppendUint64(identity, uint64(len(value)))
+		identity = append(identity, value...)
+	}
+	appendField(email)
+	for _, account := range sortedAccounts {
+		appendField(account)
+	}
+	digest := sha256.Sum256(identity)
+	return fmt.Sprintf("admin-overlap:%x", digest[:12])
 }
 
 func filterTrustedAdminOverlaps(overlaps map[string][]store.AdminEmailEntry, cfg *config.Config) map[string][]store.AdminEmailEntry {
