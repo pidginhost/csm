@@ -37,6 +37,26 @@ func isAutomaticallyDemoted(f alert.Finding) bool {
 		f.DemotedFrom >= alert.High && f.DemotedFrom <= alert.Critical
 }
 
+// ShouldRestoreSeverity reports whether an automatic demotion must be reversed.
+// A demotion holds only while the replacement keeps satisfying the inert-content
+// gate. Restore on a positive match and on every uncertain or newly-active shape
+// alike; otherwise a second edit into a detection gap would leave live malware
+// at Warning.
+func ShouldRestoreSeverity(f alert.Finding, res VerifyResult) bool {
+	return isAutomaticallyDemoted(f) && !res.Demote
+}
+
+// ShouldDemoteSeverity reports whether a verdict retires a remediated but
+// unproven finding from the live queue. It is never a clear: an attacker must
+// not retire a finding by editing the file. Demoting an already-Warning finding
+// would be churn.
+//
+// The unattended sweep and the operator's Re-check both ask this, so the two
+// cannot disagree about what a verdict means.
+func ShouldDemoteSeverity(f alert.Finding, res VerifyResult) bool {
+	return res.Checked && res.Demote && f.Severity > alert.Warning
+}
+
 // autoReverifiable reports whether the sweep may re-check and dismiss a finding
 // of this type on its own. Membership is deliberately narrow: only families
 // whose verifier re-runs the same test that raised the finding and fails closed
@@ -128,19 +148,13 @@ func ReverifyStaleFindingsStats(ctx context.Context, store LatestFindingStore) (
 				stats.Cleared++
 				dismissed = append(dismissed, ContentReverifyDismissal{Check: f.Check, Path: f.FilePath, Detail: res.Detail})
 			}
-		case isAutomaticallyDemoted(f) && !res.Demote:
-			// A demotion holds only while the replacement keeps satisfying the
-			// inert-content gate. Restore on a positive match and on every
-			// uncertain or newly-active shape alike; otherwise a second edit
-			// into a detection gap would leave live malware at Warning.
+		case ShouldRestoreSeverity(f, res):
 			if store.RestoreLatestFindingSeverity(f) {
 				stats.Promoted++
 				dismissed = append(dismissed, ContentReverifyDismissal{
 					Check: f.Check, Path: f.FilePath, Detail: res.Detail, Promoted: true})
 			}
-		case res.Checked && res.Demote && f.Severity > alert.Warning:
-			// Remediated but unproven: keep it, stop ranking it beside live
-			// threats. Demoting an already-Warning finding would be churn.
+		case ShouldDemoteSeverity(f, res):
 			if store.DemoteLatestFinding(f, alert.Warning) {
 				stats.Demoted++
 				dismissed = append(dismissed, ContentReverifyDismissal{

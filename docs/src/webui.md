@@ -95,9 +95,13 @@ database rows, administrator accounts, and database objects. Re-check uses the
 stored finding identity and current host state; the browser cannot substitute a
 different path, row, account, or object.
 
-The operation fails closed. Missing or unreadable evidence, changed file bytes,
-package-manager errors, failed CMS discovery, and failed database queries leave
-the finding active. Historical events such as login attempts, WAF blocks, and IP
+The operation fails closed. Missing or unreadable evidence, package-manager
+errors, failed CMS discovery, and failed database queries leave the finding
+active. A file whose bytes changed since detection is never cleared either,
+because a partial clean and an evasion edit look alike. When the replacement can
+be proven inert, an empty file or a comment-only stub, the finding drops to
+Warning instead of clearing, and the original severity comes back if the file
+stops being inert. Historical events such as login attempts, WAF blocks, and IP
 reputation cannot be re-evaluated and therefore have no Re-check action. Broad
 aggregates and dependency findings require a new account or full scan.
 

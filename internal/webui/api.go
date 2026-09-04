@@ -960,20 +960,37 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	in, key := s.verifyFindingInput(req)
+	in, key, stored, found := s.verifyFindingInput(req)
 	in.Context = r.Context()
-	res := checks.VerifyFindingInput(in)
-	if res.Checked && res.Resolved {
+	res := verifyFinding(in)
+	switch {
+	case res.Checked && res.Resolved:
 		if key == "" {
 			key = req.Check + ":" + req.Message
 		}
 		s.store.DismissFinding(key)
 		s.store.DismissLatestFinding(key)
 		s.auditLog(r, "verify-resolved", req.Check, res.Detail)
+	// A severity change rewrites the stored finding, so it needs the exact
+	// snapshot the verifier read; a request that could not be matched to one
+	// leaves the finding alone rather than guessing which it meant.
+	case found && checks.ShouldRestoreSeverity(stored, res):
+		if s.store.RestoreLatestFindingSeverity(stored) {
+			s.auditLog(r, "verify-restored", req.Check, res.Detail)
+		}
+	case found && checks.ShouldDemoteSeverity(stored, res):
+		if s.store.DemoteLatestFinding(stored, alert.Warning) {
+			s.auditLog(r, "verify-demoted", req.Check, res.Detail)
+		}
 	}
 
 	writeJSON(w, res)
 }
+
+// verifyFinding is a seam so handler tests can supply a verdict directly. The
+// real verifier reads the flagged file from disk under the platform's account
+// roots, which a handler test cannot reproduce.
+var verifyFinding = checks.VerifyFindingInput
 
 type verifyFindingRequest struct {
 	Check         string `json:"check"`
@@ -984,21 +1001,24 @@ type verifyFindingRequest struct {
 	Key           string `json:"key"`
 }
 
-func (s *Server) verifyFindingInput(req verifyFindingRequest) (checks.VerifyInput, string) {
+// verifyFindingInput builds the verifier input, and returns the stored finding
+// it was built from so a caller applying a severity change can pass the exact
+// snapshot the verifier saw.
+func (s *Server) verifyFindingInput(req verifyFindingRequest) (checks.VerifyInput, string, alert.Finding, bool) {
 	in := checks.VerifyInput{
 		Check: req.Check, Message: req.Message, Details: req.Details,
 		Path: req.FilePath,
 	}
 	f, ok := s.latestFindingForVerify(req.Key, req.Check, req.Message)
 	if !ok {
-		return in, req.Key
+		return in, req.Key, alert.Finding{}, false
 	}
 	in.Message = f.Message
 	in.Details = f.Details
 	in.Path = f.FilePath
 	in.ContentSHA256 = f.ContentSHA256
 	in.DetectLogic = f.DetectLogic
-	return in, f.Key()
+	return in, f.Key(), f, true
 }
 
 func (s *Server) latestFindingForVerify(key, check, message string) (alert.Finding, bool) {

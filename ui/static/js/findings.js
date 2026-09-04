@@ -452,14 +452,25 @@ function verifyOne(btn) {
             row.style.opacity = '0.3';
             CSM.toast('Resolved: ' + (data.detail || 'finding cleared'), 'success');
             setTimeout(refreshFindings, 1000);
+        } else if (data.demote) {
+            // Never cleared, only ranked lower. Reporting this as "still
+            // present" hid the fact that the severity had just changed.
+            CSM.toast('Demoted: ' + (data.detail || 'remediation unconfirmed'), 'warning');
+            setTimeout(refreshFindings, 1000);
         } else if (data.checked) {
             CSM.toast('Still present: ' + (data.detail || ''), 'warning');
             btn.disabled = false;
             btn.innerHTML = orig;
+            // A re-check can also restore a severity an earlier demotion
+            // lowered, so refresh rather than leaving a stale row.
+            setTimeout(refreshFindings, 1000);
         } else {
             CSM.toast('Cannot auto-verify: ' + (data.detail || ''), 'info');
             btn.disabled = false;
             btn.innerHTML = orig;
+            // An inconclusive re-check still reverses an earlier demotion, so
+            // the severity can rise here too.
+            setTimeout(refreshFindings, 1000);
         }
     }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = orig; });
 }
