@@ -217,6 +217,13 @@ repeat that path in `file_path`, but a different path is refused, and a target
 is never a remediation root itself (`/home`, `/tmp`, `/var/tmp`, `/dev/shm`)
 or an account's home directory.
 
+`verify-finding` returns the verifier verdict in `checked`, `resolved`,
+`demote`, and `detail`. When that verdict also changes the stored finding,
+`severity_change` is `demoted` or `restored`. A `demote` verdict without
+`severity_change` means no stored severity changed; for example, the finding
+was already demoted or a scan replaced its snapshot while verification was
+running. Callers must not report a state change from the verdict alone.
+
 ## Settings
 
 ```

@@ -944,9 +944,10 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiVerifyFinding re-checks whether a finding's condition still holds against
-// the live filesystem and, when it no longer does, dismisses the finding. This
-// lets an operator confirm a manual fix immediately instead of waiting for the
-// next scan, and is the "Re-check" action behind a finding row.
+// the live filesystem. It dismisses a resolved finding, lowers an inert
+// replacement to Warning, or restores an earlier automatic demotion. This lets
+// an operator confirm a manual fix immediately instead of waiting for the next
+// scan, and is the "Re-check" action behind a finding row.
 // POST /api/v1/verify-finding  body: {"check":"...","message":"...","details":"...","file_path":"...","key":"..."}
 func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -962,35 +963,41 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 
 	in, key, stored, found := s.verifyFindingInput(req)
 	in.Context = r.Context()
-	res := verifyFinding(in)
+	response := verifyFindingResponse{VerifyResult: s.verifyFinding(in)}
 	switch {
-	case res.Checked && res.Resolved:
+	case response.Checked && response.Resolved:
 		if key == "" {
 			key = req.Check + ":" + req.Message
 		}
 		s.store.DismissFinding(key)
 		s.store.DismissLatestFinding(key)
-		s.auditLog(r, "verify-resolved", req.Check, res.Detail)
+		s.auditLog(r, "verify-resolved", req.Check, response.Detail)
 	// A severity change rewrites the stored finding, so it needs the exact
 	// snapshot the verifier read; a request that could not be matched to one
 	// leaves the finding alone rather than guessing which it meant.
-	case found && checks.ShouldRestoreSeverity(stored, res):
+	case found && checks.ShouldRestoreSeverity(stored, response.VerifyResult):
 		if s.store.RestoreLatestFindingSeverity(stored) {
-			s.auditLog(r, "verify-restored", req.Check, res.Detail)
+			response.SeverityChange = "restored"
+			s.auditLog(r, "verify-restored", req.Check, response.Detail)
 		}
-	case found && checks.ShouldDemoteSeverity(stored, res):
+	case found && checks.ShouldDemoteSeverity(stored, response.VerifyResult):
 		if s.store.DemoteLatestFinding(stored, alert.Warning) {
-			s.auditLog(r, "verify-demoted", req.Check, res.Detail)
+			response.SeverityChange = "demoted"
+			s.auditLog(r, "verify-demoted", req.Check, response.Detail)
 		}
 	}
 
-	writeJSON(w, res)
+	writeJSON(w, response)
 }
 
-// verifyFinding is a seam so handler tests can supply a verdict directly. The
-// real verifier reads the flagged file from disk under the platform's account
-// roots, which a handler test cannot reproduce.
-var verifyFinding = checks.VerifyFindingInput
+// verifyFindingResponse distinguishes the verifier's recommendation from a
+// state change the store actually accepted. Demote remains a verdict: it can be
+// true for an already-demoted finding or after a concurrent scan replaced the
+// snapshot, neither of which means this request changed the stored severity.
+type verifyFindingResponse struct {
+	checks.VerifyResult
+	SeverityChange string `json:"severity_change,omitempty"`
+}
 
 type verifyFindingRequest struct {
 	Check         string `json:"check"`

@@ -18,14 +18,13 @@ import (
 // file by hand and pressed Re-check saw nothing happen, and could not tell that
 // apart from a re-check that had failed.
 
-// withVerdict makes the handler see a fixed verifier verdict, so these tests
+// withVerdict makes one server see a fixed verifier verdict, so these tests
 // exercise what the handler does with one rather than re-deriving it from a
-// file the webui package cannot place under a real account root.
-func withVerdict(t *testing.T, res checks.VerifyResult) {
+// file the webui package cannot place under a real account root. Keeping the
+// seam on the server avoids changing verifier behavior for concurrent servers.
+func withVerdict(t *testing.T, s *Server, res checks.VerifyResult) {
 	t.Helper()
-	old := verifyFinding
-	verifyFinding = func(checks.VerifyInput) checks.VerifyResult { return res }
-	t.Cleanup(func() { verifyFinding = old })
+	s.verifyFinding = func(checks.VerifyInput) checks.VerifyResult { return res }
 }
 
 func storedFinding(t *testing.T, s *Server, key string) alert.Finding {
@@ -50,7 +49,7 @@ func TestApiVerifyFindingDemoteLowersSeverity(t *testing.T) {
 	}
 	s.store.ClearLatestFindings()
 	s.store.SetLatestFindings([]alert.Finding{f})
-	withVerdict(t, checks.VerifyResult{
+	withVerdict(t, s, checks.VerifyResult{
 		Checked: true, Demote: true,
 		Detail: "replacement is an inert PHP stub -- confirm remediation",
 	})
@@ -70,6 +69,13 @@ func TestApiVerifyFindingDemoteLowersSeverity(t *testing.T) {
 	}
 	if !res.Demote {
 		t.Fatalf("response should carry the demotion verdict, got %+v", res)
+	}
+	var response verifyFindingResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("bad response JSON: %v", err)
+	}
+	if response.SeverityChange != "demoted" {
+		t.Fatalf("severity_change = %q, want demoted", response.SeverityChange)
 	}
 	if got := len(s.store.LatestFindings()); got != 1 {
 		t.Fatalf("a demoted finding is never cleared, have %d want 1", got)
@@ -95,7 +101,7 @@ func TestApiVerifyFindingRestoresSeverityWhenNoLongerInert(t *testing.T) {
 	}
 	s.store.ClearLatestFindings()
 	s.store.SetLatestFindings([]alert.Finding{f})
-	withVerdict(t, checks.VerifyResult{Checked: true, Demote: false, Detail: "still flagged"})
+	withVerdict(t, s, checks.VerifyResult{Checked: true, Demote: false, Detail: "still flagged"})
 
 	w := httptest.NewRecorder()
 	body := `{"check":"yara_match_scheduled","message":"` + f.Message + `","file_path":"` + path + `"}`
@@ -110,20 +116,28 @@ func TestApiVerifyFindingRestoresSeverityWhenNoLongerInert(t *testing.T) {
 	if got.Severity != alert.Critical {
 		t.Errorf("severity = %v, want Critical restored", got.Severity)
 	}
+	var response verifyFindingResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("bad response JSON: %v", err)
+	}
+	if response.SeverityChange != "restored" {
+		t.Fatalf("severity_change = %q, want restored", response.SeverityChange)
+	}
 }
 
-func TestApiVerifyFindingResolvedStillDismissesNotDemotes(t *testing.T) {
+func TestApiVerifyFindingResolvedDemotionStillDismissesFirst(t *testing.T) {
 	s := newTestServer(t, "tok")
 	path := "/home/alice/public_html/index.php"
 	f := alert.Finding{
-		Check:    "yara_match_scheduled",
-		Message:  "YARA rule match [obfuscation_fragmented_base64_eval]: " + path,
-		FilePath: path,
-		Severity: alert.Critical,
+		Check:       "yara_match_scheduled",
+		Message:     "YARA rule match [obfuscation_fragmented_base64_eval]: " + path,
+		FilePath:    path,
+		Severity:    alert.Warning,
+		DemotedFrom: alert.Critical,
 	}
 	s.store.ClearLatestFindings()
 	s.store.SetLatestFindings([]alert.Finding{f})
-	withVerdict(t, checks.VerifyResult{Checked: true, Resolved: true, Detail: "file no longer present"})
+	withVerdict(t, s, checks.VerifyResult{Checked: true, Resolved: true, Detail: "file no longer present"})
 
 	w := httptest.NewRecorder()
 	body := `{"check":"yara_match_scheduled","message":"` + f.Message + `","file_path":"` + path + `"}`
@@ -147,7 +161,7 @@ func TestApiVerifyFindingUncheckedLeavesSeverityAlone(t *testing.T) {
 	}
 	s.store.ClearLatestFindings()
 	s.store.SetLatestFindings([]alert.Finding{f})
-	withVerdict(t, checks.VerifyResult{Checked: false, Detail: "YARA scanner unavailable"})
+	withVerdict(t, s, checks.VerifyResult{Checked: false, Detail: "YARA scanner unavailable"})
 
 	w := httptest.NewRecorder()
 	body := `{"check":"yara_match_scheduled","message":"` + f.Message + `","file_path":"` + path + `"}`
@@ -158,5 +172,98 @@ func TestApiVerifyFindingUncheckedLeavesSeverityAlone(t *testing.T) {
 	got := storedFinding(t, s, f.Key())
 	if got.Severity != alert.Critical {
 		t.Errorf("an inconclusive re-check must not change severity, got %v", got.Severity)
+	}
+}
+
+func TestApiVerifyFindingUncheckedRestoresAutomaticDemotion(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{
+		Check: "yara_match_scheduled", Message: "flagged index.php", FilePath: "/home/alice/public_html/index.php",
+		Severity: alert.Warning, DemotedFrom: alert.Critical,
+	}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{f})
+	withVerdict(t, s, checks.VerifyResult{Checked: false, Detail: "YARA scanner unavailable"})
+
+	w := httptest.NewRecorder()
+	body := `{"check":"yara_match_scheduled","message":"flagged index.php"}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiVerifyFinding(w, req)
+
+	got := storedFinding(t, s, f.Key())
+	if got.Severity != alert.Critical {
+		t.Fatalf("an inconclusive re-check must restore the fail-safe severity, got %v", got.Severity)
+	}
+	var response verifyFindingResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("bad response JSON: %v", err)
+	}
+	if response.SeverityChange != "restored" {
+		t.Fatalf("severity_change = %q, want restored", response.SeverityChange)
+	}
+}
+
+func TestApiVerifyFindingDoesNotReportRejectedDemotion(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{
+		Check: "yara_match_scheduled", Message: "flagged index.php", FilePath: "/home/alice/public_html/index.php",
+		Severity: alert.Critical,
+	}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{f})
+	// Simulate a scan refreshing the finding after the handler took its
+	// snapshot but before it tries to apply the verdict.
+	s.verifyFinding = func(checks.VerifyInput) checks.VerifyResult {
+		refreshed := f
+		refreshed.ContentSHA256 = "newer-scan-snapshot"
+		s.store.SetLatestFindings([]alert.Finding{refreshed})
+		return checks.VerifyResult{Checked: true, Demote: true, Detail: "inert replacement"}
+	}
+
+	w := httptest.NewRecorder()
+	body := `{"check":"yara_match_scheduled","message":"flagged index.php"}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiVerifyFinding(w, req)
+
+	got := storedFinding(t, s, f.Key())
+	if got.Severity != alert.Critical || got.ContentSHA256 != "newer-scan-snapshot" {
+		t.Fatalf("stale verdict overwrote the refreshed finding: %+v", got)
+	}
+	var response verifyFindingResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("bad response JSON: %v", err)
+	}
+	if !response.Demote || response.SeverityChange != "" {
+		t.Fatalf("response must separate verdict from rejected mutation: %+v", response)
+	}
+}
+
+func TestApiVerifyFindingClientFieldsCannotSelectSeverityTarget(t *testing.T) {
+	s := newTestServer(t, "tok")
+	victim := alert.Finding{
+		Check: "yara_match_scheduled", Message: "stored finding", FilePath: "/home/alice/public_html/index.php",
+		Severity: alert.Critical,
+	}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{victim})
+	withVerdict(t, s, checks.VerifyResult{Checked: true, Demote: true, Detail: "inert replacement"})
+
+	w := httptest.NewRecorder()
+	body := `{"key":"` + victim.Key() + `","check":"yara_match_scheduled","message":"client-supplied finding","file_path":"/tmp/other.php"}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiVerifyFinding(w, req)
+
+	if got := storedFinding(t, s, victim.Key()); got.Severity != alert.Critical {
+		t.Fatalf("client fields selected a stored finding for mutation: %+v", got)
+	}
+	var response verifyFindingResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("bad response JSON: %v", err)
+	}
+	if response.SeverityChange != "" {
+		t.Fatalf("unmatched client input reported an applied severity change: %+v", response)
 	}
 }

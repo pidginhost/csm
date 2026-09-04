@@ -452,10 +452,19 @@ function verifyOne(btn) {
             row.style.opacity = '0.3';
             CSM.toast('Resolved: ' + (data.detail || 'finding cleared'), 'success');
             setTimeout(refreshFindings, 1000);
-        } else if (data.demote) {
-            // Never cleared, only ranked lower. Reporting this as "still
-            // present" hid the fact that the severity had just changed.
+        } else if (data.severity_change === 'demoted') {
+            // Never cleared, only ranked lower. The applied outcome is
+            // separate from the verifier verdict because a concurrent scan
+            // can replace the stored snapshot before this mutation lands.
             CSM.toast('Demoted: ' + (data.detail || 'remediation unconfirmed'), 'warning');
+            setTimeout(refreshFindings, 1000);
+        } else if (data.severity_change === 'restored') {
+            CSM.toast('Restored: ' + (data.detail || 'finding needs review'), 'warning');
+            setTimeout(refreshFindings, 1000);
+        } else if (data.demote) {
+            CSM.toast('Severity unchanged: ' + (data.detail || 'reload and retry'), 'info');
+            btn.disabled = false;
+            btn.innerHTML = orig;
             setTimeout(refreshFindings, 1000);
         } else if (data.checked) {
             CSM.toast('Still present: ' + (data.detail || ''), 'warning');

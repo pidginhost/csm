@@ -127,6 +127,9 @@ type Server struct {
 	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
 	sigCountMu       sync.RWMutex
 	settingsSaveHook func()
+	// verifyFinding is per server so handler tests can inject a verdict without
+	// replacing process-wide behavior while another server is handling a request.
+	verifyFinding func(checks.VerifyInput) checks.VerifyResult
 
 	provider health.Provider // set by Daemon when it starts the WebUI
 
@@ -176,6 +179,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		queueReporter:    selectQueueReporter(),
 		queueFlusher:     selectQueueFlusher(),
 		forwardHeld:      selectForwardHeld(),
+		verifyFinding:    checks.VerifyFindingInput,
 	}
 
 	// Check if UI directory exists on disk

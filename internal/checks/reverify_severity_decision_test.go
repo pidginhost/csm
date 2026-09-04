@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -105,5 +106,25 @@ func TestShouldRestoreSeverity(t *testing.T) {
 				t.Fatalf("ShouldRestoreSeverity = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSweepResolvesAutomaticallyDemotedFindingBeforeRestore(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+	f := alert.Finding{
+		Check: "suspicious_php_content", Message: "removed file", FilePath: filepath.Join(tmp, "gone.php"),
+		Severity: alert.Warning, DemotedFrom: alert.Critical,
+	}
+	store := &fakeFindingStore{
+		findings: []alert.Finding{f}, dismissed: map[string]bool{}, promoted: map[string]bool{},
+	}
+
+	outcomes := ReverifyStaleFindings(store)
+	if len(outcomes) != 1 || outcomes[0].Promoted || outcomes[0].Demoted {
+		t.Fatalf("resolved automatic demotion must be cleared first, got %+v", outcomes)
+	}
+	if !store.dismissed[f.Key()] || store.promoted[f.Key()] {
+		t.Fatalf("resolved finding used the wrong mutation: dismissed=%v promoted=%v", store.dismissed, store.promoted)
 	}
 }
