@@ -5,7 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.33.0] - 2026-09-04
+
+### Highlights
+
+- Realtime scanning now sees writes inside CloudLinux CageFS cages. Every write that reached an account through a bind mount previously raised no event at all, so the accounts most likely to be compromised had no realtime coverage.
+- WordPress installs on subdomains, on addon domains and one directory below a document root are scanned by every database, core-integrity and plugin check. On a typical cPanel host this roughly triples the number of installs examined, so expect a batch of findings from sites that were never scanned before, and a longer first deep cycle.
+- The Re-check action works on real servers. It resolved account directories from a list only tests ever filled in, so on a live host every malware, permission and .htaccess re-check failed on the path before opening the file, and no cleaned file could leave the queue.
+- Realtime phishing, credential-log, archive and CGI detection works on Plesk, DirectAdmin and any layout whose accounts are not under `/home`.
+- Automatic responses verify what they are about to act on: a process is killed only when it is still the process the finding described, and a file is quarantined only when it is still the file the scanner read.
+- Daemon shutdown no longer waits on a Cloudflare range refresh. On a host that cannot reach cloudflare.com, stopping the daemon took two HTTP timeouts.
+- The YARA engine moves to YARA-X 1.20.0, validated by compiling and scanning both rulesets under each version and diffing the results.
+- `csm doctor` reports binary, `csm.yaml` and conf.d hash mismatches while the daemon is still running, instead of leaving the mismatch to be discovered when a restart refuses to start.
+
+### Security
+
+- Realtime scanning was blind to writes that reached a file through a bind mount, which is how every CloudLinux CageFS account reaches its own files. Marks now cover the filesystem rather than a single mount, and any watch root left with narrower coverage is named at startup.
+- The realtime phishing, credential-log, archive and CGI detectors only recognised `/home` and `public_html`, so on Plesk, DirectAdmin, or a cPanel host with accounts elsewhere they never fired at all.
+- A file could be swapped between the moment the realtime scanner read it and the moment it was quarantined, which moved the replacement and left the malware in place under another name. Quarantine is now pinned to the file that was actually scanned.
+- The verified-CMS exemption hashed the path rather than the content that had been scanned, so presenting a clean core file at that moment skipped both the signature and YARA engines for content already read as malicious.
+- A `wp-config.php` that is a symlink is refused rather than scanned, because wp-cli follows it as root: an account could otherwise point its own config at another account's and have that tenant's database inventoried under its name.
+- Automatic responses and the Fix action killed a process by number alone. A recycled PID meant an unrelated process was killed as root; the kill now requires the process to still match the finding, and the kill that precedes a quarantine requires it to still hold the file.
+- The connection monitor performed its verdict callback inside the event loop, so one denied connection could stall the reader for the callback's timeout and overflow the event buffer. Findings are dispatched first and enrichment is bounded; when it saturates the annotation is dropped, never the finding.
+- File-specific scan gaps no longer block retirement of findings for files that were examined. Findings stay open when their scanner did not examine the file, including interrupted and shared scans.
+- Branded webshells and plugin-directory droppers stay detectable when padding separates their identifying content from the dangerous operation.
 
 ### Added
 
@@ -16,37 +39,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The YARA engine moves from YARA-X 1.19.0 to 1.20.0. Both rulesets were compiled and scanned under each version first: the shipped rules produce the same matches file for file, and the warning sets are identical apart from one diagnostic 1.20 adds. Nothing detected today stops being detected, and the version a developer runs locally is now the version that ships.
 - A `www` directory in an account home is scanned as the document root it is, and collapsed into `public_html` when it is the usual cPanel symlink, instead of being excluded as an alias.
 - `csm rehash` is listed in `csm --help`, and an integrity refusal at startup names it as the fix after an intentional change. It was discoverable only from a source comment.
 
 ### Fixed
 
-- Realtime monitoring now covers account filesystem bind mounts and configured document roots. Process, quarantine, and CMS-cache decisions preserve observed identity and only trust verified content, while callback enrichment stays bounded under load.
-- Daemon shutdown now cancels in-flight Cloudflare range refreshes, and optional verdict callbacks no longer stall realtime event ingestion.
-- The YARA deep scan now handles a file it could not read the way the PHP and JavaScript scans already did: it re-emits that file's existing finding and retires everything else it examined, instead of holding its entire finding set. One error log permanently over the scan limit was enough to freeze every YARA finding on a host for as long as that file existed.
-- Deep-scan carry-forward now preserves every prior YARA rule match and the current PHP or JavaScript finding for each unexamined file across equivalent path spellings, without undoing concurrent dismissals or severity changes. Ambiguous file-type or identity changes retain the affected scan range rather than retiring findings without coverage.
-- Finding re-verification summaries now count only state changes the store accepted and report severity restorations separately from cleared findings.
-- A YARA coverage gap now says what it was -- how many files were oversized, unreadable or changed mid-read, and how much was lost to a directory the walk could not enter -- rather than only how many entries were missed. The kinds are not equivalent: a file that can be named is carried forward, while an unreadable directory hides an unknown range and still holds everything.
-- The finding re-verification sweep always reports what it did, including how many findings it could not check and the commonest reason. A sweep that changed nothing logged nothing, so one failing on every finding looked exactly like one that never ran.
-- WordPress discovery now treats document-root resolution failures as incomplete, retains and evaluates plugin inventory after partial discovery, keeps account cleanup pointed at the primary install, and does not mistake account names for backup or cache directories. A symlinked `wp-config.php` is refused rather than scanned, because wp-cli follows it as root, and incomplete database reads no longer retire earlier findings.
+#### WordPress and CMS scanning
+
 - WordPress installs on subdomains, on addon domains and one directory below a document root are now scanned by the database-object, admin-overlap, credential-reuse, core-integrity and plugin checks, and findings raised on them can be fixed and re-checked instead of staying unresolvable because the fixer could not re-locate the install.
-- A finding whose flagged content is gone, but whose file changed since detection, now drops to Warning instead of staying Critical. It is never cleared, so an attacker cannot retire one by editing the file; what changes is that finished cleanup work stops ranking beside live threats. Only a replacement that can be proven inert qualifies -- an empty file, or a comment-only stub that never reopens into HTML -- and the severity comes straight back if the file stops being inert. An unconfirmed demotion also survives a scan that does not raise the finding again, so the state is not lost before the re-verifier has read the file.
-- Findings are re-verified once per deep-scan cycle as well as when the re-check logic changes. An operator cleaning a file, or a virtual patch closing an exposure, moves the world without moving CSM's rules, and a finding gated only on those sat at its original severity until an unrelated upgrade happened to land.
-- Web-exposed file findings can now be re-checked and are retired after a complete probe against the local origin confirms remediation. Re-checks stay pinned to current vhost routing and fail closed when routing data, either web protocol, or phpinfo body confirmation is incomplete.
+- WordPress discovery treats document-root resolution failures as incomplete, retains and evaluates plugin inventory after partial discovery, keeps account cleanup pointed at the primary install, and does not mistake account names for backup or cache directories.
+
+#### Findings and re-checks
+
 - Re-checking a malware, permission or .htaccess finding now resolves the account directories of the running host instead of an allow list that was only ever filled in by tests. On a real server every one of those re-checks failed on the path before the file was opened, so the Re-check action never worked and no cleaned file could leave the queue.
 - The Re-check action now applies a demotion, and reverses one when the file stops being inert, instead of computing the verdict and discarding it. The UI reports a severity change only after the stored finding was actually updated.
+- A finding whose flagged content is gone, but whose file changed since detection, now drops to Warning instead of staying Critical. It is never cleared, so an attacker cannot retire one by editing the file; what changes is that finished cleanup work stops ranking beside live threats. Only a replacement that can be proven inert qualifies -- an empty file, or a comment-only stub that never reopens into HTML -- and the severity comes straight back if the file stops being inert. An unconfirmed demotion also survives a scan that does not raise the finding again, so the state is not lost before the re-verifier has read the file.
+- Findings are re-verified once per deep-scan cycle as well as when the re-check logic changes. An operator cleaning a file, or a virtual patch closing an exposure, moves the world without moving CSM's rules, and a finding gated only on those sat at its original severity until an unrelated upgrade happened to land.
 - The re-verification sweep at startup now also re-runs when the sweep's own behaviour changes, not only when detection logic does. A change to what the sweep may do previously waited for the next deep-scan cycle to take effect on a host that had already recorded one.
+- Finding re-verification summaries now count only state changes the store accepted and report severity restorations separately from cleared findings.
+- The finding re-verification sweep always reports what it did, including how many findings it could not check and the commonest reason. A sweep that changed nothing logged nothing, so one failing on every finding looked exactly like one that never ran.
+- Web-exposed file findings can now be re-checked and are retired after a complete probe against the local origin confirms remediation. Re-checks stay pinned to current vhost routing and fail closed when routing data, either web protocol, or phpinfo body confirmation is incomplete.
+
+#### Deep scanning and coverage
+
+- The YARA deep scan now handles a file it could not read the way the PHP and JavaScript scans already did: it re-emits that file's existing finding and retires everything else it examined, instead of holding its entire finding set. One error log permanently over the scan limit was enough to freeze every YARA finding on a host for as long as that file existed.
+- Deep-scan carry-forward now preserves every prior YARA rule match and the current PHP or JavaScript finding for each unexamined file across equivalent path spellings, without undoing concurrent dismissals or severity changes. Ambiguous file-type or identity changes retain the affected scan range rather than retiring findings without coverage.
+- A YARA coverage gap now says what it was -- how many files were oversized, unreadable or changed mid-read, and how much was lost to a directory the walk could not enter -- rather than only how many entries were missed. The kinds are not equivalent: a file that can be named is carried forward, while an unreadable directory hides an unknown range and still holds everything.
+
+#### Rules
+
 - Large PHP logs no longer combine a family name or failed write with unrelated quoted source from another diagnostic record and report the file as malware.
 - The duplicate YARA detectors for a shell download pipeline are now one rule, and commands contained by fenced code or Markdown links are treated as documentation.
 
-### Changed
+#### Daemon and connectivity
 
-- The YARA engine moves from YARA-X 1.19.0 to 1.20.0. Both rulesets were compiled and scanned under each version first: the shipped rules produce the same matches file for file, and the warning sets are identical apart from one diagnostic 1.20 adds. Nothing detected today stops being detected, and the version a developer runs locally is now the version that ships.
-
-### Security
-
-- File-specific scan gaps no longer block retirement of findings for files that were examined. Findings stay open when their scanner did not examine the file, including interrupted and shared scans.
-- Branded webshells and plugin-directory droppers stay detectable when padding separates their identifying content from the dangerous operation.
+- Daemon shutdown cancels an in-flight Cloudflare range refresh instead of waiting out the HTTP timeout, twice, on a host that cannot reach cloudflare.com.
 
 ## [3.32.0] - 2026-09-02
 
@@ -2278,7 +2306,8 @@ Initial open-source release.
 - Commit-confirmed firewall apply with auto-rollback timer
 - Sanitized all test data, documentation, and code comments of internal infrastructure details
 
-[Unreleased]: https://github.com/pidginhost/csm/compare/v3.32.0...HEAD
+[Unreleased]: https://github.com/pidginhost/csm/compare/v3.33.0...HEAD
+[3.33.0]: https://github.com/pidginhost/csm/compare/v3.32.0...v3.33.0
 [3.32.0]: https://github.com/pidginhost/csm/compare/v3.31.0...v3.32.0
 [3.31.0]: https://github.com/pidginhost/csm/compare/v3.30.0...v3.31.0
 [3.30.0]: https://github.com/pidginhost/csm/compare/v3.29.0...v3.30.0
