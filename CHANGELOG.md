@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A WordPress core rebuilt from an older release reported every leftover file of the newer one as its own finding, which on one install produced over a thousand rows and buried the rest of the scan. The install now gets one finding that counts the files and samples them.
+- The cross-account admin overlap warning stored a new copy on every scan because its details carry an observation timestamp. One overlap is now one row until the accounts sharing that admin actually change.
+
 ## [3.33.1] - 2026-09-04
 
 ### Highlights

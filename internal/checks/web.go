@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -495,16 +496,10 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 				}
 
 				outStr := string(out)
+				var extraneous []string
 				for _, line := range strings.Split(outStr, "\n") {
 					if wpChecksumLineHasExtraneousCoreFile(line) {
-						mu.Lock()
-						findings = append(findings, alert.Finding{
-							Severity: alert.High,
-							Check:    "wp_core_integrity",
-							Message:  fmt.Sprintf("WordPress core integrity failure for %s", user),
-							Details:  fmt.Sprintf("Path: %s\n%s", wpPath, line),
-						})
-						mu.Unlock()
+						extraneous = append(extraneous, strings.TrimSpace(line))
 						continue
 					}
 					// A shipped core file whose bytes changed is where backdoors
@@ -522,6 +517,11 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 						mu.Unlock()
 					}
 				}
+				if len(extraneous) > 0 {
+					mu.Lock()
+					findings = append(findings, wpCoreExtraneousFinding(user, wpPath, extraneous))
+					mu.Unlock()
+				}
 			}
 		}()
 	}
@@ -538,6 +538,39 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 	fmt.Fprintf(os.Stderr, "CMS hash cache: %d verified core files cached\n", cache.Size())
 
 	return findings
+}
+
+// wpCoreExtraneousSampleLimit bounds how many wp-cli lines the collapsed
+// extra-file finding quotes. Enough to recognise the shape of the damage
+// without turning one broken install into a wall of text.
+const wpCoreExtraneousSampleLimit = 15
+
+// wpCoreExtraneousFinding collapses every "should not exist" line wp-cli
+// reported for one install into a single finding. The lines describe one
+// condition -- this core is not the release it claims to be -- and a core
+// rebuilt from an older release reports every file the newer one shipped, so
+// emitting them per file buries the rest of the scan. Identity is pinned to
+// the install so the row survives the operator deleting the files one by one.
+func wpCoreExtraneousFinding(user, wpPath string, lines []string) alert.Finding {
+	sorted := append([]string(nil), lines...)
+	sort.Strings(sorted)
+	var details strings.Builder
+	fmt.Fprintf(&details, "Path: %s\n", wpPath)
+	fmt.Fprintf(&details, "Core files reported as extraneous: %d\n", len(sorted))
+	for _, line := range firstN(sorted, wpCoreExtraneousSampleLimit) {
+		details.WriteString(line)
+		details.WriteString("\n")
+	}
+	if extra := len(sorted) - wpCoreExtraneousSampleLimit; extra > 0 {
+		fmt.Fprintf(&details, "... and %d more\n", extra)
+	}
+	return alert.Finding{
+		Severity: alert.High,
+		Check:    "wp_core_integrity",
+		Message:  fmt.Sprintf("WordPress core integrity failure for %s", user),
+		Details:  details.String(),
+		DedupKey: "extraneous:" + wpPath,
+	}
 }
 
 // cacheWPCoreFiles hashes all PHP files in wp-includes/ and wp-admin/

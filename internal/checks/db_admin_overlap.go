@@ -121,9 +121,8 @@ func adminEmailsForSite(creds wpDBCreds, prefix string) ([]string, error) {
 }
 
 // buildAdminOverlapFindings collapses each overlap entry into a single
-// Warning finding. Account lists are sorted for deterministic message
-// content so the dedup layer downstream treats two identical overlaps
-// emitted across scans as the same finding.
+// Warning finding. Account lists are sorted so the message reads the same
+// way every scan and so the finding's dedup identity is stable.
 func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []alert.Finding {
 	emails := make([]string, 0, len(overlaps))
 	for email := range overlaps {
@@ -148,14 +147,26 @@ func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []al
 			fmt.Fprintf(&details, "- %s (schema %s, last seen %s)\n", o.Account, o.Schema, o.LastSeen.Format(time.RFC3339))
 		}
 		out = append(out, alert.Finding{
-			Severity:  alert.Warning,
-			Check:     "admin_cross_account_overlap",
-			Message:   fmt.Sprintf("Admin email %s appears on %d accounts: %s", email, len(accounts), strings.Join(accounts, ", ")),
-			Details:   details.String(),
+			Severity: alert.Warning,
+			Check:    "admin_cross_account_overlap",
+			Message:  fmt.Sprintf("Admin email %s appears on %d accounts: %s", email, len(accounts), strings.Join(accounts, ", ")),
+			Details:  details.String(),
+			// Details carry the per-observation LastSeen stamp, which every
+			// scan refreshes. Without an explicit identity the default key
+			// hashes those details and each scan stores another copy of an
+			// overlap that has not changed.
+			DedupKey:  adminOverlapDedupKey(email, accounts),
 			Timestamp: time.Now(),
 		})
 	}
 	return out
+}
+
+// adminOverlapDedupKey pins the finding identity to the fact the message
+// states: this email administers this set of accounts. Account membership
+// changing is a new fact; the observation timestamps moving is not.
+func adminOverlapDedupKey(email string, sortedAccounts []string) string {
+	return email + "|" + strings.Join(sortedAccounts, ",")
 }
 
 func filterTrustedAdminOverlaps(overlaps map[string][]store.AdminEmailEntry, cfg *config.Config) map[string][]store.AdminEmailEntry {
