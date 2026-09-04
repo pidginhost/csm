@@ -39,9 +39,15 @@ cache instead. Repeated runs and separate worktrees therefore reuse cached work
 without giving the container write access to the host Go cache or sharing its
 locks.
 
-The wrapper prefers a running Docker daemon. If Docker is unavailable, it uses
-apple/container. Do not hand-roll a `container run` line with its own throwaway
-`GOCACHE` under `/tmp` -- nothing reuses or cleans those up.
+The wrapper uses apple/container when it is installed and falls back to Docker.
+Note that apple/container 1.2.2 keeps the rootfs snapshot of an auto-removed
+container -- about 2 GB per run, under
+`~/Library/Application Support/com.apple.container/snapshots`, and not reported
+by `container system df`. Set `GO_LINUX_RUNTIME=docker` to avoid that on a host
+that already runs Docker, and prune the leftover snapshots periodically.
+
+Do not hand-roll a `container run` line with its own throwaway `GOCACHE` under
+`/tmp` -- nothing reuses or cleans those up.
 
 **Lint:**
 ```bash

@@ -72,13 +72,17 @@ if [[ -z "$go_version" ]]; then
 fi
 IMAGE="${GO_LINUX_IMAGE:-golang:$go_version}"
 
-# Prefer a running Docker daemon. apple/container 1.2.2 can retain the rootfs
-# snapshot for an auto-removed container, so choosing it first leaks disk space
-# on hosts that have both runtimes installed.
+# Prefer apple/container: it is the runtime this project is developed against on
+# macOS, and picking a different one silently changes what a developer is
+# actually testing.
+#
+# Caveat worth knowing: apple/container 1.2.2 keeps the rootfs snapshot of an
+# auto-removed container -- roughly 2 GB per run, under
+# ~/Library/Application Support/com.apple.container/snapshots, and not counted by
+# `container system df`. Set GO_LINUX_RUNTIME=docker to avoid it on a host that
+# runs Docker anyway, and prune the leftovers periodically.
 if [[ -n "${GO_LINUX_RUNTIME:-}" ]]; then
   runtime="$GO_LINUX_RUNTIME"
-elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  runtime=docker
 elif command -v container >/dev/null 2>&1; then
   runtime=container
 elif command -v docker >/dev/null 2>&1; then

@@ -365,41 +365,22 @@ func TestGoLinuxAllowsDisablingTheHostModuleCache(t *testing.T) {
 	}
 }
 
-func TestGoLinuxPrefersAReadyDockerDaemon(t *testing.T) {
+// apple/container is the runtime these repos are developed against on macOS, so
+// it wins whenever it is installed -- including alongside a ready Docker daemon.
+// It does retain the rootfs snapshot of an auto-removed container (1.2.2: about
+// 2 GB per run, and `container system df` does not count it), but the remedy for
+// that is the documented GO_LINUX_RUNTIME=docker escape hatch plus periodic
+// pruning, not a silent reordering that sends work to a different runtime than
+// the one the developer expects.
+func TestGoLinuxPrefersAppleContainerOverAReadyDockerDaemon(t *testing.T) {
 	binDir := t.TempDir()
 	dockerStub := filepath.Join(binDir, "docker")
 	if err := os.WriteFile(dockerStub, []byte("#!/bin/sh\n[ \"$1\" = info ]\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	containerStub := filepath.Join(binDir, "container")
-	if err := os.WriteFile(containerStub, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+	if err := os.WriteFile(containerStub, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
-	}
-
-	cmd := exec.Command(filepath.Join(repoRoot(t), "scripts", "go-linux.sh"), "go", "test", "./...")
-	cmd.Env = cleanEnv(
-		"GO_LINUX_DRY_RUN=1",
-		"GO_LINUX_MODCACHE=",
-		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("dry run wrapper: %v: %s", err, out)
-	}
-	if !strings.HasPrefix(string(out), "docker run ") {
-		t.Errorf("ready Docker daemon was not preferred: %s", out)
-	}
-}
-
-func TestGoLinuxFallsBackToAppleContainerWhenDockerIsStopped(t *testing.T) {
-	binDir := t.TempDir()
-	for name, body := range map[string]string{
-		"docker":    "#!/bin/sh\nexit 1\n",
-		"container": "#!/bin/sh\nexit 0\n",
-	} {
-		if err := os.WriteFile(filepath.Join(binDir, name), []byte(body), 0o700); err != nil {
-			t.Fatalf("write %s stub: %v", name, err)
-		}
 	}
 
 	cmd := exec.Command(filepath.Join(repoRoot(t), "scripts", "go-linux.sh"), "go", "test", "./...")
@@ -413,7 +394,57 @@ func TestGoLinuxFallsBackToAppleContainerWhenDockerIsStopped(t *testing.T) {
 		t.Fatalf("dry run wrapper: %v: %s", err, out)
 	}
 	if !strings.HasPrefix(string(out), "container run ") {
-		t.Errorf("apple/container was not used as fallback: %s", out)
+		t.Errorf("apple/container was not preferred over a ready Docker daemon: %s", out)
+	}
+}
+
+// With apple/container absent, Docker is the fallback rather than an error.
+func TestGoLinuxFallsBackToDockerWhenAppleContainerIsMissing(t *testing.T) {
+	binDir := t.TempDir()
+	dockerStub := filepath.Join(binDir, "docker")
+	if err := os.WriteFile(dockerStub, []byte("#!/bin/sh\n[ \"$1\" = info ]\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(filepath.Join(repoRoot(t), "scripts", "go-linux.sh"), "go", "test", "./...")
+	// A trimmed PATH: the stub directory plus the system utilities the wrapper
+	// needs, and deliberately no `container` binary anywhere on it.
+	cmd.Env = cleanEnv(
+		"GO_LINUX_DRY_RUN=1",
+		"GO_LINUX_MODCACHE=",
+		"PATH="+binDir+":/usr/bin:/bin",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry run wrapper: %v: %s", err, out)
+	}
+	if !strings.HasPrefix(string(out), "docker run ") {
+		t.Errorf("Docker was not used when apple/container is absent: %s", out)
+	}
+}
+
+// An explicit override beats detection, so a host that wants to dodge the
+// snapshot leak can select Docker without editing the script.
+func TestGoLinuxRuntimeOverrideWins(t *testing.T) {
+	binDir := t.TempDir()
+	containerStub := filepath.Join(binDir, "container")
+	if err := os.WriteFile(containerStub, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(filepath.Join(repoRoot(t), "scripts", "go-linux.sh"), "go", "test", "./...")
+	cmd.Env = cleanEnv(
+		"GO_LINUX_DRY_RUN=1",
+		"GO_LINUX_MODCACHE=",
+		"GO_LINUX_RUNTIME=docker",
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dry run wrapper: %v: %s", err, out)
+	}
+	if !strings.HasPrefix(string(out), "docker run ") {
+		t.Errorf("GO_LINUX_RUNTIME override was ignored: %s", out)
 	}
 }
 
