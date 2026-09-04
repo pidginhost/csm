@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -117,6 +118,96 @@ func TestFixQuarantineMovesRegularFile(t *testing.T) {
 	}
 	if !hasFile || !hasMeta {
 		t.Errorf("expected quarantined file + .meta sidecar, got %v", entries)
+	}
+}
+
+func TestFixKillAndQuarantineDoesNotClaimSkippedKill(t *testing.T) {
+	tmp := t.TempDir()
+	withAllowedRoots(t, tmp)
+	withQuarantineDir(t, filepath.Join(tmp, "quarantine"))
+
+	target := filepath.Join(tmp, "evil.php")
+	if err := os.WriteFile(target, []byte("malicious payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := fixKillAndQuarantine(target, "PID: 999999")
+	if !res.Success {
+		t.Fatalf("quarantine failed: %+v", res)
+	}
+	if strings.Contains(res.Action, "killed PID") || strings.Contains(res.Description, "Process killed") {
+		t.Fatalf("reported a kill that the identity guard skipped: %+v", res)
+	}
+}
+
+type swappingFixTargetOS struct {
+	*procMock
+	target      string
+	original    os.FileInfo
+	replacement os.FileInfo
+	lstatCalls  int
+}
+
+func (m *swappingFixTargetOS) Lstat(name string) (os.FileInfo, error) {
+	if name != m.target {
+		return m.procMock.Lstat(name)
+	}
+	m.lstatCalls++
+	if m.lstatCalls <= 2 {
+		return m.original, nil
+	}
+	return m.replacement, nil
+}
+
+func TestFixKillAndQuarantinePinsIdentityAcrossProcessCheck(t *testing.T) {
+	tmp := t.TempDir()
+	withAllowedRoots(t, tmp)
+	withQuarantineDir(t, filepath.Join(tmp, "quarantine"))
+
+	target := filepath.Join(tmp, "evil.php")
+	replacement := filepath.Join(tmp, "replacement.php")
+	if err := os.WriteFile(target, []byte("malicious payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacement, []byte("unrelated payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Lstat(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldFS := osFS
+	oldKill := killProcess
+	osFS = &swappingFixTargetOS{
+		procMock: &procMock{
+			uid:   "1001",
+			fds:   map[string]string{"/proc/4242/fd/7": replacement},
+			stats: map[string]os.FileInfo{"/proc/4242/fd/7": replacementInfo},
+		},
+		target:      target,
+		original:    originalInfo,
+		replacement: replacementInfo,
+	}
+	killCalled := false
+	killProcess = func(int, syscall.Signal) error {
+		killCalled = true
+		return nil
+	}
+	t.Cleanup(func() {
+		osFS = oldFS
+		killProcess = oldKill
+	})
+
+	result := fixKillAndQuarantine(target, "PID: 4242")
+	if !result.Success {
+		t.Fatalf("quarantine failed: %+v", result)
+	}
+	if killCalled {
+		t.Fatal("killed a process that referenced only a replacement object")
 	}
 }
 

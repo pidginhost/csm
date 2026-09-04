@@ -15,7 +15,8 @@ import (
 // matches on it are false positives.
 type CMSHashCache struct {
 	mu     sync.RWMutex
-	hashes map[string]bool // SHA256 hex → true
+	hashes map[string]bool // SHA256 hex -> true
+	sizes  map[int64]bool  // file sizes that can possibly match a cached hash
 }
 
 var (
@@ -28,15 +29,17 @@ func GlobalCMSCache() *CMSHashCache {
 	globalCacheOnce.Do(func() {
 		globalCache = &CMSHashCache{
 			hashes: make(map[string]bool),
+			sizes:  make(map[int64]bool),
 		}
 	})
 	return globalCache
 }
 
-// Add inserts a file hash into the cache.
-func (c *CMSHashCache) Add(hash string) {
+// Add inserts a file hash and its content size into the cache.
+func (c *CMSHashCache) Add(hash string, size int64) {
 	c.mu.Lock()
 	c.hashes[hash] = true
+	c.sizes[size] = true
 	c.mu.Unlock()
 }
 
@@ -56,10 +59,20 @@ func (c *CMSHashCache) Size() int {
 	return n
 }
 
+// MayContainSize reports whether a verified file of size bytes was cached.
+// It lets realtime scanning reject attacker-sized files before hashing them.
+func (c *CMSHashCache) MayContainSize(size int64) bool {
+	c.mu.RLock()
+	ok := c.sizes[size]
+	c.mu.RUnlock()
+	return ok
+}
+
 // Clear removes all cached hashes (used before rebuilding).
 func (c *CMSHashCache) Clear() {
 	c.mu.Lock()
 	c.hashes = make(map[string]bool)
+	c.sizes = make(map[int64]bool)
 	c.mu.Unlock()
 }
 
@@ -120,3 +133,7 @@ func IsVerifiedCMSHash(hash string) bool {
 // CMSCacheEmpty reports whether any verified core files are cached, so a caller
 // can skip hashing entirely when the answer cannot be yes.
 func CMSCacheEmpty() bool { return GlobalCMSCache().Size() == 0 }
+
+// CMSCacheMayContainSize reports whether hashing a file of size bytes can
+// possibly produce a cached CMS hash.
+func CMSCacheMayContainSize(size int64) bool { return GlobalCMSCache().MayContainSize(size) }

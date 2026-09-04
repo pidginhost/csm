@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -34,6 +35,10 @@ var (
 // an actual read-only filesystem, and assert an already-compliant file is
 // never chmodded.
 var chmodFunc = os.Chmod
+
+// killProcess is a seam for proving that rejected fix targets cannot signal a
+// process before the filesystem boundary has been validated.
+var killProcess = syscall.Kill
 
 // RemediationResult describes the outcome of a fix action.
 type RemediationResult struct {
@@ -213,6 +218,13 @@ func fixQuarantine(path string) RemediationResult {
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
+	return quarantineResolvedTarget(path, info)
+}
+
+// quarantineResolvedTarget quarantines the exact object admitted by the
+// caller's boundary check. Regular-file quarantine reopens the path and
+// verifies this identity before copying or unlinking it.
+func quarantineResolvedTarget(path string, info os.FileInfo) RemediationResult {
 
 	_ = os.MkdirAll(quarantineDir, 0700)
 	safeName := quarantineSafeName(path)
@@ -272,28 +284,37 @@ func fixKillAndQuarantine(path, details string) RemediationResult {
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
+	resolvedPath, target, err := resolveExistingFixPath(path, effectiveFixRoots(fixQuarantineAllowedRoots, quarantineExtraRoots...))
+	if err != nil {
+		return RemediationResult{Error: err.Error()}
+	}
+	path = resolvedPath
 
 	// Try to extract and kill PID from details
 	pid := extractPID(details)
-	if pid != "" {
-		pidInt := 0
-		fmt.Sscanf(pid, "%d", &pidInt)
-		if pidInt > 1 {
-			uid := getProcessUID(pid)
-			// Never kill root, and never kill a PID that no longer references
-			// the file being quarantined: a finding can be acted on long after
-			// it was raised, by which time the number may belong to anything.
-			if uid != "0" && uid != "" && processUsesFile(pid, path) {
-				_ = syscall.Kill(pidInt, syscall.SIGKILL)
-			}
+	killed := false
+	if pidInt, ok := parseProcessPID(pid); ok {
+		pid = strconv.Itoa(pidInt)
+		uid := getProcessUID(pid)
+		// Never kill root, and never kill a PID that no longer references
+		// the file being quarantined: a finding can be acted on long after
+		// it was raised, by which time the number may belong to anything.
+		if uid != "0" && uid != "" && processUsesFileIdentity(pidInt, target) {
+			killed = killProcess(pidInt, syscall.SIGKILL) == nil
 		}
 	}
 
-	// Then quarantine
-	result := fixQuarantine(path)
-	if result.Success && pid != "" {
-		result.Action = fmt.Sprintf("killed PID %s and %s", pid, result.Action)
-		result.Description = "Process killed and file quarantined"
+	// Quarantine the same object used for the process decision. If the path was
+	// replaced after validation, the pinned-identity quarantine refuses it.
+	result := quarantineResolvedTarget(path, target)
+	if killed {
+		if result.Success {
+			result.Action = fmt.Sprintf("killed PID %s and %s", pid, result.Action)
+			result.Description = "Process killed and file quarantined"
+		} else {
+			result.Action = fmt.Sprintf("killed PID %s; quarantine failed", pid)
+			result.Description = "Process killed, but the file was not quarantined"
+		}
 	}
 	return result
 }

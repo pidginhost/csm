@@ -4,9 +4,11 @@ package daemon
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -73,6 +75,10 @@ func afAlgKillTarget(ev checks.AFAlgEvent) (int, bool, string) {
 	if ev.Exe == "" || ev.Exe == "(null)" {
 		return 0, false, "event carries no executable to verify"
 	}
+	eventUID, err := strconv.ParseUint(ev.UID, 10, 32)
+	if err != nil {
+		return 0, false, "event carries no uid to verify"
+	}
 
 	exe, err := os.Readlink(fmt.Sprintf("%s/%d/exe", procRootDir, pid))
 	if err != nil {
@@ -83,70 +89,91 @@ func afAlgKillTarget(ev checks.AFAlgEvent) (int, bool, string) {
 		return 0, false, "pid now runs a different executable"
 	}
 
-	if ev.UID != "" {
-		var st unix.Stat_t
-		if err := unix.Stat(fmt.Sprintf("%s/%d", procRootDir, pid), &st); err != nil {
-			return 0, false, "process ownership unreadable"
-		}
-		if strconv.FormatUint(uint64(st.Uid), 10) != ev.UID {
-			return 0, false, "pid now belongs to a different user"
-		}
+	uid, ok := afAlgProcessUID(pid)
+	if !ok {
+		return 0, false, "process ownership unreadable"
+	}
+	if uid != eventUID {
+		return 0, false, "pid now belongs to a different user"
 	}
 
-	started, ok := afAlgProcessStart(pid)
 	eventAt, evErr := strconv.ParseFloat(ev.Timestamp, 64)
-	if !ok || evErr != nil {
+	if evErr != nil || math.IsNaN(eventAt) || math.IsInf(eventAt, 0) || eventAt <= 0 {
 		return 0, false, "process start time could not be compared with the event"
 	}
-	// One second of slack absorbs the clock-tick resolution of starttime and
-	// any rounding in the audit timestamp.
-	if started > eventAt+1 {
+	startedBefore, ok := afAlgProcessStartedBefore(pid, eventAt)
+	if !ok {
+		return 0, false, "process start time could not be compared with the event"
+	}
+	if !startedBefore {
 		return 0, false, "pid was recycled after the event"
 	}
 	return pid, true, ""
 }
 
-// afAlgProcessStart returns the wall-clock start time of pid, in seconds since
-// the epoch, from the boot time in /proc/stat plus the process's starttime.
-func afAlgProcessStart(pid int) (float64, bool) {
-	bootData, err := os.ReadFile(fmt.Sprintf("%s/stat", procRootDir))
+func afAlgProcessUID(pid int) (uint64, bool) {
+	data, err := os.ReadFile(fmt.Sprintf("%s/%d/status", procRootDir, pid))
 	if err != nil {
 		return 0, false
 	}
-	var boot float64
-	for _, line := range strings.Split(string(bootData), "\n") {
-		if rest, found := strings.CutPrefix(line, "btime "); found {
-			boot, err = strconv.ParseFloat(strings.TrimSpace(rest), 64)
-			if err != nil {
-				return 0, false
-			}
-			break
+	for _, line := range strings.Split(string(data), "\n") {
+		rest, found := strings.CutPrefix(line, "Uid:")
+		if !found {
+			continue
 		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return 0, false
+		}
+		uid, err := strconv.ParseUint(fields[0], 10, 32)
+		return uid, err == nil
 	}
-	if boot == 0 {
-		return 0, false
-	}
+	return 0, false
+}
 
+func afAlgProcessStartedBefore(pid int, eventAt float64) (bool, bool) {
 	statData, err := os.ReadFile(fmt.Sprintf("%s/%d/stat", procRootDir, pid))
 	if err != nil {
-		return 0, false
+		return false, false
 	}
 	// The comm field is parenthesised and may contain spaces, so fields are
 	// counted from after the closing parenthesis.
 	close := strings.LastIndex(string(statData), ")")
 	if close < 0 {
-		return 0, false
+		return false, false
 	}
 	fields := strings.Fields(string(statData)[close+1:])
 	// starttime is field 22 overall, which is index 19 after pid and comm.
 	if len(fields) < 20 {
-		return 0, false
+		return false, false
 	}
-	ticks, err := strconv.ParseFloat(fields[19], 64)
+	ticks, err := strconv.ParseUint(fields[19], 10, 64)
 	if err != nil {
-		return 0, false
+		return false, false
 	}
-	return boot + ticks/afAlgClockTicks, true
+
+	uptimeData, err := os.ReadFile(fmt.Sprintf("%s/uptime", procRootDir))
+	if err != nil {
+		return false, false
+	}
+	uptimeFields := strings.Fields(string(uptimeData))
+	if len(uptimeFields) == 0 {
+		return false, false
+	}
+	uptime, err := strconv.ParseFloat(uptimeFields[0], 64)
+	if err != nil || math.IsNaN(uptime) || math.IsInf(uptime, 0) || uptime < 0 {
+		return false, false
+	}
+
+	// Read wall time after uptime so the derived event uptime is conservative.
+	// Ambiguous boundary cases fail closed instead of accepting a recycled PID.
+	observedAt := float64(time.Now().UnixNano()) / float64(time.Second)
+	elapsed := observedAt - eventAt
+	if elapsed < 0 {
+		return false, true
+	}
+	eventUptime := uptime - elapsed
+	return eventUptime >= 0 && float64(ticks)/afAlgClockTicks <= eventUptime, true
 }
 
 // afAlgClockTicks is USER_HZ, 100 on every architecture Linux ships for the

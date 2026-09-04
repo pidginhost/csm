@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,49 +20,54 @@ const procClockTicks = 100.0
 // merely inherited the PID. A process that started after the finding cannot be
 // the one the finding describes.
 //
-// Unverifiable input fails closed: no boot time, no stat, or an unparsable
+// Unverifiable input fails closed: no uptime, no stat, or an unparsable
 // field all report false, and the caller does not kill.
 //
 // (internal/daemon carries its own copy of this parse for the af_alg reaction:
 // it reads procfs directly rather than through this package's filesystem seam,
 // and sharing one implementation would mean mixing two abstractions.)
 func processStartedBefore(pid string, t time.Time) bool {
-	if pid == "" || t.IsZero() {
+	pidInt, ok := parseProcessPID(pid)
+	if !ok || t.IsZero() {
 		return false
 	}
-	boot, ok := procBootTime()
+	ticks, ok := procStartTicks(strconv.Itoa(pidInt))
 	if !ok {
 		return false
 	}
-	ticks, ok := procStartTicks(pid)
+	uptime, ok := procUptime()
 	if !ok {
 		return false
 	}
-	started := float64(boot) + ticks/procClockTicks
-	// A second of slack absorbs the clock-tick resolution of starttime.
-	return started <= float64(t.Unix())+1
+	// Read wall time after uptime so elapsed is conservatively rounded up. A
+	// process close enough to the boundary to be ambiguous is not killed.
+	elapsed := time.Since(t).Seconds()
+	if elapsed < 0 {
+		return false
+	}
+	eventUptime := uptime - elapsed
+	return eventUptime >= 0 && float64(ticks)/procClockTicks <= eventUptime
 }
 
-func procBootTime() (int64, bool) {
-	data, err := osFS.ReadFile("/proc/stat")
+func parseProcessPID(pid string) (int, bool) {
+	n, err := strconv.Atoi(pid)
+	return n, err == nil && n > 1
+}
+
+func procUptime() (float64, bool) {
+	data, err := osFS.ReadFile("/proc/uptime")
 	if err != nil {
 		return 0, false
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		rest, found := strings.CutPrefix(line, "btime ")
-		if !found {
-			continue
-		}
-		boot, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		return boot, true
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, false
 	}
-	return 0, false
+	uptime, err := strconv.ParseFloat(fields[0], 64)
+	return uptime, err == nil && !math.IsNaN(uptime) && !math.IsInf(uptime, 0) && uptime >= 0
 }
 
-func procStartTicks(pid string) (float64, bool) {
+func procStartTicks(pid string) (uint64, bool) {
 	data, err := osFS.ReadFile(filepath.Join("/proc", pid, "stat"))
 	if err != nil {
 		return 0, false
@@ -76,7 +83,7 @@ func procStartTicks(pid string) (float64, bool) {
 	if len(fields) < 20 {
 		return 0, false
 	}
-	ticks, err := strconv.ParseFloat(fields[19], 64)
+	ticks, err := strconv.ParseUint(fields[19], 10, 64)
 	if err != nil {
 		return 0, false
 	}
@@ -88,26 +95,33 @@ func procStartTicks(pid string) (float64, bool) {
 // release the file being quarantined; a process that no longer references that
 // file is not the process the finding meant, so it is not killed.
 func processUsesFile(pid, path string) bool {
-	if pid == "" || path == "" {
+	pidInt, ok := parseProcessPID(pid)
+	if !ok || path == "" {
 		return false
 	}
-	clean := filepath.Clean(path)
-	if exe := getProcessExe(pid); exe != "" {
-		if filepath.Clean(strings.TrimSuffix(exe, " (deleted)")) == clean {
-			return true
-		}
+	target, err := osFS.Lstat(path)
+	if err != nil || target.Mode()&os.ModeSymlink != 0 {
+		return false
 	}
-	fdDir := filepath.Join("/proc", pid, "fd")
+	return processUsesFileIdentity(pidInt, target)
+}
+
+func processUsesFileIdentity(pid int, target os.FileInfo) bool {
+	if pid <= 1 || target == nil || target.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	procDir := filepath.Join("/proc", strconv.Itoa(pid))
+	if info, statErr := osFS.Stat(filepath.Join(procDir, "exe")); statErr == nil && sameFileIdentity(info, target) {
+		return true
+	}
+	fdDir := filepath.Join(procDir, "fd")
 	entries, err := osFS.ReadDir(fdDir)
 	if err != nil {
 		return false
 	}
 	for _, entry := range entries {
-		target, err := osFS.Readlink(filepath.Join(fdDir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		if filepath.Clean(strings.TrimSuffix(target, " (deleted)")) == clean {
+		info, err := osFS.Stat(filepath.Join(fdDir, entry.Name()))
+		if err == nil && sameFileIdentity(info, target) {
 			return true
 		}
 	}

@@ -3,8 +3,6 @@
 package daemon
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -447,7 +445,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		reconcileSig:        make(chan struct{}, 1),
 		webRootPatterns:     webRootPatterns,
 		accountRootPatterns: checks.AccountHomePatterns(),
-		docRootPatterns:     checks.WebRootPatterns(cfg),
+		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
 	}
 
 	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
@@ -929,8 +927,9 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// CGI scripts in web-accessible directories — detect Perl/Python/Bash backdoors
-	if fm.underAccountRoot(path) {
+	// CGI scripts in hosted trees - detect Perl/Python/Bash backdoors.
+	// An explicit document root may live outside the platform's account homes.
+	if fm.underAccountOrConfiguredDocRoot(path) {
 		if strings.HasSuffix(lower, ".pl") || strings.HasSuffix(lower, ".cgi") ||
 			strings.HasSuffix(lower, ".py") || strings.HasSuffix(lower, ".sh") ||
 			strings.HasSuffix(lower, ".rb") {
@@ -948,8 +947,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// HTML files in an account tree (phishing pages)
-	if fm.underAccountRoot(path) &&
+	// HTML files in an account or explicitly configured document tree.
+	if fm.underAccountOrConfiguredDocRoot(path) &&
 		(strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".htm")) {
 		return true
 	}
@@ -960,8 +959,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// ZIP archives in an account tree (phishing kit uploads)
-	if fm.underAccountRoot(path) && strings.HasSuffix(lower, ".zip") {
+	// ZIP archives in an account or explicitly configured document tree.
+	if fm.underAccountOrConfiguredDocRoot(path) && strings.HasSuffix(lower, ".zip") {
 		return true
 	}
 
@@ -1008,6 +1007,11 @@ func (fm *FileMonitor) underDocRoot(path string) bool {
 		return strings.Contains(path, "/public_html/")
 	}
 	return pathMatchesWebRootPatterns(path, fm.docRootPatterns)
+}
+
+func (fm *FileMonitor) underAccountOrConfiguredDocRoot(path string) bool {
+	return fm.underAccountRoot(path) ||
+		(len(fm.docRootPatterns) > 0 && fm.underDocRoot(path))
 }
 
 func pathMatchesWebRootPatterns(path string, patterns []string) bool {
@@ -1481,7 +1485,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// CGI scripts in web-accessible directories (Perl, Python, Bash, Ruby)
 	// Detect backdoor toolkits like LEVIATHAN that use non-PHP scripts.
-	if fm.underAccountRoot(path) && isCGIExtension(nameLower) {
+	if fm.underAccountOrConfiguredDocRoot(path) && isCGIExtension(nameLower) {
 		fm.checkCGIBackdoor(event.fd, path, procInfo)
 		return
 	}
@@ -1590,7 +1594,7 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on .htaccess content
-	fm.runSignatureScan(data, path, ".htaccess", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".htaccess", procInfo)
 }
 
 // checkUserINI reads the event fd so a path replacement cannot change the
@@ -1616,7 +1620,7 @@ func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on PHP configuration content.
-	fm.runSignatureScan(data, path, ".ini", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".ini", procInfo)
 }
 
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
@@ -1808,18 +1812,19 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	// can resolve to clean core content while the bytes just scanned were
 	// malicious, which would skip signature and YARA scanning for the file
 	// that was actually examined.
-	if !checks.CMSCacheEmpty() && checks.IsVerifiedCMSHash(hashEventFD(fd)) {
+	contentSize := int64(len(data))
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err == nil && stat.Size > contentSize {
+		contentSize = stat.Size
+	}
+	if !checks.CMSCacheEmpty() && checks.CMSCacheMayContainSize(contentSize) &&
+		checks.IsVerifiedCMSHash(hashEventFD(fd, data, contentSize)) {
 		return false
 	}
 
 	// External signature + YARA scanning. The YAML engine sees the complete
 	// event-file size even though realtime analysis scans a bounded prefix, so
 	// per-rule file-size limits cannot be defeated by prefix truncation.
-	contentSize := int64(len(data))
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err == nil && stat.Size > contentSize {
-		contentSize = stat.Size
-	}
 	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, scannedIdentity(fd))
 }
 
@@ -1928,7 +1933,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on HTML content not caught by phishing heuristics
-	fm.runSignatureScan(data, path, ".html", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".html", procInfo)
 }
 
 // checkCredentialLog reads a text file and checks if it contains harvested
@@ -2072,6 +2077,10 @@ func scannedIdentity(fd int) os.FileInfo {
 
 func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
 	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, nil)
+}
+
+func (fm *FileMonitor) runEventSignatureScan(fd int, data []byte, path, ext, procInfo string) bool {
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, scannedIdentity(fd))
 }
 
 func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string, scanned os.FileInfo) bool {
@@ -2394,7 +2403,7 @@ func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
 	}
 
 	// Run signature scan on the content
-	fm.runSignatureScan(data, path, filepath.Ext(path), procInfo)
+	fm.runEventSignatureScan(fd, data, path, filepath.Ext(path), procInfo)
 }
 
 // matchSuppression checks if a file path matches a suppression glob pattern.
@@ -2508,31 +2517,4 @@ func looksLikePluginUpdate(path string) bool {
 		ts:     time.Now(),
 	})
 	return exists
-}
-
-// hashEventFD returns the SHA-256 of the whole file behind an event
-// descriptor, read positionally so the descriptor offset is left alone for
-// other checks. An empty string means the content could not be read, and the
-// caller treats that as "not verified".
-func hashEventFD(fd int) string {
-	h := sha256.New()
-	buf := make([]byte, 64*1024)
-	var offset int64
-	for {
-		n, err := unix.Pread(fd, buf, offset)
-		if n > 0 {
-			h.Write(buf[:n])
-			offset += int64(n)
-		}
-		if err != nil {
-			if err == unix.EINTR {
-				continue
-			}
-			return ""
-		}
-		if n == 0 {
-			break
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil))
 }

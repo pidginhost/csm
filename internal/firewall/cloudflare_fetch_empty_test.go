@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -58,5 +59,46 @@ func TestFetchCloudflareIPsReturnsFreshFamilyWhenOtherFails(t *testing.T) {
 	}
 	if len(ipv4) != 0 || len(ipv6) != 1 || ipv6[0] != "2400:cb00::/32" {
 		t.Fatalf("ranges = %v, %v; want fresh IPv6 retained", ipv4, ipv6)
+	}
+}
+
+func TestFetchCIDRListPropagatesCancellationToRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &http.Client{Transport: geoIPRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		cancel()
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})}
+
+	if _, err := fetchCIDRList(ctx, client, "https://example.test/ips"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("fetch error = %v, want context cancellation", err)
+	}
+}
+
+func TestFetchCloudflareIPsDoesNotStartSecondRequestAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	requests := 0
+	client := &http.Client{Transport: geoIPRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.String() != cfIPv4URL {
+			t.Fatalf("unexpected request after cancellation: %s", req.URL)
+		}
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("173.245.48.0/20\n")),
+			Request:    req,
+		}, nil
+	})}
+
+	ipv4, ipv6, err := fetchCloudflareIPs(ctx, client)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("fetch error = %v, want context cancellation", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want only the in-flight IPv4 request", requests)
+	}
+	if len(ipv4) != 1 || ipv4[0] != "173.245.48.0/20" || len(ipv6) != 0 {
+		t.Fatalf("ranges = %v, %v; want completed IPv4 retained", ipv4, ipv6)
 	}
 }

@@ -57,4 +57,30 @@ func TestUnderRoots_FallBackToLegacySpelling(t *testing.T) {
 	if fm.underAccountRoot("/var/lib/mysql/data.ibd") {
 		t.Error("unrelated path treated as an account tree")
 	}
+	if fm.isInteresting("/srv/public_html/login.html") {
+		t.Error("legacy fallback admitted a public_html path outside /home")
+	}
+}
+
+func TestIsInteresting_AdmitsConfiguredDocRootOutsideAccountHomes(t *testing.T) {
+	fm := &FileMonitor{
+		accountRootPatterns: []string{"/home/*"},
+		docRootPatterns:     []string{"/srv/sites/*/www"},
+	}
+
+	for _, path := range []string{
+		"/srv/sites/example/www/login.html",
+		"/srv/sites/example/www/office365-login.zip",
+		"/srv/sites/example/www/cgi-bin/shell.cgi",
+	} {
+		if !fm.isInteresting(path) {
+			t.Errorf("configured document-root file was not admitted: %s", path)
+		}
+	}
+}
+
+func TestPathMatchesWebRootPatternsRejectsSiblingPrefix(t *testing.T) {
+	if pathMatchesWebRootPatterns("/home/alice-old/shell.php", []string{"/home/alice"}) {
+		t.Fatal("a sibling sharing the document-root prefix was accepted")
+	}
 }

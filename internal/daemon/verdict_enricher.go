@@ -28,11 +28,14 @@ type verdictEntry struct {
 	at       time.Time
 }
 
-type verdictJob struct {
-	key      string
+type verdictKey struct {
 	ip       string
 	reason   string
 	severity string
+}
+
+type verdictJob struct {
+	key verdictKey
 }
 
 // verdictEnricher annotates findings with the operator's verdict without ever
@@ -48,16 +51,21 @@ type verdictEnricher struct {
 	ask      verdictAskFunc
 	ttl      time.Duration
 	jobs     chan verdictJob
+	workers  int
+	cacheCap int
 	wg       sync.WaitGroup
 	mu       sync.Mutex
-	cache    map[string]verdictEntry
-	inFlight map[string]bool
+	cache    map[verdictKey]verdictEntry
+	inFlight map[verdictKey]bool
 	dropped  atomic.Int64
 }
 
 func newVerdictEnricher(opts verdictEnricherOpts) *verdictEnricher {
 	if opts.Workers <= 0 {
 		opts.Workers = 2
+	}
+	if opts.Workers > 4 {
+		opts.Workers = 4
 	}
 	if opts.Queue <= 0 {
 		opts.Queue = 64
@@ -69,17 +77,15 @@ func newVerdictEnricher(opts verdictEnricherOpts) *verdictEnricher {
 		ask:      opts.Ask,
 		ttl:      opts.TTL,
 		jobs:     make(chan verdictJob, opts.Queue),
-		cache:    make(map[string]verdictEntry),
-		inFlight: make(map[string]bool),
+		workers:  opts.Workers,
+		cacheCap: opts.Queue,
+		cache:    make(map[verdictKey]verdictEntry),
+		inFlight: make(map[verdictKey]bool),
 	}
 }
 
 func (e *verdictEnricher) start(ctx context.Context) {
-	workers := cap(e.jobs)
-	if workers > 4 {
-		workers = 4
-	}
-	for i := 0; i < workers; i++ {
+	for i := 0; i < e.workers; i++ {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
@@ -99,11 +105,14 @@ func (e *verdictEnricher) annotate(f *alert.Finding, ip, reason, severity string
 	if e == nil || f == nil || e.ask == nil {
 		return false
 	}
-	key := ip + "\x00" + reason
+	key := verdictKey{ip: ip, reason: reason, severity: severity}
 
 	e.mu.Lock()
 	entry, ok := e.cache[key]
 	fresh := ok && time.Since(entry.at) < e.ttl
+	if ok && !fresh {
+		delete(e.cache, key)
+	}
 	queued := e.inFlight[key]
 	if !fresh && !queued {
 		e.inFlight[key] = true
@@ -118,7 +127,7 @@ func (e *verdictEnricher) annotate(f *alert.Finding, ip, reason, severity string
 		return false
 	}
 	select {
-	case e.jobs <- verdictJob{key: key, ip: ip, reason: reason, severity: severity}:
+	case e.jobs <- verdictJob{key: key}:
 	default:
 		// Saturated: the annotation is what we give up, never the finding.
 		e.mu.Lock()
@@ -139,9 +148,9 @@ func (e *verdictEnricher) work(ctx context.Context) {
 				return
 			}
 			resp, err := e.ask(ctx, verdict.Request{
-				IP:       job.ip,
-				Reason:   job.reason,
-				Severity: job.severity,
+				IP:       job.key.ip,
+				Reason:   job.key.reason,
+				Severity: job.key.severity,
 				Source:   "bpf_enforcement",
 			})
 			e.mu.Lock()
@@ -149,19 +158,41 @@ func (e *verdictEnricher) work(ctx context.Context) {
 			if err == nil {
 				// A failure is not an answer: leaving it uncached lets the next
 				// event retry instead of inheriting a permanent blank.
+				now := time.Now()
+				e.pruneCacheLocked(now)
 				e.cache[job.key] = verdictEntry{
 					tenantID: resp.TenantID,
 					verdict:  resp.Verdict,
 					note:     resp.Note,
-					at:       time.Now(),
+					at:       now,
 				}
 			}
 			e.mu.Unlock()
 			if err != nil {
-				csmlog.Warn("bpf enforcement verdict callback failed", "err", err, "dst", job.ip)
+				csmlog.Warn("bpf enforcement verdict callback failed", "err", err, "dst", job.key.ip)
 			}
 		}
 	}
+}
+
+func (e *verdictEnricher) pruneCacheLocked(now time.Time) {
+	for key, entry := range e.cache {
+		if now.Sub(entry.at) >= e.ttl {
+			delete(e.cache, key)
+		}
+	}
+	if len(e.cache) < e.cacheCap {
+		return
+	}
+	var oldestKey verdictKey
+	var oldestAt time.Time
+	for key, entry := range e.cache {
+		if oldestAt.IsZero() || entry.at.Before(oldestAt) {
+			oldestKey = key
+			oldestAt = entry.at
+		}
+	}
+	delete(e.cache, oldestKey)
 }
 
 func applyVerdictEntry(f *alert.Finding, entry verdictEntry) {

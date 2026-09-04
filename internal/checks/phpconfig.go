@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -813,6 +814,35 @@ func PHPConfigRealtimeRootPatterns(cfg *config.Config) []string {
 		}
 		seen[pattern] = struct{}{}
 		patterns = append(patterns, pattern)
+	}
+	return patterns
+}
+
+// RealtimeDocumentRootPatterns returns the served roots used by realtime
+// content detectors. cPanel's domain map is authoritative for addon domains
+// and accounts on alternate home mounts; the conventional public_html glob
+// remains the fallback when that map is unavailable.
+func RealtimeDocumentRootPatterns(cfg *config.Config) []string {
+	patterns := WebRootPatterns(cfg)
+	if (cfg != nil && len(cfg.AccountRoots) > 0) || !platform.Detect().IsCPanel() {
+		return patterns
+	}
+	data, err := osFS.ReadFile(userdataDomainsPath)
+	if err != nil {
+		return patterns
+	}
+	vhosts, _ := parseUserdataDomainRootsChecked(string(data))
+	seen := make(map[string]struct{}, len(patterns)+len(vhosts))
+	for _, pattern := range patterns {
+		seen[filepath.Clean(pattern)] = struct{}{}
+	}
+	for _, vhost := range vhosts {
+		root := filepath.Clean(vhost.docroot)
+		if _, exists := seen[root]; exists {
+			continue
+		}
+		seen[root] = struct{}{}
+		patterns = append(patterns, root)
 	}
 	return patterns
 }

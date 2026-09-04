@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -47,4 +48,20 @@ func TestTryStartBPFLSM_AttachesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	mon.Run(ctx)
+}
+
+func TestDecodeAFAlgEventStampsDetectionTime(t *testing.T) {
+	before := time.Now()
+	ev, err := decodeAFAlgEvent(make([]byte, 300))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sec, nsec int64
+	if _, err := fmt.Sscanf(ev.Timestamp, "%d.%d", &sec, &nsec); err != nil {
+		t.Fatalf("parse BPF event timestamp %q: %v", ev.Timestamp, err)
+	}
+	detectedAt := time.Unix(sec, nsec)
+	if detectedAt.Before(before) || detectedAt.After(time.Now()) {
+		t.Fatalf("BPF event timestamp = %v, want a current detection time", detectedAt)
+	}
 }

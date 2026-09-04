@@ -549,7 +549,7 @@ func cacheWPCoreFiles(cache *CMSHashCache, wpPath string) {
 	}
 	// Also cache root-level WP core files
 	rootFiles := []string{
-		"wp-config.php", "wp-cron.php", "wp-login.php", "wp-settings.php",
+		"wp-cron.php", "wp-login.php", "wp-settings.php",
 		"wp-load.php", "wp-blog-header.php", "wp-links-opml.php",
 		"wp-mail.php", "wp-signup.php", "wp-activate.php",
 		"wp-comments-post.php", "wp-trackback.php", "xmlrpc.php",
@@ -558,7 +558,9 @@ func cacheWPCoreFiles(cache *CMSHashCache, wpPath string) {
 	for _, name := range rootFiles {
 		path := filepath.Join(wpPath, name)
 		if hash := HashFile(path); hash != "" {
-			cache.Add(hash)
+			if info, err := osFS.Stat(path); err == nil {
+				cache.Add(hash, info.Size())
+			}
 		}
 	}
 
@@ -573,7 +575,7 @@ func cacheWPCoreFiles(cache *CMSHashCache, wpPath string) {
 			name := strings.ToLower(info.Name())
 			if strings.HasSuffix(name, ".php") || strings.HasSuffix(name, ".js") {
 				if hash := HashFile(path); hash != "" {
-					cache.Add(hash)
+					cache.Add(hash, info.Size())
 				}
 			}
 			return nil

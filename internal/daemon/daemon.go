@@ -3242,8 +3242,11 @@ func (d *Daemon) cloudflareRefreshLoop() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		<-d.stopCh
-		cancel()
+		select {
+		case <-d.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
 
 	// Fetch immediately on startup
