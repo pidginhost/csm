@@ -39,6 +39,55 @@ type dropperCandidate struct {
 	Digest            [32]byte
 	DigestKnown       bool
 	Head              []byte
+	// Parent identifies the real, non-symlink directory that contained the
+	// candidate while its event fd was open. The later probe uses this stable
+	// identity instead of inferring directory removal from two path stats.
+	Parent dropperParentIdentity
+}
+
+// dropperParentIdentity is deliberately compact because one is retained for
+// every tracked candidate. BirthNanos disambiguates inode reuse when statx
+// exposes it; without birth time, a reused identity is treated as unchanged
+// and cannot earn a false-positive demotion.
+type dropperParentIdentity struct {
+	Device     uint64
+	Inode      uint64
+	BirthNanos int64
+	BirthKnown bool
+	Conflicted bool
+}
+
+func (i dropperParentIdentity) known() bool {
+	return !i.Conflicted && i.Device != 0 && i.Inode != 0
+}
+
+func mergeDropperParentIdentity(a, b dropperParentIdentity) dropperParentIdentity {
+	switch {
+	case a.Conflicted || b.Conflicted:
+		return dropperParentIdentity{Conflicted: true}
+	case !a.known():
+		return b
+	case !b.known():
+		return a
+	case a.Device != b.Device || a.Inode != b.Inode:
+		return dropperParentIdentity{Conflicted: true}
+	case a.BirthKnown && b.BirthKnown && a.BirthNanos != b.BirthNanos:
+		return dropperParentIdentity{Conflicted: true}
+	case b.BirthKnown:
+		return b
+	default:
+		return a
+	}
+}
+
+func dropperParentChanged(observed, current dropperParentIdentity) bool {
+	if !observed.known() || !current.known() {
+		return false
+	}
+	if observed.Device != current.Device || observed.Inode != current.Inode {
+		return true
+	}
+	return observed.BirthKnown && current.BirthKnown && observed.BirthNanos != current.BirthNanos
 }
 
 // shouldTrackDropper reports whether a close-write event is a freshly
@@ -78,17 +127,23 @@ const (
 	unixSIFREG = 0o100000
 )
 
-// dropperMaxTracked bounds the tracker map. A cPanel package restore can
-// close-write thousands of PHP files in seconds; entries beyond the cap are
-// dropped (and counted) rather than evicting older candidates, because the
-// oldest entries are the ones closest to their probe and losing them would
-// blind the detector exactly when a bulk write storm provides cover.
-const dropperMaxTracked = 4096
+// dropperMaxTracked bounds the tracker map. A cPanel package restore or a
+// WP Toolkit site clone can close-write tens of thousands of PHP files in
+// seconds, and every one stays tracked for the whole unlink TTL; entries
+// beyond the cap are dropped (and counted) rather than evicting older
+// candidates, because the oldest entries are the ones closest to their probe
+// and losing them would blind the detector exactly when a bulk write storm
+// provides cover.
+const dropperMaxTracked = 16384
 
-// Keep enough leading content to recognise generated template artifacts and
-// show useful evidence without allowing a burst of large files to retain
-// hundreds of MiB until the probe and grace windows expire.
-const dropperTrackedHeadMax = 4096
+// Keep the retained head-byte budget at 16 MiB even with the larger tracker.
+// Candidate/map/path metadata is additional bounded memory and grows with the
+// entry cap; this constant only accounts for copied content. Representative
+// Twig and Smarty headers place all required markers inside this window.
+const (
+	dropperTrackedHeadBudget = 16 << 20
+	dropperTrackedHeadMax    = dropperTrackedHeadBudget / dropperMaxTracked
+)
 
 type dropperCandidateKey struct {
 	path       string
@@ -130,6 +185,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.Created = prev.Created || next.Created
 	merged.PHPExecutable = prev.PHPExecutable || next.PHPExecutable
 	merged.ContentSuspicious = prev.ContentSuspicious || next.ContentSuspicious
+	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
 	if !merged.BirthKnown {
 		switch {
 		case prev.BirthKnown:
@@ -269,6 +325,10 @@ type dropperFileState struct {
 	BirthKnown  bool
 	Digest      [32]byte
 	DigestKnown bool
+	// IsRegular distinguishes a file that took over the path from a directory
+	// or symlink left behind there. Only a regular file can be the result of
+	// an atomic write.
+	IsRegular bool
 }
 
 // dropperProbe is what the TTL probe learned about a candidate. AtPath and
@@ -283,8 +343,12 @@ type dropperProbe struct {
 	// DocrootRemoved is true only for a confirmed ENOENT on the document
 	// root, not for permission or transient I/O failures.
 	DocrootRemoved bool
-	RenamedTo      string
-	RenameTarget   *dropperFileState
+	// ParentRemoved is true only when a snapshotted, non-symlink parent is now
+	// absent or a different directory identity. A file whose whole directory
+	// went away was not singled out for deletion.
+	ParentRemoved bool
+	RenamedTo     string
+	RenameTarget  *dropperFileState
 	// QuarantineMatched requires an exact ledger identity/fingerprint match,
 	// not merely a prior quarantine entry for the same path.
 	QuarantineMatched bool
@@ -299,11 +363,13 @@ const (
 	dropperDemotedAtomicWrite
 	dropperDemotedWPUpgrade
 	dropperDemotedDocroot
+	dropperDemotedDirRemoved
+	dropperDemotedReplaced
 	dropperSuspect
 )
 
 func dropperVerdictDemoted(v dropperVerdict) bool {
-	return v >= dropperDemotedTemplate && v <= dropperDemotedDocroot
+	return v >= dropperDemotedTemplate && v <= dropperDemotedReplaced
 }
 
 func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
@@ -314,6 +380,25 @@ func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
 		return false
 	}
 	return !c.BirthKnown || c.Birth.Equal(current.Birth)
+}
+
+// dropperReplacedInPlace reports whether the file now at the candidate's path
+// is a regular file that came into existence after the candidate was observed.
+// That is an atomic write completing (write temp, rename over the live path),
+// which repeats every few minutes for WAF and cache state files. The successor
+// stays on disk and is scanned in its own right, and the candidate's own bytes
+// were already read by the content pass, so the evidence loss that makes a
+// self-delete Critical does not apply.
+//
+// This does not weaken the detector against an attacker who leaves a benign
+// file behind: overwriting the same inode already returns dropperBenign above,
+// which is both cheaper and quieter than unlink plus rename. A birth time is
+// required, so a filesystem without STATX_BTIME keeps the suspect verdict.
+func dropperReplacedInPlace(c dropperCandidate, current dropperFileState) bool {
+	if !current.IsRegular || !current.BirthKnown {
+		return false
+	}
+	return !current.Birth.Before(c.Observed)
 }
 
 // assessDropper turns a probe result into a verdict for one candidate.
@@ -345,8 +430,14 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if c.ContentSuspicious {
 		return dropperSuspect
 	}
+	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
+		return dropperDemotedReplaced
+	}
 	if p.DocrootRemoved {
 		return dropperDemotedDocroot
+	}
+	if p.ParentRemoved {
+		return dropperDemotedDirRemoved
 	}
 	if atomicWriteRenameCandidate(c.Path) != "" {
 		return dropperDemotedAtomicWrite
@@ -618,6 +709,10 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 			details += "\nDemoted: path is structurally inside a WordPress upgrade staging tree."
 		case dropperDemotedDocroot:
 			details += "\nDemoted: the containing document root was removed before the probe."
+		case dropperDemotedDirRemoved:
+			details += "\nDemoted: the original containing directory was removed before the probe."
+		case dropperDemotedReplaced:
+			details += "\nDemoted: the path was replaced in place by a newer file (atomic write), not emptied."
 		}
 	}
 	if len(c.Head) > 0 {

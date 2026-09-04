@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1097,6 +1098,71 @@ func readFromFd(fd int, maxBytes int) []byte {
 	return buf[:n]
 }
 
+const readCompleteMaxInterrupts = 8
+
+// readExactSize reads exactly the snapshotted size. Its buffer is fixed before
+// the first read, so a concurrently growing source cannot extend the loop; a
+// bounded EINTR retry count also prevents a pathological signal storm from
+// pinning an analyzer worker.
+func readExactSize(size int64, maxBytes int, pread func([]byte, int64) (int, error)) []byte {
+	if size <= 0 || maxBytes <= 0 || size > int64(maxBytes) {
+		return nil
+	}
+	buf := make([]byte, int(size))
+	interrupts := 0
+	for off := 0; off < len(buf); {
+		n, err := pread(buf[off:], int64(off))
+		if n < 0 || n > len(buf)-off {
+			return nil
+		}
+		if n > 0 {
+			off += n
+			interrupts = 0
+		}
+		if err != nil && !errors.Is(err, unix.EINTR) {
+			return nil
+		}
+		if n > 0 {
+			continue
+		}
+		if !errors.Is(err, unix.EINTR) {
+			return nil
+		}
+		interrupts++
+		if interrupts > readCompleteMaxInterrupts {
+			return nil
+		}
+	}
+	return buf
+}
+
+func sameReadSnapshot(before, after unix.Stat_t) bool {
+	return before.Dev == after.Dev && before.Ino == after.Ino && before.Size == after.Size &&
+		before.Mtim == after.Mtim && before.Ctim == after.Ctim
+}
+
+// readCompleteFromFd returns a stable snapshot of the entire file behind fd
+// when it fits within maxBytes. A short read, concurrent size/content change,
+// or excessive interruption fails closed so whole-file recognizers never
+// accept a stale prefix.
+func readCompleteFromFd(fd, maxBytes int) []byte {
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		return nil
+	}
+	buf := readExactSize(before.Size, maxBytes, func(p []byte, off int64) (int, error) {
+		return unix.Pread(fd, p, off)
+	})
+	if buf == nil {
+		return nil
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || !sameReadSnapshot(before, after) {
+		return nil
+	}
+	return buf
+}
+
 func isBenignPHPStubData(fd int, data []byte) bool {
 	if len(data) == 0 {
 		return false
@@ -1439,8 +1505,15 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		if fm.checkPHPContent(event.fd, path, procInfo) {
 			markDropperContentSuspicious()
 		} else {
-			data := readFromFd(event.fd, 65536)
-			if isBenignPHPStubData(event.fd, data) {
+			// Translation caches and comment-only stubs require a stable,
+			// complete body. A no-argument PHP terminator is safe from a
+			// prefix because all following bytes are unreachable, so retain
+			// the old bounded-head fallback for oversized files.
+			data := readCompleteFromFd(event.fd, checks.MaxInertPHPScanBytes)
+			if data != nil && checks.IsBenignPHPStubBytesComplete(data, true) {
+				return
+			}
+			if data == nil && checks.IsBenignPHPStubBytesComplete(readFromFd(event.fd, 65536), false) {
 				return
 			}
 			// WordPress 6.5+ writes *.l10n.php translation caches here as pure
