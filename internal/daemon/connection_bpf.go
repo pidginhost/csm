@@ -20,6 +20,7 @@ import (
 	bpfprog "github.com/pidginhost/csm/internal/daemon/connection_bpfprog"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/verdict"
 )
 
 type connectionBPF struct {
@@ -153,6 +154,26 @@ func (c *connectionBPF) Run(ctx context.Context) {
 	errorsCh := c.reader.Errors()
 	eventsCh := c.reader.Events()
 	pcCache, pcEnr := ProcessCtx()
+	// Verdict enrichment runs beside this loop, never inside it: the callback
+	// is a network round trip and this goroutine is the only reader of a
+	// 256-slot ring buffer.
+	enricher := newVerdictEnricher(verdictEnricherOpts{
+		Ask: func(ctx context.Context, req verdict.Request) (verdict.Response, error) {
+			return askBPFVerdict(ctx, activeConnectionCfg(c.cfg), req)
+		},
+		Workers: 4,
+		Queue:   256,
+		TTL:     time.Minute,
+	})
+	// The loop also returns when the events channel closes, which does not
+	// cancel ctx; without a context of our own the wait below would never
+	// return.
+	enrichCtx, stopEnricher := context.WithCancel(ctx)
+	enricher.start(enrichCtx)
+	defer func() {
+		stopEnricher()
+		enricher.wait()
+	}()
 	// Resolve MTA identities once; platform.Detect() probes the FS so
 	// keep it out of the per-event hot path.
 	mta := platform.LocalMTAIdentities(platform.Detect())
@@ -175,7 +196,10 @@ func (c *connectionBPF) Run(ctx context.Context) {
 			liveCfg := activeConnectionCfg(c.cfg)
 			for _, finding := range evaluateConnectionEvent(liveCfg, mta, ev, user) {
 				attachProcessCtxToFinding(pcCache, pcEnr, &finding, ev)
-				applyBPFEnforcementVerdict(ctx, liveCfg, ev, &finding)
+				if bpfVerdictEnabled(liveCfg, ev) {
+					enricher.annotate(&finding, ev.DstIP.String(),
+						bpfVerdictReason(finding.Check, ev.DstPort), finding.Severity.String())
+				}
 				select {
 				case c.alertCh <- finding:
 				default:

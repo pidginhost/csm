@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Realtime monitoring now covers account filesystem bind mounts and configured document roots. Process, quarantine, and CMS-cache decisions preserve observed identity and only trust verified content, while callback enrichment stays bounded under load.
+- Daemon shutdown now cancels in-flight Cloudflare range refreshes, and optional verdict callbacks no longer stall realtime event ingestion.
 - The YARA deep scan now handles a file it could not read the way the PHP and JavaScript scans already did: it re-emits that file's existing finding and retires everything else it examined, instead of holding its entire finding set. One error log permanently over the scan limit was enough to freeze every YARA finding on a host for as long as that file existed.
 - Deep-scan carry-forward now preserves every prior YARA rule match and the current PHP or JavaScript finding for each unexamined file across equivalent path spellings, without undoing concurrent dismissals or severity changes. Ambiguous file-type or identity changes retain the affected scan range rather than retiring findings without coverage.
 - Finding re-verification summaries now count only state changes the store accepted and report severity restorations separately from cleared findings.

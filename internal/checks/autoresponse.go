@@ -72,6 +72,12 @@ func AutoKillProcesses(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
+		// Safety: the PID must still name the process the finding described.
+		// Without this a recycled PID gets killed in its place.
+		if !processStartedBefore(pid, f.Timestamp) {
+			continue
+		}
+
 		// Kill it
 		pidInt := f.PID
 		if pidInt == 0 {
@@ -649,10 +655,17 @@ func isHexDigit(b byte) bool {
 // operator in monitor mode (auto-response off, or quarantine_files off) gets
 // the alert without having files moved out from under them.
 func InlineQuarantineGated(cfg *config.Config, f alert.Finding, path string, data []byte) (string, bool) {
+	return InlineQuarantineGatedIdentified(cfg, f, path, data, nil)
+}
+
+// InlineQuarantineGatedIdentified applies the auto-response policy gate and
+// then quarantines the exact file the caller scanned. See
+// InlineQuarantineIdentified for why the identity matters.
+func InlineQuarantineGatedIdentified(cfg *config.Config, f alert.Finding, path string, data []byte, scanned os.FileInfo) (string, bool) {
 	if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles {
 		return "", false
 	}
-	return InlineQuarantine(f, path, data)
+	return InlineQuarantineIdentified(f, path, data, scanned)
 }
 
 // InlineQuarantine moves a file to quarantine immediately if it passes the
@@ -662,6 +675,17 @@ func InlineQuarantineGated(cfg *config.Config, f alert.Finding, path string, dat
 // TOCTOU re-read). Pass nil to read from path.
 // Returns the quarantine path and true if the file was quarantined.
 func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) {
+	return InlineQuarantineIdentified(f, path, data, nil)
+}
+
+// InlineQuarantineIdentified is InlineQuarantine with the identity of the file
+// the caller actually scanned. The realtime scanner reads content from the
+// fanotify event descriptor, so passing that descriptor's stat pins the move to
+// the object that was examined: a file replaced between detection and
+// quarantine fails the identity check instead of being moved in place of the
+// malware. A nil identity keeps the older path-based behaviour for callers that
+// began from a path in the first place, such as the batch dispatcher.
+func InlineQuarantineIdentified(f alert.Finding, path string, data []byte, scanned os.FileInfo) (string, bool) {
 	if !isHighConfidenceRealtimeMatch(f, path, data) {
 		return "", false
 	}
@@ -672,6 +696,14 @@ func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) 
 	info, err := osFS.Lstat(path)
 	if err != nil {
 		return "", false
+	}
+	if scanned != nil {
+		// What is on disk now must be what was scanned. Without this the
+		// window between reading the event descriptor and this Lstat is
+		// unguarded, and the quarantine moves the attacker's replacement.
+		if !sameFileIdentity(info, scanned) || !sameContentShape(info, scanned) {
+			return "", false
+		}
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return "", false

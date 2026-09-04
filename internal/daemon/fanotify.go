@@ -31,14 +31,75 @@ import (
 
 // fanotify constants (not all in Go stdlib)
 const (
-	FAN_MARK_ADD    = 0x00000001
-	FAN_MARK_MOUNT  = 0x00000010
-	FAN_CLOSE_WRITE = 0x00000008
-	FAN_CREATE      = 0x00000100
-	FAN_CLASS_NOTIF = 0x00000000
-	FAN_CLOEXEC     = 0x00000001
-	FAN_NONBLOCK    = 0x00000002
+	FAN_MARK_ADD = 0x00000001
+	// FAN_MARK_MOUNT covers a single vfsmount. FAN_MARK_FILESYSTEM marks the
+	// whole superblock, so a write that reaches the same inode through a bind
+	// mount is reported too. EL8 backported the flag into 4.18, which is what
+	// CloudLinux 8 runs, so cages are reachable on production kernels.
+	FAN_MARK_MOUNT      = 0x00000010
+	FAN_MARK_FILESYSTEM = 0x00000100
+	FAN_CLOSE_WRITE     = 0x00000008
+	FAN_CREATE          = 0x00000100
+	FAN_CLASS_NOTIF     = 0x00000000
+	FAN_CLOEXEC         = 0x00000001
+	FAN_NONBLOCK        = 0x00000002
 )
+
+// markFunc is the fanotify_mark syscall, passed in so the ladder can be
+// exercised without a kernel and without a mutable package-level seam that
+// concurrent tests would race on.
+type markFunc func(fd int, flags uint, mask uint64, dirFd int, path string) error
+
+// markScope records how widely a watch root ended up being marked.
+type markScope int
+
+const (
+	markScopeNone markScope = iota
+	markScopeFilesystem
+	markScopeMount
+)
+
+func (s markScope) String() string {
+	switch s {
+	case markScopeFilesystem:
+		return "filesystem"
+	case markScopeMount:
+		return "mount"
+	default:
+		return "none"
+	}
+}
+
+// markWatchRoot watches path, preferring a filesystem-scoped mark.
+//
+// A mount-scoped mark sees only the vfsmount it was added to. Every CloudLinux
+// CageFS account reaches its files through a bind mount of the same superblock,
+// so writes inside a cage produced no event at all and the realtime scanner was
+// blind for precisely the accounts most likely to be compromised. Marking the
+// superblock covers every mount of it.
+//
+// The ladder degrades in two independent directions: kernels without
+// FAN_MARK_FILESYSTEM fall back to the mount mark, and kernels without
+// FAN_CREATE (EL8 among them) keep their scope and drop that event bit.
+func markWatchRoot(fd int, path string, mark markFunc) (markScope, error) {
+	var lastErr error
+	for _, attempt := range []struct {
+		scope markScope
+		flags uint
+	}{
+		{markScopeFilesystem, FAN_MARK_ADD | FAN_MARK_FILESYSTEM},
+		{markScopeMount, FAN_MARK_ADD | FAN_MARK_MOUNT},
+	} {
+		for _, mask := range []uint64{FAN_CLOSE_WRITE | FAN_CREATE, FAN_CLOSE_WRITE} {
+			if err := mark(fd, attempt.flags, mask, -1, path); err != nil {
+				lastErr = err
+				continue
+			}
+			return attempt.scope, nil
+		}
+	}
+	return markScopeNone, lastErr
+}
 
 // fanotifyEventMetadata is the header for each fanotify event.
 type fanotifyEventMetadata struct {
@@ -120,6 +181,12 @@ type FileMonitor struct {
 	// Per-path alert deduplication: "check:filepath" → last alert time
 	alertDedup sync.Map
 
+	// accountRootPatterns and docRootPatterns describe where accounts and their
+	// document roots live on this platform. The realtime detectors used to
+	// hardcode /home and /public_html, which made every one of them dead on
+	// Plesk and DirectAdmin and on cPanel accounts outside /home.
+	accountRootPatterns []string
+	docRootPatterns     []string
 	// webRootPatterns is the immutable PHP configuration root set captured at
 	// startup from account_roots and platform discovery.
 	webRootPatterns []string
@@ -308,6 +375,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	webRootPatterns := checks.PHPConfigRealtimeRootPatterns(cfg)
 	mountPaths := fanotifyMountPaths(webRootPatterns)
 	mountOK := 0
+	var mountScoped []string
 	for index, path := range mountPaths {
 		if index >= 4 {
 			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
@@ -317,17 +385,22 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 				continue
 			}
 		}
-		// H1 - use golang.org/x/sys/unix for fanotify_mark
-		err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE|FAN_CREATE, -1, path)
-		if err != nil {
-			// Try without FAN_CREATE (older kernels)
-			err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE, -1, path)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), path, err)
-				continue
-			}
+		scope, markErr := markWatchRoot(fd, path, unix.FanotifyMark)
+		if markErr != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), path, markErr)
+			continue
+		}
+		if scope == markScopeMount {
+			mountScoped = append(mountScoped, path)
 		}
 		mountOK++
+	}
+	if len(mountScoped) > 0 {
+		// Worth saying out loud: on these roots a write that arrives through a
+		// bind mount (a CageFS cage) raises no event, and only the rolling
+		// content scan will meet it.
+		fmt.Fprintf(os.Stderr, "[%s] Warning: watching %v per-mount only; writes through bind mounts on them are not seen in real time\n",
+			ts(), mountScoped)
 	}
 
 	// M2 - error on zero successful mounts
@@ -362,15 +435,17 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	}
 
 	fm := &FileMonitor{
-		fd:              fd,
-		cfg:             cfg,
-		alertCh:         alertCh,
-		analyzerCh:      make(chan fileEvent, analyzerChBufferSize),
-		pipeFds:         pipeFds,
-		stopCh:          make(chan struct{}),
-		reconcileDirs:   make(map[string]time.Time),
-		reconcileSig:    make(chan struct{}, 1),
-		webRootPatterns: webRootPatterns,
+		fd:                  fd,
+		cfg:                 cfg,
+		alertCh:             alertCh,
+		analyzerCh:          make(chan fileEvent, analyzerChBufferSize),
+		pipeFds:             pipeFds,
+		stopCh:              make(chan struct{}),
+		reconcileDirs:       make(map[string]time.Time),
+		reconcileSig:        make(chan struct{}, 1),
+		webRootPatterns:     webRootPatterns,
+		accountRootPatterns: checks.AccountHomePatterns(),
+		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
 	}
 
 	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
@@ -852,8 +927,9 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// CGI scripts in web-accessible directories — detect Perl/Python/Bash backdoors
-	if strings.HasPrefix(path, "/home/") {
+	// CGI scripts in hosted trees - detect Perl/Python/Bash backdoors.
+	// An explicit document root may live outside the platform's account homes.
+	if fm.underAccountOrConfiguredDocRoot(path) {
 		if strings.HasSuffix(lower, ".pl") || strings.HasSuffix(lower, ".cgi") ||
 			strings.HasSuffix(lower, ".py") || strings.HasSuffix(lower, ".sh") ||
 			strings.HasSuffix(lower, ".rb") {
@@ -871,8 +947,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// HTML files in /home (phishing pages)
-	if strings.HasPrefix(path, "/home/") &&
+	// HTML files in an account or explicitly configured document tree.
+	if fm.underAccountOrConfiguredDocRoot(path) &&
 		(strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".htm")) {
 		return true
 	}
@@ -883,8 +959,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// ZIP archives in /home (phishing kit uploads)
-	if strings.HasPrefix(path, "/home/") && strings.HasSuffix(lower, ".zip") {
+	// ZIP archives in an account or explicitly configured document tree.
+	if fm.underAccountOrConfiguredDocRoot(path) && strings.HasSuffix(lower, ".zip") {
 		return true
 	}
 
@@ -913,6 +989,29 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	}
 
 	return false
+}
+
+// underAccountRoot reports whether path sits inside a hosting account's tree.
+// Falls back to the historical /home spelling when the platform offers no
+// patterns, so an unconfigured plain-Linux host keeps the behaviour it had.
+func (fm *FileMonitor) underAccountRoot(path string) bool {
+	if len(fm.accountRootPatterns) == 0 {
+		return strings.HasPrefix(path, "/home/")
+	}
+	return pathMatchesWebRootPatterns(path, fm.accountRootPatterns)
+}
+
+// underDocRoot reports whether path sits inside a served document root.
+func (fm *FileMonitor) underDocRoot(path string) bool {
+	if len(fm.docRootPatterns) == 0 {
+		return strings.Contains(path, "/public_html/")
+	}
+	return pathMatchesWebRootPatterns(path, fm.docRootPatterns)
+}
+
+func (fm *FileMonitor) underAccountOrConfiguredDocRoot(path string) bool {
+	return fm.underAccountRoot(path) ||
+		(len(fm.docRootPatterns) > 0 && fm.underDocRoot(path))
 }
 
 func pathMatchesWebRootPatterns(path string, patterns []string) bool {
@@ -1386,7 +1485,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// CGI scripts in web-accessible directories (Perl, Python, Bash, Ruby)
 	// Detect backdoor toolkits like LEVIATHAN that use non-PHP scripts.
-	if strings.HasPrefix(path, "/home/") && isCGIExtension(nameLower) {
+	if fm.underAccountOrConfiguredDocRoot(path) && isCGIExtension(nameLower) {
 		fm.checkCGIBackdoor(event.fd, path, procInfo)
 		return
 	}
@@ -1495,7 +1594,7 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on .htaccess content
-	fm.runSignatureScan(data, path, ".htaccess", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".htaccess", procInfo)
 }
 
 // checkUserINI reads the event fd so a path replacement cannot change the
@@ -1521,7 +1620,7 @@ func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on PHP configuration content.
-	fm.runSignatureScan(data, path, ".ini", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".ini", procInfo)
 }
 
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
@@ -1709,19 +1808,24 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	// if a file's hash matches a known-clean core file, signature matches
 	// on it are false positives (e.g. $_POST in wp-includes, mail() in
 	// PHPMailer, fsockopen() in POP3.php).
-	if checks.IsVerifiedCMSFile(path) {
+	// Hashed from the event descriptor, not by re-opening the path: the path
+	// can resolve to clean core content while the bytes just scanned were
+	// malicious, which would skip signature and YARA scanning for the file
+	// that was actually examined.
+	contentSize := int64(len(data))
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err == nil && stat.Size > contentSize {
+		contentSize = stat.Size
+	}
+	if !checks.CMSCacheEmpty() && checks.CMSCacheMayContainSize(contentSize) &&
+		checks.IsVerifiedCMSHash(hashEventFD(fd, data, contentSize)) {
 		return false
 	}
 
 	// External signature + YARA scanning. The YAML engine sees the complete
 	// event-file size even though realtime analysis scans a bounded prefix, so
 	// per-rule file-size limits cannot be defeated by prefix truncation.
-	contentSize := int64(len(data))
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err == nil && stat.Size > contentSize {
-		contentSize = stat.Size
-	}
-	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo)
+	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, scannedIdentity(fd))
 }
 
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:
@@ -1736,7 +1840,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 	// /wp-content/themes/, /wp-content/plugins/, /node_modules/, /vendor/,
 	// /.well-known/ let an attacker who compromised any of those dirs drop
 	// a credential-harvesting page with full suppression.
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
@@ -1829,7 +1933,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on HTML content not caught by phishing heuristics
-	fm.runSignatureScan(data, path, ".html", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".html", procInfo)
 }
 
 // checkCredentialLog reads a text file and checks if it contains harvested
@@ -1838,7 +1942,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 // fanotify event fd (not re-opened by path) so an attacker cannot swap the
 // file between the event and the read.
 func (fm *FileMonitor) checkCredentialLog(fd int, path, procInfo string) {
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
@@ -1901,7 +2005,7 @@ func (fm *FileMonitor) checkCredentialLog(fd int, path, procInfo string) {
 // Plain plugin distribution backups (google-site-kit.zip, mailchimp.zip)
 // have a brand without an action verb and don't fire.
 func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
@@ -1958,11 +2062,28 @@ func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
 // Non-critical YAML matches use directory-level dedup to avoid alert floods
 // when a plugin directory has many files matching the same rule.
 // Critical matches (backdoors, webshells) always alert per-file.
-func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
-	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo)
+// scannedIdentity describes the object behind an event descriptor. Stat of the
+// /proc magic link resolves the open file itself rather than walking the path
+// again, so it still names the scanned inode after the path has been replaced.
+// os.NewFile is avoided deliberately: its finalizer can close a descriptor the
+// daemon still owns.
+func scannedIdentity(fd int) os.FileInfo {
+	info, err := os.Stat(fmt.Sprintf("/proc/self/fd/%d", fd))
+	if err != nil {
+		return nil
+	}
+	return info
 }
 
-func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string) bool {
+func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, nil)
+}
+
+func (fm *FileMonitor) runEventSignatureScan(fd int, data []byte, path, ext, procInfo string) bool {
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, scannedIdentity(fd))
+}
+
+func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string, scanned os.FileInfo) bool {
 	// Both engines see every file. A .yml hit used to end the scan here, so
 	// a file matching a High .yml rule never met the Critical YARA rule and
 	// the inline quarantine that only a Critical match triggers. Only a file
@@ -2005,7 +2126,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 						Details:  details,
 						FilePath: path,
 					}
-					if qPath, ok := checks.InlineQuarantineGated(fm.currentCfg(), finding, path, data); ok {
+					if qPath, ok := checks.InlineQuarantineGatedIdentified(fm.currentCfg(), finding, path, data, scanned); ok {
 						fm.recordDropperQuarantine(path, qPath)
 						fm.sendAlert(alert.Critical, "auto_response",
 							fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
@@ -2282,7 +2403,7 @@ func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
 	}
 
 	// Run signature scan on the content
-	fm.runSignatureScan(data, path, filepath.Ext(path), procInfo)
+	fm.runEventSignatureScan(fd, data, path, filepath.Ext(path), procInfo)
 }
 
 // matchSuppression checks if a file path matches a suppression glob pattern.

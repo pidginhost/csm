@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -436,7 +437,7 @@ func TestFetchCIDRListSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cidrs, err := fetchCIDRList(srv.Client(), srv.URL)
+	cidrs, err := fetchCIDRList(context.Background(), srv.Client(), srv.URL)
 	if err != nil {
 		t.Fatalf("fetchCIDRList: %v", err)
 	}
@@ -454,7 +455,7 @@ func TestFetchCIDRListHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchCIDRList(srv.Client(), srv.URL)
+	_, err := fetchCIDRList(context.Background(), srv.Client(), srv.URL)
 	if err == nil {
 		t.Fatal("HTTP 503 should error")
 	}
@@ -464,7 +465,7 @@ func TestFetchCIDRListHTTPError(t *testing.T) {
 }
 
 func TestFetchCIDRListDialFailure(t *testing.T) {
-	_, err := fetchCIDRList(http.DefaultClient, "http://127.0.0.1:1/nope")
+	_, err := fetchCIDRList(context.Background(), http.DefaultClient, "http://127.0.0.1:1/nope")
 	if err == nil {
 		t.Fatal("unreachable should error")
 	}

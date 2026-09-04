@@ -9,37 +9,43 @@ import (
 // --- CMSHashCache Add / Contains / Size / Clear -----------------------
 
 func TestCMSHashCacheAddAndContains(t *testing.T) {
-	cache := &CMSHashCache{hashes: make(map[string]bool)}
-	cache.Add("abc123")
+	cache := &CMSHashCache{hashes: make(map[string]bool), sizes: make(map[int64]bool)}
+	cache.Add("abc123", 42)
 	if !cache.Contains("abc123") {
 		t.Error("expected true after Add")
 	}
 	if cache.Contains("unknown") {
 		t.Error("unknown hash should not be contained")
 	}
+	if !cache.MayContainSize(42) || cache.MayContainSize(43) {
+		t.Error("cached size membership does not match the added file")
+	}
 }
 
 func TestCMSHashCacheSize(t *testing.T) {
-	cache := &CMSHashCache{hashes: make(map[string]bool)}
+	cache := &CMSHashCache{hashes: make(map[string]bool), sizes: make(map[int64]bool)}
 	if cache.Size() != 0 {
 		t.Errorf("empty size = %d", cache.Size())
 	}
-	cache.Add("a")
-	cache.Add("b")
+	cache.Add("a", 1)
+	cache.Add("b", 2)
 	if cache.Size() != 2 {
 		t.Errorf("size = %d, want 2", cache.Size())
 	}
 }
 
 func TestCMSHashCacheClear(t *testing.T) {
-	cache := &CMSHashCache{hashes: make(map[string]bool)}
-	cache.Add("a")
+	cache := &CMSHashCache{hashes: make(map[string]bool), sizes: make(map[int64]bool)}
+	cache.Add("a", 1)
 	cache.Clear()
 	if cache.Size() != 0 {
 		t.Errorf("size after clear = %d", cache.Size())
 	}
 	if cache.Contains("a") {
 		t.Error("should not contain after clear")
+	}
+	if cache.MayContainSize(1) {
+		t.Error("clear retained a cached file size")
 	}
 }
 
@@ -84,7 +90,7 @@ func TestIsVerifiedCMSFileMatch(t *testing.T) {
 	_ = os.WriteFile(path, content, 0644)
 
 	h := HashFile(path)
-	cache.Add(h)
+	cache.Add(h, int64(len(content)))
 
 	if !IsVerifiedCMSFile(path) {
 		t.Error("file in cache should be verified")
@@ -114,5 +120,26 @@ func TestIsVerifiedCMSFileEmptyCache(t *testing.T) {
 
 	if IsVerifiedCMSFile(path) {
 		t.Error("empty cache should return false")
+	}
+}
+
+func TestCacheWPCoreFilesExcludesUnverifiedConfiguration(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "wp-config.php")
+	corePath := filepath.Join(root, "wp-login.php")
+	if err := os.WriteFile(configPath, []byte("<?php eval($_POST['x']);"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corePath, []byte("<?php // distributed core file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cache := &CMSHashCache{hashes: make(map[string]bool), sizes: make(map[int64]bool)}
+	cacheWPCoreFiles(cache, root)
+	if cache.Contains(HashFile(configPath)) {
+		t.Fatal("site configuration was cached even though core checksums do not verify it")
+	}
+	if !cache.Contains(HashFile(corePath)) {
+		t.Fatal("checksum-covered root core file was not cached")
 	}
 }

@@ -572,3 +572,10 @@ func LookupUID(account string) int {
 	fmt.Sscanf(u.Uid, "%d", &uid)
 	return uid
 }
+
+// AccountHomePatterns returns the glob for every account home ("<root>/*") on
+// this platform. The realtime scanner needs it to recognise an account tree
+// without hardcoding /home.
+func AccountHomePatterns() []string {
+	return accountHomePatterns()
+}

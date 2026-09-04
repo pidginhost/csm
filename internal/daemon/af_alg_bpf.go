@@ -138,10 +138,12 @@ func decodeAFAlgEvent(b []byte) (checks.AFAlgEvent, error) {
 	// b[8:12] = ppid, b[28:44] = parent_comm; both retained kernel-side, dropped here.
 	comm := nullTerm(b[12:28])
 	exe := nullTerm(b[44 : 44+256])
+	detectedAt := time.Now()
 	return checks.AFAlgEvent{
-		PID:  strconv.FormatUint(uint64(pid), 10),
-		UID:  strconv.FormatUint(uint64(uid), 10),
-		Comm: comm,
-		Exe:  exe,
+		Timestamp: fmt.Sprintf("%d.%09d", detectedAt.Unix(), detectedAt.Nanosecond()),
+		PID:       strconv.FormatUint(uint64(pid), 10),
+		UID:       strconv.FormatUint(uint64(uid), 10),
+		Comm:      comm,
+		Exe:       exe,
 	}, nil
 }
