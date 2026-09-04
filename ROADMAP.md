@@ -161,3 +161,177 @@ larger detection and integration items remain:
 - **Y12 -- cross-server / fleet ingest.** DECISION: phpanel-side
   correlation vs peer-to-peer ingest endpoint + trust model.
   `2026-05-29-y12-fleet-ingest-design.md`.
+
+---
+
+## 11. Coalesce firewall interval sets before apply
+
+**Status:** planned. Highest-severity item currently open.
+
+nftables interval sets reject overlapping elements. Blocked-subnet,
+infra-IP and country sets are built straight from configured and
+feed-supplied CIDRs, so a single pair where one range contains another
+makes the whole set, and therefore the entire ruleset apply, fail.
+
+The failure is silent in the worst way: the daemon continues without a
+firewall engine, so automatic blocking stops and no finding is raised to
+say the host is now unprotected.
+
+### Decision
+
+- Coalesce and de-overlap every CIDR list before building interval
+  elements.
+- A range that still cannot be represented is dropped individually, with
+  a finding naming it, instead of failing the apply.
+- An apply that fails for any reason raises a Critical finding. A host
+  without a firewall engine must never look healthy.
+
+### Prerequisite
+
+Reproduce the kernel-side rejection in a container first: the coalescing
+rules are only correct if they match what nftables actually refuses.
+
+### Size: 3-4 hours, half of it the reproduction.
+
+---
+
+## 12. Rule corpus false-positive gates in CI
+
+**Status:** planned. The gates exist and are skipped.
+
+The signature and YARA false-positive gates need a corpus of known-clean
+web application code. No such corpus is published with the repository, so
+CI skips both gates and a rule change can only be measured locally.
+
+### Decision
+
+Publish a hash-pinned clean corpus as a CI artifact and make both gates
+required. Pinning matters more than size: a corpus that drifts turns a
+real regression into noise and a passing gate into a coin toss.
+
+Open questions for whoever picks this up: where the corpus is hosted, how
+its licence permits redistribution, and how often it is refreshed.
+
+### Out of scope
+
+Growing the corpus beyond what is needed to exercise the current rule
+families.
+
+### Size: 1 hour to write the proposal, half a day to implement once the
+hosting decision is made.
+
+---
+
+## 13. Narrow the service unit's write scope
+
+**Status:** planned.
+
+The unit grants write access to the whole of `/etc` so that one mail
+configuration fragment can be updated. Everything else the daemon writes
+is already scoped.
+
+### Decision
+
+Write that one fragment through a transient unit with its own narrow
+grant, and replace the blanket grant with the specific directories the
+daemon genuinely writes.
+
+### Size: 2-3 hours. Needs a Linux host to verify the transient unit
+behaves under the packaged unit's sandbox.
+
+---
+
+## 14. Verify mailbox passwords without exposing material in argv
+
+**Status:** planned.
+
+The weak-password audit shells out to the mail server's password tool,
+which places the hash and the candidate on the command line, where any
+local process listing can read them while the check runs.
+
+### Decision
+
+Verify in-process. This means taking on a crypt implementation that
+covers the hash formats the mail server emits, which is a new dependency
+in a security product and should be reviewed as one: pinned, vendored
+deliberately, and chosen for maintenance record over convenience.
+
+### Size: 2-3 hours plus dependency review.
+
+---
+
+## 15. Realtime coverage for files renamed into a watched tree
+
+**Status:** blocked on kernel support, not on design.
+
+A file moved into a watched directory raises no content event, so it is
+first examined by the next rolling content scan rather than on arrival.
+
+Closing this needs rename events with directory-and-name reporting from
+fanotify. Enterprise Linux 8 kernels backport the filesystem-scoped mark
+but not the rename event or file-handle reporting, so the capability is
+absent on the oldest platform CSM supports.
+
+### Decision
+
+Revisit when the supported platform floor rises. Until then the rolling
+content scan is the documented coverage path, and any implementation must
+probe for the capability at runtime and fall back rather than assume it.
+
+### Size: unknown until the floor moves.
+
+---
+
+## 16. CMS discovery deeper than one directory below a document root
+
+**Status:** planned, deliberately deferred once.
+
+Discovery covers document roots the panel serves, addon directories in an
+account home, and one directory below a document root. Installs nested
+more deeply are found by neither the panel map nor the walk.
+
+### Decision
+
+Decide whether deeper nesting is worth the walk cost before implementing
+it. The honest options are a bounded depth increase, or leaving it and
+saying so in the documentation. What must not happen is the current
+situation where the limit is real but undocumented.
+
+### Size: 15 minutes to document the limit; a day to raise it safely.
+
+---
+
+## 17. Consolidate the Go toolchain pin and upgrade
+
+**Status:** planned.
+
+The Go version is pinned in four places -- the module file, the CI image,
+the builder image, and the Alpine base -- and they have drifted apart.
+Local development on a newer toolchain also produces formatting that the
+CI linter does not expect.
+
+### Decision
+
+Reduce the four pins to a single source, then move that source forward.
+Check first that the pinned linter release supports the target toolchain:
+if it lags, the upgrade breaks CI on the first push.
+
+### Size: 30 minutes for the compatibility check, 2-3 hours if it passes.
+
+---
+
+## 18. Lint timeout headroom in CI
+
+**Status:** planned. Small, and it costs a release when it bites.
+
+The lint job spends its whole budget loading packages before linting
+anything, and now exceeds it when two pipelines run concurrently -- which
+is exactly what pushing a branch and a tag together causes. The job fails
+without having examined a single file, and every later stage is skipped.
+
+### Decision
+
+Raise the timeout enough to leave headroom on a cold cache under load.
+
+### Size: 10 minutes.
+
