@@ -21,6 +21,22 @@ make build-linux        # cross-compile for Linux amd64
 go test ./... -count=1 -race
 ```
 
+**On a non-Linux host**, fanotify, nftables and the spool watcher are all behind
+`//go:build linux`, so most of the daemon will not build locally. Run Go
+commands inside a Linux container instead:
+
+```bash
+scripts/go-linux.sh go test ./... -count=1 -race
+scripts/go-linux.sh go build ./...
+```
+
+The wrapper pins the image to the `go` directive in `go.mod`, grants
+`CAP_SYS_ADMIN` (fanotify and nftables fail on permissions without it), and
+keeps its build and module caches in one shared location outside the repository
+(`${XDG_CACHE_HOME:-$HOME/.cache}/csm-linux/`), so repeated runs and separate
+worktrees reuse the same cache. Do not hand-roll a `container run` line with its
+own throwaway `GOCACHE` under `/tmp` — nothing reuses or cleans those up.
+
 **Lint:**
 ```bash
 make lint               # runs the pinned golangci-lint with repo-local caches
