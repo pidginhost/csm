@@ -28,8 +28,8 @@ func TestFindingReverifyVersionIncludesExposureVerifier(t *testing.T) {
 	if !strings.HasPrefix(v, ContentDetectionVersion()+";") {
 		t.Fatalf("reverify token %q does not include the content token", v)
 	}
-	want := fmt.Sprintf("exposed=%d", exposedReverifyLogicVersion)
-	if !strings.HasSuffix(v, want) {
+	want := fmt.Sprintf(";exposed=%d;", exposedReverifyLogicVersion)
+	if !strings.Contains(v, want) {
 		t.Fatalf("reverify token %q missing %q", v, want)
 	}
 }
