@@ -30,12 +30,18 @@ scripts/go-linux.sh go test ./... -count=1 -race
 scripts/go-linux.sh go build ./...
 ```
 
-The wrapper pins the image to the `go` directive in `go.mod`, grants
+The wrapper pins the image to the exact Go release in `go.mod`, grants
 `CAP_SYS_ADMIN` (fanotify and nftables fail on permissions without it), and
-keeps its build and module caches in one shared location outside the repository
-(`${XDG_CACHE_HOME:-$HOME/.cache}/csm-linux/`), so repeated runs and separate
-worktrees reuse the same cache. Do not hand-roll a `container run` line with its
-own throwaway `GOCACHE` under `/tmp` — nothing reuses or cleans those up.
+keeps its writable caches in one shared location outside the repository
+(`${XDG_CACHE_HOME:-$HOME/.cache}/csm-linux/`). The host module cache is mounted
+read-only and used as a local download source; container writes go to the shared
+cache instead. Repeated runs and separate worktrees therefore reuse cached work
+without giving the container write access to the host Go cache or sharing its
+locks.
+
+The wrapper prefers a running Docker daemon. If Docker is unavailable, it uses
+apple/container. Do not hand-roll a `container run` line with its own throwaway
+`GOCACHE` under `/tmp` -- nothing reuses or cleans those up.
 
 **Lint:**
 ```bash

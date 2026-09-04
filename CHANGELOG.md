@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Linux container checks now use the exact declared Go release and keep host module caches read-only while sharing separate writable caches across worktrees.
 - The self-deleting-dropper detector reported a Critical for every file whose path was taken over by a newer file, which is how Wordfence rewrites its firewall state every few minutes. A replacement now reports at a lower severity, and so does a file whose original directory was removed, as happens when WP Toolkit tears down a site clone.
 - Realtime scanning read only the first 64KB of a PHP file in a WordPress languages or upgrade directory before deciding whether its contents were inert data, so it could never clear a translation cache larger than that. Nearly half of them are, and each one opened a warning.
 - The short-lived-file tracker filled up during a site clone or package restore and stopped following new files until the storm passed. It now holds four times as many files while keeping retained content bounded.
