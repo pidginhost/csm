@@ -280,7 +280,10 @@ func fixKillAndQuarantine(path, details string) RemediationResult {
 		fmt.Sscanf(pid, "%d", &pidInt)
 		if pidInt > 1 {
 			uid := getProcessUID(pid)
-			if uid != "0" && uid != "" { // never kill root
+			// Never kill root, and never kill a PID that no longer references
+			// the file being quarantined: a finding can be acted on long after
+			// it was raised, by which time the number may belong to anything.
+			if uid != "0" && uid != "" && processUsesFile(pid, path) {
 				_ = syscall.Kill(pidInt, syscall.SIGKILL)
 			}
 		}

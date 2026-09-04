@@ -72,6 +72,12 @@ func AutoKillProcesses(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
+		// Safety: the PID must still name the process the finding described.
+		// Without this a recycled PID gets killed in its place.
+		if !processStartedBefore(pid, f.Timestamp) {
+			continue
+		}
+
 		// Kill it
 		pidInt := f.PID
 		if pidInt == 0 {
