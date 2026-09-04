@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -148,14 +149,30 @@ func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []al
 			fmt.Fprintf(&details, "- %s (schema %s, last seen %s)\n", o.Account, o.Schema, o.LastSeen.Format(time.RFC3339))
 		}
 		out = append(out, alert.Finding{
-			Severity:  alert.Warning,
-			Check:     "admin_cross_account_overlap",
+			Severity: alert.Warning,
+			Check:    "admin_cross_account_overlap",
+			// The overlap itself is the identity: this email on this set of
+			// accounts. Details carry each account's last-seen time, and
+			// Finding.Key() hashes Details, so without an explicit key every
+			// scan minted a new finding for an unchanged overlap.
+			DedupKey:  adminOverlapDedupKey(email, accounts),
 			Message:   fmt.Sprintf("Admin email %s appears on %d accounts: %s", email, len(accounts), strings.Join(accounts, ", ")),
 			Details:   details.String(),
 			Timestamp: time.Now(),
 		})
 	}
 	return out
+}
+
+// adminOverlapDedupKey identifies one overlap by its substance: the shared
+// email and the set of accounts carrying it. An email that spreads to another
+// account is a new situation and gets its own key; the same overlap re-observed
+// on the next scan keeps this one. accounts is already sorted and de-duplicated
+// by the caller.
+func adminOverlapDedupKey(email string, accounts []string) string {
+	identity := strings.Join(append([]string{email}, accounts...), "\x00")
+	digest := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("admin-overlap:%x", digest[:12])
 }
 
 func filterTrustedAdminOverlaps(overlaps map[string][]store.AdminEmailEntry, cfg *config.Config) map[string][]store.AdminEmailEntry {
