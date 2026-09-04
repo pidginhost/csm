@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.33.1] - 2026-09-04
+
+### Highlights
+
+- Realtime false positives that flooded the alert channel are fixed. On a busy shared host this removed every Critical the self-deleting-dropper detector was raising and about 90 percent of realtime warnings.
+- A path taken over by a newer file no longer reports as a self-deleting dropper. Wordfence rewrites its firewall state that way every few minutes on every site that runs it.
+- A file whose whole directory was removed now reports at a lower severity, which is what a WP Toolkit site clone does when it tears its staging tree down.
+- Plugin files staged by an update are verified against the plugin's official release, so a routine update no longer opens a warning for every file it unpacks.
+- Translation caches larger than 64KB are recognised as data. Nearly half of them are larger than that, and each one used to open a warning.
+- The short-lived-file tracker no longer fills up during a site clone or package restore, which left new files untracked until the storm passed.
 
 ### Security
 
