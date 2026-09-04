@@ -2,21 +2,32 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
-	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
-func applyBPFEnforcementVerdict(ctx context.Context, cfg *config.Config, ev ConnectionEvent, f *alert.Finding) {
-	if cfg == nil || f == nil || !cfg.BPFEnforcement.VerdictCallback || !cfg.AutoResponse.VerdictCallback.Enabled {
-		return
+var errBPFVerdictDisabled = errors.New("verdict callback not configured")
+
+// bpfVerdictEnabled reports whether this event is one the operator's callback
+// should be asked about. Cheap enough for the ring-buffer consumer loop; the
+// request itself is not, and runs on the enricher's workers.
+func bpfVerdictEnabled(cfg *config.Config, ev ConnectionEvent) bool {
+	if cfg == nil || !cfg.BPFEnforcement.VerdictCallback || !cfg.AutoResponse.VerdictCallback.Enabled {
+		return false
 	}
-	if ev.Decision != 1 && ev.Decision != 2 {
-		return
+	return ev.Decision == 1 || ev.Decision == 2
+}
+
+// askBPFVerdict performs one callback. The client is built per call from the
+// live configuration so a hot reload of the URL or secret is honoured.
+func askBPFVerdict(ctx context.Context, cfg *config.Config, req verdict.Request) (verdict.Response, error) {
+	if cfg == nil {
+		return verdict.Response{}, errBPFVerdictDisabled
 	}
 	vcCfg := cfg.AutoResponse.VerdictCallback
 	vc := verdict.New(verdict.Config{
@@ -27,28 +38,12 @@ func applyBPFEnforcementVerdict(ctx context.Context, cfg *config.Config, ev Conn
 		AllowUnsigned:            vcCfg.AllowUnsigned,
 		Timeout:                  time.Duration(vcCfg.TimeoutSec) * time.Second,
 	})
-	resp, err := vc.Ask(ctx, verdict.Request{
-		IP:       ev.DstIP.String(),
-		Reason:   fmt.Sprintf("bpf_enforcement:%s:%d", f.Check, ev.DstPort),
-		Severity: f.Severity.String(),
-		Source:   "bpf_enforcement",
-	})
-	if err != nil {
-		csmlog.Warn("bpf enforcement verdict callback failed", "err", err, "dst", ev.DstIP.String())
-		return
-	}
-	if resp.TenantID != "" && f.TenantID == "" {
-		f.TenantID = resp.TenantID
-	}
-	if resp.Verdict != "" {
-		appendFindingDetail(f, "Verdict callback: "+resp.Verdict)
-	}
-	if resp.TenantID != "" {
-		appendFindingDetail(f, "Verdict tenant: "+resp.TenantID)
-	}
-	if resp.Note != "" {
-		appendFindingDetail(f, "Verdict note: "+resp.Note)
-	}
+	return vc.Ask(ctx, req)
+}
+
+// bpfVerdictReason is the callback's reason string for one event.
+func bpfVerdictReason(check string, port uint16) string {
+	return fmt.Sprintf("bpf_enforcement:%s:%d", check, port)
 }
 
 func appendFindingDetail(f *alert.Finding, detail string) {
