@@ -140,6 +140,42 @@ func TestVerifyHtaccessCleanUsesAccountRootsWhenNoOverride(t *testing.T) {
 	}
 }
 
+func TestNonQuarantineVerifiersRejectQuarantineOnlyRoots(t *testing.T) {
+	root := t.TempDir()
+	tempTree := t.TempDir()
+	withAccountHomeRoots(t, root)
+	withQuarantineExtraRoots(t, tempTree)
+
+	// Quarantine may reach temp trees, but permission and .htaccess fixes may
+	// not. Their verifiers must keep the same narrower account-root boundary.
+	target := filepath.Join(tempTree, ".htaccess")
+	if err := os.WriteFile(target, []byte("Options -Indexes\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		verify func() VerifyResult
+	}{
+		{name: "permissions", verify: func() VerifyResult {
+			return verifyWriteBit(target, 0002, "world-writable")
+		}},
+		{name: "htaccess", verify: func() VerifyResult {
+			return verifyHtaccessClean(target)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.verify()
+			if res.Checked || res.Demote || res.Resolved {
+				t.Fatalf("a verifier must not reach beyond its matching fixer: %+v", res)
+			}
+			if !strings.Contains(res.Detail, "outside the allowed remediation roots") {
+				t.Fatalf("detail should name the root check, got %q", res.Detail)
+			}
+		})
+	}
+}
+
 func TestReverifyContentFindingRejectsPathOutsideEveryRoot(t *testing.T) {
 	root := t.TempDir()
 	withAccountHomeRoots(t, root)

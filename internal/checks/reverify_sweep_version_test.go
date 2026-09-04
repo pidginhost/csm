@@ -23,8 +23,8 @@ func TestFindingReverifyVersionIncludesSweepLogicVersion(t *testing.T) {
 func TestReverifySweepLogicVersionCoversRemediationRootFix(t *testing.T) {
 	// Bumped when content, permission and htaccess re-checks stopped reading
 	// the raw allow-list var (nil in production) and started resolving the
-	// platform's account roots. Without this bump a host that already stored a
-	// token keeps skipping the sweep and the fix reaches nothing.
+	// platform's account roots. The bump runs the fixed sweep at startup rather
+	// than waiting for the next periodic deep-scan cycle.
 	const remediationRootFixVersion = 1
 	if reverifySweepLogicVersion < remediationRootFixVersion {
 		t.Fatalf("reverifySweepLogicVersion = %d, want at least %d so existing findings are re-checked",
