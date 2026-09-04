@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -1802,7 +1804,11 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	// if a file's hash matches a known-clean core file, signature matches
 	// on it are false positives (e.g. $_POST in wp-includes, mail() in
 	// PHPMailer, fsockopen() in POP3.php).
-	if checks.IsVerifiedCMSFile(path) {
+	// Hashed from the event descriptor, not by re-opening the path: the path
+	// can resolve to clean core content while the bytes just scanned were
+	// malicious, which would skip signature and YARA scanning for the file
+	// that was actually examined.
+	if !checks.CMSCacheEmpty() && checks.IsVerifiedCMSHash(hashEventFD(fd)) {
 		return false
 	}
 
@@ -2502,4 +2508,31 @@ func looksLikePluginUpdate(path string) bool {
 		ts:     time.Now(),
 	})
 	return exists
+}
+
+// hashEventFD returns the SHA-256 of the whole file behind an event
+// descriptor, read positionally so the descriptor offset is left alone for
+// other checks. An empty string means the content could not be read, and the
+// caller treats that as "not verified".
+func hashEventFD(fd int) string {
+	h := sha256.New()
+	buf := make([]byte, 64*1024)
+	var offset int64
+	for {
+		n, err := unix.Pread(fd, buf, offset)
+		if n > 0 {
+			h.Write(buf[:n])
+			offset += int64(n)
+		}
+		if err != nil {
+			if err == unix.EINTR {
+				continue
+			}
+			return ""
+		}
+		if n == 0 {
+			break
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

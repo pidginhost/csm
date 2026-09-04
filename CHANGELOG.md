@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The verified-CMS skip hashes the file the realtime scanner read rather than re-opening its path. A path that resolved to clean core content at hash time skipped both the signature and YARA engines for content the scanner had already read as malicious.
 - Auto-response and the Fix action no longer kill a recycled PID. Auto-kill requires the process to have started before the finding it acts on, and the kill that precedes a quarantine requires the process to still reference the file being quarantined. A finding can be acted on long after it was raised, by which time the number may belong to anything.
 - The af_alg kill reaction verifies the target before signalling it. An audit record can be a tick old, so acting on the PID alone could SIGKILL a process that merely inherited the number. The executable, the owning user and a start time no later than the event must all agree, and anything unverifiable is left alone.
 - Realtime quarantine is pinned to the file the scanner actually read. The move verified identity against a stat taken after detection, so a file replaced in the window between reading the event descriptor and that stat was moved in place of the malware, which survived under another name.

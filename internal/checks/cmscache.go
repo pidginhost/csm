@@ -100,3 +100,23 @@ func IsVerifiedCMSFile(path string) bool {
 	}
 	return cache.Contains(hash)
 }
+
+// IsVerifiedCMSHash reports whether a content hash belongs to a verified CMS
+// core file. Callers that already hold the content -- the realtime scanner
+// hashes the event descriptor -- use this instead of IsVerifiedCMSFile, whose
+// re-read resolves the path again and can hash something other than what was
+// examined.
+func IsVerifiedCMSHash(hash string) bool {
+	if hash == "" {
+		return false
+	}
+	cache := GlobalCMSCache()
+	if cache.Size() == 0 {
+		return false
+	}
+	return cache.Contains(hash)
+}
+
+// CMSCacheEmpty reports whether any verified core files are cached, so a caller
+// can skip hashing entirely when the answer cannot be yes.
+func CMSCacheEmpty() bool { return GlobalCMSCache().Size() == 0 }
