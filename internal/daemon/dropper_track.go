@@ -325,6 +325,10 @@ type dropperFileState struct {
 	BirthKnown  bool
 	Digest      [32]byte
 	DigestKnown bool
+	// IsRegular distinguishes a file that took over the path from a directory
+	// or symlink left behind there. Only a regular file can be the result of
+	// an atomic write.
+	IsRegular bool
 }
 
 // dropperProbe is what the TTL probe learned about a candidate. AtPath and
@@ -360,11 +364,12 @@ const (
 	dropperDemotedWPUpgrade
 	dropperDemotedDocroot
 	dropperDemotedDirRemoved
+	dropperDemotedReplaced
 	dropperSuspect
 )
 
 func dropperVerdictDemoted(v dropperVerdict) bool {
-	return v >= dropperDemotedTemplate && v <= dropperDemotedDirRemoved
+	return v >= dropperDemotedTemplate && v <= dropperDemotedReplaced
 }
 
 func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
@@ -375,6 +380,25 @@ func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
 		return false
 	}
 	return !c.BirthKnown || c.Birth.Equal(current.Birth)
+}
+
+// dropperReplacedInPlace reports whether the file now at the candidate's path
+// is a regular file that came into existence after the candidate was observed.
+// That is an atomic write completing (write temp, rename over the live path),
+// which repeats every few minutes for WAF and cache state files. The successor
+// stays on disk and is scanned in its own right, and the candidate's own bytes
+// were already read by the content pass, so the evidence loss that makes a
+// self-delete Critical does not apply.
+//
+// This does not weaken the detector against an attacker who leaves a benign
+// file behind: overwriting the same inode already returns dropperBenign above,
+// which is both cheaper and quieter than unlink plus rename. A birth time is
+// required, so a filesystem without STATX_BTIME keeps the suspect verdict.
+func dropperReplacedInPlace(c dropperCandidate, current dropperFileState) bool {
+	if !current.IsRegular || !current.BirthKnown {
+		return false
+	}
+	return !current.Birth.Before(c.Observed)
 }
 
 // assessDropper turns a probe result into a verdict for one candidate.
@@ -394,11 +418,6 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 		if dropperSameIdentity(c, *p.AtPath) {
 			return dropperBenign
 		}
-		// A different inode generation at the same path does not explain how
-		// the candidate disappeared. An attacker can unlink an executed dropper
-		// and immediately rename a benign successor over it, so replacement is
-		// positive tampering evidence and must not reach weaker FP heuristics.
-		return dropperSuspect
 	}
 	if p.RenamedTo != "" || p.RenameTarget != nil {
 		if p.RenamedTo == "" || p.RenameTarget == nil || p.RenameTarget.Path != p.RenamedTo {
@@ -410,6 +429,9 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	}
 	if c.ContentSuspicious {
 		return dropperSuspect
+	}
+	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
+		return dropperDemotedReplaced
 	}
 	if p.DocrootRemoved {
 		return dropperDemotedDocroot
@@ -689,6 +711,8 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 			details += "\nDemoted: the containing document root was removed before the probe."
 		case dropperDemotedDirRemoved:
 			details += "\nDemoted: the original containing directory was removed before the probe."
+		case dropperDemotedReplaced:
+			details += "\nDemoted: the path was replaced in place by a newer file (atomic write), not emptied."
 		}
 	}
 	if len(c.Head) > 0 {

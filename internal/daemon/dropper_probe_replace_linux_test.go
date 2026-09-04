@@ -12,23 +12,54 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestDropperProbeKeepsSuccessorAtPathSuspect(t *testing.T) {
+// End-to-end replacement: the probe must report a regular successor with a
+// birth time so assessDropper can tell an atomic rewrite from a self-delete.
+func TestDropperProbeDemotesSuccessorCreatedAfterObservation(t *testing.T) {
+	docroot := t.TempDir()
+	path := filepath.Join(docroot, "config-synced.php")
+	c := freshDropperCandidate(time.Now().Add(-time.Minute))
+	c.Docroot = docroot
+	c.Path = path
+	c.Inode = 1 // deliberately not the on-disk inode: the path was taken over
+
+	if err := os.WriteFile(path, []byte("<?php exit('Access denied'); __halt_compiler(); ?>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := dropperFSProbe{}.probe(c)
+	if !p.Conclusive || p.AtPath == nil {
+		t.Fatalf("probe = %+v, want a conclusive result with AtPath set", p)
+	}
+	if !p.AtPath.IsRegular {
+		t.Error("AtPath.IsRegular = false, want true for a regular file")
+	}
+	if !p.AtPath.BirthKnown {
+		t.Skip("filesystem does not report STATX_BTIME")
+	}
+	if got := assessDropper(c, p); got != dropperDemotedReplaced {
+		t.Errorf("assessDropper() = %v, want dropperDemotedReplaced", got)
+	}
+}
+
+// A file that was already at the path before the candidate was observed is not
+// the completion of an atomic write, so it earns no demotion.
+func TestDropperProbeKeepsOlderSuccessorAtPathSuspect(t *testing.T) {
 	docroot := t.TempDir()
 	path := filepath.Join(docroot, "config-synced.php")
 	if err := os.WriteFile(path, []byte("<?php exit('Access denied'); __halt_compiler(); ?>\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c := freshDropperCandidate(time.Now())
+	c := freshDropperCandidate(time.Now().Add(time.Minute))
 	c.Docroot = docroot
 	c.Path = path
-	c.Inode = 1 // deliberately not the on-disk inode: the path was taken over
+	c.Inode = 1
 
 	p := dropperFSProbe{}.probe(c)
 	if !p.Conclusive || p.AtPath == nil {
 		t.Fatalf("probe = %+v, want a conclusive result with AtPath set", p)
 	}
 	if got := assessDropper(c, p); got != dropperSuspect {
-		t.Errorf("assessDropper() = %v, want dropperSuspect for an unproven replacement", got)
+		t.Errorf("assessDropper() = %v, want dropperSuspect for a pre-existing successor", got)
 	}
 }
 

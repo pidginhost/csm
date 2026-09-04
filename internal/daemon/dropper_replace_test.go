@@ -8,10 +8,10 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// A newer file at the path does not prove an atomic update: a dropper can
-// execute, unlink itself, and rename a benign successor over the same path.
-// Keep the candidate suspect because birth time cannot distinguish the two.
-func TestAssessDropperInPlaceReplacementRemainsSuspect(t *testing.T) {
+// A file whose path is taken over by a newer inode was replaced, not deleted.
+// Wordfence rewrites wflogs/*.php over the live path every few minutes, which
+// is indistinguishable from a self-delete on identity alone.
+func TestAssessDropperInPlaceReplacementDemoted(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	c := freshDropperCandidate(now)
 	successor := &dropperFileState{
@@ -21,40 +21,101 @@ func TestAssessDropperInPlaceReplacementRemainsSuspect(t *testing.T) {
 		Size:       c.Size + 2,
 		Birth:      now.Add(90 * time.Second),
 		BirthKnown: true,
+		IsRegular:  true,
 	}
-	if got := assessDropper(c, dropperProbe{Conclusive: true, AtPath: successor}); got != dropperSuspect {
-		t.Errorf("assessDropper() = %v, want dropperSuspect", got)
+	if got := assessDropper(c, dropperProbe{Conclusive: true, AtPath: successor}); got != dropperDemotedReplaced {
+		t.Errorf("assessDropper() = %v, want dropperDemotedReplaced", got)
 	}
 }
 
-// Filesystems may reuse the same inode number at the same path within the TTL.
-// A changed birth time proves that this is not the tracked survivor, and must
-// not convert the disappearance into a lower-severity replacement finding.
-func TestAssessDropperReusedInodeRemainsSuspect(t *testing.T) {
+// A freed inode number is routinely handed straight back to the next file at
+// the same path (observed live on ext4 under Wordfence). The changed birth
+// time proves this is a successor rather than the tracked file, and it is
+// still a replacement, not a disappearance.
+func TestAssessDropperReusedInodeAtSamePathDemoted(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	c := freshDropperCandidate(now)
 	successor := &dropperFileState{
 		Path:       c.Path,
 		Device:     c.Device,
 		Inode:      c.Inode,
-		Birth:      c.Birth.Add(time.Minute),
+		Birth:      now.Add(time.Minute),
 		BirthKnown: true,
+		IsRegular:  true,
+	}
+	if got := assessDropper(c, dropperProbe{Conclusive: true, AtPath: successor}); got != dropperDemotedReplaced {
+		t.Errorf("assessDropper() = %v, want dropperDemotedReplaced", got)
+	}
+}
+
+// A successor born before the candidate was observed is not the completion of
+// an atomic write: something moved an older file over the path.
+func TestAssessDropperInPlaceReplacementRequiresNewerBirth(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	c := freshDropperCandidate(now)
+	successor := &dropperFileState{
+		Path:       c.Path,
+		Device:     c.Device,
+		Inode:      c.Inode + 1,
+		Birth:      now.Add(-time.Hour),
+		BirthKnown: true,
+		IsRegular:  true,
 	}
 	if got := assessDropper(c, dropperProbe{Conclusive: true, AtPath: successor}); got != dropperSuspect {
 		t.Errorf("assessDropper() = %v, want dropperSuspect", got)
 	}
 }
 
-func TestAssessDropperReplacementCannotFallThroughToTemplateDemotion(t *testing.T) {
+// Without a birth time the successor cannot be proven newer, and a directory
+// or symlink at the path is not an atomic-write result either.
+func TestAssessDropperInPlaceReplacementFailsClosed(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	c := freshDropperCandidate(now)
+	cases := []struct {
+		name string
+		st   dropperFileState
+	}{
+		{"birth unknown", dropperFileState{Path: c.Path, Device: c.Device, Inode: c.Inode + 1, IsRegular: true}},
+		{"not a regular file", dropperFileState{
+			Path: c.Path, Device: c.Device, Inode: c.Inode + 1,
+			Birth: now.Add(time.Minute), BirthKnown: true,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tc.st
+			if got := assessDropper(c, dropperProbe{Conclusive: true, AtPath: &st}); got != dropperSuspect {
+				t.Errorf("assessDropper() = %v, want dropperSuspect", got)
+			}
+		})
+	}
+}
+
+func TestAssessDropperInPlaceReplacementContentSignalWins(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	c := freshDropperCandidate(now)
+	c.ContentSuspicious = true
+	successor := &dropperFileState{
+		Path: c.Path, Device: c.Device, Inode: c.Inode + 1,
+		Birth: now.Add(time.Minute), BirthKnown: true, IsRegular: true,
+	}
+	if got := assessDropper(c, dropperProbe{Conclusive: true, AtPath: successor}); got != dropperSuspect {
+		t.Errorf("assessDropper() = %v, want dropperSuspect", got)
+	}
+}
+
+// A replaced path must be explained as a replacement, never mislabelled as a
+// template compile artifact by a later heuristic.
+func TestAssessDropperReplacementDemotionPrecedesTemplate(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	c := freshDropperCandidate(now)
 	c.Head = []byte("<?php\nclass __TwigTemplate_ab12 extends Template {")
 	successor := &dropperFileState{
 		Path: c.Path, Device: c.Device, Inode: c.Inode + 1,
-		Birth: now.Add(time.Minute), BirthKnown: true,
+		Birth: now.Add(time.Minute), BirthKnown: true, IsRegular: true,
 	}
-	if got := assessDropper(c, dropperProbe{Conclusive: true, AtPath: successor}); got != dropperSuspect {
-		t.Errorf("assessDropper() = %v, want dropperSuspect before template demotion", got)
+	if got := assessDropper(c, dropperProbe{Conclusive: true, AtPath: successor}); got != dropperDemotedReplaced {
+		t.Errorf("assessDropper() = %v, want dropperDemotedReplaced", got)
 	}
 }
 
@@ -77,26 +138,37 @@ func TestAssessDropperParentDirectoryRemovedContentSignalWins(t *testing.T) {
 	}
 }
 
-func TestDropperVerdictDemotedCoversDirectoryRemoval(t *testing.T) {
-	if !dropperVerdictDemoted(dropperDemotedDirRemoved) {
-		t.Error("dropperVerdictDemoted(dropperDemotedDirRemoved) = false, want true")
+func TestDropperVerdictDemotedCoversNewVerdicts(t *testing.T) {
+	for _, v := range []dropperVerdict{dropperDemotedDirRemoved, dropperDemotedReplaced} {
+		if !dropperVerdictDemoted(v) {
+			t.Errorf("dropperVerdictDemoted(%v) = false, want true", v)
+		}
 	}
 	if dropperVerdictDemoted(dropperSuspect) {
 		t.Error("dropperVerdictDemoted(dropperSuspect) = true, want false")
 	}
 }
 
-func TestDropperAlertParamsExplainsDirectoryRemoval(t *testing.T) {
+func TestDropperAlertParamsExplainsNewDemotions(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
-	f := dropperFinding{
-		Docroot: "/home/alice/public_html",
-		Items:   []dropperGone{{Cand: freshDropperCandidate(now), Verdict: dropperDemotedDirRemoved}},
+	cases := []struct {
+		verdict dropperVerdict
+		want    string
+	}{
+		{dropperDemotedReplaced, "replaced in place"},
+		{dropperDemotedDirRemoved, "original containing directory was removed"},
 	}
-	sev, _, details, _ := dropperAlertParams(f)
-	if sev != alert.Warning {
-		t.Errorf("severity = %v, want Warning", sev)
-	}
-	if want := "original containing directory was removed"; !strings.Contains(details, want) {
-		t.Errorf("details = %q, want it to mention %q", details, want)
+	for _, tc := range cases {
+		f := dropperFinding{
+			Docroot: "/home/alice/public_html",
+			Items:   []dropperGone{{Cand: freshDropperCandidate(now), Verdict: tc.verdict}},
+		}
+		sev, _, details, _ := dropperAlertParams(f)
+		if sev != alert.Warning {
+			t.Errorf("severity for %v = %v, want Warning", tc.verdict, sev)
+		}
+		if !strings.Contains(details, tc.want) {
+			t.Errorf("details for %v = %q, want it to mention %q", tc.verdict, details, tc.want)
+		}
 	}
 }
