@@ -203,7 +203,7 @@ func reverifyContentFinding(in VerifyInput) VerifyResult {
 	if in.Path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, info, exists, err := readOnlyFixPath(in.Path, fixQuarantineAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(in.Path, effectiveFixRoots(fixQuarantineAllowedRoots, quarantineExtraRoots...))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
@@ -528,7 +528,7 @@ func verifyWriteBit(path string, bit os.FileMode, label string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, info, exists, err := readOnlyFixPath(path, fixPermissionsAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(path, effectiveFixRoots(fixPermissionsAllowedRoots))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
@@ -562,7 +562,7 @@ func verifyHtaccessClean(path string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, info, exists, err := readOnlyFixPath(path, fixHtaccessAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}

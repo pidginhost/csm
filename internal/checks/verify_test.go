@@ -14,6 +14,13 @@ func withQuarantineAllowedRoots(t *testing.T, dir string) {
 	t.Cleanup(func() { fixQuarantineAllowedRoots = old })
 }
 
+func withQuarantineExtraRoots(t *testing.T, dirs ...string) {
+	t.Helper()
+	old := quarantineExtraRoots
+	quarantineExtraRoots = dirs
+	t.Cleanup(func() { quarantineExtraRoots = old })
+}
+
 func withHtaccessAllowedRoots(t *testing.T, dir string) {
 	t.Helper()
 	old := fixHtaccessAllowedRoots
