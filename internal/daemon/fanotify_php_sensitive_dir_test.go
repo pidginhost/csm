@@ -130,6 +130,33 @@ func TestPHPInLanguagesLargeTranslationCacheWarns(t *testing.T) {
 	}
 }
 
+func TestPHPInLanguagesOversizeTerminatedStubNoAlert(t *testing.T) {
+	dir := t.TempDir()
+	langDir := filepath.Join(dir, "wp-content", "languages")
+	if err := os.MkdirAll(langDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(langDir, "opaque-cache.php")
+	body := []byte("<?php __halt_compiler();" + strings.Repeat("x", checks.MaxInertPHPScanBytes))
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+	if data := readCompleteFromFd(fd, checks.MaxInertPHPScanBytes); data != nil {
+		t.Fatalf("oversized stub unexpectedly returned %d complete bytes", len(data))
+	}
+
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	select {
+	case got := <-ch:
+		t.Errorf("expected no alert for a proven terminator with an opaque tail, got %+v", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestPHPInLanguagesBenignStubNoAlert(t *testing.T) {
 	dir := t.TempDir()
 	langDir := filepath.Join(dir, "wp-content", "languages")

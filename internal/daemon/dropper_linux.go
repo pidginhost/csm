@@ -199,6 +199,9 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	if !trackFresh && c.BirthKnown {
 		return nil
 	}
+	if parent, err := statDropperCandidateParent(c.Path, c.Device, c.Inode); err == nil {
+		c.Parent = parent
+	}
 	c.Head = readFromFd(event.fd, dropperTrackedHeadMax)
 	// Only known install/atomic staging shapes need a digest for cross-filesystem
 	// copy-delete matching. A separate CLOSE_WRITE refresh normally follows
@@ -357,7 +360,6 @@ func statPathToFileState(path string, includeDigest bool) (dropperPathState, err
 	state := dropperPathState{
 		file: dropperFileState{
 			Path: path, Device: uint64(st.Dev), Inode: st.Ino, Size: st.Size,
-			IsRegular: st.Mode&unix.S_IFMT == unix.S_IFREG,
 		},
 		mode: uint32(st.Mode),
 	}
@@ -372,6 +374,83 @@ func statPathToFileState(path string, includeDigest bool) (dropperPathState, err
 		}
 	}
 	return state, nil
+}
+
+// openDropperDirNoSymlinks opens an absolute directory path one component at
+// a time. Refusing symlinks anywhere in the chain is important: reopening a
+// path through a retargeted ancestor could otherwise make an unchanged parent
+// look replaced and turn attacker-controlled path churn into demotion evidence.
+func openDropperDirNoSymlinks(path string) (int, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return -1, unix.EINVAL
+	}
+	flags := unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+	fd, err := unix.Open(string(filepath.Separator), flags, 0)
+	if err != nil {
+		return -1, err
+	}
+	for _, component := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		next, openErr := unix.Openat(fd, component, flags, 0)
+		_ = unix.Close(fd)
+		if openErr != nil {
+			return -1, openErr
+		}
+		fd = next
+	}
+	return fd, nil
+}
+
+// statDropperParent snapshots a real parent directory without following any
+// symlink in its path. Symlinked parents deliberately provide no removal
+// evidence: a dangling or retargeted link does not prove that the directory
+// which contained the event fd was removed.
+func statDropperParent(path string) (dropperParentIdentity, error) {
+	fd, err := openDropperDirNoSymlinks(path)
+	if err != nil {
+		return dropperParentIdentity{}, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	return statDropperParentFD(fd)
+}
+
+// statDropperCandidateParent also proves that the candidate fd identity is
+// still the entry in this parent. If the path was replaced while the event was
+// being admitted, the unrelated successor directory cannot later supply
+// removal evidence for the original candidate.
+func statDropperCandidateParent(path string, device, inode uint64) (dropperParentIdentity, error) {
+	fd, err := openDropperDirNoSymlinks(filepath.Dir(path))
+	if err != nil {
+		return dropperParentIdentity{}, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	var child unix.Stat_t
+	if err := unix.Fstatat(fd, filepath.Base(path), &child, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return dropperParentIdentity{}, err
+	}
+	if uint64(child.Dev) != device || child.Ino != inode {
+		return dropperParentIdentity{}, unix.ESTALE
+	}
+	return statDropperParentFD(fd)
+}
+
+func statDropperParentFD(fd int) (dropperParentIdentity, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return dropperParentIdentity{}, err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return dropperParentIdentity{}, unix.ENOTDIR
+	}
+	identity := dropperParentIdentity{Device: uint64(st.Dev), Inode: st.Ino}
+	if birth, ok := statxBirthFromFD(fd); ok {
+		identity.BirthKnown = true
+		identity.BirthNanos = birth.UnixNano()
+	}
+	return identity, nil
 }
 
 const dropperQuarantineLedgerMax = 4096

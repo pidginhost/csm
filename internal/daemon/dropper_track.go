@@ -39,6 +39,55 @@ type dropperCandidate struct {
 	Digest            [32]byte
 	DigestKnown       bool
 	Head              []byte
+	// Parent identifies the real, non-symlink directory that contained the
+	// candidate while its event fd was open. The later probe uses this stable
+	// identity instead of inferring directory removal from two path stats.
+	Parent dropperParentIdentity
+}
+
+// dropperParentIdentity is deliberately compact because one is retained for
+// every tracked candidate. BirthNanos disambiguates inode reuse when statx
+// exposes it; without birth time, a reused identity is treated as unchanged
+// and cannot earn a false-positive demotion.
+type dropperParentIdentity struct {
+	Device     uint64
+	Inode      uint64
+	BirthNanos int64
+	BirthKnown bool
+	Conflicted bool
+}
+
+func (i dropperParentIdentity) known() bool {
+	return !i.Conflicted && i.Device != 0 && i.Inode != 0
+}
+
+func mergeDropperParentIdentity(a, b dropperParentIdentity) dropperParentIdentity {
+	switch {
+	case a.Conflicted || b.Conflicted:
+		return dropperParentIdentity{Conflicted: true}
+	case !a.known():
+		return b
+	case !b.known():
+		return a
+	case a.Device != b.Device || a.Inode != b.Inode:
+		return dropperParentIdentity{Conflicted: true}
+	case a.BirthKnown && b.BirthKnown && a.BirthNanos != b.BirthNanos:
+		return dropperParentIdentity{Conflicted: true}
+	case b.BirthKnown:
+		return b
+	default:
+		return a
+	}
+}
+
+func dropperParentChanged(observed, current dropperParentIdentity) bool {
+	if !observed.known() || !current.known() {
+		return false
+	}
+	if observed.Device != current.Device || observed.Inode != current.Inode {
+		return true
+	}
+	return observed.BirthKnown && current.BirthKnown && observed.BirthNanos != current.BirthNanos
 }
 
 // shouldTrackDropper reports whether a close-write event is a freshly
@@ -87,12 +136,14 @@ const (
 // provides cover.
 const dropperMaxTracked = 16384
 
-// Keep enough leading content to recognise generated template artifacts and
-// show useful evidence without allowing a burst of large files to retain
-// hundreds of MiB until the probe and grace windows expire. Template markers
-// and the alert excerpt both live in the first few hundred bytes, so this
-// bound stays well inside the tracker's memory ceiling at full capacity.
-const dropperTrackedHeadMax = 1024
+// Keep the retained head-byte budget at 16 MiB even with the larger tracker.
+// Candidate/map/path metadata is additional bounded memory and grows with the
+// entry cap; this constant only accounts for copied content. Representative
+// Twig and Smarty headers place all required markers inside this window.
+const (
+	dropperTrackedHeadBudget = 16 << 20
+	dropperTrackedHeadMax    = dropperTrackedHeadBudget / dropperMaxTracked
+)
 
 type dropperCandidateKey struct {
 	path       string
@@ -134,6 +185,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.Created = prev.Created || next.Created
 	merged.PHPExecutable = prev.PHPExecutable || next.PHPExecutable
 	merged.ContentSuspicious = prev.ContentSuspicious || next.ContentSuspicious
+	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
 	if !merged.BirthKnown {
 		switch {
 		case prev.BirthKnown:
@@ -273,10 +325,6 @@ type dropperFileState struct {
 	BirthKnown  bool
 	Digest      [32]byte
 	DigestKnown bool
-	// IsRegular distinguishes a file that took over the path from a directory
-	// or symlink left behind there. Only a regular file can be the result of
-	// an atomic write.
-	IsRegular bool
 }
 
 // dropperProbe is what the TTL probe learned about a candidate. AtPath and
@@ -291,9 +339,9 @@ type dropperProbe struct {
 	// DocrootRemoved is true only for a confirmed ENOENT on the document
 	// root, not for permission or transient I/O failures.
 	DocrootRemoved bool
-	// ParentRemoved is true only for a confirmed ENOENT on the candidate's
-	// immediate parent directory. A file whose whole directory went away was
-	// not singled out for deletion.
+	// ParentRemoved is true only when a snapshotted, non-symlink parent is now
+	// absent or a different directory identity. A file whose whole directory
+	// went away was not singled out for deletion.
 	ParentRemoved bool
 	RenamedTo     string
 	RenameTarget  *dropperFileState
@@ -312,12 +360,11 @@ const (
 	dropperDemotedWPUpgrade
 	dropperDemotedDocroot
 	dropperDemotedDirRemoved
-	dropperDemotedReplaced
 	dropperSuspect
 )
 
 func dropperVerdictDemoted(v dropperVerdict) bool {
-	return v >= dropperDemotedTemplate && v <= dropperDemotedReplaced
+	return v >= dropperDemotedTemplate && v <= dropperDemotedDirRemoved
 }
 
 func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
@@ -328,20 +375,6 @@ func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
 		return false
 	}
 	return !c.BirthKnown || c.Birth.Equal(current.Birth)
-}
-
-// dropperReplacedInPlace reports whether the file now at the candidate's path
-// is a regular file that came into existence after the candidate was observed.
-// That is an atomic write completing (write temp, rename over the live path),
-// which repeats every few minutes for WAF and cache state files, not a file
-// deleting itself: the successor stays on disk and is scanned in its own
-// right. A birth time is required, so a filesystem without STATX_BTIME keeps
-// the suspect verdict.
-func dropperReplacedInPlace(c dropperCandidate, current dropperFileState) bool {
-	if !current.IsRegular || !current.BirthKnown {
-		return false
-	}
-	return !current.Birth.Before(c.Observed)
 }
 
 // assessDropper turns a probe result into a verdict for one candidate.
@@ -361,6 +394,11 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 		if dropperSameIdentity(c, *p.AtPath) {
 			return dropperBenign
 		}
+		// A different inode generation at the same path does not explain how
+		// the candidate disappeared. An attacker can unlink an executed dropper
+		// and immediately rename a benign successor over it, so replacement is
+		// positive tampering evidence and must not reach weaker FP heuristics.
+		return dropperSuspect
 	}
 	if p.RenamedTo != "" || p.RenameTarget != nil {
 		if p.RenamedTo == "" || p.RenameTarget == nil || p.RenameTarget.Path != p.RenamedTo {
@@ -372,9 +410,6 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	}
 	if c.ContentSuspicious {
 		return dropperSuspect
-	}
-	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
-		return dropperDemotedReplaced
 	}
 	if p.DocrootRemoved {
 		return dropperDemotedDocroot
@@ -653,9 +688,7 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 		case dropperDemotedDocroot:
 			details += "\nDemoted: the containing document root was removed before the probe."
 		case dropperDemotedDirRemoved:
-			details += "\nDemoted: the containing directory was removed before the probe."
-		case dropperDemotedReplaced:
-			details += "\nDemoted: the path was replaced in place by a newer file (atomic write), not emptied."
+			details += "\nDemoted: the original containing directory was removed before the probe."
 		}
 	}
 	if len(c.Head) > 0 {

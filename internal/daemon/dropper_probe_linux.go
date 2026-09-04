@@ -47,9 +47,12 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 	if derr := unix.Stat(c.Docroot, &dst); derr != nil && errors.Is(derr, unix.ENOENT) {
 		result.DocrootRemoved = true
 	}
-	var pst unix.Stat_t
-	if perr := unix.Stat(filepath.Dir(c.Path), &pst); perr != nil && errors.Is(perr, unix.ENOENT) {
-		result.ParentRemoved = true
+	if c.Parent.known() {
+		if current, perr := statDropperParent(filepath.Dir(c.Path)); perr == nil {
+			result.ParentRemoved = dropperParentChanged(c.Parent, current)
+		} else if errors.Is(perr, unix.ENOENT) {
+			result.ParentRemoved = true
+		}
 	}
 	return result
 }

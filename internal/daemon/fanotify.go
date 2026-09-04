@@ -1098,25 +1098,66 @@ func readFromFd(fd int, maxBytes int) []byte {
 	return buf[:n]
 }
 
-// readCompleteFromFd returns the entire file behind fd when it fits within
-// maxBytes, and nil when it does not or the read is short. Callers that must
-// reason about a whole file use it instead of readFromFd, whose prefix cannot
-// prove anything about the unread tail.
-func readCompleteFromFd(fd, maxBytes int) []byte {
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil || st.Size <= 0 || st.Size > int64(maxBytes) {
+const readCompleteMaxInterrupts = 8
+
+// readExactSize reads exactly the snapshotted size. Its buffer is fixed before
+// the first read, so a concurrently growing source cannot extend the loop; a
+// bounded EINTR retry count also prevents a pathological signal storm from
+// pinning an analyzer worker.
+func readExactSize(size int64, maxBytes int, pread func([]byte, int64) (int, error)) []byte {
+	if size <= 0 || maxBytes <= 0 || size > int64(maxBytes) {
 		return nil
 	}
-	buf := make([]byte, int(st.Size))
+	buf := make([]byte, int(size))
+	interrupts := 0
 	for off := 0; off < len(buf); {
-		n, err := unix.Pread(fd, buf[off:], int64(off))
+		n, err := pread(buf[off:], int64(off))
+		if n < 0 || n > len(buf)-off {
+			return nil
+		}
 		if n > 0 {
 			off += n
+			interrupts = 0
+		}
+		if err != nil && !errors.Is(err, unix.EINTR) {
+			return nil
+		}
+		if n > 0 {
 			continue
 		}
-		if errors.Is(err, unix.EINTR) {
-			continue
+		if !errors.Is(err, unix.EINTR) {
+			return nil
 		}
+		interrupts++
+		if interrupts > readCompleteMaxInterrupts {
+			return nil
+		}
+	}
+	return buf
+}
+
+func sameReadSnapshot(before, after unix.Stat_t) bool {
+	return before.Dev == after.Dev && before.Ino == after.Ino && before.Size == after.Size &&
+		before.Mtim == after.Mtim && before.Ctim == after.Ctim
+}
+
+// readCompleteFromFd returns a stable snapshot of the entire file behind fd
+// when it fits within maxBytes. A short read, concurrent size/content change,
+// or excessive interruption fails closed so whole-file recognizers never
+// accept a stale prefix.
+func readCompleteFromFd(fd, maxBytes int) []byte {
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		return nil
+	}
+	buf := readExactSize(before.Size, maxBytes, func(p []byte, off int64) (int, error) {
+		return unix.Pread(fd, p, off)
+	})
+	if buf == nil {
+		return nil
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || !sameReadSnapshot(before, after) {
 		return nil
 	}
 	return buf
@@ -1464,13 +1505,15 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		if fm.checkPHPContent(event.fd, path, procInfo) {
 			markDropperContentSuspicious()
 		} else {
-			// Both inert-content recognizers must see the whole body to
-			// prove the file carries no code, so read it complete rather
-			// than a prefix. Nearly half the *.l10n.php caches WordPress
-			// generates on a busy host are larger than 64 KiB, and a
-			// truncated buffer can only ever fail closed.
+			// Translation caches and comment-only stubs require a stable,
+			// complete body. A no-argument PHP terminator is safe from a
+			// prefix because all following bytes are unreachable, so retain
+			// the old bounded-head fallback for oversized files.
 			data := readCompleteFromFd(event.fd, checks.MaxInertPHPScanBytes)
-			if isBenignPHPStubData(event.fd, data) {
+			if data != nil && checks.IsBenignPHPStubBytesComplete(data, true) {
+				return
+			}
+			if data == nil && checks.IsBenignPHPStubBytesComplete(readFromFd(event.fd, 65536), false) {
 				return
 			}
 			// WordPress 6.5+ writes *.l10n.php translation caches here as pure

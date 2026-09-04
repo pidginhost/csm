@@ -183,6 +183,35 @@ func TestDropperTrackerBoundsCandidateHead(t *testing.T) {
 	}
 }
 
+func TestDropperTrackerHeadBudgetStaysBoundedAtFullCapacity(t *testing.T) {
+	if got := dropperMaxTracked * dropperTrackedHeadMax; got != dropperTrackedHeadBudget {
+		t.Fatalf("retained head budget = %d bytes, want %d", got, dropperTrackedHeadBudget)
+	}
+	if dropperTrackedHeadMax != 1024 {
+		t.Fatalf("tracked head window = %d bytes, want 1024", dropperTrackedHeadMax)
+	}
+}
+
+func TestMergeDropperCandidateKeepsOnlyConsistentParentIdentity(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	prev := freshDropperCandidate(now)
+	prev.Parent = dropperParentIdentity{Device: 1, Inode: 2}
+	next := prev
+	next.Parent = dropperParentIdentity{Device: 1, Inode: 2, BirthNanos: 3, BirthKnown: true}
+	if got := mergeDropperCandidate(prev, next).Parent; got != next.Parent {
+		t.Fatalf("strengthened parent identity = %+v, want %+v", got, next.Parent)
+	}
+
+	next.Parent.Inode++
+	conflicted := mergeDropperCandidate(prev, next)
+	if conflicted.Parent.known() || !conflicted.Parent.Conflicted {
+		t.Fatalf("conflicting parent identity survived merge: %+v", conflicted.Parent)
+	}
+	if got := mergeDropperCandidate(conflicted, next).Parent; got.known() || !got.Conflicted {
+		t.Fatalf("later refresh restored conflicting parent evidence: %+v", got)
+	}
+}
+
 func TestDropperTrackerReobserveKeepsFirstSeen(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	tr := newDropperTracker(3 * time.Minute)
@@ -471,6 +500,35 @@ func TestLooksLikeCompiledTemplate(t *testing.T) {
 	}
 	if looksLikeCompiledTemplate(markerOnly) {
 		t.Error("a loose Twig marker must not demote arbitrary PHP")
+	}
+}
+
+func TestTrackedHeadContainsRepresentativeTemplateMarkers(t *testing.T) {
+	twig := []byte("<?php\n" + strings.Join([]string{
+		"use Twig\\Environment;",
+		"use Twig\\Error\\LoaderError;",
+		"use Twig\\Error\\RuntimeError;",
+		"use Twig\\Extension\\SandboxExtension;",
+		"use Twig\\Markup;",
+		"use Twig\\Sandbox\\SecurityError;",
+		"use Twig\\Sandbox\\SecurityNotAllowedTagError;",
+		"use Twig\\Sandbox\\SecurityNotAllowedFilterError;",
+		"use Twig\\Sandbox\\SecurityNotAllowedFunctionError;",
+		"use Twig\\Source;",
+		"use Twig\\Template;",
+	}, "\n") + "\n/* templates/admin/dashboard.html.twig */\n" +
+		"class __TwigTemplate_9f8ab12cd34ef56 extends Template\n{")
+	smarty := []byte("<?php\n/* Smarty version 4.3.1, created on 2026-07-19 17:27:12\n" +
+		"  from 'file:/usr/local/cpanel/base/frontend/jupiter/index.tpl' */\n")
+	for name, body := range map[string][]byte{"twig": twig, "smarty": smarty} {
+		t.Run(name, func(t *testing.T) {
+			if len(body) > dropperTrackedHeadMax {
+				t.Fatalf("representative header is %d bytes, exceeds %d-byte retained window", len(body), dropperTrackedHeadMax)
+			}
+			if !looksLikeCompiledTemplate(body) {
+				t.Fatal("compiled-template markers were not recognized in retained head")
+			}
+		})
 	}
 }
 

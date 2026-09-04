@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -68,5 +70,57 @@ func TestReadCompleteFromFdRefusesOversizeFile(t *testing.T) {
 	}
 	if got := readCompleteFromFd(fd, checks.MaxInertPHPScanBytes); len(got) != 4096 {
 		t.Errorf("readCompleteFromFd = %d bytes, want 4096", len(got))
+	}
+}
+
+func TestReadExactSizeStopsAtSnapshotWhileSourceGrows(t *testing.T) {
+	calls := 0
+	got := readExactSize(4, 4, func(p []byte, _ int64) (int, error) {
+		calls++
+		p[0] = byte('a' + calls - 1)
+		return 1, nil // model a writer that always has another byte available
+	})
+	if string(got) != "abcd" || calls != 4 {
+		t.Fatalf("readExactSize = %q in %d calls, want %q in 4 calls", got, calls, "abcd")
+	}
+}
+
+func TestReadExactSizeRejectsShortAndEndlesslyInterruptedReads(t *testing.T) {
+	if got := readExactSize(4, 4, func([]byte, int64) (int, error) {
+		return 0, nil
+	}); got != nil {
+		t.Fatalf("zero-length short read returned %d bytes, want nil", len(got))
+	}
+
+	calls := 0
+	if got := readExactSize(4, 4, func([]byte, int64) (int, error) {
+		calls++
+		return 0, unix.EINTR
+	}); got != nil {
+		t.Fatalf("endlessly interrupted read returned %d bytes, want nil", len(got))
+	}
+	if calls != readCompleteMaxInterrupts+1 {
+		t.Errorf("interrupted read made %d calls, want %d", calls, readCompleteMaxInterrupts+1)
+	}
+}
+
+func TestSameReadSnapshotRejectsConcurrentMutation(t *testing.T) {
+	before := unix.Stat_t{
+		Dev: 1, Ino: 2, Size: 4,
+		Mtim: unix.Timespec{Sec: 3, Nsec: 4},
+		Ctim: unix.Timespec{Sec: 5, Nsec: 6},
+	}
+	if !sameReadSnapshot(before, before) {
+		t.Fatal("identical file snapshots did not match")
+	}
+	after := before
+	after.Size++
+	if sameReadSnapshot(before, after) {
+		t.Fatal("growing file snapshots matched")
+	}
+	after = before
+	after.Ctim.Nsec++
+	if sameReadSnapshot(before, after) {
+		t.Fatal("fixed-size concurrent rewrite snapshots matched")
 	}
 }

@@ -2890,10 +2890,9 @@ func containsAny(strs []string, substrs ...string) bool {
 const benignPHPStubMaxScan = 4 * 1024 * 1024
 
 // MaxInertPHPScanBytes is the largest file the inert-content recognizers read
-// in full. Both IsBenignPHPStubBytesComplete and
-// IsWPTranslationCacheBytesComplete must see every byte to prove a file
-// carries no code, so a caller that cannot supply the whole body must fail
-// closed instead of suppressing on a prefix.
+// in full. Translation caches and comment-only stubs need every byte to prove
+// that no code follows; a proven PHP terminator can still be accepted from an
+// incomplete prefix because its tail is unreachable.
 const MaxInertPHPScanBytes = benignPHPStubMaxScan
 
 // IsBenignPHPStub reports whether the reachable code region of a PHP

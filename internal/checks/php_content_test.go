@@ -1247,6 +1247,12 @@ func TestIsBenignPHPStubBytesRejectsIncompleteCommentOnlyBuffer(t *testing.T) {
 	}
 }
 
+func TestIsBenignPHPStubBytesAcceptsTerminatorInIncompleteBuffer(t *testing.T) {
+	if !IsBenignPHPStubBytesComplete([]byte("<?php __halt_compiler();"), false) {
+		t.Error("a proven no-argument terminator must make an unread tail unreachable")
+	}
+}
+
 func TestIsBenignPHPStubBytesRejectsEmpty(t *testing.T) {
 	if IsBenignPHPStubBytes(nil) {
 		t.Error("nil buffer must be rejected")
