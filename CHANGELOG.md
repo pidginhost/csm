@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the Sentry Go SDK to 0.49.0.
+
 ### Fixed
 
 - The self-deleting-dropper detector reported a Critical for every file whose path was taken over by a newer file, which is how Wordfence rewrites its firewall state every few minutes. A replacement now reports at a lower severity, and so does a file whose original directory was removed, as happens when WP Toolkit tears down a site clone.
