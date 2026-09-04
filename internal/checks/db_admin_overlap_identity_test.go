@@ -5,15 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// buildAdminOverlapFindings sorts its account list so "the dedup layer
-// downstream treats two identical overlaps emitted across scans as the same
-// finding". The LastSeen timestamp written into Details defeated exactly that:
-// Finding.Key() hashes Details, so every scan minted a new key for an unchanged
-// overlap. On cluster6 that added 18 duplicate findings per scan cycle -- 163
-// findings covering 19 real overlaps within a day, growing every hour.
+// LastSeen is useful operator context but changes on every observation.
+// Finding.Key() hashes Details by default, so an unchanged overlap needs an
+// explicit identity that excludes LastSeen.
 
 func TestAdminOverlapFindingKeyIsStableAcrossScans(t *testing.T) {
 	overlapAt := func(seen time.Time) map[string][]store.AdminEmailEntry {
@@ -33,6 +31,41 @@ func TestAdminOverlapFindingKeyIsStableAcrossScans(t *testing.T) {
 	if first[0].Key() != second[0].Key() {
 		t.Fatalf("an unchanged overlap must keep one identity across scans:\n first  = %s\n second = %s",
 			first[0].Key(), second[0].Key())
+	}
+	if first[0].DedupKey == "" {
+		t.Fatal("an overlap with volatile last-seen details needs an explicit dedup key")
+	}
+}
+
+func TestAdminOverlapFindingKeyCanonicalizesAccountSet(t *testing.T) {
+	seen := time.Date(2026, 9, 4, 11, 0, 0, 0, time.UTC)
+	find := func(owners []store.AdminEmailEntry) alert.Finding {
+		t.Helper()
+		got := buildAdminOverlapFindings(map[string][]store.AdminEmailEntry{
+			"shared@example.com": owners,
+		})
+		if len(got) != 1 {
+			t.Fatalf("expected one finding, got %d", len(got))
+		}
+		return got[0]
+	}
+
+	ordered := find([]store.AdminEmailEntry{
+		{Account: "acctone", Schema: "acctone_wp", LastSeen: seen},
+		{Account: "accttwo", Schema: "accttwo_wp", LastSeen: seen},
+	})
+	shuffledWithDuplicateAccount := find([]store.AdminEmailEntry{
+		{Account: "accttwo", Schema: "accttwo_wp", LastSeen: seen},
+		{Account: "acctone", Schema: "acctone_blog", LastSeen: seen},
+		{Account: "acctone", Schema: "acctone_wp", LastSeen: seen},
+	})
+
+	if ordered.Key() != shuffledWithDuplicateAccount.Key() {
+		t.Fatalf("owner order or a second schema changed the account-set identity:\n ordered = %s\n shuffled = %s",
+			ordered.Key(), shuffledWithDuplicateAccount.Key())
+	}
+	if !strings.Contains(shuffledWithDuplicateAccount.Message, "2 accounts: acctone, accttwo") {
+		t.Fatalf("message did not use the sorted, de-duplicated account set: %q", shuffledWithDuplicateAccount.Message)
 	}
 }
 

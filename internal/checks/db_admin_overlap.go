@@ -121,10 +121,10 @@ func adminEmailsForSite(creds wpDBCreds, prefix string) ([]string, error) {
 	return out, nil
 }
 
-// buildAdminOverlapFindings collapses each overlap entry into a single
-// Warning finding. Account lists are sorted for deterministic message
-// content so the dedup layer downstream treats two identical overlaps
-// emitted across scans as the same finding.
+// buildAdminOverlapFindings collapses each overlap entry into a single Warning
+// finding. The sorted, de-duplicated account set feeds both operator-facing
+// text and the explicit identity, so input order and multiple schemas owned by
+// one account cannot change the finding key.
 func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []alert.Finding {
 	emails := make([]string, 0, len(overlaps))
 	for email := range overlaps {

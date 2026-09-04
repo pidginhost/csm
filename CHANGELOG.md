@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A shared administrator email reported across accounts is now one finding that stays one finding. Each scan raised a fresh copy of every unchanged overlap, so a host accumulated them every hour until they crowded out the rest of the queue.
+- Shared administrator emails now retain one finding identity while the account set is unchanged. Previously, refreshed last-seen metadata created duplicate queue entries.
 
 ## [3.33.1] - 2026-09-04
 
