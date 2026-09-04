@@ -31,14 +31,75 @@ import (
 
 // fanotify constants (not all in Go stdlib)
 const (
-	FAN_MARK_ADD    = 0x00000001
-	FAN_MARK_MOUNT  = 0x00000010
-	FAN_CLOSE_WRITE = 0x00000008
-	FAN_CREATE      = 0x00000100
-	FAN_CLASS_NOTIF = 0x00000000
-	FAN_CLOEXEC     = 0x00000001
-	FAN_NONBLOCK    = 0x00000002
+	FAN_MARK_ADD = 0x00000001
+	// FAN_MARK_MOUNT covers a single vfsmount. FAN_MARK_FILESYSTEM marks the
+	// whole superblock, so a write that reaches the same inode through a bind
+	// mount is reported too. EL8 backported the flag into 4.18, which is what
+	// CloudLinux 8 runs, so cages are reachable on production kernels.
+	FAN_MARK_MOUNT      = 0x00000010
+	FAN_MARK_FILESYSTEM = 0x00000100
+	FAN_CLOSE_WRITE     = 0x00000008
+	FAN_CREATE          = 0x00000100
+	FAN_CLASS_NOTIF     = 0x00000000
+	FAN_CLOEXEC         = 0x00000001
+	FAN_NONBLOCK        = 0x00000002
 )
+
+// markFunc is the fanotify_mark syscall, passed in so the ladder can be
+// exercised without a kernel and without a mutable package-level seam that
+// concurrent tests would race on.
+type markFunc func(fd int, flags uint, mask uint64, dirFd int, path string) error
+
+// markScope records how widely a watch root ended up being marked.
+type markScope int
+
+const (
+	markScopeNone markScope = iota
+	markScopeFilesystem
+	markScopeMount
+)
+
+func (s markScope) String() string {
+	switch s {
+	case markScopeFilesystem:
+		return "filesystem"
+	case markScopeMount:
+		return "mount"
+	default:
+		return "none"
+	}
+}
+
+// markWatchRoot watches path, preferring a filesystem-scoped mark.
+//
+// A mount-scoped mark sees only the vfsmount it was added to. Every CloudLinux
+// CageFS account reaches its files through a bind mount of the same superblock,
+// so writes inside a cage produced no event at all and the realtime scanner was
+// blind for precisely the accounts most likely to be compromised. Marking the
+// superblock covers every mount of it.
+//
+// The ladder degrades in two independent directions: kernels without
+// FAN_MARK_FILESYSTEM fall back to the mount mark, and kernels without
+// FAN_CREATE (EL8 among them) keep their scope and drop that event bit.
+func markWatchRoot(fd int, path string, mark markFunc) (markScope, error) {
+	var lastErr error
+	for _, attempt := range []struct {
+		scope markScope
+		flags uint
+	}{
+		{markScopeFilesystem, FAN_MARK_ADD | FAN_MARK_FILESYSTEM},
+		{markScopeMount, FAN_MARK_ADD | FAN_MARK_MOUNT},
+	} {
+		for _, mask := range []uint64{FAN_CLOSE_WRITE | FAN_CREATE, FAN_CLOSE_WRITE} {
+			if err := mark(fd, attempt.flags, mask, -1, path); err != nil {
+				lastErr = err
+				continue
+			}
+			return attempt.scope, nil
+		}
+	}
+	return markScopeNone, lastErr
+}
 
 // fanotifyEventMetadata is the header for each fanotify event.
 type fanotifyEventMetadata struct {
@@ -308,6 +369,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	webRootPatterns := checks.PHPConfigRealtimeRootPatterns(cfg)
 	mountPaths := fanotifyMountPaths(webRootPatterns)
 	mountOK := 0
+	var mountScoped []string
 	for index, path := range mountPaths {
 		if index >= 4 {
 			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
@@ -317,17 +379,22 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 				continue
 			}
 		}
-		// H1 - use golang.org/x/sys/unix for fanotify_mark
-		err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE|FAN_CREATE, -1, path)
-		if err != nil {
-			// Try without FAN_CREATE (older kernels)
-			err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE, -1, path)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), path, err)
-				continue
-			}
+		scope, markErr := markWatchRoot(fd, path, unix.FanotifyMark)
+		if markErr != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), path, markErr)
+			continue
+		}
+		if scope == markScopeMount {
+			mountScoped = append(mountScoped, path)
 		}
 		mountOK++
+	}
+	if len(mountScoped) > 0 {
+		// Worth saying out loud: on these roots a write that arrives through a
+		// bind mount (a CageFS cage) raises no event, and only the rolling
+		// content scan will meet it.
+		fmt.Fprintf(os.Stderr, "[%s] Warning: watching %v per-mount only; writes through bind mounts on them are not seen in real time\n",
+			ts(), mountScoped)
 	}
 
 	// M2 - error on zero successful mounts
