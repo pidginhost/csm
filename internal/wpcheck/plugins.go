@@ -23,12 +23,23 @@ import (
 // plugin's official wordpress.org ZIP, signature/YARA rule matches on it are
 // false positives and should not fire.
 
-const pluginsSegment = "/wp-content/plugins/"
+const (
+	pluginsSegment = "/wp-content/plugins/"
+	upgradeSegment = "/wp-content/upgrade/"
+)
 
 // DetectPluginRoot returns the plugin root directory and slug for a path that
-// sits under /wp-content/plugins/<slug>/. Returns empty strings if the path
-// is not inside a plugin.
+// sits inside a plugin, either installed under /wp-content/plugins/<slug>/ or
+// staged by an in-progress update under /wp-content/upgrade/<package>/<slug>/.
+// Returns empty strings if the path is not inside a plugin.
 func DetectPluginRoot(path string) (root, slug string) {
+	if root, slug := detectInstalledPluginRoot(path); root != "" {
+		return root, slug
+	}
+	return detectStagedPluginRoot(path)
+}
+
+func detectInstalledPluginRoot(path string) (root, slug string) {
 	idx := strings.Index(path, pluginsSegment)
 	if idx < 0 {
 		return "", ""
@@ -39,8 +50,40 @@ func DetectPluginRoot(path string) (root, slug string) {
 		return "", ""
 	}
 	slug = tail[:slashIdx]
+	if !safePluginPathComponent(slug) {
+		return "", ""
+	}
 	root = path[:idx+len(pluginsSegment)] + slug
 	return root, slug
+}
+
+// detectStagedPluginRoot resolves the layout WordPress unpacks an update into:
+// wp-content/upgrade/<package>/<slug>/<rest>, moved into wp-content/plugins/
+// only once the install succeeds. The staged tree carries the same files and
+// the same <slug>.php version header, so the per-file hash comparison against
+// the official ZIP works there unchanged. Without this, a routine plugin
+// update leaves every one of its files unverifiable while it is staged.
+func detectStagedPluginRoot(path string) (root, slug string) {
+	idx := strings.Index(path, upgradeSegment)
+	if idx < 0 {
+		return "", ""
+	}
+	pkg, tail, ok := strings.Cut(path[idx+len(upgradeSegment):], "/")
+	if !ok || !safePluginPathComponent(pkg) {
+		return "", ""
+	}
+	slug, tail, ok = strings.Cut(tail, "/")
+	// A package directory with no file below <slug>/ is not a staged plugin.
+	if !ok || tail == "" || !safePluginPathComponent(slug) {
+		return "", ""
+	}
+	return path[:idx+len(upgradeSegment)] + pkg + "/" + slug, slug
+}
+
+// safePluginPathComponent rejects the components that would let a crafted path
+// resolve a root outside the directory it appears to name.
+func safePluginPathComponent(name string) bool {
+	return name != "" && name != "." && name != ".."
 }
 
 var rePluginVersionHeader = regexp.MustCompile(`(?im)^\s*\*?\s*Version:\s*([^\s]+)`)
