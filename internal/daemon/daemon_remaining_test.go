@@ -206,10 +206,20 @@ func TestStartFileMonitor_FailsGracefully(t *testing.T) {
 	cfg := &config.Config{}
 	d := New(cfg, nil, nil, "")
 	d.startFileMonitor()
-	// On macOS, fanotify is not available. Should not panic.
-	if d.fileMonitor != nil {
-		t.Error("fileMonitor should be nil on macOS (no fanotify)")
+
+	if d.fileMonitor == nil {
+		// No fanotify here (macOS, or a kernel or permission that refuses it).
+		// Degrading instead of panicking is what this test exists for.
+		return
 	}
+
+	// Where fanotify does work the monitor really starts, and this test used to
+	// walk away from it. Its goroutines then outlived the test and kept reading
+	// package state that later tests repoint -- the source of this package's
+	// order-dependent failures and data races under -race. Owning the shutdown
+	// keeps the rest of the run deterministic.
+	d.fileMonitor.Stop()
+	d.wg.Wait()
 }
 
 // ---------------------------------------------------------------------------
