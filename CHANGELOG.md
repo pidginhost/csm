@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The af_alg kill reaction verifies the target before signalling it. An audit record can be a tick old, so acting on the PID alone could SIGKILL a process that merely inherited the number. The executable, the owning user and a start time no later than the event must all agree, and anything unverifiable is left alone.
 - Realtime quarantine is pinned to the file the scanner actually read. The move verified identity against a stat taken after detection, so a file replaced in the window between reading the event descriptor and that stat was moved in place of the malware, which survived under another name.
 - The BPF connection consumer no longer performs the verdict callback inline. One denied connection could hold the only reader of a 256-slot ring buffer for the callback's whole timeout, so an optional annotation cost real security events. The finding is dispatched immediately and enrichment runs on a bounded worker pool behind a short-lived per-destination cache; when that saturates the annotation is dropped and counted, never the finding.
 - The Cloudflare range refresh is cancelled when the daemon stops, instead of holding shutdown for the HTTP timeout. On a host that cannot reach cloudflare.com -- an egress-restricted server among them -- the startup fetch ran before the loop could see the stop signal, so the daemon waited out two 30-second fetches before exiting.
