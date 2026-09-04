@@ -111,7 +111,7 @@ func processUsesFileIdentity(pid int, target os.FileInfo) bool {
 		return false
 	}
 	procDir := filepath.Join("/proc", strconv.Itoa(pid))
-	if info, statErr := osFS.Stat(filepath.Join(procDir, "exe")); statErr == nil && sameFileIdentity(info, target) {
+	if info, statErr := osFS.Stat(filepath.Join(procDir, "exe")); statErr == nil && sameObject(info, target) {
 		return true
 	}
 	fdDir := filepath.Join(procDir, "fd")
@@ -121,9 +121,19 @@ func processUsesFileIdentity(pid int, target os.FileInfo) bool {
 	}
 	for _, entry := range entries {
 		info, err := osFS.Stat(filepath.Join(fdDir, entry.Name()))
-		if err == nil && sameFileIdentity(info, target) {
+		if err == nil && sameObject(info, target) {
 			return true
 		}
 	}
 	return false
+}
+
+// sameObject reports whether two stats describe the same file, requiring the
+// content shape to agree as well as device and inode. A deleted inode is handed
+// straight back to the next file created in the same directory, so dev+ino
+// alone would call a descriptor for the removed file the same object as its
+// replacement -- the same inode-reuse hole the quarantine move already guards
+// against.
+func sameObject(a, b os.FileInfo) bool {
+	return sameFileIdentity(a, b) && sameContentShape(a, b)
 }

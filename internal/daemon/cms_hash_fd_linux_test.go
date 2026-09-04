@@ -80,8 +80,8 @@ func TestHashEventFD_LeavesDescriptorOffsetUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = unix.Close(fd) })
-	if _, err := unix.Seek(fd, 5, 0); err != nil {
-		t.Fatal(err)
+	if _, seekErr := unix.Seek(fd, 5, 0); seekErr != nil {
+		t.Fatal(seekErr)
 	}
 	if got := hashEventFD(fd, nil, 10); got == "" {
 		t.Fatal("hash failed")
@@ -103,7 +103,7 @@ func TestHashEventFD_InvalidDescriptorFails(t *testing.T) {
 
 func TestHashEventFD_PreservesAlreadyScannedPrefix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "in-place.php")
-	malicious := []byte("EVIL-prefix-clean-tail")
+	malicious := []byte("EVIL0-prefix-clean-tail")
 	clean := []byte("clean-prefix-clean-tail")
 	if len(malicious) != len(clean) {
 		t.Fatal("test contents must have the same size")
@@ -116,7 +116,7 @@ func TestHashEventFD_PreservesAlreadyScannedPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = unix.Close(fd) })
-	prefix := append([]byte(nil), malicious[:len("EVIL-prefix")]...)
+	prefix := append([]byte(nil), malicious[:len("EVIL0-prefix")]...)
 
 	// Replacing bytes through the same inode must not make the hash forget what
 	// the scanner already consumed.
