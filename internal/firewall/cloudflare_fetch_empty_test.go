@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -19,7 +20,7 @@ func TestFetchCIDRListRejectsBodiesWithoutCIDRs(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			client := geoIPTestClient(http.StatusOK, io.NopCloser(strings.NewReader(body)))
-			cidrs, err := fetchCIDRList(client, "https://example.test/ips")
+			cidrs, err := fetchCIDRList(context.Background(), client, "https://example.test/ips")
 			if err == nil {
 				t.Fatalf("body without CIDRs accepted as list %v", cidrs)
 			}
@@ -32,7 +33,7 @@ func TestFetchCIDRListRejectsBodiesWithoutCIDRs(t *testing.T) {
 func TestFetchCIDRListSurfacesScannerErrors(t *testing.T) {
 	body := "173.245.48.0/20\n" + strings.Repeat("x", 70000) + "\n"
 	client := geoIPTestClient(http.StatusOK, io.NopCloser(strings.NewReader(body)))
-	if _, err := fetchCIDRList(client, "https://example.test/ips"); err == nil {
+	if _, err := fetchCIDRList(context.Background(), client, "https://example.test/ips"); err == nil {
 		t.Fatal("oversized line accepted; partial list returned as complete")
 	}
 }
@@ -40,7 +41,7 @@ func TestFetchCIDRListSurfacesScannerErrors(t *testing.T) {
 func TestFetchCIDRListAcceptsRealList(t *testing.T) {
 	body := "173.245.48.0/20\n103.21.244.0/22\n# trailing comment\n"
 	client := geoIPTestClient(http.StatusOK, io.NopCloser(strings.NewReader(body)))
-	cidrs, err := fetchCIDRList(client, "https://example.test/ips")
+	cidrs, err := fetchCIDRList(context.Background(), client, "https://example.test/ips")
 	if err != nil || len(cidrs) != 2 {
 		t.Fatalf("cidrs = %v, err = %v; want the two ranges", cidrs, err)
 	}
@@ -51,7 +52,7 @@ func TestFetchCloudflareIPsReturnsFreshFamilyWhenOtherFails(t *testing.T) {
 		cfIPv4URL: {status: http.StatusServiceUnavailable, body: "unavailable"},
 		cfIPv6URL: {status: http.StatusOK, body: "2400:cb00::/32\n"},
 	})
-	ipv4, ipv6, err := fetchCloudflareIPs(client)
+	ipv4, ipv6, err := fetchCloudflareIPs(context.Background(), client)
 	if err == nil {
 		t.Fatal("one-family failure was not reported")
 	}

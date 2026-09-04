@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Cloudflare range refresh is cancelled when the daemon stops, instead of holding shutdown for the HTTP timeout. On a host that cannot reach cloudflare.com -- an egress-restricted server among them -- the startup fetch ran before the loop could see the stop signal, so the daemon waited out two 30-second fetches before exiting.
 - The YARA deep scan now handles a file it could not read the way the PHP and JavaScript scans already did: it re-emits that file's existing finding and retires everything else it examined, instead of holding its entire finding set. One error log permanently over the scan limit was enough to freeze every YARA finding on a host for as long as that file existed.
 - Deep-scan carry-forward now preserves every prior YARA rule match and the current PHP or JavaScript finding for each unexamined file across equivalent path spellings, without undoing concurrent dismissals or severity changes. Ambiguous file-type or identity changes retain the affected scan range rather than retiring findings without coverage.
 - Finding re-verification summaries now count only state changes the store accepted and report severity restorations separately from cleared findings.

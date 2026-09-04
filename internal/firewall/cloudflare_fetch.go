@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -22,18 +23,25 @@ const (
 	CloudflareCoverageWarning = "IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted"
 )
 
-// FetchCloudflareIPs downloads the current Cloudflare IP ranges.
-func FetchCloudflareIPs() (ipv4, ipv6 []string, err error) {
+// FetchCloudflareIPs downloads the current Cloudflare IP ranges, honouring
+// ctx. A caller shutting down cancels it rather than waiting out the HTTP
+// timeout: on a host that cannot reach cloudflare.com -- an egress-restricted
+// server among them -- that wait is the full timeout, twice.
+func FetchCloudflareIPs(ctx context.Context) (ipv4, ipv6 []string, err error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	return fetchCloudflareIPs(client)
+	return fetchCloudflareIPs(ctx, client)
 }
 
-func fetchCloudflareIPs(client *http.Client) (ipv4, ipv6 []string, err error) {
-	ipv4, ipv4Err := fetchCIDRList(client, cfIPv4URL)
+func fetchCloudflareIPs(ctx context.Context, client *http.Client) (ipv4, ipv6 []string, err error) {
+	ipv4, ipv4Err := fetchCIDRList(ctx, client, cfIPv4URL)
 	if ipv4Err != nil {
 		ipv4Err = fmt.Errorf("fetching CF IPv4: %w", ipv4Err)
 	}
-	ipv6, ipv6Err := fetchCIDRList(client, cfIPv6URL)
+	if ctx.Err() != nil {
+		// Cancelled between the two fetches: do not start the second.
+		return ipv4, nil, errors.Join(ipv4Err, ctx.Err())
+	}
+	ipv6, ipv6Err := fetchCIDRList(ctx, client, cfIPv6URL)
 	if ipv6Err != nil {
 		ipv6Err = fmt.Errorf("fetching CF IPv6: %w", ipv6Err)
 	}
@@ -41,8 +49,12 @@ func fetchCloudflareIPs(client *http.Client) (ipv4, ipv6 []string, err error) {
 }
 
 // fetchCIDRList fetches a URL and parses one CIDR per line.
-func fetchCIDRList(client *http.Client, url string) ([]string, error) {
-	resp, err := client.Get(url)
+func fetchCIDRList(ctx context.Context, client *http.Client, url string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

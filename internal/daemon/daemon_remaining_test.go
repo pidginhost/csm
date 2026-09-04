@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -171,7 +172,7 @@ func TestRefreshCloudflareIPs_NilFWEngine(t *testing.T) {
 	d.fwEngine = nil
 	// FetchCloudflareIPs will attempt HTTP and may fail; the method
 	// should handle errors gracefully without panic.
-	d.refreshCloudflareIPs()
+	d.refreshCloudflareIPs(context.Background())
 }
 
 // ---------------------------------------------------------------------------

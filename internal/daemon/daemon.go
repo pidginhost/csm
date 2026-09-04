@@ -3236,8 +3236,18 @@ func (d *Daemon) cloudflareRefreshLoop() {
 
 	interval := time.Duration(d.cfg.Cloudflare.RefreshHours) * time.Hour
 
+	// Every fetch is cancelled by shutdown. Without this the startup fetch runs
+	// before the select below is ever reached, so a host that cannot reach
+	// cloudflare.com holds shutdown for the HTTP timeout.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-d.stopCh
+		cancel()
+	}()
+
 	// Fetch immediately on startup
-	d.refreshCloudflareIPs()
+	d.refreshCloudflareIPs(ctx)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -3247,7 +3257,7 @@ func (d *Daemon) cloudflareRefreshLoop() {
 		case <-d.stopCh:
 			return
 		case <-ticker.C:
-			d.refreshCloudflareIPs()
+			d.refreshCloudflareIPs(ctx)
 		}
 	}
 }
@@ -3256,8 +3266,8 @@ func (d *Daemon) cloudflareRefreshLoop() {
 // can feed the refresh an unusable result.
 var fetchCloudflareIPs = firewall.FetchCloudflareIPs
 
-func (d *Daemon) refreshCloudflareIPs() {
-	ipv4, ipv6, err := fetchCloudflareIPs()
+func (d *Daemon) refreshCloudflareIPs(ctx context.Context) {
+	ipv4, ipv6, err := fetchCloudflareIPs(ctx)
 	if err != nil {
 		csmlog.Error("cloudflare IP fetch error", "err", err)
 	}

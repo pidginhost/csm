@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -19,19 +20,19 @@ func TestRefreshCloudflareIPsMergesFreshAndCachedFamilies(t *testing.T) {
 	t.Cleanup(func() { checks.SetCloudflareNets(nil) })
 
 	for name, tc := range map[string]struct {
-		fetch func() ([]string, []string, error)
+		fetch func(context.Context) ([]string, []string, error)
 		want4 []string
 		want6 []string
 	}{
 		"fresh IPv4": {
-			fetch: func() ([]string, []string, error) {
+			fetch: func(context.Context) ([]string, []string, error) {
 				return []string{"198.51.100.0/24"}, nil, errors.New("IPv6 unavailable")
 			},
 			want4: []string{"198.51.100.0/24"},
 			want6: []string{"2400:cb00::/32"},
 		},
 		"fresh IPv6": {
-			fetch: func() ([]string, []string, error) {
+			fetch: func(context.Context) ([]string, []string, error) {
 				return nil, []string{"2001:db8:100::/48"}, errors.New("IPv4 unavailable")
 			},
 			want4: []string{"173.245.48.0/20"},
@@ -45,7 +46,7 @@ func TestRefreshCloudflareIPsMergesFreshAndCachedFamilies(t *testing.T) {
 			}
 			fetchCloudflareIPs = tc.fetch
 			d := &Daemon{cfg: &config.Config{StatePath: state}}
-			d.refreshCloudflareIPs()
+			d.refreshCloudflareIPs(context.Background())
 			got4, got6 := firewall.LoadCFState(state)
 			if len(got4) != 1 || got4[0] != tc.want4[0] || len(got6) != 1 || got6[0] != tc.want6[0] {
 				t.Fatalf("saved ranges = %v, %v; want %v, %v", got4, got6, tc.want4, tc.want6)
@@ -69,11 +70,11 @@ func TestRefreshCloudflareIPsRestoresCachedRangesAfterFetchFailure(t *testing.T)
 	if err := firewall.SaveCFState(state, []string{"173.245.48.0/20"}, []string{"2400:cb00::/32"}, refreshed); err != nil {
 		t.Fatal(err)
 	}
-	fetchCloudflareIPs = func() ([]string, []string, error) {
+	fetchCloudflareIPs = func(context.Context) ([]string, []string, error) {
 		return nil, nil, os.ErrDeadlineExceeded
 	}
 	d := &Daemon{cfg: &config.Config{StatePath: state}}
-	d.refreshCloudflareIPs()
+	d.refreshCloudflareIPs(context.Background())
 
 	if got := firewall.LoadCFRefreshTime(state); !got.Equal(refreshed) {
 		t.Fatalf("failed fetch rewrote refresh time to %s; want %s", got, refreshed)
@@ -91,11 +92,11 @@ func TestRefreshCloudflareIPsUsesPartialFirstFetch(t *testing.T) {
 	t.Cleanup(func() { checks.SetCloudflareNets(nil) })
 
 	state := t.TempDir()
-	fetchCloudflareIPs = func() ([]string, []string, error) {
+	fetchCloudflareIPs = func(context.Context) ([]string, []string, error) {
 		return []string{"198.51.100.0/24"}, nil, errors.New("IPv6 unavailable")
 	}
 	d := &Daemon{cfg: &config.Config{StatePath: state}}
-	d.refreshCloudflareIPs()
+	d.refreshCloudflareIPs(context.Background())
 
 	got4, got6 := firewall.LoadCFState(state)
 	if len(got4) != 1 || got4[0] != "198.51.100.0/24" || len(got6) != 0 {
@@ -108,4 +109,40 @@ func TestRefreshCloudflareIPsUsesPartialFirstFetch(t *testing.T) {
 
 func firstAddress(cidr string) string {
 	return strings.SplitN(cidr, "/", 2)[0]
+}
+
+// A daemon shutting down must not wait on an in-flight Cloudflare fetch. On a
+// host that cannot reach cloudflare.com -- an egress-restricted server, exactly
+// the shape CSM's own firewall produces -- the startup fetch blocks on two HTTP
+// timeouts and the loop never reaches its stop select.
+func TestCloudflareRefreshLoop_CancelsFetchOnStop(t *testing.T) {
+	orig := fetchCloudflareIPs
+	t.Cleanup(func() { fetchCloudflareIPs = orig })
+
+	fetchStarted := make(chan struct{})
+	fetchCloudflareIPs = func(ctx context.Context) ([]string, []string, error) {
+		close(fetchStarted)
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+
+	cfg := &config.Config{}
+	cfg.Cloudflare.RefreshHours = 1
+	d := New(cfg, nil, nil, "")
+	d.wg.Add(1)
+
+	done := make(chan struct{})
+	go func() {
+		d.cloudflareRefreshLoop()
+		close(done)
+	}()
+
+	<-fetchStarted
+	close(d.stopCh)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh loop did not exit while a fetch was in flight")
+	}
 }
