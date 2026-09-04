@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- A WordPress core or plugin file exactly as large as the verification read limit could have a payload appended and still be accepted as an unmodified official file, which suppressed signature and YARA findings on it. Verification now reads the whole file or refuses to verify it.
+
 ### Changed
 
 - Updated the Sentry Go SDK to 0.49.0.

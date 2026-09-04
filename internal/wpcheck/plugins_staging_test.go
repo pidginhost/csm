@@ -273,3 +273,27 @@ func TestIsVerifiedPluginFileRejectsThemeAndCoreStagingTrees(t *testing.T) {
 		})
 	}
 }
+
+// The production case that motivated this: MonsterInsights ships as slug
+// "google-analytics-for-wordpress" with its main file named
+// googleanalytics.php, so the whole staged package must still verify.
+func TestIsVerifiedPluginFileAcceptsStagedPackageWithAlternateMainFile(t *testing.T) {
+	dir := t.TempDir()
+	const slug, version = "google-analytics-for-wordpress", "11.2.0"
+	body := []byte("<?php\nclass MonsterInsights_Site_Health {}\n")
+	root, rel := stagedPackage(t, dir, slug, "googleanalytics.php", version, body)
+
+	sum := sha256.Sum256(body)
+	c := NewCache(t.TempDir())
+	c.setPluginChecksums(slug, version, map[string]string{rel: hex.EncodeToString(sum[:])})
+
+	f, err := os.Open(filepath.Join(root, rel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if !c.IsVerifiedPluginFile(int(f.Fd()), filepath.Join(root, rel)) {
+		t.Error("IsVerifiedPluginFile = false, want true when the main file name differs from the slug")
+	}
+}
