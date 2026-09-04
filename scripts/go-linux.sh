@@ -11,7 +11,7 @@
 #
 # Environment:
 #   GO_LINUX_IMAGE     override the image (default: exact go.mod Go version)
-#   GO_LINUX_RUNTIME   override the runtime (default: ready Docker, else container)
+#   GO_LINUX_RUNTIME   override the runtime (default: apple/container, else Docker)
 #   GO_LINUX_MODCACHE  override the read-only host module cache seed; empty disables it
 #   GO_LINUX_MEMORY    memory limit (default: 12g)
 #   GO_LINUX_DRY_RUN=1 print the invocation instead of running it
