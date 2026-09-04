@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Realtime quarantine is pinned to the file the scanner actually read. The move verified identity against a stat taken after detection, so a file replaced in the window between reading the event descriptor and that stat was moved in place of the malware, which survived under another name.
 - The BPF connection consumer no longer performs the verdict callback inline. One denied connection could hold the only reader of a 256-slot ring buffer for the callback's whole timeout, so an optional annotation cost real security events. The finding is dispatched immediately and enrichment runs on a bounded worker pool behind a short-lived per-destination cache; when that saturates the annotation is dropped and counted, never the finding.
 - The Cloudflare range refresh is cancelled when the daemon stops, instead of holding shutdown for the HTTP timeout. On a host that cannot reach cloudflare.com -- an egress-restricted server among them -- the startup fetch ran before the loop could see the stop signal, so the daemon waited out two 30-second fetches before exiting.
 - The YARA deep scan now handles a file it could not read the way the PHP and JavaScript scans already did: it re-emits that file's existing finding and retires everything else it examined, instead of holding its entire finding set. One error log permanently over the scan limit was enough to freeze every YARA finding on a host for as long as that file existed.

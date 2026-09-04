@@ -1814,7 +1814,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	if err := unix.Fstat(fd, &stat); err == nil && stat.Size > contentSize {
 		contentSize = stat.Size
 	}
-	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo)
+	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, scannedIdentity(fd))
 }
 
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:
@@ -2051,11 +2051,24 @@ func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
 // Non-critical YAML matches use directory-level dedup to avoid alert floods
 // when a plugin directory has many files matching the same rule.
 // Critical matches (backdoors, webshells) always alert per-file.
-func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
-	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo)
+// scannedIdentity describes the object behind an event descriptor. Stat of the
+// /proc magic link resolves the open file itself rather than walking the path
+// again, so it still names the scanned inode after the path has been replaced.
+// os.NewFile is avoided deliberately: its finalizer can close a descriptor the
+// daemon still owns.
+func scannedIdentity(fd int) os.FileInfo {
+	info, err := os.Stat(fmt.Sprintf("/proc/self/fd/%d", fd))
+	if err != nil {
+		return nil
+	}
+	return info
 }
 
-func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string) bool {
+func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, nil)
+}
+
+func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string, scanned os.FileInfo) bool {
 	// Both engines see every file. A .yml hit used to end the scan here, so
 	// a file matching a High .yml rule never met the Critical YARA rule and
 	// the inline quarantine that only a Critical match triggers. Only a file
@@ -2098,7 +2111,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 						Details:  details,
 						FilePath: path,
 					}
-					if qPath, ok := checks.InlineQuarantineGated(fm.currentCfg(), finding, path, data); ok {
+					if qPath, ok := checks.InlineQuarantineGatedIdentified(fm.currentCfg(), finding, path, data, scanned); ok {
 						fm.recordDropperQuarantine(path, qPath)
 						fm.sendAlert(alert.Critical, "auto_response",
 							fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
