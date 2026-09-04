@@ -113,6 +113,46 @@ func TestReadPluginVersion_NoVersionHeaderReturnsError(t *testing.T) {
 	}
 }
 
+func TestReadPluginVersion_ParsesAlternateMainFilename(t *testing.T) {
+	dir := t.TempDir()
+	const slug = "google-analytics-for-wordpress"
+	pluginRoot := filepath.Join(dir, slug)
+	if err := os.MkdirAll(pluginRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "googleanalytics.php"),
+		[]byte("<?php\n/**\n * Plugin Name: MonsterInsights\n * Version: 11.2.0\n */\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	version, err := ReadPluginVersion(pluginRoot, slug)
+	if err != nil {
+		t.Fatalf("ReadPluginVersion: %v", err)
+	}
+	if version != "11.2.0" {
+		t.Errorf("version = %q, want %q", version, "11.2.0")
+	}
+}
+
+func TestReadPluginVersion_AmbiguousAlternateMainFilesFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	const slug = "bundle"
+	pluginRoot := filepath.Join(dir, slug)
+	if err := os.MkdirAll(pluginRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, version := range map[string]string{"one.php": "1.0", "two.php": "2.0"} {
+		body := []byte("<?php\n/*\nPlugin Name: Bundle\nVersion: " + version + "\n*/\n")
+		if err := os.WriteFile(filepath.Join(pluginRoot, name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := ReadPluginVersion(pluginRoot, slug); err == nil {
+		t.Error("expected error for conflicting plugin versions")
+	}
+}
+
 // --- FetchPluginChecksums -------------------------------------------------
 
 func TestFetchPluginChecksums_DownloadsZipAndHashesEntries(t *testing.T) {
