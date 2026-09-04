@@ -357,6 +357,7 @@ func statPathToFileState(path string, includeDigest bool) (dropperPathState, err
 	state := dropperPathState{
 		file: dropperFileState{
 			Path: path, Device: uint64(st.Dev), Inode: st.Ino, Size: st.Size,
+			IsRegular: st.Mode&unix.S_IFMT == unix.S_IFREG,
 		},
 		mode: uint32(st.Mode),
 	}

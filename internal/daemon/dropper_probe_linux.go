@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"errors"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -45,6 +46,10 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 	var dst unix.Stat_t
 	if derr := unix.Stat(c.Docroot, &dst); derr != nil && errors.Is(derr, unix.ENOENT) {
 		result.DocrootRemoved = true
+	}
+	var pst unix.Stat_t
+	if perr := unix.Stat(filepath.Dir(c.Path), &pst); perr != nil && errors.Is(perr, unix.ENOENT) {
+		result.ParentRemoved = true
 	}
 	return result
 }

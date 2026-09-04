@@ -2889,6 +2889,13 @@ func containsAny(strs []string, substrs ...string) bool {
 // accepted on faith.
 const benignPHPStubMaxScan = 4 * 1024 * 1024
 
+// MaxInertPHPScanBytes is the largest file the inert-content recognizers read
+// in full. Both IsBenignPHPStubBytesComplete and
+// IsWPTranslationCacheBytesComplete must see every byte to prove a file
+// carries no code, so a caller that cannot supply the whole body must fail
+// closed instead of suppressing on a prefix.
+const MaxInertPHPScanBytes = benignPHPStubMaxScan
+
 // IsBenignPHPStub reports whether the reachable code region of a PHP
 // file consists only of whitespace and comments, or terminates with a
 // no-argument die / exit / __halt_compiler before any other statement.

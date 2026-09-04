@@ -78,17 +78,21 @@ const (
 	unixSIFREG = 0o100000
 )
 
-// dropperMaxTracked bounds the tracker map. A cPanel package restore can
-// close-write thousands of PHP files in seconds; entries beyond the cap are
-// dropped (and counted) rather than evicting older candidates, because the
-// oldest entries are the ones closest to their probe and losing them would
-// blind the detector exactly when a bulk write storm provides cover.
-const dropperMaxTracked = 4096
+// dropperMaxTracked bounds the tracker map. A cPanel package restore or a
+// WP Toolkit site clone can close-write tens of thousands of PHP files in
+// seconds, and every one stays tracked for the whole unlink TTL; entries
+// beyond the cap are dropped (and counted) rather than evicting older
+// candidates, because the oldest entries are the ones closest to their probe
+// and losing them would blind the detector exactly when a bulk write storm
+// provides cover.
+const dropperMaxTracked = 16384
 
 // Keep enough leading content to recognise generated template artifacts and
 // show useful evidence without allowing a burst of large files to retain
-// hundreds of MiB until the probe and grace windows expire.
-const dropperTrackedHeadMax = 4096
+// hundreds of MiB until the probe and grace windows expire. Template markers
+// and the alert excerpt both live in the first few hundred bytes, so this
+// bound stays well inside the tracker's memory ceiling at full capacity.
+const dropperTrackedHeadMax = 1024
 
 type dropperCandidateKey struct {
 	path       string
@@ -269,6 +273,10 @@ type dropperFileState struct {
 	BirthKnown  bool
 	Digest      [32]byte
 	DigestKnown bool
+	// IsRegular distinguishes a file that took over the path from a directory
+	// or symlink left behind there. Only a regular file can be the result of
+	// an atomic write.
+	IsRegular bool
 }
 
 // dropperProbe is what the TTL probe learned about a candidate. AtPath and
@@ -283,8 +291,12 @@ type dropperProbe struct {
 	// DocrootRemoved is true only for a confirmed ENOENT on the document
 	// root, not for permission or transient I/O failures.
 	DocrootRemoved bool
-	RenamedTo      string
-	RenameTarget   *dropperFileState
+	// ParentRemoved is true only for a confirmed ENOENT on the candidate's
+	// immediate parent directory. A file whose whole directory went away was
+	// not singled out for deletion.
+	ParentRemoved bool
+	RenamedTo     string
+	RenameTarget  *dropperFileState
 	// QuarantineMatched requires an exact ledger identity/fingerprint match,
 	// not merely a prior quarantine entry for the same path.
 	QuarantineMatched bool
@@ -299,11 +311,13 @@ const (
 	dropperDemotedAtomicWrite
 	dropperDemotedWPUpgrade
 	dropperDemotedDocroot
+	dropperDemotedDirRemoved
+	dropperDemotedReplaced
 	dropperSuspect
 )
 
 func dropperVerdictDemoted(v dropperVerdict) bool {
-	return v >= dropperDemotedTemplate && v <= dropperDemotedDocroot
+	return v >= dropperDemotedTemplate && v <= dropperDemotedReplaced
 }
 
 func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
@@ -314,6 +328,20 @@ func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
 		return false
 	}
 	return !c.BirthKnown || c.Birth.Equal(current.Birth)
+}
+
+// dropperReplacedInPlace reports whether the file now at the candidate's path
+// is a regular file that came into existence after the candidate was observed.
+// That is an atomic write completing (write temp, rename over the live path),
+// which repeats every few minutes for WAF and cache state files, not a file
+// deleting itself: the successor stays on disk and is scanned in its own
+// right. A birth time is required, so a filesystem without STATX_BTIME keeps
+// the suspect verdict.
+func dropperReplacedInPlace(c dropperCandidate, current dropperFileState) bool {
+	if !current.IsRegular || !current.BirthKnown {
+		return false
+	}
+	return !current.Birth.Before(c.Observed)
 }
 
 // assessDropper turns a probe result into a verdict for one candidate.
@@ -345,8 +373,14 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if c.ContentSuspicious {
 		return dropperSuspect
 	}
+	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
+		return dropperDemotedReplaced
+	}
 	if p.DocrootRemoved {
 		return dropperDemotedDocroot
+	}
+	if p.ParentRemoved {
+		return dropperDemotedDirRemoved
 	}
 	if atomicWriteRenameCandidate(c.Path) != "" {
 		return dropperDemotedAtomicWrite
@@ -618,6 +652,10 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 			details += "\nDemoted: path is structurally inside a WordPress upgrade staging tree."
 		case dropperDemotedDocroot:
 			details += "\nDemoted: the containing document root was removed before the probe."
+		case dropperDemotedDirRemoved:
+			details += "\nDemoted: the containing directory was removed before the probe."
+		case dropperDemotedReplaced:
+			details += "\nDemoted: the path was replaced in place by a newer file (atomic write), not emptied."
 		}
 	}
 	if len(c.Head) > 0 {

@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1097,6 +1098,30 @@ func readFromFd(fd int, maxBytes int) []byte {
 	return buf[:n]
 }
 
+// readCompleteFromFd returns the entire file behind fd when it fits within
+// maxBytes, and nil when it does not or the read is short. Callers that must
+// reason about a whole file use it instead of readFromFd, whose prefix cannot
+// prove anything about the unread tail.
+func readCompleteFromFd(fd, maxBytes int) []byte {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil || st.Size <= 0 || st.Size > int64(maxBytes) {
+		return nil
+	}
+	buf := make([]byte, int(st.Size))
+	for off := 0; off < len(buf); {
+		n, err := unix.Pread(fd, buf[off:], int64(off))
+		if n > 0 {
+			off += n
+			continue
+		}
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		return nil
+	}
+	return buf
+}
+
 func isBenignPHPStubData(fd int, data []byte) bool {
 	if len(data) == 0 {
 		return false
@@ -1439,7 +1464,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		if fm.checkPHPContent(event.fd, path, procInfo) {
 			markDropperContentSuspicious()
 		} else {
-			data := readFromFd(event.fd, 65536)
+			// Both inert-content recognizers must see the whole body to
+			// prove the file carries no code, so read it complete rather
+			// than a prefix. Nearly half the *.l10n.php caches WordPress
+			// generates on a busy host are larger than 64 KiB, and a
+			// truncated buffer can only ever fail closed.
+			data := readCompleteFromFd(event.fd, checks.MaxInertPHPScanBytes)
 			if isBenignPHPStubData(event.fd, data) {
 				return
 			}

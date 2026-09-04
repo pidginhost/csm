@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -96,19 +97,20 @@ func TestPHPInLanguagesLargeTranslationCacheWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(langDir, "admin-ro_RO.l10n.php")
+	// Past the whole-file read cap the recognizer never sees the tail, so it
+	// must fail closed rather than suppress on a prefix.
 	l10n := []byte("<?php\nreturn ['language'=>'ro','messages'=>['Site flagged.'=>'Site marcat']];\n" +
-		strings.Repeat(" ", 70*1024))
+		strings.Repeat(" ", checks.MaxInertPHPScanBytes))
 	if err := os.WriteFile(path, l10n, 0644); err != nil {
 		t.Fatal(err)
 	}
 	fd := openRawFd(t, path)
 
-	head := readFromFd(fd, 65536)
-	if len(head) != 65536 {
-		t.Fatalf("head read length = %d, want 65536", len(head))
+	if data := readCompleteFromFd(fd, checks.MaxInertPHPScanBytes); data != nil {
+		t.Fatalf("readCompleteFromFd returned %d bytes for an oversize file, want nil", len(data))
 	}
-	if isWPTranslationCacheData(fd, head) {
-		t.Fatal("partial realtime read of larger file must fail closed")
+	if isWPTranslationCacheData(fd, readFromFd(fd, 65536)) {
+		t.Fatal("partial realtime read of a larger file must fail closed")
 	}
 
 	ch := make(chan alert.Finding, 8)

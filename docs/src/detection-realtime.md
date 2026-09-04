@@ -8,7 +8,7 @@ Monitors the mounts containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configur
 
 **Detects:**
 - Webshell creation (PHP files in web directories)
-- Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. Upgrade staging, atomic-save temp files, and template compile caches are recognized and not reported; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`.
+- Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. Upgrade staging, atomic-save temp files, template compile caches, a path replaced in place by a newer file, and a file whose whole directory was removed are recognized and reported at a lower severity; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`.
 - PHP in uploads, languages, upgrade directories
 - PHP in `.ssh`, `.cpanel`, mail directories (critical escalation)
 - Executable drops in `.config`
