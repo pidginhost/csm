@@ -44,6 +44,11 @@ func withCleanYARAScanner(t *testing.T) {
 func TestReverifyContentFindingUsesAccountRootsWhenNoOverride(t *testing.T) {
 	root := t.TempDir()
 	withAccountHomeRoots(t, root)
+	// No temp trees, so only the account root can grant this path. On Linux
+	// t.TempDir() lives under /tmp, which is itself a quarantine extra root:
+	// leaving both in place lets either one grant access and the test stops
+	// proving which.
+	withQuarantineExtraRoots(t)
 	withCleanYARAScanner(t)
 
 	// A cleaned file two levels below the account root, the shape a real
@@ -179,6 +184,10 @@ func TestNonQuarantineVerifiersRejectQuarantineOnlyRoots(t *testing.T) {
 func TestReverifyContentFindingRejectsPathOutsideEveryRoot(t *testing.T) {
 	root := t.TempDir()
 	withAccountHomeRoots(t, root)
+	// Without this the path below is "outside every root" only where
+	// t.TempDir() sits outside /tmp. On Linux it does not, so /tmp granted the
+	// very access this test exists to deny.
+	withQuarantineExtraRoots(t)
 	withCleanYARAScanner(t)
 
 	outside := filepath.Join(t.TempDir(), "elsewhere", "index.php")
