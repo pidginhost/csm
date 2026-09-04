@@ -181,6 +181,12 @@ type FileMonitor struct {
 	// Per-path alert deduplication: "check:filepath" → last alert time
 	alertDedup sync.Map
 
+	// accountRootPatterns and docRootPatterns describe where accounts and their
+	// document roots live on this platform. The realtime detectors used to
+	// hardcode /home and /public_html, which made every one of them dead on
+	// Plesk and DirectAdmin and on cPanel accounts outside /home.
+	accountRootPatterns []string
+	docRootPatterns     []string
 	// webRootPatterns is the immutable PHP configuration root set captured at
 	// startup from account_roots and platform discovery.
 	webRootPatterns []string
@@ -429,15 +435,17 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	}
 
 	fm := &FileMonitor{
-		fd:              fd,
-		cfg:             cfg,
-		alertCh:         alertCh,
-		analyzerCh:      make(chan fileEvent, analyzerChBufferSize),
-		pipeFds:         pipeFds,
-		stopCh:          make(chan struct{}),
-		reconcileDirs:   make(map[string]time.Time),
-		reconcileSig:    make(chan struct{}, 1),
-		webRootPatterns: webRootPatterns,
+		fd:                  fd,
+		cfg:                 cfg,
+		alertCh:             alertCh,
+		analyzerCh:          make(chan fileEvent, analyzerChBufferSize),
+		pipeFds:             pipeFds,
+		stopCh:              make(chan struct{}),
+		reconcileDirs:       make(map[string]time.Time),
+		reconcileSig:        make(chan struct{}, 1),
+		webRootPatterns:     webRootPatterns,
+		accountRootPatterns: checks.AccountHomePatterns(),
+		docRootPatterns:     checks.WebRootPatterns(cfg),
 	}
 
 	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
@@ -920,7 +928,7 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	}
 
 	// CGI scripts in web-accessible directories — detect Perl/Python/Bash backdoors
-	if strings.HasPrefix(path, "/home/") {
+	if fm.underAccountRoot(path) {
 		if strings.HasSuffix(lower, ".pl") || strings.HasSuffix(lower, ".cgi") ||
 			strings.HasSuffix(lower, ".py") || strings.HasSuffix(lower, ".sh") ||
 			strings.HasSuffix(lower, ".rb") {
@@ -938,8 +946,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// HTML files in /home (phishing pages)
-	if strings.HasPrefix(path, "/home/") &&
+	// HTML files in an account tree (phishing pages)
+	if fm.underAccountRoot(path) &&
 		(strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".htm")) {
 		return true
 	}
@@ -950,8 +958,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// ZIP archives in /home (phishing kit uploads)
-	if strings.HasPrefix(path, "/home/") && strings.HasSuffix(lower, ".zip") {
+	// ZIP archives in an account tree (phishing kit uploads)
+	if fm.underAccountRoot(path) && strings.HasSuffix(lower, ".zip") {
 		return true
 	}
 
@@ -980,6 +988,24 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	}
 
 	return false
+}
+
+// underAccountRoot reports whether path sits inside a hosting account's tree.
+// Falls back to the historical /home spelling when the platform offers no
+// patterns, so an unconfigured plain-Linux host keeps the behaviour it had.
+func (fm *FileMonitor) underAccountRoot(path string) bool {
+	if len(fm.accountRootPatterns) == 0 {
+		return strings.HasPrefix(path, "/home/")
+	}
+	return pathMatchesWebRootPatterns(path, fm.accountRootPatterns)
+}
+
+// underDocRoot reports whether path sits inside a served document root.
+func (fm *FileMonitor) underDocRoot(path string) bool {
+	if len(fm.docRootPatterns) == 0 {
+		return strings.Contains(path, "/public_html/")
+	}
+	return pathMatchesWebRootPatterns(path, fm.docRootPatterns)
 }
 
 func pathMatchesWebRootPatterns(path string, patterns []string) bool {
@@ -1453,7 +1479,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// CGI scripts in web-accessible directories (Perl, Python, Bash, Ruby)
 	// Detect backdoor toolkits like LEVIATHAN that use non-PHP scripts.
-	if strings.HasPrefix(path, "/home/") && isCGIExtension(nameLower) {
+	if fm.underAccountRoot(path) && isCGIExtension(nameLower) {
 		fm.checkCGIBackdoor(event.fd, path, procInfo)
 		return
 	}
@@ -1803,7 +1829,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 	// /wp-content/themes/, /wp-content/plugins/, /node_modules/, /vendor/,
 	// /.well-known/ let an attacker who compromised any of those dirs drop
 	// a credential-harvesting page with full suppression.
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
@@ -1905,7 +1931,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 // fanotify event fd (not re-opened by path) so an attacker cannot swap the
 // file between the event and the read.
 func (fm *FileMonitor) checkCredentialLog(fd int, path, procInfo string) {
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
@@ -1968,7 +1994,7 @@ func (fm *FileMonitor) checkCredentialLog(fd int, path, procInfo string) {
 // Plain plugin distribution backups (google-site-kit.zip, mailchimp.zip)
 // have a brand without an action verb and don't fire.
 func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
