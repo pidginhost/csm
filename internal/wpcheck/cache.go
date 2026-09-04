@@ -2,6 +2,7 @@ package wpcheck
 
 import (
 	"crypto/md5" // #nosec G501 -- MD5 is the hash wordpress.org publishes for core file checksums; this is integrity verification against a published reference, not a security primitive.
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -206,6 +207,50 @@ func (c *Cache) fetchWithRetry(version, locale string, attempt int) {
 
 const maxFileSize = 2 << 20
 
+// readCompleteFileForHash returns a stable-size snapshot of a regular file.
+// Hash verification must never accept only a prefix: if a known-good file is
+// exactly maxFileSize bytes, an attacker could otherwise append a payload that
+// the one-shot bounded Pread silently ignores.
+func readCompleteFileForHash(fd int) []byte {
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil || before.Size <= 0 || before.Size > maxFileSize {
+		return nil
+	}
+	if before.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil
+	}
+
+	data := make([]byte, int(before.Size))
+	offset := 0
+	interrupts := 0
+	for offset < len(data) {
+		n, err := unix.Pread(fd, data[offset:], int64(offset))
+		if n > 0 {
+			offset += n
+			interrupts = 0
+		}
+		if err != nil && !errors.Is(err, unix.EINTR) {
+			return nil
+		}
+		if n == 0 {
+			if !errors.Is(err, unix.EINTR) {
+				return nil
+			}
+			interrupts++
+			if interrupts > 100 {
+				return nil
+			}
+		}
+	}
+
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || before.Dev != after.Dev ||
+		before.Ino != after.Ino || before.Size != after.Size {
+		return nil
+	}
+	return data
+}
+
 func (c *Cache) IsVerifiedCoreFile(fd int, path string) bool {
 	root := DetectWPRoot(path)
 	if root == "" {
@@ -241,12 +286,10 @@ func (c *Cache) IsVerifiedCoreFile(fd int, path string) bool {
 		return false
 	}
 
-	data := make([]byte, maxFileSize)
-	n, err := unix.Pread(fd, data, 0)
-	if n <= 0 || (err != nil && n == 0) {
+	data := readCompleteFileForHash(fd)
+	if data == nil {
 		return false
 	}
-	data = data[:n]
 
 	// #nosec G401 -- MD5 is required here: wordpress.org ships MD5 digests
 	// as the canonical integrity reference for core files. We compare
