@@ -141,6 +141,8 @@ func main() {
 		runPHPRelay()
 	case "doctor":
 		runDoctor()
+	case "systemd-roots":
+		runSystemdRoots()
 	case "backup":
 		runBackup()
 	case "forensic-snapshot":
@@ -203,6 +205,7 @@ Commands:
   incidents     List, show, and update correlated security incidents
   enable        Enable optional features (--php-shield)
   disable       Disable optional features (--php-shield)
+  systemd-roots Print a validated systemd drop-in for account write access
   doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   forensic-snapshot <account> --out <archive.tar.gz>  Evidence archive for incident handoff (triggers/admins/sessions/mtimes)

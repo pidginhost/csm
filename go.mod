@@ -27,6 +27,7 @@ require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-crypt/x v0.4.16 // indirect
+	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect

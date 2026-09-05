@@ -92,6 +92,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 	// daemon probe, also puts the remedy in front of an operator whose
 	// daemon is already down for that reason.
 	report.Checks = append(report.Checks, doctorIntegrityCheck(cfg, verifyIntegrity))
+	report.Checks = append(report.Checks, doctorAccountRootAccess(cfg)...)
 
 	// 2. Daemon reachable
 	resp, err := readStatus()

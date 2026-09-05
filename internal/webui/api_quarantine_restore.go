@@ -52,15 +52,16 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	restorePath, err := validateQuarantineRestorePath(meta.OriginalPath)
+	roots, rootErr := quarantineRootsForConfig(s.cfg)
+	restorePath, err := validateQuarantineRestorePath(meta.OriginalPath, roots)
 	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		writeJSONError(w, errors.Join(err, rootErr).Error(), http.StatusBadRequest)
 		return
 	}
 	if quarantineRestoreAfterValidateForTest != nil {
 		quarantineRestoreAfterValidateForTest(restorePath)
 	}
-	target, err := openQuarantineRestoreTarget(restorePath, meta.RestoreAction == "")
+	target, err := openQuarantineRestoreTarget(restorePath, roots, meta.RestoreAction == "")
 	if err != nil {
 		writeJSONError(w, fmt.Sprintf("Cannot open restore destination: %v", err), http.StatusConflict)
 		return
@@ -260,13 +261,11 @@ func ensureTargetStillNamesInfo(target *safepath.Target, fileInfo os.FileInfo) e
 	return nil
 }
 
-func openQuarantineRestoreTarget(path string, createParents bool) (*safepath.Target, error) {
+func openQuarantineRestoreTarget(path string, roots []string, createParents bool) (*safepath.Target, error) {
 	var root string
-	for _, base := range quarantineRestoreRoots {
-		for _, candidate := range []string{base, resolvedRestoreRoot(base)} {
-			if candidate != "" && isPathWithin(path, candidate) && path != candidate && len(candidate) > len(root) {
-				root = candidate
-			}
+	for _, base := range roots {
+		if isPathWithin(path, base) && path != base && len(base) > len(root) {
+			root = base
 		}
 	}
 	if root == "" {
@@ -277,11 +276,6 @@ func openQuarantineRestoreTarget(path string, createParents bool) (*safepath.Tar
 		return nil, err
 	}
 	return safepath.OpenTarget(root, relative, createParents)
-}
-
-func resolvedRestoreRoot(path string) string {
-	resolved, _ := filepath.EvalSymlinks(path)
-	return resolved
 }
 
 func restoreQuarantineDirectory(path string, target *safepath.Target, mode os.FileMode, meta checks.QuarantineMeta) error {

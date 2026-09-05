@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // jsonForScript marshals v to JSON and returns it as template.JS suitable
@@ -463,9 +465,30 @@ func listMetaFiles(dir string) []string {
 	return metas
 }
 
-var quarantineRestoreRoots = []string{"/home", "/tmp", "/dev/shm", "/var/tmp"}
+// Tests redirect platform and scratch roots without changing the config scope.
+var quarantineRestoreRoots []string
 
-func validateQuarantineRestorePath(path string) (string, error) {
+func quarantineRootsForConfig(cfg *config.Config) ([]string, error) {
+	roots := quarantineRestoreRoots
+	if roots == nil {
+		roots = append(platform.Detect().AccountHomeRoots(), "/tmp", "/dev/shm", "/var/tmp")
+	}
+	roots = append([]string(nil), roots...)
+	// Only platform-owned roots can have aliases (for example /tmp on a
+	// development host). Snapshot them before adding tenant-owned roots.
+	for _, root := range roots {
+		if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != root {
+			roots = append(roots, resolved)
+		}
+	}
+	if cfg != nil {
+		configured, err := platform.ResolveAccountRoots(cfg.AccountRoots)
+		return append(roots, configured...), err
+	}
+	return roots, nil
+}
+
+func validateQuarantineRestorePath(path string, roots []string) (string, error) {
 	cleanPath := filepath.Clean(strings.TrimSpace(path))
 	if cleanPath == "" {
 		return "", fmt.Errorf("restore path is required")
@@ -473,7 +496,7 @@ func validateQuarantineRestorePath(path string) (string, error) {
 	if !filepath.IsAbs(cleanPath) {
 		return "", fmt.Errorf("restore path must be absolute")
 	}
-	if !pathWithinAny(cleanPath, quarantineRestoreRoots) {
+	if !pathWithinAny(cleanPath, roots) {
 		return "", fmt.Errorf("restore path is outside the allowed restore roots: %s", cleanPath)
 	}
 
@@ -485,7 +508,7 @@ func validateQuarantineRestorePath(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot validate restore path: %w", err)
 	}
-	if !pathWithinAny(resolvedAncestor, quarantineRestoreRoots) {
+	if !pathWithinAny(resolvedAncestor, roots) {
 		return "", fmt.Errorf("restore path escapes the allowed restore roots: %s", cleanPath)
 	}
 	if accountRoot := homeAccountRoot(cleanPath); accountRoot != "" && !isPathWithin(resolvedAncestor, accountRoot) {
@@ -498,9 +521,6 @@ func validateQuarantineRestorePath(path string) (string, error) {
 func pathWithinAny(path string, bases []string) bool {
 	for _, base := range bases {
 		if isPathWithin(path, base) {
-			return true
-		}
-		if resolvedBase, err := filepath.EvalSymlinks(base); err == nil && isPathWithin(path, resolvedBase) {
 			return true
 		}
 	}
@@ -525,13 +545,16 @@ func nearestExistingAncestor(path string) (string, error) {
 }
 
 func homeAccountRoot(path string) string {
-	cleanPath := filepath.Clean(path)
-	if !strings.HasPrefix(cleanPath, "/home/") {
-		return ""
+	clean := filepath.Clean(path)
+	for _, root := range platform.Detect().AccountHomeRoots() {
+		rest, found := strings.CutPrefix(clean, filepath.Clean(root)+string(filepath.Separator))
+		if !found {
+			continue
+		}
+		account, tail, inside := strings.Cut(rest, string(filepath.Separator))
+		if inside && tail != "" {
+			return filepath.Join(root, account)
+		}
 	}
-	parts := strings.Split(cleanPath, string(filepath.Separator))
-	if len(parts) < 4 {
-		return ""
-	}
-	return filepath.Join("/home", parts[2])
+	return ""
 }

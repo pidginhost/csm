@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Configured account roots now work with manual remediation and quarantine restore. Operators can generate narrow service write grants and check them with health diagnostics.
+
 - Large state databases can now be backed up and restored under the same configurable archive limit. Restore checks available staging space before replacing live files.
 
 - Backup restore rejects corrupt, truncated, and unsupported trailing archive data before replacing live files.

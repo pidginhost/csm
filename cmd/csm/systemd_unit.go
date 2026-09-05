@@ -45,7 +45,8 @@ ProtectSystem=strict
 # Empty log file). The read-only home mode is enforced after writable path
 # grants, so it would still leave /home read-only. ProtectSystem=strict keeps
 # paths outside explicit writable grants read-only; only the explicit -/home
-# grant below reopens account home directories.
+# grant below reopens account home directories. Custom roots need the
+# validated drop-in printed by csm systemd-roots.
 ProtectHome=no
 # -/opt/csm/state (tolerate-absent) covers installs that still pin the legacy
 # state_path (state_path: /opt/csm/state) instead of the FHS default

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/sshdconf"
 	"golang.org/x/text/language"
 )
@@ -34,6 +35,11 @@ func (v ValidationResult) String() string {
 // Validate checks the config for errors, warnings, and emits OK for valid sections.
 func Validate(cfg *Config) []ValidationResult {
 	var results []ValidationResult
+	for index, pattern := range cfg.AccountRoots {
+		if err := platform.ValidateAccountRootPattern(pattern); err != nil {
+			results = append(results, ValidationResult{"error", fmt.Sprintf("account_roots[%d]", index), err.Error()})
+		}
+	}
 
 	// --- Hostname ---
 	if cfg.Hostname == "" || cfg.Hostname == "SET_HOSTNAME_HERE" {

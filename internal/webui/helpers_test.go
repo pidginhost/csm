@@ -518,7 +518,8 @@ func TestResolveQuarantineEntry_PreClean(t *testing.T) {
 
 func TestValidateQuarantineRestorePath_AllowedTempPath(t *testing.T) {
 	restorePath := filepath.Join("/tmp", "csm-test", "restored.php")
-	got, err := validateQuarantineRestorePath(restorePath)
+	roots, _ := quarantineRootsForConfig(nil)
+	got, err := validateQuarantineRestorePath(restorePath, roots)
 	if err != nil {
 		t.Fatalf("validateQuarantineRestorePath() error = %v", err)
 	}
@@ -528,7 +529,8 @@ func TestValidateQuarantineRestorePath_AllowedTempPath(t *testing.T) {
 }
 
 func TestValidateQuarantineRestorePath_RejectsOutsideRoots(t *testing.T) {
-	if _, err := validateQuarantineRestorePath("/etc/passwd"); err == nil {
+	roots, _ := quarantineRootsForConfig(nil)
+	if _, err := validateQuarantineRestorePath("/etc/passwd", roots); err == nil {
 		t.Fatal("validateQuarantineRestorePath() = nil error, want root validation failure")
 	}
 }

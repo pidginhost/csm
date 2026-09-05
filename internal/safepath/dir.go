@@ -29,6 +29,23 @@ func OpenDir(path string) (*Dir, error) {
 	return &Dir{file: f}, nil
 }
 
+// OpenDirNoFollow pins every component from the filesystem root. Configured
+// content roots can belong to tenants, including their ancestor directories.
+func OpenDirNoFollow(path string) (*Dir, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, fmt.Errorf("directory root must be an absolute clean path: %q", path)
+	}
+	root, err := OpenDir("/")
+	if err != nil {
+		return nil, err
+	}
+	if path == "/" {
+		return root, nil
+	}
+	defer func() { _ = root.Close() }()
+	return root.walk(strings.TrimPrefix(path, "/"), false)
+}
+
 func (d *Dir) Close() error { return d.file.Close() }
 
 func (d *Dir) Sync() error { return d.file.Sync() }
@@ -160,7 +177,7 @@ func OpenTarget(rootPath, relative string, createParents bool) (*Target, error) 
 	if !filepath.IsLocal(relative) || filepath.Clean(relative) != relative || relative == "." {
 		return nil, fmt.Errorf("invalid relative restore path %q", relative)
 	}
-	root, err := OpenDir(rootPath)
+	root, err := openTargetRoot(rootPath)
 	if err != nil {
 		return nil, err
 	}

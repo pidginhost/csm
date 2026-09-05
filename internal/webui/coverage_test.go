@@ -322,26 +322,30 @@ func TestReadQuarantineMetaCorrupt(t *testing.T) {
 // --- validateQuarantineRestorePath ------------------------------------
 
 func TestValidateQuarantineRestorePathEmpty(t *testing.T) {
-	if _, err := validateQuarantineRestorePath(""); err == nil {
+	roots, _ := quarantineRootsForConfig(nil)
+	if _, err := validateQuarantineRestorePath("", roots); err == nil {
 		t.Fatal("empty path should error")
 	}
 }
 
 func TestValidateQuarantineRestorePathRelative(t *testing.T) {
-	if _, err := validateQuarantineRestorePath("relative/path"); err == nil {
+	roots, _ := quarantineRootsForConfig(nil)
+	if _, err := validateQuarantineRestorePath("relative/path", roots); err == nil {
 		t.Fatal("relative path should error")
 	}
 }
 
 func TestValidateQuarantineRestorePathOutsideRoots(t *testing.T) {
-	if _, err := validateQuarantineRestorePath("/etc/shadow"); err == nil {
+	roots, _ := quarantineRootsForConfig(nil)
+	if _, err := validateQuarantineRestorePath("/etc/shadow", roots); err == nil {
 		t.Fatal("path outside roots should error")
 	}
 }
 
 func TestValidateQuarantineRestorePathValidTmp(t *testing.T) {
 	// /tmp exists on macOS and Linux.
-	got, err := validateQuarantineRestorePath("/tmp/csm-test-restore")
+	roots, _ := quarantineRootsForConfig(nil)
+	got, err := validateQuarantineRestorePath("/tmp/csm-test-restore", roots)
 	if err != nil {
 		t.Fatalf("valid /tmp path errored: %v", err)
 	}

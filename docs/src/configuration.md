@@ -50,7 +50,7 @@ account_roots:
   - "/home/*/public_html"          # add if you also have cPanel-style accounts
 ```
 
-Each entry is a glob pattern expanded at scan time. Non-existent matches are silently dropped. If `account_roots` is empty and CSM is not on a cPanel host, the account-scan checks return no findings (they run but find nothing, which is the correct behavior for a plain-Linux host with no configured web roots).
+Each entry is an absolute, normalized glob pattern expanded at scan time. Configured directories also define remediation and restore scope. Custom locations need service write access; see [Custom account roots](custom-account-roots.md). Non-existent matches are silently dropped. If `account_roots` is empty and CSM is not on a cPanel host, the account-scan checks return no findings (they run but find nothing, which is the correct behavior for a plain-Linux host with no configured web roots).
 
 The setting covers `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, real-time `php.ini` monitoring, and WP-Cron remediation roots. CMS integrity, phishing, `.htaccess`, and file-index scans use the platform's account layout: every directory under `/home` on cPanel, DirectAdmin and plain hosts, under `/var/www/vhosts` on Plesk.
 

@@ -1121,7 +1121,8 @@ type Config struct {
 
 	// AccountRoots lets operators point the account-scan based checks at
 	// non-cPanel web root layouts. Each entry is a glob pattern expanded
-	// at check time. Examples:
+	// at check time. Validated directories also bound content remediation
+	// and quarantine restore. Examples:
 	//
 	//   account_roots:
 	//     - /var/www/*/public

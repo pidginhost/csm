@@ -38,6 +38,10 @@ file's modification time in place instead of treating the archive's timestamp
 as the original. Some older access-file cleanup backups also lack trustworthy
 ownership and permission data; check those attributes when restoring them.
 
+Configured account roots participate in manual remediation and restore. Set up
+[service write access](custom-account-roots.md) for roots outside the packaged
+grants before enabling these operations.
+
 Web UI restore refuses symbolic links in destination directories and does not
 replace an existing file or directory. If a destination changes during restore,
 CSM reports a conflict and retains the quarantine entry. Check the original
