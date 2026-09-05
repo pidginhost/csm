@@ -63,6 +63,7 @@ type AutomationStatus struct {
 	// to apply at startup) -- a condition monitoring should alert on.
 	FirewallEnabled               bool              `json:"firewall_enabled"`
 	FirewallManaged               bool              `json:"firewall_managed"`
+	FirewallStartupError          string            `json:"firewall_startup_error,omitempty"`
 	FirewallBlockedIPs            int               `json:"firewall_blocked_ips"`
 	FirewallBlockedSubnets        int               `json:"firewall_blocked_subnets"`
 	FirewallRollbackPending       bool              `json:"firewall_rollback_pending"`
@@ -113,13 +114,13 @@ func (s Snapshot) AllWatchersAttached() bool {
 
 // OverallStatus collapses the snapshot into one of: "ok", "degraded", "down".
 //   - "down" if the snapshot was zero-valued (never assembled)
-//   - "degraded" if any watcher is detached or the store is unhealthy
+//   - "degraded" if a watcher is detached, the store is unhealthy, or an enabled firewall is unmanaged
 //   - "ok" otherwise
 func (s Snapshot) OverallStatus() string {
 	if s.StartedAt.IsZero() && len(s.Watchers) == 0 {
 		return "down"
 	}
-	if !s.StoreHealthy || !s.AllWatchersAttached() {
+	if !s.StoreHealthy || !s.AllWatchersAttached() || s.Automation.FirewallEnabled && !s.Automation.FirewallManaged {
 		return "degraded"
 	}
 	return "ok"

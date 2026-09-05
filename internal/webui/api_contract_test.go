@@ -29,6 +29,8 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			DryRunBlocks:                  3,
 			ChallengeEnabled:              true,
 			ChallengePending:              2,
+			FirewallEnabled:               true,
+			FirewallStartupError:          "fixture apply failure",
 			FirewallRollbackPending:       true,
 			FirewallRollbackSecondsRemain: 120,
 			LastAction: &health.AutomationAction{

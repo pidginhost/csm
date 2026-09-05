@@ -162,6 +162,19 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.Checks = append(report.Checks, DoctorCheck{Name: "bbolt store healthy", Status: "ok"})
 	}
 
+	if automation := sr.Snapshot.Automation; automation.FirewallEnabled {
+		check := DoctorCheck{Name: "firewall managed", Status: "ok"}
+		if !automation.FirewallManaged {
+			check.Status = "fail"
+			check.Message = "firewall is enabled but CSM could not initialize its engine"
+			if automation.FirewallStartupError != "" {
+				check.Message += ": " + automation.FirewallStartupError
+			}
+			check.Fix = "inspect journalctl -u csm.service for the firewall startup error, correct the configuration or nftables permissions, then restart csm.service"
+		}
+		report.Checks = append(report.Checks, check)
+	}
+
 	if cfg.PHPShield.Enabled {
 		report.Checks = append(report.Checks, phpShieldCageFSDoctorChecks()...)
 	}

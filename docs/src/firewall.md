@@ -21,6 +21,24 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **Audit trail** - JSONL log with 10MB rotation
 - **State persistence** with atomic writes
 
+## Startup failures
+
+CSM tries to initialize and apply an enabled firewall up to three times, with
+one-second and two-second delays between attempts. Each attempt builds a fresh
+atomic transaction. A failed apply keeps the previous kernel rules in place.
+The retry delays stop when the daemon shuts down.
+
+If all attempts fail, CSM continues monitoring but reports degraded health.
+`/api/v1/status` and `csm status --json` expose
+`automation.firewall_enabled: true`, `firewall_managed: false`, and
+`firewall_startup_error`. The error remains available for the lifetime of that
+process. `csm doctor` reports a failed firewall check and a recovery step.
+
+Inspect `journalctl -u csm.service`, correct the reported configuration or
+nftables permissions problem, and restart `csm.service`. A successful startup
+clears the error and enables the firewall-dependent services. Disabling the
+firewall deliberately does not degrade health.
+
 ## CLI Commands
 
 ```bash

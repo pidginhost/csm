@@ -190,6 +190,9 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	out.ChallengePortGateActive = d.challengeGate != nil
 	if cfg != nil && cfg.Firewall != nil {
 		out.FirewallEnabled = cfg.Firewall.Enabled
+		if out.FirewallEnabled {
+			out.FirewallStartupError = d.fwStartupError
+		}
 	}
 	// FirewallManaged is true only when a live engine is wired. Reporting it
 	// (alongside FirewallEnabled) lets monitoring detect "enabled but not
