@@ -12,6 +12,9 @@ CSM scans email attachments in real-time using ClamAV and YARA-X on the Exim mai
 6. Infected messages are quarantined with full metadata
 7. Sender, recipient, and message ID are logged
 
+Quarantine and release preserve each queue file's ownership, permissions, and
+modification time, including when the move crosses filesystems.
+
 Quarantine persists recovery metadata before moving spool files and syncs file
 contents and directory changes. A failed rollback retains the remaining
 quarantine files. Release restores the body before publishing the queue header;

@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 	"unicode"
 
 	"golang.org/x/sys/unix"
@@ -97,15 +96,7 @@ func CleanInfectedFile(path string) CleanResult {
 
 	// Metadata sidecar derived from the same fd we read, so a directory
 	// race after open cannot change the metadata we record.
-	meta := map[string]interface{}{
-		"original_path":  path,
-		"owner_uid":      target.UID,
-		"group_gid":      target.GID,
-		"mode":           target.Info.Mode().String(),
-		"size":           target.Info.Size(),
-		"quarantined_at": time.Now(),
-		"reason":         "Pre-clean backup (surgical cleaning)",
-	}
+	meta := quarantineMetadata(path, target.Info, "Pre-clean backup (surgical cleaning)")
 	if err := storeQuarantineBackup(backupPath, data, meta, 0600); err != nil {
 		result.Error = fmt.Sprintf("cannot create durable backup: %v", err)
 		return result

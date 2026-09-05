@@ -84,6 +84,11 @@ func RestoreVirtualPatchBackup(backupPath string, target *safepath.Target, meta 
 	if opErr := temp.Chown(meta.Owner, meta.Group); opErr != nil {
 		return opErr
 	}
+	if !meta.OriginalModTime.IsZero() {
+		if opErr := safepath.SetModTime(temp, meta.OriginalModTime); opErr != nil {
+			return opErr
+		}
+	}
 	if opErr := temp.Sync(); opErr != nil {
 		return opErr
 	}

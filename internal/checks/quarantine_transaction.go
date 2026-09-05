@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func quarantineTarget(path, qPath string, info os.FileInfo, metadata any) error {
+func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineMeta) error {
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding quarantine metadata: %w", err)
@@ -27,7 +27,7 @@ func quarantineTarget(path, qPath string, info os.FileInfo, metadata any) error 
 	return quarantineFileTOCTOUSafe(path, qPath, info, data)
 }
 
-var storeQuarantineBackup = func(path string, content []byte, metadata any, mode os.FileMode) error {
+var storeQuarantineBackup = func(path string, content []byte, metadata QuarantineMeta, mode os.FileMode) error {
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding quarantine metadata: %w", err)

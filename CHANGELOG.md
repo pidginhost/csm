@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Quarantine restore preserves recorded ownership, permissions, and modification times. Historical entries use their saved quarantine dates when available.
+
 - Quarantine and restore now make recovery data durable before removing originals. Storage failures preserve recovery copies and report partial completion.
 
 - Mail monitoring preserves records written in fragments and discards oversized records through their terminating newline, preventing partial records from hiding or distorting authentication events.

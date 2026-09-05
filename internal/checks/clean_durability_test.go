@@ -39,7 +39,7 @@ func TestCleanBackupFailurePreservesOriginal(t *testing.T) {
 				t.Fatal(err)
 			}
 			called := false
-			storeQuarantineBackup = func(_ string, data []byte, _ any, _ os.FileMode) error {
+			storeQuarantineBackup = func(_ string, data []byte, _ QuarantineMeta, _ os.FileMode) error {
 				called = true
 				if string(data) != content {
 					t.Fatalf("backup does not contain complete original: %q", data)

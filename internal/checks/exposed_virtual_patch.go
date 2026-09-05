@@ -600,6 +600,7 @@ func findExistingPrePatchBackup(htaccess string, state htaccessState, patched []
 			meta.Owner != state.uid ||
 			meta.Group != state.gid ||
 			meta.Mode != state.mode.String() ||
+			(state.existed && !meta.OriginalModTime.Equal(state.info.ModTime())) ||
 			meta.Size != int64(len(state.content)) {
 			return false
 		}
@@ -627,10 +628,8 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 	if err := quarantinefs.EnsureDir(htaccessBackupDirRoot, 0750); err != nil {
 		return virtualPatchBackup{}, false, fmt.Errorf("creating backup dir: %v", err)
 	}
-	// A backup plugin that rewrites its own .htaccess sends CSM back here on
-	// every scan with byte-identical pre-patch content. Reuse the archived
-	// copy instead of stacking another one; the operator gains nothing from
-	// the duplicate and the quarantine list becomes unreadable.
+	// Reuse only an identical recovery state. Equal bytes with different
+	// attributes need a new backup so restore keeps the captured metadata.
 	if existing, found := findExistingPrePatchBackup(htaccess, state, patched); found {
 		for _, path := range []string{existing.itemPath, existing.metaPath} {
 			if err := quarantinefs.SyncFilePath(path); err != nil {
@@ -675,7 +674,7 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 	if !state.existed {
 		restoreAction = QuarantineRestoreRemoveIfUnchanged
 	}
-	metaJSON, err := json.Marshal(QuarantineMeta{
+	meta := QuarantineMeta{
 		OriginalPath:          htaccess,
 		Owner:                 state.uid,
 		Group:                 state.gid,
@@ -685,7 +684,11 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 		Reason:                "exposed-file virtual-patch: pre-patch .htaccess backup",
 		RestoreAction:         restoreAction,
 		ExpectedCurrentSHA256: virtualPatchSHA256(patched),
-	})
+	}
+	if state.existed {
+		meta.OriginalModTime = state.info.ModTime().UTC()
+	}
+	metaJSON, err := json.Marshal(meta)
 	if err != nil {
 		return virtualPatchBackup{}, false, fmt.Errorf("encoding backup meta: %v", err)
 	}

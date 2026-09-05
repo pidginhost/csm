@@ -117,7 +117,7 @@ func TestQuarantineDirectoryRestoreSyncFailureRetainsRecovery(t *testing.T) {
 			} else {
 				syncQuarantineRestoredParent = func(*safepath.Dir) error { return syscall.EIO }
 			}
-			err = restoreQuarantineDirectory(qPath, target, 0700, os.Getuid(), os.Getgid())
+			err = restoreQuarantineDirectory(qPath, target, 0700, checks.QuarantineMeta{Owner: os.Getuid(), Group: os.Getgid()})
 			if !errors.Is(err, syscall.EIO) {
 				t.Fatalf("%s failure not reported: %v", phase, err)
 			}

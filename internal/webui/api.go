@@ -584,13 +584,15 @@ var quarantineDir = "/opt/csm/quarantine"
 func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 
 	type quarantineEntry struct {
-		ID           string `json:"id"`
-		Kind         string `json:"kind"`
-		OriginalPath string `json:"original_path"`
-		Size         int64  `json:"size"`
-		QuarantineAt string `json:"quarantined_at"`
-		Reason       string `json:"reason"`
-		LiveState    string `json:"live_state"`
+		ID              string    `json:"id"`
+		Kind            string    `json:"kind"`
+		OriginalPath    string    `json:"original_path"`
+		Size            int64     `json:"size"`
+		QuarantineAt    string    `json:"quarantined_at"`
+		Reason          string    `json:"reason"`
+		LiveState       string    `json:"live_state"`
+		OriginalModTime time.Time `json:"original_mtime,omitzero"`
+		quarantinedAt   time.Time
 	}
 
 	var entries []quarantineEntry
@@ -621,20 +623,29 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 			kind = "pre_clean"
 		}
 
+		var timestamp string
+		if !meta.QuarantineAt.IsZero() {
+			timestamp = meta.QuarantineAt.UTC().Format(time.RFC3339Nano)
+		}
 		entries = append(entries, quarantineEntry{
-			ID:           quarantineEntryID(metaFile),
-			Kind:         kind,
-			OriginalPath: meta.OriginalPath,
-			Size:         meta.Size,
-			QuarantineAt: meta.QuarantineAt.Format(time.RFC3339),
-			Reason:       meta.Reason,
-			LiveState:    liveState,
+			ID:              quarantineEntryID(metaFile),
+			Kind:            kind,
+			OriginalPath:    meta.OriginalPath,
+			Size:            meta.Size,
+			QuarantineAt:    timestamp,
+			Reason:          meta.Reason,
+			LiveState:       liveState,
+			OriginalModTime: meta.OriginalModTime,
+			quarantinedAt:   meta.QuarantineAt,
 		})
 	}
 
 	// Sort newest first
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].QuarantineAt > entries[j].QuarantineAt
+		if entries[i].quarantinedAt.Equal(entries[j].quarantinedAt) {
+			return entries[i].ID < entries[j].ID
+		}
+		return entries[i].quarantinedAt.After(entries[j].quarantinedAt)
 	})
 
 	writeJSON(w, entries)
@@ -1571,8 +1582,15 @@ func parseModeString(s string) os.FileMode {
 			mode |= b
 		}
 	}
-	if mode == 0 {
-		mode = 0644 // fallback
+	for _, flag := range s[:len(s)-9] {
+		switch flag {
+		case 'u':
+			mode |= os.ModeSetuid
+		case 'g':
+			mode |= os.ModeSetgid
+		case 't':
+			mode |= os.ModeSticky
+		}
 	}
 	return mode
 }

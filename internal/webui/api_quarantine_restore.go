@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -121,7 +120,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if quarInfo.IsDir() {
-		if err := restoreQuarantineDirectory(entry.ItemPath, target, restoredMode, meta.Owner, meta.Group); err != nil {
+		if err := restoreQuarantineDirectory(entry.ItemPath, target, restoredMode, meta); err != nil {
 			writeJSONError(w, fmt.Sprintf("Cannot restore directory: %v", err), http.StatusConflict)
 			return
 		}
@@ -164,13 +163,22 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
 			return
 		}
+		if err := dst.Chown(meta.Owner, meta.Group); err != nil {
+			_ = dst.Close()
+			writeJSONError(w, fmt.Sprintf("Cannot restore file ownership; quarantine retained: %v", err), http.StatusInternalServerError)
+			return
+		}
 		if err := dst.Chmod(restoredMode); err != nil {
 			_ = dst.Close()
 			writeJSONError(w, fmt.Sprintf("Cannot restore file mode: %v", err), http.StatusInternalServerError)
 			return
 		}
-		if err := dst.Chown(meta.Owner, meta.Group); err != nil {
-			log.Printf("webui: chown %s after restore failed: %v", safeLogString(restorePath), err)
+		if !meta.OriginalModTime.IsZero() {
+			if err := restoreQuarantineModTime(dst, meta.OriginalModTime); err != nil {
+				_ = dst.Close()
+				writeJSONError(w, fmt.Sprintf("Cannot restore modification time; quarantine retained: %v", err), http.StatusInternalServerError)
+				return
+			}
 		}
 		restoredInfo, err := ensureOpenFileStillAtTarget(dst, target)
 		if err != nil {
@@ -225,6 +233,7 @@ var quarantineRestoreBeforeFinalizeForTest func(string)
 var syncQuarantineRestoredFile = (*os.File).Sync
 var syncQuarantineRestoredParent = (*safepath.Dir).Sync
 var removeRestoredQuarantineEvidence = quarantinefs.RemoveEvidence
+var restoreQuarantineModTime = safepath.SetModTime
 
 func ensureOpenFileStillAtTarget(f *os.File, target *safepath.Target) (os.FileInfo, error) {
 	fileInfo, err := f.Stat()
@@ -275,7 +284,7 @@ func resolvedRestoreRoot(path string) string {
 	return resolved
 }
 
-func restoreQuarantineDirectory(path string, target *safepath.Target, mode os.FileMode, uid, gid int) error {
+func restoreQuarantineDirectory(path string, target *safepath.Target, mode os.FileMode, meta checks.QuarantineMeta) error {
 	// Quarantine is daemon-owned. Both sides of the rename still use pinned
 	// parents so destination swaps cannot redirect the transaction.
 	source, err := safepath.OpenDir(filepath.Dir(path))
@@ -299,11 +308,16 @@ func restoreQuarantineDirectory(path string, target *safepath.Target, mode os.Fi
 	if err := quarantinefs.SyncTree(path, info); err != nil {
 		return err
 	}
+	if err := dir.Chown(meta.Owner, meta.Group); err != nil {
+		return err
+	}
 	if err := dir.Chmod(mode); err != nil {
 		return err
 	}
-	if err := dir.Chown(uid, gid); err != nil {
-		return err
+	if !meta.OriginalModTime.IsZero() {
+		if err := restoreQuarantineModTime(dir, meta.OriginalModTime); err != nil {
+			return err
+		}
 	}
 	if err := syncQuarantineRestoredFile(dir); err != nil {
 		return err

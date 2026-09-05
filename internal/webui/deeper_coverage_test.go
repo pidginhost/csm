@@ -986,10 +986,10 @@ func TestParseModeStringDirectory(t *testing.T) {
 }
 
 func TestParseModeStringAllDashesDeep(t *testing.T) {
-	// All dashes means no permissions => fallback to 0644
+	// All dashes records a deliberate lack of permissions.
 	mode := parseModeString("----------")
-	if mode != 0644 {
-		t.Errorf("---------- mode = %o, want 644 (fallback)", mode)
+	if mode != 0 {
+		t.Errorf("---------- mode = %o, want 0000", mode)
 	}
 }
 

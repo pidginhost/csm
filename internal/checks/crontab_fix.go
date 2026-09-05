@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
-	"time"
 
 	"github.com/pidginhost/csm/internal/quarantinefs"
 )
@@ -38,20 +36,7 @@ func fixSuspiciousCrontab(path string) RemediationResult {
 	user := filepath.Base(path)
 	qPath := newQuarantinePath(quarantineDir, "crontab_"+user)
 
-	var uid, gid int
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		uid = int(stat.Uid)
-		gid = int(stat.Gid)
-	}
-	meta := map[string]interface{}{
-		"original_path": path,
-		"owner_uid":     uid,
-		"group_gid":     gid,
-		"mode":          info.Mode().String(),
-		"size":          info.Size(),
-		"quarantine_at": time.Now(),
-		"reason":        "suspicious_crontab remediation",
-	}
+	meta := quarantineMetadata(path, info, "suspicious_crontab remediation")
 	if err := storeQuarantineBackup(qPath, data, meta, 0600); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot create durable crontab backup: %v", err)}
 	}

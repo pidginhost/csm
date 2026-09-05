@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
 
 // eximMsgIDRegex validates Exim message ID format. Exim 4.96 and older use
@@ -228,20 +227,7 @@ func quarantineResolvedTarget(path string, info os.FileInfo) RemediationResult {
 	qPath := newQuarantinePath(quarantineDir, path)
 	var quarantineWarning string
 
-	var uid, gid int
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		uid = int(stat.Uid)
-		gid = int(stat.Gid)
-	}
-	meta := map[string]interface{}{
-		"original_path": path,
-		"owner_uid":     uid,
-		"group_gid":     gid,
-		"mode":          info.Mode().String(),
-		"size":          info.Size(),
-		"quarantine_at": time.Now(),
-		"reason":        "Fixed via CSM Web UI",
-	}
+	meta := quarantineMetadata(path, info, "Fixed via CSM Web UI")
 	if err := quarantineTarget(path, qPath, info, meta); err != nil {
 		var completed bool
 		quarantineWarning, completed = completedQuarantineWarning(err)
@@ -393,15 +379,7 @@ func fixHtaccess(path, message string) RemediationResult {
 	}
 
 	backupPath := newQuarantinePath(htaccessBackupDirRoot, path)
-	meta := QuarantineMeta{
-		OriginalPath: path,
-		Owner:        target.UID,
-		Group:        target.GID,
-		Mode:         target.Info.Mode().String(),
-		Size:         int64(len(data)),
-		QuarantineAt: time.Now().UTC(),
-		Reason:       "Pre-clean .htaccess backup",
-	}
+	meta := quarantineMetadata(path, target.Info, "Pre-clean .htaccess backup")
 	if err := storeQuarantineBackup(backupPath, data, meta, 0600); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot create durable backup: %v", err)}
 	}
@@ -587,21 +565,8 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 		if err != nil {
 			return RemediationResult{Error: fmt.Sprintf("cannot inspect spool file after quarantining %d files: %v", moved, err)}
 		}
-		var uid, gid int
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			uid, gid = int(stat.Uid), int(stat.Gid)
-		}
-		meta := map[string]interface{}{
-			"original_path": src,
-			"owner_uid":     uid,
-			"group_gid":     gid,
-			"mode":          info.Mode().String(),
-			"size":          info.Size(),
-			"message_id":    msgID,
-			"spool_dir":     spoolDir,
-			"quarantine_at": time.Now(),
-			"reason":        "Phishing email quarantined via CSM Web UI",
-		}
+		meta := quarantineMetadata(src, info, "Phishing email quarantined via CSM Web UI")
+		meta.MessageID, meta.SpoolDir = msgID, spoolDir
 		dst := base + suffix
 		if err := quarantineTarget(src, dst, info, meta); err != nil {
 			return RemediationResult{Error: fmt.Sprintf("spool quarantine stopped after %d files; inspect recovery copies under %s: %v", moved, quarantineDir, err)}

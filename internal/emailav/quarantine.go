@@ -329,6 +329,20 @@ func moveFile(src, dst string) error {
 		_ = dstFile.Close()
 		return fmt.Errorf("cross-device copy body: %w", copyErr)
 	}
+	stat := srcInfo.Sys().(*syscall.Stat_t)
+	if ownerErr := dstFile.Chown(int(stat.Uid), int(stat.Gid)); ownerErr != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("cross-device ownership: %w", ownerErr)
+	}
+	// Chown can clear special mode bits, so permissions follow ownership.
+	if modeErr := dstFile.Chmod(srcInfo.Mode()); modeErr != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("cross-device permissions: %w", modeErr)
+	}
+	if timeErr := safepath.SetModTime(dstFile, srcInfo.ModTime()); timeErr != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("cross-device modification time: %w", timeErr)
+	}
 	if syncErr := dstFile.Sync(); syncErr != nil {
 		_ = dstFile.Close()
 		return fmt.Errorf("cross-device sync: %w", syncErr)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/state"
@@ -277,7 +278,7 @@ func TestListMetaFilesFiltersMetaOnly(t *testing.T) {
 func TestReadQuarantineMetaSuccess(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.meta")
-	meta := quarantineMeta{
+	meta := checks.QuarantineMeta{
 		OriginalPath: "/home/a/shell.php",
 		Owner:        1000,
 		Group:        1000,

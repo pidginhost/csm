@@ -25,6 +25,19 @@ Directory quarantine syncs the tree and metadata before moving it on the same
 filesystem. A directory move across filesystems is refused and leaves the source
 in place. Storage failures do not count as successful remediation.
 
+New quarantine and pre-clean sidecars record the original modification time,
+owner, group, permissions, and size. Restore reapplies the saved attributes to
+the opened destination before syncing it. Linux preserves modification times at
+the precision supported by the destination filesystem. An ownership or timestamp
+failure keeps the recovery evidence and reports an error.
+
+Older sidecars may use `quarantine_at`; listing and restore also read that
+historical spelling. Entries without a saved quarantine date sort last. Older
+entries have no recorded original modification time, so restore leaves the new
+file's modification time in place instead of treating the archive's timestamp
+as the original. Some older access-file cleanup backups also lack trustworthy
+ownership and permission data; check those attributes when restoring them.
+
 Web UI restore refuses symbolic links in destination directories and does not
 replace an existing file or directory. If a destination changes during restore,
 CSM reports a conflict and retains the quarantine entry. Check the original
@@ -42,6 +55,10 @@ on the filesystem and storage device honoring sync requests.
 Virtual-patch rollback uses the same directory confinement. It replaces or
 removes the access file only when the saved content, owner, and permissions
 still match, preserving later customer edits.
+
+Virtual-patch backups are reused only when their content and saved attributes,
+including modification time, match. A later edit with identical bytes but a new
+modification time gets a separate recovery point.
 
 Rollback isolates displaced entries in a private directory. If another writer
 changes the destination, CSM preserves the live replacement and reports any

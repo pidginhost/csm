@@ -810,12 +810,7 @@ func CleanHtaccessFile(path string) RemediationResult {
 	backupDir := htaccessBackupDirRoot
 
 	backupPath := newQuarantinePath(backupDir, resolved)
-	meta := QuarantineMeta{
-		OriginalPath: resolved,
-		Size:         int64(len(original)),
-		QuarantineAt: time.Now().UTC(),
-		Reason:       fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)),
-	}
+	meta := quarantineMetadata(resolved, target.Info, fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)))
 	if err := storeQuarantineBackup(backupPath, original, meta, 0640); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("writing durable backup: %v", err)}
 	}

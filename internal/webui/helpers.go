@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/integrity"
 )
 
@@ -425,22 +426,8 @@ func resolveQuarantineEntry(id string) (quarantineEntryRef, error) {
 	}, nil
 }
 
-// quarantineMeta represents the JSON sidecar metadata for a quarantined file.
-// Must match checks.QuarantineMeta on-disk format.
-type quarantineMeta struct {
-	OriginalPath          string    `json:"original_path"`
-	Owner                 int       `json:"owner_uid"`
-	Group                 int       `json:"group_gid"`
-	Mode                  string    `json:"mode"`
-	Size                  int64     `json:"size"`
-	QuarantineAt          time.Time `json:"quarantined_at"`
-	Reason                string    `json:"reason"`
-	RestoreAction         string    `json:"restore_action,omitempty"`
-	ExpectedCurrentSHA256 string    `json:"expected_current_sha256,omitempty"`
-}
-
 // readQuarantineMeta reads and parses a quarantine .meta JSON file.
-func readQuarantineMeta(metaPath string) (*quarantineMeta, error) {
+func readQuarantineMeta(metaPath string) (*checks.QuarantineMeta, error) {
 	// #nosec G304 -- metaPath is constructed by resolveQuarantineEntry under
 	// the quarantine base dir with filepath.Base applied to the ID.
 	data, err := os.ReadFile(metaPath)
@@ -448,7 +435,7 @@ func readQuarantineMeta(metaPath string) (*quarantineMeta, error) {
 		return nil, fmt.Errorf("read quarantine meta: %w", err)
 	}
 
-	var meta quarantineMeta
+	var meta checks.QuarantineMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse quarantine meta: %w", err)
 	}

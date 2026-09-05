@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/emailav"
 )
 
@@ -399,7 +400,7 @@ func TestReadQuarantineMeta_Valid(t *testing.T) {
 	metaPath := filepath.Join(dir, "test.meta")
 
 	ts := time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC)
-	meta := quarantineMeta{
+	meta := checks.QuarantineMeta{
 		OriginalPath: "/home/user/public_html/malware.php",
 		Owner:        1001,
 		Group:        1001,
