@@ -225,7 +225,9 @@ func TestEngineRemoveBlockedState(t *testing.T) {
 	e := &Engine{statePath: dir}
 
 	_ = e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "test"})
-	e.removeBlockedState("203.0.113.5")
+	if err := e.removeBlockedState("203.0.113.5"); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Blocked) != 0 {
@@ -237,7 +239,9 @@ func TestEngineSaveAllowedEntry(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "admin"})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "admin"}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Allowed) != 1 {
@@ -249,8 +253,12 @@ func TestEngineRemoveAllowedState(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "admin"})
-	e.removeAllowedState("10.0.0.1")
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.removeAllowedState("10.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Allowed) != 0 {
@@ -262,7 +270,9 @@ func TestEngineSaveSubnetEntry(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveSubnetEntry(SubnetEntry{CIDR: "192.168.0.0/16", Reason: "test"})
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "192.168.0.0/16", Reason: "test"}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.BlockedNet) != 1 {
@@ -274,8 +284,12 @@ func TestEngineRemoveSubnetState(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveSubnetEntry(SubnetEntry{CIDR: "192.168.0.0/16", Reason: "test"})
-	e.removeSubnetState("192.168.0.0/16")
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "192.168.0.0/16", Reason: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.removeSubnetState("192.168.0.0/16"); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.BlockedNet) != 0 {
@@ -505,8 +519,12 @@ func TestEngineBlockedSubnets(t *testing.T) {
 		Source:    SourceWebUI,
 		BlockedAt: time.Now().Truncate(time.Second),
 	}
-	e.saveSubnetEntry(autoEntry)
-	e.saveSubnetEntry(webuiEntry)
+	if err := e.saveSubnetEntry(autoEntry); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveSubnetEntry(webuiEntry); err != nil {
+		t.Fatal(err)
+	}
 
 	// First call warms the shared state cache and returns a snapshot.
 	first := e.BlockedSubnets()

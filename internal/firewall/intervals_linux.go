@@ -119,7 +119,7 @@ func (e *Engine) replaceBlockedSubnetSets(entries []SubnetEntry) error {
 }
 
 func (e *Engine) updateSubnetStateAndKernel(prior, next FirewallState) error {
-	if err := e.saveState(&next); err != nil {
+	if err := e.persistFirewallIntent(prior, next); err != nil {
 		return fmt.Errorf("persisting subnet change: %w", err)
 	}
 	if err := e.replaceBlockedSubnetSets(next.BlockedNet); err != nil {

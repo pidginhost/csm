@@ -21,6 +21,26 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **Audit trail** - JSONL log with 10MB rotation
 - **State persistence** with atomic writes
 
+## Mutation failures
+
+Firewall changes persist their intent before changing kernel rules. A failed
+atomic kernel transaction restores the previous state. Failed writes and
+rollbacks return errors without success audit records; expiry cleanup logs the
+failure and retries on a later pass. DNS refreshes also retry failed removals.
+Removing one allow source preserves any other active source for that address.
+
+An unconfirmed-durability error means the replacement is visible on disk but
+storage did not confirm its survival across power loss. For kernel changes,
+CSM attempts to restore the previous state before returning the error. A
+failed rollback is reported as well. Correct the storage problem, inspect the
+saved state and live rules, and repeat the intended operation or run
+`csm firewall restart` to apply the saved state. Do not treat an error as a
+successful rule change.
+
+Port-specific allow additions and removals update saved state only. Run
+`csm firewall restart` to apply them to the kernel; the command acknowledgement
+states that a reload is required.
+
 ## Startup failures
 
 Overlapping, nested, duplicate, and adjacent ranges are merged for the kernel,

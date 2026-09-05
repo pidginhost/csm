@@ -196,10 +196,12 @@ func TestEngineSaveAllowedEntryInfersSourceWhenEmpty(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{
+	if err := e.saveAllowedEntry(AllowedEntry{
 		IP:     "10.0.0.42",
 		Reason: "bulk whitelist",
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Allowed) != 1 {
@@ -214,8 +216,12 @@ func TestEngineSaveAllowedEntryDedupSameSource(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "first", Source: SourceCLI})
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "updated", Source: SourceCLI})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "first", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "updated", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Allowed) != 1 {
@@ -230,8 +236,12 @@ func TestEngineSaveAllowedEntryDifferentSourceKeepsBoth(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "a", Source: SourceCLI})
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "b", Source: SourceDynDNS})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "a", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "b", Source: SourceDynDNS}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Allowed) != 2 {
@@ -243,8 +253,12 @@ func TestEngineSaveSubnetEntryDedupCIDR(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveSubnetEntry(SubnetEntry{CIDR: "192.168.0.0/16", Reason: "first"})
-	e.saveSubnetEntry(SubnetEntry{CIDR: "192.168.0.0/16", Reason: "second"})
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "192.168.0.0/16", Reason: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "192.168.0.0/16", Reason: "second"}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.BlockedNet) != 1 {
@@ -260,7 +274,9 @@ func TestEngineSaveSubnetEntryInfersSource(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveSubnetEntry(SubnetEntry{CIDR: "10.0.0.0/8", Reason: "via CSM Web UI"})
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "10.0.0.0/8", Reason: "via CSM Web UI"}); err != nil {
+		t.Fatal(err)
+	}
 	state := e.loadStateFile()
 	if state.BlockedNet[0].Source != SourceWebUI {
 		t.Errorf("source should be inferred to %q, got %q", SourceWebUI, state.BlockedNet[0].Source)
@@ -273,7 +289,7 @@ func TestEngineRemoveAllowedStateBySourceEmptyState(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	if removed := e.removeAllowedStateBySource("10.0.0.1", SourceCLI); removed {
+	if removed, err := e.removeAllowedStateBySource("10.0.0.1", SourceCLI); err != nil || removed {
 		t.Error("no state → should return false")
 	}
 }
@@ -282,8 +298,10 @@ func TestEngineRemoveAllowedStateBySourceNoMatchingSource(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Source: SourceCLI})
-	if removed := e.removeAllowedStateBySource("10.0.0.1", SourceDynDNS); removed {
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := e.removeAllowedStateBySource("10.0.0.1", SourceDynDNS); err != nil || removed {
 		t.Error("no entry for that ip+source → should return false")
 	}
 	// And the CLI entry should still be present.
@@ -357,11 +375,13 @@ func TestEngineCleanExpiredAllowsActiveOnly(t *testing.T) {
 		statePath: dir,
 		cfg:       &FirewallConfig{Enabled: true},
 	}
-	e.saveAllowedEntry(AllowedEntry{
+	if err := e.saveAllowedEntry(AllowedEntry{
 		IP:        "10.0.0.1",
 		Reason:    "future",
 		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	n := e.CleanExpiredAllows()
 	if n != 0 {
 		t.Errorf("no expired entries → CleanExpiredAllows should return 0, got %d", n)
@@ -378,11 +398,13 @@ func TestEngineCleanExpiredSubnetsActiveOnly(t *testing.T) {
 		statePath: dir,
 		cfg:       &FirewallConfig{Enabled: true},
 	}
-	e.saveSubnetEntry(SubnetEntry{
+	if err := e.saveSubnetEntry(SubnetEntry{
 		CIDR:      "192.168.0.0/16",
 		Reason:    "future",
 		ExpiresAt: time.Now().Add(time.Hour),
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	n := e.CleanExpiredSubnets()
 	if n != 0 {
 		t.Errorf("no expired subnets → should return 0, got %d", n)
