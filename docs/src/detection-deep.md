@@ -100,9 +100,18 @@ the hosting account, CMS, database host, database name, and table prefix. Two
 sites under one account keep separate baselines when they use different
 databases or prefixes. Paths that share the same database and prefix share the
 same administrator set. Upgrading from account-wide baselines starts a fresh
-baseline for each installation on its first successful administrator query;
+baseline for each installation on its first complete administrator query;
 later additions produce one High finding per new administrator. Finding
 details identify the affected database and prefix.
+
+Database errors, discovery errors, and configuration or query limits keep the
+affected CMS check incomplete. Earlier findings remain until that CMS completes
+a scan; another CMS can still complete and clear its own resolved findings.
+Queries inspect at most 200 rows and request one extra row to detect overflow.
+An installation stops issuing queries after a failure or overflow. Administrator
+baselines and recorded IDs change only after a complete result; a successful
+empty administrator result also establishes a baseline. New IDs in a partial
+result can still be reported against an existing baseline.
 
 ## CMS Scanner Support Policy
 

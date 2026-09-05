@@ -357,6 +357,9 @@ type wpDBCreds struct {
 	// queryCtx ties scheduled database work to the runner's deadline. Command
 	// paths leave it nil and retain the per-query timeout below.
 	queryCtx context.Context
+	// queryOwner identifies the CMS check whose coverage depends on a query.
+	// WordPress callers use the default owner when this is empty.
+	queryOwner string
 	// queryFailed is shared by the sequential queries for one install. Once a
 	// connection or query fails, later checks skip redundant retries and the
 	// host-wide scan can continue with the next install.
@@ -554,9 +557,7 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 		if creds.queryFailed != nil {
 			*creds.queryFailed = true
 		}
-		if creds.queryCtx != nil {
-			markCheckIncomplete(creds.queryCtx, "db_content")
-		}
+		markCheckIncomplete(creds.queryCtx, creds.queryCheck())
 		return nil
 	}
 	out := make([]string, 0, len(rows))
@@ -570,6 +571,13 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 		return nil
 	}
 	return out
+}
+
+func (c wpDBCreds) queryCheck() string {
+	if c.queryOwner != "" {
+		return c.queryOwner
+	}
+	return "db_content"
 }
 
 // siteURLPoisonReason reports why a siteurl/home value cannot be a real site

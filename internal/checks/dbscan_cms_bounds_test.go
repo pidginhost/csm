@@ -38,7 +38,7 @@ func TestCMSContentQueriesAreBounded(t *testing.T) {
 	scanMagentoContent("alice", magentoCreds{dbName: "m"}, "cms_page", "content")
 	scanDrupalConfig("alice", drupalCreds{dbName: "d"})
 	scanDrupalContent("alice", drupalCreds{dbName: "d"})
-	if len(*queries) < 8 {
+	if len(*queries) != 8 {
 		t.Fatalf("expected the eight content queries, got %d", len(*queries))
 	}
 	for _, q := range *queries {

@@ -74,21 +74,24 @@ var (
 // asWPDBCreds) work uniformly.
 type drupalCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx    context.Context
-	dbName string
-	dbUser string
-	dbPass string
-	dbHost string
-	path   string
+	ctx         context.Context
+	dbName      string
+	dbUser      string
+	dbPass      string
+	dbHost      string
+	path        string
+	queryFailed *bool
 }
 
 func (c drupalCreds) asWPDBCreds() wpDBCreds {
 	return wpDBCreds{
-		dbName:   c.dbName,
-		dbUser:   c.dbUser,
-		dbPass:   c.dbPass,
-		dbHost:   c.dbHost,
-		queryCtx: c.ctx,
+		dbName:      c.dbName,
+		dbUser:      c.dbUser,
+		dbPass:      c.dbPass,
+		dbHost:      c.dbHost,
+		queryCtx:    c.ctx,
+		queryOwner:  "db_content_drupal",
+		queryFailed: c.queryFailed,
 	}
 }
 
@@ -103,14 +106,14 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.St
 	}
 	var findings []alert.Finding
 
-	settings := cmsDiscover("*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php")
+	settings := cmsDiscover(ctx, "db_content_drupal", "*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php")
 	if len(settings) == 0 {
 		return nil
 	}
 
 	// Rank by mtime desc so recently touched Drupal sites are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, settings, accountScanMaxFiles(ctx, cfg)) {
+	for _, path := range rankCMSConfigs(ctx, "db_content_drupal", settings, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
@@ -132,6 +135,7 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.St
 			continue
 		}
 		creds.ctx = ctx
+		creds.queryFailed = new(bool)
 
 		findings = append(findings, scanDrupalConfig(account, creds)...)
 		findings = append(findings, scanDrupalContent(account, creds)...)
@@ -195,7 +199,7 @@ func scanDrupalConfig(account string, creds drupalCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT name, data FROM config WHERE %s",
 		paramsLikeClause("data"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		name, body := splitTabRow(row)
@@ -224,7 +228,7 @@ func scanDrupalContent(account string, creds drupalCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT entity_id, body_value FROM node_revision__body WHERE %s",
 		paramsLikeClause("body_value"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		entityID, body := splitTabRow(row)
@@ -259,8 +263,8 @@ func scanDrupalAdmins(store *state.Store, account string, creds drupalCreds) []a
 	query := fmt.Sprintf(
 		"SELECT u.uid, u.name, u.mail FROM users_field_data u JOIN user__roles r ON u.uid = r.entity_id WHERE r.roles_target_id = '%s' AND u.default_langcode = 1",
 		drupalAdminRoleID)
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
-	return cmsAdminFindings(store, "drupal", "drupal_admin_injection", account, creds.asWPDBCreds(), rows, func(fields []string) (string, string) {
+	rows, complete := runCMSQuery(creds.asWPDBCreds(), query)
+	return cmsAdminFindings(store, "drupal", "drupal_admin_injection", account, creds.asWPDBCreds(), rows, complete, func(fields []string) (string, string) {
 		return fmt.Sprintf("Drupal administrator account on %s: %s", account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})

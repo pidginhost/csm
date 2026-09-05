@@ -48,13 +48,14 @@ import (
 
 type opencartCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx      context.Context
-	dbName   string
-	dbUser   string
-	dbPass   string
-	dbHost   string
-	dbPrefix string
-	path     string
+	ctx         context.Context
+	dbName      string
+	dbUser      string
+	dbPass      string
+	dbHost      string
+	dbPrefix    string
+	path        string
+	queryFailed *bool
 }
 
 func (c opencartCreds) asWPDBCreds() wpDBCreds {
@@ -65,6 +66,8 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 		dbHost:      c.dbHost,
 		tablePrefix: c.dbPrefix,
 		queryCtx:    c.ctx,
+		queryOwner:  "db_content_opencart",
+		queryFailed: c.queryFailed,
 	}
 }
 
@@ -78,14 +81,14 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.
 	}
 	var findings []alert.Finding
 
-	configs := cmsDiscover("*/public_html/config.php", "*/*/config.php")
+	configs := cmsDiscover(ctx, "db_content_opencart", "*/public_html/config.php", "*/*/config.php")
 	if len(configs) == 0 {
 		return nil
 	}
 
 	// Rank by mtime desc so recently touched OpenCart installs are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, configs, accountScanMaxFiles(ctx, cfg)) {
+	for _, path := range rankCMSConfigs(ctx, "db_content_opencart", configs, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
@@ -104,6 +107,7 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.
 			continue
 		}
 		creds.ctx = ctx
+		creds.queryFailed = new(bool)
 		prefix := creds.dbPrefix
 		if prefix == "" {
 			prefix = "oc_"
@@ -185,7 +189,7 @@ func scanOpenCartSettings(account string, creds opencartCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT `key`, value FROM %ssetting WHERE %s",
 		creds.dbPrefix, paramsLikeClause("value"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		key, body := splitTabRow(row)
@@ -228,7 +232,7 @@ func scanOpenCartContentTable(account string, creds opencartCreds, table, valueC
 	query := fmt.Sprintf(
 		"SELECT %s, %s FROM %s%s WHERE language_id = 1 AND %s",
 		idCol, valueCol, creds.dbPrefix, table, paramsLikeClause(valueCol))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		id, body := splitTabRow(row)
@@ -256,8 +260,8 @@ func scanOpenCartAdmins(store *state.Store, account string, creds opencartCreds)
 	query := fmt.Sprintf(
 		"SELECT user_id, username, email FROM %suser",
 		creds.dbPrefix)
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
-	return cmsAdminFindings(store, "opencart", "opencart_admin_injection", account, creds.asWPDBCreds(), rows, func(fields []string) (string, string) {
+	rows, complete := runCMSQuery(creds.asWPDBCreds(), query)
+	return cmsAdminFindings(store, "opencart", "opencart_admin_injection", account, creds.asWPDBCreds(), rows, complete, func(fields []string) (string, string) {
 		return fmt.Sprintf("OpenCart admin account on %s: user_id=%s", account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})
