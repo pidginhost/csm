@@ -879,7 +879,7 @@ func (d *Daemon) Run() error {
 
 	// Other auto-response only on new findings
 	if len(newFindings) > 0 {
-		killActions := checks.AutoKillProcesses(initialCfg, newFindings)
+		killActions := checks.AutoKillProcesses(d.scanContext(), initialCfg, newFindings)
 		quarantineActions := checks.AutoQuarantineFiles(initialCfg, newFindings)
 		blockActions := checks.AutoBlockIPs(initialCfg, initialAutoResponseFindings)
 		d.observeBlocks(blockActions)
@@ -1546,7 +1546,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.observeBlocks(blockActions)
 
 	// Kill, quarantine, and DB cleanup only run on NEW findings
-	killActions := checks.AutoKillProcesses(cfg, newFindings)
+	killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
 	dbCleanActions := checks.AutoRespondDBMalware(cfg, newFindings)
 	newFindings = append(newFindings, killActions...)

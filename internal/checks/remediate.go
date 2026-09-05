@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -33,10 +34,6 @@ var (
 // an actual read-only filesystem, and assert an already-compliant file is
 // never chmodded.
 var chmodFunc = os.Chmod
-
-// killProcess is a seam for proving that rejected fix targets cannot signal a
-// process before the filesystem boundary has been validated.
-var killProcess = syscall.Kill
 
 // RemediationResult describes the outcome of a fix action.
 type RemediationResult struct {
@@ -126,7 +123,10 @@ func HasFix(checkType string) bool {
 }
 
 // ApplyFix executes the remediation action for a finding.
-func ApplyFix(checkType, message, details string, filePath ...string) RemediationResult {
+func ApplyFix(ctx context.Context, checkType, message, details string, filePath ...string) RemediationResult {
+	if err := ctx.Err(); err != nil {
+		return RemediationResult{Error: err.Error()}
+	}
 	path := selectFindingPath(message, filePath...)
 	if isHtaccessHardenedFinding(checkType) {
 		// CleanHtaccessFile re-runs the full detector registry, so a single
@@ -142,7 +142,7 @@ func ApplyFix(checkType, message, details string, filePath ...string) Remediatio
 		"phishing_page", "phishing_directory":
 		return fixQuarantine(path)
 	case "backdoor_binary", "new_executable_in_config":
-		return fixKillAndQuarantine(path, details)
+		return fixKillAndQuarantine(ctx, path, details)
 	case "htaccess_injection", "htaccess_handler_abuse":
 		return fixHtaccess(path, message)
 	case "email_phishing_content":
@@ -248,7 +248,7 @@ func quarantineResolvedTarget(path string, info os.FileInfo) RemediationResult {
 }
 
 // fixKillAndQuarantine kills any process using the file, then quarantines it.
-func fixKillAndQuarantine(path, details string) RemediationResult {
+func fixKillAndQuarantine(ctx context.Context, path, details string) RemediationResult {
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
@@ -261,20 +261,35 @@ func fixKillAndQuarantine(path, details string) RemediationResult {
 	// Try to extract and kill PID from details
 	pid := extractPID(details)
 	killed := false
+	var signalErr error
 	if pidInt, ok := parseProcessPID(pid); ok {
 		pid = strconv.Itoa(pidInt)
-		uid := getProcessUID(pid)
-		// Never kill root, and never kill a PID that no longer references
-		// the file being quarantined: a finding can be acted on long after
-		// it was raised, by which time the number may belong to anything.
-		if uid != "0" && uid != "" && processUsesFileIdentity(pidInt, target) {
-			killed = killProcess(pidInt, syscall.SIGKILL) == nil
+		signalErr = signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
+			uid := getProcessUID(pid)
+			if uid == "0" || uid == "" || !processUsesFileIdentity(pidInt, target) {
+				return errProcessNotEligible
+			}
+			return nil
+		})
+		killed = signalErr == nil
+		if errors.Is(signalErr, errProcessNotEligible) || errors.Is(signalErr, os.ErrProcessDone) {
+			signalErr = nil
 		}
+	}
+	if err := ctx.Err(); err != nil && !killed {
+		return RemediationResult{Error: err.Error()}
 	}
 
 	// Quarantine the same object used for the process decision. If the path was
 	// replaced after validation, the pinned-identity quarantine refuses it.
 	result := quarantineResolvedTarget(path, target)
+	if signalErr != nil {
+		result.Success = false
+		if result.Error != "" {
+			result.Error += "; "
+		}
+		result.Error += "process was not stopped: " + signalErr.Error()
+	}
 	if killed {
 		if result.Success {
 			result.Action = fmt.Sprintf("killed PID %s and %s", pid, result.Action)

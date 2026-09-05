@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ func withChmodFunc(t *testing.T, fn func(string, os.FileMode) error) {
 // must recognise the file is no longer world-writable and report success
 // without touching it, so the finding clears instead of erroring.
 func TestFixPermissionsAlreadyCompliantIsResolved(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
 	withChmodFunc(t, func(string, os.FileMode) error {
@@ -36,7 +38,7 @@ func TestFixPermissionsAlreadyCompliantIsResolved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := ApplyFix("world_writable_php", "", "", target)
+	res := ApplyFix(context.Background(), "world_writable_php", "", "", target)
 	if !res.Success {
 		t.Fatalf("expected success for already-compliant file, got error %q", res.Error)
 	}
@@ -56,6 +58,7 @@ func TestFixPermissionsAlreadyCompliantIsResolved(t *testing.T) {
 // TestFixPermissionsGroupWritableAlreadyCompliant: a 0644 file has no
 // group-write bit, so a group_writable_php finding for it is already resolved.
 func TestFixPermissionsGroupWritableAlreadyCompliant(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
 	withChmodFunc(t, func(string, os.FileMode) error {
@@ -68,13 +71,14 @@ func TestFixPermissionsGroupWritableAlreadyCompliant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := ApplyFix("group_writable_php", "", "", target)
+	res := ApplyFix(context.Background(), "group_writable_php", "", "", target)
 	if !res.Success {
 		t.Fatalf("expected success for already-compliant group file, got error %q", res.Error)
 	}
 }
 
 func TestFixPermissionsGroupWritableGetsChmodded(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
 
@@ -86,7 +90,7 @@ func TestFixPermissionsGroupWritableGetsChmodded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := ApplyFix("group_writable_php", "", "", target)
+	res := ApplyFix(context.Background(), "group_writable_php", "", "", target)
 	if !res.Success {
 		t.Fatalf("expected success, got error %q", res.Error)
 	}
@@ -100,6 +104,7 @@ func TestFixPermissionsGroupWritableGetsChmodded(t *testing.T) {
 }
 
 func TestFixPermissionsResolvedWhenOnlyOtherWriteBitRemains(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tests := []struct {
 		name      string
 		checkType string
@@ -134,7 +139,7 @@ func TestFixPermissionsResolvedWhenOnlyOtherWriteBitRemains(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			res := ApplyFix(tc.checkType, "", "", target)
+			res := ApplyFix(context.Background(), tc.checkType, "", "", target)
 			if !res.Success {
 				t.Fatalf("expected resolved finding, got error %q", res.Error)
 			}
@@ -152,6 +157,7 @@ func TestFixPermissionsResolvedWhenOnlyOtherWriteBitRemains(t *testing.T) {
 // TestFixPermissionsWorldWritableGetsChmodded is the regression guard: a still
 // world-writable file is set to 0644.
 func TestFixPermissionsWorldWritableGetsChmodded(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
 
@@ -165,7 +171,7 @@ func TestFixPermissionsWorldWritableGetsChmodded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := ApplyFix("world_writable_php", "", "", target)
+	res := ApplyFix(context.Background(), "world_writable_php", "", "", target)
 	if !res.Success {
 		t.Fatalf("expected success, got error %q", res.Error)
 	}
@@ -182,6 +188,7 @@ func TestFixPermissionsWorldWritableGetsChmodded(t *testing.T) {
 // case: the flagged file is still world-writable, but chmod returns EROFS. The
 // operator must get a clear explanation, not the raw kernel error.
 func TestFixPermissionsReadOnlyMountFriendlyError(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
 
@@ -196,7 +203,7 @@ func TestFixPermissionsReadOnlyMountFriendlyError(t *testing.T) {
 		return &os.PathError{Op: "chmod", Path: path, Err: syscall.EROFS}
 	})
 
-	res := ApplyFix("world_writable_php", "", "", target)
+	res := ApplyFix(context.Background(), "world_writable_php", "", "", target)
 	if res.Success {
 		t.Fatal("expected failure when the file is on a read-only mount")
 	}
@@ -212,6 +219,7 @@ func TestFixPermissionsReadOnlyMountFriendlyError(t *testing.T) {
 // TestFixPermissionsOtherChmodErrorSurfaced: a non-EROFS chmod failure still
 // surfaces the generic "chmod failed" error.
 func TestFixPermissionsOtherChmodErrorSurfaced(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
 
@@ -224,7 +232,7 @@ func TestFixPermissionsOtherChmodErrorSurfaced(t *testing.T) {
 	}
 	withChmodFunc(t, func(string, os.FileMode) error { return syscall.EPERM })
 
-	res := ApplyFix("world_writable_php", "", "", target)
+	res := ApplyFix(context.Background(), "world_writable_php", "", "", target)
 	if res.Success {
 		t.Fatal("expected failure")
 	}

@@ -1,25 +1,33 @@
 package checks
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/processhandle"
 )
 
 // var (not const) so tests can redirect to t.TempDir().
 var quarantineDir = "/opt/csm/quarantine"
 
+var signalProcess = processhandle.Signal
+var errProcessNotEligible = errors.New("process is no longer eligible for termination")
+
 // AutoKillProcesses kills processes that match critical findings.
 // Only targets: fake kernel threads, reverse shells, GSocket processes.
 // Never kills root system services or cPanel processes.
-func AutoKillProcesses(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.KillProcesses {
 		return nil
 	}
@@ -46,35 +54,23 @@ func AutoKillProcesses(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			}
 		}
 
-		// Safety: verify the process is not root/system
-		uid := getProcessUID(pid)
-		if uid == "0" || uid == "" {
-			continue // never kill root processes automatically
-		}
-
-		// Safety: verify it's not a cPanel/system process
-		exe := getProcessExe(pid)
-		if isSafeProcess(exe) {
+		pidInt, validPID := parseProcessPID(pid)
+		if !validPID {
 			continue
 		}
-
-		// Safety: the PID must still name the process the finding described.
-		// Without this a recycled PID gets killed in its place.
-		if !processStartedBefore(pid, f.Timestamp) {
-			continue
-		}
-
-		// Kill it
-		pidInt := f.PID
-		if pidInt == 0 {
-			fmt.Sscanf(pid, "%d", &pidInt)
-		}
-		if pidInt <= 1 {
-			continue
-		}
-
-		err := syscall.Kill(pidInt, syscall.SIGKILL)
+		pid = strconv.Itoa(pidInt)
+		var uid, exe string
+		err := signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
+			uid, exe = getProcessUID(pid), getProcessExe(pid)
+			if uid == "0" || uid == "" || exe == "" || isSafeProcess(exe) || !processStartedBefore(pid, f.Timestamp) {
+				return errProcessNotEligible
+			}
+			return nil
+		})
 		if err != nil {
+			if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
+				csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
+			}
 			continue
 		}
 
@@ -352,11 +348,27 @@ func getProcessUID(pid string) string {
 		return ""
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "Uid:\t") {
-			fields := strings.Fields(strings.TrimPrefix(line, "Uid:\t"))
-			if len(fields) > 0 {
-				return fields[0]
+		if rest, found := strings.CutPrefix(line, "Uid:"); found {
+			fields := strings.Fields(rest)
+			if len(fields) != 4 {
+				return ""
 			}
+			var owner uint64
+			for index, field := range fields {
+				uid, err := strconv.ParseUint(field, 10, 32)
+				if err != nil {
+					return ""
+				}
+				// Effective, saved, and filesystem root credentials are also
+				// privileged even when the real UID still names a tenant.
+				if uid == 0 {
+					return "0"
+				}
+				if index == 0 {
+					owner = uid
+				}
+			}
+			return strconv.FormatUint(owner, 10)
 		}
 	}
 	return ""

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -261,6 +262,7 @@ func TestHtaccessDetectorRegistryIntegrations(t *testing.T) {
 }
 
 func TestNewHtaccessDetectorsApplyAndAutoClean(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	root := t.TempDir()
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -296,7 +298,7 @@ func TestNewHtaccessDetectorsApplyAndAutoClean(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := writeHtaccess(t, root, strings.TrimPrefix(tt.name, "htaccess_"), tt.body)
-			result := ApplyFix(tt.name, "", "", path)
+			result := ApplyFix(context.Background(), tt.name, "", "", path)
 			if !result.Success {
 				t.Fatalf("ApplyFix failed: %s", result.Error)
 			}

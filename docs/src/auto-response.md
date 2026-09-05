@@ -17,6 +17,24 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
+### Process termination
+
+CSM opens a kernel process handle before verifying ownership, executable, start
+time, or the file referenced by a process. It checks that the captured process
+is still alive after verification and sends the signal through that handle.
+An exited process cannot redirect the signal to a replacement with the same PID.
+Automatic and manual malware termination reject root credentials, including
+effective and saved root IDs. The separate opt-in AF_ALG reaction requires the
+current credentials and executable to match its recorded event.
+
+Safe signaling needs `pidfd_open` and `pidfd_send_signal`, normally available
+together from Linux 5.3 or in vendor backports. CSM does not fall back to numeric
+PID signaling on older kernels or when service restrictions deny these calls.
+Automatic termination failures are logged while the original detection remains.
+Manual kill-and-quarantine reports a termination failure even if the file was
+successfully quarantined; inspect both the process and recovery entry before
+retrying. Manual request cancellation is checked before sending a signal.
+
 ### Restoring quarantined files
 
 Regular-file quarantine and pre-clean backups write and sync the private content

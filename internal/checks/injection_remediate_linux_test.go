@@ -3,6 +3,7 @@
 package checks
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -124,6 +125,7 @@ func TestFixQuarantineMovesRegularFile(t *testing.T) {
 }
 
 func TestFixKillAndQuarantineDoesNotClaimSkippedKill(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withAllowedRoots(t, tmp)
 	withQuarantineDir(t, filepath.Join(tmp, "quarantine"))
@@ -132,7 +134,7 @@ func TestFixKillAndQuarantineDoesNotClaimSkippedKill(t *testing.T) {
 	if err := os.WriteFile(target, []byte("malicious payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := fixKillAndQuarantine(target, "PID: 999999")
+	res := fixKillAndQuarantine(context.Background(), target, "PID: 999999")
 	if !res.Success {
 		t.Fatalf("quarantine failed: %+v", res)
 	}
@@ -183,7 +185,7 @@ func TestFixKillAndQuarantinePinsIdentityAcrossProcessCheck(t *testing.T) {
 	}
 
 	oldFS := osFS
-	oldKill := killProcess
+	oldKill := signalProcess
 	osFS = &swappingFixTargetOS{
 		procMock: &procMock{
 			uid:   "1001",
@@ -195,16 +197,19 @@ func TestFixKillAndQuarantinePinsIdentityAcrossProcessCheck(t *testing.T) {
 		replacement: replacementInfo,
 	}
 	killCalled := false
-	killProcess = func(int, syscall.Signal) error {
+	signalProcess = func(_ context.Context, _ int, _ syscall.Signal, verify func() error) error {
+		if err := verify(); err != nil {
+			return err
+		}
 		killCalled = true
 		return nil
 	}
 	t.Cleanup(func() {
 		osFS = oldFS
-		killProcess = oldKill
+		signalProcess = oldKill
 	})
 
-	result := fixKillAndQuarantine(target, "PID: 4242")
+	result := fixKillAndQuarantine(context.Background(), target, "PID: 4242")
 	if !result.Success {
 		t.Fatalf("quarantine failed: %+v", result)
 	}

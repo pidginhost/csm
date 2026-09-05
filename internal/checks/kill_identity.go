@@ -51,7 +51,7 @@ func processStartedBefore(pid string, t time.Time) bool {
 
 func parseProcessPID(pid string) (int, bool) {
 	n, err := strconv.Atoi(pid)
-	return n, err == nil && n > 1
+	return n, err == nil && n > 1 && n <= math.MaxInt32
 }
 
 func procUptime() (float64, bool) {

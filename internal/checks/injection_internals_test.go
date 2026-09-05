@@ -185,10 +185,11 @@ func TestDiscoverShadowFilesWithGlob(t *testing.T) {
 // --- AutoKillProcesses with real findings ----------------------------
 
 func TestAutoKillProcessesNonCritical(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	findings := []alert.Finding{
 		{Severity: alert.Warning, Check: "waf_status", Message: "WAF disabled"},
 	}
-	results := AutoKillProcesses(&config.Config{}, findings)
+	results := AutoKillProcesses(context.Background(), &config.Config{}, findings)
 	if len(results) != 0 {
 		t.Errorf("non-critical should produce 0, got %d", len(results))
 	}

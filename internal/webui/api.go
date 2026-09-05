@@ -939,7 +939,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	result := checks.ApplyFix(req.Check, message, details, filePath)
+	result := checks.ApplyFix(r.Context(), req.Check, message, details, filePath)
 
 	// If fix succeeded, dismiss from both alert state and latest findings.
 	if result.Success {
@@ -1091,7 +1091,7 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 			results = append(results, checks.RemediationResult{Error: err.Error()})
 			continue
 		}
-		result := checks.ApplyFix(req.Check, message, details, filePath)
+		result := checks.ApplyFix(r.Context(), req.Check, message, details, filePath)
 		if result.Success {
 			s.store.DismissFinding(dismissKey)
 			s.store.DismissLatestFinding(dismissKey)

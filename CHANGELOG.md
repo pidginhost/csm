@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Process termination now uses a verified process handle, preventing recycled process IDs from redirecting an action. Unsupported kernels leave termination disabled and report the failure.
+
 - Quarantine restore preserves recorded ownership, permissions, and modification times. Historical entries use their saved quarantine dates when available.
 
 - Quarantine and restore now make recovery data durable before removing originals. Storage failures preserve recovery copies and report partial completion.

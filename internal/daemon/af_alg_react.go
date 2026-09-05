@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -15,7 +16,10 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/processhandle"
 )
+
+var signalAFAlgProcess = processhandle.Signal
 
 // reactToAFAlgEvent applies opt-in live reactions when an AF_ALG socket
 // open is caught by either the audit-log listener or the BPF LSM hook.
@@ -34,15 +38,18 @@ func reactToAFAlgEvent(cfg *config.Config, ev checks.AFAlgEvent) {
 	if cfg == nil || !cfg.AutoResponse.CopyFailKillProcess {
 		return
 	}
-	pid, ok, reason := afAlgKillTarget(ev)
-	if !ok {
-		csmlog.Warn("af_alg react: refusing to kill",
-			"reason", reason,
-			"pid", ev.PID, "exe", ev.Exe, "uid", ev.UID,
-		)
+	pid, err := strconv.Atoi(ev.PID)
+	if err != nil || pid <= 1 {
 		return
 	}
-	if err := unix.Kill(pid, unix.SIGKILL); err != nil {
+	err = signalAFAlgProcess(context.Background(), pid, unix.SIGKILL, func() error {
+		_, valid, reason := afAlgKillTarget(ev)
+		if !valid {
+			return fmt.Errorf("refusing to kill: %s", reason)
+		}
+		return nil
+	})
+	if err != nil {
 		csmlog.Warn("af_alg react: kill failed",
 			"pid", pid, "exe", ev.Exe, "uid", ev.UID,
 			"err", err,
@@ -122,11 +129,20 @@ func afAlgProcessUID(pid int) (uint64, bool) {
 			continue
 		}
 		fields := strings.Fields(rest)
-		if len(fields) == 0 {
+		if len(fields) != 4 {
 			return 0, false
 		}
 		uid, err := strconv.ParseUint(fields[0], 10, 32)
-		return uid, err == nil
+		if err != nil {
+			return 0, false
+		}
+		for _, field := range fields[1:] {
+			credential, parseErr := strconv.ParseUint(field, 10, 32)
+			if parseErr != nil || credential != uid {
+				return 0, false
+			}
+		}
+		return uid, true
 	}
 	return 0, false
 }

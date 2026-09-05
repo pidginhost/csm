@@ -1134,7 +1134,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		}
 		findings = append(findings, challengeActions...)
 
-		killActions := AutoKillProcesses(cfg, findings)
+		killActions := AutoKillProcesses(parent, cfg, findings)
 		for i := range killActions {
 			if killActions[i].Timestamp.IsZero() {
 				killActions[i].Timestamp = now

@@ -3,6 +3,7 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/processhandle"
 	"github.com/pidginhost/csm/internal/signatures"
 	"golang.org/x/sys/unix"
 )
@@ -42,6 +44,19 @@ func TestCustomAccountRootsInSystemdService(t *testing.T) {
 	if insideFS.Flags&unix.ST_RDONLY != 0 || outsideFS.Flags&unix.ST_RDONLY == 0 {
 		t.Fatal("test requires a writable custom volume and a read-only sibling")
 	}
+	t.Run("process signaling", func(t *testing.T) {
+		child := exec.Command("sleep", "60")
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+		if err := processhandle.Signal(context.Background(), child.Process.Pid, syscall.SIGTERM, func() error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if err := child.Wait(); err == nil || child.ProcessState.Sys().(syscall.WaitStatus).Signal() != syscall.SIGTERM {
+			t.Fatalf("service could not signal its captured child: %v", err)
+		}
+	})
 	doctor, doctorErr := exec.Command(os.Getenv("CSM_TEST_BINARY"), "doctor", "--json", "--config", os.Getenv("CSM_TEST_CONFIG")).Output()
 	var report struct {
 		Checks []struct{ Name, Status, Message string }

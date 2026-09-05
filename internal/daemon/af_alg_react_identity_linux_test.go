@@ -41,7 +41,7 @@ func fakeAFAlgProc(t *testing.T, pid int, exe string, uptime, startAfterBoot int
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "status"),
-		[]byte("Name:\tworker\nUid:\t"+currentUID()+"\t"+currentUID()+"\n"), 0o644); err != nil {
+		[]byte("Name:\tworker\nUid:\t"+currentUID()+"\t"+currentUID()+"\t"+currentUID()+"\t"+currentUID()+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(exe, filepath.Join(dir, "exe")); err != nil {

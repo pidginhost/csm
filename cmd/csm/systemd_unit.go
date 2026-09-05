@@ -108,6 +108,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service @network-io @file-system
 SystemCallFilter=bpf fanotify_init fanotify_mark inotify_init inotify_init1 inotify_add_watch inotify_rm_watch perf_event_open
 SystemCallFilter=clone clone3 execve execveat fork vfork mmap mprotect munmap mremap brk
+SystemCallFilter=pidfd_open pidfd_send_signal
 SystemCallFilter=~@reboot ~@swap ~@module ~@raw-io ~@mount ~@cpu-emulation
 SystemCallErrorNumber=EPERM
 

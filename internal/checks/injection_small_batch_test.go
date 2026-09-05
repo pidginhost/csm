@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -84,28 +85,31 @@ func TestFileContentHashMissingFileReturnsError(t *testing.T) {
 // fixKillAndQuarantine dispatcher branches (no actual kills).
 
 func TestFixKillAndQuarantineEmptyPath(t *testing.T) {
-	res := fixKillAndQuarantine("", "PID: 123")
+	withSimulatedProcessSignal(t)
+	res := fixKillAndQuarantine(context.Background(), "", "PID: 123")
 	if res.Success || !strings.Contains(res.Error, "could not extract") {
 		t.Errorf("empty path should error, got %+v", res)
 	}
 }
 
 func TestFixKillAndQuarantineNoPIDProceedsToQuarantine(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	// No "PID:" in details → extractPID returns empty → skip kill, go
 	// straight to fixQuarantine. With an invalid path fixQuarantine
 	// will still error (path not under allowed roots), surfacing the
 	// path-validation error rather than panicking.
-	res := fixKillAndQuarantine("/etc/passwd", "no pid info here")
+	res := fixKillAndQuarantine(context.Background(), "/etc/passwd", "no pid info here")
 	if res.Success {
 		t.Errorf("expected path-validation failure, got Success")
 	}
 }
 
 func TestFixKillAndQuarantineLowPIDSkipsKill(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	// pidInt must be > 1 to attempt kill. PID=0 or PID=1 skip the Kill
 	// call but still proceed to fixQuarantine. With an outside-root path
 	// fixQuarantine errors, but we must not have crashed.
-	res := fixKillAndQuarantine("/etc/passwd", "PID: 1")
+	res := fixKillAndQuarantine(context.Background(), "/etc/passwd", "PID: 1")
 	if res.Success {
 		t.Errorf("expected error, got Success")
 	}

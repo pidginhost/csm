@@ -590,22 +590,25 @@ func TestDiscoverShadowFiles_SkipsTooShortPaths(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestApplyFix_NewWebshellFile_NonexistentPath(t *testing.T) {
-	r := ApplyFix("new_webshell_file", "", "", "/tmp/never-exists-here.php")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "new_webshell_file", "", "", "/tmp/never-exists-here.php")
 	if r.Success {
 		t.Error("nonexistent path must not succeed")
 	}
 }
 
 func TestApplyFix_PhishingDirectory_DispatchesToQuarantine(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	// /home/... outside an existing tree → resolveExistingFixPath fails.
-	r := ApplyFix("phishing_directory", "", "", "/home/alice/public_html/phish")
+	r := ApplyFix(context.Background(), "phishing_directory", "", "", "/home/alice/public_html/phish")
 	if r.Success {
 		t.Error("nonexistent dir under /home should fail")
 	}
 }
 
 func TestApplyFix_NewExecutableInConfig_DispatchesToKillAndQuarantine(t *testing.T) {
-	r := ApplyFix("new_executable_in_config", "", "", "/home/alice/.config/miner")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "new_executable_in_config", "", "", "/home/alice/.config/miner")
 	if r.Success {
 		t.Error("nonexistent path should fail")
 	}
@@ -616,14 +619,16 @@ func TestApplyFix_NewExecutableInConfig_DispatchesToKillAndQuarantine(t *testing
 }
 
 func TestApplyFix_HtaccessHandlerAbuse_RoutesToFixHtaccess(t *testing.T) {
-	r := ApplyFix("htaccess_handler_abuse", "", "", "/home/alice/public_html/.htaccess")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "htaccess_handler_abuse", "", "", "/home/alice/public_html/.htaccess")
 	if r.Success {
 		t.Error("nonexistent .htaccess path should fail")
 	}
 }
 
 func TestApplyFix_SuspiciousPHPContent_RoutesToQuarantine(t *testing.T) {
-	r := ApplyFix("suspicious_php_content", "", "", "/tmp/missing.php")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "suspicious_php_content", "", "", "/tmp/missing.php")
 	if r.Success {
 		t.Error("missing tmp file should fail")
 	}
