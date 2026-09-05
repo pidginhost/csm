@@ -1064,3 +1064,54 @@ func TestDeployDefaultConfigDOSExemptFirewallDefaults(t *testing.T) {
 		t.Error("installer default must explicitly document firewall.dos_exempt_ranges")
 	}
 }
+
+// The audit log is the SIEM backfill source and the daemon appends to it for
+// the life of the process. Packaging never rotated it, so on a production host
+// it reached 93 MB in three months with nothing to cap it. JSONLSink is built
+// for copytruncate -- it keeps its own fd across a rotation -- so the stanza
+// has to use that and not `create`, which would leave the daemon writing to
+// the renamed inode.
+func TestLogrotateConfigRotatesTheAuditLog(t *testing.T) {
+	content := logrotateConfig()
+	stanza, ok := logrotateStanzaFor(content, "/var/log/csm/audit.jsonl")
+	if !ok {
+		t.Fatalf("no logrotate stanza for the audit log:\n%s", content)
+	}
+	for _, directive := range []string{"copytruncate", "compress", "missingok"} {
+		if !strings.Contains(stanza, directive) {
+			t.Errorf("audit log stanza missing %q:\n%s", directive, stanza)
+		}
+	}
+	if strings.Contains(stanza, "create ") {
+		t.Errorf("audit log stanza uses create, which strands the daemon's fd:\n%s", stanza)
+	}
+	if !strings.Contains(stanza, "rotate ") {
+		t.Errorf("audit log stanza keeps every rotation forever:\n%s", stanza)
+	}
+}
+
+// The stanzas that were already shipped must survive the addition.
+func TestLogrotateConfigKeepsExistingLogs(t *testing.T) {
+	content := logrotateConfig()
+	for _, path := range []string{"/var/log/csm/monitor.log", "/var/log/csm-php-shield/events.log"} {
+		if _, ok := logrotateStanzaFor(content, path); !ok {
+			t.Errorf("logrotate config lost the stanza for %s:\n%s", path, content)
+		}
+	}
+}
+
+// logrotateStanzaFor returns the body of the stanza governing path.
+func logrotateStanzaFor(content, path string) (string, bool) {
+	for _, block := range strings.Split(content, "}") {
+		head, body, found := strings.Cut(block, "{")
+		if !found {
+			continue
+		}
+		for _, field := range strings.Fields(head) {
+			if field == path {
+				return body, true
+			}
+		}
+	}
+	return "", false
+}

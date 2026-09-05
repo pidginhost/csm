@@ -1055,14 +1055,31 @@ func deploySystemdTimer() error {
 	return nil
 }
 
-func deployLogrotate() error {
-	content := `/var/log/csm/monitor.log {
+// logrotateConfig is the /etc/logrotate.d/csm content.
+//
+// The audit log rotates with copytruncate on purpose: the daemon holds one
+// append-only fd on it for the life of the process, so a rename-and-create
+// rotation would leave every later event going to the rotated inode. maxsize
+// caps a burst between daily runs -- auto-block alone writes tens of thousands
+// of events a week on a busy shared host.
+func logrotateConfig() string {
+	return `/var/log/csm/monitor.log {
     weekly
     rotate 4
     compress
     missingok
     notifempty
     create 0640 root root
+}
+
+/var/log/csm/audit.jsonl {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+    maxsize 100M
 }
 
 /var/log/csm-php-shield/events.log {
@@ -1075,8 +1092,11 @@ func deployLogrotate() error {
     maxsize 5M
 }
 `
+}
+
+func deployLogrotate() error {
 	// #nosec G306 -- /etc/logrotate.d/csm; logrotate requires 0644.
-	return os.WriteFile("/etc/logrotate.d/csm", []byte(content), 0644)
+	return os.WriteFile("/etc/logrotate.d/csm", []byte(logrotateConfig()), 0644)
 }
 
 // InstallWHMPlugin deploys the CGI proxy and AppConfig registration

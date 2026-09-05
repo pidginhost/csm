@@ -166,7 +166,7 @@ The daemon runs as one executable plus packaged UI, rule, profile, and PAM asset
 |---------|-----------|---------|
 | `auditd` | All | Shadow file / SSH key tamper detection via auditd |
 | `debsums` | Debian/Ubuntu | Cleaner system binary integrity output vs. `dpkg --verify` fallback |
-| `logrotate` | All | Rotation of `/var/log/csm/monitor.log` |
+| `logrotate` | All | Rotation of `/var/log/csm/monitor.log`, `/var/log/csm/audit.jsonl`, and the PHP Shield event log |
 | `wp-cli` | Optional | WordPress core integrity check |
 | ModSecurity | All | WAF enforcement checks (see platform-specific install below) |
 

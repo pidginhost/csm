@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A WordPress core rebuilt from an older release reported every leftover file of the newer one as its own finding, which on one install produced over a thousand rows and buried the rest of the scan. The install now gets one finding that counts the files and samples them.
+- The audit log was never rotated, so it grew without limit; on one host it reached 93 MB. The packaged logrotate fragment now covers it.
 - The cross-account admin overlap warning stored a new copy on every scan because its details carry an observation timestamp. One overlap is now one row until the accounts sharing that admin actually change.
 
 ## [3.33.1] - 2026-09-04

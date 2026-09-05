@@ -84,7 +84,12 @@ alerts:
 The default path is created with mode `0640` and the parent dir
 with `0750`. The packaged logrotate fragment uses `copytruncate`
 mode so the daemon's open file descriptor stays valid across
-rotation -- no SIGHUP needed.
+rotation -- no SIGHUP needed. It keeps 14 compressed days and
+rotates early once the file passes 100 MB.
+
+If you move the audit log off the default path, add your own
+logrotate stanza for it: the packaged fragment names the default
+path only.
 
 Tail it for an interactive view:
 
