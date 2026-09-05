@@ -19,12 +19,25 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 
 ### Restoring quarantined files
 
+Regular-file quarantine and pre-clean backups write and sync the private content
+copy, metadata, and directory entries before removing or changing the original.
+Directory quarantine syncs the tree and metadata before moving it on the same
+filesystem. A directory move across filesystems is refused and leaves the source
+in place. Storage failures do not count as successful remediation.
+
 Web UI restore refuses symbolic links in destination directories and does not
 replace an existing file or directory. If a destination changes during restore,
 CSM reports a conflict and retains the quarantine entry. Check the original
 location before retrying; a failed or interrupted file restore can leave a
 partial file in the directory that was opened for restoration. CSM keeps this
 file because removing it could discard a concurrent replacement.
+
+Restore syncs the replacement and its containing directory before deleting
+quarantine evidence. A failure after a move or unlink reports partial completion
+and retains recovery metadata where possible. Inspect both the original and
+quarantine locations named in the error before retrying; a copy may already be
+restored while quarantine cleanup remains incomplete. These guarantees depend
+on the filesystem and storage device honoring sync requests.
 
 Virtual-patch rollback uses the same directory confinement. It replaces or
 removes the access file only when the saved content, owner, and permissions

@@ -3,6 +3,7 @@
 package checks
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 // can write under t.TempDir() without modifying real /home or /tmp.
 func withAllowedRoots(t *testing.T, dir string) {
 	t.Helper()
+	withHtaccessBackupRoot(t)
 	op := fixPermissionsAllowedRoots
 	oq := fixQuarantineAllowedRoots
 	oh := fixHtaccessAllowedRoots
@@ -365,8 +367,30 @@ func TestFixQuarantineSpoolMessageMovesHandD(t *testing.T) {
 			t.Errorf("spool %s should be removed, stat err=%v", suf, err)
 		}
 	}
-	entries, _ := os.ReadDir(qdir)
-	if len(entries) < 3 { // -H, -D, .meta
-		t.Errorf("expected at least 3 quarantine entries (H/D/meta), got %d: %v", len(entries), entries)
+	entries, err := os.ReadDir(qdir)
+	if err != nil || len(entries) != 4 {
+		t.Fatalf("expected two content files and two metadata files, got %v, error=%v", entries, err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".meta") {
+			continue
+		}
+		metaPath := filepath.Join(qdir, entry.Name())
+		data, readErr := os.ReadFile(metaPath)
+		var meta QuarantineMeta
+		if readErr != nil || json.Unmarshal(data, &meta) != nil {
+			t.Fatalf("invalid spool metadata: %q, error=%v", data, readErr)
+		}
+		want, ok := map[string]string{
+			filepath.Join(spool, msgID+"-H"): "headers",
+			filepath.Join(spool, msgID+"-D"): "body",
+		}[meta.OriginalPath]
+		if !ok || meta.Size != int64(len(want)) {
+			t.Fatalf("incorrect spool recovery metadata: %+v", meta)
+		}
+		data, readErr = os.ReadFile(strings.TrimSuffix(metaPath, ".meta"))
+		if readErr != nil || string(data) != want {
+			t.Fatalf("spool recovery bytes=%q, error=%v, want=%q", data, readErr, want)
+		}
 	}
 }

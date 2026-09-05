@@ -3,7 +3,6 @@ package checks
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -94,15 +93,7 @@ func CleanInfectedFile(path string) CleanResult {
 
 	// Create backup before any modification
 	backupDir := filepath.Join(quarantineDir, "pre_clean")
-	_ = os.MkdirAll(backupDir, 0700)
-	ts := time.Now().Format("20060102-150405")
-	safeName := quarantineSafeName(path)
-	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s", ts, safeName))
-	if err := os.WriteFile(backupPath, data, 0600); err != nil {
-		result.Error = fmt.Sprintf("cannot create backup: %v", err)
-		return result
-	}
-	result.BackupPath = backupPath
+	backupPath := newQuarantinePath(backupDir, path)
 
 	// Metadata sidecar derived from the same fd we read, so a directory
 	// race after open cannot change the metadata we record.
@@ -115,8 +106,11 @@ func CleanInfectedFile(path string) CleanResult {
 		"quarantined_at": time.Now(),
 		"reason":         "Pre-clean backup (surgical cleaning)",
 	}
-	metaData, _ := json.MarshalIndent(meta, "", "  ")
-	_ = os.WriteFile(backupPath+".meta", metaData, 0600)
+	if err := storeQuarantineBackup(backupPath, data, meta, 0600); err != nil {
+		result.Error = fmt.Sprintf("cannot create durable backup: %v", err)
+		return result
+	}
+	result.BackupPath = backupPath
 
 	content := string(data)
 	originalLen := len(content)
@@ -282,6 +276,9 @@ func sameUnixStatIdentity(info os.FileInfo, stat unix.Stat_t) bool {
 	return uint64(want.Dev) == uint64(stat.Dev) && uint64(want.Ino) == uint64(stat.Ino)
 }
 
+var closeCleanTemp = (*os.File).Close
+var syncCleanParent = unix.Fsync
+
 // writeCleanedFileAtomic stages cleaned content through a hidden sibling
 // name under the pinned parent directory and renames it over the original
 // only after the path still resolves to the inode we read.
@@ -312,6 +309,9 @@ func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
 	if err := tmp.Sync(); err != nil {
 		return err
 	}
+	if err := closeCleanTemp(tmp); err != nil {
+		return err
+	}
 
 	if err := verifyCleanTargetUnchanged(target); err != nil {
 		return err
@@ -321,6 +321,9 @@ func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
 		return err
 	}
 	removeTmp = false
+	if err := syncCleanParent(target.DirFD); err != nil {
+		return fmt.Errorf("cleaned file installed but directory sync failed; recovery backup retained: %w", err)
+	}
 	return nil
 }
 

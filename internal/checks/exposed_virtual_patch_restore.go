@@ -189,6 +189,10 @@ func RestoreVirtualPatchBackup(backupPath string, target *safepath.Target, meta 
 	if opErr := target.Check(); opErr != nil {
 		return rollback(opErr)
 	}
+	if opErr := target.Parent.Sync(); opErr != nil {
+		keep = true
+		return fmt.Errorf("restore applied but destination sync failed; recovery files retained in %s: %w", stageName, opErr)
+	}
 	if opErr := stage.Remove(name); opErr != nil {
 		keep = true
 		return fmt.Errorf("restore applied but replaced file could not be removed from %s: %w", stageName, opErr)

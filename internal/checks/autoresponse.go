@@ -1,7 +1,6 @@
 package checks
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -193,13 +192,8 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		}
 
 	quarantine:
-		// Create quarantine directory
-		_ = os.MkdirAll(quarantineDir, 0700)
-
 		// Build quarantine destination preserving directory structure
-		safeName := quarantineSafeName(path)
-		ts := time.Now().Format("20060102-150405")
-		qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
+		qPath := newQuarantinePath(quarantineDir, path)
 		var quarantineWarning string
 
 		// Get file ownership
@@ -209,28 +203,6 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			gid = int(stat.Gid)
 		}
 
-		// Handle directory quarantine (e.g., LEVIATHAN/ webshell directories)
-		if info.IsDir() {
-			if err := os.Rename(path, qPath); err != nil {
-				// Cross-device: skip directory move (too complex for auto-response)
-				continue
-			}
-		} else {
-			// Move file to quarantine via the TOCTOU-safe path: open and
-			// verify the source fd, copy it into a private inode, then unlink
-			// the detected name only while it still identifies that source.
-			if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
-				var completed bool
-				quarantineWarning, completed = completedQuarantineWarning(err)
-				if !completed {
-					fmt.Fprintf(os.Stderr, "autoresponse: refused quarantine of %s: %v\n", path, err)
-					continue
-				}
-				fmt.Fprintf(os.Stderr, "autoresponse: %s\n", quarantineWarning)
-			}
-		}
-
-		// Write metadata sidecar
 		meta := QuarantineMeta{
 			OriginalPath: path,
 			Owner:        uid,
@@ -240,8 +212,15 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			QuarantineAt: time.Now(),
 			Reason:       f.Message,
 		}
-		metaData, _ := json.MarshalIndent(meta, "", "  ")
-		_ = os.WriteFile(qPath+".meta", metaData, 0600)
+		if err := quarantineTarget(path, qPath, info, meta); err != nil {
+			var completed bool
+			quarantineWarning, completed = completedQuarantineWarning(err)
+			if !completed {
+				fmt.Fprintf(os.Stderr, "autoresponse: refused quarantine of %s: %v\n", path, err)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "autoresponse: %s\n", quarantineWarning)
+		}
 
 		details := fmt.Sprintf("Quarantined to: %s\nOriginal finding: %s", qPath, f.Message)
 		if quarantineWarning != "" {
@@ -709,31 +688,8 @@ func InlineQuarantineIdentified(f alert.Finding, path string, data []byte, scann
 		return "", false
 	}
 
-	_ = os.MkdirAll(quarantineDir, 0700)
-	safeName := quarantineSafeName(path)
-	ts := time.Now().Format("20060102-150405")
-	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
+	qPath := newQuarantinePath(quarantineDir, path)
 
-	if info.IsDir() {
-		if err := os.Rename(path, qPath); err != nil {
-			return "", false
-		}
-	} else {
-		// Move the file through the TOCTOU-safe path (fd open with O_NOFOLLOW,
-		// fstat-verify the inode, hardlink-by-fd, unlink) just like the batch
-		// AutoQuarantineFiles dispatcher, so a late inode/symlink swap fails
-		// closed instead of relocating an attacker-chosen file.
-		if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
-			if warning, completed := completedQuarantineWarning(err); completed {
-				fmt.Fprintf(os.Stderr, "autoresponse: %s\n", warning)
-			} else {
-				fmt.Fprintf(os.Stderr, "autoresponse: refused inline quarantine of %s: %v\n", path, err)
-				return "", false
-			}
-		}
-	}
-
-	// Write metadata sidecar
 	var uid, gid int
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
 		uid = int(stat.Uid)
@@ -748,8 +704,14 @@ func InlineQuarantineIdentified(f alert.Finding, path string, data []byte, scann
 		QuarantineAt: time.Now(),
 		Reason:       "Inline quarantine: high-confidence realtime signature match",
 	}
-	metaData, _ := json.MarshalIndent(meta, "", "  ")
-	_ = os.WriteFile(qPath+".meta", metaData, 0600)
+	if err := quarantineTarget(path, qPath, info, meta); err != nil {
+		if warning, completed := completedQuarantineWarning(err); completed {
+			fmt.Fprintf(os.Stderr, "autoresponse: %s\n", warning)
+		} else {
+			fmt.Fprintf(os.Stderr, "autoresponse: refused inline quarantine of %s: %v\n", path, err)
+			return "", false
+		}
+	}
 
 	return qPath, true
 }

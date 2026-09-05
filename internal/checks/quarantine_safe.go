@@ -26,13 +26,14 @@ var quarantineCopyByFD = copyQuarantineFileByFD
 //  3. Copy from that verified fd into a private, independent quarantine
 //     inode. A hardlink is never used: the account could add another name
 //     after the initial fstat and keep the quarantine inode writable.
+//     Persist the copy, metadata, and quarantine directory before unlinking.
 //  4. Unlink the source path only if it still resolves to the inode
 //     we quarantined. If an attacker swapped in a replacement after
 //     step 2, leave that replacement alone.
 //
 // Returns nil on success. Errors describe what failed; callers should
 // not retry blindly because a failure usually means the file moved.
-func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) error {
+func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata []byte) error {
 	if originalInfo == nil {
 		return fmt.Errorf("quarantine: missing original stat")
 	}
@@ -63,7 +64,7 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 	}
 	// Defence against inode reuse: on busy tmpfs / ext4 mounts the kernel
 	// can hand out the freed inode to whatever the attacker wrote next.
-	// A matching inode is necessary but not sufficient — also require the
+	// A matching inode is necessary but not sufficient; also require the
 	// content shape (size + mtime) to match what the detector recorded.
 	if !sameContentShape(cur, originalInfo) {
 		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path)
@@ -79,7 +80,7 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 	// Always create an independent root-owned copy. Checking st_nlink before a
 	// hardlink is not sufficient: the account can add another name after the
 	// check and retain write access to the inode placed in quarantine.
-	if err = quarantineCopyByFD(fd, qPath); err != nil {
+	if err = quarantineCopyByFD(fd, qPath, metadata); err != nil {
 		return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
 	}
 

@@ -31,6 +31,8 @@ func OpenDir(path string) (*Dir, error) {
 
 func (d *Dir) Close() error { return d.file.Close() }
 
+func (d *Dir) Sync() error { return d.file.Sync() }
+
 func validName(name string) bool {
 	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\x00")
 }
@@ -222,6 +224,14 @@ func (d *Dir) walk(relative string, create bool) (*Dir, error) {
 				return nil, mkdirErr
 			}
 			next, openErr = current.OpenFile(name, os.O_RDONLY|unix.O_DIRECTORY, 0)
+		}
+		// A concurrent restore may have created the directory but not yet
+		// persisted its entry. Each successful restore needs its own sync.
+		if openErr == nil && create {
+			if syncErr := current.Sync(); syncErr != nil {
+				_ = next.Close()
+				openErr = syncErr
+			}
 		}
 		_ = current.Close()
 		if openErr != nil {

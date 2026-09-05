@@ -16,6 +16,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/quarantinefs"
 )
 
 // Virtual patching for web-exposed files.
@@ -38,6 +39,8 @@ var chownFunc = func(file *os.File, uid, gid int) error {
 // virtualPatchBeforeCommitForTest simulates a customer or deploy process
 // changing .htaccess between the initial read and the atomic commit.
 var virtualPatchBeforeCommitForTest func(string, string)
+
+var syncVirtualPatchDirectory = quarantinefs.SyncDir
 
 const maxVirtualPatchHtaccessSize = 4 << 20
 
@@ -208,6 +211,9 @@ func applyHtaccessDeny(dir string, block []byte) (bool, error) {
 		return false, err
 	}
 	keepBackup = true
+	if err := syncVirtualPatchDirectory(dir); err != nil {
+		return false, fmt.Errorf("virtual-patch installed but directory sync failed; backup retained at %s: %w", backup.itemPath, err)
+	}
 	return reverted, nil
 }
 
@@ -618,7 +624,7 @@ func findExistingPrePatchBackup(htaccess string, state htaccessState, patched []
 // The bool reports whether this call created the backup, so a failed patch
 // never removes an archived copy shared with an earlier successful patch.
 func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []byte) (virtualPatchBackup, bool, error) {
-	if err := os.MkdirAll(htaccessBackupDirRoot, 0750); err != nil {
+	if err := quarantinefs.EnsureDir(htaccessBackupDirRoot, 0750); err != nil {
 		return virtualPatchBackup{}, false, fmt.Errorf("creating backup dir: %v", err)
 	}
 	// A backup plugin that rewrites its own .htaccess sends CSM back here on
@@ -626,6 +632,14 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 	// copy instead of stacking another one; the operator gains nothing from
 	// the duplicate and the quarantine list becomes unreadable.
 	if existing, found := findExistingPrePatchBackup(htaccess, state, patched); found {
+		for _, path := range []string{existing.itemPath, existing.metaPath} {
+			if err := quarantinefs.SyncFilePath(path); err != nil {
+				return virtualPatchBackup{}, false, fmt.Errorf("syncing existing backup: %w", err)
+			}
+		}
+		if err := quarantinefs.SyncDir(htaccessBackupDirRoot); err != nil {
+			return virtualPatchBackup{}, false, err
+		}
 		return existing, false, nil
 	}
 
@@ -689,6 +703,9 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 	}
 	if err := metaFile.Close(); err != nil {
 		return virtualPatchBackup{}, false, fmt.Errorf("closing backup meta: %v", err)
+	}
+	if err := quarantinefs.SyncDir(htaccessBackupDirRoot); err != nil {
+		return virtualPatchBackup{}, false, fmt.Errorf("syncing backup directory: %w", err)
 	}
 	keep = true
 	return backup, true, nil

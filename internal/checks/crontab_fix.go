@@ -1,12 +1,13 @@
 package checks
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/pidginhost/csm/internal/quarantinefs"
 )
 
 // fixCrontabAllowedRoots limits suspicious_crontab remediation to the cron
@@ -34,13 +35,8 @@ func fixSuspiciousCrontab(path string) RemediationResult {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
 	}
 
-	_ = os.MkdirAll(quarantineDir, 0700)
-	ts := time.Now().Format("20060102-150405")
 	user := filepath.Base(path)
-	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_crontab_%s", ts, user))
-	if err := os.WriteFile(qPath, data, 0600); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("cannot write quarantine: %v", err)}
-	}
+	qPath := newQuarantinePath(quarantineDir, "crontab_"+user)
 
 	var uid, gid int
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
@@ -56,9 +52,8 @@ func fixSuspiciousCrontab(path string) RemediationResult {
 		"quarantine_at": time.Now(),
 		"reason":        "suspicious_crontab remediation",
 	}
-	metaData, _ := json.MarshalIndent(meta, "", "  ")
-	if err := os.WriteFile(qPath+".meta", metaData, 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "remediate: error writing crontab quarantine metadata %s: %v\n", qPath+".meta", err)
+	if err := storeQuarantineBackup(qPath, data, meta, 0600); err != nil {
+		return RemediationResult{Error: fmt.Sprintf("cannot create durable crontab backup: %v", err)}
 	}
 
 	// Truncate live crontab. 0600 is the mode cron(8) enforces for user
@@ -67,6 +62,9 @@ func fixSuspiciousCrontab(path string) RemediationResult {
 	// is the only safe mode for /var/spool/cron/<user>.
 	if err := os.WriteFile(path, []byte{}, 0600); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot truncate crontab: %v", err)}
+	}
+	if err := quarantinefs.SyncFilePath(path); err != nil {
+		return RemediationResult{Error: fmt.Sprintf("crontab truncated but not synced; recovery copy retained at %s: %v", qPath, err)}
 	}
 
 	return RemediationResult{

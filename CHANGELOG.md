@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Quarantine and restore now make recovery data durable before removing originals. Storage failures preserve recovery copies and report partial completion.
+
 - Mail monitoring preserves records written in fragments and discards oversized records through their terminating newline, preventing partial records from hiding or distorting authentication events.
 - Overlapping firewall ranges now apply without disabling protection. Removing or expiring one range keeps coverage supplied by the remaining entries.
 - Email password checks no longer expose passwords or stored hashes through process arguments or findings. Password formats outside the supported audit limits are reported as incomplete and remain eligible for retry.
