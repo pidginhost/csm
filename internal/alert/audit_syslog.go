@@ -58,10 +58,9 @@ var facilityCodes = map[string]int{
 }
 
 // NewSyslogSink validates the config, dials the destination, and
-// returns a ready-to-emit sink. A dial failure here is fatal --
-// callers should treat it as "audit syslog is misconfigured" rather
-// than retrying silently. Once dialled, transient write errors
-// trigger a single redial on the next Emit.
+// returns a ready-to-emit sink. The dispatch manager reports dial failures
+// and retries with backoff. Direct callers can retry a failed write with
+// another Emit, which redials when the connection was dropped.
 func NewSyslogSink(cfg SyslogConfig) (*SyslogSink, error) {
 	if cfg.Network == "" || cfg.Address == "" {
 		return nil, errors.New("syslog sink: network and address required")

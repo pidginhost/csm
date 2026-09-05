@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Audit logging retries failed destinations without reopening healthy ones. Delivery failures remain visible in metrics, and reloads wait for active writes to finish.
+
 - Firewall changes now report persistence and rollback failures without success audit records. Failed allow removals remain eligible for retry, and port-specific changes say when a reload is required.
 
 - Mail monitoring retries failed source attachment and recovers without a daemon restart. Automatic source selection can switch to journal input after a file disappears, while explicit source settings stay in effect.
