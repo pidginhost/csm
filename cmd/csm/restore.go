@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -85,10 +86,14 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 		return staged, err
 	}
 	defer f.Close()
-	gr, err := gzip.NewReader(f)
+	compressed := bufio.NewReader(f)
+	gr, err := gzip.NewReader(compressed)
 	if err != nil {
 		return staged, err
 	}
+	// ByteReader input and single-member mode leave trailing compressed data
+	// available for validation instead of silently consuming another member.
+	gr.Multistream(false)
 	defer func() {
 		if closeErr := gr.Close(); err == nil && closeErr != nil {
 			err = closeErr
@@ -103,7 +108,7 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 			if !manifestSeen {
 				return staged, errors.New("backup manifest is missing")
 			}
-			return staged, nil
+			return staged, verifyBackupArchiveEnd(gr, compressed)
 		}
 		if nextErr != nil {
 			return staged, nextErr
@@ -190,6 +195,22 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 			return staged, closeErr
 		}
 	}
+}
+
+func verifyBackupArchiveEnd(gr *gzip.Reader, compressed *bufio.Reader) error {
+	// Tar EOF precedes the gzip trailer. Reading to gzip EOF checks its CRC
+	// and length; one extra byte is enough to reject unsupported tar padding.
+	if n, err := io.CopyN(io.Discard, gr, 1); n != 0 {
+		return errors.New("backup contains data after tar end")
+	} else if err != io.EOF {
+		return fmt.Errorf("validating backup gzip trailer: %w", err)
+	}
+	if _, err := compressed.ReadByte(); err == nil {
+		return errors.New("backup contains trailing compressed data or another gzip member")
+	} else if err != io.EOF {
+		return fmt.Errorf("checking backup compressed end: %w", err)
+	}
+	return nil
 }
 
 func isTransientBackupStateEntry(name string) bool {

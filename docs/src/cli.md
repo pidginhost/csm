@@ -65,6 +65,8 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 
 Backup and restore use the state lock to exclude daemon access. Restore stages all data beside its destination before replacement, so validation failures leave the live installation unchanged. Uninstall is intentionally non-destructive unless `--purge` is supplied.
 
+Restore accepts the format produced by `csm backup`: one tar archive in one gzip member, with no data or padding after the tar end markers and no trailing compressed bytes or additional members. It validates the gzip checksum and length before replacing any destination, and rejects corrupt or truncated archives.
+
 ## Hardening
 
 Operator-driven mitigations applied to the host. Run `csm harden` with no arguments to print the available subcommands on the current host (the audit detects kernel build, panel, and existing mitigations and only offers what's relevant). Background, full list, and live-detection details: [CVE Mitigations](cve-mitigations.md).
