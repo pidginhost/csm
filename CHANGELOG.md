@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The audit log was never rotated, so it grew without limit; on one host it reached 93 MB. The packaged logrotate fragment now covers it.
 - Upgrades refresh log rotation rules, so existing installations receive the audit log rotation policy too.
 - Database findings stored a second copy of themselves whenever the panel's domain map failed to load mid-scan, because a line about the document root appeared and disappeared with it.
-- The cross-account admin overlap warning stored a new copy on every scan because its details carry an observation timestamp. One overlap is now one row until the accounts sharing that admin actually change.
+- Shared administrator emails now retain one finding identity while the account set is unchanged. Previously, refreshed last-seen metadata created duplicate queue entries.
 
 ### Changed
 

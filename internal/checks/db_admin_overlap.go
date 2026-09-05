@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -122,9 +121,10 @@ func adminEmailsForSite(creds wpDBCreds, prefix string) ([]string, error) {
 	return out, nil
 }
 
-// buildAdminOverlapFindings collapses each overlap entry into a single
-// Warning finding. Account lists are sorted so the message reads the same
-// way every scan and so the finding's dedup identity is stable.
+// buildAdminOverlapFindings collapses each overlap entry into a single Warning
+// finding. The sorted, de-duplicated account set feeds both operator-facing
+// text and the explicit identity, so input order and multiple schemas owned by
+// one account cannot change the finding key.
 func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []alert.Finding {
 	emails := make([]string, 0, len(overlaps))
 	for email := range overlaps {
@@ -151,35 +151,27 @@ func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []al
 		out = append(out, alert.Finding{
 			Severity: alert.Warning,
 			Check:    "admin_cross_account_overlap",
-			Message:  fmt.Sprintf("Admin email %s appears on %d accounts: %s", email, len(accounts), strings.Join(accounts, ", ")),
-			Details:  details.String(),
-			// Details carry the per-observation LastSeen stamp, which every
-			// scan refreshes. Without an explicit identity the default key
-			// hashes those details and each scan stores another copy of an
-			// overlap that has not changed.
+			// The overlap itself is the identity: this email on this set of
+			// accounts. Details carry each account's last-seen time, and
+			// Finding.Key() hashes Details, so without an explicit key every
+			// scan minted a new finding for an unchanged overlap.
 			DedupKey:  adminOverlapDedupKey(email, accounts),
+			Message:   fmt.Sprintf("Admin email %s appears on %d accounts: %s", email, len(accounts), strings.Join(accounts, ", ")),
+			Details:   details.String(),
 			Timestamp: time.Now(),
 		})
 	}
 	return out
 }
 
-// adminOverlapDedupKey pins the finding identity to the fact the message
-// states: this email administers this set of accounts. Account membership
-// changing is a new fact; the observation timestamps moving is not. Length
-// prefixes keep arbitrary field contents unambiguous, while the digest keeps
-// a large shared-admin set from turning into an unbounded state-map key.
-func adminOverlapDedupKey(email string, sortedAccounts []string) string {
-	identity := make([]byte, 0, len(email)+len(sortedAccounts)*16)
-	appendField := func(value string) {
-		identity = binary.BigEndian.AppendUint64(identity, uint64(len(value)))
-		identity = append(identity, value...)
-	}
-	appendField(email)
-	for _, account := range sortedAccounts {
-		appendField(account)
-	}
-	digest := sha256.Sum256(identity)
+// adminOverlapDedupKey identifies one overlap by its substance: the shared
+// email and the set of accounts carrying it. An email that spreads to another
+// account is a new situation and gets its own key; the same overlap re-observed
+// on the next scan keeps this one. accounts is already sorted and de-duplicated
+// by the caller.
+func adminOverlapDedupKey(email string, accounts []string) string {
+	identity := strings.Join(append([]string{email}, accounts...), "\x00")
+	digest := sha256.Sum256([]byte(identity))
 	return fmt.Sprintf("admin-overlap:%x", digest[:12])
 }
 
