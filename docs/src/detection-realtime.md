@@ -71,6 +71,13 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 
 cPanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
 
+The Postfix/Dovecot file reader polls every two seconds. It reads replacement
+files from the start and rewinds when the current file shrinks below its read
+position. Truncation also clears buffered bytes from the previous file contents.
+With `copytruncate`, a file that regrows past that position between polls can
+hide the truncation and lose events. Use rename/create rotation with the log
+writer reopening its file, or journal input, when that loss is unacceptable.
+
 ## SMTP / Dovecot Brute-Force Tracker
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.

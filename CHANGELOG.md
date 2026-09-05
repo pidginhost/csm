@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Mail monitoring resumes from the start after detecting an in-place log truncation, so new authentication events are read again.
 - Firewall startup now retries temporary failures and reports a persistent failure in health status and diagnostics. Failed attempts preserve the existing kernel rules.
 - A WordPress core rebuilt from an older release reported every leftover file of the newer one as its own finding, which on one install produced over a thousand rows and buried the rest of the scan. The install now gets one finding that counts the files and samples them.
 - The audit log was never rotated, so it grew without limit; on one host it reached 93 MB. The packaged logrotate fragment now covers it.

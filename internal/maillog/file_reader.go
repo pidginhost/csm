@@ -181,6 +181,12 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 	rotate := time.NewTicker(time.Minute)
 	defer rotate.Stop()
 
+	rewindOnTruncate := func() {
+		if _, err := rewindTruncatedFile(f, reader); err != nil {
+			fmt.Fprintf(os.Stderr, "maillog file_reader %s rewind: %v\n", r.path, err)
+		}
+	}
+
 	reopenOnRotate := func() {
 		st, err := os.Stat(r.path)
 		if err != nil {
@@ -192,6 +198,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 		}
 		r.recordStat(false, nil)
 		if inode(st) == lastIno {
+			rewindOnTruncate()
 			r.recordRestored()
 			return
 		}
@@ -212,6 +219,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 		case <-ctx.Done():
 			return
 		case <-poll.C:
+			rewindOnTruncate()
 			for {
 				line, truncated, err := readBoundedLine(reader, maxLogLineBytes)
 				if err != nil {
@@ -239,4 +247,22 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 			reopenOnRotate()
 		}
 	}
+}
+
+func rewindTruncatedFile(f *os.File, reader *bufio.Reader) (bool, error) {
+	st, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	offset, err := f.Seek(0, io.SeekCurrent)
+	if err != nil || st.Size() >= offset {
+		return false, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	// Read-ahead bytes belong to the generation that was truncated. Compare
+	// against the descriptor position so those bytes cannot conceal shrinkage.
+	reader.Reset(f)
+	return true, nil
 }
