@@ -194,3 +194,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 - `perf_mysql_config`, `perf_redis_config`, `perf_error_logs` -- rely on standard service locations
 
 Operators on plain Linux can point `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and `perf_wp_cron` at generic web roots with the `account_roots` glob list (see [configuration.md](configuration.md)). The remaining account and CMS scans still assume the cPanel `/home/*/public_html` layout.
+
+Package integrity rechecks retain a modification that the package verifier still
+reports for the flagged file. Changing its executable mode or removing the file
+does not by itself resolve that finding.

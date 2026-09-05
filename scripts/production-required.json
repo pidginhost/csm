@@ -1,0 +1,7 @@
+[
+  {"Package":"github.com/pidginhost/csm/internal/emailav","Name":"TestYaraXScannerFailsClosedOnScanError"},
+  {"Package":"github.com/pidginhost/csm/internal/yaraworker","Name":"TestRunRecoversFromBadRulesOnReload"},
+  {"Package":"github.com/pidginhost/csm/internal/checks","Name":"TestContentReverifyCompressedArchiveResolvesYARAFinding"},
+  {"Package":"github.com/pidginhost/csm/internal/daemon","Name":"TestDecodeAFAlgEventStampsDetectionTime"},
+  {"Package":"github.com/pidginhost/csm/internal/maillog","Name":"TestFactory_ExplicitJournalReturnsJournalReaderOrError"}
+]

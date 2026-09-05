@@ -2,5 +2,5 @@ ARG GO_VERSION=1.26.7
 FROM golang:${GO_VERSION}
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends systemd systemd-sysv dbus php-cli \
+    && apt-get install -y --no-install-recommends systemd systemd-sysv dbus php-cli libsystemd-dev \
     && rm -rf /var/lib/apt/lists/*

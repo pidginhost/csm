@@ -93,7 +93,10 @@ not count historical authentication failures as new activity.
 With `mail_logs.source: auto`, each retry chooses the configured or platform
 file if present, otherwise the configured journal units. A file missing for
 90 seconds triggers a new selection. The old reader stops before a replacement
-starts. Explicit `file` and `journal` modes retry their selected source without
+starts. Journal input follows new records from the selected services, including
+services with no prior entries; it does not replay older records on attachment.
+
+Explicit `file` and `journal` modes retry their selected source without
 switching, and a working reader stays attached until it stops or loses its file.
 Journal input requires a build with journal support.
 

@@ -46,7 +46,8 @@ type packageVerifyOutputState struct {
 
 // verifyManifestLineFlagsFile reports whether an rpm -V / dpkg --verify output
 // line marks the target file as size/checksum-modified (mirrors the detector:
-// skip config/doc, require S or 5, require an executable or library).
+// skip config/doc and require S or 5). The existing finding already classified
+// the file; changing its mode or removing it must not clear a reported mismatch.
 func verifyManifestLineFlagsFile(line, file string) (targetFlagged, recognized bool) {
 	flags, got, ok := parseManifestVerifyLine(line)
 	if !ok {
@@ -61,7 +62,7 @@ func verifyManifestLineFlagsFile(line, file string) (targetFlagged, recognized b
 	if !strings.Contains(flags, "S") && !strings.Contains(flags, "5") {
 		return false, true
 	}
-	return got == file && looksExecutableOrLibrary(got), true
+	return got == file, true
 }
 
 func manifestVerifyLineHasPackagePath(line, got string) bool {
@@ -123,7 +124,7 @@ func debsumsOutputState(out []byte, file string) packageVerifyOutputState {
 			continue
 		}
 		state.sawReport = true
-		if got == file && looksExecutableOrLibrary(got) {
+		if got == file {
 			state.targetFlagged = true
 		}
 	}

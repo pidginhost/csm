@@ -8,11 +8,20 @@ if [[ "$(uname -s)" != Linux || $$ != 1 || ! -e /src/.git || ! -d /gocache || ! 
 fi
 cd /src
 artifacts=/src/.cache/systemd-account-roots
+production=${1:-}
 mkdir -p "$artifacts"
 printf 'NOT RUN\n' > "$artifacts/result"
 : > "$artifacts/service.log"
-go build -o "$artifacts/csm" ./cmd/csm
-go test -c -race -tags systemdintegration -o "$artifacts/webui.test" ./internal/webui
+csm_tags=
+service_tags=systemdintegration
+if [[ "$production" == production ]]; then
+  csm_tags=yara,journal,bpf
+  service_tags+=,yara,journal,bpf
+  export CGO_ENABLED=1
+  export CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)"
+fi
+go build -tags "$csm_tags" -o "$artifacts/csm" ./cmd/csm
+go test -c -race -tags "$service_tags" -o "$artifacts/webui.test" ./internal/webui
 
 # A separate filesystem exercises mount ordering and the grant for custom
 # content without making an unconfigured sibling writable.
@@ -57,6 +66,30 @@ Environment=CSM_TEST_CONFIG=/etc/csm/csm.yaml
 StandardOutput=file:$artifacts/service.log
 StandardError=inherit
 UNIT
+if [[ "$production" == production ]]; then
+  mkdir -p /etc/systemd/system/csm-audit.service.d
+  cat > /etc/systemd/system/csm-production-kernel.service <<UNIT
+[Unit]
+Description=CSM production kernel tests
+Wants=systemd-journald.service dbus.socket
+After=systemd-journald.service dbus.socket csm.service
+[Service]
+Type=oneshot
+TimeoutStartSec=45min
+ExecStart=/bin/bash /src/scripts/production-tests.sh kernel
+Environment=PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=GOCACHE=/gocache
+Environment=GOMODCACHE=/gomodcache
+Environment=GOPROXY=${GOPROXY:-https://proxy.golang.org,direct}
+Environment=PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig}
+StandardOutput=journal+console
+UNIT
+  cat > /etc/systemd/system/csm-audit.service.d/production.conf <<UNIT
+[Unit]
+Wants=csm-production-kernel.service
+After=csm-production-kernel.service
+UNIT
+fi
 cat > "$artifacts/finish.sh" <<'FINISH'
 #!/bin/bash
 set -euo pipefail
@@ -69,6 +102,14 @@ if [[ "$(systemctl show csm.service --property=Result --value)" == success && "$
 else
   printf 'FAIL\n' > "$artifacts/result"
   status=1
+fi
+if [[ -f /etc/systemd/system/csm-production-kernel.service ]]; then
+  systemctl show csm-production-kernel.service --property=Result,ExecMainStatus > "$artifacts/kernel-properties"
+  if [[ "$(systemctl show csm-production-kernel.service --property=Result --value)" != success || "$(systemctl show csm-production-kernel.service --property=ExecMainStatus --value)" != 0 ]]; then
+    printf 'FAIL\n' > "$artifacts/result"
+    status=1
+  fi
+  journalctl -u csm-production-kernel.service --no-pager > "$artifacts/kernel-journal.log"
 fi
 journalctl -u csm.service --no-pager > "$artifacts/journal.log"
 systemctl exit "$status"

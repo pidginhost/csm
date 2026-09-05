@@ -53,25 +53,27 @@ func TestRunRecoversFromBadRulesOnReload(t *testing.T) {
 
 	// Fix the rules and reload.
 	good := "rule good { strings: $a = \"malz\" condition: $a }"
-	if err := os.WriteFile(rulePath, []byte(good), 0o600); err != nil {
+	if err = os.WriteFile(rulePath, []byte(good), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rr, err := c.Reload(yaraipc.ReloadArgs{})
 	if err != nil {
 		t.Fatalf("Reload after fixing rules: %v", err)
 	}
-	if rr.RuleCount < 1 || rr.CompileError != "" {
-		t.Fatalf("Reload result = %+v, want >=1 rule + no compile error", rr)
+	if rr.RuleCount != 1 || rr.CompileError != "" {
+		t.Fatalf("Reload result = %+v, want exactly one rule + no compile error", rr)
 	}
 
 	ping, err = c.Ping()
 	if err != nil {
 		t.Fatalf("Ping after recovery: %v", err)
 	}
-	if ping.RuleCount < 1 || ping.CompileError != "" {
-		t.Errorf("post-recovery ping = %+v, want rules + no compile error", ping)
+	if ping.RuleCount != 1 || ping.CompileError != "" {
+		t.Errorf("post-recovery ping = %+v, want one rule + no compile error", ping)
 	}
 
 	cancel()
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("worker shutdown: %v", err)
+	}
 }

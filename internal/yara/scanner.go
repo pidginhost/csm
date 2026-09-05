@@ -75,7 +75,7 @@ func (s *Scanner) Reload() error {
 		fileCount++
 
 		path := filepath.Join(s.rulesDir, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- ReadDir supplies a basename in the operator-selected directory; rule files are trust-checked above.
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", path, err)
 		}
@@ -193,7 +193,7 @@ func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
 	if maxBytes <= 0 {
 		return nil
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- This API scans caller-selected local files; contents are read only and byte-limited.
 	if err != nil {
 		return nil
 	}
@@ -217,7 +217,7 @@ func (s *Scanner) ScanFileChecked(path string, maxBytes int) (FileScanResult, er
 	if maxBytes <= 0 {
 		return FileScanResult{}, fmt.Errorf("yara scan file: maxBytes must be positive")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- This API scans caller-selected local files; contents are read only and byte-limited.
 	if err != nil {
 		return FileScanResult{}, fmt.Errorf("yara scan file: open %s: %w", path, err)
 	}

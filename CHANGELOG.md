@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Rule permission checks now cover every filename extension accepted by the YARA loader.
+
+- Package integrity rechecks keep reported modifications unresolved when a previously flagged file loses its executable mode or disappears.
+
+- Journal mail monitoring now follows new records when the selected services have no prior journal entries.
+
 - Process termination now uses a verified process handle, preventing recycled process IDs from redirecting an action. Unsupported kernels leave termination disabled and report the failure.
 
 - Quarantine restore preserves recorded ownership, permissions, and modification times. Historical entries use their saved quarantine dates when available.
@@ -27,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quarantine rollback preserves concurrent file replacements and keeps recovery copies when it cannot safely finish. Failed restores no longer remove files through names another writer can replace.
 
 ### Fixed
+
+- Release publication now requires tests with the shipped features and real kernel and service checks. Failed BPF monitor startup releases its event reader.
 
 - Tagged releases now require cPanel package and upgrade validation before publication. Missing cPanel test infrastructure stops the release early.
 

@@ -82,3 +82,21 @@ func TestValidateRulesDir_RejectsRegularFileAsDir(t *testing.T) {
 		t.Fatal("regular file masquerading as rules dir must be rejected")
 	}
 }
+
+func TestValidateRulesDirRejectsUntrustedUppercaseRules(t *testing.T) {
+	for _, extension := range []string{".YAR", ".YaRa"} {
+		t.Run(extension, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "rules"+extension)
+			if err := os.WriteFile(path, []byte("rule unsafe { condition: true }"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0o666); err != nil {
+				t.Fatal(err)
+			}
+			if err := validateRulesDir(dir); err == nil {
+				t.Fatal("loader-selected rule bypassed trust validation through extension case")
+			}
+		})
+	}
+}
