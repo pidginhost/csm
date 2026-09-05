@@ -246,3 +246,10 @@ Every pipeline runs the required [clean-corpus gate](clean-corpus.md) in the pro
 See [cPanel release tests](cpanel-release-tests.md) for the required image, upgrade baseline, release dependencies and retained evidence.
 
 Production tag selection, execution artifacts, and the required isolated kernel runner are described in [Production build and kernel tests](production-tests.md).
+
+`make check-fixtures` is also a blocking GitLab job and publication dependency.
+It checks all tracked and unignored files under `testdata` and `fixtures`,
+including files without extensions. Scanner failures stop the check; reports
+identify the file and line without printing the suspected address. The
+[fixture sanitisation rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md)
+describe the additional manual privacy review.
