@@ -260,7 +260,7 @@ func scanDrupalAdmins(store *state.Store, account string, creds drupalCreds) []a
 		"SELECT u.uid, u.name, u.mail FROM users_field_data u JOIN user__roles r ON u.uid = r.entity_id WHERE r.roles_target_id = '%s' AND u.default_langcode = 1",
 		drupalAdminRoleID)
 	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
-	return cmsAdminFindings(store, "drupal", "drupal_admin_injection", account, rows, func(fields []string) (string, string) {
+	return cmsAdminFindings(store, "drupal", "drupal_admin_injection", account, creds.asWPDBCreds(), rows, func(fields []string) (string, string) {
 		return fmt.Sprintf("Drupal administrator account on %s: %s", account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})

@@ -39,13 +39,16 @@ func cmsDiscover(patterns ...string) []string {
 // finding. Without a store (ad-hoc runs, tests) it keeps the historical
 // per-row visibility Warning. describe renders the message tail and the
 // details for one row's tab-separated fields; fields[0] is the id.
-func cmsAdminFindings(store *state.Store, cms, check, account string, rows []string, describe func(fields []string) (message, details string)) []alert.Finding {
+func cmsAdminFindings(store *state.Store, cms, check, account string, creds wpDBCreds, rows []string, describe func(fields []string) (message, details string)) []alert.Finding {
 	if len(rows) == 0 {
 		return nil
 	}
 	var findings []alert.Finding
-	baselineKey := fmt.Sprintf("_cmsadmin_baseline:%s:%s", cms, account)
-	_, baselined := false, false
+	// Account-wide keys cannot establish which installation supplied an id.
+	// Each database and prefix gets a fresh baseline after the key migration.
+	siteKey := dbContentDedupKey(account, creds, creds.tablePrefix, "cms-admin="+cms)
+	baselineKey := "_cmsadmin_baseline:v2:" + siteKey
+	baselined := false
 	if store != nil {
 		_, baselined = store.GetRaw(baselineKey)
 	}
@@ -55,16 +58,20 @@ func cmsAdminFindings(store *state.Store, cms, check, account string, rows []str
 			continue
 		}
 		message, details := describe(fields)
+		details = dbContentFindingDetails(creds, creds.tablePrefix,
+			"Database host: "+creds.dbHost, details)
+		dedupKey := dbContentDedupKey(account, creds, creds.tablePrefix, "cms-admin="+cms, "id="+fields[0])
 		if store == nil {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,
 				Check:    check,
 				Message:  message,
 				Details:  details,
+				DedupKey: dedupKey,
 			})
 			continue
 		}
-		key := fmt.Sprintf("_cmsadmin:%s:%s:%s", cms, account, fields[0])
+		key := "_cmsadmin:v2:" + dedupKey
 		if _, seen := store.GetRaw(key); seen {
 			continue
 		}
@@ -77,6 +84,7 @@ func cmsAdminFindings(store *state.Store, cms, check, account string, rows []str
 			Check:    check,
 			Message:  "New " + message,
 			Details:  details + "\nThis administrator was not present when the install was baselined.",
+			DedupKey: dedupKey,
 		})
 	}
 	if store != nil && !baselined {

@@ -312,7 +312,9 @@ func scanJoomlaSuperUsers(store *state.Store, account string, creds jConfigCreds
 	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
 	// The legitimate site admin is in this set too: the store baseline
 	// keeps known Super Users quiet and reports only a newcomer.
-	return cmsAdminFindings(store, "joomla", "joomla_admin_injection", account, rows, func(fields []string) (string, string) {
+	dbCreds := creds.asWPDBCreds()
+	dbCreds.tablePrefix = prefix
+	return cmsAdminFindings(store, "joomla", "joomla_admin_injection", account, dbCreds, rows, func(fields []string) (string, string) {
 		return fmt.Sprintf("Joomla Super User account on %s: %s", account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})

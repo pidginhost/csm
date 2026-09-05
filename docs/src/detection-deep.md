@@ -95,6 +95,15 @@ during the read, and stop when the scan is canceled. Read failures and missing
 required credentials mark that CMS scan incomplete; manual re-checks keep the
 finding unresolved when its configuration cannot be inspected.
 
+Administrator baselines for Joomla, Drupal, Magento, and OpenCart are scoped to
+the hosting account, CMS, database host, database name, and table prefix. Two
+sites under one account keep separate baselines when they use different
+databases or prefixes. Paths that share the same database and prefix share the
+same administrator set. Upgrading from account-wide baselines starts a fresh
+baseline for each installation on its first successful administrator query;
+later additions produce one High finding per new administrator. Finding
+details identify the affected database and prefix.
+
 ## CMS Scanner Support Policy
 
 New CMS scanner work targets upstream-supported major versions. EOL versions are best-effort when the existing scanner covers them through the same low-risk layout or schema. Adding a new EOL-only scanner needs operator fleet data and an explicit security reason.

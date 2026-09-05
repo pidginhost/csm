@@ -321,7 +321,7 @@ func scanMagentoAdmins(store *state.Store, account string, creds magentoCreds) [
 		"SELECT user_id, username, email FROM %sadmin_user",
 		creds.dbPrefix)
 	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
-	return cmsAdminFindings(store, "magento", "magento_admin_injection", account, rows, func(fields []string) (string, string) {
+	return cmsAdminFindings(store, "magento", "magento_admin_injection", account, creds.asWPDBCreds(), rows, func(fields []string) (string, string) {
 		return fmt.Sprintf("Magento %s admin account on %s: user_id=%s", creds.version, account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})

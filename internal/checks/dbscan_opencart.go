@@ -257,7 +257,7 @@ func scanOpenCartAdmins(store *state.Store, account string, creds opencartCreds)
 		"SELECT user_id, username, email FROM %suser",
 		creds.dbPrefix)
 	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
-	return cmsAdminFindings(store, "opencart", "opencart_admin_injection", account, rows, func(fields []string) (string, string) {
+	return cmsAdminFindings(store, "opencart", "opencart_admin_injection", account, creds.asWPDBCreds(), rows, func(fields []string) (string, string) {
 		return fmt.Sprintf("OpenCart admin account on %s: user_id=%s", account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})

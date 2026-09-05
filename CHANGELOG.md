@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- CMS administrator monitoring now tracks each installation separately, preventing one site's known accounts from hiding a new administrator on another site. Existing installations establish a fresh baseline after upgrading.
 - CMS configuration scans now reject oversized files, symlinks, and special files. Unreadable configurations keep scan coverage incomplete and prevent manual re-checks from clearing findings.
 - Stronger hidden-link evidence now raises a fresh alert after an earlier warning was acknowledged. Growth in affected rows no longer creates duplicate findings for the same destinations.
 - Realtime scanning now checks files during atomic saves and restores. Verified WordPress content remains quiet, while modified files receive normal content analysis.
