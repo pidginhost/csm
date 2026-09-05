@@ -31,9 +31,8 @@ info() { echo "  $1"; }
 #   1. $CSM_SIGNING_KEY_PEM environment variable (operator override)
 #   2. Embedded public key below (set at release time)
 #
-# When neither is present the installer WARNS and proceeds - pre-signing
-# releases must still install. To enforce strict signature checking even
-# on the install path, set CSM_REQUIRE_SIGNATURES=1.
+# Current releases require successful signature verification. Setting
+# CSM_REQUIRE_SIGNATURES=1 also rejects missing signatures on legacy releases.
 : "${CSM_SIGNING_KEY_PEM:=}"
 : "${CSM_REQUIRE_SIGNATURES:=0}"
 
@@ -54,7 +53,7 @@ fi
 missing_signature_allowed() {
     local version="${1#v}"
     local major minor
-    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
         return 1
     fi
     major="${BASH_REMATCH[1]}"
@@ -70,34 +69,6 @@ missing_signature_allowed() {
 
 verify_signature() {
     local file="$1" sig_url="$2" release_version="${3:-}"
-    if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
-        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
-            die "CSM_REQUIRE_SIGNATURES=1 but no signing key configured"
-        fi
-        echo "  WARNING: no signing key configured, skipping signature verification" >&2
-        return 0
-    fi
-    if ! command -v openssl >/dev/null 2>&1; then
-        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
-            die "CSM_REQUIRE_SIGNATURES=1 but openssl is not installed"
-        fi
-        echo "  WARNING: openssl not found, skipping signature verification" >&2
-        return 0
-    fi
-    # Ed25519 one-shot verification needs OpenSSL 3.0+ (the -rawin flag). EL8 /
-    # CloudLinux 8 ship OpenSSL 1.1.1, which cannot verify Ed25519 from the CLI.
-    # Treat that as "cannot verify" (the SHA-256 checksum above is already
-    # enforced), never as a tamper -- otherwise upgrades would hard-fail on
-    # every 1.1.1 host the moment a release is signed.
-    local pkeyutl_help
-    pkeyutl_help=$(openssl pkeyutl -help 2>&1 || true)
-    if ! grep -q -- '-rawin' <<<"$pkeyutl_help"; then
-        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
-            die "CSM_REQUIRE_SIGNATURES=1 but openssl ($(openssl version 2>/dev/null)) lacks Ed25519 one-shot verify (needs OpenSSL 3.0+)"
-        fi
-        echo "  WARNING: openssl too old for Ed25519 verification (needs 3.0+); skipping signature check (checksum already verified)" >&2
-        return 0
-    fi
     local sig_file
     sig_file="${file}.sig"
     local sig_http
@@ -112,6 +83,15 @@ verify_signature() {
     fi
     if [ "$sig_http" != "200" ]; then
         die "Signature download failed (HTTP ${sig_http}) from ${sig_url}"
+    fi
+    # A downloaded checksum is not an independent authenticity check. Current
+    # artifacts must never execute merely because the host lacks a verifier.
+    [ -n "$CSM_SIGNING_KEY_PEM" ] || die "No signing key configured; refusing the unverified artifact"
+    command -v openssl >/dev/null 2>&1 || die "openssl is not installed; use the signed APT/DNF repository instead"
+    local pkeyutl_help
+    pkeyutl_help=$(openssl pkeyutl -help 2>&1 || true)
+    if ! grep -q -- '-rawin' <<<"$pkeyutl_help"; then
+        die "OpenSSL 3.0+ is required for Ed25519 verification; use the signed APT/DNF repository on older hosts"
     fi
     local key_file
     key_file=$(mktemp)

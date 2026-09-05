@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Update checks no longer execute downloaded code to read its version.
+
+- Standalone installs and upgrades now require successful release signature verification. Hosts without a compatible verifier must use the signed package repositories; only explicitly selected pre-signing releases may omit a signature.
+
 - The service now limits configuration writes to managed directories. Mail configuration changes run in a separate constrained operation, and opted-in module removal retains the daemon sandbox.
 
 - Rule permission checks now cover every filename extension accepted by the YARA loader.

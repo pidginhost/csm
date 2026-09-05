@@ -1,5 +1,12 @@
 # Upgrading
 
+Use the signed APT/DNF repository for maintained package upgrades. Standalone
+deploy scripts require successful detached signature verification for current
+releases and stop when OpenSSL is missing or older than 3.0. On EL8/CloudLinux 8
+and other hosts with older OpenSSL, use the package repository; disabling
+`CSM_REQUIRE_SIGNATURES` does not enable unsigned current upgrades. See
+[Release signing](release-signing.md) for the historical-release exception.
+
 ## Package installations (recommended)
 
 Use the same signed repository that installed CSM:

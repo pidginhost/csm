@@ -16,7 +16,7 @@ Do not reuse keys between these paths. The package repositories use GPG because 
 | Raw binaries, tarballs, `.deb`, `.rpm` siblings | Ed25519 | `CSM_SIGNING_KEY` | Detached `.sig` files for direct downloads and standalone scripts. |
 | YARA Forge rule ZIPs | Ed25519 | `CSM_SIGNING_KEY` | Signed by the `yara-forge-mirror` job; clients verify via `signatures.signing_key`. |
 
-The preferred operator path is the signed APT/DNF repository documented in [Installation](installation.md). Standalone scripts also verify detached signatures: `scripts/install.sh` embeds the Ed25519 public key in `EMBEDDED_SIGNING_KEY`. Override it at runtime with `CSM_SIGNING_KEY_PEM`. Without any key, the scripts warn and continue unless `CSM_REQUIRE_SIGNATURES=1` is set.
+The preferred operator path is the signed APT/DNF repository documented in [Installation](installation.md). Standalone scripts also verify detached signatures: `scripts/install.sh` embeds the Ed25519 public key in `EMBEDDED_SIGNING_KEY`. Override it at runtime with `CSM_SIGNING_KEY_PEM`. Current releases fail before execution if the key, signature, or compatible verifier is unavailable. Setting `CSM_REQUIRE_SIGNATURES=0` does not bypass verification for current releases.
 
 ## Public Key
 
@@ -98,18 +98,22 @@ For standalone script verification, either:
 - Embed the public key PEM in `EMBEDDED_SIGNING_KEY` in `scripts/install.sh`, `scripts/deploy.sh`, and `scripts/deploy-gitlab.sh`.
 - Or pass the public key at runtime with `CSM_SIGNING_KEY_PEM`.
 
-To make missing signatures or missing public keys fatal:
+Signature verification is mandatory for current standalone releases. To also reject missing signatures on historical pre-signing releases:
 
 ```bash
 curl -fsSLo /tmp/csm-install.sh https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh
 sudo env CSM_REQUIRE_SIGNATURES=1 bash /tmp/csm-install.sh
 ```
 
-Strict detached verification requires OpenSSL 3.0 or newer because the Ed25519 command uses `pkeyutl -rawin`. On older supported hosts, use the signed APT/DNF repository or verify the artifacts on a separate trusted system before transfer.
+Detached verification requires OpenSSL 3.0 or newer because the Ed25519 command uses `pkeyutl -rawin`. The scripts stop on older OpenSSL, including the default on EL8/CloudLinux 8, Ubuntu 20.04 and Debian 11. Use the signed APT/DNF repository on these supported platforms; its GPG verification does not depend on this OpenSSL command. The scripts never download and execute a verifier to bypass this requirement.
 
-If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`. A missing `.sig` (HTTP 404) is tolerated only for releases published before signing began (v2.2.0); for any later release the scripts abort even without `CSM_REQUIRE_SIGNATURES`, because every such release ships a signature and its absence means the download is incomplete or tampered.
+If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`. A missing `.sig` (HTTP 404) is tolerated only with `CSM_REQUIRE_SIGNATURES=0` and an explicitly selected complete release version older than v2.2.0, with no suffix or leading zeroes; for any later release the scripts abort even without `CSM_REQUIRE_SIGNATURES`, because every such release ships a signature and its absence means the download is incomplete or tampered. An unknown version or `latest` cannot qualify for the exception. This historical exception is checksum-only installation and is reported as unverified, not signature-verified.
 
 The same policy applies to the `csm-assets.tar.gz.sha256` checksum: releases published before checksums existed produce a warning and skip the checksum step, while `CSM_REQUIRE_SIGNATURES=1` makes the missing checksum fatal. A checksum that exists but does not match always aborts.
+
+The `check` action only compares checksums and reports update availability; it
+does not download or execute a release binary. Installation and upgrade perform
+the signature checks above.
 
 ## Key Rotation
 

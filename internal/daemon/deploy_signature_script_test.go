@@ -50,32 +50,24 @@ func TestVerifySignatureRejectsMismatchWhenRawinSupported(t *testing.T) {
 	}
 }
 
-func TestVerifySignatureSkipsOldOpenSSLOnlyWhenNotStrict(t *testing.T) {
+func TestVerifySignatureRejectsOldOpenSSLByDefault(t *testing.T) {
 	for _, script := range deploySignatureScripts() {
-		t.Run(script.name, func(t *testing.T) {
-			output, code := runVerifySignature(t, script, oldOpenSSL(), nil, "")
-			if code != 0 {
-				t.Fatalf("old OpenSSL should warn and continue when signatures are not required, exit %d:\n%s", code, output)
-			}
-			if !strings.Contains(output, "openssl too old for Ed25519 verification") {
-				t.Fatalf("expected old OpenSSL warning, got:\n%s", output)
-			}
-
-			output, code = runVerifySignature(t, script, oldOpenSSL(), []string{"CSM_REQUIRE_SIGNATURES=1"}, "")
-			if code == 0 {
-				t.Fatalf("strict mode should reject old OpenSSL:\n%s", output)
-			}
-			if !strings.Contains(output, "CSM_REQUIRE_SIGNATURES=1") {
-				t.Fatalf("expected strict-mode error, got:\n%s", output)
-			}
-		})
+		for _, strict := range []string{"0", "1"} {
+			t.Run(script.name+"/strict="+strict, func(t *testing.T) {
+				stubs := rawinCapableOpenSSL("200") + oldOpenSSL()
+				output, code := runVerifySignature(t, script, stubs, []string{"CSM_REQUIRE_SIGNATURES=" + strict}, "")
+				if code == 0 || !strings.Contains(output, "OpenSSL 3.0+ is required") || !strings.Contains(output, "signed APT/DNF repository") {
+					t.Fatalf("unsupported verifier must fail with the supported package path: exit=%d output=%s", code, output)
+				}
+			})
+		}
 	}
 }
 
 func TestVerifySignatureFailsClosedWhenStrict(t *testing.T) {
 	for _, script := range deploySignatureScripts() {
 		t.Run(script.name+"/missing-openssl", func(t *testing.T) {
-			output, code := runVerifySignature(t, script, noDownloader(), []string{"CSM_REQUIRE_SIGNATURES=1"}, t.TempDir())
+			output, code := runVerifySignature(t, script, `curl() { printf 200; }; pkg_download() { printf 200; }`, []string{"CSM_REQUIRE_SIGNATURES=1"}, t.TempDir())
 			if code == 0 {
 				t.Fatalf("strict mode should reject missing openssl:\n%s", output)
 			}
@@ -2039,20 +2031,6 @@ openssl() {
         return 0
     fi
     return 2
-}
-` + noDownloader()
-}
-
-func noDownloader() string {
-	return `
-curl() {
-    echo 'curl should not be called' >&2
-    return 99
-}
-
-pkg_download() {
-    echo 'pkg_download should not be called' >&2
-    return 99
 }
 `
 }
