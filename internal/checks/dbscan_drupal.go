@@ -2,7 +2,9 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -114,13 +116,19 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.St
 		}
 		// public_html is three dirs up from sites/default/settings.php.
 		publicHTML := filepath.Dir(filepath.Dir(filepath.Dir(path)))
-		if !looksLikeDrupal8Plus(publicHTML) {
+		matched, err := looksLikeDrupal8Plus(publicHTML)
+		if err != nil {
+			markCheckIncomplete(ctx, "db_content_drupal")
+			continue
+		}
+		if !matched {
 			continue
 		}
 		// /home/<account> is one level above public_html.
 		account := extractUser(filepath.Dir(publicHTML))
-		creds := parseDrupalSettings(path)
-		if creds.dbName == "" || creds.dbUser == "" {
+		creds, err := parseDrupalSettings(ctx, path)
+		if err != nil || creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_content_drupal")
 			continue
 		}
 		creds.ctx = ctx
@@ -132,13 +140,21 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.St
 	return findings
 }
 
-// looksLikeDrupal8Plus checks for the core/lib/Drupal.php marker
-// that distinguishes D8+ from D7. Stat (not Open) so we don't
-// pull file content into memory just to check existence.
-func looksLikeDrupal8Plus(publicHTML string) bool {
+// The marker distinguishes D8+ from D7 without reading its contents. A
+// symlink or special file cannot establish the installation's version.
+func looksLikeDrupal8Plus(publicHTML string) (bool, error) {
 	marker := filepath.Join(publicHTML, "core", "lib", "Drupal.php")
-	_, err := osFS.Stat(marker)
-	return err == nil
+	info, err := osFS.Lstat(marker)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, errNonRegularFile
+	}
+	return true, nil
 }
 
 // parseDrupalSettings reads settings.php and returns the database
@@ -146,12 +162,11 @@ func looksLikeDrupal8Plus(publicHTML string) bool {
 // settings.php uses split-DB or per-environment overrides, only
 // the first 'default' connection is reported -- the rest are
 // followed by the same regex on subsequent calls.
-func parseDrupalSettings(path string) drupalCreds {
+func parseDrupalSettings(ctx context.Context, path string) (drupalCreds, error) {
 	creds := drupalCreds{path: path}
-	// #nosec G304 -- path resolved via osFS.Glob over /home/*/public_html; not attacker-controlled.
-	data, err := osFS.ReadFile(path)
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return creds
+		return creds, err
 	}
 	body := string(data)
 
@@ -170,7 +185,7 @@ func parseDrupalSettings(path string) drupalCreds {
 	if creds.dbHost == "" {
 		creds.dbHost = "localhost"
 	}
-	return creds
+	return creds, nil
 }
 
 // scanDrupalConfig pulls rows from the config table whose data

@@ -107,12 +107,18 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, store *state.St
 		if ctx.Err() != nil {
 			return findings
 		}
-		if !looksLikeJoomlaConfig(path) {
+		matched, err := looksLikeJoomlaConfig(ctx, path)
+		if err != nil {
+			markCheckIncomplete(ctx, "db_content_joomla")
+			continue
+		}
+		if !matched {
 			continue
 		}
 		account := extractUser(filepath.Dir(path))
-		creds := parseJConfig(path)
-		if creds.dbName == "" || creds.dbUser == "" {
+		creds, err := parseJConfig(ctx, path)
+		if err != nil || creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_content_joomla")
 			continue
 		}
 		creds.ctx = ctx
@@ -128,35 +134,25 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, store *state.St
 	return findings
 }
 
-// looksLikeJoomlaConfig reads the file looking for the `class JConfig`
-// marker. The file must be small enough that a full read is cheap
-// (vanilla Joomla configuration.php is ~3 KB; a hostile multi-MB
-// file would be unusual but we cap implicitly via Open + ReadFile).
-func looksLikeJoomlaConfig(path string) bool {
-	// #nosec G304 -- path resolved via osFS.Glob over /home/*/public_html; not attacker-controlled.
-	data, err := osFS.ReadFile(path)
+// A defaced configuration can still identify a Joomla installation. Its
+// credentials are parsed without executing any PHP.
+func looksLikeJoomlaConfig(ctx context.Context, path string) (bool, error) {
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return false
+		return false, err
 	}
-	// A defaced configuration.php that still has the class
-	// declaration but injected malicious public properties is
-	// exactly what we WANT to scan. Marker check is intentionally
-	// loose: any occurrence of `class JConfig` (case-insensitive on
-	// the keyword `class`).
-	lower := strings.ToLower(string(data))
-	return strings.Contains(lower, "class jconfig")
+	return strings.Contains(strings.ToLower(string(data)), "class jconfig"), nil
 }
 
 // parseJConfig reads configuration.php and pulls credentials out of
 // the public-property assignments. Lines outside the class body
 // (PHP comments, namespaced statements, etc.) are tolerated
 // silently because the regex is line-anchored to "public $foo = ...".
-func parseJConfig(path string) jConfigCreds {
+func parseJConfig(ctx context.Context, path string) (jConfigCreds, error) {
 	creds := jConfigCreds{path: path}
-	// #nosec G304 -- same Glob-resolved path as above.
-	data, err := osFS.ReadFile(path)
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return creds
+		return creds, err
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		m := jConfigCredsPattern.FindStringSubmatch(line)
@@ -179,7 +175,7 @@ func parseJConfig(path string) jConfigCreds {
 	if creds.dbHost == "" {
 		creds.dbHost = "localhost"
 	}
-	return creds
+	return creds, nil
 }
 
 // scanJoomlaExtensions queries the extensions table for params

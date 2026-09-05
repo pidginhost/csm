@@ -9,11 +9,9 @@ import (
 	"io"
 	"net/netip"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -373,8 +371,6 @@ type wpDBCreds struct {
 	multisite bool
 }
 
-const maxWPConfigBytes = 1 << 20
-
 // parseWPConfig extracts database credentials from wp-config.php.
 func parseWPConfig(path string) wpDBCreds {
 	creds, complete := parseWPConfigChecked(path)
@@ -387,29 +383,16 @@ func parseWPConfig(path string) wpDBCreds {
 // parseWPConfigChecked bounds account-controlled input so a special or very
 // large wp-config.php cannot strand the scheduled database scan.
 func parseWPConfigChecked(path string) (wpDBCreds, bool) {
-	var f *os.File
-	var err error
-	if _, productionFS := osFS.(realOS); productionFS {
-		// The account controls this path. A nonblocking, no-follow open prevents
-		// a regular-file-to-FIFO or symlink swap from stranding the worker.
-		// #nosec G304 -- read-only document-root candidate; flags reject unsafe types.
-		f, err = os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
-	} else {
-		f, err = osFS.Open(path)
-	}
+	f, err := openCMSConfig(path)
 	if err != nil {
 		return wpDBCreds{}, false
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return wpDBCreds{}, false
-	}
 
 	var creds wpDBCreds
-	limited := &io.LimitedReader{R: f, N: maxWPConfigBytes + 1}
+	limited := &io.LimitedReader{R: f, N: maxCMSConfigBytes + 1}
 	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 64*1024), maxWPConfigBytes+1)
+	scanner.Buffer(make([]byte, 64*1024), maxCMSConfigBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 

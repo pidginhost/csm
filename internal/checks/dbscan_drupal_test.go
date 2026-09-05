@@ -2,7 +2,6 @@ package checks
 
 import (
 	"context"
-	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -29,7 +28,7 @@ $databases['default']['default'] = [
 `
 }
 
-// fakeDrupalOS stubs Glob, ReadFile, and Stat so CheckDrupalContent
+// fakeDrupalOS stubs Glob, ReadFile, and Lstat so CheckDrupalContent
 // finds exactly one D8+ install.
 type fakeDrupalOS struct {
 	mockOS
@@ -51,15 +50,14 @@ func (m *fakeDrupalOS) ReadFile(name string) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *fakeDrupalOS) Stat(name string) (os.FileInfo, error) {
+func (m *fakeDrupalOS) Lstat(name string) (os.FileInfo, error) {
 	if strings.HasSuffix(name, "/core/lib/Drupal.php") && m.hasDrupalPHP {
 		return drupalStatStub{}, nil
 	}
-	return nil, errors.New("not found")
+	return nil, os.ErrNotExist
 }
 
-// drupalStatStub is the minimum FileInfo Stat needs to return a
-// non-error: looksLikeDrupal8Plus only checks err.
+// drupalStatStub represents a regular Drupal marker file.
 type drupalStatStub struct{}
 
 func (drupalStatStub) Name() string       { return "Drupal.php" }
@@ -72,16 +70,16 @@ func (drupalStatStub) Sys() any           { return nil }
 // --- looksLikeDrupal8Plus -------------------------------------------------
 
 func TestLooksLikeDrupal8PlusPositive(t *testing.T) {
-	withMockOS(t, &fakeDrupalOS{hasDrupalPHP: true})
-	if !looksLikeDrupal8Plus("/home/alice/public_html") {
+	withCMSConfigOS(t, &fakeDrupalOS{hasDrupalPHP: true})
+	if matched, err := looksLikeDrupal8Plus("/home/alice/public_html"); err != nil || !matched {
 		t.Error("expected D8+ marker to be detected")
 	}
 }
 
 func TestLooksLikeDrupal8PlusD7Negative(t *testing.T) {
 	// D7 sites have settings.php but no core/lib/Drupal.php.
-	withMockOS(t, &fakeDrupalOS{hasDrupalPHP: false})
-	if looksLikeDrupal8Plus("/home/alice/public_html") {
+	withCMSConfigOS(t, &fakeDrupalOS{hasDrupalPHP: false})
+	if matched, err := looksLikeDrupal8Plus("/home/alice/public_html"); err != nil || matched {
 		t.Error("D7 install (no core/lib/Drupal.php) misidentified as D8+")
 	}
 }
@@ -89,8 +87,11 @@ func TestLooksLikeDrupal8PlusD7Negative(t *testing.T) {
 // --- parseDrupalSettings --------------------------------------------------
 
 func TestParseDrupalSettingsExtractsAllFields(t *testing.T) {
-	withMockOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
-	creds := parseDrupalSettings("/home/alice/public_html/sites/default/settings.php")
+	withCMSConfigOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
+	creds, err := parseDrupalSettings(context.Background(), "/home/alice/public_html/sites/default/settings.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbName != "drupal_db" {
 		t.Errorf("dbName = %q", creds.dbName)
 	}
@@ -117,8 +118,11 @@ $databases['default']['default'] = array(
     'host' => '10.0.0.5',
 );
 `
-	withMockOS(t, &fakeDrupalOS{settingsBody: body, hasDrupalPHP: true})
-	creds := parseDrupalSettings("/home/alice/public_html/sites/default/settings.php")
+	withCMSConfigOS(t, &fakeDrupalOS{settingsBody: body, hasDrupalPHP: true})
+	creds, err := parseDrupalSettings(context.Background(), "/home/alice/public_html/sites/default/settings.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbName != "d7db" || creds.dbUser != "d7user" || creds.dbHost != "10.0.0.5" {
 		t.Errorf("creds = %+v", creds)
 	}
@@ -132,8 +136,11 @@ $databases['default']['default'] = [
     'password' => 'p',
 ];
 `
-	withMockOS(t, &fakeDrupalOS{settingsBody: body, hasDrupalPHP: true})
-	creds := parseDrupalSettings("/home/alice/public_html/sites/default/settings.php")
+	withCMSConfigOS(t, &fakeDrupalOS{settingsBody: body, hasDrupalPHP: true})
+	creds, err := parseDrupalSettings(context.Background(), "/home/alice/public_html/sites/default/settings.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbHost != "localhost" {
 		t.Errorf("dbHost = %q, want localhost (default)", creds.dbHost)
 	}
@@ -142,7 +149,7 @@ $databases['default']['default'] = [
 // --- CheckDrupalContent end-to-end ---------------------------------------
 
 func TestCheckDrupalContentSkipsD7Sites(t *testing.T) {
-	withMockOS(t, &fakeDrupalOS{
+	withCMSConfigOS(t, &fakeDrupalOS{
 		settingsBody: canonicalDrupalSettings(),
 		hasDrupalPHP: false, // D7: no core/lib/Drupal.php
 	})
@@ -159,7 +166,7 @@ func TestCheckDrupalContentSkipsD7Sites(t *testing.T) {
 }
 
 func TestCheckDrupalContentEmitsFromAllThreeScans(t *testing.T) {
-	withMockOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
+	withCMSConfigOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
 
 	withMockCmd(t, &mockCmd{
 		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
@@ -197,7 +204,7 @@ func TestCheckDrupalContentEmitsFromAllThreeScans(t *testing.T) {
 }
 
 func TestCheckDrupalContentMalformedSettingsSkipsScan(t *testing.T) {
-	withMockOS(t, &fakeDrupalOS{
+	withCMSConfigOS(t, &fakeDrupalOS{
 		settingsBody: `<?php
 // malformed: no $databases declaration at all
 echo 'hi';
@@ -220,7 +227,7 @@ echo 'hi';
 // Drupal config blobs. classifyMalwareRow already handles this --
 // this test confirms the Drupal scanner uses the predicate.
 func TestCheckDrupalContentSuppressesScriptOnlyConfigFP(t *testing.T) {
-	withMockOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
+	withCMSConfigOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
 
 	withMockCmd(t, &mockCmd{
 		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
@@ -248,7 +255,7 @@ func TestCheckDrupalContentSuppressesScriptOnlyConfigFP(t *testing.T) {
 // site appeared once per language. The default_langcode = 1
 // filter restores 1 finding per admin.
 func TestScanDrupalAdminsFiltersDefaultLangcode(t *testing.T) {
-	withMockOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
+	withCMSConfigOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
 
 	var seenQuery string
 	withMockCmd(t, &mockCmd{

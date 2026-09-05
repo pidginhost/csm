@@ -2,7 +2,9 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -87,12 +89,18 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.
 		if ctx.Err() != nil {
 			return findings
 		}
-		if !looksLikeOpenCart(path) {
+		matched, err := looksLikeOpenCart(ctx, path)
+		if err != nil {
+			markCheckIncomplete(ctx, "db_content_opencart")
+			continue
+		}
+		if !matched {
 			continue
 		}
 		account := extractUser(filepath.Dir(path))
-		creds := parseOpenCartConfig(path)
-		if creds.dbName == "" {
+		creds, err := parseOpenCartConfig(ctx, path)
+		if err != nil || creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_content_opencart")
 			continue
 		}
 		creds.ctx = ctx
@@ -114,22 +122,25 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.
 // reference DB_DRIVER. The admin-side file is what distinguishes
 // OpenCart from arbitrary PHP sites that happen to ship a
 // config.php at the document root.
-func looksLikeOpenCart(rootConfig string) bool {
-	if !configContainsDBDriver(rootConfig) {
-		return false
+func looksLikeOpenCart(ctx context.Context, rootConfig string) (bool, error) {
+	matched, err := configContainsDBDriver(ctx, rootConfig)
+	if err != nil || !matched {
+		return false, err
 	}
-	publicHTML := filepath.Dir(rootConfig)
-	adminConfig := filepath.Join(publicHTML, "admin", "config.php")
-	return configContainsDBDriver(adminConfig)
+	adminConfig := filepath.Join(filepath.Dir(rootConfig), "admin", "config.php")
+	matched, err = configContainsDBDriver(ctx, adminConfig)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return matched, err
 }
 
-func configContainsDBDriver(path string) bool {
-	// #nosec G304 -- path resolved via osFS.Glob over /home/*/public_html or its admin/ subdir; not attacker-controlled.
-	data, err := osFS.ReadFile(path)
+func configContainsDBDriver(ctx context.Context, path string) (bool, error) {
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return false
+		return false, err
 	}
-	return strings.Contains(string(data), "DB_DRIVER")
+	return strings.Contains(string(data), "DB_DRIVER"), nil
 }
 
 // parseOpenCartConfig extracts the DB_* defines from a config.php.
@@ -137,12 +148,11 @@ func configContainsDBDriver(path string) bool {
 // have the same `define('KEY', 'value')` shape WP uses, and the
 // helper already strips comments and walks past the key's closing
 // quote correctly.
-func parseOpenCartConfig(path string) opencartCreds {
+func parseOpenCartConfig(ctx context.Context, path string) (opencartCreds, error) {
 	creds := opencartCreds{path: path}
-	// #nosec G304 -- same Glob-resolved path.
-	data, err := osFS.ReadFile(path)
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return creds
+		return creds, err
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if v := extractDefine(line, "DB_HOSTNAME"); v != "" {
@@ -164,7 +174,7 @@ func parseOpenCartConfig(path string) opencartCreds {
 	if creds.dbHost == "" {
 		creds.dbHost = "localhost"
 	}
-	return creds
+	return creds, nil
 }
 
 // scanOpenCartSettings walks oc_setting k/v rows. The value column

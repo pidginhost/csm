@@ -9,7 +9,7 @@ import (
 )
 
 // cmsVerifyOS stubs osFS for the non-WordPress CMS DB re-checks: ReadFile serves
-// canned config files and Stat answers the Drupal core marker probe.
+// canned config files and Lstat answers the Drupal core marker probe.
 type cmsVerifyOS struct {
 	mockOS
 	files  map[string]string
@@ -23,18 +23,16 @@ func (m *cmsVerifyOS) ReadFile(name string) ([]byte, error) {
 	return nil, os.ErrNotExist
 }
 
-func (m *cmsVerifyOS) Stat(name string) (os.FileInfo, error) {
+func (m *cmsVerifyOS) Lstat(name string) (os.FileInfo, error) {
 	if m.statOK[name] {
-		return os.Stat(os.TempDir())
+		return drupalStatStub{}, nil
 	}
 	return nil, os.ErrNotExist
 }
 
 func withCMSVerifyOS(t *testing.T, files map[string]string, statOK map[string]bool) {
 	t.Helper()
-	old := osFS
-	osFS = &cmsVerifyOS{files: files, statOK: statOK}
-	t.Cleanup(func() { osFS = old })
+	withCMSConfigOS(t, &cmsVerifyOS{files: files, statOK: statOK})
 }
 
 const drupalSettings = `<?php

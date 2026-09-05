@@ -87,6 +87,14 @@ an upgrade; previous dismissals do not transfer to the new identity.
 
 Hidden-link corroboration counts registrable domains within one hidden container, not hostnames across a whole row. Multiple subdomains of one linked domain count as one target, and both the WordPress home and site addresses count as local.
 
+Joomla, Drupal, Magento, and OpenCart configuration reads accept regular files
+up to 1 MiB. Configuration symlinks and special files are rejected, including
+during Joomla and OpenCart marker probes. Drupal's version marker must also be
+a regular file. Reads use the opened file throughout, reject changes observed
+during the read, and stop when the scan is canceled. Read failures and missing
+required credentials mark that CMS scan incomplete; manual re-checks keep the
+finding unresolved when its configuration cannot be inspected.
+
 ## CMS Scanner Support Policy
 
 New CMS scanner work targets upstream-supported major versions. EOL versions are best-effort when the existing scanner covers them through the same low-risk layout or schema. Adding a new EOL-only scanner needs operator fleet data and an explicit security reason.
