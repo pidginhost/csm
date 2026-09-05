@@ -109,33 +109,46 @@ func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
 	return out, nil
 }
 
-// readBoundedLine reads up to and including the next '\n'. If the line
-// exceeds maxBytes, the returned data is capped at maxBytes, the reader
-// is advanced past the line's terminating newline so framing stays
-// intact for the next call, and truncated=true is returned. Callers must
-// treat truncated records as untrusted and skip them.
-func readBoundedLine(r *bufio.Reader, maxBytes int) (string, bool, error) {
-	var b strings.Builder
-	truncated := false
+// Temporary EOF does not finish a log record. Both its bounded prefix and
+// discard state must survive until the newline or a change of file generation.
+type pendingLogLine struct {
+	data      strings.Builder
+	truncated bool
+}
+
+func (p *pendingLogLine) reset() {
+	p.data.Reset()
+	p.truncated = false
+}
+
+func (p *pendingLogLine) read(ctx context.Context, r *bufio.Reader, maxBytes int) (string, bool, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", false, err
+		}
 		chunk, err := r.ReadSlice('\n')
 		if len(chunk) > 0 {
 			switch {
-			case truncated:
+			case p.truncated:
 				// drain remainder to align on next newline
-			case b.Len()+len(chunk) <= maxBytes:
-				b.Write(chunk)
+			case p.data.Len()+len(chunk) <= maxBytes:
+				p.data.Write(chunk)
 			default:
-				if room := maxBytes - b.Len(); room > 0 {
-					b.Write(chunk[:room])
+				if room := maxBytes - p.data.Len(); room > 0 {
+					p.data.Write(chunk[:room])
 				}
-				truncated = true
+				p.truncated = true
 			}
 		}
 		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
-		return b.String(), truncated, err
+		if err != nil {
+			return "", false, err
+		}
+		line, truncated := p.data.String(), p.truncated
+		p.reset()
+		return line, truncated, nil
 	}
 }
 
@@ -180,10 +193,13 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 	// without waiting for the next idle period.
 	rotate := time.NewTicker(time.Minute)
 	defer rotate.Stop()
+	var pending pendingLogLine
 
 	rewindOnTruncate := func() {
-		if _, err := rewindTruncatedFile(f, reader); err != nil {
+		if reset, err := rewindTruncatedFile(f, reader); err != nil {
 			fmt.Fprintf(os.Stderr, "maillog file_reader %s rewind: %v\n", r.path, err)
+		} else if reset {
+			pending.reset()
 		}
 	}
 
@@ -211,6 +227,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 		f = nf
 		reader = nr
 		lastIno = ino
+		pending.reset()
 		r.recordRestored()
 	}
 
@@ -221,10 +238,10 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 		case <-poll.C:
 			rewindOnTruncate()
 			for {
-				line, truncated, err := readBoundedLine(reader, maxLogLineBytes)
+				line, truncated, err := pending.read(ctx, reader, maxLogLineBytes)
 				if err != nil {
-					if truncated {
-						fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line skipped at %d bytes\n", r.path, maxLogLineBytes)
+					if ctx.Err() != nil {
+						return
 					}
 					// Tight rotation detection: every time the reader
 					// hits EOF or any I/O error we re-stat the path so a

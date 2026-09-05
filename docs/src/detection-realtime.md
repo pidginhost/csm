@@ -78,6 +78,11 @@ With `copytruncate`, a file that regrows past that position between polls can
 hide the truncation and lose events. Use rename/create rotation with the log
 writer reopening its file, or journal input, when that loss is unacceptable.
 
+Mail records are emitted only after their newline arrives. A partial record
+survives temporary EOF up to the 64 KiB limit, including its newline. Longer
+records are discarded through the next newline even when written across
+several polls. Rotation and detected truncation clear pending record state.
+
 ## SMTP / Dovecot Brute-Force Tracker
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
