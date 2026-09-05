@@ -829,6 +829,10 @@ func buildHiddenLinkFindings(user string, creds wpDBCreds, prefix string, rows [
 	if offScreen {
 		severity = alert.High
 	}
+	// Concealment strength and the complete destination set identify this
+	// site's finding. Row growth and display samples must not re-alert, while
+	// stronger concealment must survive a prior baseline or dismissal.
+	identity := append([]string{fmt.Sprintf("off-screen=%t", offScreen)}, named...)
 
 	return []alert.Finding{{
 		Severity: severity,
@@ -836,7 +840,7 @@ func buildHiddenLinkFindings(user string, creds wpDBCreds, prefix string, rows [
 		Message: fmt.Sprintf("%d WordPress rows hide outbound links to %d hosts across %d domains (account: %s)",
 			len(reported), len(named), len(domains), user),
 		Details:  dbContentFindingDetails(creds, prefix, details...),
-		DedupKey: dbContentDedupKey(user, creds, prefix, details...),
+		DedupKey: dbContentDedupKey(user, creds, prefix, identity...),
 	}}
 }
 

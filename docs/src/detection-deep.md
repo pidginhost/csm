@@ -77,6 +77,14 @@ group growing into a Critical content farm, produces a fresh alert even when the
 earlier condition was baselined or dismissed. Ordinary count changes within the
 same orphaned-post severity tier keep the existing identity.
 
+Hidden-link findings are tracked per account, database host, database, and table
+prefix. More affected rows or a different row order do not raise another alert
+for the same destinations and concealment strength. Off-screen concealment
+raises a new High even after an earlier Warning was baselined or dismissed.
+Changes to destinations outside the displayed sample also produce a new finding.
+The corrected identity can show existing hidden-link findings once more after
+an upgrade; previous dismissals do not transfer to the new identity.
+
 Hidden-link corroboration counts registrable domains within one hidden container, not hostnames across a whole row. Multiple subdomains of one linked domain count as one target, and both the WordPress home and site addresses count as local.
 
 ## CMS Scanner Support Policy
