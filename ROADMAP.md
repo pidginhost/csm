@@ -166,32 +166,21 @@ larger detection and integration items remain:
 
 ## 11. Coalesce firewall interval sets before apply
 
-**Status:** planned. Highest-severity item currently open.
+**Status:** implemented.
 
-nftables interval sets reject overlapping elements. Blocked-subnet,
-infra-IP and country sets are built straight from configured and
-feed-supplied CIDRs, so a single pair where one range contains another
-makes the whole set, and therefore the entire ruleset apply, fail.
+Infrastructure, blocked subnet, country, Cloudflare, and DoS exemption sets
+coalesce overlapping and adjacent IPv4/IPv6 intervals before applying them.
+Full-space and upper-bound intervals keep their intended coverage. Subnet
+removal and expiry rebuild the union from the remaining source entries in
+one kernel transaction.
 
-The failure is silent in the worst way: the daemon continues without a
-firewall engine, so automatic blocking stops and no finding is raised to
-say the host is now unprotected.
+Constructor and apply failures get bounded startup retries, retained status
+diagnostics, and degraded aggregate health. `csm doctor` reports the cause
+and the restart needed after correcting the problem.
 
-### Decision
-
-- Coalesce and de-overlap every CIDR list before building interval
-  elements.
-- A range that still cannot be represented is dropped individually, with
-  a finding naming it, instead of failing the apply.
-- An apply that fails for any reason raises a Critical finding. A host
-  without a firewall engine must never look healthy.
-
-### Prerequisite
-
-Reproduce the kernel-side rejection in a container first: the coalescing
-rules are only correct if they match what nftables actually refuses.
-
-### Size: 3-4 hours, half of it the reproduction.
+The `nftkernel` regression suite reproduces the original rejection in isolated
+Linux network namespaces and verifies apply, reload, removal, expiry, and
+failed-transaction recovery. See `docs/src/development.md` for the command.
 
 ---
 

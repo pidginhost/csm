@@ -126,18 +126,15 @@ func TestEngineBlockSubnetStateOnly(t *testing.T) {
 	}
 }
 
-func TestEngineBlockSubnetRejectsSaturatedCIDRBeforeNetlink(t *testing.T) {
+func TestEngineBlockSubnetRejectsDefaultRouteBeforeNetlink(t *testing.T) {
 	e := newTestEngine(t)
 	e.setBlockedNet = &nftables.Set{Name: "blocked_nets"}
-
-	err := e.BlockSubnet("255.255.255.255/32", "bad range", 0)
-	if err == nil || !strings.Contains(err.Error(), "no safe interval end") {
-		t.Fatalf("BlockSubnet saturated CIDR error = %v, want safe interval error", err)
+	err := e.BlockSubnet("0.0.0.0/0", "bad range", 0)
+	if err == nil || !strings.Contains(err.Error(), "default route") {
+		t.Fatalf("BlockSubnet default route error = %v, want lockout refusal", err)
 	}
-
-	state := e.loadStateFile()
-	if len(state.BlockedNet) != 0 {
-		t.Fatalf("saturated CIDR persisted state: %+v", state.BlockedNet)
+	if state := e.loadStateFile(); len(state.BlockedNet) != 0 {
+		t.Fatalf("default route persisted state: %+v", state.BlockedNet)
 	}
 }
 

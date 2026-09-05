@@ -23,6 +23,13 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 
 ## Startup failures
 
+Overlapping, nested, duplicate, and adjacent ranges are merged for the kernel,
+including IPv4 and IPv6 ranges ending at the last address. This applies to
+infrastructure, country, Cloudflare, DoS exemption, and blocked subnet sets.
+Stored subnet entries keep their own source and expiry; removing or expiring
+one entry rebuilds the remaining coverage in an atomic transaction. Default
+routes remain forbidden as subnet blocks to prevent operator lockout.
+
 CSM tries to initialize and apply an enabled firewall up to three times, with
 one-second and two-second delays between attempts. Each attempt builds a fresh
 atomic transaction. A failed apply keeps the previous kernel rules in place.

@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
 	"os"
@@ -423,24 +424,21 @@ func requireIntervalElems(t *testing.T, elems []nftables.SetElement, cidr string
 	}
 }
 
-func TestIntervalSetElementsSkipsSaturatedEnd(t *testing.T) {
-	_, network, err := net.ParseCIDR("0.0.0.0/0")
-	if err != nil {
-		t.Fatalf("ParseCIDR: %v", err)
-	}
-	got := intervalSetElements(network.IP.To4(), lastIPInRange(network))
-	if len(got) != 0 {
-		t.Fatalf("0.0.0.0/0 elements = %d, want 0", len(got))
-	}
-
-	ip := net.ParseIP("255.255.255.255").To4()
-	got = intervalSetElements(ip, ip)
-	if len(got) != 0 {
-		t.Fatalf("255.255.255.255/32 elements = %d, want 0", len(got))
+func TestIntervalSetElementsUsesOpenUpperBound(t *testing.T) {
+	for _, cidr := range []string{"0.0.0.0/0", "255.255.255.255/32", "::/0", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128"} {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := canonicalIPBytes(network.IP)
+		got := intervalSetElements(start, lastIPInRange(network))
+		if len(got) != 1 || got[0].IntervalEnd || !bytes.Equal(got[0].Key, start) {
+			t.Fatalf("%s boundaries = %+v, want one open interval starting at %v", cidr, got, start)
+		}
 	}
 }
 
-func TestComputeInitialBlockStateSkipsSaturatedCIDRs(t *testing.T) {
+func TestComputeInitialBlockStateSkipsDefaultRoutes(t *testing.T) {
 	dir := t.TempDir()
 	writeEngineStateFile(t, dir, FirewallState{
 		BlockedNet: []SubnetEntry{

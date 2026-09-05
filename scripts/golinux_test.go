@@ -286,14 +286,14 @@ func TestGoLinuxMakesLinkedWorktreeMetadataReadable(t *testing.T) {
 	requireArgPair(t, args, "-e", "GIT_OPTIONAL_LOCKS=0")
 }
 
-func TestGoLinuxGrantsCapSysAdmin(t *testing.T) {
+func TestGoLinuxGrantsKernelTestCapabilities(t *testing.T) {
 	out, code := runGoLinux(t, repoRoot(t), nil, "go", "test", "./...")
 	if code != 0 {
 		t.Fatalf("wrapper exited %d: %s", code, out)
 	}
-	if !hasArg(invocationArgs(t, out), "CAP_SYS_ADMIN") {
-		t.Errorf("CAP_SYS_ADMIN is not granted:\n%s", out)
-	}
+	args := invocationArgs(t, out)
+	requireArgPair(t, args, "--cap-add", "CAP_SYS_ADMIN")
+	requireArgPair(t, args, "--cap-add", "CAP_NET_ADMIN")
 }
 
 func TestGoLinuxHonoursAReadOnlyModuleCacheOverride(t *testing.T) {

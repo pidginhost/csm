@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Overlapping firewall ranges now apply without disabling protection. Removing or expiring one range keeps coverage supplied by the remaining entries.
 - Email password checks no longer expose passwords or stored hashes through process arguments or findings. Password formats outside the supported audit limits are reported as incomplete and remain eligible for retry.
 - Partial CMS database scans now preserve earlier findings for the affected CMS without delaying cleanup of findings from successful scans. Failed or truncated scans no longer establish administrator baselines.
 - CMS administrator monitoring now tracks each installation separately, preventing one site's known accounts from hiding a new administrator on another site. Existing installations establish a fresh baseline after upgrading.

@@ -540,8 +540,6 @@ func cloneIPNetSlice(nets []*net.IPNet) []*net.IPNet {
 }
 
 // dosExemptIntervalElems builds nftables interval set elements from nets.
-// Each net produces two elements (start key + exclusive interval-end key).
-// Saturated ranges whose end has no successor (e.g. 0.0.0.0/0) are skipped.
 // Callers must pass nets from a single IP family (all IPv4 or all IPv6).
 func dosExemptIntervalElems(nets []*net.IPNet) []nftables.SetElement {
 	if len(nets) == 0 {
@@ -564,7 +562,7 @@ func dosExemptIntervalElems(nets []*net.IPNet) []nftables.SetElement {
 		}
 		elems = appendIntervalSetElements(elems, start, end)
 	}
-	return elems
+	return normalizeIntervalElements(elems)
 }
 
 // RefreshDOSExemptSets repopulates the dos_exempt_nets[6] interval sets with
@@ -782,7 +780,7 @@ func (e *Engine) createSets() error {
 		}
 	}
 
-	if err := e.conn.AddSet(e.setInfra, infraElements); err != nil {
+	if err := e.conn.AddSet(e.setInfra, normalizeIntervalElements(infraElements)); err != nil {
 		return fmt.Errorf("infra set: %w", err)
 	}
 
@@ -820,7 +818,7 @@ func (e *Engine) createSets() error {
 			countryElements = append(countryElements, loadCountryCIDRs(CountryDBDir(e.cfg, e.statePath), code)...)
 		}
 
-		if err := e.conn.AddSet(e.setCountry, countryElements); err != nil {
+		if err := e.conn.AddSet(e.setCountry, normalizeIntervalElements(countryElements)); err != nil {
 			fmt.Fprintf(os.Stderr, "firewall: warning creating country set: %v\n", err)
 			e.setCountry = nil
 		} else if len(countryElements) > 0 {
@@ -860,7 +858,7 @@ func (e *Engine) createSets() error {
 			Table: e.table, Name: "infra_ips6",
 			KeyType: nftables.TypeIP6Addr, Interval: true,
 		}
-		if err := e.conn.AddSet(e.setInfra6, infra6Elements); err != nil {
+		if err := e.conn.AddSet(e.setInfra6, normalizeIntervalElements(infra6Elements)); err != nil {
 			return fmt.Errorf("infra6 set: %w", err)
 		}
 
@@ -875,7 +873,7 @@ func (e *Engine) createSets() error {
 			for _, code := range e.cfg.CountryBlock {
 				country6Elements = append(country6Elements, loadCountryCIDRs6(CountryDBDir(e.cfg, e.statePath), code)...)
 			}
-			if err := e.conn.AddSet(e.setCountry6, country6Elements); err != nil {
+			if err := e.conn.AddSet(e.setCountry6, normalizeIntervalElements(country6Elements)); err != nil {
 				fmt.Fprintf(os.Stderr, "firewall: warning creating IPv6 country set: %v\n", err)
 				e.setCountry6 = nil
 			} else if len(country6Elements) > 0 {
@@ -3166,66 +3164,32 @@ func (e *Engine) CleanExpiredAllows() int {
 func (e *Engine) CleanExpiredSubnets() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	state, ok := e.loadStateFileRawLocked()
+	prior, ok := e.loadStateFileRawLocked()
 	if !ok {
 		return 0
 	}
+	next := copyFirewallState(prior)
+	var active, expired []SubnetEntry
 	now := time.Now()
-	var active []SubnetEntry
-	var expired []SubnetEntry
-	removed := 0
-	queueFailedCIDRs := make(map[string]bool)
-	queuedDeletes := false
-
-	for _, entry := range state.BlockedNet {
-		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			if _, network, err := net.ParseCIDR(entry.CIDR); err == nil {
-				if set, start, end := e.resolveSubnetSet(network); set != nil {
-					if elements := intervalSetElements(start, end); len(elements) > 0 {
-						if err := e.conn.SetDeleteElements(set, elements); err != nil {
-							logNftSetOpErr("CleanExpiredSubnets remove", entry.CIDR, err)
-							queueFailedCIDRs[entry.CIDR] = true
-						} else {
-							queuedDeletes = true
-						}
-					}
-				}
-			}
+	for _, entry := range prior.BlockedNet {
+		if !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
 			expired = append(expired, entry)
-			removed++
-			continue
+		} else {
+			active = append(active, entry)
 		}
-		active = append(active, entry)
 	}
-
-	if removed > 0 {
-		if queuedDeletes {
-			if err := e.conn.Flush(); err != nil {
-				// The netlink batch is atomic: a failed flush applied nothing,
-				// so keep every expired row in state and retry next tick.
-				fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-subnet cleanup failed: %v\n", err)
-				return 0
-			}
-		}
-		// Keep queue-failed rows in state for a retry next tick; drop the
-		// rest. See CleanExpiredAllows for the wedge this avoids.
-		dropped := make([]SubnetEntry, 0, len(expired))
-		for _, entry := range expired {
-			if queueFailedCIDRs[entry.CIDR] {
-				active = append(active, entry)
-				continue
-			}
-			dropped = append(dropped, entry)
-		}
-		state.BlockedNet = active
-		_ = e.saveState(&state)
-		for _, entry := range dropped {
-			AppendAudit(e.statePath, "temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
-		}
-		return len(dropped)
+	if len(expired) == 0 {
+		return 0
 	}
-	return removed
+	next.BlockedNet = active
+	if err := e.updateSubnetStateAndKernel(prior, next); err != nil {
+		fmt.Fprintf(os.Stderr, "firewall: expired-subnet cleanup failed: %v\n", err)
+		return 0
+	}
+	for _, entry := range expired {
+		AppendAudit(e.statePath, "temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
+	}
+	return len(expired)
 }
 
 // RemoveAllowIP removes an IP from the allowed set and state.
@@ -3434,28 +3398,24 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 	return nil
 }
 
-func (e *Engine) subnetBlockPlanLocked(cidr string) (*net.IPNet, *nftables.Set, []nftables.SetElement, bool, error) {
+func (e *Engine) subnetBlockPlanLocked(cidr string) (*net.IPNet, bool, error) {
 	_, network, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, nil, nil, false, fmt.Errorf("invalid CIDR: %s", cidr)
+		return nil, false, fmt.Errorf("invalid CIDR: %s", cidr)
 	}
 	if err := e.subnetSafetyGuardLocked(network); err != nil {
-		return nil, nil, nil, false, err
+		return nil, false, err
 	}
 	if e.isSubnetBlockedStateLocked(network.String()) {
-		return network, nil, nil, true, nil
+		return network, true, nil
 	}
 
-	targetSet, start, end := e.resolveSubnetSet(network)
+	targetSet, _, _ := e.resolveSubnetSet(network)
 	if targetSet == nil {
-		return nil, nil, nil, false, fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
+		return nil, false, fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
 	}
 
-	elements := intervalSetElements(start, end)
-	if len(elements) == 0 {
-		return nil, nil, nil, false, fmt.Errorf("CIDR has no safe interval end: %s", network.String())
-	}
-	return network, targetSet, elements, false, nil
+	return network, false, nil
 }
 
 // ValidateSubnetBlock runs the same safety and capability checks as
@@ -3464,7 +3424,7 @@ func (e *Engine) ValidateSubnetBlock(cidr string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	_, _, _, _, err := e.subnetBlockPlanLocked(cidr)
+	_, _, err := e.subnetBlockPlanLocked(cidr)
 	return err
 }
 
@@ -3474,7 +3434,7 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	network, targetSet, elements, alreadyBlocked, err := e.subnetBlockPlanLocked(cidr)
+	network, alreadyBlocked, err := e.subnetBlockPlanLocked(cidr)
 	if err != nil {
 		return err
 	}
@@ -3499,21 +3459,8 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	priorState := e.loadStateFile()
 	nextState := copyFirewallState(priorState)
 	addSubnetEntryIfMissingInState(&nextState, entry)
-	if err := e.saveState(&nextState); err != nil {
-		return fmt.Errorf("persisting subnet block for %s: %w", network.String(), err)
-	}
-
-	if err := e.conn.SetAddElements(targetSet, elements); err != nil {
-		if restoreErr := e.saveState(&priorState); restoreErr != nil {
-			return fmt.Errorf("adding to blocked_nets: %w (state restore failed: %v)", err, restoreErr)
-		}
-		return fmt.Errorf("adding to blocked_nets: %w", err)
-	}
-	if err := e.conn.Flush(); err != nil {
-		if restoreErr := e.saveState(&priorState); restoreErr != nil {
-			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
-		}
-		return fmt.Errorf("flushing: %w", err)
+	if err := e.updateSubnetStateAndKernel(priorState, nextState); err != nil {
+		return err
 	}
 
 	AppendAudit(e.statePath, "block_subnet", network.String(), reason, entry.Source, timeout)
@@ -3553,25 +3500,24 @@ func (e *Engine) UnblockSubnet(cidr string) error {
 		return fmt.Errorf("invalid CIDR: %s", cidr)
 	}
 
-	targetSet, start, end := e.resolveSubnetSet(network)
+	targetSet, _, _ := e.resolveSubnetSet(network)
 	if targetSet == nil {
 		return fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
 	}
 
-	elements := intervalSetElements(start, end)
-	if len(elements) == 0 {
-		e.removeSubnetState(network.String())
-		AppendAudit(e.statePath, "unblock_subnet", network.String(), "", "", 0)
-		return nil
+	prior := e.loadStateFile()
+	next := copyFirewallState(prior)
+	remaining := next.BlockedNet[:0]
+	for _, entry := range next.BlockedNet {
+		if entry.CIDR != network.String() {
+			remaining = append(remaining, entry)
+		}
 	}
-	if err := e.conn.SetDeleteElements(targetSet, elements); err != nil {
-		return fmt.Errorf("removing from blocked_nets: %w", err)
-	}
-	if err := e.conn.Flush(); err != nil {
-		return fmt.Errorf("flushing: %w", err)
+	next.BlockedNet = remaining
+	if err := e.updateSubnetStateAndKernel(prior, next); err != nil {
+		return err
 	}
 
-	e.removeSubnetState(network.String())
 	AppendAudit(e.statePath, "unblock_subnet", network.String(), "", "", 0)
 	return nil
 }
@@ -3607,11 +3553,11 @@ func appendIntervalSetElements(dst []nftables.SetElement, start, end net.IP) []n
 	if start == nil || end == nil {
 		return dst
 	}
-	endMarker, ok := nextIPSafe(end)
+	endMarker, ok := nextIntervalKey(end)
 	if !ok {
-		// The interval end marker is exclusive. An all-ones end has no
-		// successor, so encoding it would either wrap or widen the range.
-		return dst
+		// nftables represents an interval through the last address with an
+		// open end. Wrapping its exclusive end to zero would change its meaning.
+		return append(dst, nftables.SetElement{Key: start})
 	}
 	return append(dst,
 		nftables.SetElement{Key: start},
@@ -3879,24 +3825,7 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 		}
 		restoredAllowed[key] = true
 	}
-	for _, entry := range state.BlockedNet {
-		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			continue
-		}
-		_, network, err := net.ParseCIDR(entry.CIDR)
-		if err != nil {
-			continue
-		}
-		end := lastIPInRange(network)
-		if end == nil {
-			continue
-		}
-		if start := network.IP.To4(); start != nil {
-			ibs.blockedNet4 = appendIntervalSetElements(ibs.blockedNet4, start, end)
-		} else if e.cfg.IPv6 {
-			ibs.blockedNet6 = appendIntervalSetElements(ibs.blockedNet6, network.IP.To16(), end)
-		}
-	}
+	ibs.blockedNet4, ibs.blockedNet6 = subnetIntervalElements(state.BlockedNet, e.cfg.IPv6, now)
 	return ibs
 }
 
@@ -3938,17 +3867,20 @@ func (e *Engine) queueInitialBlockStateLocked(ibs initialBlockState) error {
 // message can be before the receive path refuses it with ENOBUFS. At
 // ~28 bytes per element worst-case a 1000-element chunk is ~28 KB, well
 // under the default rmem and comfortably below any realistic rmem_max.
-// The batch size must stay even so interval sets (blocked_net, where each
-// CIDR expands to a consecutive {start, IntervalEnd} pair) never split a
-// pair across chunks.
+// The batch size must stay even so merged interval boundary pairs never
+// split across chunks. Only the final range can have an open upper end.
 func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement) error {
+	return addElementsChunked(e.conn, s, elems)
+}
+
+func addElementsChunked(conn *nftables.Conn, s *nftables.Set, elems []nftables.SetElement) error {
 	const chunk = 1000
 	for i := 0; i < len(elems); i += chunk {
 		end := i + chunk
 		if end > len(elems) {
 			end = len(elems)
 		}
-		if err := e.conn.SetAddElements(s, elems[i:end]); err != nil {
+		if err := conn.SetAddElements(s, elems[i:end]); err != nil {
 			op := fmt.Sprintf("add elements to set %q chunk %d-%d", s.Name, i, end)
 			logNftSetOpErr(op, "initial restore", err)
 			return fmt.Errorf("adding initial elements to set %q chunk %d-%d: %w", s.Name, i, end, err)

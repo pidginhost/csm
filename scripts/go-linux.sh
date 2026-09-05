@@ -131,13 +131,13 @@ if [[ -f "$ROOT_DIR/.git" ]]; then
   env_args+=(-e GIT_OPTIONAL_LOCKS=0)
 fi
 
-# The Linux-only paths open fanotify and nftables handles. Without CAP_SYS_ADMIN
-# those tests fail on permissions rather than behaviour, which looks like a
-# broken suite instead of a missing capability.
+# Fanotify and isolated network namespaces need CAP_SYS_ADMIN; nftables
+# transactions need CAP_NET_ADMIN even inside those namespaces.
 cmd=(
   "$runtime" run --rm
   -m "${GO_LINUX_MEMORY:-12g}"
   --cap-add CAP_SYS_ADMIN
+  --cap-add CAP_NET_ADMIN
   "${mount_args[@]}"
   "${env_args[@]}"
   -w "$CONTAINER_WORKDIR"

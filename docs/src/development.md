@@ -17,6 +17,15 @@ go test ./... -count=1           # all tests
 go test -race -short ./...       # CI mode (race detector, skip slow tests)
 ```
 
+On macOS, run Linux code through `scripts/go-linux.sh`. The wrapper uses the
+toolchain pinned in `go.mod`, shared caches, and the capabilities required by
+fanotify and nftables. Kernel firewall regressions run in isolated network
+namespaces and require both `CAP_SYS_ADMIN` and `CAP_NET_ADMIN`:
+
+```bash
+scripts/go-linux.sh go test -tags nftkernel ./internal/firewall -race -count=1
+```
+
 ## Fuzz
 
 CSM has a dozen parsers that read attacker-controlled input: Exim mainlog lines, Dovecot maillog lines, Apache Combined Log Format, /proc/net/tcp rows, wp-config.php bodies, /etc/shadow, auditd comm fields, and finding messages coming back from the WebUI.
