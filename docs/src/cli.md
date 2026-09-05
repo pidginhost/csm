@@ -67,6 +67,10 @@ Backup and restore use the state lock to exclude daemon access. Restore stages a
 
 Restore accepts the format produced by `csm backup`: one tar archive in one gzip member, with no data or padding after the tar end markers and no trailing compressed bytes or additional members. It validates the gzip checksum and length before replacing any destination, and rejects corrupt or truncated archives.
 
+Both commands stream file contents and limit the total uncompressed tar archive to 16 GiB by default, including headers, manifest, and padding. There is no separate limit on a state file. Use `--max-bytes <positive byte count>` on both commands to raise or lower the budget; restore also accepts older large backups when they fit the selected budget. An over-limit backup fails without replacing an existing archive. Restore keeps its manifest read limited to 64 KiB.
+
+Backup checks space before copying the state database snapshot. Restore checks before each staged file and each replacement copy, including copies onto a different destination filesystem. These checks leave 64 MiB free beyond the file being copied. Allow space for the old installation, the full extracted archive, and a second copy of the restored files during replacement. Space checks cannot reserve storage against other writers; write failures still abort staging before live replacement. If a limit or space check fails, retain the original archive, provision enough storage, and retry with the same or a higher explicit budget.
+
 ## Hardening
 
 Operator-driven mitigations applied to the host. Run `csm harden` with no arguments to print the available subcommands on the current host (the audit detects kernel build, panel, and existing mitigations and only offers what's relevant). Background, full list, and live-detection details: [CVE Mitigations](cve-mitigations.md).
