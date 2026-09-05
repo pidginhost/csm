@@ -85,9 +85,9 @@ func (fm *FileMonitor) currentDropperDocroots() []string {
 }
 
 // isDropperInteresting admits paths that the normal content filter deliberately
-// excludes but the dropper detector still needs: atomic-write PHP staging
-// names, inherited .htaccess PHP handlers, and regular files carrying an
-// executable mode under a document root. It does not take ownership of fd.
+// excludes but the dropper detector still needs: inherited .htaccess PHP
+// handlers and regular files carrying an executable mode under a document
+// root. It does not take ownership of fd.
 func (fm *FileMonitor) isDropperInteresting(path string, fd int) (interesting, phpExecutable bool) {
 	if fm.dropper == nil {
 		return false, false

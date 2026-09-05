@@ -6,6 +6,19 @@ CSM detects threats in under 2 seconds using kernel and log watchers running ins
 
 Monitors the mounts containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configured `account_roots`, and detected cPanel document roots.
 
+Atomic-save files enter the same bounded worker queue as ordinary writes.
+Where supported, create events inspect available content; close-write events inspect the
+completed write. Scans read the original event descriptor even if the file has
+been renamed, replaced, or deleted before analysis. No rename event is needed
+to inspect those bytes. Repeated findings use the normal alert cooldown, and
+queue overflow schedules a directory rescan of files that remain on disk.
+Kernel notification loss still relies on the next deep scan.
+
+For WordPress atomic saves, the intended basename can select a core or plugin
+checksum entry. Only a match against the complete event-file content verifies
+the file; missing checksums, partial content, and modifications proceed through
+normal detection. The finding retains the actual event path.
+
 **Detects:**
 - Webshell creation (PHP files in web directories)
 - Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. Upgrade staging, atomic-save temp files, template compile caches, a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`.

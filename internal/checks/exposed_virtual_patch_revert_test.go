@@ -167,7 +167,7 @@ func TestVirtualPatchExposedFile_ArchivesIdenticalContentAfterModeChange(t *test
 		if record.meta.Mode != "-rw-------" {
 			continue
 		}
-		if err := RestoreVirtualPatchBackup(record.itemPath, htaccess, record.meta); err != nil {
+		if err := RestoreVirtualPatchBackup(record.itemPath, virtualPatchRestoreTarget(t, htaccess), record.meta); err != nil {
 			t.Fatalf("restore mode-specific backup: %v", err)
 		}
 		info, err := os.Stat(htaccess)
@@ -669,7 +669,7 @@ func TestRestoreVirtualPatchBackup_WorksAfterDedupedRepatch(t *testing.T) {
 		if meta.OriginalPath != htaccess {
 			continue
 		}
-		if err := RestoreVirtualPatchBackup(strings.TrimSuffix(metaPath, ".meta"), htaccess, meta); err != nil {
+		if err := RestoreVirtualPatchBackup(strings.TrimSuffix(metaPath, ".meta"), virtualPatchRestoreTarget(t, htaccess), meta); err != nil {
 			t.Fatalf("restore: %v", err)
 		}
 		restored = true

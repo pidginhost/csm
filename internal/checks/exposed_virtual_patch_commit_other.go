@@ -73,33 +73,3 @@ func commitVirtualPatchTemp(tmp, htaccess string, state, tempState htaccessState
 	}
 	return nil
 }
-
-func removeVirtualPatchIfUnchanged(htaccess string, state htaccessState) error {
-	if err := htaccessStateMatchesPath(htaccess, state); err != nil {
-		return fmt.Errorf("live .htaccess changed: %v", err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(htaccess), ".htaccess.csm-restore-*")
-	if err != nil {
-		return fmt.Errorf("creating restore placeholder: %v", err)
-	}
-	tmpPath := tmp.Name()
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("closing restore placeholder: %v", err)
-	}
-	if err := os.Remove(tmpPath); err != nil {
-		return fmt.Errorf("removing restore placeholder: %v", err)
-	}
-	if err := os.Rename(htaccess, tmpPath); err != nil {
-		return fmt.Errorf("isolating .htaccess for removal: %v", err)
-	}
-	if err := htaccessStateMatchesPath(tmpPath, state); err != nil {
-		_ = os.Rename(tmpPath, htaccess)
-		return fmt.Errorf("live .htaccess changed: %v", err)
-	}
-	if err := os.Remove(tmpPath); err != nil {
-		_ = os.Rename(tmpPath, htaccess)
-		return fmt.Errorf("removing patched .htaccess: %v", err)
-	}
-	return nil
-}

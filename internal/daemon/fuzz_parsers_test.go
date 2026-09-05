@@ -1,6 +1,24 @@
 package daemon
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
+
+func FuzzAtomicWriteContentPath(f *testing.F) {
+	for _, path := range []string{"/home/site/.temp.1.example.php", "/home/site/.temp.1..htaccess", "/home/site/.temp.1...", ".temp.1..", "", "/", ".temp.1.\x00"} {
+		f.Add(path)
+	}
+	f.Fuzz(func(t *testing.T, path string) {
+		got := atomicWriteContentPath(path)
+		if filepath.Dir(got) != filepath.Dir(path) {
+			t.Fatalf("content hint escaped parent: %q -> %q", path, got)
+		}
+		if !looksLikeAtomicWriteStage(filepath.Base(path)) && got != path {
+			t.Fatalf("ordinary name changed: %q -> %q", path, got)
+		}
+	})
+}
 
 // Fuzz targets for daemon-side log parsers. Same approach as
 // internal/checks/fuzz_parsers_test.go: find crashers, don't verify output.

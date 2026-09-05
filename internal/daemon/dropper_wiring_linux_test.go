@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // dropperWebrootFixture returns a writable document root outside the system
@@ -37,6 +38,7 @@ func dropperWebrootFixture(t *testing.T) string {
 
 func newDropperWiringTestMonitor(docroot string, ttl time.Duration) *FileMonitor {
 	fm := &FileMonitor{
+		cfg:     &config.Config{},
 		alertCh: make(chan alert.Finding, 8),
 		stopCh:  make(chan struct{}),
 	}
@@ -166,8 +168,8 @@ func TestDropperHandleEventPreservesMaskForAtomicStage(t *testing.T) {
 	if event.mask&FAN_CREATE == 0 || event.mask&FAN_CLOSE_WRITE == 0 {
 		t.Fatalf("queued mask = %#x, want CREATE|CLOSE_WRITE", event.mask)
 	}
-	if !event.dropperOnly {
-		t.Fatal("atomic staging path must bypass normal content checks")
+	if event.dropperOnly {
+		t.Fatal("atomic staging path must receive normal content checks")
 	}
 }
 
@@ -300,7 +302,7 @@ func TestDropperPHPHandlerCacheInvalidatesOnHtaccessEvent(t *testing.T) {
 	}
 }
 
-func TestDropperOnlyAtomicStageRetainsSuspiciousContentVerdict(t *testing.T) {
+func TestDropperAtomicStageScansAndRetainsSuspiciousContentVerdict(t *testing.T) {
 	docroot := t.TempDir()
 	path := filepath.Join(docroot, ".temp.123.payload.php")
 	content := []byte("<?php system($_GET['x']);")
@@ -314,16 +316,21 @@ func TestDropperOnlyAtomicStageRetainsSuspiciousContentVerdict(t *testing.T) {
 	defer func() { _ = f.Close() }()
 
 	fm := newDropperWiringTestMonitor(docroot, time.Minute)
+	alerts := make(chan alert.Finding, 8)
+	fm.alertCh = alerts
 	fm.analyzeFile(fileEvent{
 		path: path, fd: int(f.Fd()), mask: FAN_CREATE | FAN_CLOSE_WRITE,
-		dropperOnly: true,
 	})
 	due := fm.dropper.tr.Due(time.Now().Add(2 * time.Minute))
 	if len(due) != 1 || !due[0].ContentSuspicious {
 		t.Fatalf("tracked candidates = %+v, want suspicious atomic-stage content", due)
 	}
-	if got := len(fm.alertCh); got != 0 {
-		t.Fatalf("dropper-only staging path entered normal alert pipeline: %d alert(s)", got)
+	if got := len(alerts); got != 1 {
+		t.Fatalf("staging content produced %d alerts, want one immediate alert", got)
+	}
+	finding := <-alerts
+	if finding.Check != "webshell_content_realtime" || finding.Severity != alert.Critical || finding.FilePath != path {
+		t.Fatalf("unexpected staging finding: %+v", finding)
 	}
 }
 

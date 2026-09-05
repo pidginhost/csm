@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Stronger hidden-link evidence now raises a fresh alert after an earlier warning was acknowledged. Growth in affected rows no longer creates duplicate findings for the same destinations.
+- Realtime scanning now checks files during atomic saves and restores. Verified WordPress content remains quiet, while modified files receive normal content analysis.
+- Quarantine restore now keeps filesystem operations inside the permitted destination when account directories change during restoration. Conflicts preserve the quarantine copy for recovery.
+- Quarantine rollback preserves concurrent file replacements and keeps recovery copies when it cannot safely finish. Failed restores no longer remove files through names another writer can replace.
+
 ### Fixed
 
 - A WordPress core rebuilt from an older release reported every leftover file of the newer one as its own finding, which on one install produced over a thousand rows and buried the rest of the scan. The install now gets one finding that counts the files and samples them.
