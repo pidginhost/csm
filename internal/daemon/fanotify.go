@@ -756,11 +756,8 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 		return
 	}
 
-	// Keep the existing content scanner filter separate from the dropper
-	// admission filter. Atomic-write staging names deliberately skip the
-	// normal content pipeline, while the dropper tracker still needs to see
-	// them so it can distinguish a rename from a deletion. Likewise, an
-	// executable with an arbitrary filename has no path-only content signal.
+	// The dropper tracker also needs arbitrary executable names that have
+	// no path-only content signal.
 	fm.invalidateDropperPHPHandlerCache(path)
 	contentInteresting := fm.isInteresting(path)
 	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)
@@ -899,20 +896,7 @@ func (fm *FileMonitor) reconcileDrops() {
 
 // isInteresting is the fast filter - zero I/O, pure string matching.
 func (fm *FileMonitor) isInteresting(path string) bool {
-	// Atomic-write staging files. cPanel's fileTransfer and any restore
-	// tool using write-then-rename stages content as
-	// `.temp.<nanoseconds>.<name>.<ext>` before rename(2) to the final
-	// path. CSM's fanotify mask is CLOSE_WRITE + CREATE only; it does not
-	// subscribe to FAN_MOVED_TO, so the post-rename file is never
-	// rescanned in real time. Scanning the transient staging path
-	// produces a false-positive storm on legitimate WordPress restores
-	// because the staged content IS genuine WP core. The periodic deep
-	// scan catches any file that lingers at a staging name (attacker
-	// hiding under `.temp.` would leave a permanent .temp.* file on disk
-	// for the next hourly deep pass to pick up).
-	if looksLikeAtomicWriteStage(filepath.Base(path)) {
-		return false
-	}
+	path = atomicWriteContentPath(path)
 
 	lower := strings.ToLower(path)
 
@@ -1247,7 +1231,8 @@ func resolveProcessInfo(pid int32) string {
 
 func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	path := event.path
-	name := filepath.Base(path)
+	contentPath := atomicWriteContentPath(path)
+	name := filepath.Base(contentPath)
 	nameLower := strings.ToLower(name)
 
 	// Resolve process info from PID (best-effort - process may have exited)
@@ -1266,9 +1251,8 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	}
 
 	// Some events are admitted only for dropper tracking. Handler-mapped PHP
-	// still needs the normal PHP scanner; arbitrary executables and atomic-write
-	// staging paths retain only the strongest cheap content signal so staging
-	// does not regain the false-positive storm this pipeline already avoided.
+	// still needs the normal PHP scanner; arbitrary executables retain the
+	// strongest cheap content signal for the later deletion verdict.
 	if event.dropperOnly {
 		if event.phpExecutable {
 			if fm.checkPHPContent(event.fd, path, procInfo) {
@@ -1290,8 +1274,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	}
 
 	// Skip verified WordPress core files - checksum matches official WP.org checksums.
-	// Content is read from the event fd (not path) to preserve TOCTOU safety.
-	if fm.wpCache != nil && fm.wpCache.IsVerifiedCoreFile(event.fd, path) {
+	// For atomic writes, the intended basename only selects the checksum
+	// entry. Trust requires hashing the complete original event descriptor.
+	if fm.wpCache != nil && fm.wpCache.IsVerifiedCoreFile(event.fd, contentPath) {
 		return
 	}
 
@@ -1299,7 +1284,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// wordpress.org ZIP for its declared version. Stops signature/YARA FPs
 	// on stock plugin code (Wordfence, Contact Form 7, etc.). Cache miss
 	// triggers a background fetch; misses fall through to rule evaluation.
-	if fm.wpCache != nil && fm.wpCache.IsVerifiedPluginFile(event.fd, path) {
+	if fm.wpCache != nil && fm.wpCache.IsVerifiedPluginFile(event.fd, contentPath) {
 		return
 	}
 

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Realtime scanning now checks files during atomic saves and restores. Verified WordPress content remains quiet, while modified files receive normal content analysis.
 - Quarantine restore now keeps filesystem operations inside the permitted destination when account directories change during restoration. Conflicts preserve the quarantine copy for recovery.
 
 ### Fixed

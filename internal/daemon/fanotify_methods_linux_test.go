@@ -53,34 +53,14 @@ func TestIsInterestingNonPHP(t *testing.T) {
 
 func TestIsInterestingNodeModules(t *testing.T) {
 	fm := newTestFileMonitor(t)
-	// isInteresting checks extension, not suppression — PHP in node_modules IS interesting
-	// (suppression is applied later in analyzeFile)
-	result := fm.isInteresting("/home/alice/node_modules/pkg/index.php")
-	_ = result // exercises the function
+	// Suppressions are applied later in analyzeFile.
+	if !fm.isInteresting("/home/alice/node_modules/pkg/index.php") {
+		t.Error("PHP must be admitted before suppression filtering")
+	}
 }
 
-// --- isInteresting: atomic-write staging files ----------------------
-//
-// cPanel's fileTransfer service (and every restore tool that rolls its
-// own atomic write) stages content in `.temp.<nanoseconds>.<name>.<ext>`
-// before calling rename(2) to the final path. CSM's fanotify mask is
-// CLOSE_WRITE + CREATE (no MOVED_TO), so the scanner sees the temp
-// file's content but never the rename target. Scanning the temp path
-// means a WordPress restore produces dozens of Critical alerts on the
-// content of genuine WP core / plugin files (PHPMailer.php matches
-// webshell_marijuana; class-json.php matches dropper_php_input_stream;
-// etc.) seconds before those files land at their canonical paths.
-//
-// The fix skips these transient staging filenames at the fast-path
-// filter. The post-rename file is not re-scanned by realtime, but the
-// hourly deep scan catches any file that fails to complete its rename,
-// so detection is deferred, not abandoned. An attacker attempting to
-// hide a webshell as `.temp.123.evil.php` would have to leave that
-// hidden file in place forever (deep scan picks it up) or arrange an
-// include(.temp...) from another file (which itself would have fired
-// CLOSE_WRITE at a non-staging path).
-
-func TestIsInteresting_SkipsAtomicWriteStagingFile(t *testing.T) {
+// Staging names are tenant-controlled and must reach content analysis.
+func TestIsInteresting_ScansAtomicWriteStagingFile(t *testing.T) {
 	fm := newTestFileMonitor(t)
 	paths := []string{
 		"/home/user/public_html/wp-includes/PHPMailer/.temp.1776678837447384369.PHPMailer.php",
@@ -88,10 +68,12 @@ func TestIsInteresting_SkipsAtomicWriteStagingFile(t *testing.T) {
 		"/home/user/public_html/.temp.0.file.php",
 		"/home/user/public_html/.temp.9.x.htaccess",
 		"/home/user/public_html/.temp.1.foo.html",
+		"/home/user/public_html/.temp.1..user.ini",
+		"/home/user/public_html/.temp.1.results.txt",
 	}
 	for _, p := range paths {
-		if fm.isInteresting(p) {
-			t.Errorf("isInteresting(%q) = true, want false (atomic-write staging file)", p)
+		if !fm.isInteresting(p) {
+			t.Errorf("isInteresting(%q) = false, want true (atomic-write staging file)", p)
 		}
 	}
 }
@@ -223,13 +205,24 @@ func TestCheckPhishingZipSuspiciousName(t *testing.T) {
 	}
 
 	fm.checkPhishingZip("/home/alice/public_html/office365_kit.zip", "office365_kit.zip", "unknown")
-	// Exercises the ZIP name checking path
+	if len(ch) != 0 {
+		t.Fatal("brand plus kit alone must not flag a legitimate distribution")
+	}
+	fm.checkPhishingZip("/home/alice/public_html/office365-login.zip", "office365-login.zip", "unknown")
+	select {
+	case finding := <-ch:
+		if finding.Check != "phishing_kit_realtime" || finding.Severity != alert.High {
+			t.Fatalf("unexpected phishing kit finding: %+v", finding)
+		}
+	default:
+		t.Fatal("brand plus credential action must alert")
+	}
 }
 
 // --- resolveProcessInfo with nonexistent pid -------------------------
 
 func TestResolveProcessInfoNonexistent(t *testing.T) {
-	info := resolveProcessInfo(999999)
-	// Should return empty or "unknown" for nonexistent pid
-	_ = info
+	if info := resolveProcessInfo(1 << 30); info != "" {
+		t.Fatalf("process beyond Linux PID range returned info: %q", info)
+	}
 }

@@ -510,22 +510,6 @@ func wpUpgradeRenameCandidates(path, configuredDocroot string) []string {
 	}
 }
 
-// atomicWriteRenameCandidate maps cPanel's .temp.<timestamp>.<name> staging
-// path to its intended final path. It is only a location hint: the probe must
-// still validate the destination with dropperRenameMatch.
-func atomicWriteRenameCandidate(path string) string {
-	base := filepath.Base(path)
-	if !looksLikeAtomicWriteStage(base) {
-		return ""
-	}
-	rest := strings.TrimPrefix(base, ".temp.")
-	dot := strings.IndexByte(rest, '.')
-	if dot < 0 || dot == len(rest)-1 {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(path), rest[dot+1:])
-}
-
 func dropperRenameTargetAllowed(c dropperCandidate, target string) bool {
 	if atomicTarget := atomicWriteRenameCandidate(c.Path); atomicTarget != "" && target == atomicTarget {
 		return true
