@@ -12,7 +12,9 @@ completed write. Scans read the original event descriptor even if the file has
 been renamed, replaced, or deleted before analysis. No rename event is needed
 to inspect those bytes. Repeated findings use the normal alert cooldown, and
 queue overflow schedules a directory rescan of files that remain on disk.
-Kernel notification loss still relies on the next deep scan.
+Kernel notification loss still relies on the next deep scan. A rename-only
+arrival without a usable create or close-write event is also first examined
+by the rolling content scan; the watcher does not subscribe to rename events.
 
 For WordPress atomic saves, the intended basename can select a core or plugin
 checksum entry. Only a match against the complete event-file content verifies

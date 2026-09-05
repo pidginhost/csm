@@ -1,9 +1,8 @@
 # CSM Engineering Roadmap
 
-Forward-looking engineering decisions that are committed to but not yet
-implemented. Items move from here into commits + `CHANGELOG.md` entries
-as they land, then drop off this list (git history + CHANGELOG are the
-archive).
+Open engineering work and release acceptance checks. Implemented items below
+retain a short status while their operational follow-up is still useful.
+Commits and `CHANGELOG.md` remain the archive of completed changes.
 
 This file is for contributors. End-user documentation lives in `docs/`.
 
@@ -18,17 +17,33 @@ file.
 
 ## Release readiness gates
 
-These are release controls, not forward-looking feature work:
+The required dependencies are defined in [.gitlab-ci.yml](.gitlab-ci.yml).
+A checked item means the control is implemented, not that a release pipeline
+has passed it on the current infrastructure.
 
-- [x] Tag builds require signed amd64 and arm64 binaries and packages.
-- [x] Integration coverage must merge into the published coverage profile.
-- [x] Tag integration requires a clean cPanel image, verifies cPanel is
-  installed, installs the current pipeline package, and runs the integration
-  binary.
-- [x] Public release creation is blocked until assets, signatures, and coverage
-  pass preflight validation.
-- [ ] Provision and maintain the clean cPanel image referenced by the
-  `INTEGRATION_CPANEL_IMAGE` CI variable.
+- [x] Version tags require signed amd64 and arm64 binaries and packages.
+  The arm64 build and package jobs allow failure on branches, but not tags.
+- [x] Publication requires the fixture privacy, pinned clean-application,
+  production-tag and real-kernel jobs. Missing inputs or required kernel
+  capabilities cannot be replaced by skipped tests.
+- [x] Tag preflight requires a cPanel image before server allocation. Tag
+  publication requires integration using the current pipeline packages,
+  including cPanel installation, upgrade and service checks.
+- [x] Public GitHub release creation requires merged integration coverage,
+  assets and signature preflight validation.
+- [ ] Provision and maintain a licensed clean cPanel image, set the protected
+  `INTEGRATION_CPANEL_IMAGE` variable, and pass the live upgrade and forward
+  guard checks. See [cPanel acceptance](docs/src/cpanel-release-tests.md).
+- [ ] Provision the dedicated `csm-kernel` runner and pass every required
+  attachment test, including BPF LSM, under the real service sandbox. See
+  [kernel runner acceptance](docs/src/production-tests.md#kernel-runner).
+
+As of 2026-09-06, local production-tag race tests and the four pinned corpus
+gates passed. Real systemd and supported kernel checks passed locally, but
+BPF LSM attachment was unavailable and the kernel gate correctly failed.
+The licensed cPanel run and dedicated kernel runner remain operational gaps.
+Main-branch cloud integration is manual and is not a publication dependency;
+it can run AlmaLinux/Ubuntu only when no cPanel image is configured.
 
 ---
 
@@ -159,9 +174,14 @@ larger detection and integration items remain:
   correlation vs peer-to-peer ingest endpoint + trust model.
   `2026-05-29-y12-fleet-ingest-design.md`.
 
-Y15 mail source supervision is implemented: failed attachment retries with
-bounded backoff and unhealthy status, while automatic selection can switch
-from a missing file to journal input. Explicit source modes stay fixed.
+Y15 mail source supervision is implemented in
+[mail_reader.go](internal/daemon/mail_reader.go): initial attachment failures
+retry, source loss and recovery update watcher health, and automatic selection
+can switch from a missing file to journal input. Explicit modes stay fixed;
+retries use current configuration and shutdown joins the readers. File and
+real-systemd journal regressions cover recovery. The remaining release proof
+is the live cPanel run above; copytruncate's polling limit is documented in
+[mail monitoring](docs/src/detection-realtime.md#inotify-log-watchers-2-seconds).
 
 ---
 
@@ -198,113 +218,114 @@ Corpus growth and detector false-positive reductions remain ongoing work.
 
 ## 13. Narrow the service unit's write scope
 
-**Status:** planned.
+**Status:** implemented; live cPanel acceptance remains open.
 
-The unit grants write access to the whole of `/etc` so that one mail
-configuration fragment can be updated. Everything else the daemon writes
-is already scoped.
+The packaged and installed units grant specific managed configuration
+directories instead of all of `/etc`. Exim mutations run through a serialized
+helper outside the daemon sandbox, including rebuild and rollback. Opted-in
+module removal uses a separate transient service.
 
-### Decision
-
-Write that one fragment through a transient unit with its own narrow
-grant, and replace the blanket grant with the specific directories the
-daemon genuinely writes.
-
-### Size: 2-3 hours. Needs a Linux host to verify the transient unit
-behaves under the packaged unit's sandbox.
+Real-systemd tests verify denied unrelated writes, permitted atomic updates,
+helper rejection and rollback, account-root remediation, and restore.
+The remaining check is the actual cPanel rebuild under the candidate package;
+see [service write scope](docs/src/service-confinement.md) and the release
+acceptance list above.
 
 ---
 
 ## 14. Verify mailbox passwords without exposing material in argv
 
-**Status:** planned.
+**Status:** implemented.
 
-The weak-password audit shells out to the mail server's password tool,
-which places the hash and the candidate on the command line, where any
-local process listing can read them while the check runs.
-
-### Decision
-
-Verify in-process. This means taking on a crypt implementation that
-covers the hash formats the mail server emits, which is a new dependency
-in a security product and should be reviewed as one: pinned, vendored
-deliberately, and chosen for maintenance record over convenience.
-
-### Size: 2-3 hours plus dependency review.
+[In-process verification](internal/checks/email_password_hash.go) replaces the
+password-tool subprocess. Supported hash formats have explicit work limits,
+concurrency is bounded, and unsupported or over-budget hashes leave the scan
+incomplete and eligible for retry. Dependencies are pinned in `go.mod`.
+Regression fixtures include upstream Dovecot vectors; a live Dovecot binary
+was not part of local validation. Further interoperability coverage should
+compare supported formats on the cPanel image without placing secrets in
+process arguments.
 
 ---
 
 ## 15. Realtime coverage for files renamed into a watched tree
 
-**Status:** blocked on kernel support, not on design.
+**Status:** atomic-save coverage implemented; rename-only arrivals remain open.
 
-A file moved into a watched directory raises no content event, so it is
-first examined by the next rolling content scan rather than on arrival.
+Creation and close-write events scan atomic-stage names and retain the event
+file descriptor through analysis, including after rename, replacement or
+unlink. The completed content reaches normal scanners without requiring a
+rename event. See [realtime coverage](docs/src/detection-realtime.md).
 
-Closing this needs rename events with directory-and-name reporting from
-fanotify. Enterprise Linux 8 kernels backport the filesystem-scoped mark
-but not the rename event or file-handle reporting, so the capability is
-absent on the oldest platform CSM supports.
+A file moved into an eligible path without a usable create or close-write
+event is a separate case. The current watcher does not subscribe to rename
+notifications, so the rolling content scan remains its coverage path.
 
-### Decision
+### Remaining acceptance
 
-Revisit when the supported platform floor rises. Until then the rolling
-content scan is the documented coverage path, and any implementation must
-probe for the capability at runtime and fall back rather than assume it.
-
-### Size: unknown until the floor moves.
+Probe directory/name event and file-handle support at runtime before adding
+rename-only coverage. Test arrival from outside the watched scope, same-tree
+moves, lost events, and unsupported kernels. Retain the rolling scan fallback
+on enterprise kernels that lack the required notification support; raising
+the supported platform floor is not required for the existing atomic-save fix.
 
 ---
 
 ## 16. CMS discovery deeper than one directory below a document root
 
-**Status:** planned, deliberately deferred once.
+**Status:** WordPress discovery limits documented; broader discovery planned.
 
-Discovery covers document roots the panel serves, addon directories in an
-account home, and one directory below a document root. Installs nested
-more deeply are found by neither the panel map nor the walk.
+WordPress merges the panel's document-root map with the account-home patterns
+in [wpinstalls.go](internal/checks/wpinstalls.go). A deeply nested root declared
+by the panel can be found; an undeclared installation outside those bounded
+patterns can be missed. The supported layout is described in
+[deep check platform support](docs/src/detection-deep.md#platform-support).
+Other CMS adapters use their own configuration patterns in `cmsDiscover` and
+do not inherit the WordPress panel-map traversal.
 
-### Decision
+### Remaining acceptance
 
-Decide whether deeper nesting is worth the walk cost before implementing
-it. The honest options are a bounded depth increase, or leaving it and
-saying so in the documentation. What must not happen is the current
-situation where the limit is real but undocumented.
-
-### Size: 15 minutes to document the limit; a day to raise it safely.
-
----
-
-## 17. Consolidate the Go toolchain pin and upgrade
-
-**Status:** planned.
-
-The Go version is pinned in four places -- the module file, the CI image,
-the builder image, and the Alpine base -- and they have drifted apart.
-Local development on a newer toolchain also produces formatting that the
-CI linter does not expect.
-
-### Decision
-
-Reduce the four pins to a single source, then move that source forward.
-Check first that the pinned linter release supports the target toolchain:
-if it lags, the upgrade breaks CI on the first push.
-
-### Size: 30 minutes for the compatibility check, 2-3 hours if it passes.
+Decide the supported depth and cost budget for each CMS before expanding the
+walk. Test nested mapped and unmapped installs, custom account roots, tenant
+ownership, symlinks, cancellation and incomplete traversal. Document each
+adapter's limits alongside the resulting coverage.
 
 ---
 
-## 18. Lint timeout headroom in CI
+## 17. Consolidate bootstrap toolchain pins
 
-**Status:** planned. Small, and it costs a release when it bites.
+**Status:** partially complete; image pin consolidation remains planned.
 
-The lint job spends its whole budget loading packages before linting
-anything, and now exceeds it when two pipelines run concurrently -- which
-is exactly what pushing a branch and a tag together causes. The job fails
-without having examined a single file, and every later stage is skipped.
+`go.mod` requires Go 1.26.7. CI sets `GOTOOLCHAIN=auto` so the Go command can
+select that version even though the CI tools image starts with Go 1.26.3 and
+the AlmaLinux YARA-X builder starts with Go 1.26.2. The Linux test wrapper
+already derives its exact default image version from `go.mod`. The builder
+uses AlmaLinux 8, not an Alpine Go base. Lint is pinned to golangci-lint 2.11.4;
+formatting and canonical lint pass with Go 1.26.7.
 
-### Decision
+### Remaining acceptance
 
-Raise the timeout enough to leave headroom on a cold cache under load.
+Generate bootstrap version inputs from one maintained source and check them
+for drift. Rebuild both architecture builders and the CI tools image, update
+their tags, then record the selected Go and linter build versions in CI.
+Verify both release architectures and formatter compatibility before changing
+the module requirement. The current automatic toolchain selection requires
+access to the toolchain download when it is absent from cache.
 
-### Size: 10 minutes.
+---
+
+## 18. Measure lint timeout headroom
+
+**Status:** five-minute limit configured; cold-runner measurement remains open.
+
+`.golangci.yml`, `make lint`, the default CI lint job and production-tag lint
+all use five minutes. Local canonical lint currently passes. Earlier package
+loading timeouts are historical observations, not a current failing result.
+
+### Remaining acceptance
+
+Record package-loading and total lint time on cold caches with two concurrent
+pipelines on the intended runner. Retain timings and exit statuses, then tune
+runner resources or the timeout if the result leaves insufficient margin.
+A timeout or typechecking failure cannot be reported as clean merely because
+the tool also prints zero issues.

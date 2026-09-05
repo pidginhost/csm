@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Development and readiness documentation now matches required test jobs, completed fixes, and outstanding release infrastructure checks.
+
 - Credential rotation instructions now state the restart requirement for environment-backed tokens and signing secrets.
 
 - Fixture privacy checks now block CI and publication, cover all fixture formats, and report scanner failures without printing suspected private addresses.
