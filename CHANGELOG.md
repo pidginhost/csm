@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
-
-- Database alerts remain separate for accounts sharing a database. Previously accepted inactive snippets and small orphaned-post groups no longer suppress alerts when they become active or escalate.
-- Distinct problems in long WordPress site addresses no longer share a dismissal when their displayed previews are identical.
-
 ### Fixed
 
 - A WordPress core rebuilt from an older release reported every leftover file of the newer one as its own finding, which on one install produced over a thousand rows and buried the rest of the scan. The install now gets one finding that counts the files and samples them.
