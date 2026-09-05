@@ -242,3 +242,5 @@ mdbook serve              # local preview at http://localhost:3000
 ## Clean application corpus
 
 Every pipeline runs the required [clean-corpus gate](clean-corpus.md) in the production YARA-X builder image. Package publication and GitHub releases depend on its success.
+
+See [cPanel release tests](cpanel-release-tests.md) for the required image, upgrade baseline, release dependencies and retained evidence.

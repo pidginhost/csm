@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tagged releases now require cPanel package and upgrade validation before publication. Missing cPanel test infrastructure stops the release early.
+
 - Release publication now requires pinned clean-application checks across the signature and taint engines, with retained measurements for review.
 
 - Configured account roots now work with manual remediation and quarantine restore. Operators can generate narrow service write grants and check them with health diagnostics.
