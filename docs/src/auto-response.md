@@ -22,12 +22,20 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 Web UI restore refuses symbolic links in destination directories and does not
 replace an existing file or directory. If a destination changes during restore,
 CSM reports a conflict and retains the quarantine entry. Check the original
-location before retrying; an interrupted file restore can leave a partial file
-in the directory that was opened for restoration.
+location before retrying; a failed or interrupted file restore can leave a
+partial file in the directory that was opened for restoration. CSM keeps this
+file because removing it could discard a concurrent replacement.
 
 Virtual-patch rollback uses the same directory confinement. It replaces or
 removes the access file only when the saved content, owner, and permissions
 still match, preserving later customer edits.
+
+Rollback isolates displaced entries in a private directory. If another writer
+changes the destination, CSM preserves the live replacement and reports any
+retained recovery directory in the error. Check that directory beneath the
+original destination or quarantine location before retrying. If another writer
+moves a restored directory, CSM cannot recover it from its old name and will
+not substitute a different entry into quarantine.
 
 ## Configuration
 

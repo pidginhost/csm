@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 func TestQuarantineRestoreAncestorSwap(t *testing.T) {
@@ -105,6 +106,50 @@ func TestQuarantineRestoreAncestorSwap(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestQuarantineDirectoryRollbackPreservesReplacement(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	qdir := filepath.Join(base, "quarantine")
+	item := filepath.Join(qdir, "item")
+	for _, dir := range []string{root, item} {
+		if opErr := os.MkdirAll(dir, 0700); opErr != nil {
+			t.Fatal(opErr)
+		}
+	}
+	if opErr := os.WriteFile(filepath.Join(item, "original"), []byte("quarantined"), 0600); opErr != nil {
+		t.Fatal(opErr)
+	}
+	target, err := safepath.OpenTarget(root, "restored", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	live := filepath.Join(root, target.Name)
+	oldHook := quarantineRestoreAfterDirectoryMoveForTest
+	quarantineRestoreAfterDirectoryMoveForTest = func() {
+		if opErr := os.Rename(live, live+".moved"); opErr != nil {
+			t.Fatal(opErr)
+		}
+		if opErr := os.Symlink("restored.moved", live); opErr != nil {
+			t.Fatal(opErr)
+		}
+	}
+	t.Cleanup(func() { quarantineRestoreAfterDirectoryMoveForTest = oldHook })
+	owner := fileOwner(t, item)
+	if err := restoreQuarantineDirectory(item, target, 0700, owner.uid, owner.gid); err == nil {
+		t.Fatal("replaced directory passed restore")
+	}
+	if info, err := os.Lstat(item); !os.IsNotExist(err) {
+		t.Errorf("replacement imported into quarantine: %v, %v", info, err)
+	}
+	if got, err := os.Readlink(live); err != nil || got != "restored.moved" {
+		t.Errorf("replacement lost: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(live+".moved", "original")); err != nil || string(got) != "quarantined" {
+		t.Errorf("original directory content lost: %q, %v", got, err)
 	}
 }
 

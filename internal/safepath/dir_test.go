@@ -123,3 +123,49 @@ func TestRenameDoesNotReplaceDirectory(t *testing.T) {
 		t.Fatalf("directory rename failed: %v, %v", info, err)
 	}
 }
+
+func TestPrivateTempPinsTransactionNames(t *testing.T) {
+	root := t.TempDir()
+	parent, err := OpenDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = parent.Close() }()
+	stage, name, err := parent.CreatePrivateTemp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stage.Close() }()
+	info, err := os.Stat(filepath.Join(root, name))
+	if err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("staging directory is not private: %v, %v", info, err)
+	}
+	if opErr := os.Rename(filepath.Join(root, name), filepath.Join(root, "moved")); opErr != nil {
+		t.Fatal(opErr)
+	}
+	if opErr := os.Symlink(".", filepath.Join(root, name)); opErr != nil {
+		t.Fatal(opErr)
+	}
+	file, err := stage.CreateTemp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opErr := file.Close(); opErr != nil {
+		t.Fatal(opErr)
+	}
+	if _, err := os.Stat(filepath.Join(root, "moved", file.Name())); err != nil {
+		t.Fatalf("staged file escaped pinned directory: %v", err)
+	}
+	if err := parent.RemoveDir("moved"); err == nil {
+		t.Fatal("removed a nonempty recovery directory")
+	}
+	if opErr := stage.Remove(file.Name()); opErr != nil {
+		t.Fatal(opErr)
+	}
+	if opErr := parent.RemoveDir("moved"); opErr != nil {
+		t.Fatal(opErr)
+	}
+	if err := parent.RemoveDir(name); err == nil {
+		t.Fatal("followed a replacement symlink during cleanup")
+	}
+}

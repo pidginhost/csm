@@ -53,16 +53,26 @@ func RestoreVirtualPatchBackup(backupPath string, target *safepath.Target, meta 
 	if opErr := target.Check(); opErr != nil {
 		return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, opErr)
 	}
-	temp, err := target.Parent.CreateTemp()
+	stage, stageName, err := target.Parent.CreatePrivateTemp()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stage.Close() }()
+	keep := false
+	defer func() {
+		if !keep {
+			_ = target.Parent.RemoveDir(stageName)
+		}
+	}()
+	temp, err := stage.CreateTemp()
 	if err != nil {
 		return err
 	}
 	name := filepath.Base(temp.Name())
-	keep := false
 	defer func() {
 		_ = temp.Close()
 		if !keep {
-			_ = target.Parent.Remove(name)
+			_ = stage.Remove(name)
 		}
 	}()
 	if _, opErr := temp.Write(content); opErr != nil {
@@ -87,19 +97,74 @@ func RestoreVirtualPatchBackup(backupPath string, target *safepath.Target, meta 
 	if opErr := target.Check(); opErr != nil {
 		return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, opErr)
 	}
-	if opErr := target.Parent.ExchangeTo(name, target.Parent, target.Name); opErr != nil {
-		return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, opErr)
-	}
-	// The old inode is checked after isolation. Checking before exchange
-	// would permit an intervening replacement to be silently discarded.
-	rollback := func(cause error) error {
-		if opErr := target.Parent.ExchangeTo(name, target.Parent, target.Name); opErr != nil {
-			keep = true
-			return fmt.Errorf("%w: %v; rollback failed: %v", ErrVirtualPatchRestoreConflict, cause, opErr)
+	remove := meta.RestoreAction == QuarantineRestoreRemoveIfUnchanged
+	if remove {
+		if opErr := stage.Remove(name); opErr != nil {
+			return opErr
 		}
-		return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, cause)
+		// Isolate the old file without leaving a placeholder whose later
+		// unlink could delete a concurrent replacement at the live name.
+		err = target.Parent.RenameTo(target.Name, stage, name)
+	} else {
+		err = stage.ExchangeTo(name, target.Parent, target.Name)
 	}
-	oldState, err := readRestoreHtaccess(target.Parent, name)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, err)
+	}
+	if virtualPatchRestoreAfterMoveForTest != nil {
+		virtualPatchRestoreAfterMoveForTest()
+	}
+	conflict := func(cause error) error {
+		keep = true
+		return fmt.Errorf("%w: %v; recovery files retained in %s", ErrVirtualPatchRestoreConflict, cause, stageName)
+	}
+	rollback := func(cause error) error {
+		keep = true
+		if remove {
+			if opErr := stage.RenameTo(name, target.Parent, target.Name); opErr != nil {
+				return conflict(fmt.Errorf("%v; rollback failed: %w", cause, opErr))
+			}
+			keep = false
+			return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, cause)
+		}
+		// Capture the live name before deciding what to put back. A second
+		// exchange after a check could overwrite another intervening edit.
+		captured, opErr := stage.CreateTemp()
+		if opErr != nil {
+			return conflict(opErr)
+		}
+		captureName := filepath.Base(captured.Name())
+		if opErr := captured.Close(); opErr != nil {
+			return conflict(opErr)
+		}
+		if opErr := stage.Remove(captureName); opErr != nil {
+			return conflict(opErr)
+		}
+		captureErr := target.Parent.RenameTo(target.Name, stage, captureName)
+		if captureErr != nil && !os.IsNotExist(captureErr) {
+			return conflict(fmt.Errorf("%v; rollback failed: %w", cause, captureErr))
+		}
+		restoreName := name
+		if captureErr == nil {
+			current, readErr := readRestoreHtaccess(stage, captureName)
+			if readErr != nil || !os.SameFile(prepared, current.info) ||
+				!bytes.Equal(content, current.content) || current.uid != meta.Owner ||
+				current.gid != meta.Group || current.mode != mode.Perm() {
+				restoreName = captureName
+			}
+		}
+		if opErr := stage.RenameTo(restoreName, target.Parent, target.Name); opErr != nil {
+			return conflict(fmt.Errorf("%v; rollback failed: %w", cause, opErr))
+		}
+		if captureErr != nil {
+			keep = false
+			return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, cause)
+		}
+		// Keep every captured inode on conflict, including one that looked
+		// unchanged: a writer may still hold an open descriptor to it.
+		return conflict(cause)
+	}
+	oldState, err := readRestoreHtaccess(stage, name)
 	if err != nil {
 		return rollback(err)
 	}
@@ -107,29 +172,31 @@ func RestoreVirtualPatchBackup(backupPath string, target *safepath.Target, meta 
 		state.uid != oldState.uid || state.gid != oldState.gid || state.mode != oldState.mode {
 		return rollback(fmt.Errorf("live file changed during restore"))
 	}
-	current, err := readRestoreHtaccess(target.Parent, target.Name)
-	if err != nil {
-		return rollback(err)
-	}
-	if !os.SameFile(prepared, current.info) || !bytes.Equal(content, current.content) ||
-		current.uid != meta.Owner || current.gid != meta.Group || current.mode != mode.Perm() {
-		return rollback(fmt.Errorf("prepared restore changed"))
+	if remove {
+		if _, statErr := target.Parent.Stat(target.Name); !os.IsNotExist(statErr) {
+			return conflict(fmt.Errorf("live file was recreated during restore"))
+		}
+	} else {
+		current, readErr := readRestoreHtaccess(target.Parent, target.Name)
+		if readErr != nil {
+			return rollback(readErr)
+		}
+		if !os.SameFile(prepared, current.info) || !bytes.Equal(content, current.content) ||
+			current.uid != meta.Owner || current.gid != meta.Group || current.mode != mode.Perm() {
+			return conflict(fmt.Errorf("prepared restore changed"))
+		}
 	}
 	if opErr := target.Check(); opErr != nil {
 		return rollback(opErr)
 	}
-	if meta.RestoreAction == QuarantineRestoreRemoveIfUnchanged {
-		if opErr := target.Parent.Remove(target.Name); opErr != nil {
-			return rollback(opErr)
-		}
-	}
-	if opErr := target.Parent.Remove(name); opErr != nil {
+	if opErr := stage.Remove(name); opErr != nil {
 		keep = true
-		return fmt.Errorf("restore applied but replaced file could not be removed: %w", opErr)
+		return fmt.Errorf("restore applied but replaced file could not be removed from %s: %w", stageName, opErr)
 	}
-	keep = true
 	return nil
 }
+
+var virtualPatchRestoreAfterMoveForTest func()
 
 func readRestoreContent(file *os.File) ([]byte, error) {
 	info, err := file.Stat()

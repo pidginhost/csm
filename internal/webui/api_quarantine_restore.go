@@ -153,7 +153,6 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			copyErr = closeErr
 		}
 		if copyErr != nil {
-			removeRestoreTargetIfSameOpenFile(dst, target)
 			_ = dst.Close()
 			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
 			return
@@ -167,7 +166,6 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := dst.Chmod(restoredMode); err != nil {
-			removeRestoreTargetIfSameOpenFile(dst, target)
 			_ = dst.Close()
 			writeJSONError(w, fmt.Sprintf("Cannot restore file mode: %v", err), http.StatusInternalServerError)
 			return
@@ -182,7 +180,6 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := dst.Close(); err != nil {
-			removeRestoreTargetIfSameInfo(target, restoredInfo)
 			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -239,25 +236,6 @@ func ensureTargetStillNamesInfo(target *safepath.Target, fileInfo os.FileInfo) e
 		return fmt.Errorf("restore destination changed during restore")
 	}
 	return nil
-}
-
-func removeRestoreTargetIfSameOpenFile(f *os.File, target *safepath.Target) {
-	fileInfo, err := ensureOpenFileStillAtTarget(f, target)
-	if err != nil {
-		log.Printf("webui: not removing changed restore target: %v", err)
-		return
-	}
-	removeRestoreTargetIfSameInfo(target, fileInfo)
-}
-
-func removeRestoreTargetIfSameInfo(target *safepath.Target, fileInfo os.FileInfo) {
-	if err := ensureTargetStillNamesInfo(target, fileInfo); err != nil {
-		log.Printf("webui: not removing changed restore target: %v", err)
-		return
-	}
-	if err := target.Parent.Remove(target.Name); err != nil && !os.IsNotExist(err) {
-		log.Printf("webui: failed to remove restore target: %v", err)
-	}
 }
 
 func openQuarantineRestoreTarget(path string, createParents bool) (*safepath.Target, error) {
@@ -317,11 +295,44 @@ func restoreQuarantineDirectory(path string, target *safepath.Target, mode os.Fi
 	if err := source.RenameTo(name, target.Parent, target.Name); err != nil {
 		return err
 	}
+	if quarantineRestoreAfterDirectoryMoveForTest != nil {
+		quarantineRestoreAfterDirectoryMoveForTest()
+	}
 	if err := ensureTargetStillNamesInfo(target, info); err != nil {
-		if rollbackErr := target.Parent.RenameTo(target.Name, source, name); rollbackErr != nil {
+		if rollbackErr := rollbackQuarantineDirectory(source, name, target, info); rollbackErr != nil {
 			return fmt.Errorf("%w; restoring quarantine entry failed: %v", err, rollbackErr)
 		}
 		return err
+	}
+	return nil
+}
+
+var quarantineRestoreAfterDirectoryMoveForTest func()
+
+// Rollback must identify the isolated inode, not a name a tenant can replace
+// between validation and rename. Foreign entries go back without overwriting.
+func rollbackQuarantineDirectory(source *safepath.Dir, name string, target *safepath.Target, want os.FileInfo) error {
+	stage, stageName, err := source.CreatePrivateTemp()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = stage.Close()
+		_ = source.RemoveDir(stageName)
+	}()
+	const displaced = "displaced"
+	if err := target.Parent.RenameTo(target.Name, stage, displaced); err != nil {
+		return err
+	}
+	got, statErr := stage.Stat(displaced)
+	if statErr != nil || !os.SameFile(want, got) {
+		if err := stage.RenameTo(displaced, target.Parent, target.Name); err != nil {
+			return fmt.Errorf("destination changed; displaced entry retained in %s: %w", stageName, err)
+		}
+		return fmt.Errorf("destination changed; quarantine directory was moved by another writer")
+	}
+	if err := stage.RenameTo(displaced, source, name); err != nil {
+		return fmt.Errorf("quarantine directory retained in %s: %w", stageName, err)
 	}
 	return nil
 }

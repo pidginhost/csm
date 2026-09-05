@@ -61,11 +61,47 @@ func (d *Dir) CreateTemp() (*os.File, error) {
 	return d.OpenFile(".csm-restore-"+rand.Text(), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 }
 
+// CreatePrivateTemp isolates transaction names from writers of the parent.
+// The parent may rename this directory, so callers must keep using its handle.
+func (d *Dir) CreatePrivateTemp() (*Dir, string, error) {
+	name := ".csm-restore-" + rand.Text()
+	err := unix.Mkdirat(int(d.file.Fd()), name, 0700)
+	runtime.KeepAlive(d)
+	if err != nil {
+		return nil, "", err
+	}
+	f, err := d.OpenFile(name, os.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return nil, "", err
+	}
+	var stat unix.Stat_t
+	err = unix.Fstat(int(f.Fd()), &stat)
+	runtime.KeepAlive(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, "", err
+	}
+	if int(stat.Uid) != os.Geteuid() || stat.Mode&0077 != 0 {
+		_ = f.Close()
+		return nil, "", fmt.Errorf("private restore directory changed while opening")
+	}
+	return &Dir{file: f}, name, nil
+}
+
+// RemoveDir removes only an empty directory; it never traverses its contents.
+func (d *Dir) RemoveDir(name string) error {
+	return d.unlink(name, unix.AT_REMOVEDIR)
+}
+
 func (d *Dir) Remove(name string) error {
+	return d.unlink(name, 0)
+}
+
+func (d *Dir) unlink(name string, flags int) error {
 	if !validName(name) {
 		return fmt.Errorf("invalid basename %q", name)
 	}
-	err := unix.Unlinkat(int(d.file.Fd()), name, 0)
+	err := unix.Unlinkat(int(d.file.Fd()), name, flags)
 	runtime.KeepAlive(d)
 	if err != nil {
 		return &os.PathError{Op: "unlinkat", Path: name, Err: err}
