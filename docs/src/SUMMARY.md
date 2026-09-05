@@ -7,6 +7,7 @@
 - [Installation](installation.md)
 - [Configuration](configuration.md)
 - [Custom account roots](custom-account-roots.md)
+- [Service configuration writes](service-confinement.md)
 - [Upgrading](upgrading.md)
 - [CLI Commands](cli.md)
 

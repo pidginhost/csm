@@ -46,15 +46,31 @@ alerts:
 account_roots:
   - $content
 CONFIG
+# Fixed cPanel command fixtures exercise the helper transport, not cPanel itself.
+mkdir -p /etc/audit/rules.d /etc/modprobe.d /etc/apache2/conf.d/modsec /etc/apache2/conf-enabled /etc/httpd/conf.d /etc/nginx/conf.d /usr/local/lsws/conf/templates /scripts
+getent passwd mailnull >/dev/null || useradd --system --no-create-home mailnull
+printf '# operator configuration\n@ROUTERSTART@\n@TRANSPORTSTART@\n' > /etc/exim.conf.local
+cat > /scripts/buildeximconf <<'BUILDER'
+#!/bin/sh
+printf 'rebuild\n' >> /etc/csm-audit-rebuilds
+if test -e /var/lib/csm/fail-next-rebuild; then
+  rm /var/lib/csm/fail-next-rebuild
+  exit 1
+fi
+BUILDER
+chmod 0755 /scripts/buildeximconf
 mkdir -p /etc/systemd/system/csm.service.d
 cp build/packaging/systemd/csm.service /etc/systemd/system/csm.service
 "$artifacts/csm" systemd-roots --config /etc/csm/csm.yaml > /etc/systemd/system/csm.service.d/50-account-roots.conf
 cp /etc/systemd/system/csm.service.d/50-account-roots.conf "$artifacts/generated.conf"
 cat > /etc/systemd/system/csm.service.d/90-test.conf <<UNIT
+[Unit]
+Wants=dbus.socket
+After=dbus.socket
 [Service]
 Type=oneshot
 ExecStart=
-ExecStart=$artifacts/webui.test -test.run=^TestCustomAccountRootsInSystemdService$ -test.v -test.timeout=60s
+ExecStart=$artifacts/webui.test -test.run=^TestCustomAccountRootsInSystemdService$ -test.v -test.timeout=120s
 ExecReload=
 Restart=no
 WatchdogSec=0

@@ -122,3 +122,75 @@ func TestCandidateServiceAndMailWatcher(t *testing.T) {
 	}
 	t.Logf("candidate version=%s, daemon PID=%d, attached mail watcher, healthy state", snapshot.Version, pid)
 }
+
+// The upgrade harness provisions a dedicated cPanel server with no prior CSM
+// installation. Exercise daemon restarts so the transaction starts inside the
+// shipped sandbox and reaches the real cPanel rebuild command.
+func TestCandidateForwardGuard(t *testing.T) {
+	const fragment = "/etc/csm/conf.d/99-csm-integration-forward-guard.yaml"
+	const local = "/etc/exim.conf.local"
+	original, err := os.ReadFile(local)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(original), "# CSM-FORWARD-GUARD") {
+		t.Fatal("test image already has an installed forward guard")
+	}
+	file, err := os.OpenFile(fragment, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(fragment); err != nil {
+			t.Error(err)
+		}
+		restartCandidate(t)
+		waitForForwardGuard(t, false)
+		if len(original) != 0 {
+			restored, readErr := os.ReadFile(local)
+			if readErr != nil || string(restored) != string(original) {
+				t.Errorf("forward guard changed operator config after removal: %v", readErr)
+			}
+		}
+	})
+	body := "email_protection:\n  forward_guard:\n    enabled: true\n    dry_run: false\n    hold_signals:\n      bounce_backscatter: true\n"
+	_, writeErr := file.WriteString(body)
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatalf("write fragment: %v %v", writeErr, closeErr)
+	}
+	restartCandidate(t)
+	waitForForwardGuard(t, true)
+	run(t, "exim", "-bV")
+	run(t, "systemctl", "is-active", "--quiet", "exim.service", "csm.service")
+}
+
+func waitForForwardGuard(t *testing.T, installed bool) {
+	t.Helper()
+	deadline := time.Now().Add(150 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile("/etc/exim.conf.local")
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		text := string(data)
+		router := strings.Contains(text, "# CSM-FORWARD-GUARD ROUTER BEGIN")
+		transport := strings.Contains(text, "# CSM-FORWARD-GUARD TRANSPORT BEGIN")
+		if router == installed && transport == installed {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("daemon forward guard installed=%v was not reached", installed)
+}
+
+func restartCandidate(t *testing.T) {
+	t.Helper()
+	run(t, "/opt/csm/csm", "rehash")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "systemctl", "restart", "csm.service").CombinedOutput()
+	if err != nil {
+		t.Fatalf("candidate restart failed: %v\n%s", err, output)
+	}
+}

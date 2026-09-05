@@ -79,6 +79,8 @@ func main() {
 		fmt.Printf("csm %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
 	case "daemon":
 		runDaemon()
+	case "forward-guard-worker":
+		runForwardGuardWorker()
 	case "yara-worker":
 		runYaraWorker()
 	case "phptaint-worker":

@@ -5,6 +5,7 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +19,10 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/processhandle"
 	"github.com/pidginhost/csm/internal/signatures"
+	"github.com/pidginhost/csm/internal/systemdrun"
 	"golang.org/x/sys/unix"
 )
 
@@ -44,6 +47,7 @@ func TestCustomAccountRootsInSystemdService(t *testing.T) {
 	if insideFS.Flags&unix.ST_RDONLY != 0 || outsideFS.Flags&unix.ST_RDONLY == 0 {
 		t.Fatal("test requires a writable custom volume and a read-only sibling")
 	}
+	t.Run("configuration confinement", testServiceConfigurationWrites)
 	t.Run("process signaling", func(t *testing.T) {
 		child := exec.Command("sleep", "60")
 		if err := child.Start(); err != nil {
@@ -203,5 +207,98 @@ func TestCustomAccountRootsInSystemdService(t *testing.T) {
 				t.Fatalf("failed restore lost evidence: %s %v", evidence, err)
 			}
 		}
+	}
+}
+
+func testServiceConfigurationWrites(t *testing.T) {
+	for _, path := range []string{"/etc/csm-audit-unrelated", "/etc/exim.conf.local"} {
+		if err := os.WriteFile(path, []byte("unexpected write"), 0600); !errors.Is(err, syscall.EROFS) {
+			t.Fatalf("unrelated configuration write %s: %v", path, err)
+		}
+	}
+	for _, dir := range []string{"/etc/audit/rules.d", "/etc/modprobe.d", "/etc/apache2/conf.d/modsec", "/etc/apache2/conf-enabled", "/etc/httpd/conf.d", "/etc/nginx/conf.d", "/usr/local/lsws/conf/templates"} {
+		file, err := os.CreateTemp(dir, "csm-test-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(file.Name(), file.Name()+".conf"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(file.Name() + ".conf"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rules := "/etc/apache2/conf.d/modsec/modsec2.user.conf"
+	overrides := "/etc/apache2/conf.d/modsec/csm-overrides.conf"
+	if err := os.WriteFile(rules, []byte("# operator rule\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	modsec.EnsureOverridesInclude(rules, overrides)
+	merged, err := os.ReadFile(rules)
+	if err != nil || !strings.Contains(string(merged), "# operator rule\n") || !strings.Contains(string(merged), overrides) {
+		t.Fatalf("override include not preserved: %s %v", merged, err)
+	}
+	if err = modsec.RestoreOverrides(overrides, []byte("# restored overrides\n")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(overrides)
+	if err != nil || string(data) != "# restored overrides\n" {
+		t.Fatalf("override transaction: %s %v", data, err)
+	}
+	unprivileged := exec.Command("runuser", "-u", "nobody", "--", os.Getenv("CSM_TEST_BINARY"), "forward-guard-worker")
+	unprivileged.Stdin = strings.NewReader(`{"operation":"remove"}`)
+	rejected, rejection := unprivileged.CombinedOutput()
+	if rejection == nil || !strings.Contains(string(rejected), "requires root") {
+		t.Fatalf("worker accepted unprivileged caller: %s %v", rejected, rejection)
+	}
+	original, err := os.ReadFile("/etc/exim.conf.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate := func(body string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			cmd := exec.CommandContext(ctx, name, args...)
+			cmd.Stdin = strings.NewReader(body)
+			return cmd.CombinedOutput()
+		}
+		out, runErr := systemdrun.Run(ctx, exec.LookPath, run, systemdrun.Options{Pipe: true, RuntimeMax: 30 * time.Second}, os.Getenv("CSM_TEST_BINARY"), "forward-guard-worker")
+		if runErr != nil {
+			return fmt.Errorf("%w: %s", runErr, out)
+		}
+		return nil
+	}
+	apply := `{"operation":"apply","config":{"Enabled":true,"HoldSignals":{"BounceBackscatter":true}},"bad_ips":["192.0.2.10"]}`
+	if err = mutate(apply); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile("/etc/exim.conf.local")
+	if err != nil || !strings.Contains(string(data), "csm_forward_guard:") {
+		t.Fatalf("helper did not install router: %s %v", data, err)
+	}
+	if err = mutate(`{"operation":"remove"}`); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile("/etc/exim.conf.local")
+	if err != nil || string(data) != string(original) {
+		t.Fatalf("helper did not preserve operator config: %s %v", data, err)
+	}
+	if err = os.WriteFile("/var/lib/csm/fail-next-rebuild", nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = mutate(apply); err == nil || !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("helper did not report failed rebuild: %v", err)
+	}
+	data, err = os.ReadFile("/etc/exim.conf.local")
+	if err != nil || string(data) != string(original) {
+		t.Fatalf("helper rollback lost operator config: %s %v", data, err)
+	}
+	calls, err := os.ReadFile("/etc/csm-audit-rebuilds")
+	if err != nil || string(calls) != strings.Repeat("rebuild\n", 4) {
+		t.Fatalf("rebuilds=%s error=%v", calls, err)
 	}
 }

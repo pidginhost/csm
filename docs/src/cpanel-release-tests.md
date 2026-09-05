@@ -91,3 +91,7 @@ cancellation. A failed package check retains diagnostics and still reaches
 that cleanup. Image preparation and a successful live cPanel job are required
 operational steps; compiling the integration binary locally does not replace
 them.
+
+The candidate daemon also enables and removes the forward guard through a test
+drop-in and service restart. This runs the actual cPanel rebuild through the packaged
+service sandbox and checks that removal preserves operator configuration.

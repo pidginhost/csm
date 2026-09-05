@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The service now limits configuration writes to managed directories. Mail configuration changes run in a separate constrained operation, and opted-in module removal retains the daemon sandbox.
+
 - Rule permission checks now cover every filename extension accepted by the YARA loader.
 
 - Package integrity rechecks keep reported modifications unresolved when a previously flagged file loses its executable mode or disappears.
