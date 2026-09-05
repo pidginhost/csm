@@ -6,6 +6,7 @@
 
 - [Installation](installation.md)
 - [Configuration](configuration.md)
+- [Credential rotation](credential-rotation.md)
 - [Custom account roots](custom-account-roots.md)
 - [Service configuration writes](service-confinement.md)
 - [Upgrading](upgrading.md)

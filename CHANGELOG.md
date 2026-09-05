@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Credential rotation instructions now state the restart requirement for environment-backed tokens and signing secrets.
+
 - Fixture privacy checks now block CI and publication, cover all fixture formats, and report scanner failures without printing suspected private addresses.
 
 - Release publication now requires tests with the shipped features and real kernel and service checks. Failed BPF monitor startup releases its event reader.
