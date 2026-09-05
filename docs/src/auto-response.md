@@ -17,6 +17,18 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
+### Restoring quarantined files
+
+Web UI restore refuses symbolic links in destination directories and does not
+replace an existing file or directory. If a destination changes during restore,
+CSM reports a conflict and retains the quarantine entry. Check the original
+location before retrying; an interrupted file restore can leave a partial file
+in the directory that was opened for restoration.
+
+Virtual-patch rollback uses the same directory confinement. It replaces or
+removes the access file only when the saved content, owner, and permissions
+still match, preserving later customer edits.
+
 ## Configuration
 
 ```yaml

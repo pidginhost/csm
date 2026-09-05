@@ -379,7 +379,7 @@ func TestRestoreVirtualPatchBackup_RefusesLaterModeChange(t *testing.T) {
 	if chmodErr := os.Chmod(htaccess, 0600); chmodErr != nil {
 		t.Fatal(chmodErr)
 	}
-	err = RestoreVirtualPatchBackup(itemPath, htaccess, meta)
+	err = RestoreVirtualPatchBackup(itemPath, virtualPatchRestoreTarget(t, htaccess), meta)
 	if !errors.Is(err, ErrVirtualPatchRestoreConflict) {
 		t.Fatalf("later mode change should conflict, got %v", err)
 	}
