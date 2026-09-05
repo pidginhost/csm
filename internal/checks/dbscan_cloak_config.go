@@ -527,7 +527,7 @@ func checkWPCloakConfig(user string, creds wpDBCreds, prefix string) []alert.Fin
 					"the table. Cloak kits key that digest to the site's own hostname so one "+
 					"payload serves many sites. The row is autoloaded, so it is read on every request.",
 				cloakSample("Options", keyed)),
-			DedupKey: dbContentDedupKey(creds, prefix,
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				"An option named after a digest cannot be found without already knowing "+
 					"the key, and the base64 layer keeps its contents out of any search of "+
 					"the table. Cloak kits key that digest to the site's own hostname so one "+
@@ -551,7 +551,7 @@ func checkWPCloakConfig(user string, creds wpDBCreds, prefix string) []alert.Fin
 					"appearing in the site's real sitemap. Sitemap plugins add rewrite rules "+
 					"too, but none of them pair a numbered sitemap with a feed of the same number.",
 				cloakSample("Clusters", routes)),
-			DedupKey: dbContentDedupKey(creds, prefix,
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				"Each rule routes sitemap<N>.xml straight into a matching feed, one per "+
 					"doorway cluster, so crawlers are handed the generated pages without them "+
 					"appearing in the site's real sitemap. Sitemap plugins add rewrite rules "+

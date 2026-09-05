@@ -1060,8 +1060,8 @@ func deploySystemdTimer() error {
 // The audit log rotates with copytruncate on purpose: the daemon holds one
 // append-only fd on it for the life of the process, so a rename-and-create
 // rotation would leave every later event going to the rotated inode. maxsize
-// caps a burst between daily runs -- auto-block alone writes tens of thousands
-// of events a week on a busy shared host.
+// permits early rotation if the host runs logrotate more often than daily;
+// it does not cap growth between invocations.
 func logrotateConfig() string {
 	return `/var/log/csm/monitor.log {
     weekly

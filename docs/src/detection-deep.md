@@ -70,6 +70,13 @@ The parser supports PHP syntax up to version 8.1. A file written against a newer
 | `credential_reuse` | WordPress administrator password-hash reuse across cPanel accounts. Groups identical hashes with an in-memory fingerprint and reports only the affected accounts and count. |
 | `supply_chain` | Composer and npm lockfile advisory matching against the local advisory database. Silent when no advisory file is present. |
 
+WordPress content findings use the account, database server, database name,
+and table prefix to stay separate. Changes to the panel's document-root map do not create duplicate
+findings. Publishing a previously inactive suspicious snippet, or an orphaned-post
+group growing into a Critical content farm, produces a fresh alert even when the
+earlier condition was baselined or dismissed. Ordinary count changes within the
+same orphaned-post severity tier keep the existing identity.
+
 Hidden-link corroboration counts registrable domains within one hidden container, not hostnames across a whole row. Multiple subdomains of one linked domain count as one target, and both the WordPress home and site addresses count as local.
 
 ## CMS Scanner Support Policy

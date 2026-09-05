@@ -910,6 +910,10 @@ func runRehash() {
 		fmt.Fprintf(os.Stderr, "Error updating systemd service: %v\n", err)
 		os.Exit(1)
 	}
+	// Package and standalone upgrades run rehash without rerunning install.
+	if err := deployLogrotate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: logrotate config not installed: %v\n", err)
+	}
 
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)

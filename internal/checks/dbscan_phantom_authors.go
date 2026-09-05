@@ -78,7 +78,10 @@ func checkWPPhantomAuthors(user string, creds wpDBCreds, postsPrefix, usersPrefi
 					"A small number can remain after an administrator deletes a user directly in SQL. "+
 					"Large groups can indicate hidden or injected content.",
 					authorID, usersPrefix)),
-			DedupKey: dbContentDedupKey(creds, postsPrefix,
+			// Crossing into a content farm must alert even if the orphan group
+			// was baselined or dismissed. Counts within either tier stay stable.
+			DedupKey: dbContentDedupKey(user, creds, postsPrefix,
+				"farm="+strconv.FormatBool(count >= phantomAuthorFarmSize),
 				fmt.Sprintf("post_author = %d has no row in %susers.\n"+
 					"A small number can remain after an administrator deletes a user directly in SQL. "+
 					"Large groups can indicate hidden or injected content.",

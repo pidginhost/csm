@@ -313,6 +313,9 @@ func TestRehashMaintainsCommandSymlink(t *testing.T) {
 	if !strings.Contains(rehash[start:start+end], "deploySystemdTimer()") {
 		t.Error("runRehash must refresh the service sandbox for standalone upgrades")
 	}
+	if !strings.Contains(rehash[start:start+end], "deployLogrotate()") {
+		t.Error("runRehash must refresh log rotation for package and standalone upgrades")
+	}
 }
 
 func TestDiscoverPHPShieldIniDirsFindsEveryEAPHPVersion(t *testing.T) {

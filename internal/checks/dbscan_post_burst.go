@@ -82,6 +82,6 @@ func checkWPPostVolumeBurst(user string, creds wpDBCreds, prefix string) []alert
 				ageDays)),
 		// One burst per site. The details count days and posts, all of which
 		// move on their own between scans without the burst being a new one.
-		DedupKey: dbContentDedupKey(creds, prefix),
+		DedupKey: dbContentDedupKey(user, creds, prefix),
 	}}
 }

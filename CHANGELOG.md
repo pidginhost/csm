@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Database alerts remain separate for accounts sharing a database. Previously accepted inactive snippets and small orphaned-post groups no longer suppress alerts when they become active or escalate.
+- Distinct problems in long WordPress site addresses no longer share a dismissal when their displayed previews are identical.
+
 ### Fixed
 
 - A WordPress core rebuilt from an older release reported every leftover file of the newer one as its own finding, which on one install produced over a thousand rows and buried the rest of the scan. The install now gets one finding that counts the files and samples them.
 - The audit log was never rotated, so it grew without limit; on one host it reached 93 MB. The packaged logrotate fragment now covers it.
+- Upgrades refresh log rotation rules, so existing installations receive the audit log rotation policy too.
 - Database findings stored a second copy of themselves whenever the panel's domain map failed to load mid-scan, because a line about the document root appeared and disappeared with it.
 - The cross-account admin overlap warning stored a new copy on every scan because its details carry an observation timestamp. One overlap is now one row until the accounts sharing that admin actually change.
 

@@ -141,7 +141,7 @@ func TestSpamScale_EachKeywordKeepsItsOwnIdentity(t *testing.T) {
 		}
 		keys[f.Key()] = f.Message
 	}
-	if len(keys) < 2 {
-		t.Fatalf("expected a finding per spam pattern, got %d", len(keys))
+	if len(keys) != len(dbSpamPatterns) {
+		t.Fatalf("got %d distinct findings, want one for each of %d spam patterns", len(keys), len(dbSpamPatterns))
 	}
 }

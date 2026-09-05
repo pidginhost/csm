@@ -836,7 +836,7 @@ func buildHiddenLinkFindings(user string, creds wpDBCreds, prefix string, rows [
 		Message: fmt.Sprintf("%d WordPress rows hide outbound links to %d hosts across %d domains (account: %s)",
 			len(reported), len(named), len(domains), user),
 		Details:  dbContentFindingDetails(creds, prefix, details...),
-		DedupKey: dbContentDedupKey(creds, prefix, details...),
+		DedupKey: dbContentDedupKey(user, creds, prefix, details...),
 	}}
 }
 
