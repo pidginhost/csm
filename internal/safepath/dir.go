@@ -35,17 +35,30 @@ func validName(name string) bool {
 	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\x00")
 }
 
+// fileFD returns f's integer descriptor for a descriptor-relative syscall.
+// Callers must keep f alive across the call.
+func fileFD(f *os.File) int {
+	// #nosec G115 -- an open descriptor is a small non-negative value; os.File only exposes it as uintptr
+	return int(f.Fd())
+}
+
+// adoptFD wraps a descriptor produced by a syscall whose error was already checked.
+func adoptFD(fd int, name string) *os.File {
+	// #nosec G115 -- a syscall that reported success returns a non-negative descriptor
+	return os.NewFile(uintptr(fd), name)
+}
+
 func (d *Dir) OpenFile(name string, flags int, mode os.FileMode) (*os.File, error) {
 	if !validName(name) {
 		return nil, fmt.Errorf("invalid basename %q", name)
 	}
-	fd, err := unix.Openat(int(d.file.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, uint32(mode.Perm()))
+	fd, err := unix.Openat(fileFD(d.file), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, uint32(mode.Perm()))
 	// The integer descriptor does not keep os.File's finalizer alive.
 	runtime.KeepAlive(d)
 	if err != nil {
 		return nil, &os.PathError{Op: "openat", Path: name, Err: err}
 	}
-	return os.NewFile(uintptr(fd), name), nil
+	return adoptFD(fd, name), nil
 }
 
 func (d *Dir) Stat(name string) (os.FileInfo, error) {
@@ -65,7 +78,7 @@ func (d *Dir) CreateTemp() (*os.File, error) {
 // The parent may rename this directory, so callers must keep using its handle.
 func (d *Dir) CreatePrivateTemp() (*Dir, string, error) {
 	name := ".csm-restore-" + rand.Text()
-	err := unix.Mkdirat(int(d.file.Fd()), name, 0700)
+	err := unix.Mkdirat(fileFD(d.file), name, 0700)
 	runtime.KeepAlive(d)
 	if err != nil {
 		return nil, "", err
@@ -75,7 +88,7 @@ func (d *Dir) CreatePrivateTemp() (*Dir, string, error) {
 		return nil, "", err
 	}
 	var stat unix.Stat_t
-	err = unix.Fstat(int(f.Fd()), &stat)
+	err = unix.Fstat(fileFD(f), &stat)
 	runtime.KeepAlive(f)
 	if err != nil {
 		_ = f.Close()
@@ -101,7 +114,7 @@ func (d *Dir) unlink(name string, flags int) error {
 	if !validName(name) {
 		return fmt.Errorf("invalid basename %q", name)
 	}
-	err := unix.Unlinkat(int(d.file.Fd()), name, flags)
+	err := unix.Unlinkat(fileFD(d.file), name, flags)
 	runtime.KeepAlive(d)
 	if err != nil {
 		return &os.PathError{Op: "unlinkat", Path: name, Err: err}
@@ -123,7 +136,7 @@ func (d *Dir) rename(name string, dest *Dir, destName string, exchange bool) err
 	if !validName(name) || !validName(destName) {
 		return fmt.Errorf("invalid rename basenames %q, %q", name, destName)
 	}
-	err := renameat(int(d.file.Fd()), name, int(dest.file.Fd()), destName, exchange)
+	err := renameat(fileFD(d.file), name, fileFD(dest.file), destName, exchange)
 	runtime.KeepAlive(d)
 	runtime.KeepAlive(dest)
 	if err != nil {
@@ -184,12 +197,12 @@ func (t *Target) Check() error {
 }
 
 func (d *Dir) walk(relative string, create bool) (*Dir, error) {
-	fd, err := unix.Openat(int(d.file.Fd()), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(fileFD(d.file), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	runtime.KeepAlive(d)
 	if err != nil {
 		return nil, err
 	}
-	current := &Dir{file: os.NewFile(uintptr(fd), ".")}
+	current := &Dir{file: adoptFD(fd, ".")}
 	if relative == "." {
 		return current, nil
 	}
@@ -202,7 +215,7 @@ func (d *Dir) walk(relative string, create bool) (*Dir, error) {
 		if os.IsNotExist(openErr) && create {
 			// Public document roots need traversable parents. A concurrent
 			// creator is harmless only if the no-follow open accepts its inode.
-			mkdirErr := unix.Mkdirat(int(current.file.Fd()), name, 0755)
+			mkdirErr := unix.Mkdirat(fileFD(current.file), name, 0755)
 			runtime.KeepAlive(current)
 			if mkdirErr != nil && mkdirErr != unix.EEXIST {
 				_ = current.Close()

@@ -61,11 +61,16 @@ define('DB_PREFIX', 'oc_');
 `
 
 func drupalFiles() (map[string]string, map[string]bool) {
-	return map[string]string{
+	// Two composite literals in a single return statement indent differently
+	// under Go 1.26 and Go 1.27 gofmt. Naming them keeps the file stable
+	// across the toolchain CI uses and the one developers run locally.
+	files := map[string]string{
 		"/home/bob/public_html/sites/default/settings.php": drupalSettings,
-	}, map[string]bool{
+	}
+	statOK := map[string]bool{
 		"/home/bob/public_html/core/lib/Drupal.php": true,
 	}
+	return files, statOK
 }
 
 func joomlaFiles() map[string]string {
