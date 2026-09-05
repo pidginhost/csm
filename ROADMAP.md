@@ -187,30 +187,14 @@ failed-transaction recovery. See `docs/src/development.md` for the command.
 
 ## 12. Rule corpus false-positive gates in CI
 
-**Status:** planned. The gates exist and are skipped.
+**Status:** implemented. Every pipeline provisions checksum-pinned public
+WordPress, WooCommerce and Elementor archives and runs all four engine gates
+in the production YARA-X builder image. Missing inputs and regressions block
+publication. Corpus inventories, versions and per-rule budgets are retained
+as CI artifacts. See [the corpus gate documentation](docs/src/clean-corpus.md)
+for measured coverage and known gaps.
 
-The signature and YARA false-positive gates need a corpus of known-clean
-web application code. No such corpus is published with the repository, so
-CI skips both gates and a rule change can only be measured locally.
-
-### Decision
-
-Publish a hash-pinned clean corpus as a CI artifact and make both gates
-required. Pinning matters more than size: a corpus that drifts turns a
-real regression into noise and a passing gate into a coin toss.
-
-Open questions for whoever picks this up: where the corpus is hosted, how
-its licence permits redistribution, and how often it is refreshed.
-
-### Out of scope
-
-Growing the corpus beyond what is needed to exercise the current rule
-families.
-
-### Size: 1 hour to write the proposal, half a day to implement once the
-hosting decision is made.
-
----
+Corpus growth and detector false-positive reductions remain ongoing work.
 
 ## 13. Narrow the service unit's write scope
 

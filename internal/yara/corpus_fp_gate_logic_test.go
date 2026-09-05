@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/corpusgate"
 	csmyara "github.com/pidginhost/csm/internal/yara"
 )
 
@@ -136,4 +137,29 @@ func writeCorpusFile(t *testing.T, root, name, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestCleanCorpusGateRejectsAlwaysMatchingRule(t *testing.T) {
+	rules := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rules, "bad.yar"), []byte("rule bad_detector { condition: true }"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	scanner, err := csmyara.NewScanner(rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	writeCorpusFile(t, root, "clean.php", "<?php echo 'clean';")
+	result, err := scanCleanCorpus(root, 1, corpusMaxFileBytes, func(path string, data []byte) ([]csmyara.Match, error) {
+		return csmyara.ScanBytesChecked(scanner, path, data)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.scanned != 1 || result.hits["bad_detector"] != 1 {
+		t.Fatalf("bad rule did not run: %+v", result)
+	}
+	if err := (corpusgate.Report{Engine: "yara", Scanned: result.scanned, Hits: result.hits}).Validate(); err == nil {
+		t.Fatal("bad detector passed corpus gate")
+	}
 }

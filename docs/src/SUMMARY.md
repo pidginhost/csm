@@ -46,4 +46,5 @@
 # Development
 
 - [Building and Testing](development.md)
+  - [Clean Application Corpus](clean-corpus.md)
 - [Release Signing](release-signing.md)

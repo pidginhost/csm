@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/corpusgate"
 )
 
-// corpusEnv names the environment variable that points the opt-in corpus gate at
-// a tree of real JavaScript files. The gate never runs in normal CI: it is a
-// false-positive measurement over private host content, so it is skipped unless
-// an operator sets this variable to a corpus directory.
+// corpusEnv points to the pinned public corpus in the required CI gate.
+// Developers may supply another local corpus for additional measurements.
 const corpusEnv = "CSM_JSTAINT_CORPUS"
 
 const (
@@ -61,7 +61,10 @@ type finding struct {
 // set, so any finding blocks release. Timing and memory measurements are
 // reported for review rather than enforced as hardware-sensitive test limits.
 func TestCorpusGate(t *testing.T) {
-	root := os.Getenv(corpusEnv)
+	root, rootErr := corpusgate.Root(corpusEnv)
+	if rootErr != nil {
+		t.Fatal(rootErr)
+	}
 	if root == "" {
 		t.Skipf("set %s to a corpus directory to run the opt-in false-positive gate", corpusEnv)
 	}
@@ -76,6 +79,22 @@ func TestCorpusGate(t *testing.T) {
 	warmup, err := runCorpusPass(files)
 	if err != nil {
 		t.Fatalf("warm-up corpus pass: %v", err)
+	}
+	report := corpusgate.Report{Engine: "jstaint", Scanned: warmup.fileCount, Hits: map[string]int{"key_exfiltration": len(warmup.findings)}, Thresholds: map[string]int{}, Statuses: map[string]int{}}
+	for status, count := range warmup.statuses {
+		report.Statuses[status.String()] = count
+	}
+	report.StatusThresholds = map[string]int{"oversize": 7, "parse_error": 12}
+	if err := report.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("CSM_CORPUS_REQUIRED") == "1" {
+		if warmup.statuses[StatusAnalyzed] < 100 {
+			t.Fatal("required corpus analyzed fewer than 100 JavaScript files")
+		}
+		if err := report.Validate(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	validateCorpusPass(t, "warm-up", warmup)
 

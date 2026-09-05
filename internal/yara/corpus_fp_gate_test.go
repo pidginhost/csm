@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/corpusgate"
 	csmyara "github.com/pidginhost/csm/internal/yara"
 )
 
@@ -43,7 +43,10 @@ var corpusBaseline = map[string]int{}
 //
 //	YARA_FP_CORPUS=/path/to/corpus go test -tags yara ./internal/yara/ -run TestRepositoryRulesAgainstCleanCorpus -v
 func TestRepositoryRulesAgainstCleanCorpus(t *testing.T) {
-	root := os.Getenv("YARA_FP_CORPUS")
+	root, rootErr := corpusgate.Root("YARA_FP_CORPUS")
+	if rootErr != nil {
+		t.Fatal(rootErr)
+	}
 	if root == "" {
 		t.Skip("YARA_FP_CORPUS not set")
 	}
@@ -71,18 +74,26 @@ func TestRepositoryRulesAgainstCleanCorpus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var regressions []string
-	for name, count := range result.hits {
-		if count > corpusBaseline[name] {
-			regressions = append(regressions, name)
+	for _, rule := range scanner.GlobalRules().Slice() {
+		if _, found := result.hits[rule.Identifier()]; !found {
+			result.hits[rule.Identifier()] = 0
 		}
 	}
-	sort.Strings(regressions)
-	for _, name := range regressions {
-		t.Errorf("rule %s fired %d times on clean third-party code (baseline %d), first at %s",
-			name, result.hits[name], corpusBaseline[name], result.examples[name])
+	report := corpusgate.Report{Engine: "yara", Scanned: result.scanned, Hits: result.hits, Thresholds: corpusBaseline}
+	if err := report.Save(); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("scanned %d files with %d rules; %d rules fired", result.scanned, scanner.RuleCount(), len(result.hits))
+	if err := report.Validate(); err != nil {
+		t.Error(err)
+	}
+	fired := 0
+	for rule, count := range result.hits {
+		if count > 0 {
+			fired++
+			t.Logf("rule %s hits=%d threshold=%d example=%s", rule, count, corpusBaseline[rule], result.examples[rule])
+		}
+	}
+	t.Logf("scanned %d files with %d rules; %d rules fired", result.scanned, scanner.RuleCount(), fired)
 }
 
 type cleanCorpusResult struct {
