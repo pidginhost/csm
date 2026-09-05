@@ -35,3 +35,38 @@ POST /api/v1/email/quarantine/   Release or delete quarantined email
 - `email_forwarder_audit` - audits forwarders for exfiltration redirects
 - `mail_queue` - alerts on queue buildup (spam outbreak indicator)
 - `mail_per_account` - per-account sending volume spikes
+
+## Email password audit
+
+The deep scan checks mailbox passwords against account-derived candidates and the
+bundled weak-password list. Verification runs inside CSM; passwords and stored
+hashes are never passed to subprocesses or included in findings. Confirmed matches
+can still use the HIBP range API for breach counts, sending only a SHA1 prefix.
+
+Supported stored formats follow [Dovecot password schemes](https://doc.dovecot.org/2.3/configuration_manual/authentication/password_schemes/):
+
+| Scheme | Accepted format and audit limit |
+| --- | --- |
+| CRYPT, SHA512-CRYPT, SHA256-CRYPT | SHA crypt with a nonempty salt of up to 16 characters; 1,000 to 1,000,000 rounds, or the standard 5,000 when omitted |
+| CRYPT, MD5-CRYPT | MD5 crypt with a nonempty salt of up to 8 characters |
+| CRYPT, BLF-CRYPT | bcrypt 2a, 2b, or 2y; cost 4 through 14 |
+| ARGON2I, ARGON2ID | Version 19; at most 64 MiB memory, 4 passes, and 4 lanes; salt 8 to 64 bytes, digest 16 to 64 bytes |
+| PLAIN | Plaintext |
+| PLAIN-MD5, LDAP-MD5, SMD5 | MD5 digests; salted variants allow 1 to 64 salt bytes |
+| SHA, SHA1, SSHA, SHA256, SSHA256, SHA512, SSHA512 | SHA digests; salted variants allow 1 to 64 salt bytes |
+
+Unprefixed hashes use CRYPT. Scheme names and `.hex`, `.b64`, and `.base64`
+encoding suffixes are case-insensitive. Unsalted digests also accept Dovecot's
+hex/base64 autodetection. DES crypt, bcrypt 2x, yescrypt, PBKDF2, and
+mechanism-specific formats such as SCRAM are not audited.
+
+Stored values are limited to 4 KiB and candidates to 256 bytes without embedded
+NULs. At most three hash calculations run concurrently. Cancellation returns
+promptly; a calculation already running keeps its worker slot until its bounded
+work finishes.
+
+An unsupported, malformed, or over-budget hash produces
+`email_password_audit_incomplete`. CSM keeps earlier password findings and does
+not record that mailbox as successfully audited. Other mailboxes continue to be
+checked, and incomplete mailboxes are retried on a later deep scan. Upgrading
+starts a fresh audit even when an older CSM version recorded the same hash.

@@ -416,7 +416,8 @@ func TestCheckWordlist_NoMatchesWhenEmpty(t *testing.T) {
 
 	withMockOS(t, &mockOS{}) // missing wordlist → loadWeakPasswords returns nil
 
-	if got := checkWordlist("{SHA512-CRYPT}$6$abc$xyz"); got != "" {
+	v := mustEmailPasswordVerifier(t, "{PLAIN}fixture-password")
+	if got, err := v.firstMatch(context.Background(), loadWeakPasswords()); got != "" || err != nil {
 		t.Errorf("empty wordlist should yield empty match, got %q", got)
 	}
 }

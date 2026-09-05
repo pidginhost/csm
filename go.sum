@@ -18,6 +18,10 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/getsentry/sentry-go v0.49.0 h1:Ehejknu1l023Ub7QoRBVLAI7g3Jnhqku4oWx4B4Sh5s=
 github.com/getsentry/sentry-go v0.49.0/go.mod h1:nuMJAoCfe1u0Bts2ocyNI+TW8HT84vRMqwA5Qq/SKUI=
+github.com/go-crypt/crypt v0.14.15 h1:q1i5OMpL05r935IxWmXgpDAVF0nvi4SMoHhGXLBQUEQ=
+github.com/go-crypt/crypt v0.14.15/go.mod h1:0n/to1VqIZPENj2yEUa/sLLYYnmupma6cp+QMX4zfF0=
+github.com/go-crypt/x v0.4.16 h1:WXdY28H/0MsXnH+gwerxuCcvBTJPkBG90u6oS4gIPZI=
+github.com/go-crypt/x v0.4.16/go.mod h1:vmVFA/d/oLrEaCbqsLcjBMlTqF8u8pvH/c4+EJ/ped8=
 github.com/go-errors/errors v1.4.2 h1:J6MZopCL4uSllY1OfXM374weqZFFItUbrImctkmUxIA=
 github.com/go-errors/errors v1.4.2/go.mod h1:sIVyrIiJhuEF+Pj9Ebtd6P/rEYROXFi3BopGUQ5a5Og=
 github.com/go-quicktest/qt v1.101.1-0.20240301121107-c6c8733fa1e6 h1:teYtXy9B7y5lHTp8V9KPxpYRAVA7dozigQcMiBust1s=

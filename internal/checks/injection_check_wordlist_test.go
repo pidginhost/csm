@@ -1,7 +1,7 @@
 package checks
 
 import (
-	"errors"
+	"context"
 	"testing"
 )
 
@@ -18,42 +18,23 @@ func withWeakPasswords(t *testing.T, words []string) {
 	t.Cleanup(func() { weakPasswords = prevWords })
 }
 
-func TestCheckWordlistAllPasswordsRejectReturnsEmpty(t *testing.T) {
-	withWeakPasswords(t, []string{"password", "letmein", "qwerty"})
-	withMockCmd(t, &mockCmd{
-		// doveadm exits non-zero for every candidate → no match.
-		run: func(string, ...string) ([]byte, error) { return nil, errors.New("auth failed") },
-	})
-
-	if got := checkWordlist("{CRYPT}$6$salt$hash"); got != "" {
-		t.Errorf("expected empty string when no password matches, got %q", got)
-	}
-}
-
-func TestCheckWordlistMatchReturnsFirstMatch(t *testing.T) {
-	withWeakPasswords(t, []string{"wrongpw", "matchme", "thirdpw"})
-	withMockCmd(t, &mockCmd{
-		run: func(name string, args ...string) ([]byte, error) {
-			// doveadm pw -t {hash} -p {candidate} → exit 0 means match.
-			// Match only when candidate is "matchme" (it's the last arg).
-			for _, a := range args {
-				if a == "matchme" {
-					return nil, nil
-				}
+func TestEmailPasswordWordlist(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		words []string
+		want  string
+	}{
+		{"mismatch", []string{"password", "letmein", "qwerty"}, ""},
+		{"match", []string{"wrongpw", "matchme", "thirdpw"}, "matchme"},
+		{"empty", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withWeakPasswords(t, tc.words)
+			v := mustEmailPasswordVerifier(t, "{PLAIN}matchme")
+			got, err := v.firstMatch(context.Background(), loadWeakPasswords())
+			if err != nil || got != tc.want {
+				t.Fatalf("match = %q, %v; want %q", got, err, tc.want)
 			}
-			return nil, errors.New("no match")
-		},
-	})
-
-	if got := checkWordlist("{CRYPT}$6$salt$hash"); got != "matchme" {
-		t.Errorf("expected 'matchme' to be returned, got %q", got)
-	}
-}
-
-func TestCheckWordlistEmptyListReturnsEmpty(t *testing.T) {
-	withWeakPasswords(t, nil)
-	withMockCmd(t, &mockCmd{})
-	if got := checkWordlist("{CRYPT}$any"); got != "" {
-		t.Errorf("empty wordlist should yield empty result, got %q", got)
+		})
 	}
 }
