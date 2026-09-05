@@ -106,3 +106,42 @@ func TestSpamScale_MalformedCappedSampleStaysIncompleteAndHedged(t *testing.T) {
 		t.Error("malformed spam row did not mark the database scan incomplete")
 	}
 }
+
+// Each spam pattern is a separate finding with its own keyword in the message.
+// Pinning the identity must not merge them: an operator who dismisses the
+// pharmacy row would otherwise lose the gambling one with it.
+func TestSpamScale_EachKeywordKeepsItsOwnIdentity(t *testing.T) {
+	prev := runMySQLQuery
+	cloaked := map[int]string{}
+	for i, sp := range dbSpamPatterns {
+		cloaked[i] = fmt.Sprintf(
+			`<div style="position:absolute;left:-12623px;width:1000px"><a href="https://spam.example/%s/">%s</a></div>`,
+			sp.keyword, sp.keyword)
+	}
+	runMySQLQuery = func(_ wpDBCreds, query string) []string {
+		if !strings.Contains(query, "pattern_index") || !strings.Contains(query, "post_content LIKE") {
+			return nil
+		}
+		var rows []string
+		for i := range dbSpamPatterns {
+			rows = append(rows, fmt.Sprintf("%d\t%d\t%s", i, 1000+i, cloaked[i]))
+		}
+		return rows
+	}
+	t.Cleanup(func() { runMySQLQuery = prev })
+
+	creds := wpDBCreds{dbHost: "localhost", dbName: "wp", dbUser: "u", dbPass: "p"}
+	keys := map[string]string{}
+	for _, f := range checkWPPosts("alice", creds, "wp_") {
+		if f.Check != "db_spam_injection" {
+			continue
+		}
+		if prevMsg, clash := keys[f.Key()]; clash {
+			t.Errorf("two spam keywords share one identity %q:\n %s\n %s", f.Key(), prevMsg, f.Message)
+		}
+		keys[f.Key()] = f.Message
+	}
+	if len(keys) < 2 {
+		t.Fatalf("expected a finding per spam pattern, got %d", len(keys))
+	}
+}

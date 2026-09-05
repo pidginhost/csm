@@ -134,6 +134,11 @@ func checkWPStoredCode(user string, creds wpDBCreds, prefix string) []alert.Find
 					"so it is not visible to any filesystem scan.\nMatched: %s%s",
 					row.id, prefix, strings.Join(names, ", "),
 					storedCloakNote(cacheDefeat, crawler))),
+			DedupKey: dbContentDedupKey(creds, prefix,
+				fmt.Sprintf("Snippet %s is stored in %sposts for WPCode, "+
+					"so it is not visible to any filesystem scan.\nMatched: %s%s",
+					row.id, prefix, strings.Join(names, ", "),
+					storedCloakNote(cacheDefeat, crawler))),
 		})
 	}
 	return findings

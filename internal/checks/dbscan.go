@@ -3,6 +3,8 @@ package checks
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net/netip"
@@ -321,6 +323,8 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 			Check:    "db_content_scan_incomplete",
 			Message:  fmt.Sprintf("WordPress multisite database scan reached its %d-site safety limit (account: %s)", maxWPSecondaryBlogs, user),
 			Details: dbContentFindingDetails(creds, prefix,
+				"The network has more active secondary sites than one scheduled scan can safely inspect."),
+			DedupKey: dbContentDedupKey(creds, prefix,
 				"The network has more active secondary sites than one scheduled scan can safely inspect."),
 		})
 	}
@@ -688,6 +692,8 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 					Message:  fmt.Sprintf("WordPress %s contains malicious code (account: %s)", optName, user),
 					Details: dbContentFindingDetails(creds, prefix,
 						fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
+					DedupKey: dbContentDedupKey(creds, prefix,
+						fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
 				})
 			} else if reason, bad := siteURLPoisonReason(parts[1]); bad {
 				findings = append(findings, alert.Finding{
@@ -695,6 +701,9 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 					Check:    "db_siteurl_invalid",
 					Message:  fmt.Sprintf("WordPress %s is not a site address (account: %s): %s", optName, user, reason),
 					Details: dbContentFindingDetails(creds, prefix,
+						fmt.Sprintf("%s = %s\nWordPress builds every asset URL from this value, so the address it names is loaded on every page.",
+							optName, truncateDB(parts[1], 200))),
+					DedupKey: dbContentDedupKey(creds, prefix,
 						fmt.Sprintf("%s = %s\nWordPress builds every asset URL from this value, so the address it names is loaded on every page.",
 							optName, truncateDB(parts[1], 200))),
 				})
@@ -752,6 +761,10 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 				fmt.Sprintf("Option: %s", optName),
 				fmt.Sprintf("Malicious URL: %s", maliciousURL),
 				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
+			DedupKey: dbContentDedupKey(creds, prefix,
+				fmt.Sprintf("Option: %s", optName),
+				fmt.Sprintf("Malicious URL: %s", maliciousURL),
+				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
 		})
 	}
 	queryComplete := creds.queryFailed == nil || !*creds.queryFailed
@@ -780,6 +793,9 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			Check:    "db_options_injection",
 			Message:  fmt.Sprintf("Malicious content in core wp_option '%s' (account: %s)", parts[0], user),
 			Details: dbContentFindingDetails(creds, prefix,
+				fmt.Sprintf("Option: %s", parts[0]),
+				fmt.Sprintf("Content preview: %s", truncateDB(parts[1], 200))),
+			DedupKey: dbContentDedupKey(creds, prefix,
 				fmt.Sprintf("Option: %s", parts[0]),
 				fmt.Sprintf("Content preview: %s", truncateDB(parts[1], 200))),
 		})
@@ -872,6 +888,9 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			Details: dbContentFindingDetails(creds, prefix,
 				fmt.Sprintf("Affected post IDs: %s", strings.Join(confirmedIDs, ", ")),
 				fmt.Sprintf("Pattern: %s", mp.pattern)),
+			DedupKey: dbContentDedupKey(creds, prefix,
+				fmt.Sprintf("Affected post IDs: %s", strings.Join(confirmedIDs, ", ")),
+				fmt.Sprintf("Pattern: %s", mp.pattern)),
 		})
 	}
 
@@ -928,12 +947,43 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			Message: fmt.Sprintf("WordPress posts contain cloaked spam keyword '%s' (%s posts, account: %s)",
 				sp.keyword, spamCountLabel(n, spamSampled[i] >= dbSpamSampleLimit), user),
 			Details: dbContentFindingDetails(creds, prefix),
+			// The pattern is the identity; the count is not. Spam grows between
+			// scans, and that is the same finding, not a new one.
+			DedupKey: dbContentDedupKey(creds, prefix, "keyword="+sp.keyword),
 		})
 	}
 
 	return findings
 }
 
+// dbContentDedupKey pins a database-content finding's identity to the database
+// it was found in and to what was found there. Callers pass the same lines they
+// gave dbContentFindingDetails.
+//
+// The document-root note is deliberately excluded. It reports what the panel's
+// domain map said during this scan, not anything the scan found in the
+// database, and that map read fails transiently -- when it does the note
+// disappears, the default Message+Details identity changes with it, and the
+// store keeps a second copy of a finding that never changed.
+func dbContentDedupKey(creds wpDBCreds, prefix string, lines ...string) string {
+	identity := make([]byte, 0, 128)
+	appendField := func(value string) {
+		identity = binary.BigEndian.AppendUint64(identity, uint64(len(value)))
+		identity = append(identity, value...)
+	}
+	appendField(creds.dbHost)
+	appendField(creds.dbName)
+	appendField(prefix)
+	for _, line := range lines {
+		appendField(line)
+	}
+	digest := sha256.Sum256(identity)
+	return fmt.Sprintf("db-content:%x", digest[:12])
+}
+
+// dbContentFindingDetails renders a database-content finding's details. The
+// document-root note it adds is scan-time context, not part of what was found,
+// so every caller pairs this with dbContentDedupKey over the same lines.
 func dbContentFindingDetails(creds wpDBCreds, prefix string, lines ...string) string {
 	out := []string{
 		fmt.Sprintf("Database: %s", creds.dbName),

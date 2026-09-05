@@ -80,5 +80,8 @@ func checkWPPostVolumeBurst(user string, creds wpDBCreds, prefix string) []alert
 				"doorway spam arrives, and it is visible without knowing what language or vocabulary the "+
 				"spam uses.\nReview the recent posts before acting: a genuine content migration looks the same.",
 				ageDays)),
+		// One burst per site. The details count days and posts, all of which
+		// move on their own between scans without the burst being a new one.
+		DedupKey: dbContentDedupKey(creds, prefix),
 	}}
 }

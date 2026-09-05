@@ -67,6 +67,11 @@ func newExternalScriptFindings(user string, creds wpDBCreds, prefix, option, val
 				fmt.Sprintf("Script host: %s", host),
 				fmt.Sprintf("Content preview: %s", truncateDB(value, 200)),
 				"First appearance of this host since the site's baseline; verify it is a service the site owner added."),
+			DedupKey: dbContentDedupKey(creds, prefix,
+				fmt.Sprintf("Option: %s", option),
+				fmt.Sprintf("Script host: %s", host),
+				fmt.Sprintf("Content preview: %s", truncateDB(value, 200)),
+				"First appearance of this host since the site's baseline; verify it is a service the site owner added."),
 		})
 	}
 	return findings

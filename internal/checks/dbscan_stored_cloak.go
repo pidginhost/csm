@@ -546,6 +546,14 @@ func storedCloakFindingWithComponents(user string, creds wpDBCreds, prefix strin
 				"and user-agent checks are ordinary separately, but not together here.",
 			"Cache defeat: "+strings.Join(cacheDefeat, ", "),
 			"Crawlers named: "+strings.Join(crawler, ", ")),
+		DedupKey: dbContentDedupKey(creds, prefix,
+			fmt.Sprintf("Snippet %s is stored in %sposts, so no filesystem scan reads it.", row.id, prefix),
+			"It disables caching for the request and, in the same snippet, tests the "+
+				"visitor against a search or SEO crawler. Cloaks need both: the decision "+
+				"is per request, so the page must not be served from cache. Cache helpers "+
+				"and user-agent checks are ordinary separately, but not together here.",
+			"Cache defeat: "+strings.Join(cacheDefeat, ", "),
+			"Crawlers named: "+strings.Join(crawler, ", ")),
 	}
 }
 
