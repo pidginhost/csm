@@ -2044,44 +2044,7 @@ func (d *Daemon) startLogWatchers() {
 		logFiles = append(logFiles, logFile{"", eximMainlogPath, eximHandler})
 	}
 
-	// Mail-log reader: factory selects file vs journal based on cfg.MailLogs.
-	// Replaces the old cPanel-only /var/log/maillog registration; now works
-	// on all platforms using the platform-default path or journal fallback.
-	{
-		mailReader, mlErr := maillog.New(d.cfg.MailLogs, hostInfo.MailLogPath())
-		if mlErr != nil {
-			csmlog.Warn("mail log reader disabled", "err", mlErr)
-			d.MarkWatcher("maillog", false)
-		} else {
-			// A file-backed reader can go dark if its log path disappears
-			// mid-run (syslog->journald migration). Surface that instead of
-			// silently tailing a dead fd: mark the watcher unhealthy and
-			// emit a finding so the operator knows mail detection degraded.
-			if fr, ok := mailReader.(*maillog.FileReader); ok {
-				fr.SetOnGone(d.handleMailLogSourceGone)
-				fr.SetOnRestored(d.handleMailLogSourceRestored)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			go func() { <-d.stopCh; cancel() }()
-			mailLines, mlErr := mailReader.Run(ctx)
-			if mlErr != nil {
-				cancel()
-				csmlog.Warn("mail log reader failed to start", "err", mlErr)
-				d.MarkWatcher("maillog", false)
-			} else {
-				d.MarkWatcher("maillog", true)
-				d.wg.Add(1)
-				obs.Go("maillog-consumer", func() {
-					defer d.wg.Done()
-					for line := range mailLines {
-						if !d.dispatchMailLogLine(line, mailHandler) {
-							return
-						}
-					}
-				})
-			}
-		}
-	}
+	d.startMailLogReader(hostInfo.MailLogPath(), mailHandler)
 
 	// Only receive PHP Shield events if enabled AND actually installed. A stale
 	// php_shield.enabled flag (e.g. after an upgrade wiped /opt/csm) would
@@ -2329,7 +2292,7 @@ func (d *Daemon) handleMailLogSourceGone(err error) {
 	finding := alert.Finding{
 		Severity:  alert.Warning,
 		Check:     "mail_log_source_unavailable",
-		Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded until it returns or the daemon restarts", err),
+		Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded while attachment is retried", err),
 		Timestamp: time.Now(),
 	}
 	select {

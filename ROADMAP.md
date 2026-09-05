@@ -149,18 +149,19 @@ Replacing the in-memory cache (item 7.1 result stands).
 ## 10. Security audit v5 feature backlog
 
 **Status:** partially implemented. Completed items were removed after
-landing; their commits and CHANGELOG entries are the archive. These three
+landing; their commits and CHANGELOG entries are the archive. These two
 larger detection and integration items remain:
 
 - **Y11 -- spray ingests HTTP-flood / UA-spoof.** Add the HTTP checks to
   the spray default set plus a request-target identity dimension.
   `2026-05-29-y11-spray-http-signals-design.md`.
-- **Y15 -- mail_logs source re-pick.** FileReader missing-file callback ->
-  finding + unhealthy watcher (+ optional live journal re-pick).
-  `2026-05-29-y15-maillog-source-repick-design.md`.
 - **Y12 -- cross-server / fleet ingest.** DECISION: phpanel-side
   correlation vs peer-to-peer ingest endpoint + trust model.
   `2026-05-29-y12-fleet-ingest-design.md`.
+
+Y15 mail source supervision is implemented: failed attachment retries with
+bounded backoff and unhealthy status, while automatic selection can switch
+from a missing file to journal input. Explicit source modes stay fixed.
 
 ---
 
@@ -323,4 +324,3 @@ without having examined a single file, and every later stage is skipped.
 Raise the timeout enough to leave headroom on a cold cache under load.
 
 ### Size: 10 minutes.
-

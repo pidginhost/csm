@@ -83,6 +83,20 @@ survives temporary EOF up to the 64 KiB limit, including its newline. Longer
 records are discarded through the next newline even when written across
 several polls. Rotation and detected truncation clear pending record state.
 
+Mail source attachment retries after failures, starting at one second and
+doubling to a maximum delay of 30 seconds. The watcher remains unhealthy and
+reports an unavailable-source finding until a reader attaches successfully.
+Repeated identical errors are not re-emitted. Retries use the current mail
+source configuration and start at the current tail, so delayed attachment does
+not count historical authentication failures as new activity.
+
+With `mail_logs.source: auto`, each retry chooses the configured or platform
+file if present, otherwise the configured journal units. A file missing for
+90 seconds triggers a new selection. The old reader stops before a replacement
+starts. Explicit `file` and `journal` modes retry their selected source without
+switching, and a working reader stays attached until it stops or loses its file.
+Journal input requires a build with journal support.
+
 ## SMTP / Dovecot Brute-Force Tracker
 
 Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
