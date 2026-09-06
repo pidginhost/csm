@@ -7,6 +7,10 @@ if [[ "$(uname -s)" != Linux || $$ != 1 || ! -e /src/.git || ! -d /gocache || ! 
   exit 1
 fi
 cd /src
+# Go stamps builds from VCS metadata. The checkout belongs to the CI user while
+# this container runs as root, so Git rejects it as dubiously owned. Trust it
+# system-wide: units started by the manager do not inherit this environment.
+git config --system --add safe.directory /src
 artifacts=/src/.cache/systemd-account-roots
 production=${1:-}
 mkdir -p "$artifacts"

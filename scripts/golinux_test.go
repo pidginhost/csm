@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -498,5 +499,56 @@ func TestGoLinuxPrivilegedModeIsExplicit(t *testing.T) {
 				t.Fatalf("cgroup namespace not private: %s", out)
 			}
 		})
+	}
+}
+
+// A CI shell runner checks out as its own user while the container runs as
+// root, so Git refuses the bind-mounted repository as dubiously owned and Go
+// VCS stamping fails with exit status 128. Trust the mounted paths through the
+// environment rather than writing config into the image.
+func TestGoLinuxTrustsTheMountedRepository(t *testing.T) {
+	out, code := runGoLinux(t, repoRoot(t), nil, "go", "build", "./...")
+	if code != 0 {
+		t.Fatalf("wrapper exited %d: %s", code, out)
+	}
+	args := invocationArgs(t, out)
+	settings := map[string]string{}
+	count := ""
+	for i, arg := range args {
+		if arg != "-e" || i+1 >= len(args) {
+			continue
+		}
+		key, value, ok := strings.Cut(args[i+1], "=")
+		if !ok {
+			continue
+		}
+		switch {
+		case key == "GIT_CONFIG_COUNT":
+			count = value
+		case strings.HasPrefix(key, "GIT_CONFIG_KEY_"):
+			settings[strings.TrimPrefix(key, "GIT_CONFIG_KEY_")] = value
+		}
+	}
+	if count == "" {
+		t.Fatalf("wrapper does not configure Git for the container:\n%q", args)
+	}
+	total, err := strconv.Atoi(count)
+	if err != nil || total < 1 {
+		t.Fatalf("GIT_CONFIG_COUNT = %q: %v", count, err)
+	}
+	trusted := map[string]bool{}
+	for index := 0; index < total; index++ {
+		key := strconv.Itoa(index)
+		if settings[key] != "safe.directory" {
+			t.Fatalf("GIT_CONFIG_KEY_%s = %q, want safe.directory", key, settings[key])
+		}
+		for i, arg := range args {
+			if arg == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "GIT_CONFIG_VALUE_"+key+"=") {
+				trusted[strings.TrimPrefix(args[i+1], "GIT_CONFIG_VALUE_"+key+"=")] = true
+			}
+		}
+	}
+	if !trusted["/src"] {
+		t.Fatalf("the mounted workspace is not trusted: %v", trusted)
 	}
 }
