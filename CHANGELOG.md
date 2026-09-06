@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- PHP taint analysis no longer reports remote execution for an assertion over a type check, and recognises the filesystem path constants of Joomla, Drupal, OpenCart and Magento rather than only WordPress's.
 - Operator copies of the deploy scripts are now reported by `csm doctor` when they predate mandatory signature verification, so a hand-maintained copy cannot keep installing unverified releases unnoticed.
 - The SOCKS proxy rule no longer treats a single 0x05 byte as evidence, which had reduced it to matching any file that opens a socket.
 - Release verification now rejects special and oversized inputs without blocking. Python verification no longer loads modules from caller-controlled locations.
