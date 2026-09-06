@@ -155,7 +155,7 @@ csm verify-release csm-signing.pub \
 ```
 
 It exits zero only for an artifact signed by the given key. The installer and
-deploy scripts select the same two verifiers in that order, and refuse the
-artifact when neither is available.
+deploy scripts try OpenSSL 3.0+, then an installed `csm verify-release`, then
+`python3-cryptography`, and refuse the artifact when none is available.
 
 If verification fails, treat the artifact as untrusted. Do not install it.

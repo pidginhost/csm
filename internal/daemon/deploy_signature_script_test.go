@@ -57,13 +57,38 @@ func TestVerifySignatureRejectsOldOpenSSLWithoutGoVerifier(t *testing.T) {
 		for _, strict := range []string{"0", "1"} {
 			t.Run(script.name+"/strict="+strict, func(t *testing.T) {
 				stubs := rawinCapableOpenSSL("200") + oldOpenSSL()
-				env := []string{"CSM_REQUIRE_SIGNATURES=" + strict, "CSM_VERIFIER_BINARY=/nonexistent/csm"}
+				env := []string{"CSM_REQUIRE_SIGNATURES=" + strict, "CSM_VERIFIER_BINARY=/nonexistent/csm", "CSM_DISABLE_PYTHON_VERIFIER=1"}
 				output, code := runVerifySignature(t, script, stubs, env, "")
 				if code == 0 || !strings.Contains(output, "no Ed25519 verifier available") || !strings.Contains(output, "signed APT/DNF repository") {
 					t.Fatalf("unsupported verifier must fail with the supported package path: exit=%d output=%s", code, output)
 				}
 			})
 		}
+	}
+}
+
+// The first upgrade to a build that provides verify-release is performed by
+// the build that does not have it yet, so EL8 needs a verifier that depends on
+// neither. python3-cryptography ships with the distribution and verifies
+// Ed25519, which keeps the bootstrap upgrade on the signed pipeline path.
+func TestVerifySignatureFallsBackToPythonWhenNoOtherVerifier(t *testing.T) {
+	if err := exec.Command("python3", "-c", "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey").Run(); err != nil {
+		t.Skip("python3-cryptography without ed25519 support")
+	}
+	for _, script := range deploySignatureScripts() {
+		t.Run(script.name, func(t *testing.T) {
+			stubs := rawinCapableOpenSSL("200") + oldOpenSSL()
+			env := []string{"CSM_VERIFIER_BINARY=/nonexistent/csm"}
+			output, code := runVerifySignature(t, script, stubs, env, "")
+			// The harness signs nothing, so python must reject it. Reaching a
+			// verification verdict at all proves the fallback was selected.
+			if code == 0 || !strings.Contains(output, "SIGNATURE VERIFICATION FAILED") {
+				t.Fatalf("python verifier not selected: exit=%d output=%s", code, output)
+			}
+			if strings.Contains(output, "no Ed25519 verifier available") {
+				t.Fatalf("python verifier not detected: %s", output)
+			}
+		})
 	}
 }
 
@@ -152,8 +177,12 @@ func TestVerifySignatureSuccessDoesNotAbortEnclosingFunction(t *testing.T) {
 				verifyingOpenSSL(),
 				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
 				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "python_verifies_ed25519"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_with_python"),
 				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
 				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "python_verifies_ed25519"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_with_python"),
 				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_signature"),
 				"stage_assets() {",
 				"    verify_signature \"$PAYLOAD_FILE\" \"https://example.invalid/csm.sig\"",
@@ -426,6 +455,8 @@ func TestReleaseInstallScriptsVerifyAssetsBeforeExtraction(t *testing.T) {
 				"assets.tar.gz.sha256",
 				"openssl_verifies_ed25519",
 				"csm_release_verifier",
+				"python_verifies_ed25519",
+				"verify_with_python",
 				"verify_signature",
 				"validate_assets_archive",
 			} {
@@ -1781,6 +1812,8 @@ func runVerifySignature(t *testing.T, script deploySignatureScript, stubs string
 		stubs,
 		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
 		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
+		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "python_verifies_ed25519"),
+		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_with_python"),
 		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_signature"),
 		"verify_signature \"$PAYLOAD_FILE\" \"https://example.invalid/csm.sig\"",
 		"",

@@ -40,6 +40,8 @@ func runVerifySignatureWithVersion(t *testing.T, script deploySignatureScript, s
 		extractShellFunction(t, scriptPath, "missing_signature_allowed"),
 		extractShellFunction(t, scriptPath, "openssl_verifies_ed25519"),
 		extractShellFunction(t, scriptPath, "csm_release_verifier"),
+		extractShellFunction(t, scriptPath, "python_verifies_ed25519"),
+		extractShellFunction(t, scriptPath, "verify_with_python"),
 		extractShellFunction(t, scriptPath, "verify_signature"),
 		call,
 		"",

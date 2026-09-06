@@ -32,14 +32,17 @@ func TestCurrentReleaseRequiresAuthenticityBeforeExecution(t *testing.T) {
 	}
 	help, _ := exec.Command("openssl", "pkeyutl", "-help").CombinedOutput()
 	capable := strings.Contains(string(help), "-rawin")
+	// Where OpenSSL cannot verify Ed25519, python3-cryptography does, so an
+	// authentic artifact must still verify and run on those hosts.
+	pythonCapable := exec.Command("python3", "-c", "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey").Run() == nil
 	payload := []byte("#!/bin/sh\nprintf executed > \"$EXECUTION_MARKER\"\n")
 	for _, script := range deploySignatureScripts() {
-		for _, tc := range []string{"valid", "tampered", "wrong-key", "missing-signature", "missing-key", "missing-verifier", "old-openssl"} {
+		for _, tc := range []string{"valid", "tampered", "wrong-key", "missing-signature", "missing-key", "missing-verifier", "old-openssl", "old-openssl-tampered", "old-openssl-wrong-key"} {
 			t.Run(script.name+"/"+tc, func(t *testing.T) {
 				dir := t.TempDir()
 				artifact, signature, marker := filepath.Join(dir, "artifact"), filepath.Join(dir, "signature"), filepath.Join(dir, "executed")
 				data := append([]byte(nil), payload...)
-				if tc == "tampered" {
+				if strings.Contains(tc, "tampered") {
 					data = append(data, []byte("# changed\n")...)
 				}
 				if err := os.WriteFile(artifact, data, 0700); err != nil {
@@ -49,7 +52,7 @@ func TestCurrentReleaseRequiresAuthenticityBeforeExecution(t *testing.T) {
 					t.Fatal(err)
 				}
 				key := keyPEM(public)
-				if tc == "wrong-key" {
+				if strings.Contains(tc, "wrong-key") {
 					key = keyPEM(wrong)
 				}
 				if tc == "missing-key" {
@@ -68,7 +71,7 @@ pkg_download() { /bin/cp "$SOURCE_SIGNATURE" "$2"; printf 200; }`
 				if tc == "missing-signature" {
 					stubs = `curl() { printf 404; }; pkg_download() { printf 404; }`
 				}
-				if tc == "old-openssl" {
+				if strings.HasPrefix(tc, "old-openssl") {
 					stubs += "\n" + oldOpenSSL()
 				}
 				wrapper := strings.Join([]string{
@@ -80,6 +83,8 @@ pkg_download() { /bin/cp "$SOURCE_SIGNATURE" "$2"; printf 200; }`
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "missing_signature_allowed"),
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
+					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "python_verifies_ed25519"),
+					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_with_python"),
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_signature"),
 					`verify_signature "$PAYLOAD_FILE" https://example.invalid/current.sig v3.33.1`,
 					`"$PAYLOAD_FILE"`,
@@ -90,7 +95,7 @@ pkg_download() { /bin/cp "$SOURCE_SIGNATURE" "$2"; printf 200; }`
 					command.Env = withEnv(command.Env, "PATH="+dir)
 				}
 				output, runErr := command.CombinedOutput()
-				wantPass := tc == "valid" && capable
+				wantPass := (tc == "valid" && capable) || (tc == "old-openssl" && pythonCapable)
 				if (runErr == nil) != wantPass {
 					t.Fatalf("capable=%v error=%v output=%s", capable, runErr, output)
 				}

@@ -102,6 +102,36 @@ csm_release_verifier() {
     return 1
 }
 
+# python3-cryptography ships with EL8 and CloudLinux 8 and verifies Ed25519,
+# which keeps the first upgrade to a verify-release build on the signed path.
+python_verifies_ed25519() {
+    [ "${CSM_DISABLE_PYTHON_VERIFIER:-0}" != 1 ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - >/dev/null 2>&1 <<'CSM_PY_PROBE'
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+CSM_PY_PROBE
+}
+
+verify_with_python() {
+    python3 - "$1" "$2" "$3" <<'CSM_PY_VERIFY'
+import sys
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+key = load_pem_public_key(open(sys.argv[1], "rb").read())
+if not isinstance(key, Ed25519PublicKey):
+    sys.exit(1)
+signature = open(sys.argv[2], "rb").read()
+payload = open(sys.argv[3], "rb").read()
+if not payload:
+    sys.exit(1)
+try:
+    key.verify(signature, payload)
+except Exception:
+    sys.exit(1)
+CSM_PY_VERIFY
+}
+
 verify_signature() {
     local file="$1" sig_url="$2" release_version="${3:-}"
     local sig_file="${file}.sig"
@@ -128,10 +158,12 @@ verify_signature() {
         verifier=openssl
     elif verifier=$(csm_release_verifier); then
         :
+    elif python_verifies_ed25519; then
+        verifier=python
     else
         # No external command here: a host missing the verifier may be missing
         # coreutils from PATH too, and the diagnosis must survive that.
-        die "no Ed25519 verifier available: install OpenSSL 3.0+, keep a CSM build providing 'csm verify-release', or use the signed APT/DNF repository"
+        die "no Ed25519 verifier available: install OpenSSL 3.0+ or python3-cryptography, keep a CSM build providing 'csm verify-release', or use the signed APT/DNF repository"
     fi
     local key_file
     key_file=$(mktemp)
@@ -141,6 +173,8 @@ verify_signature() {
     local verify_status=0
     if [ "$verifier" = openssl ]; then
         openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1 || verify_status=$?
+    elif [ "$verifier" = python ]; then
+        verify_with_python "$key_file" "$sig_file" "$file" >/dev/null 2>&1 || verify_status=$?
     else
         # OpenSSL 1.1.1 on EL8 and CloudLinux 8 cannot verify Ed25519; the
         # installed CSM build does it with Go's implementation.

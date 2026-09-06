@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Update checks no longer execute downloaded code to read its version.
 
-- Standalone installs and upgrades now require successful release signature verification. Hosts whose OpenSSL cannot verify Ed25519 verify through the installed binary's new `csm verify-release` instead, and upgrades stop when no verifier is available; only explicitly selected pre-signing releases may omit a signature.
+- Standalone installs and upgrades now require successful release signature verification. Hosts whose OpenSSL cannot verify Ed25519 verify through the installed binary's new `csm verify-release` or through python3-cryptography instead, and installs and upgrades stop when no verifier is available; only explicitly selected pre-signing releases may omit a signature.
 
 - The service now limits configuration writes to managed directories. Mail configuration changes run in a separate constrained operation, and opted-in module removal retains the daemon sandbox.
 
