@@ -192,6 +192,11 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.Checks = append(report.Checks, check)
 	}
 
+	// An operator copy of a deploy script is never upgraded in place, so a
+	// version predating mandatory verification keeps installing unverified
+	// releases until somebody reads it.
+	report.Checks = append(report.Checks, deployScriptDoctorChecks()...)
+
 	if cfg.PHPShield.Enabled {
 		report.Checks = append(report.Checks, phpShieldCageFSDoctorChecks()...)
 	}
