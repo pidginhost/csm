@@ -163,3 +163,20 @@ func TestHarnessTrustsTheCheckoutForEveryUnit(t *testing.T) {
 		t.Fatalf("checkout trusted at %d, after the first build at %d", trust, build)
 	}
 }
+
+// The harness runs as root against a bind-mounted checkout owned by the CI
+// user. Output left owned by root cannot be collected or cleaned by the runner,
+// which fails every job after the first, so results must match the checkout.
+func TestHarnessLeavesResultsOwnedByTheCheckout(t *testing.T) {
+	for _, script := range []string{"systemd-account-roots-test.sh", "production-tests.sh"} {
+		t.Run(script, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", script))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), "chown -R --reference=") {
+				t.Fatalf("%s leaves its output owned by root", script)
+			}
+		})
+	}
+}

@@ -37,4 +37,7 @@ else
   go run ./scripts/testgate -tags "$tags" -run "$pattern" -inventory "$artifacts/inventory.json" "${packages[@]}"
 fi
 go test -json -race -count=1 -p=2 -timeout=30m -tags "$tags" -run "$pattern" "${packages[@]}" | tee "$artifacts/tests.jsonl"
+# Match the checkout's ownership so a root container run does not leave results
+# the CI runner cannot collect or clean up on its next job.
+chown -R --reference="$PWD" "$PWD/production-results" 2>/dev/null || true
 go run ./scripts/testgate -inventory "$artifacts/inventory.json" -required "$required" -events "$artifacts/tests.jsonl"
