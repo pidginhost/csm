@@ -33,4 +33,9 @@ func TestReleaseRequiresCPanelBeforePublication(t *testing.T) {
 			t.Errorf("integration missing %s", want)
 		}
 	}
+	// Without a licensed image the release still has to state, in its own
+	// retained evidence, that the primary target was not exercised.
+	if !strings.Contains(integration, `cpanel_coverage:"absent"`) {
+		t.Error("a release without cPanel coverage does not record the gap in its evidence")
+	}
 }

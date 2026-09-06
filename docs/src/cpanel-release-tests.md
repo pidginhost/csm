@@ -1,11 +1,26 @@
 # cPanel release tests
 
-Version tags require a cPanel integration image. `release-preflight` runs before
-builds, and integration repeats the preflight before allocating servers.
-The tag-specific publication dependencies require that integration succeeds;
-package registry publication, repository publication and releases cannot use
-an AlmaLinux/Ubuntu-only result. Main-branch integration remains manual and
+Version tags require either a cPanel integration image or a recorded reason for
+releasing without one. `release-preflight` runs before builds, and integration
+repeats the preflight before allocating servers. The tag-specific publication
+dependencies require that integration succeeds; package registry publication,
+repository publication and releases cannot use an AlmaLinux/Ubuntu-only result
+unless the omission was acknowledged. Main-branch integration remains manual and
 may run without cPanel when no image is configured.
+
+## Releasing without cPanel coverage
+
+CSM has no licensed cPanel image while no cPanel licence is available for
+disposable CI clones. Set the protected variable `CSM_RELEASE_WITHOUT_CPANEL`
+to a sentence stating why, for example `no licensed cPanel image available`.
+A bare `1` is rejected: the reason is published in the pipeline log and in
+`dist/cpanel-release.json` as `cpanel_coverage: "absent"`.
+
+Do not read such a release as cPanel-tested. WHM plugin installation, mail
+integration, cPanel platform paths, service confinement under a real cPanel
+layout, and upgrade behaviour are unvalidated in that pipeline, and the
+findings that depend on them (F19, F22, F25) stay open. Clear the variable as
+soon as an image exists.
 
 The CSM release maintainer owns the CI variables and image refresh schedule.
 The PidginHost cloud image administrator owns capture and publication of the

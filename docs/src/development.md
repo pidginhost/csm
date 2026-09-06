@@ -168,8 +168,11 @@ To cut a release:
 3. Wait. The tag pipeline runs integration, publishes packages to the mirror, creates the GitHub release, and uploads every artifact including the fresh `merged-coverage.out`. No manual pipeline clicks needed.
 
 Tag pipelines require `INTEGRATION_CPANEL_IMAGE` to name a clean cPanel CI
-image. `INTEGRATION_CPANEL_PACKAGE` optionally selects its compute package and
-defaults to `cloudv-2`.
+image, or `CSM_RELEASE_WITHOUT_CPANEL` to state why no image is available.
+`INTEGRATION_CPANEL_PACKAGE` optionally selects its compute package and
+defaults to `cloudv-2`. A release taken without cPanel coverage records
+`cpanel_coverage: "absent"` in `dist/cpanel-release.json`; see
+[cPanel release tests](cpanel-release-tests.md).
 
 Tag-specific `publish` dependencies require preflight, fixtures, corpus,
 production tags, kernel tests, signed artifacts and integration. Repository

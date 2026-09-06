@@ -34,6 +34,10 @@ has passed it on the current infrastructure.
 - [ ] Provision and maintain a licensed clean cPanel image, set the protected
   `INTEGRATION_CPANEL_IMAGE` variable, and pass the live upgrade and forward
   guard checks. See [cPanel acceptance](docs/src/cpanel-release-tests.md).
+  Blocked: no cPanel licence is available for disposable CI clones, and the
+  cloud image catalogue offers no cPanel image. Until then a tag must set
+  `CSM_RELEASE_WITHOUT_CPANEL` with a reason, and its release evidence records
+  `cpanel_coverage: "absent"`.
 - [ ] Provision the dedicated `csm-kernel` runner and pass every required
   attachment test, including BPF LSM, under the real service sandbox. See
   [kernel runner acceptance](docs/src/production-tests.md#kernel-runner).
@@ -44,6 +48,15 @@ LinuxKit 7.0.12, including BPF LSM attachment, and the strict systemd sandbox
 checks. GitLab accepted the configuration and main/tag pipeline dry runs.
 The licensed cPanel run and dedicated CI kernel runner remain operational gaps;
 local evidence does not establish that the required CI jobs have executed.
+
+No available runner image reproduces the production kernel. Supported hosts run
+CloudLinux 8 and EL8 on 4.18, while the cloud catalogue offers AlmaLinux 9 and
+10, Ubuntu and Debian only. Kernel coverage in CI therefore establishes that a
+feature works on a newer kernel, never that it works on the deployed one:
+4.18 has `pidfd_send_signal` but not `pidfd_open`, which a 5.14 or newer runner
+cannot show. Capabilities the daemon depends on are consequently probed at
+runtime and reported through `csm doctor` and the health status, and a
+capability regression is expected to surface there rather than in CI.
 Main-branch cloud integration is manual and is not a publication dependency;
 it can run AlmaLinux/Ubuntu only when no cPanel image is configured.
 

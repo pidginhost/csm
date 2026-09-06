@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Release publication now requires tests with the shipped features and real kernel and service checks. Failed BPF monitor startup releases its event reader.
 
-- Tagged releases now require cPanel package and upgrade validation before publication. Missing cPanel test infrastructure stops the release early.
+- Tagged releases now require cPanel package and upgrade validation before publication, or a stated reason for releasing without it. Missing cPanel test infrastructure stops the release early, and a release taken without that coverage records the gap in its own evidence.
 
 - Release publication now requires pinned clean-application checks across the signature and taint engines, with retained measurements for review.
 
