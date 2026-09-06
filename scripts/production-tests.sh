@@ -36,7 +36,29 @@ if [[ "$mode" == kernel ]]; then
 else
   go run ./scripts/testgate -tags "$tags" -run "$pattern" -inventory "$artifacts/inventory.json" "${packages[@]}"
 fi
-go test -json -race -count=1 -p=2 -timeout=30m -tags "$tags" -run "$pattern" "${packages[@]}" | tee "$artifacts/tests.jsonl"
+# Stream the machine-readable log to the artifact, not to the job log: the
+# full -json transcript exceeds GitLab's 4 MB capture limit, which truncated
+# the output exactly where a failure would be reported. Print the failures.
+status=0
+go test -json -race -count=1 -p=2 -timeout=30m -tags "$tags" -run "$pattern" "${packages[@]}" > "$artifacts/tests.jsonl" || status=$?
+python3 - "$artifacts/tests.jsonl" <<'SUMMARY'
+import json, sys
+failed = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get("Action") == "fail":
+        failed.append((event.get("Package", "?"), event.get("Test", "")))
+    if event.get("Action") == "output" and event.get("Test"):
+        text = event.get("Output", "")
+        if "--- FAIL" in text or text.lstrip().startswith(("Error:", "Error Trace:", "panic:")):
+            print(f'{event.get("Package","?")}: {text.rstrip()}')
+for package, test in failed:
+    print(f'FAILED {package} {test}'.rstrip())
+SUMMARY
+[[ "$status" == 0 ]] || exit "$status"
 # Match the checkout's ownership so a root container run does not leave results
 # the CI runner cannot collect or clean up on its next job.
 chown -R --reference="$PWD" "$PWD/production-results" 2>/dev/null || true
