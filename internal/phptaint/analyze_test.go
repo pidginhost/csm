@@ -181,6 +181,46 @@ fetchInfo($handle);`)
 	}
 }
 
+// A predicate call yields a bool, so nothing executable reaches assert(). The
+// exclusion previously covered only operators, so a stock Drupal kernel test
+// asserting is_string() over file-sourced content reported remote execution.
+func TestAssertPredicateCallReportsNothing(t *testing.T) {
+	for _, guard := range []string{"is_string($info)", "is_array($info)", "empty($info)", "function_exists($info)"} {
+		src := b64(`<?php
+function fetchInfo($h) {
+	$info = curl_exec($h);
+	assert(` + guard + `);
+	return $info;
+}
+fetchInfo($handle);`)
+		rep := run(t, src)
+		if rep.Status != StatusAnalyzed {
+			t.Fatalf("%s: status = %v (%s)", guard, rep.Status, rep.Reason)
+		}
+		if len(rep.Results) != 0 {
+			t.Errorf("false positive: assert(%s) reported as a sink: %+v", guard, rep.Results)
+		}
+	}
+}
+
+// A call that can return a string must remain a sink: only predicates whose
+// return type is always bool are excluded.
+func TestAssertNonPredicateCallStillReportsFlow(t *testing.T) {
+	src := b64(`<?php
+function fetchCode($h) {
+	$code = curl_exec($h);
+	assert(strval($code));
+}
+fetchCode($handle);`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("false negative: assert(strval($tainted)) was not detected")
+	}
+}
+
 // TestAssertStringArgumentStillReportsFlow guards against the
 // boolean-argument exclusion overcorrecting into never treating assert as
 // a sink: a tainted variable passed directly is still a real PHP 7

@@ -45,6 +45,15 @@ func TestProvablyLocalPathIsNotASource(t *testing.T) {
 		"<?php file_get_contents(__DIR__ . '/config.php');",
 		"<?php fopen(dirname(__FILE__) . '/x.html', 'r');",
 		"<?php file_get_contents(ABSPATH . 'wp-config.php');",
+		// Every supported CMS bootstraps its own filesystem path constants.
+		// Knowing only WordPress's meant a Joomla or OpenCart template cache
+		// read looked undecidable, and every compiled-template include then
+		// reported as remote execution.
+		"<?php file_get_contents(JPATH_CACHE . '/language/en-GB.php');",
+		"<?php file_get_contents(JPATH_ROOT . '/configuration.php');",
+		"<?php file_get_contents(DIR_CACHE . 'template/x.php');",
+		"<?php file_get_contents(DIR_APPLICATION . 'config.php');",
+		"<?php file_get_contents(DRUPAL_ROOT . '/sites/default/settings.php');",
 	} {
 		if _, ok := sourceConfidence(firstCall(t, src)); ok {
 			t.Errorf("%s: treated as a remote source, want not a source", src)

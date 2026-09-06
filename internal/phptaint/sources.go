@@ -33,12 +33,38 @@ var dualUse = map[string]bool{
 // nested remote scheme and is classified accordingly.
 var remoteSchemes = []string{"http://", "https://", "ftp://", "ftps://", "php://input", "data://"}
 
-// These are the specific PHP and WordPress constructs whose result is known to
-// be a local path. Arbitrary constants and calls remain undecidable: their
-// runtime value can be a remote URL.
+// These are the specific PHP and CMS constructs whose result is known to be a
+// local path. Arbitrary constants and calls remain undecidable: their runtime
+// value can be a remote URL.
+//
+// Every supported CMS defines filesystem path constants during bootstrap, and
+// all of them compile templates or caches by writing generated PHP under one
+// of those paths and including it afterwards. Without the constant, that read
+// is undecidable, the generated file looks remotely acquired, and the include
+// reports as remote execution on a stock installation.
 var (
-	localPathConstants = map[string]bool{"abspath": true}
-	localPathResults   = map[string]bool{
+	localPathConstants = map[string]bool{
+		// WordPress.
+		"abspath": true,
+		// Joomla. Every JPATH_* constant is a filesystem path.
+		"jpath_root": true, "jpath_base": true, "jpath_site": true,
+		"jpath_administrator": true, "jpath_api": true, "jpath_cache": true,
+		"jpath_cli": true, "jpath_component": true,
+		"jpath_component_administrator": true, "jpath_component_site": true,
+		"jpath_configuration": true, "jpath_installation": true,
+		"jpath_libraries": true, "jpath_manifests": true,
+		"jpath_plugins": true, "jpath_public": true, "jpath_themes": true,
+		// OpenCart. Every DIR_* constant is a filesystem path.
+		"dir_application": true, "dir_cache": true, "dir_catalog": true,
+		"dir_config": true, "dir_download": true, "dir_extension": true,
+		"dir_image": true, "dir_language": true, "dir_logs": true,
+		"dir_modification": true, "dir_opencart": true, "dir_root": true,
+		"dir_session": true, "dir_storage": true, "dir_system": true,
+		"dir_template": true, "dir_upload": true,
+		// Drupal and Magento roots.
+		"drupal_root": true, "bp": true,
+	}
+	localPathResults = map[string]bool{
 		"get_template_directory": true,
 		"realpath":               true,
 		"sys_get_temp_dir":       true,
