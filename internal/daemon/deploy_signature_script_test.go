@@ -130,6 +130,35 @@ func TestVerifySignatureUsesInstalledGoVerifierOnOldOpenSSL(t *testing.T) {
 	}
 }
 
+// The internal registry signs tagged releases only, so requiring a signature
+// for a CI build refuses an artifact that never had one. A release version
+// fetched through the same path must still be signed, and an operator can
+// refuse unsigned builds outright.
+func TestGitLabRegistryAcceptsUnsignedCIBuildsButNotUnsignedReleases(t *testing.T) {
+	script := deploySignatureScript{name: "scripts-deploy-gitlab", path: "scripts/deploy-gitlab.sh"}
+	for _, tc := range []struct {
+		name, version string
+		env           []string
+		wantPass      bool
+	}{
+		{name: "latest CI build", version: "latest", wantPass: true},
+		{name: "commit build", version: "9b6ee5bd", wantPass: true},
+		{name: "release must be signed", version: "3.33.1"},
+		{name: "operator refuses unsigned", version: "latest", env: []string{"CSM_REQUIRE_SIGNATURES=1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubs := rawinCapableOpenSSL("404")
+			output, code := runVerifySignatureWithVersion(t, script, stubs, tc.env, tc.version)
+			if (code == 0) != tc.wantPass {
+				t.Fatalf("exit=%d output=%s", code, output)
+			}
+			if tc.wantPass && !strings.Contains(output, "unsigned CI build") {
+				t.Fatalf("acceptance not disclosed: %s", output)
+			}
+		})
+	}
+}
+
 func TestVerifySignatureFailsClosedWhenStrict(t *testing.T) {
 	for _, script := range deploySignatureScripts() {
 		t.Run(script.name+"/missing-openssl", func(t *testing.T) {
