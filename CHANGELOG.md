@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Kernel validation now leaves its results owned by the checkout, so the runner can collect them and clean up instead of failing every job after the first.
 
+- Release test jobs no longer run two full race suites against one runner at the same time, and the production suite reports its failures instead of losing them past the log capture limit.
+
 - Process termination health now recovers after transient resource failures.
 
 - Release waivers now reject blank, padded, and flag-like values instead of recording them as reasons for missing cPanel coverage.
