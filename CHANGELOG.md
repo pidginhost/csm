@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Operator copies of the deploy scripts are now reported by `csm doctor` when they predate mandatory signature verification, so a hand-maintained copy cannot keep installing unverified releases unnoticed.
+- The SOCKS proxy rule no longer treats a single 0x05 byte as evidence, which had reduced it to matching any file that opens a socket.
 - Release verification now rejects special and oversized inputs without blocking. Python verification no longer loads modules from caller-controlled locations.
 - Update checks no longer execute downloaded code to read its version.
 - Standalone installs and upgrades now require successful release signature verification. Hosts whose OpenSSL cannot verify Ed25519 verify through the installed binary's new `csm verify-release` or through python3-cryptography instead, and installs and upgrades stop when no verifier is available; only explicitly selected pre-signing releases may omit a signature.
