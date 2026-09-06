@@ -1,104 +1,229 @@
 # CSM Engineering Roadmap
 
-Open engineering work and release acceptance checks. Implemented items below
-retain a short status while their operational follow-up is still useful.
-Commits and `CHANGELOG.md` remain the archive of completed changes.
+Open engineering work and release acceptance checks, ordered so a contributor
+can pick the top item and start. Completed work is removed from this file:
+commits and `CHANGELOG.md` are the archive.
 
 This file is for contributors. End-user documentation lives in `docs/`.
 
-**Stable cross-references.** Older commits, CHANGELOG entries, and a
-few code comments reference `ROADMAP item N` by the number that item
-had when the commit was written. Those numbers are frozen in time and
-no longer map onto the current list. To resolve a historical
-`ROADMAP item N`, search `git log` and `CHANGELOG.md` rather than this
-file.
+**Stable cross-references.** Older commits, CHANGELOG entries, and a few code
+comments reference `ROADMAP item N` by the number that item had when the commit
+was written. Those numbers are frozen in time and no longer map onto this list.
+To resolve a historical `ROADMAP item N`, search `git log` and `CHANGELOG.md`
+rather than this file. Items below are named, not numbered, for that reason.
 
 ---
 
 ## Release readiness gates
 
-The required dependencies are defined in [.gitlab-ci.yml](.gitlab-ci.yml).
-A checked item means the control is implemented, not that a release pipeline
-has passed it on the current infrastructure.
+Required dependencies are defined in [.gitlab-ci.yml](.gitlab-ci.yml). A checked
+item means the control is implemented and has passed on the current
+infrastructure.
 
-- [x] Version tags require signed amd64 and arm64 binaries and packages.
-  The arm64 build and package jobs allow failure on branches, but not tags.
+- [x] Version tags require signed amd64 and arm64 binaries and packages. The
+  arm64 build and package jobs allow failure on branches, but not tags.
 - [x] Publication requires the fixture privacy, pinned clean-application,
   production-tag and real-kernel jobs. Missing inputs or required kernel
   capabilities cannot be replaced by skipped tests.
-- [x] Tag preflight requires a cPanel image before server allocation. Tag
-  publication requires integration using the current pipeline packages,
-  including cPanel installation, upgrade and service checks.
 - [x] Public GitHub release creation requires merged integration coverage,
   assets and signature preflight validation.
+- [x] A dedicated kernel runner executes the required attachment tests,
+  including BPF LSM, under the real service sandbox. See
+  [kernel runner acceptance](docs/src/production-tests.md#kernel-runner).
+- [x] Cloud integration installs the pipeline's own packages on freshly
+  allocated servers and deletes them afterwards.
 - [ ] Provision and maintain a licensed clean cPanel image, set the protected
   `INTEGRATION_CPANEL_IMAGE` variable, and pass the live upgrade and forward
   guard checks. See [cPanel acceptance](docs/src/cpanel-release-tests.md).
-  Blocked: no cPanel licence is available for disposable CI clones, and the
+  **Blocked:** no cPanel licence is available for disposable CI clones, and the
   cloud image catalogue offers no cPanel image. Until then a tag must set
-  `CSM_RELEASE_WITHOUT_CPANEL` with a reason, and its release evidence records
-  `cpanel_coverage: "absent"`.
-- [ ] Provision the dedicated `csm-kernel` runner and pass every required
-  attachment test, including BPF LSM, under the real service sandbox. See
-  [kernel runner acceptance](docs/src/production-tests.md#kernel-runner).
+  `CSM_RELEASE_WITHOUT_CPANEL` with a stated reason, and its release evidence
+  records `cpanel_coverage: "absent"`.
 
-As of 2026-09-06, local production-tag race tests and the four pinned corpus
-gates passed. The EL8 production test image passed all 12 kernel tests on
-LinuxKit 7.0.12, including BPF LSM attachment, and the strict systemd sandbox
-checks. GitLab accepted the configuration and main/tag pipeline dry runs.
-The licensed cPanel run and dedicated CI kernel runner remain operational gaps;
-local evidence does not establish that the required CI jobs have executed.
+  Three shipped subsystems have completed every acceptance except this one, so
+  closing the gate is all that remains for them: the narrowed service write
+  scope (real-systemd tests cover denied writes, atomic updates, helper
+  rejection and rollback, but not a live panel rebuild under the candidate
+  package), mailbox password verification (upstream vectors are covered, a live
+  Dovecot binary is not), and mail source supervision (file and journal
+  recovery are covered).
+
+### CI kernel coverage does not reach the deployed kernel
 
 No available runner image reproduces the production kernel. Supported hosts run
-CloudLinux 8 and EL8 on 4.18, while the cloud catalogue offers AlmaLinux 9 and
-10, Ubuntu and Debian only. Kernel coverage in CI therefore establishes that a
-feature works on a newer kernel, never that it works on the deployed one:
-4.18 has `pidfd_send_signal` but not `pidfd_open`, which a 5.14 or newer runner
-cannot show. Capabilities the daemon depends on are consequently probed at
-runtime and reported through `csm doctor` and the health status, and a
-capability regression is expected to surface there rather than in CI.
-Main-branch cloud integration is manual and is not a publication dependency;
-it can run AlmaLinux/Ubuntu only when no cPanel image is configured.
+CloudLinux 8 and EL8 on 4.18, while the cloud image catalogue offers AlmaLinux 9
+and 10, Ubuntu and Debian only. A passing kernel job therefore establishes that
+a feature works on a newer kernel, never that it works on the deployed one:
+4.18 provides `pidfd_send_signal` but not `pidfd_open`, and a 5.14 or newer
+runner cannot show that difference.
+
+Capabilities the daemon depends on are consequently probed at runtime and
+reported through `csm doctor` and the health status. **A kernel-capability
+regression is expected to surface there, not in CI.** Treat any new dependency
+on a kernel facility as requiring a runtime probe and a doctor check, not only
+a kernel test.
+
+Main-branch cloud integration is manual and is not a publication dependency.
 
 ---
 
-## 2. `csm support-bundle` command
+# Priority 1 -- detection precision
 
-**Status:** planned. Triage workflow: operators today grep journal +
-copy `state.json` by hand.
+These block growing the clean-application corpus, which is the only automated
+evidence that a rule or analyzer does not fire on stock software. Each is a
+real defect found by extending the corpus; none should be closed by raising a
+threshold or excluding a path.
 
-### Decision
+Verified pinned sources for Joomla, Drupal and OpenCart are ready to add to
+`scripts/clean-corpus/manifest.json` (URL, SHA-256, exact file count and
+in-archive licence path). Adding them today turns the gate red on the two
+analyzer items below, so land the fixes first, then the sources and the
+recalibrated status budgets in one commit.
+
+## Taint laundering through value encoders
+
+**Status:** open. One false positive on stock Joomla.
+
+Every template-compiling CMS reads a file, writes generated PHP to a cache and
+includes it. Joomla writes `"<?php ... return " . var_export($strings, true) . ";"`.
+`var_export` emits an escaped PHP literal and cannot introduce executable
+constructs, so it neutralises the flow, but the analyzer has no concept of a
+laundering function. The `sanitize()` in `internal/phptaint/taint.go` is display
+escaping and is unrelated.
+
+**Decision needed:** which encoders neutralise a code-execution sink
+(`var_export`, `json_encode`, `serialize`, integer casts) and where laundering
+is applied, without blinding the engine to an `eval` of a decoded round-trip.
+
+**Acceptance:** the Joomla language cache stops reporting; a laundered value
+that is later decoded and executed still reports; the WordPress corpus stays at
+zero.
+
+## Local-path provenance through variables
+
+**Status:** open. One false positive on stock OpenCart.
+
+`argLocality` folds only literal and constant expressions, so a variable is
+undecidable however it was built. OpenCart assigns `$file = DIR_TEMPLATE . $x`
+before reading it, so a read from a known-local directory still seeds taint.
+The constant table itself now covers every supported CMS.
+
+**Acceptance:** a read through a variable assigned from a local path constant
+is not a source; a read through a variable assigned from a parameter or an
+unknown constant still is; reassignment between the two is handled.
+
+## Content rules versus archive containers
+
+**Status:** open. One false positive on a stock OpenCart developer tool.
+
+A PHAR is an archive, so string rules match across bundled libraries that never
+appear together in one source file. `network_socks_proxy` fired on a vendored
+tool containing `socket_create(`, `socket_connect`, `socket_bind`,
+`socket_listen`, `socket_accept` and the string `SOCKS` from unrelated packages.
+No string-cooccurrence discriminator separates it from a real proxy.
+
+This is a rule-class exposure, not one rule: every multi-string rule has it, and
+the deep scan applies no extension gate.
+
+**Decision needed:** require matches within a bounded offset window, or define
+how content rules treat archive containers (`.phar`, `.zip`, `.jar`) that are
+currently scanned as flat blobs.
+
+**Acceptance:** the vendored tool stops matching; a real single-file proxy still
+matches; the decision is applied consistently rather than rule by rule.
+
+## Corpus growth
+
+**Status:** ongoing.
+
+After the three items above, add the pinned Joomla, Drupal and OpenCart sources
+and recalibrate the engine status budgets, which scale with corpus size and were
+set for a WordPress-only corpus: `phptaint partial_parse`, `jstaint oversize`
+and `jstaint parse_error`. Recalibration is deliberate and belongs in the same
+commit as the sources, with the measured numbers in the message.
+
+Non-WordPress CMS adapters ship without any false-positive gate until this
+lands. See [the corpus gate documentation](docs/src/clean-corpus.md).
+
+---
+
+# Priority 2 -- supply chain and operability
+
+## Decide the trust model for internal CI builds
+
+**Status:** open decision. Current behaviour is deliberate but narrow.
+
+Release signing runs on tags only, so the internal package registry publishes
+unsigned CI builds. The internal deploy script accepts those, states so, and
+still requires a signature for any release version fetched through the same
+path; `CSM_REQUIRE_SIGNATURES=1` refuses them outright. Their authenticity today
+rests on the registry: TLS plus a token scoped to `read_package_registry`.
+
+That is the path used to deploy main-branch builds to production, so it is the
+least verified link in the chain.
+
+**Options:** sign every published build with the release key, accepting wider
+key exposure; sign CI builds with a separate lower-value key and embed both
+public keys; or keep registry authentication as the boundary and document it as
+the accepted limit.
+
+**Acceptance:** whichever is chosen, the deploy scripts and
+[release signing](docs/src/release-signing.md) state the same contract, and a
+tampered artifact is refused on the path operators actually use.
+
+## Operator-copied deploy scripts drift
+
+**Status:** guard implemented; hardening open.
+
+`csm doctor` now reports any deploy script on the host that still carries a path
+able to install an unverified release. This came from a hand-maintained copy
+that silently kept a superseded, weaker verification path.
+
+**Remaining:** the check emits nothing when every script is current, unlike the
+other checks which report `[OK]`. Make it report the clean result so an operator
+can tell the check ran. Consider having the installer own the operator copy so
+it is refreshed like the shipped one.
+
+## Validate CageFS mount points
+
+**Status:** open. Small, operator-facing.
+
+`csm doctor` verifies that the PHP Shield event directory is a shared CageFS
+mount and that live cages actually have it. It does not validate the rest of the
+mount-point configuration, so entries pointing at directories that do not exist
+cause every `cagefsctl` invocation to print errors, including CSM's own remount
+guidance.
+
+**Acceptance:** doctor reports configured mount points whose source is missing,
+naming them; a correct configuration stays quiet or reports `[OK]`.
+
+## `csm support-bundle`
+
+**Status:** planned, unimplemented. Operators grep the journal and copy state
+by hand today.
 
 New CLI `csm support-bundle <path>` produces a tar+zstd containing:
-- `csm store export` output (manifest, bbolt snapshot, state, rules
-  cache).
-- Last N (default 2000) `journalctl -u csm` lines.
-- `/etc/csm/csm.yaml` with secrets redacted (`smtp`, `webhook.url`,
-  `abuseipdb_key`, `webui.auth_token`,
-  `verified_session.admin_secret`, `captcha_fallback.secret_key`,
-  plus whitelist-style redaction of any unknown `*_key` / `*_token`
-  / `*_secret`).
-- `system.txt` with `uname -a`, `csm version`, distro info, startup
+
+- `csm store export` output (manifest, bbolt snapshot, state, rules cache).
+- The last N (default 2000) service journal lines.
+- The configuration file with secrets redacted: `smtp`, `webhook.url`,
+  `abuseipdb_key`, `webui.auth_token`, `verified_session.admin_secret`,
+  `captcha_fallback.secret_key`, plus whitelist-style redaction of any unknown
+  `*_key`, `*_token` or `*_secret`.
+- `system.txt` with `uname -a`, `csm version`, distro info and startup
   integrity hashes.
 
-Live daemon required (mirrors `store export`).
+Requires a live daemon, mirroring `store export`. Auto-upload and encryption at
+rest are out of scope; pipe through gpg.
 
-### Out of scope
+**Size:** 1 day.
 
-Auto-upload, encryption at rest (pipe through gpg).
+## Scheduled backup exports
 
-### Size: 1 day.
+**Status:** planned, unimplemented. `store export` needs an operator cron entry
+today.
 
----
-
-## 3. Scheduled backup exports
-
-**Status:** planned. `csm store export` needs an operator-managed
-cron entry today.
-
-### Decision
-
-Top-level config block, hot-reloadable:
+Hot-reloadable top-level config block:
 
 ```yaml
 backup:
@@ -109,238 +234,125 @@ backup:
   retention_days: 14
 ```
 
-Daemon ticks schedule, calls `store.Export`, prunes archives older
-than `retention_days`. Failures emit `backup_export_failed` Warning.
+The daemon ticks the schedule, calls `store.Export` and prunes archives older
+than `retention_days`. Failures emit a `backup_export_failed` Warning.
+Off-host destinations and encryption are out of scope.
 
-### Out of scope
-
-Off-host destinations (S3 / SFTP). Encryption.
-
-### Size: 1-2 days.
+**Size:** 1-2 days.
 
 ---
 
-## 4. WordPress companion plugin for signed-cookie operator bypass
+# Priority 3 -- detection coverage
 
-**Status:** planned. Closes UX gap on `/challenge/admin-token`: a
-logged-in WP admin currently has no way to obtain the cookie without
-manual curl.
+## Realtime coverage for files renamed into a watched tree
 
-### Decision
-
-Plugin lives in separate repo (`pidginhost/csm-wp-bypass`). This
-repo only:
-
-- Documents `/challenge/admin-token` as a stable contract (breaking
-  changes require a roadmap item).
-- Adds a short integration note in `docs/src/challenge.md` linking
-  the plugin repo.
-
-Plugin behaviour (separate repo): reads `CSM_ADMIN_SECRET` from
-`wp-config.php`, on `wp_login` for `manage_options` users POSTs to
-the endpoint and sets the returned cookie.
-
-### Size: 0.5 day (this repo); plugin itself ~2 days separately.
-
----
-
-## 9. Firewall state migration to bbolt
-
-**Status:** planned. Item 7.1 cache landed (commit 48cc718a) and
-killed the per-call 325 KiB read + parse + linear scan. Next
-bottleneck: every mutator still rewrites the full `state.json` on
-disk (fsync amplification + crash window between mutators).
-
-### Decision
-
-Move firewall state out of `state.json` into bbolt:
-
-- Bucket `fw:blocked` keyed by IP, value `{added, expires, reason,
-  source}` JSON or msgpack.
-- Bucket `fw:allow_*`, `fw:port_*` parallel.
-- Mutators wrap `bolt.Update`; readers use `bolt.View`. The 7.1
-  in-memory cache stays as the hot-path index, invalidated by the
-  same mtime/sequence number scheme.
-- `csm store export` already snapshots bbolt; firewall state rides
-  along for free.
-
-Migration: one-shot importer in `csm firewall migrate-state` reads
-existing `state.json`, writes bbolt buckets, renames the JSON to
-`state.json.migrated-<timestamp>` for rollback.
-
-### Out of scope
-
-Replacing the in-memory cache (item 7.1 result stands).
-
-### Size: 2-3 days.
-
----
-
-## 10. Security audit v5 feature backlog
-
-**Status:** partially implemented. Completed items were removed after
-landing; their commits and CHANGELOG entries are the archive. These two
-larger detection and integration items remain:
-
-- **Y11 -- spray ingests HTTP-flood / UA-spoof.** Add the HTTP checks to
-  the spray default set plus a request-target identity dimension.
-  `2026-05-29-y11-spray-http-signals-design.md`.
-- **Y12 -- cross-server / fleet ingest.** DECISION: phpanel-side
-  correlation vs peer-to-peer ingest endpoint + trust model.
-  `2026-05-29-y12-fleet-ingest-design.md`.
-
-Y15 mail source supervision is implemented in
-[mail_reader.go](internal/daemon/mail_reader.go): initial attachment failures
-retry, source loss and recovery update watcher health, and automatic selection
-can switch from a missing file to journal input. Explicit modes stay fixed;
-retries use current configuration and shutdown joins the readers. File and
-real-systemd journal regressions cover recovery. The remaining release proof
-is the live cPanel run above; copytruncate's polling limit is documented in
-[mail monitoring](docs/src/detection-realtime.md#inotify-log-watchers-2-seconds).
-
----
-
-## 11. Coalesce firewall interval sets before apply
-
-**Status:** implemented.
-
-Infrastructure, blocked subnet, country, Cloudflare, and DoS exemption sets
-coalesce overlapping and adjacent IPv4/IPv6 intervals before applying them.
-Full-space and upper-bound intervals keep their intended coverage. Subnet
-removal and expiry rebuild the union from the remaining source entries in
-one kernel transaction.
-
-Constructor and apply failures get bounded startup retries, retained status
-diagnostics, and degraded aggregate health. `csm doctor` reports the cause
-and the restart needed after correcting the problem.
-
-The `nftkernel` regression suite reproduces the original rejection in isolated
-Linux network namespaces and verifies apply, reload, removal, expiry, and
-failed-transaction recovery. See `docs/src/development.md` for the command.
-
----
-
-## 12. Rule corpus false-positive gates in CI
-
-**Status:** implemented. Every pipeline provisions checksum-pinned public
-WordPress, WooCommerce and Elementor archives and runs all four engine gates
-in the production YARA-X builder image. Missing inputs and regressions block
-publication. Corpus inventories, versions and per-rule budgets are retained
-as CI artifacts. See [the corpus gate documentation](docs/src/clean-corpus.md)
-for measured coverage and known gaps.
-
-Corpus growth and detector false-positive reductions remain ongoing work.
-
-## 13. Narrow the service unit's write scope
-
-**Status:** implemented; live cPanel acceptance remains open.
-
-The packaged and installed units grant specific managed configuration
-directories instead of all of `/etc`. Exim mutations run through a serialized
-helper outside the daemon sandbox, including rebuild and rollback. Opted-in
-module removal uses a separate transient service.
-
-Real-systemd tests verify denied unrelated writes, permitted atomic updates,
-helper rejection and rollback, account-root remediation, and restore.
-The remaining check is the actual cPanel rebuild under the candidate package;
-see [service write scope](docs/src/service-confinement.md) and the release
-acceptance list above.
-
----
-
-## 14. Verify mailbox passwords without exposing material in argv
-
-**Status:** implemented.
-
-[In-process verification](internal/checks/email_password_hash.go) replaces the
-password-tool subprocess. Supported hash formats have explicit work limits,
-concurrency is bounded, and unsupported or over-budget hashes leave the scan
-incomplete and eligible for retry. Dependencies are pinned in `go.mod`.
-Regression fixtures include upstream Dovecot vectors; a live Dovecot binary
-was not part of local validation. Further interoperability coverage should
-compare supported formats on the cPanel image without placing secrets in
-process arguments.
-
----
-
-## 15. Realtime coverage for files renamed into a watched tree
-
-**Status:** atomic-save coverage implemented; rename-only arrivals remain open.
+**Status:** atomic-save coverage implemented; rename-only arrivals open.
 
 Creation and close-write events scan atomic-stage names and retain the event
-file descriptor through analysis, including after rename, replacement or
-unlink. The completed content reaches normal scanners without requiring a
-rename event. See [realtime coverage](docs/src/detection-realtime.md).
+file descriptor through analysis, including after rename, replacement or unlink,
+so completed content reaches the scanners without a rename event. See
+[realtime coverage](docs/src/detection-realtime.md).
 
-A file moved into an eligible path without a usable create or close-write
-event is a separate case. The current watcher does not subscribe to rename
-notifications, so the rolling content scan remains its coverage path.
+A file moved into an eligible path without a usable create or close-write event
+is a separate case. The watcher does not subscribe to rename notifications, so
+the rolling content scan remains its coverage path.
 
-### Remaining acceptance
+**Acceptance:** probe directory/name event and file-handle support at runtime
+before adding rename-only coverage. Test arrival from outside the watched scope,
+same-tree moves, lost events and unsupported kernels. Retain the rolling scan
+fallback on enterprise kernels lacking the notification support; raising the
+supported platform floor is not required.
 
-Probe directory/name event and file-handle support at runtime before adding
-rename-only coverage. Test arrival from outside the watched scope, same-tree
-moves, lost events, and unsupported kernels. Retain the rolling scan fallback
-on enterprise kernels that lack the required notification support; raising
-the supported platform floor is not required for the existing atomic-save fix.
+## CMS discovery deeper than one directory below a document root
 
----
+**Status:** WordPress limits documented; broader discovery open.
 
-## 16. CMS discovery deeper than one directory below a document root
-
-**Status:** WordPress discovery limits documented; broader discovery planned.
-
-WordPress merges the panel's document-root map with the account-home patterns
-in [wpinstalls.go](internal/checks/wpinstalls.go). A deeply nested root declared
-by the panel can be found; an undeclared installation outside those bounded
-patterns can be missed. The supported layout is described in
+WordPress merges the panel's document-root map with account-home patterns in
+[wpinstalls.go](internal/checks/wpinstalls.go), so a deeply nested declared root
+is found while an undeclared installation outside those bounded patterns can be
+missed. Other CMS adapters use their own patterns in `cmsDiscover` and do not
+inherit the panel-map traversal. See
 [deep check platform support](docs/src/detection-deep.md#platform-support).
-Other CMS adapters use their own configuration patterns in `cmsDiscover` and
-do not inherit the WordPress panel-map traversal.
 
-### Remaining acceptance
+**Acceptance:** decide the supported depth and cost budget per CMS before
+expanding the walk. Test nested mapped and unmapped installs, custom account
+roots, tenant ownership, symlinks, cancellation and incomplete traversal.
+Document each adapter's limits alongside the resulting coverage.
 
-Decide the supported depth and cost budget for each CMS before expanding the
-walk. Test nested mapped and unmapped installs, custom account roots, tenant
-ownership, symlinks, cancellation and incomplete traversal. Document each
-adapter's limits alongside the resulting coverage.
+## Spray correlation ingesting HTTP signals
 
----
+**Status:** open. Formerly audit item Y11.
 
-## 17. Consolidate bootstrap toolchain pins
+The HTTP abuse checks exist (`http_request_flood`, `http_scanner_profile`,
+`http_ua_spoof`, `http_distributed_flood`, `http_asn_crawl`) and correlate under
+the WordPress brute-force group. They do not feed the account-spray thresholds,
+which remain mail-only.
 
-**Status:** partially complete; image pin consolidation remains planned.
+**Acceptance:** add the HTTP checks to the spray signal set with a
+request-target identity dimension, and show on recorded traffic that a
+distributed low-rate campaign correlates without raising the existing per-source
+detectors' false-positive rate.
 
-`go.mod` requires Go 1.26.7. CI sets `GOTOOLCHAIN=auto` so the Go command can
-select that version even though the CI tools image starts with Go 1.26.3 and
-the AlmaLinux YARA-X builder starts with Go 1.26.2. The Linux test wrapper
-already derives its exact default image version from `go.mod`. The builder
-uses AlmaLinux 8, not an Alpine Go base. Lint is pinned to golangci-lint 2.11.4;
-formatting and canonical lint pass with Go 1.26.7.
+## Cross-server fleet ingest
 
-### Remaining acceptance
+**Status:** open decision. Formerly audit item Y12.
 
-Generate bootstrap version inputs from one maintained source and check them
-for drift. Rebuild both architecture builders and the CI tools image, update
-their tags, then record the selected Go and linter build versions in CI.
-Verify both release architectures and formatter compatibility before changing
-the module requirement. The current automatic toolchain selection requires
-access to the toolchain download when it is absent from cache.
+Correlating activity seen by separate installations requires choosing between
+panel-side correlation and a peer-to-peer ingest endpoint, and defining the
+trust model between hosts before any protocol work. Nothing is implemented.
 
 ---
 
-## 18. Measure lint timeout headroom
+# Priority 4 -- infrastructure
 
-**Status:** five-minute limit configured; cold-runner measurement remains open.
+## Firewall state migration to bbolt
 
-`.golangci.yml`, `make lint`, the default CI lint job and production-tag lint
-all use five minutes. Local canonical lint currently passes. Earlier package
-loading timeouts are historical observations, not a current failing result.
+**Status:** partially prepared. A `fw:blocked` bucket exists but is written only
+during migration; `state.json` remains authoritative and every mutator rewrites
+it in full, so fsync amplification and the crash window between mutators remain.
 
-### Remaining acceptance
+Move firewall state into bbolt: `fw:blocked` keyed by IP with
+`{added, expires, reason, source}`, parallel `fw:allow_*` and `fw:port_*`
+buckets, mutators wrapping `bolt.Update` and readers using `bolt.View`. The
+existing in-memory cache stays as the hot-path index under the same invalidation
+scheme. `csm store export` already snapshots bbolt, so firewall state rides
+along. Provide a one-shot `csm firewall migrate-state` that reads the existing
+JSON, writes the buckets and renames the file for rollback.
 
-Record package-loading and total lint time on cold caches with two concurrent
-pipelines on the intended runner. Retain timings and exit statuses, then tune
-runner resources or the timeout if the result leaves insufficient margin.
-A timeout or typechecking failure cannot be reported as clean merely because
-the tool also prints zero issues.
+**Size:** 2-3 days.
+
+## WordPress companion plugin for signed-cookie operator bypass
+
+**Status:** planned. A logged-in administrator has no way to obtain the bypass
+cookie without a manual request.
+
+The plugin lives in a separate repository. This repository documents
+`/challenge/admin-token` as a stable contract, with breaking changes requiring a
+roadmap item, and adds a short integration note in `docs/src/challenge.md`.
+
+**Size:** 0.5 day here; the plugin itself is separate.
+
+## Consolidate bootstrap toolchain pins
+
+**Status:** partially complete; image pin consolidation open.
+
+`go.mod` requires Go 1.26.7 and CI sets `GOTOOLCHAIN=auto`, so the Go command
+selects it even though the tools image and the YARA-X builder start older. The
+Linux test wrapper derives its default image version from `go.mod`. Lint is
+pinned to golangci-lint 2.11.4.
+
+**Acceptance:** generate bootstrap version inputs from one maintained source and
+check for drift; rebuild both architecture builders and the tools image, update
+their tags, and record the selected Go and linter versions in CI. Automatic
+toolchain selection still requires access to the toolchain download when it is
+absent from cache.
+
+## Measure lint timeout headroom
+
+**Status:** five-minute limit configured; cold-runner measurement open.
+
+`.golangci.yml`, `make lint` and both lint jobs use five minutes, and canonical
+lint passes. Record package-loading and total lint time on cold caches with two
+concurrent pipelines on the intended runner, retain timings and exit statuses,
+then tune runner resources or the timeout. A timeout or typechecking failure
+must not be reported as clean merely because the tool also prints zero issues.
