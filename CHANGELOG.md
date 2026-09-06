@@ -10,25 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Release verification now rejects special and oversized inputs without blocking. Python verification no longer loads modules from caller-controlled locations.
-
 - Update checks no longer execute downloaded code to read its version.
-
 - Standalone installs and upgrades now require successful release signature verification. Hosts whose OpenSSL cannot verify Ed25519 verify through the installed binary's new `csm verify-release` or through python3-cryptography instead, and installs and upgrades stop when no verifier is available; only explicitly selected pre-signing releases may omit a signature.
-
 - The service now limits configuration writes to managed directories. Mail configuration changes run in a separate constrained operation, and opted-in module removal retains the daemon sandbox.
-
 - Rule permission checks now cover every filename extension accepted by the YARA loader.
-
 - Package integrity rechecks keep reported modifications unresolved when a previously flagged file loses its executable mode or disappears.
-
 - Journal mail monitoring now follows new records when the selected services have no prior journal entries.
-
 - Process termination now uses a verified process handle, preventing recycled process IDs from redirecting an action. Kernels without `pidfd_open`, including EL8 and CloudLinux 8, pin the target through its process directory instead of losing termination. Kernels that support neither leave termination disabled, fail the matching health and doctor check, and report the cause.
-
 - Quarantine restore preserves recorded ownership, permissions, and modification times. Historical entries use their saved quarantine dates when available.
-
 - Quarantine and restore now make recovery data durable before removing originals. Storage failures preserve recovery copies and report partial completion.
-
 - Mail monitoring preserves records written in fragments and discards oversized records through their terminating newline, preventing partial records from hiding or distorting authentication events.
 - Overlapping firewall ranges now apply without disabling protection. Removing or expiring one range keeps coverage supplied by the remaining entries.
 - Email password checks no longer expose passwords or stored hashes through process arguments or findings. Password formats outside the supported audit limits are reported as incomplete and remain eligible for retry.
@@ -42,40 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Kernel validation now builds on a CI runner whose checkout belongs to another user, instead of failing every job on Git ownership before any test runs.
-
-- Kernel validation now leaves its results owned by the checkout, so the runner can collect them and clean up instead of failing every job after the first.
-
+- Kernel validation now runs to completion on its dedicated runner: it builds against a checkout owned by another user, starts and exits correctly on the production image, and leaves results the runner can collect, instead of failing before any test ran.
 - Release test jobs no longer run two full race suites against one runner at the same time, and the production suite reports its failures instead of losing them past the log capture limit.
-
 - Process termination health now recovers after transient resource failures.
-
-- Release waivers now reject blank, padded, and flag-like values instead of recording them as reasons for missing cPanel coverage.
-
-- Kernel validation now starts and exits correctly on the production test image, retaining failure diagnostics instead of hanging.
-
 - Development and readiness documentation now matches required test jobs, completed fixes, and outstanding release infrastructure checks.
-
 - Credential rotation instructions now state the restart requirement for environment-backed tokens and signing secrets.
-
 - Fixture privacy checks now block CI and publication, cover all fixture formats, and report scanner failures without printing suspected private addresses.
-
 - Release publication now requires tests with the shipped features and real kernel and service checks. Failed BPF monitor startup releases its event reader.
-
-- Tagged releases now require cPanel package and upgrade validation before publication, or a stated reason for releasing without it. Missing cPanel test infrastructure stops the release early, and a release taken without that coverage records the gap in its own evidence.
-
+- Tagged releases now require cPanel package and upgrade validation before publication, or a stated reason for releasing without it. Missing cPanel test infrastructure stops the release early, and a release taken without that coverage records the gap in its own evidence. Blank, padded, and flag-like waiver values are rejected.
 - Release publication now requires pinned clean-application checks across the signature and taint engines, with retained measurements for review.
-
 - Configured account roots now work with manual remediation and quarantine restore. Operators can generate narrow service write grants and check them with health diagnostics.
-
 - Large state databases can now be backed up and restored under the same configurable archive limit. Restore checks available staging space before replacing live files.
-
 - Backup restore rejects corrupt, truncated, and unsupported trailing archive data before replacing live files.
-
 - Audit logging retries failed destinations without reopening healthy ones. Delivery failures remain visible in metrics, and reloads wait for active writes to finish.
-
 - Firewall changes now report persistence and rollback failures without success audit records. Failed allow removals remain eligible for retry, and port-specific changes say when a reload is required.
-
 - Mail monitoring retries failed source attachment and recovers without a daemon restart. Automatic source selection can switch to journal input after a file disappears, while explicit source settings stay in effect.
 - Mail monitoring resumes from the start after detecting an in-place log truncation, so new authentication events are read again.
 - Firewall startup now retries temporary failures and reports a persistent failure in health status and diagnostics. Failed attempts preserve the existing kernel rules.
@@ -2078,7 +2048,6 @@ Replaces 3.3.1 (tag withdrawn before public release).
 ### Changed
 
 - SIGHUP hot-reload safe-reload set grows from one field to six: `alerts`, `suppressions`, `auto_response`, `reputation`, and `email_protection` are now tagged `hotreload:"safe"` alongside `thresholds`. Auto-response paths, `alert.Dispatch`, and the heartbeat read `d.currentCfg()` per call; batch handlers (`dispatchBatch`, initial-scan) snapshot once at the top so a reload landing mid-batch never splits a finding set between policies. Regression: `TestDiffAllSafeFieldsClassifiedSafe`.
-
 - `csm run-deep` no longer exits with `reading response: i/o timeout` on large servers. Tier-run RPCs get a 60-minute deadline (plugin-cache refresh fans out a wp-cli per site); other CLI commands keep the 5-minute default. The hourly `csm-deep.service` timer now logs a real `tier=deep findings=X new=Y elapsed_ms=Z` line instead of failing every hour.
 - `db_post_injection` stopped firing on legacy author-embedded `<script src="http://...">` tags. Post-content URL classification uses a post-specific predicate that drops the plaintext-HTTP indicator but keeps structural markers (raw IP, abused TLD, known-bad exfil host, invalid host). wp_options classification is unchanged.
 - `suspicious_php_content` no longer fires purely on "shell function co-present with request input" against WordPress file-manager plugins (FileOrganizer, elFinder). The co-presence signal is corroboration only; same-line shell-function-with-request-input still fires alone. `containsStandaloneFunc` also rejects method calls, static calls, and function declarations (e.g. an SQLite driver's `$this->DB->...(...)` line with a `$_SERVER` reference no longer trips the same-line rule).
