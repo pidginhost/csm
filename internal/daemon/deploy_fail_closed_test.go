@@ -38,6 +38,8 @@ func runVerifySignatureWithVersion(t *testing.T, script deploySignatureScript, s
 		": \"${CSM_REQUIRE_SIGNATURES:=0}\"",
 		stubs,
 		extractShellFunction(t, scriptPath, "missing_signature_allowed"),
+		extractShellFunction(t, scriptPath, "openssl_verifies_ed25519"),
+		extractShellFunction(t, scriptPath, "csm_release_verifier"),
 		extractShellFunction(t, scriptPath, "verify_signature"),
 		call,
 		"",

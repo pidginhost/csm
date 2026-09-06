@@ -145,6 +145,8 @@ func main() {
 		runDoctor()
 	case "systemd-roots":
 		runSystemdRoots()
+	case "verify-release":
+		runVerifyRelease()
 	case "backup":
 		runBackup()
 	case "forensic-snapshot":

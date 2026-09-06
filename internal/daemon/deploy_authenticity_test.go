@@ -78,6 +78,8 @@ pkg_download() { /bin/cp "$SOURCE_SIGNATURE" "$2"; printf 200; }`
 					"CSM_REQUIRE_SIGNATURES=0",
 					stubs,
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "missing_signature_allowed"),
+					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
+					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_signature"),
 					`verify_signature "$PAYLOAD_FILE" https://example.invalid/current.sig v3.33.1`,
 					`"$PAYLOAD_FILE"`,

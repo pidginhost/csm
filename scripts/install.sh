@@ -67,6 +67,40 @@ missing_signature_allowed() {
     return 1
 }
 
+# OpenSSL can verify Ed25519 from the command line only through
+# "pkeyutl -rawin", which requires OpenSSL 3.0+.
+openssl_verifies_ed25519() {
+    command -v openssl >/dev/null 2>&1 || return 1
+    # Capture first: a pipeline under "set -o pipefail" would report the
+    # help exit status rather than whether the flag is supported.
+    local help
+    help=$(openssl pkeyutl -help 2>&1 || true)
+    case "$help" in
+        *-rawin*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# A CSM build providing "verify-release" verifies with Go's Ed25519
+# implementation and needs no OpenSSL, which is the supported path on EL8 and
+# CloudLinux 8 (OpenSSL 1.1.1). Only an already-installed binary is consulted:
+# the artifact being verified never verifies itself.
+csm_release_verifier() {
+    local candidate probe
+    for candidate in "${CSM_VERIFIER_BINARY:-}" /opt/csm/csm /usr/bin/csm /usr/local/bin/csm; do
+        [ -n "$candidate" ] || continue
+        [ -x "$candidate" ] || continue
+        probe=$("$candidate" verify-release 2>&1 || true)
+        case "$probe" in
+            *"usage: csm verify-release"*) ;;
+            *) continue ;;
+        esac
+        printf '%s\n' "$candidate"
+        return 0
+    done
+    return 1
+}
+
 verify_signature() {
     local file="$1" sig_url="$2" release_version="${3:-}"
     local sig_file
@@ -87,11 +121,17 @@ verify_signature() {
     # A downloaded checksum is not an independent authenticity check. Current
     # artifacts must never execute merely because the host lacks a verifier.
     [ -n "$CSM_SIGNING_KEY_PEM" ] || die "No signing key configured; refusing the unverified artifact"
-    command -v openssl >/dev/null 2>&1 || die "openssl is not installed; use the signed APT/DNF repository instead"
-    local pkeyutl_help
-    pkeyutl_help=$(openssl pkeyutl -help 2>&1 || true)
-    if ! grep -q -- '-rawin' <<<"$pkeyutl_help"; then
-        die "OpenSSL 3.0+ is required for Ed25519 verification; use the signed APT/DNF repository on older hosts"
+    # Choose the verifier before creating any temporary file, so a host with
+    # no verifier at all fails on that fact rather than on a missing utility.
+    local verifier=""
+    if openssl_verifies_ed25519; then
+        verifier=openssl
+    elif verifier=$(csm_release_verifier); then
+        :
+    else
+        # No external command here: a host missing the verifier may be missing
+        # coreutils from PATH too, and the diagnosis must survive that.
+        die "no Ed25519 verifier available: install OpenSSL 3.0+, keep a CSM build providing 'csm verify-release', or use the signed APT/DNF repository"
     fi
     local key_file
     key_file=$(mktemp)
@@ -99,7 +139,13 @@ verify_signature() {
     # No RETURN trap for cleanup: it would outlive this function and re-fire
     # at the caller's return, where set -u aborts on the vanished locals.
     local verify_status=0
-    openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1 || verify_status=$?
+    if [ "$verifier" = openssl ]; then
+        openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1 || verify_status=$?
+    else
+        # OpenSSL 1.1.1 on EL8 and CloudLinux 8 cannot verify Ed25519; the
+        # installed CSM build does it with Go's implementation.
+        "$verifier" verify-release "$key_file" "$sig_file" "$file" >/dev/null 2>&1 || verify_status=$?
+    fi
     rm -f "$key_file" "$sig_file"
     if [ "$verify_status" -eq 0 ]; then
         info "Signature verified OK"

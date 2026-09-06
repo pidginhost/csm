@@ -75,7 +75,7 @@ less /tmp/csm-install.sh
 sudo bash /tmp/csm-install.sh
 ```
 
-Standalone verification needs OpenSSL 3.0 or newer. A missing key, missing current-release signature, older OpenSSL, or failed verification stops the install before executing the binary. Use the signed package repository above on EL8/CloudLinux 8, Ubuntu 20.04, Debian 11, and other hosts with older OpenSSL. See [Release signing](release-signing.md) for the narrowly scoped historical-release exception.
+Standalone verification uses OpenSSL 3.0 or newer, or an already installed CSM build providing `csm verify-release`, which verifies Ed25519 without OpenSSL. A first installation on a host with older OpenSSL and no CSM present has neither, so use the signed package repository above on EL8/CloudLinux 8, Ubuntu 20.04, Debian 11, and similar hosts. A missing key, missing current-release signature, absent verifier, or failed verification stops the install before executing the binary. See [Release signing](release-signing.md) for the narrowly scoped historical-release exception.
 
 It auto-detects the hostname and alert email, generates a Web UI token, and prompts before applying. Non-interactive mode:
 

@@ -144,4 +144,18 @@ openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
   -sigfile "csm-${VERSION}-linux-amd64.sig" -in "csm-${VERSION}-linux-amd64"
 ```
 
+`openssl pkeyutl -rawin` needs OpenSSL 3.0 or newer. EL8 and CloudLinux 8 ship
+OpenSSL 1.1.1, whose command line cannot verify Ed25519 at all. Use an already
+installed CSM build there, which verifies with Go's implementation and needs no
+OpenSSL:
+
+```bash
+csm verify-release csm-signing.pub \
+  "csm-${VERSION}-linux-amd64.sig" "csm-${VERSION}-linux-amd64"
+```
+
+It exits zero only for an artifact signed by the given key. The installer and
+deploy scripts select the same two verifiers in that order, and refuse the
+artifact when neither is available.
+
 If verification fails, treat the artifact as untrusted. Do not install it.
