@@ -27,10 +27,17 @@ Automatic and manual malware termination reject root credentials, including
 effective and saved root IDs. The separate opt-in AF_ALG reaction requires the
 current credentials and executable to match its recorded event.
 
-Safe signaling needs `pidfd_open` and `pidfd_send_signal`, normally available
-together from Linux 5.3 or in vendor backports. CSM does not fall back to numeric
-PID signaling on older kernels or when service restrictions deny these calls.
-Automatic termination failures are logged while the original detection remains.
+Safe signaling needs `pidfd_send_signal` (Linux 5.1). Where `pidfd_open`
+(Linux 5.3) is absent -- EL8 and CloudLinux 8 ship 4.18 kernels without it --
+CSM pins the target through its `/proc/<pid>` directory descriptor, which
+`pidfd_send_signal` accepts and which refers to the same kernel process. Both
+paths reject a recycled PID; CSM never falls back to numeric PID signaling.
+On a kernel without `pidfd_send_signal`, or when service restrictions deny the
+call, termination stays disabled: `csm doctor` reports `process termination
+supported` as failed and the health status becomes `degraded` whenever
+`auto_response.kill_processes` is enabled, so an inoperative protection is
+visible before an incident needs it. Automatic termination failures are logged
+while the original detection remains.
 Manual kill-and-quarantine reports a termination failure even if the file was
 successfully quarantined; inspect both the process and recovery entry before
 retrying. Manual request cancellation is checked before sending a signal.

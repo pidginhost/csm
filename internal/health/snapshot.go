@@ -47,15 +47,21 @@ type Snapshot struct {
 // observe-only, actively mutating the firewall, or waiting for operator
 // confirmation after a tentative firewall apply.
 type AutomationStatus struct {
-	AutoResponseEnabled      bool `json:"auto_response_enabled"`
-	AutoResponseBlockIPs     bool `json:"auto_response_block_ips"`
-	AutoResponseDryRun       bool `json:"auto_response_dry_run"`
-	DryRunBlocks             int  `json:"dry_run_blocks"`
-	ChallengeEnabled         bool `json:"challenge_enabled"`
-	ChallengePortGateEnabled bool `json:"challenge_port_gate_enabled"`
-	ChallengePortGateActive  bool `json:"challenge_port_gate_active"`
-	ChallengePending         int  `json:"challenge_pending"`
-	ChallengeEscalated       int  `json:"challenge_escalated"`
+	AutoResponseEnabled  bool `json:"auto_response_enabled"`
+	AutoResponseBlockIPs bool `json:"auto_response_block_ips"`
+	AutoResponseDryRun   bool `json:"auto_response_dry_run"`
+	// Termination needs a kernel process handle. A kernel that cannot pin one
+	// leaves configured automatic killing inoperative, so the capability and
+	// its cause travel with the status instead of staying in the log.
+	ProcessKillEnabled       bool   `json:"process_kill_enabled"`
+	ProcessSignalSupported   bool   `json:"process_signal_supported"`
+	ProcessSignalError       string `json:"process_signal_error,omitempty"`
+	DryRunBlocks             int    `json:"dry_run_blocks"`
+	ChallengeEnabled         bool   `json:"challenge_enabled"`
+	ChallengePortGateEnabled bool   `json:"challenge_port_gate_enabled"`
+	ChallengePortGateActive  bool   `json:"challenge_port_gate_active"`
+	ChallengePending         int    `json:"challenge_pending"`
+	ChallengeEscalated       int    `json:"challenge_escalated"`
 	// FirewallEnabled reflects firewall.enabled in config. FirewallManaged is
 	// true only when the daemon has a live nftables engine wired. The
 	// combination FirewallEnabled && !FirewallManaged means the firewall is
@@ -114,13 +120,15 @@ func (s Snapshot) AllWatchersAttached() bool {
 
 // OverallStatus collapses the snapshot into one of: "ok", "degraded", "down".
 //   - "down" if the snapshot was zero-valued (never assembled)
-//   - "degraded" if a watcher is detached, the store is unhealthy, or an enabled firewall is unmanaged
+//   - "degraded" if a watcher is detached, the store is unhealthy, an enabled
+//     firewall is unmanaged, or enabled termination has no safe kernel path
 //   - "ok" otherwise
 func (s Snapshot) OverallStatus() string {
 	if s.StartedAt.IsZero() && len(s.Watchers) == 0 {
 		return "down"
 	}
-	if !s.StoreHealthy || !s.AllWatchersAttached() || s.Automation.FirewallEnabled && !s.Automation.FirewallManaged {
+	if !s.StoreHealthy || !s.AllWatchersAttached() || s.Automation.FirewallEnabled && !s.Automation.FirewallManaged ||
+		s.Automation.ProcessKillEnabled && !s.Automation.ProcessSignalSupported {
 		return "degraded"
 	}
 	return "ok"

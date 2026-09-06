@@ -148,8 +148,14 @@ func TestSignalRejectsCancellationVerificationAndUnavailableKernel(t *testing.T)
 			if opened != wantOpen || closed != wantClose || verified != wantVerify || sent != wantSend {
 				t.Fatalf("open/close/verify/send=%d/%d/%d/%d, want=%d/%d/%d/%d", opened, closed, verified, sent, wantOpen, wantClose, wantVerify, wantSend)
 			}
-			if (at == "old kernel" || at == "send error") && !errors.Is(err, ErrUnsupported) {
+			if at == "send error" && !errors.Is(err, ErrUnsupported) {
 				t.Fatalf("missing unsupported diagnosis: %v", err)
+			}
+			// A kernel without pidfd_open still pins the target through its
+			// /proc entry, so the fallback decides the outcome: an absent PID
+			// is a finished process, not an unsupported kernel.
+			if at == "old kernel" && !errors.Is(err, os.ErrProcessDone) {
+				t.Fatalf("missing process-done diagnosis: %v", err)
 			}
 		})
 	}

@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Journal mail monitoring now follows new records when the selected services have no prior journal entries.
 
-- Process termination now uses a verified process handle, preventing recycled process IDs from redirecting an action. Unsupported kernels leave termination disabled and report the failure.
+- Process termination now uses a verified process handle, preventing recycled process IDs from redirecting an action. Kernels without `pidfd_open`, including EL8 and CloudLinux 8, pin the target through its process directory instead of losing termination. Kernels that support neither leave termination disabled, fail the matching health and doctor check, and report the cause.
 
 - Quarantine restore preserves recorded ownership, permissions, and modification times. Historical entries use their saved quarantine dates when available.
 

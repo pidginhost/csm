@@ -176,6 +176,22 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.Checks = append(report.Checks, check)
 	}
 
+	// Termination depends on a kernel that can pin a process handle. Report it
+	// only where it is configured, so hosts that never kill processes are not
+	// asked to act on a capability they do not use.
+	if automation := sr.Snapshot.Automation; automation.ProcessKillEnabled {
+		check := DoctorCheck{Name: "process termination supported", Status: "ok"}
+		if !automation.ProcessSignalSupported {
+			check.Status = "fail"
+			check.Message = "auto_response.kill_processes is enabled but this kernel cannot signal a pinned process handle"
+			if automation.ProcessSignalError != "" {
+				check.Message += ": " + automation.ProcessSignalError
+			}
+			check.Fix = "run a kernel providing pidfd_send_signal (Linux 5.1+, including EL8 backports), or set auto_response.kill_processes: false so detections are not silently left unremediated"
+		}
+		report.Checks = append(report.Checks, check)
+	}
+
 	if cfg.PHPShield.Enabled {
 		report.Checks = append(report.Checks, phpShieldCageFSDoctorChecks()...)
 	}

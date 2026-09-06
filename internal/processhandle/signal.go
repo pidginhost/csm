@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"syscall"
 )
 
@@ -39,4 +40,16 @@ func Signal(ctx context.Context, pid int, sig syscall.Signal, verify func() erro
 		return err
 	}
 	return handle.signal(sig)
+}
+
+var probeOnce sync.Once
+var probeResult error
+
+// Available reports whether this kernel can pin and signal a process handle.
+// Kernel capability cannot change while the process runs, so the probe is
+// performed once. Callers surface the error rather than silently skipping
+// configured termination.
+func Available() error {
+	probeOnce.Do(func() { probeResult = probe() })
+	return probeResult
 }
