@@ -132,6 +132,27 @@ Automated tests cover RFC 5424 output and UDP, TCP, TLS, Unix datagram,
 and Unix stream framing. Validate the chosen receiver configuration in a
 staging environment before production rollout.
 
+### Delivery failures and recovery
+
+Each enabled destination retries independently after an open or write failure.
+The delay starts at one second and doubles up to one minute. A later dispatch
+retries a missing destination once its delay has elapsed; a quiet daemon waits
+until another finding arrives. Healthy destinations stay open during retries.
+Reloading audit configuration waits for in-flight writes before replacing sinks.
+
+Failures and recovery are logged to journald. Monitor
+`csm_audit_sink_degraded{sink="jsonl"}` and
+`csm_audit_sink_degraded{sink="syslog"}` on `/metrics`: one means a configured
+destination failed, zero means it is healthy or disabled. These values are
+initialized when the audit pipeline first runs. Syslog health reflects local
+connection/write results, not an acknowledgement from the receiving SIEM.
+
+`csm_audit_events_dropped_total{sink}` counts events whose destination was
+unavailable or whose write failed. Failed deliveries are not replayed
+automatically; use the backfill command below to recover stored findings.
+Backoff resets after a successful delivery, and configuration changes take
+effect on the next dispatch.
+
 ### Backfill
 
 When you first turn on the audit log, the SIEM has no history. Use

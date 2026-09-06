@@ -12,7 +12,9 @@ completed write. Scans read the original event descriptor even if the file has
 been renamed, replaced, or deleted before analysis. No rename event is needed
 to inspect those bytes. Repeated findings use the normal alert cooldown, and
 queue overflow schedules a directory rescan of files that remain on disk.
-Kernel notification loss still relies on the next deep scan.
+Kernel notification loss still relies on the next deep scan. A rename-only
+arrival without a usable create or close-write event is also first examined
+by the rolling content scan; the watcher does not subscribe to rename events.
 
 For WordPress atomic saves, the intended basename can select a core or plugin
 checksum entry. Only a match against the complete event-file content verifies
@@ -70,6 +72,35 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
 
 cPanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
+
+The Postfix/Dovecot file reader polls every two seconds. It reads replacement
+files from the start and rewinds when the current file shrinks below its read
+position. Truncation also clears buffered bytes from the previous file contents.
+With `copytruncate`, a file that regrows past that position between polls can
+hide the truncation and lose events. Use rename/create rotation with the log
+writer reopening its file, or journal input, when that loss is unacceptable.
+
+Mail records are emitted only after their newline arrives. A partial record
+survives temporary EOF up to the 64 KiB limit, including its newline. Longer
+records are discarded through the next newline even when written across
+several polls. Rotation and detected truncation clear pending record state.
+
+Mail source attachment retries after failures, starting at one second and
+doubling to a maximum delay of 30 seconds. The watcher remains unhealthy and
+reports an unavailable-source finding until a reader attaches successfully.
+Repeated identical errors are not re-emitted. Retries use the current mail
+source configuration and start at the current tail, so delayed attachment does
+not count historical authentication failures as new activity.
+
+With `mail_logs.source: auto`, each retry chooses the configured or platform
+file if present, otherwise the configured journal units. A file missing for
+90 seconds triggers a new selection. The old reader stops before a replacement
+starts. Journal input follows new records from the selected services, including
+services with no prior entries; it does not replay older records on attachment.
+
+Explicit `file` and `journal` modes retry their selected source without
+switching, and a working reader stays attached until it stops or loses its file.
+Journal input requires a build with journal support.
 
 ## SMTP / Dovecot Brute-Force Tracker
 

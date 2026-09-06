@@ -14,6 +14,7 @@
 #   GO_LINUX_RUNTIME   override the runtime (default: apple/container, else Docker)
 #   GO_LINUX_MODCACHE  override the read-only host module cache seed; empty disables it
 #   GO_LINUX_MEMORY    memory limit (default: 12g)
+#   GO_LINUX_PRIVILEGED=1 allow kernel/service tests in a disposable Docker VM
 #   GO_LINUX_DRY_RUN=1 print the invocation instead of running it
 set -euo pipefail
 
@@ -131,13 +132,21 @@ if [[ -f "$ROOT_DIR/.git" ]]; then
   env_args+=(-e GIT_OPTIONAL_LOCKS=0)
 fi
 
-# The Linux-only paths open fanotify and nftables handles. Without CAP_SYS_ADMIN
-# those tests fail on permissions rather than behaviour, which looks like a
-# broken suite instead of a missing capability.
+# Fanotify and isolated network namespaces need CAP_SYS_ADMIN; nftables
+# transactions need CAP_NET_ADMIN even inside those namespaces.
+privilege_args=(--cap-add CAP_SYS_ADMIN --cap-add CAP_NET_ADMIN)
+if [[ "${GO_LINUX_PRIVILEGED:-0}" == 1 ]]; then
+  if [[ "$runtime" != docker ]]; then
+    printf 'GO_LINUX_PRIVILEGED requires Docker on a dedicated test host.\n' >&2
+    exit 1
+  fi
+  privilege_args+=(--privileged --cgroupns=private)
+fi
+
 cmd=(
   "$runtime" run --rm
   -m "${GO_LINUX_MEMORY:-12g}"
-  --cap-add CAP_SYS_ADMIN
+  "${privilege_args[@]}"
   "${mount_args[@]}"
   "${env_args[@]}"
   -w "$CONTAINER_WORKDIR"

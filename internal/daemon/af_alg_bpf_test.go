@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -14,14 +15,21 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// TestProbeBPFLSM_ReturnsBool is a "must not panic" smoke test on the
-// shared probe. Skipped without root because BPF program loading is
-// privileged.
-func TestProbeBPFLSM_ReturnsBool(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("BPF program load requires root / CAP_BPF")
+func TestProbeBPFLSMMatchesAttachment(t *testing.T) {
+	caps := bpf.Probe()
+	mon, err := tryStartBPFLSM(context.Background(), make(chan alert.Finding, 8), &config.Config{})
+	if !caps.LSMAttach || !caps.Ringbuf {
+		if !errors.Is(err, bpf.ErrUnsupported) || mon != nil {
+			t.Fatalf("unsupported capabilities: monitor=%v err=%v", mon, err)
+		}
+		return
 	}
-	_ = bpf.Probe().LSMAttach
+	if err != nil || mon == nil {
+		t.Fatalf("advertised BPF capability did not attach: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	mon.Run(ctx)
 }
 
 // TestTryStartBPFLSM_AttachesAndShutsDown loads the AF_ALG LSM program,

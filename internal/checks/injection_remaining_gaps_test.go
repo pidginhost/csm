@@ -717,6 +717,7 @@ func TestAutoQuarantineFiles_ExercisesAllCheckTypes(t *testing.T) {
 }
 
 func TestAutoKillProcesses_StructuredPID(t *testing.T) {
+	calls := withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {
 			if strings.Contains(name, "/status") {
@@ -730,10 +731,14 @@ func TestAutoKillProcesses_StructuredPID(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.KillProcesses = true
 	findings := []alert.Finding{{Check: "fake_kernel_thread", Severity: alert.Critical, PID: 99999, Message: "Fake kernel thread detected", Details: "Some details"}}
-	_ = AutoKillProcesses(cfg, findings)
+	actions := AutoKillProcesses(context.Background(), cfg, findings)
+	if len(actions) != 0 || len(calls.requested) != 1 || calls.requested[0] != 99999 || len(calls.signaled) != 0 {
+		t.Fatalf("unverifiable structured PID: actions=%v calls=%+v", actions, calls)
+	}
 }
 
 func TestAutoKillProcesses_SkipsPIDZeroOrOne(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {
 			if strings.Contains(name, "/status") {
@@ -747,13 +752,14 @@ func TestAutoKillProcesses_SkipsPIDZeroOrOne(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.KillProcesses = true
 	findings := []alert.Finding{{Check: "fake_kernel_thread", Severity: alert.Critical, PID: 1, Message: "PID 1"}}
-	actions := AutoKillProcesses(cfg, findings)
+	actions := AutoKillProcesses(context.Background(), cfg, findings)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions for PID <= 1, got %d", len(actions))
 	}
 }
 
 func TestAutoKillProcesses_SkipsEmptyUID(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {
 			if strings.Contains(name, "/status") {
@@ -767,7 +773,7 @@ func TestAutoKillProcesses_SkipsEmptyUID(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.KillProcesses = true
 	findings := []alert.Finding{{Check: "fake_kernel_thread", Severity: alert.Critical, PID: 12345, Message: "Fake thread"}}
-	actions := AutoKillProcesses(cfg, findings)
+	actions := AutoKillProcesses(context.Background(), cfg, findings)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions when UID is empty, got %d", len(actions))
 	}

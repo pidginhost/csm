@@ -36,7 +36,8 @@ func TestCheckFirewallEnabled_MissingNftCriticalFinding(t *testing.T) {
 // TestApplyFixPermissions_PathOutsideAllowedRoots hits fixPermissions with a
 // /tmp/ path which is not within /home, producing a validation error.
 func TestApplyFixPermissions_PathOutsideAllowedRoots(t *testing.T) {
-	r := ApplyFix("world_writable_php", "", "", "/tmp/out-of-bounds.php")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "world_writable_php", "", "", "/tmp/out-of-bounds.php")
 	if r.Success {
 		t.Error("paths outside /home should not be remediated")
 	}
@@ -47,7 +48,8 @@ func TestApplyFixPermissions_PathOutsideAllowedRoots(t *testing.T) {
 
 // TestApplyFixPermissions_PathIsRelative ensures a non-absolute path is rejected.
 func TestApplyFixPermissions_PathIsRelative(t *testing.T) {
-	r := ApplyFix("world_writable_php", "", "", "relative/path.php")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "world_writable_php", "", "", "relative/path.php")
 	if r.Success {
 		t.Error("relative paths should not be remediated")
 	}
@@ -78,7 +80,8 @@ func TestFixHtaccess_EmptyPathGuard(t *testing.T) {
 
 // TestFixKillAndQuarantine_EmptyPath hits the top-level guard.
 func TestFixKillAndQuarantine_EmptyPath(t *testing.T) {
-	r := fixKillAndQuarantine("", "PID: 123")
+	withSimulatedProcessSignal(t)
+	r := fixKillAndQuarantine(context.Background(), "", "PID: 123")
 	if r.Success {
 		t.Error("empty path should fail")
 	}
@@ -88,9 +91,10 @@ func TestFixKillAndQuarantine_EmptyPath(t *testing.T) {
 // gracefully and continues to the quarantine attempt (which then fails
 // because the path does not exist under the allowed roots).
 func TestFixKillAndQuarantine_NonIntegerPID(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	// Details contains "PID: NaN" which Sscanf will parse as 0, so the
 	// syscall.Kill path is skipped safely.
-	r := fixKillAndQuarantine("/home/alice/.config/miner", "PID: NaN")
+	r := fixKillAndQuarantine(context.Background(), "/home/alice/.config/miner", "PID: NaN")
 	if r.Success {
 		t.Error("missing file under /home/alice should not succeed")
 	}
@@ -115,7 +119,8 @@ func TestFixQuarantineSpoolMessage_SpoolDirAbsent(t *testing.T) {
 
 // TestApplyFix_PhishingPageDispatch exercises the phishing_page switch case.
 func TestApplyFix_PhishingPageDispatch(t *testing.T) {
-	r := ApplyFix("phishing_page", "phishing at /home/alice/public_html/login.php", "")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "phishing_page", "phishing at /home/alice/public_html/login.php", "")
 	// Will fail because file does not exist, but dispatch path is covered.
 	if r.Success {
 		t.Error("nonexistent file should not succeed")
@@ -124,7 +129,8 @@ func TestApplyFix_PhishingPageDispatch(t *testing.T) {
 
 // TestApplyFix_NewPhpInLanguagesDispatch exercises the new_php_in_languages path.
 func TestApplyFix_NewPhpInLanguagesDispatch(t *testing.T) {
-	r := ApplyFix("new_php_in_languages", "", "", "/home/alice/public_html/wp-admin/x.php")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "new_php_in_languages", "", "", "/home/alice/public_html/wp-admin/x.php")
 	if r.Success {
 		t.Error("nonexistent file should not succeed")
 	}
@@ -132,7 +138,8 @@ func TestApplyFix_NewPhpInLanguagesDispatch(t *testing.T) {
 
 // TestApplyFix_NewPhpInUpgradeDispatch exercises the new_php_in_upgrade path.
 func TestApplyFix_NewPhpInUpgradeDispatch(t *testing.T) {
-	r := ApplyFix("new_php_in_upgrade", "", "", "/home/alice/public_html/wp-admin/x.php")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "new_php_in_upgrade", "", "", "/home/alice/public_html/wp-admin/x.php")
 	if r.Success {
 		t.Error("nonexistent file should not succeed")
 	}
@@ -140,7 +147,8 @@ func TestApplyFix_NewPhpInUpgradeDispatch(t *testing.T) {
 
 // TestApplyFix_PhpDropperDispatch exercises the php_dropper path.
 func TestApplyFix_PhpDropperDispatch(t *testing.T) {
-	r := ApplyFix("php_dropper", "dropper at /home/alice/public_html/d.php", "")
+	withSimulatedProcessSignal(t)
+	r := ApplyFix(context.Background(), "php_dropper", "dropper at /home/alice/public_html/d.php", "")
 	if r.Success {
 		t.Error("nonexistent file should not succeed")
 	}

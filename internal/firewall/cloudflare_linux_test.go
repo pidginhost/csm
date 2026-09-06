@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"net"
 	"os"
 	"testing"
 )
@@ -59,13 +60,15 @@ func TestLoadCountryCIDRs6MissingFile(t *testing.T) {
 	}
 }
 
-func TestLoadCountryCIDRsSkipsSaturatedRange(t *testing.T) {
+func TestLoadCountryCIDRsPreservesFullRange(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte("0.0.0.0/0\n198.51.100.0/24\n")
 	if err := os.WriteFile(dir+"/US.cidr", data, 0600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	elements := loadCountryCIDRs(dir, "US")
-	requireIntervalElems(t, elements, "198.51.100.0/24")
+	elements := normalizeIntervalElements(loadCountryCIDRs(dir, "US"))
+	if len(elements) != 1 || elements[0].IntervalEnd || !net.IP(elements[0].Key).Equal(net.IPv4zero) {
+		t.Fatalf("full country range was not preserved: %+v", elements)
+	}
 }

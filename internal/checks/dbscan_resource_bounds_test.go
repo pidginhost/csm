@@ -80,7 +80,7 @@ func TestCheckDatabaseContentRejectsOversizedWPConfig(t *testing.T) {
 	content := "<?php\n" +
 		"define('DB_NAME', 'alice_wp');\n" +
 		"define('DB_USER', 'alice_wp');\n" +
-		strings.Repeat("# padding\n", maxWPConfigBytes/10+2)
+		strings.Repeat("# padding\n", maxCMSConfigBytes/10+2)
 	if err := os.WriteFile(configFile, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}

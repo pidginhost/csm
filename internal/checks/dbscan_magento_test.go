@@ -86,8 +86,11 @@ func (m *fakeMagentoOS) ReadFile(name string) ([]byte, error) {
 // --- parseMagentoM1 ------------------------------------------------------
 
 func TestParseMagentoM1ExtractsCredentialsAndPrefix(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{m1Body: canonicalM1XML()})
-	creds := parseMagentoM1("/home/alice/public_html/app/etc/local.xml")
+	withCMSConfigOS(t, &fakeMagentoOS{m1Body: canonicalM1XML()})
+	creds, err := parseMagentoM1(context.Background(), "/home/alice/public_html/app/etc/local.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.version != "M1" {
 		t.Errorf("version = %q, want M1", creds.version)
 	}
@@ -119,16 +122,22 @@ func TestParseMagentoM1HandlesNonCDATAFields(t *testing.T) {
   </global>
 </config>
 `
-	withMockOS(t, &fakeMagentoOS{m1Body: body})
-	creds := parseMagentoM1("/home/alice/public_html/app/etc/local.xml")
+	withCMSConfigOS(t, &fakeMagentoOS{m1Body: body})
+	creds, err := parseMagentoM1(context.Background(), "/home/alice/public_html/app/etc/local.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbHost != "db.example.com" || creds.dbUser != "plain_user" || creds.dbName != "plain_db" {
 		t.Errorf("plain (non-CDATA) XML not parsed: %+v", creds)
 	}
 }
 
 func TestParseMagentoM1MalformedReturnsZero(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{m1Body: "<not-config>broken"})
-	creds := parseMagentoM1("/home/alice/public_html/app/etc/local.xml")
+	withCMSConfigOS(t, &fakeMagentoOS{m1Body: "<not-config>broken"})
+	creds, err := parseMagentoM1(context.Background(), "/home/alice/public_html/app/etc/local.xml")
+	if err == nil {
+		t.Fatal("malformed XML did not return an error")
+	}
 	if creds.dbName != "" {
 		t.Errorf("malformed XML should return zero creds, got %+v", creds)
 	}
@@ -137,8 +146,11 @@ func TestParseMagentoM1MalformedReturnsZero(t *testing.T) {
 // --- parseMagentoM2 ------------------------------------------------------
 
 func TestParseMagentoM2ExtractsCredentialsAndPrefix(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{m2Body: canonicalM2EnvPHP()})
-	creds := parseMagentoM2("/home/alice/public_html/app/etc/env.php")
+	withCMSConfigOS(t, &fakeMagentoOS{m2Body: canonicalM2EnvPHP()})
+	creds, err := parseMagentoM2(context.Background(), "/home/alice/public_html/app/etc/env.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.version != "M2" {
 		t.Errorf("version = %q, want M2", creds.version)
 	}
@@ -165,8 +177,11 @@ return [
     ],
 ];
 `
-	withMockOS(t, &fakeMagentoOS{m2Body: body})
-	creds := parseMagentoM2("/home/alice/public_html/app/etc/env.php")
+	withCMSConfigOS(t, &fakeMagentoOS{m2Body: body})
+	creds, err := parseMagentoM2(context.Background(), "/home/alice/public_html/app/etc/env.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbHost != "mysql.internal" || creds.dbName != "shop" {
 		t.Errorf("double-quoted env.php not parsed: %+v", creds)
 	}
@@ -175,7 +190,7 @@ return [
 // --- CheckMagentoContent end-to-end --------------------------------------
 
 func TestCheckMagentoContentSkipsHostsWithNeitherFile(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{}) // no env.php, no local.xml
+	withCMSConfigOS(t, &fakeMagentoOS{}) // no env.php, no local.xml
 	withMockCmd(t, &mockCmd{
 		runWithEnv: func(string, []string, ...string) ([]byte, error) {
 			t.Errorf("mysql called when neither M1 nor M2 file present")
@@ -189,7 +204,7 @@ func TestCheckMagentoContentSkipsHostsWithNeitherFile(t *testing.T) {
 }
 
 func TestCheckMagentoContentM2EmitsAcrossSettingsContentAndAdmin(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{m2Body: canonicalM2EnvPHP()})
+	withCMSConfigOS(t, &fakeMagentoOS{m2Body: canonicalM2EnvPHP()})
 	withMockCmd(t, &mockCmd{
 		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
 			joined := strings.Join(args, " ")
@@ -214,8 +229,8 @@ func TestCheckMagentoContentM2EmitsAcrossSettingsContentAndAdmin(t *testing.T) {
 	if categories["magento_settings_injection"] != 1 {
 		t.Errorf("magento_settings_injection = %d, want 1", categories["magento_settings_injection"])
 	}
-	if categories["magento_content_injection"] < 1 {
-		t.Errorf("magento_content_injection = %d, want >= 1", categories["magento_content_injection"])
+	if categories["magento_content_injection"] != 1 {
+		t.Errorf("magento_content_injection = %d, want 1", categories["magento_content_injection"])
 	}
 	// The first pass over an install baselines its administrators silently;
 	// only an admin that appears later is reported (see cmsAdminFindings).
@@ -225,7 +240,7 @@ func TestCheckMagentoContentM2EmitsAcrossSettingsContentAndAdmin(t *testing.T) {
 }
 
 func TestCheckMagentoContentM1FallbackWhenOnlyXMLPresent(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{m1Body: canonicalM1XML()})
+	withCMSConfigOS(t, &fakeMagentoOS{m1Body: canonicalM1XML()})
 
 	prefixSeen := false
 	withMockCmd(t, &mockCmd{
@@ -249,7 +264,7 @@ func TestCheckMagentoContentM1FallbackWhenOnlyXMLPresent(t *testing.T) {
 // half-finished M1 to M2 migration should not trigger duplicate
 // scans (one for each version's creds).
 func TestCheckMagentoContentDeduplicatesAcrossVersions(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{
+	withCMSConfigOS(t, &fakeMagentoOS{
 		m1Body: canonicalM1XML(),
 		m2Body: canonicalM2EnvPHP(),
 	})
@@ -284,7 +299,7 @@ func TestCheckMagentoContentDeduplicatesAcrossVersions(t *testing.T) {
 // Regression: confirm the post-filter applies to Magento config
 // rows just like Joomla / Drupal.
 func TestCheckMagentoContentSuppressesScriptOnlyConfigFP(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{m2Body: canonicalM2EnvPHP()})
+	withCMSConfigOS(t, &fakeMagentoOS{m2Body: canonicalM2EnvPHP()})
 	withMockCmd(t, &mockCmd{
 		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
 			joined := strings.Join(args, " ")
@@ -309,7 +324,7 @@ func TestCheckMagentoContentSuppressesScriptOnlyConfigFP(t *testing.T) {
 // host with stale local.xml credentials. The seenAccounts map
 // prevents that.
 func TestCheckMagentoContentDedupSurvivesZeroFindingM2(t *testing.T) {
-	withMockOS(t, &fakeMagentoOS{
+	withCMSConfigOS(t, &fakeMagentoOS{
 		m1Body: canonicalM1XML(),
 		m2Body: canonicalM2EnvPHP(),
 	})

@@ -9,11 +9,9 @@ import (
 	"io"
 	"net/netip"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -359,6 +357,9 @@ type wpDBCreds struct {
 	// queryCtx ties scheduled database work to the runner's deadline. Command
 	// paths leave it nil and retain the per-query timeout below.
 	queryCtx context.Context
+	// queryOwner identifies the CMS check whose coverage depends on a query.
+	// WordPress callers use the default owner when this is empty.
+	queryOwner string
 	// queryFailed is shared by the sequential queries for one install. Once a
 	// connection or query fails, later checks skip redundant retries and the
 	// host-wide scan can continue with the next install.
@@ -373,8 +374,6 @@ type wpDBCreds struct {
 	multisite bool
 }
 
-const maxWPConfigBytes = 1 << 20
-
 // parseWPConfig extracts database credentials from wp-config.php.
 func parseWPConfig(path string) wpDBCreds {
 	creds, complete := parseWPConfigChecked(path)
@@ -387,29 +386,16 @@ func parseWPConfig(path string) wpDBCreds {
 // parseWPConfigChecked bounds account-controlled input so a special or very
 // large wp-config.php cannot strand the scheduled database scan.
 func parseWPConfigChecked(path string) (wpDBCreds, bool) {
-	var f *os.File
-	var err error
-	if _, productionFS := osFS.(realOS); productionFS {
-		// The account controls this path. A nonblocking, no-follow open prevents
-		// a regular-file-to-FIFO or symlink swap from stranding the worker.
-		// #nosec G304 -- read-only document-root candidate; flags reject unsafe types.
-		f, err = os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
-	} else {
-		f, err = osFS.Open(path)
-	}
+	f, err := openCMSConfig(path)
 	if err != nil {
 		return wpDBCreds{}, false
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return wpDBCreds{}, false
-	}
 
 	var creds wpDBCreds
-	limited := &io.LimitedReader{R: f, N: maxWPConfigBytes + 1}
+	limited := &io.LimitedReader{R: f, N: maxCMSConfigBytes + 1}
 	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 64*1024), maxWPConfigBytes+1)
+	scanner.Buffer(make([]byte, 64*1024), maxCMSConfigBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -571,9 +557,7 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 		if creds.queryFailed != nil {
 			*creds.queryFailed = true
 		}
-		if creds.queryCtx != nil {
-			markCheckIncomplete(creds.queryCtx, "db_content")
-		}
+		markCheckIncomplete(creds.queryCtx, creds.queryCheck())
 		return nil
 	}
 	out := make([]string, 0, len(rows))
@@ -587,6 +571,13 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 		return nil
 	}
 	return out
+}
+
+func (c wpDBCreds) queryCheck() string {
+	if c.queryOwner != "" {
+		return c.queryOwner
+	}
+	return "db_content"
 }
 
 // siteURLPoisonReason reports why a siteurl/home value cannot be a real site

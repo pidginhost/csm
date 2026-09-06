@@ -6,6 +6,9 @@
 
 - [Installation](installation.md)
 - [Configuration](configuration.md)
+- [Credential rotation](credential-rotation.md)
+- [Custom account roots](custom-account-roots.md)
+- [Service configuration writes](service-confinement.md)
 - [Upgrading](upgrading.md)
 - [CLI Commands](cli.md)
 
@@ -45,4 +48,7 @@
 # Development
 
 - [Building and Testing](development.md)
+  - [Clean Application Corpus](clean-corpus.md)
+  - [cPanel Release Tests](cpanel-release-tests.md)
+  - [Production Build and Kernel Tests](production-tests.md)
 - [Release Signing](release-signing.md)

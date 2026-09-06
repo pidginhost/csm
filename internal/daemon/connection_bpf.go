@@ -51,7 +51,7 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 	}
 
 	objs := &bpfprog.ConnectionObjects{}
-	if err := bpfprog.LoadConnectionObjects(objs, nil); err != nil {
+	if err = bpfprog.LoadConnectionObjects(objs, nil); err != nil {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
 	}
 
@@ -59,16 +59,16 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 	// attaching cgroup programs so the first connect on a hosted UID
 	// does not race the first refresh.
 	pol := BuildBPFEnforcementPolicy(cfg)
-	if err := installBPFEnforcementPolicy(objs, pol); err != nil {
+	if err = installBPFEnforcementPolicy(objs, pol); err != nil {
 		csmlog.Warn("bpf enforcement policy install failed", "err", err)
 	}
 	if pol.Enforce == 1 {
-		if uids, err := safeUIDsFromPasswd("/etc/passwd"); err == nil {
-			if err := installSafeUIDs(objs, uids); err != nil {
+		if uids, loadErr := safeUIDsFromPasswd("/etc/passwd"); loadErr == nil {
+			if err = installSafeUIDs(objs, uids); err != nil {
 				csmlog.Warn("bpf enforcement initial safe-uid install failed", "err", err)
 			}
 		} else {
-			csmlog.Warn("bpf enforcement initial safe-uid load failed", "err", err)
+			csmlog.Warn("bpf enforcement initial safe-uid load failed", "err", loadErr)
 		}
 	}
 
@@ -78,7 +78,7 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 		Program: objs.CsmConnect4,
 	})
 	if err != nil {
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("attach connect4: %w", err)
 	}
 	l6, err := link.AttachCgroup(link.CgroupOptions{
@@ -88,7 +88,7 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 	})
 	if err != nil {
 		_ = l4.Close()
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("attach connect6: %w", err)
 	}
 
@@ -96,7 +96,7 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 	if err != nil {
 		_ = l4.Close()
 		_ = l6.Close()
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
 
@@ -147,7 +147,7 @@ func (c *connectionBPF) Run(ctx context.Context) {
 		_ = c.reader.Close()
 		_ = c.link4.Close()
 		_ = c.link6.Close()
-		c.objs.Close()
+		_ = c.objs.Close()
 	}()
 
 	go c.reader.Run(ctx)

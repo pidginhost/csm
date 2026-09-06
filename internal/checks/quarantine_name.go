@@ -1,14 +1,23 @@
 package checks
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // quarantineSafeNameMax keeps the generated name, plus the timestamp prefix
 // callers add, under the 255-byte filename limit.
 const quarantineSafeNameMax = 180
+
+func newQuarantinePath(dir, original string) string {
+	// Repeated cleanups can occur within one second. Independent names keep
+	// a new recovery point from replacing the only copy of an earlier state.
+	return filepath.Join(dir, time.Now().UTC().Format("20060102-150405")+"_"+rand.Text()+"_"+quarantineSafeName(original))
+}
 
 // quarantineSafeName turns a source path into one flat quarantine filename.
 // Short paths keep the familiar slash-to-underscore form. A path that would

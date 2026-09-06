@@ -1293,7 +1293,8 @@ func TestIsPathWithinOrEqual_PartialPrefix(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestApplyFix_UnknownCheckType(t *testing.T) {
-	result := ApplyFix("unknown_check_type", "msg", "details")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "unknown_check_type", "msg", "details")
 	if result.Success {
 		t.Error("unknown check should not succeed")
 	}
@@ -1303,7 +1304,8 @@ func TestApplyFix_UnknownCheckType(t *testing.T) {
 }
 
 func TestApplyFix_WorldWritableEmptyPath(t *testing.T) {
-	result := ApplyFix("world_writable_php", "no path here", "")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "world_writable_php", "no path here", "")
 	if result.Success {
 		t.Error("should fail with no path")
 	}
@@ -1313,7 +1315,8 @@ func TestApplyFix_WorldWritableEmptyPath(t *testing.T) {
 }
 
 func TestApplyFix_HtaccessNonHtaccessFile(t *testing.T) {
-	result := ApplyFix("htaccess_injection", "", "", "/home/alice/public_html/index.php")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "htaccess_injection", "", "", "/home/alice/public_html/index.php")
 	if result.Success {
 		t.Error("should fail for non-.htaccess file")
 	}
@@ -1323,8 +1326,9 @@ func TestApplyFix_HtaccessNonHtaccessFile(t *testing.T) {
 }
 
 func TestApplyFix_HtaccessOutsideAllowedRoot(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	// fixHtaccess only allows paths under /home.
-	result := ApplyFix("htaccess_injection", "", "", "/tmp/.htaccess")
+	result := ApplyFix(context.Background(), "htaccess_injection", "", "", "/tmp/.htaccess")
 	if result.Success {
 		t.Error("should fail for path outside /home")
 	}

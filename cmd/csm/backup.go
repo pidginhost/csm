@@ -26,17 +26,23 @@ var daemonStateTransientPaths = []string{
 
 var errBackupDaemonLive = errors.New("daemon is running; stop it first (systemctl stop csm)")
 
-// BackupSources lists the on-disk inputs csm backup includes.
+// BackupSources lists backup inputs or restore destinations and their shared
+// uncompressed tar size budget. MaxBytes zero selects the default budget.
 type BackupSources struct {
 	ConfigPath string // main csm.yaml path
 	ConfDir    string // /etc/csm/conf.d/
 	StateDir   string // /var/lib/csm/state/
+	MaxBytes   int64
 }
 
 // WriteBackupArchive bundles every source path into a tar+gzip file at out.
 // The caller must prevent concurrent state writes while this function runs.
 // Empty or non-existent source paths are skipped silently.
 func WriteBackupArchive(out string, src BackupSources) (err error) {
+	maxBytes, err := backupArchiveLimit(src.MaxBytes)
+	if err != nil {
+		return err
+	}
 	outAbs, err := filepath.Abs(out)
 	if err != nil {
 		return fmt.Errorf("resolving output path: %w", err)
@@ -70,7 +76,7 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		}
 	}()
 	gw := gzip.NewWriter(tmp)
-	tw := tar.NewWriter(gw)
+	tw := tar.NewWriter(&backupSizeWriter{w: gw, remaining: maxBytes})
 	writersClosed := false
 	defer func() {
 		if !writersClosed {
@@ -90,7 +96,7 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		}
 	}
 	if src.StateDir != "" {
-		stateDBSnapshot, snapshotErr := disarmedStateDBSnapshot(filepath.Join(src.StateDir, "csm.db"), filepath.Dir(outAbs))
+		stateDBSnapshot, snapshotErr := disarmedStateDBSnapshot(filepath.Join(src.StateDir, "csm.db"), filepath.Dir(outAbs), maxBytes)
 		if snapshotErr != nil && !os.IsNotExist(snapshotErr) {
 			return snapshotErr
 		}
@@ -140,12 +146,25 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 // #nosec G304 G703 -- srcPath is the fixed csm.db name under the configured
 // state directory, and the snapshot is a private temporary file this
 // function creates under tempDir.
-func disarmedStateDBSnapshot(srcPath, tempDir string) (_ string, err error) {
+func disarmedStateDBSnapshot(srcPath, tempDir string, maxBytes int64) (_ string, err error) {
 	in, err := os.Open(srcPath)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = in.Close() }()
+	info, err := in.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("backup state database is not a regular file")
+	}
+	if info.Size() > maxBytes {
+		return "", errBackupSizeLimit
+	}
+	if spaceErr := requireBackupSpace(tempDir, info.Size()); spaceErr != nil {
+		return "", spaceErr
+	}
 	out, err := os.CreateTemp(tempDir, ".csm-backup-db-*.snap")
 	if err != nil {
 		return "", err
@@ -161,7 +180,7 @@ func disarmedStateDBSnapshot(srcPath, tempDir string) (_ string, err error) {
 	if err := out.Chmod(0o600); err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.CopyN(out, in, info.Size()); err != nil {
 		return "", err
 	}
 	if err := out.Sync(); err != nil {
@@ -274,26 +293,9 @@ func writeBackupArchiveGuarded(out string, src BackupSources) error {
 }
 
 func runBackup() {
-	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: csm backup <output.tar.gz>")
-		os.Exit(1)
-	}
-	// Find the output path: last non-flag argument after "backup",
-	// skipping known two-part flags (--config, --config-dir) and their values.
-	knownPairFlags := map[string]bool{"--config": true, "--config-dir": true}
-	out := ""
-	for i := 2; i < len(os.Args); i++ {
-		if knownPairFlags[os.Args[i]] {
-			i++ // skip value
-			continue
-		}
-		if !isFlag(os.Args[i]) {
-			out = os.Args[i]
-			break
-		}
-	}
-	if out == "" {
-		fmt.Fprintln(os.Stderr, "Usage: csm backup <output.tar.gz>")
+	out, maxBytes, err := parseBackupRestoreArgs(os.Args[2:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm backup: %v\nUsage: csm backup <output.tar.gz> [--max-bytes <bytes>]\n", err)
 		os.Exit(1)
 	}
 	cfg, err := tryLoadConfigLite()
@@ -305,6 +307,7 @@ func runBackup() {
 		ConfigPath: cfg.ConfigFile,
 		ConfDir:    cfg.ConfigDir,
 		StateDir:   cfg.StatePath,
+		MaxBytes:   maxBytes,
 	}
 	if backupErr := writeBackupArchiveGuarded(out, src); backupErr != nil {
 		fmt.Fprintf(os.Stderr, "backup failed: %v\n", backupErr)
@@ -317,9 +320,4 @@ func runBackup() {
 		return
 	}
 	fmt.Printf("backup written: %s (%d bytes)\n", out, st.Size())
-}
-
-// isFlag returns true if the argument starts with "-".
-func isFlag(s string) bool {
-	return len(s) > 0 && s[0] == '-'
 }

@@ -52,22 +52,22 @@ func (m *fakeJoomlaOS) ReadFile(name string) ([]byte, error) {
 // --- looksLikeJoomlaConfig ------------------------------------------------
 
 func TestLooksLikeJoomlaConfigPositive(t *testing.T) {
-	withMockOS(t, &fakeJoomlaOS{body: canonicalJConfigBody("jos_")})
-	if !looksLikeJoomlaConfig("/home/alice/public_html/configuration.php") {
+	withCMSConfigOS(t, &fakeJoomlaOS{body: canonicalJConfigBody("jos_")})
+	if matched, err := looksLikeJoomlaConfig(context.Background(), "/home/alice/public_html/configuration.php"); err != nil || !matched {
 		t.Error("expected JConfig marker to be detected")
 	}
 }
 
 func TestLooksLikeJoomlaConfigCaseInsensitive(t *testing.T) {
-	withMockOS(t, &fakeJoomlaOS{body: "<?php\nClass jconfig { public $host = 'x'; }\n"})
-	if !looksLikeJoomlaConfig("/home/alice/public_html/configuration.php") {
+	withCMSConfigOS(t, &fakeJoomlaOS{body: "<?php\nClass jconfig { public $host = 'x'; }\n"})
+	if matched, err := looksLikeJoomlaConfig(context.Background(), "/home/alice/public_html/configuration.php"); err != nil || !matched {
 		t.Error("class JConfig marker should match case-insensitively")
 	}
 }
 
 func TestLooksLikeJoomlaConfigNegative(t *testing.T) {
-	withMockOS(t, &fakeJoomlaOS{body: "<?php\n// random PHP file, not Joomla\necho 'hello';\n"})
-	if looksLikeJoomlaConfig("/home/alice/public_html/configuration.php") {
+	withCMSConfigOS(t, &fakeJoomlaOS{body: "<?php\n// random PHP file, not Joomla\necho 'hello';\n"})
+	if matched, err := looksLikeJoomlaConfig(context.Background(), "/home/alice/public_html/configuration.php"); err != nil || matched {
 		t.Error("non-JConfig file misidentified as Joomla")
 	}
 }
@@ -75,8 +75,11 @@ func TestLooksLikeJoomlaConfigNegative(t *testing.T) {
 // --- parseJConfig ---------------------------------------------------------
 
 func TestParseJConfigExtractsCredentialsAndPrefix(t *testing.T) {
-	withMockOS(t, &fakeJoomlaOS{body: canonicalJConfigBody("xyz12_")})
-	creds := parseJConfig("/home/alice/public_html/configuration.php")
+	withCMSConfigOS(t, &fakeJoomlaOS{body: canonicalJConfigBody("xyz12_")})
+	creds, err := parseJConfig(context.Background(), "/home/alice/public_html/configuration.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbName != "joomla_db" {
 		t.Errorf("dbName = %q, want joomla_db", creds.dbName)
 	}
@@ -103,8 +106,11 @@ class JConfig {
 	public $dbprefix = 'jos_';
 }
 `
-	withMockOS(t, &fakeJoomlaOS{body: body})
-	creds := parseJConfig("/home/alice/public_html/configuration.php")
+	withCMSConfigOS(t, &fakeJoomlaOS{body: body})
+	creds, err := parseJConfig(context.Background(), "/home/alice/public_html/configuration.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbHost != "localhost" {
 		t.Errorf("missing $host should default to localhost, got %q", creds.dbHost)
 	}
@@ -120,8 +126,11 @@ class JConfig {
 	public $dbprefix = "jos_";
 }
 `
-	withMockOS(t, &fakeJoomlaOS{body: body})
-	creds := parseJConfig("/home/alice/public_html/configuration.php")
+	withCMSConfigOS(t, &fakeJoomlaOS{body: body})
+	creds, err := parseJConfig(context.Background(), "/home/alice/public_html/configuration.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbHost != "mysql.example.com" {
 		t.Errorf("dbHost = %q, want mysql.example.com (double-quoted)", creds.dbHost)
 	}
@@ -141,8 +150,11 @@ class JConfig {
 	public $db = 'd';
 }
 `
-	withMockOS(t, &fakeJoomlaOS{body: body})
-	creds := parseJConfig("/home/alice/public_html/configuration.php")
+	withCMSConfigOS(t, &fakeJoomlaOS{body: body})
+	creds, err := parseJConfig(context.Background(), "/home/alice/public_html/configuration.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbHost != "localhost" {
 		t.Errorf("private $host should be ignored, got %q", creds.dbHost)
 	}
@@ -198,7 +210,7 @@ func TestParamsLikeClauseEmptyColumns(t *testing.T) {
 // --- CheckJoomlaContent end-to-end ---------------------------------------
 
 func TestCheckJoomlaContentSkipsNonJoomlaConfig(t *testing.T) {
-	withMockOS(t, &fakeJoomlaOS{body: "<?php\necho 'plain php';\n"})
+	withCMSConfigOS(t, &fakeJoomlaOS{body: "<?php\necho 'plain php';\n"})
 	withMockCmd(t, &mockCmd{
 		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
 			t.Errorf("mysql called for non-Joomla configuration.php")
@@ -217,7 +229,7 @@ func TestCheckJoomlaContentSkipsNonJoomlaConfig(t *testing.T) {
 var evalToken = "ev" + "al"
 
 func TestCheckJoomlaContentEmitsExtensionsAndContentFindings(t *testing.T) {
-	withMockOS(t, &fakeJoomlaOS{body: canonicalJConfigBody("jos_")})
+	withCMSConfigOS(t, &fakeJoomlaOS{body: canonicalJConfigBody("jos_")})
 
 	extBody := "system\t" + evalToken + "(base64_decode('cGF5bG9hZA==')); // evil\n"
 	contentBody := "42\tWelcome\tHello world<?php " + evalToken + "($_POST['x']); ?>\n"
@@ -265,7 +277,7 @@ func TestCheckJoomlaContentRespectsAccountScanMaxFiles(t *testing.T) {
 	now := time.Now()
 	oldPath := "/home/aaa-customer/public_html/configuration.php"
 	recentPath := "/home/zzz-customer/public_html/configuration.php"
-	withMockOS(t, &mockOS{
+	withCMSConfigOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			if strings.Contains(pattern, "configuration.php") {
 				return []string{oldPath, recentPath}, nil
@@ -346,7 +358,7 @@ func TestClassifyJoomlaRowEmptyBodyIsNoMatch(t *testing.T) {
 }
 
 func TestCheckJoomlaContentRespectsCustomDBPrefix(t *testing.T) {
-	withMockOS(t, &fakeJoomlaOS{body: canonicalJConfigBody("rnd9k_")})
+	withCMSConfigOS(t, &fakeJoomlaOS{body: canonicalJConfigBody("rnd9k_")})
 
 	queries := []string{}
 	withMockCmd(t, &mockCmd{
@@ -379,7 +391,7 @@ class JConfig {
 	// db / user / password missing -- malformed config
 }
 `
-	withMockOS(t, &fakeJoomlaOS{body: body})
+	withCMSConfigOS(t, &fakeJoomlaOS{body: body})
 	withMockCmd(t, &mockCmd{
 		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
 			t.Errorf("mysql called with empty credentials")

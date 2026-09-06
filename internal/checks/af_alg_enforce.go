@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // EnforceAction is the discrete outcome of the pure enforcement decision.
@@ -108,8 +110,7 @@ func loadedTargetedModules() []string {
 // pure decideAFAlgEnforcement, and applies the resulting action via osFS
 // and cmdExec. Errors from osFS.WriteFile or unexpected osFS.Stat failures
 // are returned; modprobe outcomes are observed via a post-call /proc/modules
-// re-read (RunAllowNonZero swallows the non-zero exit, so the only reliable
-// signal that the unload actually took effect is the kernel's module table).
+// re-read, so an attempted unload is never reported as an observed success.
 func enforceAFAlgBlocked() (EnforceResult, error) {
 	res := EnforceResult{}
 
@@ -143,13 +144,10 @@ func enforceAFAlgBlocked() (EnforceResult, error) {
 
 	switch res.Action {
 	case EnforceActionUnloadModules, EnforceActionRestoreAndUnload:
-		_, _ = cmdExec.RunAllowNonZero("modprobe", "-r", "algif_aead", "af_alg")
-		// Re-read /proc/modules to see whether the unload actually took
-		// effect. RunAllowNonZero swallows non-zero exits (modprobe returns
-		// 1 when a module is in use), and the helper's underlying
-		// .Output() captures stdout only — modprobe writes its "FATAL:
-		// module in use" message to stderr — so the only reliable signal
-		// is the post-call kernel state.
+		if err := unloadAFAlgModules(); err != nil {
+			res.Notes = append(res.Notes, fmt.Sprintf("module unload command failed: %v", err))
+		}
+		// Observe the kernel state even when the command fails or times out.
 		stillLoaded := loadedTargetedModules()
 		if len(stillLoaded) == 0 {
 			res.ModuleUnloaded = true
@@ -162,6 +160,15 @@ func enforceAFAlgBlocked() (EnforceResult, error) {
 	}
 
 	return res, nil
+}
+
+// Module removal is denied by the daemon's seccomp filter and kernel module
+// protection. Keep those restrictions and delegate only the fixed opt-in action.
+func unloadAFAlgModules() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := systemdrun.Run(ctx, cmdExec.LookPath, cmdExec.RunContext, systemdrun.Options{Pipe: true, RuntimeMax: 30 * time.Second}, "modprobe", "-r", "algif_aead", "af_alg")
+	return err
 }
 
 // AFAlgMarkerPath returns the canonical marker file location. Exposed for

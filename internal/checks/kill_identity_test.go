@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -31,7 +32,7 @@ func (m *procMock) ReadFile(name string) ([]byte, error) {
 	case name == "/proc/uptime":
 		return []byte(strconv.FormatFloat(m.uptime, 'f', 2, 64) + " 0.00\n"), nil
 	case strings.HasSuffix(name, "/status"):
-		return []byte("Name:\tworker\nUid:\t" + m.uid + "\t" + m.uid + "\n"), nil
+		return []byte("Name:\tworker\nUid:\t" + m.uid + "\t" + m.uid + "\t" + m.uid + "\t" + m.uid + "\n"), nil
 	case strings.HasSuffix(name, "/stat"):
 		fields := make([]string, 52)
 		for i := range fields {
@@ -89,6 +90,7 @@ func (m *procMock) Lstat(name string) (os.FileInfo, error) {
 // A PID is recycled freely on a busy host. Auto-kill acting on a finding whose
 // PID now belongs to a process started later destroys an unrelated process.
 func TestAutoKillProcesses_SkipsProcessStartedAfterTheFinding(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	old := osFS
 	osFS = &procMock{uid: "1001", exe: "/tmp/evil", uptime: 1_000, startTick: 50_000}
 	t.Cleanup(func() { osFS = old })
@@ -104,7 +106,7 @@ func TestAutoKillProcesses_SkipsProcessStartedAfterTheFinding(t *testing.T) {
 		PID:       4242,
 		Timestamp: time.Now().Add(-900 * time.Second),
 	}
-	if actions := AutoKillProcesses(cfg, []alert.Finding{f}); len(actions) != 0 {
+	if actions := AutoKillProcesses(context.Background(), cfg, []alert.Finding{f}); len(actions) != 0 {
 		t.Errorf("killed a process that started after the finding: %+v", actions)
 	}
 }
@@ -256,7 +258,7 @@ func TestProcessUsesFileIdentityRejectsProcessUsingReplacement(t *testing.T) {
 func TestFixKillAndQuarantineValidatesPathBeforeKill(t *testing.T) {
 	oldFS := osFS
 	oldRoots := fixQuarantineAllowedRoots
-	oldKill := killProcess
+	oldKill := signalProcess
 	target := filepath.Join(t.TempDir(), "outside.php")
 	if err := os.WriteFile(target, []byte("malware"), 0o600); err != nil {
 		t.Fatal(err)
@@ -275,17 +277,17 @@ func TestFixKillAndQuarantineValidatesPathBeforeKill(t *testing.T) {
 	}
 	fixQuarantineAllowedRoots = []string{"/allowed"}
 	killCalled := false
-	killProcess = func(int, syscall.Signal) error {
+	signalProcess = func(context.Context, int, syscall.Signal, func() error) error {
 		killCalled = true
 		return nil
 	}
 	t.Cleanup(func() {
 		osFS = oldFS
 		fixQuarantineAllowedRoots = oldRoots
-		killProcess = oldKill
+		signalProcess = oldKill
 	})
 
-	result := fixKillAndQuarantine(target, "PID: 4242")
+	result := fixKillAndQuarantine(context.Background(), target, "PID: 4242")
 	if result.Success || !strings.Contains(result.Error, "outside the allowed remediation roots") {
 		t.Fatalf("invalid target result = %+v", result)
 	}
@@ -298,7 +300,7 @@ func TestFixKillAndQuarantineReportsKillWhenQuarantineFails(t *testing.T) {
 	oldFS := osFS
 	oldRoots := fixQuarantineAllowedRoots
 	oldQuarantineDir := quarantineDir
-	oldKill := killProcess
+	oldKill := signalProcess
 	dir := t.TempDir()
 	dir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -324,15 +326,15 @@ func TestFixKillAndQuarantineReportsKillWhenQuarantineFails(t *testing.T) {
 	}
 	fixQuarantineAllowedRoots = []string{dir}
 	quarantineDir = filepath.Join(dir, "quarantine")
-	killProcess = func(int, syscall.Signal) error { return nil }
+	signalProcess = func(_ context.Context, _ int, _ syscall.Signal, verify func() error) error { return verify() }
 	t.Cleanup(func() {
 		osFS = oldFS
 		fixQuarantineAllowedRoots = oldRoots
 		quarantineDir = oldQuarantineDir
-		killProcess = oldKill
+		signalProcess = oldKill
 	})
 
-	result := fixKillAndQuarantine(target, "PID: 4242")
+	result := fixKillAndQuarantine(context.Background(), target, "PID: 4242")
 	if result.Success || result.Error == "" {
 		t.Fatalf("quarantine identity mismatch was not reported: %+v", result)
 	}

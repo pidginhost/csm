@@ -13,6 +13,7 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/processhandle"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/updatecheck"
 )
@@ -180,6 +181,14 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 		out.AutoResponseEnabled = cfg.AutoResponse.Enabled
 		out.AutoResponseBlockIPs = cfg.AutoResponse.BlockIPs
 		out.AutoResponseDryRun = cfg.AutoResponseDryRunEnabled()
+		// Configured termination that the kernel cannot perform safely is
+		// inoperative, not merely unused: report the capability either way.
+		out.ProcessKillEnabled = cfg.AutoResponse.Enabled && cfg.AutoResponse.KillProcesses
+		if err := processhandle.Available(); err != nil {
+			out.ProcessSignalError = err.Error()
+		} else {
+			out.ProcessSignalSupported = true
+		}
 		out.ChallengeEnabled = cfg.Challenge.Enabled
 		out.ChallengePortGateEnabled = cfg.Challenge.PortGate.Enabled
 	}
@@ -190,6 +199,9 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	out.ChallengePortGateActive = d.challengeGate != nil
 	if cfg != nil && cfg.Firewall != nil {
 		out.FirewallEnabled = cfg.Firewall.Enabled
+		if out.FirewallEnabled {
+			out.FirewallStartupError = d.fwStartupError
+		}
 	}
 	// FirewallManaged is true only when a live engine is wired. Reporting it
 	// (alongside FirewallEnabled) lets monitoring detect "enabled but not

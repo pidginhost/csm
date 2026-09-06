@@ -77,6 +77,7 @@ type Daemon struct {
 	ipList           *challenge.IPList
 	challengeGate    challenge.PortGate
 	fwEngine         *firewall.Engine
+	fwStartupError   string     // finalized before status servers start
 	baselineMu       sync.Mutex // serialises CmdBaseline handler runs
 	geoipDB          *geoip.DB
 	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
@@ -878,7 +879,7 @@ func (d *Daemon) Run() error {
 
 	// Other auto-response only on new findings
 	if len(newFindings) > 0 {
-		killActions := checks.AutoKillProcesses(initialCfg, newFindings)
+		killActions := checks.AutoKillProcesses(d.scanContext(), initialCfg, newFindings)
 		quarantineActions := checks.AutoQuarantineFiles(initialCfg, newFindings)
 		blockActions := checks.AutoBlockIPs(initialCfg, initialAutoResponseFindings)
 		d.observeBlocks(blockActions)
@@ -1545,7 +1546,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.observeBlocks(blockActions)
 
 	// Kill, quarantine, and DB cleanup only run on NEW findings
-	killActions := checks.AutoKillProcesses(cfg, newFindings)
+	killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
 	dbCleanActions := checks.AutoRespondDBMalware(cfg, newFindings)
 	newFindings = append(newFindings, killActions...)
@@ -2043,44 +2044,7 @@ func (d *Daemon) startLogWatchers() {
 		logFiles = append(logFiles, logFile{"", eximMainlogPath, eximHandler})
 	}
 
-	// Mail-log reader: factory selects file vs journal based on cfg.MailLogs.
-	// Replaces the old cPanel-only /var/log/maillog registration; now works
-	// on all platforms using the platform-default path or journal fallback.
-	{
-		mailReader, mlErr := maillog.New(d.cfg.MailLogs, hostInfo.MailLogPath())
-		if mlErr != nil {
-			csmlog.Warn("mail log reader disabled", "err", mlErr)
-			d.MarkWatcher("maillog", false)
-		} else {
-			// A file-backed reader can go dark if its log path disappears
-			// mid-run (syslog->journald migration). Surface that instead of
-			// silently tailing a dead fd: mark the watcher unhealthy and
-			// emit a finding so the operator knows mail detection degraded.
-			if fr, ok := mailReader.(*maillog.FileReader); ok {
-				fr.SetOnGone(d.handleMailLogSourceGone)
-				fr.SetOnRestored(d.handleMailLogSourceRestored)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			go func() { <-d.stopCh; cancel() }()
-			mailLines, mlErr := mailReader.Run(ctx)
-			if mlErr != nil {
-				cancel()
-				csmlog.Warn("mail log reader failed to start", "err", mlErr)
-				d.MarkWatcher("maillog", false)
-			} else {
-				d.MarkWatcher("maillog", true)
-				d.wg.Add(1)
-				obs.Go("maillog-consumer", func() {
-					defer d.wg.Done()
-					for line := range mailLines {
-						if !d.dispatchMailLogLine(line, mailHandler) {
-							return
-						}
-					}
-				})
-			}
-		}
-	}
+	d.startMailLogReader(hostInfo.MailLogPath(), mailHandler)
 
 	// Only receive PHP Shield events if enabled AND actually installed. A stale
 	// php_shield.enabled flag (e.g. after an upgrade wiped /opt/csm) would
@@ -2328,7 +2292,7 @@ func (d *Daemon) handleMailLogSourceGone(err error) {
 	finding := alert.Finding{
 		Severity:  alert.Warning,
 		Check:     "mail_log_source_unavailable",
-		Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded until it returns or the daemon restarts", err),
+		Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded while attachment is retried", err),
 		Timestamp: time.Now(),
 	}
 	select {
@@ -3071,122 +3035,6 @@ func (d *Daemon) doGeoIPUpdate() {
 
 	if anyUpdated {
 		d.publishGeoIP()
-	}
-}
-
-func (d *Daemon) startFirewall() {
-	effectiveFirewall := config.EffectiveFirewallConfig(d.cfg)
-	if effectiveFirewall == nil || !effectiveFirewall.Enabled {
-		return
-	}
-
-	engine, err := firewall.NewEngine(effectiveFirewall, d.cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Firewall engine init error: %v\n", ts(), err)
-		return
-	}
-
-	// Wire dry-run + verdict callbacks BEFORE Apply() and before the
-	// engine is exposed via d.fwEngine / checks.SetIPBlocker. The
-	// auto_response.dry_run safety default is "on": if any code path
-	// reaches engine.BlockIP while these callbacks are still nil, the
-	// engine treats dry-run as off and the block lands live, defeating
-	// the operator's stated intent. Wiring before exposure removes the
-	// boot-time race window entirely.
-	engine.SetDryRunRecorder(func(ip, reason string, timeout time.Duration) {
-		if db := store.Global(); db != nil {
-			db.RecordDryRunBlock(ip, reason, timeout)
-		}
-	})
-	engine.SetDryRunEnabledFunc(d.autoResponseDryRunEnabled)
-	engine.SetVerdictAsker(d.askVerdictCallback)
-	// The auto-block path skips published-crawler IPs so a high-volume bot is
-	// never re-added to blocked_ips behind the operator allowlist. Built-in and
-	// operator verified_bots ranges both flow through this lookup.
-	engine.SetSoftAllowChecker(func(ip string) bool {
-		parsed := net.ParseIP(ip)
-		return parsed != nil && threatintel.IPInAnyVerifiedBotRange(parsed)
-	})
-
-	// Push the mail-provider ranges loaded by initMailRanges() into the engine
-	// before Apply() so the dos_exempt_nets interval sets are populated in the
-	// first nftables transaction. initMailRanges() runs before startFirewall()
-	// so ProviderNets() always returns the cached or embedded snapshot here.
-	engine.SetDOSExemptProviderNets(mailranges.ProviderNets())
-
-	if err := engine.Apply(); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)
-		return
-	}
-
-	// Apply does not consult the verdict callback. Install the shutdown
-	// context only after a successful firewall setup so a failed init
-	// does not leave behind a stopCh waiter.
-	verdictCtx, cancelVerdict := context.WithCancel(context.Background())
-	go func() {
-		<-d.stopCh
-		cancelVerdict()
-	}()
-	engine.SetShutdownContext(verdictCtx)
-
-	d.setFirewallEngine(engine)
-
-	// Set firewall engine for auto-blocking
-	checks.SetIPBlocker(engine)
-	// Prune auto-response subnet blocks that now intersect the DoS-exempt set.
-	// The mail-provider cache is loaded (initMailRanges ran before startFirewall)
-	// and Apply has completed, so the exempt set is current.
-	checks.PruneExemptAutoSubnets(d.cfg, engine)
-	// Wire the incident firewall hand-off through the ApplyBlock chokepoint
-	// so the correlator distinguishes live mutation from dry-run and no-op
-	// outcomes AND spray blocks leave the standard evidence trail.
-	SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
-
-	fwState, _ := firewall.LoadState(d.cfg.StatePath)
-	csmlog.Info("firewall active",
-		"blocked_ips", len(fwState.Blocked),
-		"allowed_ips", len(fwState.Allowed),
-	)
-
-	// Start Dynamic DNS resolver if configured. The same resolver
-	// loop also services hostnames listed under infra_ips so they get
-	// DNS-refreshed into the engine's infra-block guard; otherwise the
-	// hostname entries would only protect operators whose IPs never
-	// move, which defeats the point of listing them by name.
-	infraHosts := infraHostnames(effectiveFirewall.InfraIPs)
-	dynHosts := append([]string{}, effectiveFirewall.DynDNSHosts...)
-	for _, h := range infraHosts {
-		if !containsString(dynHosts, h) {
-			dynHosts = append(dynHosts, h)
-		}
-	}
-	if len(dynHosts) > 0 {
-		resolver := firewall.NewDynDNSResolver(dynHosts, engine)
-		resolver.SetInfraEngine(engine)
-		for _, h := range infraHosts {
-			resolver.RegisterInfraHost(h)
-		}
-		resolver.SetFindingSink(func(host string) {
-			select {
-			case d.alertCh <- dynDNSUnresolvableFinding(host):
-			default:
-				atomic.AddInt64(&d.droppedAlerts, 1)
-				fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping dyndns guard finding: %s\n", ts(), host)
-			}
-		})
-		d.wg.Add(1)
-		obs.Go("dyndns-resolver", func() {
-			defer d.wg.Done()
-			resolver.Run(d.stopCh)
-		})
-		csmlog.Info("DynDNS resolver active", "hosts", len(dynHosts), "infra_hosts", len(infraHosts))
-	}
-
-	// Start Cloudflare IP whitelist refresh if configured
-	if d.cfg.Cloudflare.Enabled {
-		d.wg.Add(1)
-		obs.Go("cloudflare-refresh", d.cloudflareRefreshLoop)
-		csmlog.Info("cloudflare IP whitelist enabled", "refresh_hours", d.cfg.Cloudflare.RefreshHours)
 	}
 }
 

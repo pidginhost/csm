@@ -203,11 +203,13 @@ func TestEngineSaveSubnetEntryPreservesExplicitSource(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveSubnetEntry(SubnetEntry{
+	if err := e.saveSubnetEntry(SubnetEntry{
 		CIDR:   "10.0.0.0/8",
 		Reason: "anything",
 		Source: SourceCLI,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	state := e.loadStateFile()
 	if state.BlockedNet[0].Source != SourceCLI {
 		t.Errorf("source overridden: got %q", state.BlockedNet[0].Source)
@@ -219,36 +221,18 @@ func TestEngineSaveSubnetEntryPreservesExplicitSource(t *testing.T) {
 // Two different sources for the same IP; one expired, one active.
 // The IP stays in state (active entry survives).
 func TestEngineCleanExpiredAllowsSameIPMixedSources(t *testing.T) {
-	dir := t.TempDir()
-	e := &Engine{statePath: dir, cfg: &FirewallConfig{}}
-
-	e.saveAllowedEntry(AllowedEntry{
-		IP:        "10.0.0.42",
-		Reason:    "expired cli",
-		Source:    SourceCLI,
-		ExpiresAt: time.Now().Add(-time.Hour),
-	})
-	e.saveAllowedEntry(AllowedEntry{
-		IP:        "10.0.0.42",
-		Reason:    "active dyndns",
-		Source:    SourceDynDNS,
-		ExpiresAt: time.Now().Add(time.Hour),
-	})
-
-	// The nftables flush will fail silently (nil conn wrapper), so this returns 0.
-	// But state should reflect the active entry surviving.
-	// NOTE: CleanExpiredAllows will try to flush; if that fails it returns 0 and
-	// does not update state. We avoid that by not exercising real flush here —
-	// we just check that loadStateFile properly filters expired on read.
-	state := e.loadStateFile()
-	var ipCount int
-	for _, entry := range state.Allowed {
-		if entry.IP == "10.0.0.42" {
-			ipCount++
-		}
+	e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{}}
+	active := AllowedEntry{IP: "10.0.0.42", Reason: "active dyndns", Source: SourceDynDNS, ExpiresAt: time.Now().Add(time.Hour).UTC()}
+	writeRawFirewallState(t, e, FirewallState{Allowed: []AllowedEntry{
+		{IP: "10.0.0.42", Reason: "expired cli", Source: SourceCLI, ExpiresAt: time.Now().Add(-time.Hour)},
+		active,
+	}})
+	if removed := e.CleanExpiredAllows(); removed != 1 {
+		t.Fatalf("expired %d entries, want 1", removed)
 	}
-	if ipCount != 1 {
-		t.Errorf("loadStateFile should filter expired: got %d entries for ip", ipCount)
+	state := readRawFirewallState(t, e)
+	if len(state.Allowed) != 1 || state.Allowed[0] != active {
+		t.Fatalf("active source was changed or removed: %+v", state.Allowed)
 	}
 }
 
@@ -498,7 +482,9 @@ func TestEngineRemoveBlockedStateMissingIPIsNoop(t *testing.T) {
 
 	_ = e.saveBlockedEntry(BlockedEntry{IP: "10.0.0.1"})
 	// Removing an IP not present should leave state unchanged (no panic, no error).
-	e.removeBlockedState("9.9.9.9")
+	if err := e.removeBlockedState("9.9.9.9"); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Blocked) != 1 {
@@ -510,8 +496,12 @@ func TestEngineRemoveAllowedStateMissingIPIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Source: SourceCLI})
-	e.removeAllowedState("9.9.9.9")
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.removeAllowedState("9.9.9.9"); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Allowed) != 1 {
@@ -523,8 +513,12 @@ func TestEngineRemoveSubnetStateMissingCIDRIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveSubnetEntry(SubnetEntry{CIDR: "10.0.0.0/8"})
-	e.removeSubnetState("192.168.0.0/16")
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "10.0.0.0/8"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.removeSubnetState("192.168.0.0/16"); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.BlockedNet) != 1 {
@@ -537,11 +531,19 @@ func TestEngineRemoveAllowedStateRemovesAllSourcesForIP(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "a", Source: SourceCLI})
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "b", Source: SourceDynDNS})
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.2", Reason: "survivor", Source: SourceCLI})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "a", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "b", Source: SourceDynDNS}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.2", Reason: "survivor", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
 
-	e.removeAllowedState("10.0.0.1")
+	if err := e.removeAllowedState("10.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Allowed) != 1 {
@@ -558,10 +560,17 @@ func TestEngineRemoveAllowedStateBySourcePartialRemovalKeepsIP(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "cli", Source: SourceCLI})
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "dyndns", Source: SourceDynDNS})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "cli", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "dyndns", Source: SourceDynDNS}); err != nil {
+		t.Fatal(err)
+	}
 
-	ipGone := e.removeAllowedStateBySource("10.0.0.1", SourceCLI)
+	ipGone, err := e.removeAllowedStateBySource("10.0.0.1", SourceCLI)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ipGone {
 		t.Error("IP should still be present via DynDNS entry")
 	}
@@ -579,9 +588,14 @@ func TestEngineRemoveAllowedStateBySourceOnlySourceReportsGone(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "only", Source: SourceCLI})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "only", Source: SourceCLI}); err != nil {
+		t.Fatal(err)
+	}
 
-	ipGone := e.removeAllowedStateBySource("10.0.0.1", SourceCLI)
+	ipGone, err := e.removeAllowedStateBySource("10.0.0.1", SourceCLI)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ipGone {
 		t.Error("removing only source should report IP gone")
 	}

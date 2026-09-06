@@ -46,7 +46,7 @@ func probeLSM() bool {
 	if err != nil {
 		return false
 	}
-	defer prog.Close()
+	defer func() { _ = prog.Close() }()
 	l, err := link.AttachLSM(link.LSMOptions{Program: prog})
 	if err != nil {
 		return false
@@ -78,7 +78,7 @@ func probeCgroupSockAttach(cgroupPath string, attach ebpf.AttachType) bool {
 	if err != nil {
 		return false
 	}
-	defer prog.Close()
+	defer func() { _ = prog.Close() }()
 
 	l, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgroupPath,
@@ -116,7 +116,7 @@ func probeTracepoint() bool {
 	if err != nil {
 		return false
 	}
-	defer prog.Close()
+	defer func() { _ = prog.Close() }()
 	l, err := link.Tracepoint("sched", "sched_process_exec", prog, nil)
 	if err != nil {
 		return false

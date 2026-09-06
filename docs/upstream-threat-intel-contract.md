@@ -21,9 +21,11 @@ CSM sends `Authorization: Bearer <token>` when
 `reputation.upstream.token` (or its env var) is set. The server SHOULD
 reject requests with a missing/invalid token via HTTP 401.
 
-The token is resolved at every Score call: if `reputation.upstream.token_env`
-is set and the env var is non-empty, it wins over the static `token` field.
-This lets operators rotate the token via env without restarting the daemon.
+Before each HTTP request, CSM reads `reputation.upstream.token_env` from
+its process environment. A non-empty value overrides the static `token`
+field. Editing an environment file or exporting a value in another shell
+requires a daemon restart to take effect; configuration reload does not
+replace the process environment. See [credential rotation](src/credential-rotation.md).
 
 ## Request
 

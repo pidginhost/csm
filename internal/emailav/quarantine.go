@@ -1,6 +1,7 @@
 package emailav
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/pidginhost/csm/internal/quarantinefs"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 type movedFile struct {
@@ -20,8 +24,9 @@ type movedFile struct {
 // vars so tests can force EXDEV and source swaps without depending on
 // the host filesystem layout.
 var (
-	moveFileRename               = os.Rename
+	moveFileRename               = renameSpoolFile
 	moveFileAfterCrossDeviceCopy = func(string, string) error { return nil }
+	moveFileSyncDir              = quarantinefs.SyncDir
 )
 
 // QuarantineEnvelope holds the email envelope info for quarantine metadata.
@@ -86,8 +91,19 @@ func (q *Quarantine) QuarantineMessage(msgID, spoolDir string, result *ScanResul
 		return fmt.Errorf("marshaling metadata: %w", err)
 	}
 
-	if err := os.MkdirAll(msgDir, 0700); err != nil {
+	if err := quarantinefs.EnsureDir(q.baseDir, 0700); err != nil {
+		return fmt.Errorf("creating quarantine root: %w", err)
+	}
+	if err := os.Mkdir(msgDir, 0700); err != nil {
 		return fmt.Errorf("creating quarantine dir: %w", err)
+	}
+	if err := quarantinefs.SyncDir(q.baseDir); err != nil {
+		return fmt.Errorf("syncing quarantine root: %w", err)
+	}
+	metaPath := filepath.Join(msgDir, "metadata.json")
+	if err := quarantinefs.WriteExclusive(metaPath, bytes.NewReader(metaData), 0600); err != nil {
+		_ = os.RemoveAll(msgDir)
+		return fmt.Errorf("writing metadata before moving spool files: %w", err)
 	}
 
 	var moved []movedFile
@@ -95,12 +111,16 @@ func (q *Quarantine) QuarantineMessage(msgID, spoolDir string, result *ScanResul
 		src := filepath.Join(spoolDir, msgID+suffix)
 		dst := filepath.Join(msgDir, msgID+suffix)
 		if err := moveFile(src, dst); err != nil {
+			var partial *partialSpoolMove
+			if errors.As(err, &partial) {
+				return fmt.Errorf("quarantine partly applied; recovery files and metadata retained at %s: %w", msgDir, err)
+			}
 			if !os.IsNotExist(err) {
 				rollbackErr := rollbackMovedFiles(moved)
-				_ = os.RemoveAll(msgDir)
 				if rollbackErr != nil {
-					return fmt.Errorf("moving spool file %s: %w (rollback failed: %v)", suffix, err, rollbackErr)
+					return fmt.Errorf("moving spool file %s: %w (rollback failed, recovery files retained at %s: %v)", suffix, err, msgDir, rollbackErr)
 				}
+				_ = os.RemoveAll(msgDir)
 				return fmt.Errorf("moving spool file %s: %w", suffix, err)
 			}
 			continue
@@ -108,18 +128,8 @@ func (q *Quarantine) QuarantineMessage(msgID, spoolDir string, result *ScanResul
 		moved = append(moved, movedFile{src: src, dst: dst})
 	}
 	if len(moved) == 0 {
-		os.Remove(msgDir)
-		return fmt.Errorf("no spool files found for %s", msgID)
-	}
-
-	metaPath := filepath.Join(msgDir, "metadata.json")
-	if err := os.WriteFile(metaPath, metaData, 0600); err != nil {
-		rollbackErr := rollbackMovedFiles(moved)
 		_ = os.RemoveAll(msgDir)
-		if rollbackErr != nil {
-			return fmt.Errorf("writing metadata: %w (rollback failed: %v)", err, rollbackErr)
-		}
-		return fmt.Errorf("writing metadata: %w", err)
+		return fmt.Errorf("no spool files found for %s", msgID)
 	}
 
 	return nil
@@ -175,7 +185,8 @@ func (q *Quarantine) ReleaseMessage(msgID string) error {
 	}
 
 	msgDir := filepath.Join(q.baseDir, msgID)
-	for _, suffix := range []string{"-H", "-D"} {
+	// The queue header makes the message visible to Exim; restore its body first.
+	for _, suffix := range []string{"-D", "-H"} {
 		src := filepath.Join(msgDir, msgID+suffix)
 		dst := filepath.Join(spoolDir, msgID+suffix)
 		if err := moveFile(src, dst); err != nil {
@@ -187,7 +198,10 @@ func (q *Quarantine) ReleaseMessage(msgID string) error {
 		}
 	}
 
-	return os.RemoveAll(msgDir)
+	if err := os.RemoveAll(msgDir); err != nil {
+		return fmt.Errorf("message released but quarantine cleanup failed: %w", err)
+	}
+	return quarantinefs.SyncDir(q.baseDir)
 }
 
 // DeleteMessage permanently removes a quarantined message. Unlike
@@ -273,8 +287,11 @@ func cleanQuarantineMessageID(msgID string) (string, error) {
 // attacker who swaps src for a symlink or replaces the file
 // mid-copy is rejected.
 func moveFile(src, dst string) error {
+	if err := quarantinefs.SyncFilePath(src); err != nil {
+		return err
+	}
 	if err := moveFileRename(src, dst); err == nil {
-		return nil
+		return syncSpoolMove(src, dst)
 	} else if !errors.Is(err, syscall.EXDEV) {
 		// Non-EXDEV rename errors are not a cross-device condition;
 		// surface them directly so the caller does not silently
@@ -312,6 +329,24 @@ func moveFile(src, dst string) error {
 		_ = dstFile.Close()
 		return fmt.Errorf("cross-device copy body: %w", copyErr)
 	}
+	stat := srcInfo.Sys().(*syscall.Stat_t)
+	if ownerErr := dstFile.Chown(int(stat.Uid), int(stat.Gid)); ownerErr != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("cross-device ownership: %w", ownerErr)
+	}
+	// Chown can clear special mode bits, so permissions follow ownership.
+	if modeErr := dstFile.Chmod(srcInfo.Mode()); modeErr != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("cross-device permissions: %w", modeErr)
+	}
+	if timeErr := safepath.SetModTime(dstFile, srcInfo.ModTime()); timeErr != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("cross-device modification time: %w", timeErr)
+	}
+	if syncErr := dstFile.Sync(); syncErr != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("cross-device sync: %w", syncErr)
+	}
 	if closeErr := dstFile.Close(); closeErr != nil {
 		return fmt.Errorf("cross-device close: %w", closeErr)
 	}
@@ -325,11 +360,51 @@ func moveFile(src, dst string) error {
 	if !sameUnixInode(srcInfo, pathInfo) {
 		return fmt.Errorf("cross-device source %s changed during copy", src)
 	}
+	if err := moveFileSyncDir(filepath.Dir(dst)); err != nil {
+		return fmt.Errorf("syncing cross-device destination: %w", err)
+	}
 	if err := os.Remove(src); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing cross-device source: %w", err)
 	}
 	removeDst = false
+	if err := moveFileSyncDir(filepath.Dir(src)); err != nil {
+		return &partialSpoolMove{src: src, dst: dst, cause: err}
+	}
 	return nil
+}
+
+type partialSpoolMove struct {
+	src, dst string
+	cause    error
+}
+
+func (e *partialSpoolMove) Error() string {
+	return fmt.Sprintf("moved %s to %s, but directory sync failed; inspect both paths before retrying: %v", e.src, e.dst, e.cause)
+}
+
+func (e *partialSpoolMove) Unwrap() error { return e.cause }
+
+func syncSpoolMove(src, dst string) error {
+	for _, dir := range []string{filepath.Dir(dst), filepath.Dir(src)} {
+		if err := moveFileSyncDir(dir); err != nil {
+			return &partialSpoolMove{src: src, dst: dst, cause: err}
+		}
+	}
+	return nil
+}
+
+func renameSpoolFile(src, dst string) error {
+	source, err := safepath.OpenDir(filepath.Dir(src))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = source.Close() }()
+	destination, err := safepath.OpenDir(filepath.Dir(dst))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = destination.Close() }()
+	return source.RenameTo(filepath.Base(src), destination, filepath.Base(dst))
 }
 
 // sameUnixInode compares two FileInfos via underlying syscall.Stat_t so

@@ -729,7 +729,8 @@ func TestDownloadFeed_TrailingComments(t *testing.T) {
 
 // ApplyFix backdoor_binary path → fixKillAndQuarantine → fixQuarantine.
 func TestApplyFix_BackdoorBinary_NonexistentPath(t *testing.T) {
-	result := ApplyFix("backdoor_binary", "backdoor at /home/alice/.config/miner", "PID: 1234")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "backdoor_binary", "backdoor at /home/alice/.config/miner", "PID: 1234")
 	if result.Success {
 		t.Error("should fail for nonexistent file")
 	}
@@ -740,7 +741,8 @@ func TestApplyFix_BackdoorBinary_NonexistentPath(t *testing.T) {
 
 // ApplyFix webshell with /tmp/-prefixed path — fixQuarantine allows /tmp roots.
 func TestApplyFix_Webshell_NonexistentTmpPath(t *testing.T) {
-	result := ApplyFix("webshell", "webshell at /tmp/nope.php", "")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "webshell", "webshell at /tmp/nope.php", "")
 	if result.Success {
 		t.Error("should fail for nonexistent /tmp file")
 	}
@@ -748,7 +750,8 @@ func TestApplyFix_Webshell_NonexistentTmpPath(t *testing.T) {
 
 // ApplyFix obfuscated_php dispatched to fixQuarantine.
 func TestApplyFix_ObfuscatedPHP_Dispatch(t *testing.T) {
-	result := ApplyFix("obfuscated_php", "obfuscated at /home/alice/wp.php", "")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "obfuscated_php", "obfuscated at /home/alice/wp.php", "")
 	if result.Success {
 		t.Error("should fail (nonexistent path)")
 	}
@@ -756,7 +759,8 @@ func TestApplyFix_ObfuscatedPHP_Dispatch(t *testing.T) {
 
 // ApplyFix email_phishing_content: no message ID in text.
 func TestApplyFix_EmailPhishingNoMsgID(t *testing.T) {
-	result := ApplyFix("email_phishing_content", "no msg id here", "")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "email_phishing_content", "no msg id here", "")
 	if result.Success {
 		t.Error("should fail with no message id")
 	}
@@ -764,7 +768,8 @@ func TestApplyFix_EmailPhishingNoMsgID(t *testing.T) {
 
 // ApplyFix email_phishing_content with invalid message ID format.
 func TestApplyFix_EmailPhishingInvalidFormat(t *testing.T) {
-	result := ApplyFix("email_phishing_content", "phishing (message: INVALID)", "")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "email_phishing_content", "phishing (message: INVALID)", "")
 	if result.Success {
 		t.Error("should reject malformed message id")
 	}
@@ -775,8 +780,9 @@ func TestApplyFix_EmailPhishingInvalidFormat(t *testing.T) {
 
 // ApplyFix email_phishing_content with valid ID but no spool file.
 func TestApplyFix_EmailPhishingNoSpool(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{})
-	result := ApplyFix("email_phishing_content", "phishing (message: 2jKPFm-000abc-1X)", "")
+	result := ApplyFix(context.Background(), "email_phishing_content", "phishing (message: 2jKPFm-000abc-1X)", "")
 	if result.Success {
 		t.Error("should fail with no spool file")
 	}

@@ -3,6 +3,8 @@
 package checks
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,7 @@ import (
 // can write under t.TempDir() without modifying real /home or /tmp.
 func withAllowedRoots(t *testing.T, dir string) {
 	t.Helper()
+	withHtaccessBackupRoot(t)
 	op := fixPermissionsAllowedRoots
 	oq := fixQuarantineAllowedRoots
 	oh := fixHtaccessAllowedRoots
@@ -122,6 +125,7 @@ func TestFixQuarantineMovesRegularFile(t *testing.T) {
 }
 
 func TestFixKillAndQuarantineDoesNotClaimSkippedKill(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withAllowedRoots(t, tmp)
 	withQuarantineDir(t, filepath.Join(tmp, "quarantine"))
@@ -130,7 +134,7 @@ func TestFixKillAndQuarantineDoesNotClaimSkippedKill(t *testing.T) {
 	if err := os.WriteFile(target, []byte("malicious payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := fixKillAndQuarantine(target, "PID: 999999")
+	res := fixKillAndQuarantine(context.Background(), target, "PID: 999999")
 	if !res.Success {
 		t.Fatalf("quarantine failed: %+v", res)
 	}
@@ -181,7 +185,7 @@ func TestFixKillAndQuarantinePinsIdentityAcrossProcessCheck(t *testing.T) {
 	}
 
 	oldFS := osFS
-	oldKill := killProcess
+	oldKill := signalProcess
 	osFS = &swappingFixTargetOS{
 		procMock: &procMock{
 			uid:   "1001",
@@ -193,16 +197,19 @@ func TestFixKillAndQuarantinePinsIdentityAcrossProcessCheck(t *testing.T) {
 		replacement: replacementInfo,
 	}
 	killCalled := false
-	killProcess = func(int, syscall.Signal) error {
+	signalProcess = func(_ context.Context, _ int, _ syscall.Signal, verify func() error) error {
+		if err := verify(); err != nil {
+			return err
+		}
 		killCalled = true
 		return nil
 	}
 	t.Cleanup(func() {
 		osFS = oldFS
-		killProcess = oldKill
+		signalProcess = oldKill
 	})
 
-	result := fixKillAndQuarantine(target, "PID: 4242")
+	result := fixKillAndQuarantine(context.Background(), target, "PID: 4242")
 	if !result.Success {
 		t.Fatalf("quarantine failed: %+v", result)
 	}
@@ -365,8 +372,30 @@ func TestFixQuarantineSpoolMessageMovesHandD(t *testing.T) {
 			t.Errorf("spool %s should be removed, stat err=%v", suf, err)
 		}
 	}
-	entries, _ := os.ReadDir(qdir)
-	if len(entries) < 3 { // -H, -D, .meta
-		t.Errorf("expected at least 3 quarantine entries (H/D/meta), got %d: %v", len(entries), entries)
+	entries, err := os.ReadDir(qdir)
+	if err != nil || len(entries) != 4 {
+		t.Fatalf("expected two content files and two metadata files, got %v, error=%v", entries, err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".meta") {
+			continue
+		}
+		metaPath := filepath.Join(qdir, entry.Name())
+		data, readErr := os.ReadFile(metaPath)
+		var meta QuarantineMeta
+		if readErr != nil || json.Unmarshal(data, &meta) != nil {
+			t.Fatalf("invalid spool metadata: %q, error=%v", data, readErr)
+		}
+		want, ok := map[string]string{
+			filepath.Join(spool, msgID+"-H"): "headers",
+			filepath.Join(spool, msgID+"-D"): "body",
+		}[meta.OriginalPath]
+		if !ok || meta.Size != int64(len(want)) {
+			t.Fatalf("incorrect spool recovery metadata: %+v", meta)
+		}
+		data, readErr = os.ReadFile(strings.TrimSuffix(metaPath, ".meta"))
+		if readErr != nil || string(data) != want {
+			t.Fatalf("spool recovery bytes=%q, error=%v, want=%q", data, readErr, want)
+		}
 	}
 }

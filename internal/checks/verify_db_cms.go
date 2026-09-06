@@ -1,7 +1,10 @@
 package checks
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -37,11 +40,11 @@ func discoverDrupalSchema(account string) (schema string, ok bool) {
 		return "", false
 	}
 	publicHTML := filepath.Join(accountHomeDir(account), "public_html")
-	if !looksLikeDrupal8Plus(publicHTML) {
+	if matched, err := looksLikeDrupal8Plus(publicHTML); err != nil || !matched {
 		return "", false
 	}
-	creds := parseDrupalSettings(filepath.Join(publicHTML, "sites", "default", "settings.php"))
-	if creds.dbName == "" {
+	creds, err := parseDrupalSettings(context.Background(), filepath.Join(publicHTML, "sites", "default", "settings.php"))
+	if err != nil || creds.dbName == "" {
 		return "", false
 	}
 	return creds.dbName, true
@@ -78,11 +81,11 @@ func discoverJoomlaSchema(account string) (schema, prefix string, ok bool) {
 		return "", "", false
 	}
 	path := filepath.Join(accountHomeDir(account), "public_html", "configuration.php")
-	if !looksLikeJoomlaConfig(path) {
+	if matched, err := looksLikeJoomlaConfig(context.Background(), path); err != nil || !matched {
 		return "", "", false
 	}
-	creds := parseJConfig(path)
-	if creds.dbName == "" {
+	creds, err := parseJConfig(context.Background(), path)
+	if err != nil || creds.dbName == "" {
 		return "", "", false
 	}
 	prefix = creds.dbPrefix
@@ -128,10 +131,19 @@ func discoverMagentoSchema(account string) (schema, prefix string, ok bool) {
 		return "", "", false
 	}
 	base := filepath.Join(accountHomeDir(account), "public_html", "app", "etc")
-	if creds := parseMagentoM2(filepath.Join(base, "env.php")); creds.dbName != "" {
+	creds, err := parseMagentoM2(context.Background(), filepath.Join(base, "env.php"))
+	if err == nil {
+		if creds.dbName == "" {
+			return "", "", false
+		}
 		return magentoVerifyFinalize(creds)
 	}
-	if creds := parseMagentoM1(filepath.Join(base, "local.xml")); creds.dbName != "" {
+	// An unsafe or unreadable current config must not select an older schema
+	// and let a re-check clear the finding against that unrelated database.
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", "", false
+	}
+	if creds, err := parseMagentoM1(context.Background(), filepath.Join(base, "local.xml")); err == nil && creds.dbName != "" {
 		return magentoVerifyFinalize(creds)
 	}
 	return "", "", false
@@ -198,11 +210,11 @@ func discoverOpenCartSchema(account string) (schema, prefix string, ok bool) {
 		return "", "", false
 	}
 	path := filepath.Join(accountHomeDir(account), "public_html", "config.php")
-	if !looksLikeOpenCart(path) {
+	if matched, err := looksLikeOpenCart(context.Background(), path); err != nil || !matched {
 		return "", "", false
 	}
-	creds := parseOpenCartConfig(path)
-	if creds.dbName == "" {
+	creds, err := parseOpenCartConfig(context.Background(), path)
+	if err != nil || creds.dbName == "" {
 		return "", "", false
 	}
 	prefix = creds.dbPrefix

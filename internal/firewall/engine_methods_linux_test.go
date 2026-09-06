@@ -100,10 +100,12 @@ func TestEngineBlockIPStateOnly(t *testing.T) {
 func TestEngineAllowIPStateOnly(t *testing.T) {
 	e := newTestEngine(t)
 
-	e.saveAllowedEntry(AllowedEntry{
+	if err := e.saveAllowedEntry(AllowedEntry{
 		IP:     "10.0.0.1",
 		Reason: "admin access",
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.Allowed) != 1 {
@@ -114,11 +116,13 @@ func TestEngineAllowIPStateOnly(t *testing.T) {
 func TestEngineBlockSubnetStateOnly(t *testing.T) {
 	e := newTestEngine(t)
 
-	e.saveSubnetEntry(SubnetEntry{
+	if err := e.saveSubnetEntry(SubnetEntry{
 		CIDR:      "192.168.0.0/16",
 		Reason:    "test block",
 		BlockedAt: time.Now(),
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.BlockedNet) != 1 {
@@ -126,18 +130,15 @@ func TestEngineBlockSubnetStateOnly(t *testing.T) {
 	}
 }
 
-func TestEngineBlockSubnetRejectsSaturatedCIDRBeforeNetlink(t *testing.T) {
+func TestEngineBlockSubnetRejectsDefaultRouteBeforeNetlink(t *testing.T) {
 	e := newTestEngine(t)
 	e.setBlockedNet = &nftables.Set{Name: "blocked_nets"}
-
-	err := e.BlockSubnet("255.255.255.255/32", "bad range", 0)
-	if err == nil || !strings.Contains(err.Error(), "no safe interval end") {
-		t.Fatalf("BlockSubnet saturated CIDR error = %v, want safe interval error", err)
+	err := e.BlockSubnet("0.0.0.0/0", "bad range", 0)
+	if err == nil || !strings.Contains(err.Error(), "default route") {
+		t.Fatalf("BlockSubnet default route error = %v, want lockout refusal", err)
 	}
-
-	state := e.loadStateFile()
-	if len(state.BlockedNet) != 0 {
-		t.Fatalf("saturated CIDR persisted state: %+v", state.BlockedNet)
+	if state := e.loadStateFile(); len(state.BlockedNet) != 0 {
+		t.Fatalf("default route persisted state: %+v", state.BlockedNet)
 	}
 }
 
@@ -282,7 +283,7 @@ func TestAllowMethodsRetryStaleBlockedKernelElement(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEngine(t)
-			conn, sends := nftConnReturningErrsThenOK(t, syscall.ENOENT, syscall.ENOENT)
+			conn, sends := nftConnReturningErrsThenOK(t, syscall.ENOENT)
 			e.conn = conn
 			e.setBlocked = namedIPv4Set("blocked_ips")
 			e.setAllowed = namedIPv4Set("allowed_ips")
@@ -297,8 +298,8 @@ func TestAllowMethodsRetryStaleBlockedKernelElement(t *testing.T) {
 			if err := tc.call(e); err != nil {
 				t.Fatalf("%s should retry stale blocked kernel element: %v", tc.name, err)
 			}
-			if sends() != 3 {
-				t.Fatalf("%s netlink sends = %d, want initial batch, delete retry, add retry", tc.name, sends())
+			if sends() != 2 {
+				t.Fatalf("%s netlink sends = %d, want initial batch and atomic add-only retry", tc.name, sends())
 			}
 			state := e.loadStateFile()
 			if len(state.Blocked) != 0 {
@@ -317,11 +318,13 @@ func TestAllowMethodsRetryStaleBlockedKernelElement(t *testing.T) {
 func TestEngineIsSubnetBlockedUsesCanonicalCIDR(t *testing.T) {
 	e := newTestEngine(t)
 
-	e.saveSubnetEntry(SubnetEntry{
+	if err := e.saveSubnetEntry(SubnetEntry{
 		CIDR:      "198.51.100.0/24",
 		Reason:    "test block",
 		BlockedAt: time.Now(),
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if !e.IsSubnetBlocked("198.51.100.99/24") {
 		t.Fatal("expected canonical /24 subnet to be blocked")
@@ -334,8 +337,12 @@ func TestEngineIsSubnetBlockedUsesCanonicalCIDR(t *testing.T) {
 func TestEngineSaveSubnetEntryDeduplicates(t *testing.T) {
 	e := newTestEngine(t)
 
-	e.saveSubnetEntry(SubnetEntry{CIDR: "203.0.113.0/24", Reason: "first", BlockedAt: time.Now()})
-	e.saveSubnetEntry(SubnetEntry{CIDR: "203.0.113.0/24", Reason: "second", BlockedAt: time.Now()})
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "203.0.113.0/24", Reason: "first", BlockedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "203.0.113.0/24", Reason: "second", BlockedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 
 	state := e.loadStateFile()
 	if len(state.BlockedNet) != 1 {
@@ -349,11 +356,18 @@ func TestEngineSaveSubnetEntryDeduplicates(t *testing.T) {
 func TestEngineRemoveAllowedBySourceStateOnly(t *testing.T) {
 	e := newTestEngine(t)
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "admin", Source: "manual"})
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "auto", Source: "dyndns"})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "admin", Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "auto", Source: "dyndns"}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Remove only the dyndns source
-	removed := e.removeAllowedStateBySource("10.0.0.1", "dyndns")
+	removed, err := e.removeAllowedStateBySource("10.0.0.1", "dyndns")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if removed {
 		t.Error("IP still has manual entry, should not be fully removed")
 	}
@@ -370,9 +384,14 @@ func TestEngineRemoveAllowedBySourceStateOnly(t *testing.T) {
 func TestEngineRemoveAllowedBySourceFullRemoval(t *testing.T) {
 	e := newTestEngine(t)
 
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "test", Source: "dyndns"})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Reason: "test", Source: "dyndns"}); err != nil {
+		t.Fatal(err)
+	}
 
-	removed := e.removeAllowedStateBySource("10.0.0.1", "dyndns")
+	removed, err := e.removeAllowedStateBySource("10.0.0.1", "dyndns")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !removed {
 		t.Error("only entry removed, should be fully removed")
 	}
@@ -381,7 +400,10 @@ func TestEngineRemoveAllowedBySourceFullRemoval(t *testing.T) {
 func TestEngineRemoveAllowedBySourceNotFound(t *testing.T) {
 	e := newTestEngine(t)
 
-	removed := e.removeAllowedStateBySource("10.0.0.1", "dyndns")
+	removed, err := e.removeAllowedStateBySource("10.0.0.1", "dyndns")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if removed {
 		t.Error("nothing to remove, should return false")
 	}

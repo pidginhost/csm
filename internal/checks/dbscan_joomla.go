@@ -61,13 +61,14 @@ const joomlaSuperUserGroupID = 8
 // wp-config.php are not interchangeable.
 type jConfigCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx      context.Context
-	dbName   string
-	dbUser   string
-	dbPass   string
-	dbHost   string
-	dbPrefix string
-	path     string
+	ctx         context.Context
+	dbName      string
+	dbUser      string
+	dbPass      string
+	dbHost      string
+	dbPrefix    string
+	path        string
+	queryFailed *bool
 }
 
 // asWPDBCreds returns the equivalent wpDBCreds for runMySQLQuery
@@ -81,6 +82,8 @@ func (c jConfigCreds) asWPDBCreds() wpDBCreds {
 		dbHost:      c.dbHost,
 		tablePrefix: c.dbPrefix,
 		queryCtx:    c.ctx,
+		queryOwner:  "db_content_joomla",
+		queryFailed: c.queryFailed,
 	}
 }
 
@@ -96,26 +99,33 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, store *state.St
 	}
 	var findings []alert.Finding
 
-	configs := cmsDiscover("*/public_html/configuration.php", "*/*/configuration.php")
+	configs := cmsDiscover(ctx, "db_content_joomla", "*/public_html/configuration.php", "*/*/configuration.php")
 	if len(configs) == 0 {
 		return nil
 	}
 
 	// Rank by mtime desc so recently touched Joomla installs are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, configs, accountScanMaxFiles(ctx, cfg)) {
+	for _, path := range rankCMSConfigs(ctx, "db_content_joomla", configs, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
-		if !looksLikeJoomlaConfig(path) {
+		matched, err := looksLikeJoomlaConfig(ctx, path)
+		if err != nil {
+			markCheckIncomplete(ctx, "db_content_joomla")
+			continue
+		}
+		if !matched {
 			continue
 		}
 		account := extractUser(filepath.Dir(path))
-		creds := parseJConfig(path)
-		if creds.dbName == "" || creds.dbUser == "" {
+		creds, err := parseJConfig(ctx, path)
+		if err != nil || creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_content_joomla")
 			continue
 		}
 		creds.ctx = ctx
+		creds.queryFailed = new(bool)
 		prefix := creds.dbPrefix
 		if prefix == "" {
 			prefix = "jos_"
@@ -128,35 +138,25 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, store *state.St
 	return findings
 }
 
-// looksLikeJoomlaConfig reads the file looking for the `class JConfig`
-// marker. The file must be small enough that a full read is cheap
-// (vanilla Joomla configuration.php is ~3 KB; a hostile multi-MB
-// file would be unusual but we cap implicitly via Open + ReadFile).
-func looksLikeJoomlaConfig(path string) bool {
-	// #nosec G304 -- path resolved via osFS.Glob over /home/*/public_html; not attacker-controlled.
-	data, err := osFS.ReadFile(path)
+// A defaced configuration can still identify a Joomla installation. Its
+// credentials are parsed without executing any PHP.
+func looksLikeJoomlaConfig(ctx context.Context, path string) (bool, error) {
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return false
+		return false, err
 	}
-	// A defaced configuration.php that still has the class
-	// declaration but injected malicious public properties is
-	// exactly what we WANT to scan. Marker check is intentionally
-	// loose: any occurrence of `class JConfig` (case-insensitive on
-	// the keyword `class`).
-	lower := strings.ToLower(string(data))
-	return strings.Contains(lower, "class jconfig")
+	return strings.Contains(strings.ToLower(string(data)), "class jconfig"), nil
 }
 
 // parseJConfig reads configuration.php and pulls credentials out of
 // the public-property assignments. Lines outside the class body
 // (PHP comments, namespaced statements, etc.) are tolerated
 // silently because the regex is line-anchored to "public $foo = ...".
-func parseJConfig(path string) jConfigCreds {
+func parseJConfig(ctx context.Context, path string) (jConfigCreds, error) {
 	creds := jConfigCreds{path: path}
-	// #nosec G304 -- same Glob-resolved path as above.
-	data, err := osFS.ReadFile(path)
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return creds
+		return creds, err
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		m := jConfigCredsPattern.FindStringSubmatch(line)
@@ -179,7 +179,7 @@ func parseJConfig(path string) jConfigCreds {
 	if creds.dbHost == "" {
 		creds.dbHost = "localhost"
 	}
-	return creds
+	return creds, nil
 }
 
 // scanJoomlaExtensions queries the extensions table for params
@@ -203,7 +203,7 @@ func scanJoomlaExtensions(account string, creds jConfigCreds, prefix string) []a
 	query := fmt.Sprintf(
 		"SELECT name, params FROM %sextensions WHERE %s",
 		prefix, paramsLikeClause("params"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		name, body := splitTabRow(row)
@@ -239,7 +239,7 @@ func scanJoomlaContent(account string, creds jConfigCreds, prefix string) []aler
 	query := fmt.Sprintf(
 		"SELECT id, title, introtext FROM %scontent WHERE %s",
 		prefix, paramsLikeClause("introtext"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		fields := strings.SplitN(row, "\t", 3)
@@ -313,10 +313,12 @@ func scanJoomlaSuperUsers(store *state.Store, account string, creds jConfigCreds
 	query := fmt.Sprintf(
 		"SELECT u.id, u.username, u.email FROM %susers u JOIN %suser_usergroup_map m ON u.id = m.user_id WHERE m.group_id = %d",
 		prefix, prefix, joomlaSuperUserGroupID)
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, complete := runCMSQuery(creds.asWPDBCreds(), query)
 	// The legitimate site admin is in this set too: the store baseline
 	// keeps known Super Users quiet and reports only a newcomer.
-	return cmsAdminFindings(store, "joomla", "joomla_admin_injection", account, rows, func(fields []string) (string, string) {
+	dbCreds := creds.asWPDBCreds()
+	dbCreds.tablePrefix = prefix
+	return cmsAdminFindings(store, "joomla", "joomla_admin_injection", account, dbCreds, rows, complete, func(fields []string) (string, string) {
 		return fmt.Sprintf("Joomla Super User account on %s: %s", account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})

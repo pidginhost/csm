@@ -27,9 +27,8 @@ func subnetCovering(entries []SubnetEntry, ip string) (string, bool) {
 
 // nextIP returns the IP address immediately following the given IP.
 // When ip is the all-ones address for its family, nextIP clamps to ip
-// instead of wrapping to all-zeros. Callers that construct nftables
-// interval ranges should use nextIPSafe so saturated ends can be
-// skipped rather than encoded as a wrapped interval.
+// instead of wrapping to all-zeros. nftables interval keys use a separate
+// width-preserving helper because their address family is already fixed.
 func nextIP(ip net.IP) net.IP {
 	next, _ := nextIPSafe(ip)
 	return next
@@ -78,6 +77,9 @@ func lastIPInRange(network *net.IPNet) net.IP {
 		return nil
 	}
 	mask := network.Mask
+	if len(ip) == net.IPv4len && len(mask) == net.IPv6len {
+		mask = mask[net.IPv6len-net.IPv4len:]
+	}
 	last := make(net.IP, len(ip))
 	for i := range ip {
 		if i < len(mask) {

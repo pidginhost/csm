@@ -32,9 +32,9 @@ const (
 	verdictMaxResponseSkew = 5 * time.Minute
 )
 
-// Config configures the verdict callback client. HMACSecretEnv (if set)
-// is consulted at every Ask call so operators can rotate via env without
-// restarting the daemon.
+// Config configures the verdict callback client. HMACSecretEnv reads the
+// process environment once per exchange. External environment changes
+// require a daemon restart.
 //
 // RequireResponseSignature controls whether the panel must sign its
 // response body with the same HMAC scheme used on the request
@@ -118,7 +118,7 @@ func New(cfg Config) *Client {
 }
 
 // resolveSecret reads HMACSecretEnv at call time, falling back to the
-// static secret. Lets operators rotate via env without daemon restart.
+// static secret. External environment changes require a daemon restart.
 func (c *Client) resolveSecret() string {
 	if c.cfg.HMACSecretEnv != "" {
 		if v := os.Getenv(c.cfg.HMACSecretEnv); v != "" {

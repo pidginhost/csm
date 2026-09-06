@@ -25,7 +25,7 @@ func TestQuarantineFileTOCTOUSafeOtherHappyPath(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	if err := quarantineFileTOCTOUSafe(src, dst, info); err != nil {
+	if err := quarantineFileTOCTOUSafe(src, dst, info, []byte("{}")); err != nil {
 		t.Fatalf("quarantine: %v", err)
 	}
 	got, err := os.ReadFile(dst)
@@ -65,7 +65,7 @@ func TestQuarantineFileTOCTOUSafeOtherRefusesSymlinkSwap(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	qErr := quarantineFileTOCTOUSafe(bait, dst, info)
+	qErr := quarantineFileTOCTOUSafe(bait, dst, info, []byte("{}"))
 	if qErr == nil {
 		t.Fatal("expected refusal of symlinked path, got nil error")
 	}
@@ -101,7 +101,7 @@ func TestQuarantineFileTOCTOUSafeOtherDetectsFileSwap(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	qErr := quarantineFileTOCTOUSafe(src, dst, info)
+	qErr := quarantineFileTOCTOUSafe(src, dst, info, []byte("{}"))
 	if qErr == nil {
 		t.Fatal("expected refusal after file swap, got nil error")
 	}

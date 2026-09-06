@@ -35,7 +35,8 @@ die() { echo "ERROR: $1" >&2; exit 1; }
 # Priority:
 #   1. $CSM_SIGNING_KEY_PEM environment variable
 #   2. Embedded public key below
-# Set CSM_REQUIRE_SIGNATURES=1 to fail rather than warn on missing key/sig.
+# Current releases always require verification. CSM_REQUIRE_SIGNATURES=1
+# also rejects missing signatures on pre-signing releases.
 : "${CSM_SIGNING_KEY_PEM:=}"
 : "${CSM_REQUIRE_SIGNATURES:=0}"
 
@@ -53,7 +54,7 @@ fi
 missing_signature_allowed() {
     local version="${1#v}"
     local major minor
-    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
         return 1
     fi
     major="${BASH_REMATCH[1]}"
@@ -67,36 +68,90 @@ missing_signature_allowed() {
     return 1
 }
 
+# OpenSSL can verify Ed25519 from the command line only through
+# "pkeyutl -rawin", which requires OpenSSL 3.0+.
+openssl_verifies_ed25519() {
+    command -v openssl >/dev/null 2>&1 || return 1
+    # Capture first: a pipeline under "set -o pipefail" would report the
+    # help exit status rather than whether the flag is supported.
+    local help
+    help=$(openssl pkeyutl -help 2>&1 || true)
+    case "$help" in
+        *-rawin*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# A CSM build providing "verify-release" verifies with Go's Ed25519
+# implementation and needs no OpenSSL, which is the supported path on EL8 and
+# CloudLinux 8 (OpenSSL 1.1.1). Only an already-installed binary is consulted:
+# the artifact being verified never verifies itself.
+csm_release_verifier() {
+    local candidate probe
+    for candidate in "${CSM_VERIFIER_BINARY:-}" /opt/csm/csm /usr/bin/csm /usr/local/bin/csm; do
+        [ -n "$candidate" ] || continue
+        [ -x "$candidate" ] || continue
+        probe=$("$candidate" verify-release 2>&1 || true)
+        case "$probe" in
+            *"usage: csm verify-release"*) ;;
+            *) continue ;;
+        esac
+        printf '%s\n' "$candidate"
+        return 0
+    done
+    return 1
+}
+
+# python3-cryptography ships with EL8 and CloudLinux 8 and verifies Ed25519,
+# which keeps the first upgrade to a verify-release build on the signed path.
+python_verifies_ed25519() {
+    [ "${CSM_DISABLE_PYTHON_VERIFIER:-0}" != 1 ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    # Ignore caller-controlled module paths when running as root.
+    python3 -I - >/dev/null 2>&1 <<'CSM_PY_PROBE'
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+CSM_PY_PROBE
+}
+
+verify_with_python() {
+    python3 -I - "$1" "$2" "$3" <<'CSM_PY_VERIFY'
+import os
+import stat
+import sys
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+
+def read_bounded_file(path, limit):
+    # Reject FIFOs before reading and bound allocations even if a file grows.
+    with open(path, "rb", opener=lambda p, flags: os.open(p, flags | os.O_NONBLOCK)) as file:
+        info = os.fstat(file.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("invalid verification input")
+        data = file.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("oversized verification input")
+        return data
+
+
+try:
+    key = load_pem_public_key(read_bounded_file(sys.argv[1], 1 << 16))
+    if not isinstance(key, Ed25519PublicKey):
+        sys.exit(1)
+    signature = read_bounded_file(sys.argv[2], 64)
+    if len(signature) != 64:
+        sys.exit(1)
+    payload = read_bounded_file(sys.argv[3], 512 << 20)
+    if not payload:
+        sys.exit(1)
+    key.verify(signature, payload)
+except Exception:
+    sys.exit(1)
+CSM_PY_VERIFY
+}
+
 verify_signature() {
     local file="$1" sig_url="$2" release_version="${3:-}"
-    if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
-        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
-            die "CSM_REQUIRE_SIGNATURES=1 but no signing key configured"
-        fi
-        echo "WARNING: no signing key configured, skipping signature verification" >&2
-        return 0
-    fi
-    if ! command -v openssl >/dev/null 2>&1; then
-        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
-            die "CSM_REQUIRE_SIGNATURES=1 but openssl is not installed"
-        fi
-        echo "  WARNING: openssl not found, skipping signature verification" >&2
-        return 0
-    fi
-    # Ed25519 one-shot verification needs OpenSSL 3.0+ (the -rawin flag). EL8 /
-    # CloudLinux 8 ship OpenSSL 1.1.1, which cannot verify Ed25519 from the CLI.
-    # Treat that as "cannot verify" (the SHA-256 checksum above is already
-    # enforced), never as a tamper -- otherwise upgrades would hard-fail on
-    # every 1.1.1 host the moment a release is signed.
-    local pkeyutl_help
-    pkeyutl_help=$(openssl pkeyutl -help 2>&1 || true)
-    if ! grep -q -- '-rawin' <<<"$pkeyutl_help"; then
-        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
-            die "CSM_REQUIRE_SIGNATURES=1 but openssl ($(openssl version 2>/dev/null)) lacks Ed25519 one-shot verify (needs OpenSSL 3.0+)"
-        fi
-        echo "  WARNING: openssl too old for Ed25519 verification (needs 3.0+); skipping signature check (checksum already verified)" >&2
-        return 0
-    fi
     local sig_file="${file}.sig"
     local sig_http
     sig_http=$(curl -sS -w '%{http_code}' -L -o "$sig_file" "$sig_url")
@@ -111,13 +166,38 @@ verify_signature() {
     if [ "$sig_http" != "200" ]; then
         die "Signature download failed (HTTP ${sig_http}) from ${sig_url}"
     fi
+    # A downloaded checksum is not an independent authenticity check. Current
+    # artifacts must never execute merely because the host lacks a verifier.
+    [ -n "$CSM_SIGNING_KEY_PEM" ] || die "No signing key configured; refusing the unverified artifact"
+    # Choose the verifier before creating any temporary file, so a host with
+    # no verifier at all fails on that fact rather than on a missing utility.
+    local verifier=""
+    if openssl_verifies_ed25519; then
+        verifier=openssl
+    elif verifier=$(csm_release_verifier); then
+        :
+    elif python_verifies_ed25519; then
+        verifier=python
+    else
+        # No external command here: a host missing the verifier may be missing
+        # coreutils from PATH too, and the diagnosis must survive that.
+        die "no Ed25519 verifier available: install OpenSSL 3.0+ or python3-cryptography, keep a CSM build providing 'csm verify-release', or use the signed APT/DNF repository"
+    fi
     local key_file
     key_file=$(mktemp)
     printf '%s\n' "$CSM_SIGNING_KEY_PEM" > "$key_file"
     # No RETURN trap for cleanup: it would outlive this function and re-fire
     # at the caller's return, where set -u aborts on the vanished locals.
     local verify_status=0
-    openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1 || verify_status=$?
+    if [ "$verifier" = openssl ]; then
+        openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1 || verify_status=$?
+    elif [ "$verifier" = python ]; then
+        verify_with_python "$key_file" "$sig_file" "$file" >/dev/null 2>&1 || verify_status=$?
+    else
+        # OpenSSL 1.1.1 on EL8 and CloudLinux 8 cannot verify Ed25519; the
+        # installed CSM build does it with Go's implementation.
+        "$verifier" verify-release "$key_file" "$sig_file" "$file" >/dev/null 2>&1 || verify_status=$?
+    fi
     rm -f "$key_file" "$sig_file"
     if [ "$verify_status" -eq 0 ]; then
         echo "Signature verified OK" >&2

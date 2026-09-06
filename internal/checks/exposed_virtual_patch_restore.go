@@ -84,6 +84,11 @@ func RestoreVirtualPatchBackup(backupPath string, target *safepath.Target, meta 
 	if opErr := temp.Chown(meta.Owner, meta.Group); opErr != nil {
 		return opErr
 	}
+	if !meta.OriginalModTime.IsZero() {
+		if opErr := safepath.SetModTime(temp, meta.OriginalModTime); opErr != nil {
+			return opErr
+		}
+	}
 	if opErr := temp.Sync(); opErr != nil {
 		return opErr
 	}
@@ -188,6 +193,10 @@ func RestoreVirtualPatchBackup(backupPath string, target *safepath.Target, meta 
 	}
 	if opErr := target.Check(); opErr != nil {
 		return rollback(opErr)
+	}
+	if opErr := target.Parent.Sync(); opErr != nil {
+		keep = true
+		return fmt.Errorf("restore applied but destination sync failed; recovery files retained in %s: %w", stageName, opErr)
 	}
 	if opErr := stage.Remove(name); opErr != nil {
 		keep = true

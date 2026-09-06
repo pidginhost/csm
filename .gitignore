@@ -6,6 +6,7 @@ state/state.json
 .superpowers/
 /csm
 .cache/
+/corpus-results/
 graphify-out/
 
 # Internal planning / local-only files
@@ -60,3 +61,5 @@ docs/book/
 /findings.txt
 /scan-*.txt
 /*.alerts
+
+/production-results/

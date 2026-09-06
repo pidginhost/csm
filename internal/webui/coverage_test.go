@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/state"
@@ -277,7 +278,7 @@ func TestListMetaFilesFiltersMetaOnly(t *testing.T) {
 func TestReadQuarantineMetaSuccess(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.meta")
-	meta := quarantineMeta{
+	meta := checks.QuarantineMeta{
 		OriginalPath: "/home/a/shell.php",
 		Owner:        1000,
 		Group:        1000,
@@ -321,26 +322,30 @@ func TestReadQuarantineMetaCorrupt(t *testing.T) {
 // --- validateQuarantineRestorePath ------------------------------------
 
 func TestValidateQuarantineRestorePathEmpty(t *testing.T) {
-	if _, err := validateQuarantineRestorePath(""); err == nil {
+	roots, _ := quarantineRootsForConfig(nil)
+	if _, err := validateQuarantineRestorePath("", roots); err == nil {
 		t.Fatal("empty path should error")
 	}
 }
 
 func TestValidateQuarantineRestorePathRelative(t *testing.T) {
-	if _, err := validateQuarantineRestorePath("relative/path"); err == nil {
+	roots, _ := quarantineRootsForConfig(nil)
+	if _, err := validateQuarantineRestorePath("relative/path", roots); err == nil {
 		t.Fatal("relative path should error")
 	}
 }
 
 func TestValidateQuarantineRestorePathOutsideRoots(t *testing.T) {
-	if _, err := validateQuarantineRestorePath("/etc/shadow"); err == nil {
+	roots, _ := quarantineRootsForConfig(nil)
+	if _, err := validateQuarantineRestorePath("/etc/shadow", roots); err == nil {
 		t.Fatal("path outside roots should error")
 	}
 }
 
 func TestValidateQuarantineRestorePathValidTmp(t *testing.T) {
 	// /tmp exists on macOS and Linux.
-	got, err := validateQuarantineRestorePath("/tmp/csm-test-restore")
+	roots, _ := quarantineRootsForConfig(nil)
+	got, err := validateQuarantineRestorePath("/tmp/csm-test-restore", roots)
 	if err != nil {
 		t.Fatalf("valid /tmp path errored: %v", err)
 	}

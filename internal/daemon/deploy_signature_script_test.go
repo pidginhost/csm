@@ -50,37 +50,95 @@ func TestVerifySignatureRejectsMismatchWhenRawinSupported(t *testing.T) {
 	}
 }
 
-func TestVerifySignatureSkipsOldOpenSSLOnlyWhenNotStrict(t *testing.T) {
+// OpenSSL 1.1.1 cannot verify Ed25519 and no CSM build is installed to do it
+// instead: there is no verifier at all, so the artifact must be refused.
+func TestVerifySignatureRejectsOldOpenSSLWithoutGoVerifier(t *testing.T) {
+	for _, script := range deploySignatureScripts() {
+		for _, strict := range []string{"0", "1"} {
+			t.Run(script.name+"/strict="+strict, func(t *testing.T) {
+				stubs := rawinCapableOpenSSL("200") + oldOpenSSL()
+				env := []string{"CSM_REQUIRE_SIGNATURES=" + strict, "CSM_VERIFIER_BINARY=/nonexistent/csm", "CSM_DISABLE_PYTHON_VERIFIER=1"}
+				output, code := runVerifySignature(t, script, stubs, env, "")
+				if code == 0 || !strings.Contains(output, "no Ed25519 verifier available") || !strings.Contains(output, "signed APT/DNF repository") {
+					t.Fatalf("unsupported verifier must fail with the supported package path: exit=%d output=%s", code, output)
+				}
+			})
+		}
+	}
+}
+
+// The first upgrade to a build that provides verify-release is performed by
+// the build that does not have it yet, so EL8 needs a verifier that depends on
+// neither. python3-cryptography ships with the distribution and verifies
+// Ed25519, which keeps the bootstrap upgrade on the signed pipeline path.
+func TestVerifySignatureFallsBackToPythonWhenNoOtherVerifier(t *testing.T) {
+	requirePythonVerifier(t)
 	for _, script := range deploySignatureScripts() {
 		t.Run(script.name, func(t *testing.T) {
-			output, code := runVerifySignature(t, script, oldOpenSSL(), nil, "")
-			if code != 0 {
-				t.Fatalf("old OpenSSL should warn and continue when signatures are not required, exit %d:\n%s", code, output)
+			stubs := rawinCapableOpenSSL("200") + oldOpenSSL()
+			env := []string{"CSM_VERIFIER_BINARY=/nonexistent/csm"}
+			output, code := runVerifySignature(t, script, stubs, env, "")
+			// The harness signs nothing, so python must reject it. Reaching a
+			// verification verdict at all proves the fallback was selected.
+			if code == 0 || !strings.Contains(output, "SIGNATURE VERIFICATION FAILED") {
+				t.Fatalf("python verifier not selected: exit=%d output=%s", code, output)
 			}
-			if !strings.Contains(output, "openssl too old for Ed25519 verification") {
-				t.Fatalf("expected old OpenSSL warning, got:\n%s", output)
-			}
-
-			output, code = runVerifySignature(t, script, oldOpenSSL(), []string{"CSM_REQUIRE_SIGNATURES=1"}, "")
-			if code == 0 {
-				t.Fatalf("strict mode should reject old OpenSSL:\n%s", output)
-			}
-			if !strings.Contains(output, "CSM_REQUIRE_SIGNATURES=1") {
-				t.Fatalf("expected strict-mode error, got:\n%s", output)
+			if strings.Contains(output, "no Ed25519 verifier available") {
+				t.Fatalf("python verifier not detected: %s", output)
 			}
 		})
+	}
+}
+
+// EL8 and CloudLinux 8 keep OpenSSL 1.1.1 for their lifetime. An installed CSM
+// build verifies with Go's Ed25519 implementation there, and its verdict --
+// pass or fail -- decides whether the artifact is used.
+func TestVerifySignatureUsesInstalledGoVerifierOnOldOpenSSL(t *testing.T) {
+	for _, script := range deploySignatureScripts() {
+		for _, verdict := range []string{"accepts", "rejects"} {
+			t.Run(script.name+"/"+verdict, func(t *testing.T) {
+				dir := t.TempDir()
+				verifier := filepath.Join(dir, "csm")
+				exit := "0"
+				if verdict == "rejects" {
+					exit = "1"
+				}
+				stub := "#!/bin/sh\n" +
+					"if [ \"$1\" = verify-release ] && [ \"$#\" -eq 1 ]; then\n" +
+					"  echo 'usage: csm verify-release <public-key.pem> <signature-file> <artifact>' >&2\n" +
+					"  exit 2\n" +
+					"fi\n" +
+					"[ \"$1\" = verify-release ] || exit 1\n" +
+					"[ -s \"$2\" ] || exit 1\n" +
+					"exit " + exit + "\n"
+				if err := os.WriteFile(verifier, []byte(stub), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				stubs := rawinCapableOpenSSL("200") + oldOpenSSL()
+				output, code := runVerifySignature(t, script, stubs, []string{"CSM_VERIFIER_BINARY=" + verifier}, "")
+				if verdict == "accepts" {
+					if code != 0 || !strings.Contains(output, "Signature verified OK") {
+						t.Fatalf("Go verifier acceptance ignored: exit=%d output=%s", code, output)
+					}
+					return
+				}
+				if code == 0 || !strings.Contains(output, "SIGNATURE VERIFICATION FAILED") {
+					t.Fatalf("Go verifier rejection ignored: exit=%d output=%s", code, output)
+				}
+			})
+		}
 	}
 }
 
 func TestVerifySignatureFailsClosedWhenStrict(t *testing.T) {
 	for _, script := range deploySignatureScripts() {
 		t.Run(script.name+"/missing-openssl", func(t *testing.T) {
-			output, code := runVerifySignature(t, script, noDownloader(), []string{"CSM_REQUIRE_SIGNATURES=1"}, t.TempDir())
+			output, code := runVerifySignature(t, script, `curl() { printf 200; }; pkg_download() { printf 200; }`, []string{"CSM_REQUIRE_SIGNATURES=1"}, t.TempDir())
 			if code == 0 {
 				t.Fatalf("strict mode should reject missing openssl:\n%s", output)
 			}
-			if !strings.Contains(output, "openssl is not installed") {
-				t.Fatalf("expected missing openssl error, got:\n%s", output)
+			if !strings.Contains(output, "no Ed25519 verifier available") {
+				t.Fatalf("expected missing verifier error, got:\n%s", output)
 			}
 		})
 
@@ -115,6 +173,14 @@ func TestVerifySignatureSuccessDoesNotAbortEnclosingFunction(t *testing.T) {
 				": \"${CSM_SIGNING_KEY_PEM:=test-key}\"",
 				": \"${CSM_REQUIRE_SIGNATURES:=0}\"",
 				verifyingOpenSSL(),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "python_verifies_ed25519"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_with_python"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "python_verifies_ed25519"),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_with_python"),
 				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_signature"),
 				"stage_assets() {",
 				"    verify_signature \"$PAYLOAD_FILE\" \"https://example.invalid/csm.sig\"",
@@ -385,6 +451,10 @@ func TestReleaseInstallScriptsVerifyAssetsBeforeExtraction(t *testing.T) {
 			body := string(data)
 			for _, want := range []string{
 				"assets.tar.gz.sha256",
+				"openssl_verifies_ed25519",
+				"csm_release_verifier",
+				"python_verifies_ed25519",
+				"verify_with_python",
 				"verify_signature",
 				"validate_assets_archive",
 			} {
@@ -1738,6 +1808,10 @@ func runVerifySignature(t *testing.T, script deploySignatureScript, stubs string
 		": \"${CSM_SIGNING_KEY_PEM:=test-key}\"",
 		": \"${CSM_REQUIRE_SIGNATURES:=0}\"",
 		stubs,
+		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
+		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
+		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "python_verifies_ed25519"),
+		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_with_python"),
 		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_signature"),
 		"verify_signature \"$PAYLOAD_FILE\" \"https://example.invalid/csm.sig\"",
 		"",
@@ -2039,20 +2113,6 @@ openssl() {
         return 0
     fi
     return 2
-}
-` + noDownloader()
-}
-
-func noDownloader() string {
-	return `
-curl() {
-    echo 'curl should not be called' >&2
-    return 99
-}
-
-pkg_download() {
-    echo 'pkg_download should not be called' >&2
-    return 99
 }
 `
 }

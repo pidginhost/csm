@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -22,7 +23,7 @@ import (
 
 type sensitiveFileBPF struct {
 	objs    *bpfprog.SensitiveFileObjects
-	link    link.Link
+	link    io.Closer
 	reader  *bpf.Reader[SensitiveFileEvent]
 	alertCh chan<- alert.Finding
 	cfg     *config.Config
@@ -58,14 +59,14 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 
 	l, err := link.AttachLSM(link.LSMOptions{Program: objs.CsmFilePerm})
 	if err != nil {
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("attach lsm/file_permission: %w", err)
 	}
 
 	reader, err := bpf.NewReader[SensitiveFileEvent](objs.Events, decodeSensitiveFileEvent)
 	if err != nil {
 		_ = l.Close()
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
 
@@ -79,12 +80,20 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 		digests:      map[string]checks.SensitiveFileState{},
 		liveReported: map[string]checks.SensitiveFileState{},
 	}
-	if err := s.refreshWatchset(false); err != nil {
-		_ = s.link.Close()
-		s.objs.Close()
-		return nil, fmt.Errorf("populate watchset: %w", err)
+	if err := s.initializeWatchset(); err != nil {
+		return nil, err
 	}
 	return s, nil
+}
+
+func (s *sensitiveFileBPF) initializeWatchset() error {
+	if err := s.refreshWatchset(false); err != nil {
+		_ = s.reader.Close()
+		_ = s.link.Close()
+		_ = s.objs.Close()
+		return fmt.Errorf("populate watchset: %w", err)
+	}
+	return nil
 }
 
 func (s *sensitiveFileBPF) refreshWatchset(reportNew bool) error {
@@ -163,7 +172,7 @@ func (s *sensitiveFileBPF) Run(ctx context.Context) {
 	defer func() {
 		_ = s.reader.Close()
 		_ = s.link.Close()
-		s.objs.Close()
+		_ = s.objs.Close()
 	}()
 
 	go s.reader.Run(ctx)

@@ -17,7 +17,56 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
+### Process termination
+
+CSM opens a kernel process handle before verifying ownership, executable, start
+time, or the file referenced by a process. It checks that the captured process
+is still alive after verification and sends the signal through that handle.
+An exited process cannot redirect the signal to a replacement with the same PID.
+Automatic and manual malware termination reject root credentials, including
+effective and saved root IDs. The separate opt-in AF_ALG reaction requires the
+current credentials and executable to match its recorded event.
+
+Safe signaling needs `pidfd_send_signal` (Linux 5.1). Where `pidfd_open`
+(Linux 5.3) is absent -- EL8 and CloudLinux 8 ship 4.18 kernels without it --
+CSM pins the target through its `/proc/<pid>` directory descriptor, which
+`pidfd_send_signal` accepts and which refers to the same kernel process. Both
+paths reject a recycled PID; CSM never falls back to numeric PID signaling.
+On a kernel without `pidfd_send_signal`, or when service restrictions deny the
+call, termination stays disabled: `csm doctor` reports `process termination
+supported` as failed and the health status becomes `degraded` whenever
+`auto_response.kill_processes` is enabled, so an inoperative protection is
+visible before an incident needs it. Each health snapshot probes this capability
+again, so transient resource failures clear once signaling becomes available.
+Automatic termination failures are logged while the original detection remains.
+Manual kill-and-quarantine reports a termination failure even if the file was
+successfully quarantined; inspect both the process and recovery entry before
+retrying. Manual request cancellation is checked before sending a signal.
+
 ### Restoring quarantined files
+
+Regular-file quarantine and pre-clean backups write and sync the private content
+copy, metadata, and directory entries before removing or changing the original.
+Directory quarantine syncs the tree and metadata before moving it on the same
+filesystem. A directory move across filesystems is refused and leaves the source
+in place. Storage failures do not count as successful remediation.
+
+New quarantine and pre-clean sidecars record the original modification time,
+owner, group, permissions, and size. Restore reapplies the saved attributes to
+the opened destination before syncing it. Linux preserves modification times at
+the precision supported by the destination filesystem. An ownership or timestamp
+failure keeps the recovery evidence and reports an error.
+
+Older sidecars may use `quarantine_at`; listing and restore also read that
+historical spelling. Entries without a saved quarantine date sort last. Older
+entries have no recorded original modification time, so restore leaves the new
+file's modification time in place instead of treating the archive's timestamp
+as the original. Some older access-file cleanup backups also lack trustworthy
+ownership and permission data; check those attributes when restoring them.
+
+Configured account roots participate in manual remediation and restore. Set up
+[service write access](custom-account-roots.md) for roots outside the packaged
+grants before enabling these operations.
 
 Web UI restore refuses symbolic links in destination directories and does not
 replace an existing file or directory. If a destination changes during restore,
@@ -26,9 +75,20 @@ location before retrying; a failed or interrupted file restore can leave a
 partial file in the directory that was opened for restoration. CSM keeps this
 file because removing it could discard a concurrent replacement.
 
+Restore syncs the replacement and its containing directory before deleting
+quarantine evidence. A failure after a move or unlink reports partial completion
+and retains recovery metadata where possible. Inspect both the original and
+quarantine locations named in the error before retrying; a copy may already be
+restored while quarantine cleanup remains incomplete. These guarantees depend
+on the filesystem and storage device honoring sync requests.
+
 Virtual-patch rollback uses the same directory confinement. It replaces or
 removes the access file only when the saved content, owner, and permissions
 still match, preserving later customer edits.
+
+Virtual-patch backups are reused only when their content and saved attributes,
+including modification time, match. A later edit with identical bytes but a new
+modification time gets a separate recovery point.
 
 Rollback isolates displaced entries in a private directory. If another writer
 changes the destination, CSM preserves the live replacement and reports any

@@ -48,14 +48,14 @@ func tryStartBPFLSM(_ context.Context, alertCh chan<- alert.Finding, cfg *config
 
 	l, err := link.AttachLSM(link.LSMOptions{Program: objs.CsmBlockAfAlg})
 	if err != nil {
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("attach lsm/socket_create: %w", err)
 	}
 
 	reader, err := bpf.NewReader[checks.AFAlgEvent](objs.Events, decodeAFAlgEvent)
 	if err != nil {
 		_ = l.Close()
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
 
@@ -75,7 +75,7 @@ func (a *afAlgBPF) Run(ctx context.Context) {
 	defer func() {
 		_ = a.reader.Close()
 		_ = a.link.Close()
-		a.objs.Close()
+		_ = a.objs.Close()
 	}()
 
 	go a.reader.Run(ctx)

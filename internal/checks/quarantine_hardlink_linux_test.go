@@ -43,7 +43,7 @@ func TestQuarantineFileTOCTOUSafe_CopiesMultiLinkFile(t *testing.T) {
 		t.Fatal(mkErr)
 	}
 
-	err = quarantineFileTOCTOUSafe(src, qPath, info)
+	err = quarantineFileTOCTOUSafe(src, qPath, info, []byte("{}"))
 	if err == nil || !strings.Contains(err.Error(), "hard link") {
 		t.Fatalf("surviving hard link not reported: err=%v", err)
 	}
@@ -93,15 +93,15 @@ func TestQuarantineFileTOCTOUSafe_CopiesLinkAddedAfterFstat(t *testing.T) {
 	}
 
 	oldCopy := quarantineCopyByFD
-	quarantineCopyByFD = func(fd *os.File, dst string) error {
+	quarantineCopyByFD = func(fd *os.File, dst string, metadata []byte) error {
 		if linkErr := os.Link(src, other); linkErr != nil {
 			return linkErr
 		}
-		return oldCopy(fd, dst)
+		return oldCopy(fd, dst, metadata)
 	}
 	t.Cleanup(func() { quarantineCopyByFD = oldCopy })
 
-	err = quarantineFileTOCTOUSafe(src, qPath, info)
+	err = quarantineFileTOCTOUSafe(src, qPath, info, []byte("{}"))
 	if err == nil || !strings.Contains(err.Error(), "hard link") {
 		t.Fatalf("link added after fstat was not reported: %v", err)
 	}

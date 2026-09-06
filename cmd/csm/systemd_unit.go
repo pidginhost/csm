@@ -45,7 +45,8 @@ ProtectSystem=strict
 # Empty log file). The read-only home mode is enforced after writable path
 # grants, so it would still leave /home read-only. ProtectSystem=strict keeps
 # paths outside explicit writable grants read-only; only the explicit -/home
-# grant below reopens account home directories.
+# grant below reopens account home directories. Custom roots need the
+# validated drop-in printed by csm systemd-roots.
 ProtectHome=no
 # -/opt/csm/state (tolerate-absent) covers installs that still pin the legacy
 # state_path (state_path: /opt/csm/state) instead of the FHS default
@@ -56,13 +57,12 @@ ProtectHome=no
 # the daemon cannot start.
 ReadWritePaths=/var/lib/csm -/opt/csm/state /var/log/csm -/var/log/csm-php-shield /etc/csm /opt/csm/quarantine /opt/csm/policies
 ReadWritePaths=/opt/csm/rules -/opt/csm/deploy.sh -/home /tmp /var/tmp -/dev/shm
-# /etc: CSM atomically maintains the forward-guard router/transport in
-# /etc/exim.conf.local. The temp file must be a sibling in /etc, so a
-# file-scoped grant is not enough. The heavyweight cPanel rebuild
-# (buildeximconf) runs as a separate transient systemd service and is not
-# limited by csm.service's sandbox; the daemon only needs /etc for the atomic
-# write above.
-ReadWritePaths=/etc -/usr/local/apache/conf
+# Configuration writes stay within managed subsystem directories. Exim's
+# atomic config update and rebuild run together in a fixed-purpose transient
+# service; the daemon does not need write access to the whole /etc directory.
+ReadWritePaths=-/etc/audit -/etc/modprobe.d
+ReadWritePaths=-/etc/apache2/conf.d -/etc/apache2/conf-enabled -/etc/httpd/conf.d -/etc/nginx/conf.d
+ReadWritePaths=-/usr/local/apache/conf -/usr/local/lsws/conf/templates
 ReadWritePaths=-/usr/local/cpanel/whostmgr/docroot/cgi -/var/cpanel
 ReadWritePaths=-/var/spool/cron -/var/spool/exim/input -/var/spool/exim4/input
 # NOTE: exim log grants deliberately removed. Exim opens its main/panic logs
@@ -107,6 +107,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service @network-io @file-system
 SystemCallFilter=bpf fanotify_init fanotify_mark inotify_init inotify_init1 inotify_add_watch inotify_rm_watch perf_event_open
 SystemCallFilter=clone clone3 execve execveat fork vfork mmap mprotect munmap mremap brk
+SystemCallFilter=pidfd_open pidfd_send_signal
 SystemCallFilter=~@reboot ~@swap ~@module ~@raw-io ~@mount ~@cpu-emulation
 SystemCallErrorNumber=EPERM
 

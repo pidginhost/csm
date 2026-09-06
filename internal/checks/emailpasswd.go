@@ -20,9 +20,6 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// doveadmSemaphore limits concurrent doveadm processes.
-var doveadmSemaphore = make(chan struct{}, 3)
-
 // hibpClient is used for HIBP API requests.
 var hibpClient = &http.Client{Timeout: 10 * time.Second}
 
@@ -114,31 +111,6 @@ func capitalizeFirst(s string) string {
 	runes := []rune(s)
 	runes[0] = unicode.ToUpper(runes[0])
 	return string(runes)
-}
-
-// verifyDoveadm checks a candidate password against a stored hash.
-// Returns true if the password matches.
-func verifyDoveadm(hash, candidate string) bool {
-	return verifyDoveadmContext(context.Background(), hash, candidate)
-}
-
-func verifyDoveadmContext(ctx context.Context, hash, candidate string) bool {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	select {
-	case doveadmSemaphore <- struct{}{}:
-	case <-ctx.Done():
-		return false
-	}
-	defer func() { <-doveadmSemaphore }()
-	if ctx.Err() != nil {
-		return false
-	}
-
-	// Routed through cmdExec so tests can mock doveadm without a real install.
-	_, err := cmdExec.RunContext(ctx, "doveadm", "pw", "-t", hash, "-p", candidate)
-	return err == nil
 }
 
 // hashFingerprint returns a SHA256 hex fingerprint of a password hash
@@ -298,27 +270,6 @@ func loadWeakPasswords() []string {
 	return weakPasswords
 }
 
-// checkWordlist tests a hash against the bundled weak passwords list.
-// Returns the matched password or empty string.
-func checkWordlist(hash string) string {
-	return checkWordlistContext(context.Background(), hash)
-}
-
-func checkWordlistContext(ctx context.Context, hash string) string {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	for _, word := range loadWeakPasswords() {
-		if ctx.Err() != nil {
-			return ""
-		}
-		if verifyDoveadmContext(ctx, hash, word) {
-			return word
-		}
-	}
-	return ""
-}
-
 // CheckEmailPasswords audits Dovecot email account passwords for weak/predictable
 // patterns. Uses internal throttle: skips if last refresh was less than
 // password_check_interval_min ago.
@@ -364,97 +315,91 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 
 	var mu sync.Mutex
 	var findings []alert.Finding
+	var incomplete int
 	var wg sync.WaitGroup
 
-	// Process each mailbox concurrently (bounded by semaphore)
 	sem := make(chan struct{}, 5)
+mailboxes:
 	for _, entry := range allEntries {
-		if ctx.Err() != nil {
-			break
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break mailboxes
 		}
-		wg.Add(1)
-		go func(e mailboxEntry) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
+		wg.Go(func() {
 			defer func() { <-sem }()
 			if ctx.Err() != nil {
 				return
 			}
-
-			fullMailbox := e.mailbox + "@" + e.domain
-			storeKey := fmt.Sprintf("email:pwaudit:%s:%s", e.account, fullMailbox)
-
-			// Skip if hash hasn't changed since last audit
-			fp := hashFingerprint(e.hash)
-			if stored := db.GetMetaString(storeKey); stored == fp {
+			fullMailbox := entry.mailbox + "@" + entry.domain
+			storeKey := fmt.Sprintf("email:pwaudit:%s:%s", entry.account, fullMailbox)
+			// Older versions also cached failed verifications as clean.
+			fp := "v2:" + hashFingerprint(entry.hash)
+			if db.GetMetaString(storeKey) == fp {
 				return
 			}
 
-			// Layer 1: Heuristic candidates
-			candidates := generateCandidates(e.mailbox, e.domain)
-			var matched string
-			var matchType string
-			for _, c := range candidates {
-				if ctx.Err() != nil {
-					return
-				}
-				if verifyDoveadmContext(ctx, e.hash, c) {
-					matched = c
-					matchType = "heuristic"
-					break
-				}
+			finding, err := auditEmailPassword(ctx, entry)
+			mu.Lock()
+			if err != nil {
+				incomplete++
+			} else if finding != nil {
+				findings = append(findings, *finding)
 			}
-
-			// Layer 2: Common wordlist (skip if layer 1 matched)
-			if matched == "" {
-				if ctx.Err() != nil {
-					return
-				}
-				if w := checkWordlistContext(ctx, e.hash); w != "" {
-					matched = w
-					matchType = "wordlist"
-				}
-			}
-
-			if matched != "" {
-				details := fmt.Sprintf("Account: %s\nMailbox: %s\nMatch type: %s\nMatched password pattern: %q",
-					e.account, fullMailbox, matchType, matched)
-
-				// Layer 3: HIBP enrichment (only for confirmed matches)
-				breachCount := checkHIBPWithContext(ctx, matched)
-				if breachCount > 0 {
-					details += fmt.Sprintf("\nHIBP: password found in %d data breaches", breachCount)
-				}
-
-				mu.Lock()
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "email_weak_password",
-					Message:  fmt.Sprintf("Weak email password for %s (account: %s)", fullMailbox, e.account),
-					Details:  details,
-					Domain:   e.domain,
-					Mailbox:  fullMailbox,
-				})
-				mu.Unlock()
-			}
-
-			// Record fingerprint so we don't re-audit until hash changes
-			if ctx.Err() != nil {
+			mu.Unlock()
+			if err != nil || ctx.Err() != nil {
 				return
 			}
 			_ = db.SetMetaString(storeKey, fp)
-		}(entry)
+		})
 	}
-
 	wg.Wait()
-	if ctx.Err() != nil {
+	if incomplete > 0 || ctx.Err() != nil {
+		markCheckIncomplete(ctx, "email_weak_password")
+		findings = append(findings, alert.Finding{
+			Severity: alert.Warning,
+			Check:    "email_password_audit_incomplete",
+			Message:  "Email password audit did not complete",
+			Details:  fmt.Sprintf("Mailboxes with an unfinished verification: %d. Unsupported, malformed, or over-budget hashes remain unaudited and are retried. See the email password audit documentation for supported formats and limits.", incomplete),
+		})
 		return findings
 	}
 	_ = db.SetEmailPWLastRefresh(time.Now())
-
 	return findings
+}
+
+func auditEmailPassword(ctx context.Context, entry mailboxEntry) (*alert.Finding, error) {
+	verifier, err := parseEmailPasswordHash(entry.hash)
+	if err != nil {
+		return nil, err
+	}
+	matched, err := verifier.firstMatch(ctx, generateCandidates(entry.mailbox, entry.domain))
+	if err != nil {
+		return nil, err
+	}
+	matchType := "heuristic"
+	if matched == "" {
+		matched, err = verifier.firstMatch(ctx, loadWeakPasswords())
+		if err != nil {
+			return nil, err
+		}
+		matchType = "wordlist"
+	}
+	if matched == "" {
+		return nil, nil
+	}
+
+	fullMailbox := entry.mailbox + "@" + entry.domain
+	details := fmt.Sprintf("Account: %s\nMailbox: %s\nMatch type: %s", entry.account, fullMailbox, matchType)
+	if breachCount := checkHIBPWithContext(ctx, matched); breachCount > 0 {
+		details += fmt.Sprintf("\nHIBP: password found in %d data breaches", breachCount)
+	}
+	return &alert.Finding{
+		Severity: alert.Critical,
+		Check:    "email_weak_password",
+		Message:  fmt.Sprintf("Weak email password for %s (account: %s)", fullMailbox, entry.account),
+		Details:  details,
+		Domain:   entry.domain,
+		Mailbox:  fullMailbox,
+	}, nil
 }

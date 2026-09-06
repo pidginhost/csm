@@ -42,7 +42,7 @@ func TestSaveBlockedEntrySucceedsWhenWritable(t *testing.T) {
 	}
 }
 
-func TestSaveBlockedEntryAcceptsCommittedWriteWarning(t *testing.T) {
+func TestSaveBlockedEntryReportsUnconfirmedDurability(t *testing.T) {
 	prev := writeFirewallStateJSON
 	t.Cleanup(func() { writeFirewallStateJSON = prev })
 	writeFirewallStateJSON = func(path string, perm os.FileMode, v any) error {
@@ -53,8 +53,8 @@ func TestSaveBlockedEntryAcceptsCommittedWriteWarning(t *testing.T) {
 	}
 
 	e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{}}
-	if err := e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.3", Reason: "test"}); err != nil {
-		t.Fatalf("saveBlockedEntry returned error after committed write: %v", err)
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.3", Reason: "test"}); err == nil || !strings.Contains(err.Error(), "durability") {
+		t.Fatalf("saveBlockedEntry should report unconfirmed durability: %v", err)
 	}
 	if !e.IsBlocked("203.0.113.3") {
 		t.Fatal("committed write warning should refresh blocked cache")

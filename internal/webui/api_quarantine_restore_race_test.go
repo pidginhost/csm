@@ -139,7 +139,7 @@ func TestQuarantineDirectoryRollbackPreservesReplacement(t *testing.T) {
 	}
 	t.Cleanup(func() { quarantineRestoreAfterDirectoryMoveForTest = oldHook })
 	owner := fileOwner(t, item)
-	if err := restoreQuarantineDirectory(item, target, 0700, owner.uid, owner.gid); err == nil {
+	if err := restoreQuarantineDirectory(item, target, 0700, checks.QuarantineMeta{Owner: owner.uid, Group: owner.gid}); err == nil {
 		t.Fatal("replaced directory passed restore")
 	}
 	if info, err := os.Lstat(item); !os.IsNotExist(err) {

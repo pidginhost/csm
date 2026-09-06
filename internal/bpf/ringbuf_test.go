@@ -29,7 +29,7 @@ func decodeTiny(b []byte) (tinyEvent, error) {
 	}, nil
 }
 
-func TestReaderDeliversEvents(t *testing.T) {
+func TestReaderClosesEventsAfterCancellation(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs CAP_BPF")
 	}
@@ -40,18 +40,13 @@ func TestReaderDeliversEvents(t *testing.T) {
 		}
 		t.Fatalf("NewMap ringbuf: %v", err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
-	// Userspace cannot push directly into a ringbuf (kernel side does
-	// bpf_ringbuf_output). For the unit test we exercise Reader's
-	// channel and shutdown semantics with a Map already created;
-	// integration coverage of the kernel-side write happens in each
-	// feature plan's BPF program tests.
 	r, err := NewReader(m, decodeTiny)
 	if err != nil {
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -64,6 +59,8 @@ func TestReaderDeliversEvents(t *testing.T) {
 		}
 		// Closed after ctx cancellation: expected.
 	case <-ctx.Done():
-		<-r.Events() // wait for Run to close the channel
+		if _, ok := <-r.Events(); ok {
+			t.Fatal("event received after cancellation without a producer")
+		}
 	}
 }

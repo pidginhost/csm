@@ -80,14 +80,11 @@ func TestReleaseCriticalJobsAreBlocking(t *testing.T) {
 	if strings.Contains(integration[:afterScript], "phctl compute server delete") {
 		t.Fatal("integration script still uses unverified fire-and-forget cleanup")
 	}
-	// cPanel integration runs when a cPanel image is configured; tag releases
-	// fall back to the Alma+Ubuntu matrix (with a warning) rather than blocking
-	// when no image is set. The provisioning and assertion machinery must still
-	// be present so cPanel is exercised whenever an image is available.
+	// Tags require cPanel; main may run the optional image when configured.
 	for _, want := range []string{
-		"releasing with Alma+Ubuntu integration only",
+		"bash scripts/ci-cpanel-preflight.sh",
 		`--image "$INTEGRATION_CPANEL_IMAGE"`,
-		`CPANEL_PACKAGE="${INTEGRATION_CPANEL_PACKAGE:-cloudv-1}"`,
+		`CPANEL_PACKAGE="${INTEGRATION_CPANEL_PACKAGE:-cloudv-2}"`,
 		`TEST_HOSTS="$TEST_HOSTS $CPANEL_IP:cpanel"`,
 		`test -x /usr/local/cpanel/cpanel`,
 		`test ! -e /opt/csm/csm`,

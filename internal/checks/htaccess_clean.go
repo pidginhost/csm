@@ -1,7 +1,6 @@
 package checks
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -30,7 +29,7 @@ import (
 // new), no write happens and no backup is created.
 
 // htaccessBackupDirRoot is the parent directory under which
-// CleanHtaccessFile writes <ts>_<sanitized-path> backups. Exposed
+// CleanHtaccessFile writes unique recovery backups. Exposed
 // as a package var so tests can redirect it to a t.TempDir().
 var htaccessBackupDirRoot = "/opt/csm/quarantine/pre_clean"
 
@@ -809,34 +808,11 @@ func CleanHtaccessFile(path string) RemediationResult {
 	}
 
 	backupDir := htaccessBackupDirRoot
-	if err = os.MkdirAll(backupDir, 0750); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("creating backup dir: %v", err)}
-	}
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s", stamp, sanitizePathForBackup(resolved)))
-	// #nosec G306 G703 -- 0640 matches the rest of pre_clean/. backupPath is filepath.Join(backupDir, <ts>_<sanitizePathForBackup>) where sanitizePathForBackup strips every / and .. so the result cannot escape backupDir; resolved itself was validated by resolveExistingFixPath (fixHtaccessAllowedRoots).
-	if err = os.WriteFile(backupPath, original, 0640); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("writing backup: %v", err)}
-	}
-	// .meta written as JSON in the same shape as autoresponse.go's
-	// QuarantineMeta so the existing /api/v1/quarantine listing and
-	// /api/v1/quarantine-restore handlers pick up htaccess pre_clean
-	// backups without a parallel codepath. The early implementation
-	// used a plain key=value sidecar; nothing in the pipeline read
-	// that, which made htaccess backups invisible in the UI.
-	metaPath := backupPath + ".meta"
-	metaJSON, err := json.Marshal(QuarantineMeta{
-		OriginalPath: resolved,
-		Size:         int64(len(original)),
-		QuarantineAt: time.Now().UTC(),
-		Reason:       fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)),
-	})
-	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("encoding backup meta: %v", err)}
-	}
-	// #nosec G306 -- sidecar meta; 0640 matches the backup file mode.
-	if err := os.WriteFile(metaPath, metaJSON, 0640); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("writing backup meta: %v", err)}
+
+	backupPath := newQuarantinePath(backupDir, resolved)
+	meta := quarantineMetadata(resolved, target.Info, fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)))
+	if err := storeQuarantineBackup(backupPath, original, meta, 0640); err != nil {
+		return RemediationResult{Error: fmt.Sprintf("writing durable backup: %v", err)}
 	}
 
 	if err := writeCleanedFileAtomic(target, cleaned); err != nil {
@@ -976,11 +952,6 @@ func matchesFromLogicalLineRegex(content []byte, re *regexp.Regexp) []htaccessMa
 		})
 	}
 	return out
-}
-
-func sanitizePathForBackup(p string) string {
-	r := strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_")
-	return strings.TrimPrefix(r.Replace(p), "_")
 }
 
 // detectPHPInUploads flags AddHandler/SetHandler/ForceType lines

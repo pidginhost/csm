@@ -26,9 +26,13 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			AutoResponseEnabled:           true,
 			AutoResponseBlockIPs:          true,
 			AutoResponseDryRun:            true,
+			ProcessKillEnabled:            true,
+			ProcessSignalError:            "fixture kernel probe failure",
 			DryRunBlocks:                  3,
 			ChallengeEnabled:              true,
 			ChallengePending:              2,
+			FirewallEnabled:               true,
+			FirewallStartupError:          "fixture apply failure",
 			FirewallRollbackPending:       true,
 			FirewallRollbackSecondsRemain: 120,
 			LastAction: &health.AutomationAction{

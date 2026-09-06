@@ -67,13 +67,15 @@ To upgrade later: `sudo dnf upgrade csm`.
 
 ## Online standalone installer
 
-Use the standalone installer when the host has Internet access but cannot use the APT or DNF repository. It downloads the binary and supporting assets from the latest GitHub release, verifies their checksums, verifies Ed25519 signatures when the installed OpenSSL supports it, and installs outside the package manager.
+Use the standalone installer when the host has Internet access but cannot use the APT or DNF repository. It downloads the binary and supporting assets from the latest GitHub release, verifies their checksums, requires successful Ed25519 signature verification, and installs outside the package manager.
 
 ```bash
 curl -fsSLo /tmp/csm-install.sh https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh
 less /tmp/csm-install.sh
 sudo bash /tmp/csm-install.sh
 ```
+
+Standalone verification uses OpenSSL 3.0 or newer, an already installed CSM build providing `csm verify-release`, or `python3-cryptography` -- in that order. EL8 and CloudLinux 8 have the last of these, so the standalone path works there even though their OpenSSL 1.1.1 cannot verify Ed25519. A missing key, missing current-release signature, absent verifier, or failed verification stops the install before executing the binary. See [Release signing](release-signing.md) for the narrowly scoped historical-release exception.
 
 It auto-detects the hostname and alert email, generates a Web UI token, and prompts before applying. Non-interactive mode:
 
@@ -85,16 +87,22 @@ This is not an offline or air-gapped installation path. Mirror the signed packag
 
 ## Manual `.rpm` / `.deb` download
 
-If you need a specific version or want to install without adding the repository:
+If you need a specific version or want to install without adding the repository, verify its detached signature before invoking the package manager. Save the trusted public key from [Release signing](release-signing.md#public-key) as `csm-signing.pub`. These commands require OpenSSL 3.0 or newer; older hosts should use the signed repository above. Installing a local package does not by itself establish the repository signature chain:
 
 ```bash
 # RHEL family
 curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm-VERSION-1.x86_64.rpm
-sudo dnf install -y ./csm-VERSION-1.x86_64.rpm
+curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm-VERSION-1.x86_64.rpm.sig
+openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
+  -sigfile csm-VERSION-1.x86_64.rpm.sig -in csm-VERSION-1.x86_64.rpm && \
+  sudo dnf install -y ./csm-VERSION-1.x86_64.rpm
 
 # Debian/Ubuntu
 curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_amd64.deb
-sudo apt install -y ./csm_VERSION_amd64.deb
+curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_amd64.deb.sig
+openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
+  -sigfile csm_VERSION_amd64.deb.sig -in csm_VERSION_amd64.deb && \
+  sudo apt install -y ./csm_VERSION_amd64.deb
 ```
 
 Replace `VERSION` with a published version. Both files are also available from the package mirror if you need to pin a release without adding the repository.

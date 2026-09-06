@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -185,6 +186,12 @@ func effectiveFixRoots(override []string, extra ...string) []string {
 		return override
 	}
 	roots := append([]string(nil), accountHomeRoots()...)
+	if cfg := config.Active(); cfg != nil {
+		// Failed roots are excluded; doctor reports the resolution errors.
+		// One tenant's symlink must not disable fixes for other accounts.
+		configured, _ := platform.ResolveAccountRoots(cfg.AccountRoots)
+		roots = append(roots, configured...)
+	}
 	return append(roots, extra...)
 }
 

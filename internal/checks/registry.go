@@ -278,6 +278,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_suspicious_forwarder", Category: CategoryEmail},
 	{Name: "email_suspicious_geo", Category: CategoryEmail},
 	{Name: "email_weak_password", Category: CategoryEmail},
+	{Name: "email_password_audit_incomplete", Category: CategoryEmail, Internal: true},
 	{Name: "exim_frozen_realtime", Category: CategoryEmail},
 	{Name: "mail_per_account", Category: CategoryEmail},
 	{Name: "mail_queue", Category: CategoryEmail},

@@ -87,6 +87,32 @@ an upgrade; previous dismissals do not transfer to the new identity.
 
 Hidden-link corroboration counts registrable domains within one hidden container, not hostnames across a whole row. Multiple subdomains of one linked domain count as one target, and both the WordPress home and site addresses count as local.
 
+Joomla, Drupal, Magento, and OpenCart configuration reads accept regular files
+up to 1 MiB. Configuration symlinks and special files are rejected, including
+during Joomla and OpenCart marker probes. Drupal's version marker must also be
+a regular file. Reads use the opened file throughout, reject changes observed
+during the read, and stop when the scan is canceled. Read failures and missing
+required credentials mark that CMS scan incomplete; manual re-checks keep the
+finding unresolved when its configuration cannot be inspected.
+
+Administrator baselines for Joomla, Drupal, Magento, and OpenCart are scoped to
+the hosting account, CMS, database host, database name, and table prefix. Two
+sites under one account keep separate baselines when they use different
+databases or prefixes. Paths that share the same database and prefix share the
+same administrator set. Upgrading from account-wide baselines starts a fresh
+baseline for each installation on its first complete administrator query;
+later additions produce one High finding per new administrator. Finding
+details identify the affected database and prefix.
+
+Database errors, discovery errors, and configuration or query limits keep the
+affected CMS check incomplete. Earlier findings remain until that CMS completes
+a scan; another CMS can still complete and clear its own resolved findings.
+Queries inspect at most 200 rows and request one extra row to detect overflow.
+An installation stops issuing queries after a failure or overflow. Administrator
+baselines and recorded IDs change only after a complete result; a successful
+empty administrator result also establishes a baseline. New IDs in a partial
+result can still be reported against an existing baseline.
+
 ## CMS Scanner Support Policy
 
 New CMS scanner work targets upstream-supported major versions. EOL versions are best-effort when the existing scanner covers them through the same low-risk layout or schema. Adding a new EOL-only scanner needs operator fleet data and an explicit security reason.
@@ -126,7 +152,8 @@ Current scanner scope:
 
 | Check | Description |
 |-------|-------------|
-| `email_weak_password` | Email accounts with weak passwords |
+| `email_weak_password` | Email accounts with weak passwords; in-process verification with [supported hash formats and cost limits](email-av.md#email-password-audit) |
+| `email_password_audit_incomplete` | Password verification was interrupted or encountered a hash outside the supported audit formats or limits |
 | `email_forwarder_audit` | Forwarders redirecting to external addresses |
 | `email_mail_filters` | Exim mail filters and dovecot/Roundcube Sieve scripts that copy mail to an external address while keeping a local copy, forward externally, pipe to a command, or blackhole all mail. Sieve is what webmail-managed rules actually execute, so both are scanned. A forward that leaves the mailbox its own copy is what a webmail forward rule produces, so on its own it reports as a Warning for review; it is Critical when an independent forwarding layer on the same mailbox, mail the mailbox never receives, or the same destination across accounts corroborates it. |
 
@@ -167,3 +194,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 - `perf_mysql_config`, `perf_redis_config`, `perf_error_logs` -- rely on standard service locations
 
 Operators on plain Linux can point `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and `perf_wp_cron` at generic web roots with the `account_roots` glob list (see [configuration.md](configuration.md)). The remaining account and CMS scans still assume the cPanel `/home/*/public_html` layout.
+
+Package integrity rechecks retain a modification that the package verifier still
+reports for the flagged file. Changing its executable mode or removing the file
+does not by itself resolve that finding.

@@ -31,9 +31,8 @@ const (
 // RspamdSource queries rspamd's rolling history and returns a score
 // 0..100 derived only from rows matching the requested IP.
 //
-// Token resolution happens at Score time (not at construction time) so
-// operators can rotate the rspamd controller password via env var
-// without restarting the daemon.
+// Token resolution reads the process environment at Score time. External
+// environment changes require a daemon restart.
 type RspamdSource struct {
 	url      string
 	token    string // static token from config (may be empty)
@@ -53,7 +52,7 @@ func NewRspamdSource(url, token, tokenEnv string) *RspamdSource {
 func (s *RspamdSource) Name() string { return "rspamd" }
 
 // resolveToken reads the env var (if set) at query time, falling back to
-// the static token. Lets operators rotate via env without daemon restart.
+// the static token. External environment changes require a daemon restart.
 func (s *RspamdSource) resolveToken() string {
 	if s.tokenEnv != "" {
 		if v := os.Getenv(s.tokenEnv); v != "" {

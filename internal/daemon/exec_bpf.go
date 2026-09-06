@@ -39,14 +39,14 @@ func startExecBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *config.C
 
 	tp, err := link.Tracepoint("sched", "sched_process_exec", objs.CsmOnExec, nil)
 	if err != nil {
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("attach tracepoint: %w", err)
 	}
 
 	reader, err := bpf.NewReader[ExecEvent](objs.Events, decodeExecEvent)
 	if err != nil {
 		_ = tp.Close()
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
 
@@ -66,7 +66,7 @@ func (e *execBPF) Run(ctx context.Context) {
 	defer func() {
 		_ = e.reader.Close()
 		_ = e.link.Close()
-		e.objs.Close()
+		_ = e.objs.Close()
 	}()
 
 	go e.reader.Run(ctx)

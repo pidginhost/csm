@@ -16,12 +16,13 @@ import (
 
 func cleanEnv(overrides ...string) []string {
 	overridden := map[string]struct{}{
-		"GO_LINUX_DRY_RUN":  {},
-		"GO_LINUX_IMAGE":    {},
-		"GO_LINUX_MEMORY":   {},
-		"GO_LINUX_MODCACHE": {},
-		"GO_LINUX_RUNTIME":  {},
-		"XDG_CACHE_HOME":    {},
+		"GO_LINUX_DRY_RUN":    {},
+		"GO_LINUX_PRIVILEGED": {},
+		"GO_LINUX_IMAGE":      {},
+		"GO_LINUX_MEMORY":     {},
+		"GO_LINUX_MODCACHE":   {},
+		"GO_LINUX_RUNTIME":    {},
+		"XDG_CACHE_HOME":      {},
 	}
 	for _, entry := range overrides {
 		if key, _, ok := strings.Cut(entry, "="); ok {
@@ -286,14 +287,14 @@ func TestGoLinuxMakesLinkedWorktreeMetadataReadable(t *testing.T) {
 	requireArgPair(t, args, "-e", "GIT_OPTIONAL_LOCKS=0")
 }
 
-func TestGoLinuxGrantsCapSysAdmin(t *testing.T) {
+func TestGoLinuxGrantsKernelTestCapabilities(t *testing.T) {
 	out, code := runGoLinux(t, repoRoot(t), nil, "go", "test", "./...")
 	if code != 0 {
 		t.Fatalf("wrapper exited %d: %s", code, out)
 	}
-	if !hasArg(invocationArgs(t, out), "CAP_SYS_ADMIN") {
-		t.Errorf("CAP_SYS_ADMIN is not granted:\n%s", out)
-	}
+	args := invocationArgs(t, out)
+	requireArgPair(t, args, "--cap-add", "CAP_SYS_ADMIN")
+	requireArgPair(t, args, "--cap-add", "CAP_NET_ADMIN")
 }
 
 func TestGoLinuxHonoursAReadOnlyModuleCacheOverride(t *testing.T) {
@@ -470,5 +471,32 @@ func TestGoLinuxNeverMintsAThrowawayCache(t *testing.T) {
 		if strings.Contains(source, bad) {
 			t.Errorf("go-linux.sh points a Go cache at /tmp (%q)", bad)
 		}
+	}
+}
+
+func TestGoLinuxPrivilegedModeIsExplicit(t *testing.T) {
+	wrapper := filepath.Join(repoRoot(t), "scripts", "go-linux.sh")
+	for _, tc := range []struct {
+		name, runtime, privileged string
+		wantErr, wantFlag         bool
+	}{
+		{"default", "docker", "0", false, false},
+		{"kernel", "docker", "1", false, true},
+		{"unsupported", "container", "1", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("bash", wrapper, "true")
+			cmd.Env = cleanEnv("GO_LINUX_DRY_RUN=1", "GO_LINUX_RUNTIME="+tc.runtime, "GO_LINUX_PRIVILEGED="+tc.privileged)
+			out, err := cmd.CombinedOutput()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v output=%s", err, out)
+			}
+			if strings.Contains(string(out), "--privileged") != tc.wantFlag {
+				t.Fatalf("wrong privilege flags: %s", out)
+			}
+			if tc.wantFlag && !strings.Contains(string(out), "--cgroupns=private") {
+				t.Fatalf("cgroup namespace not private: %s", out)
+			}
+		})
 	}
 }

@@ -655,13 +655,19 @@ func TestStartFirewall_EnabledFailsGracefully(t *testing.T) {
 	cfg.Firewall = firewall.DefaultConfig()
 	cfg.Firewall.Enabled = true
 	cfg.StatePath = t.TempDir()
-	// No nftables binary on macOS, so firewall.NewEngine will fail.
 	d := New(cfg, nil, nil, "")
-	d.startFirewall()
-	// fwEngine should be nil on macOS since nftables is not available.
-	if d.fwEngine != nil {
-		t.Log("fwEngine unexpectedly non-nil (may be valid on Linux)")
+	attempts := 0
+	d.startFirewallUsing(firewallStartupOps{
+		newEngine: func(*firewall.FirewallConfig, string) (*firewall.Engine, error) {
+			attempts++
+			return nil, os.ErrPermission
+		},
+		delays: []time.Duration{0, 0},
+	})
+	if attempts != 3 || d.fwEngine != nil || d.fwStartupError == "" {
+		t.Fatalf("failed firewall startup was not bounded and retained: attempts=%d error=%q", attempts, d.fwStartupError)
 	}
+
 }
 
 // ---------------------------------------------------------------------------

@@ -213,7 +213,7 @@ var runnerFindingNames = map[string][]string{
 	"email_content":         {"email_phishing_content"},
 	"email_forwarder_audit": {"email_pipe_forwarder", "email_suspicious_forwarder"},
 	"email_mail_filters":    {"email_filter_blackhole", "email_filter_exfil", "email_filter_forwarder", "email_filter_pipe", "email_mail_filters"},
-	"email_weak_password":   {"email_weak_password"},
+	"email_weak_password":   {"email_weak_password", "email_password_audit_incomplete"},
 	"exfiltration_paste":    {"exfiltration_paste_site"},
 	"fake_kernel_threads":   {"fake_kernel_thread"},
 	"file_index":            {"new_executable_in_config", "new_php_in_sensitive_dir", "new_php_in_sensitive_dir_clean", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
@@ -633,6 +633,7 @@ func withLogicalOwnerPurgeNames(toScan []namedCheck) []string {
 // An empty entry lets a stateful logical owner preserve its last finding
 // without inventing a per-run status finding.
 var perRunFindingNames = map[string][]string{
+	"email_weak_password":           {"email_password_audit_incomplete"},
 	"yara_deep":                     {"yara_scan_incomplete"},
 	"db_content":                    {"db_content_scan_incomplete"},
 	logicalOwnerJSTaintDeep:         {"js_taint_scan_incomplete"},
@@ -1133,7 +1134,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		}
 		findings = append(findings, challengeActions...)
 
-		killActions := AutoKillProcesses(cfg, findings)
+		killActions := AutoKillProcesses(parent, cfg, findings)
 		for i := range killActions {
 			if killActions[i].Timestamp.IsZero() {
 				killActions[i].Timestamp = now
