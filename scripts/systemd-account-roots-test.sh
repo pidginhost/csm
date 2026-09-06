@@ -94,6 +94,8 @@ Type=oneshot
 TimeoutStartSec=45min
 ExecStart=/bin/bash /src/scripts/production-tests.sh kernel
 Environment=PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=GOPATH=/go
+Environment=GOTOOLCHAIN=auto
 Environment=GOCACHE=/gocache
 Environment=GOMODCACHE=/gomodcache
 Environment=GOPROXY=${GOPROXY:-https://proxy.golang.org,direct}
@@ -128,7 +130,9 @@ if [[ -f /etc/systemd/system/csm-production-kernel.service ]]; then
   journalctl -u csm-production-kernel.service --no-pager > "$artifacts/kernel-journal.log"
 fi
 journalctl -u csm.service --no-pager > "$artifacts/journal.log"
-systemctl exit "$status"
+# Tests have stopped and their artifacts are closed. EL8's orderly exit target
+# can restart itself through SuccessAction=exit until its start limit is hit.
+systemctl --force exit "$status"
 FINISH
 cat > /etc/systemd/system/csm-audit.service <<UNIT
 [Unit]

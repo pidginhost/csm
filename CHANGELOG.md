@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Kernel validation now starts and exits correctly on the production test image, retaining failure diagnostics instead of hanging.
+
 - Development and readiness documentation now matches required test jobs, completed fixes, and outstanding release infrastructure checks.
 
 - Credential rotation instructions now state the restart requirement for environment-backed tokens and signing secrets.

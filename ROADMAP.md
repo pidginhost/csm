@@ -39,9 +39,11 @@ has passed it on the current infrastructure.
   [kernel runner acceptance](docs/src/production-tests.md#kernel-runner).
 
 As of 2026-09-06, local production-tag race tests and the four pinned corpus
-gates passed. Real systemd and supported kernel checks passed locally, but
-BPF LSM attachment was unavailable and the kernel gate correctly failed.
-The licensed cPanel run and dedicated kernel runner remain operational gaps.
+gates passed. The EL8 production test image passed all 12 kernel tests on
+LinuxKit 7.0.12, including BPF LSM attachment, and the strict systemd sandbox
+checks. GitLab accepted the configuration and main/tag pipeline dry runs.
+The licensed cPanel run and dedicated CI kernel runner remain operational gaps;
+local evidence does not establish that the required CI jobs have executed.
 Main-branch cloud integration is manual and is not a publication dependency;
 it can run AlmaLinux/Ubuntu only when no cPanel image is configured.
 

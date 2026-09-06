@@ -53,6 +53,10 @@ and journal delivery from two actual services followed by reader cancellation.
 The journal test covers both empty and existing history, excludes unrelated
 services, and rejects replayed records.
 Both the CLI and service test binary use the shipped tags.
+The kernel test service has an explicit Go workspace and toolchain selection;
+EL8 system services may start without a home directory. Once tests stop and
+their results and journals are saved, the collector exits the disposable
+systemd manager directly with the test result, avoiding EL8 exit-target loops.
 The first service verifies remediation and restore under the packaged unit,
 custom account-root grants, doctor checks, and process-handle signaling.
 It does not exercise the daemon's complete watcher startup; the cPanel package
