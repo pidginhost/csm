@@ -72,9 +72,7 @@ func TestVerifySignatureRejectsOldOpenSSLWithoutGoVerifier(t *testing.T) {
 // neither. python3-cryptography ships with the distribution and verifies
 // Ed25519, which keeps the bootstrap upgrade on the signed pipeline path.
 func TestVerifySignatureFallsBackToPythonWhenNoOtherVerifier(t *testing.T) {
-	if err := exec.Command("python3", "-I", "-c", "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey").Run(); err != nil {
-		t.Fatal("Python verifier tests require python3-cryptography with Ed25519 support")
-	}
+	requirePythonVerifier(t)
 	for _, script := range deploySignatureScripts() {
 		t.Run(script.name, func(t *testing.T) {
 			stubs := rawinCapableOpenSSL("200") + oldOpenSSL()

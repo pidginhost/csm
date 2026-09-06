@@ -19,10 +19,7 @@ import (
 )
 
 func TestPythonReleaseVerifierBoundsInputs(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Fatal("Python verifier tests require python3-cryptography")
-	}
+	python := requirePythonVerifier(t)
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)

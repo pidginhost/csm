@@ -11,9 +11,7 @@ import (
 // Root-run verification must not import code from the caller's working
 // directory or Python module path before authenticating a release.
 func TestPythonReleaseVerifierIgnoresCallerModules(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Fatal("Python verifier tests require python3")
-	}
+	requirePythonVerifier(t)
 	for _, script := range deploySignatureScripts() {
 		for _, source := range []string{"cwd", "PYTHONPATH"} {
 			t.Run(script.name+"/"+source, func(t *testing.T) {
