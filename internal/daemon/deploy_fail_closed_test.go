@@ -38,6 +38,9 @@ func runVerifySignatureWithVersion(t *testing.T, script deploySignatureScript, s
 		": \"${CSM_REQUIRE_SIGNATURES:=0}\"",
 		stubs,
 		extractShellFunction(t, scriptPath, "missing_signature_allowed"),
+		// Only the internal-registry script defines this; the public scripts
+		// have no unsigned channel and must not gain one by accident.
+		optionalShellFunction(t, scriptPath, "unsigned_ci_build"),
 		extractShellFunction(t, scriptPath, "openssl_verifies_ed25519"),
 		extractShellFunction(t, scriptPath, "csm_release_verifier"),
 		extractShellFunction(t, scriptPath, "python_verifies_ed25519"),
@@ -165,4 +168,17 @@ func TestUpgradeRefusesDowngradeBeforeStaging(t *testing.T) {
 			}
 		})
 	}
+}
+
+// optionalShellFunction extracts a helper that only some deploy scripts define.
+func optionalShellFunction(t *testing.T, path, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), name+"() {") {
+		return ""
+	}
+	return extractShellFunction(t, path, name)
 }

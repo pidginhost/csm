@@ -117,12 +117,19 @@ func TestLegacySignatureExceptionRequiresCompletePreSigningVersion(t *testing.T)
 			t.Run(script.name+"/"+version, func(t *testing.T) {
 				stubs := rawinCapableOpenSSL("404") + oldOpenSSL() + "\nCSM_SIGNING_KEY_PEM=''\n"
 				output, code := runVerifySignatureWithVersion(t, script, stubs, nil, version)
-				allowed := version == "v1.0.0" || version == "v2.1.9"
+				legacy := version == "v1.0.0" || version == "v2.1.9"
+				// The internal registry signs tagged releases only, so an
+				// unsigned CI build is expected there and nowhere else.
+				ciBuild := version == "latest" && script.path == "scripts/deploy-gitlab.sh"
+				allowed := legacy || ciBuild
 				if (code == 0) != allowed {
 					t.Fatalf("version=%q exit=%d output=%s", version, code, output)
 				}
-				if allowed && !strings.Contains(output, "pre-signing release") {
+				if legacy && !strings.Contains(output, "pre-signing release") {
 					t.Fatalf("legacy bypass not disclosed: %s", output)
+				}
+				if ciBuild && !strings.Contains(output, "unsigned CI build") {
+					t.Fatalf("CI build acceptance not disclosed: %s", output)
 				}
 				if allowed {
 					strictOut, strictCode := runVerifySignatureWithVersion(t, script, stubs, []string{"CSM_REQUIRE_SIGNATURES=1"}, version)
