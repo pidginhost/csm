@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Kernel validation now builds on a CI runner whose checkout belongs to another user, instead of failing every job on Git ownership before any test runs.
+
 - Process termination health now recovers after transient resource failures.
 
 - Release waivers now reject blank, padded, and flag-like values instead of recording them as reasons for missing cPanel coverage.

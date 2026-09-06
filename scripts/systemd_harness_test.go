@@ -143,3 +143,23 @@ fi
 		})
 	}
 }
+
+// The CI runner checks the repository out as its own user while this harness
+// runs as root in a container, and units started by the manager do not inherit
+// the container's environment. Go stamps builds from VCS metadata, so the
+// checkout must be trusted system-wide before anything builds.
+func TestHarnessTrustsTheCheckoutForEveryUnit(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "systemd-account-roots-test.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(script)
+	trust := strings.Index(body, "git config --system --add safe.directory /src")
+	if trust < 0 {
+		t.Fatal("the harness does not trust the bind-mounted checkout for units it starts")
+	}
+	// Trusting after the first build would leave that build unstamped.
+	if build := strings.Index(body, "go build -tags"); build < 0 || trust > build {
+		t.Fatalf("checkout trusted at %d, after the first build at %d", trust, build)
+	}
+}

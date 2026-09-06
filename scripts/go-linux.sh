@@ -115,6 +115,21 @@ env_args=(
   -e GOLANGCI_LINT_CACHE=/golangci-cache
 )
 
+# A CI shell runner checks the repository out as its own user while the
+# container runs as root, so Git rejects the bind mount as dubiously owned and
+# Go VCS stamping fails with exit status 128. Trust the mounted paths through
+# the environment: no config is written into the image, and the exceptions stay
+# scoped to this invocation instead of a blanket wildcard.
+git_trusted=(/src)
+trust_git_paths() {
+  local index=0 path
+  env_args+=(-e "GIT_CONFIG_COUNT=${#git_trusted[@]}")
+  for path in "${git_trusted[@]}"; do
+    env_args+=(-e "GIT_CONFIG_KEY_${index}=safe.directory" -e "GIT_CONFIG_VALUE_${index}=${path}")
+    index=$((index + 1))
+  done
+}
+
 if [[ -n "$HOST_MOD_CACHE" ]]; then
   mount_args+=(-v "$HOST_MOD_CACHE:/gomodcache-host:ro")
   env_args+=(-e "GOPROXY=file:///gomodcache-host/cache/download,https://proxy.golang.org,direct")
@@ -130,7 +145,11 @@ if [[ -f "$ROOT_DIR/.git" ]]; then
   fi
   mount_args+=(-v "$git_common_dir:$git_common_dir:ro")
   env_args+=(-e GIT_OPTIONAL_LOCKS=0)
+  # The linked worktree's metadata lives outside /src and is checked separately.
+  git_trusted+=("$git_common_dir")
 fi
+
+trust_git_paths
 
 # Fanotify and isolated network namespaces need CAP_SYS_ADMIN; nftables
 # transactions need CAP_NET_ADMIN even inside those namespaces.
