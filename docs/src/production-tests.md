@@ -29,6 +29,28 @@ BPF ring buffers, fanotify, and nftables. Give it access to pull the pinned
 builder image. It must have no unrelated workloads or host credentials.
 The ordinary Kubernetes runner does not satisfy this contract automatically.
 
+Provision it from the cloud catalogue's `alma9` image (AlmaLinux 9, x86_64),
+the closest available match to the EL production family; `alma10`, `ubuntu26`
+and `debian13` also satisfy the contract. Enable BPF LSM before registering the
+runner, since it is not in the default boot-time LSM list:
+
+```bash
+grubby --update-kernel=ALL --args="lsm=capability,yama,selinux,bpf"
+reboot
+cat /sys/kernel/security/lsm      # must list bpf
+stat -fc %T /sys/fs/cgroup        # must print cgroup2fs
+```
+
+Register with `gitlab-runner register --executor shell --tag-list csm-kernel`,
+lock it to this project, and disable it for other projects.
+
+This runner does **not** reproduce the production kernel. Supported hosts run
+CloudLinux 8 and EL8 on 4.18; no catalogue image offers that kernel. Treat a
+passing `test:kernel` as evidence for a 5.14-or-newer kernel only. Capabilities
+that differ across those kernels -- `pidfd_open` is present on the runner and
+absent on 4.18 -- are probed at runtime instead and reported by `csm doctor`
+and the health status.
+
 The job builds `build/Dockerfile.production-test` on the release builder and
 uses `scripts/go-linux.sh` to boot systemd inside a disposable container.
 `GO_LINUX_PRIVILEGED=1` is an explicit Docker-only test option; the wrapper's
