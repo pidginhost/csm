@@ -36,8 +36,9 @@ On a kernel without `pidfd_send_signal`, or when service restrictions deny the
 call, termination stays disabled: `csm doctor` reports `process termination
 supported` as failed and the health status becomes `degraded` whenever
 `auto_response.kill_processes` is enabled, so an inoperative protection is
-visible before an incident needs it. Automatic termination failures are logged
-while the original detection remains.
+visible before an incident needs it. Each health snapshot probes this capability
+again, so transient resource failures clear once signaling becomes available.
+Automatic termination failures are logged while the original detection remains.
 Manual kill-and-quarantine reports a termination failure even if the file was
 successfully quarantined; inspect both the process and recovery entry before
 retrying. Manual request cancellation is checked before sending a signal.

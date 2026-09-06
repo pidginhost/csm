@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Release verification now rejects special and oversized inputs without blocking. Python verification no longer loads modules from caller-controlled locations.
+
 - Update checks no longer execute downloaded code to read its version.
 
 - Standalone installs and upgrades now require successful release signature verification. Hosts whose OpenSSL cannot verify Ed25519 verify through the installed binary's new `csm verify-release` or through python3-cryptography instead, and installs and upgrades stop when no verifier is available; only explicitly selected pre-signing releases may omit a signature.
@@ -39,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quarantine rollback preserves concurrent file replacements and keeps recovery copies when it cannot safely finish. Failed restores no longer remove files through names another writer can replace.
 
 ### Fixed
+
+- Process termination health now recovers after transient resource failures.
+
+- Release waivers now reject blank, padded, and flag-like values instead of recording them as reasons for missing cPanel coverage.
 
 - Kernel validation now starts and exits correctly on the production test image, retaining failure diagnostics instead of hanging.
 

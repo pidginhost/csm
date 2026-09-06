@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 )
 
 // maxReleaseArtifactBytes bounds what the verifier will read into memory.
@@ -84,7 +85,10 @@ func loadEd25519PublicKey(path string) (ed25519.PublicKey, error) {
 // readBoundedFile reads a regular file and refuses anything longer than limit,
 // so a hostile or corrupt input cannot exhaust memory during an upgrade.
 func readBoundedFile(path string, limit int) ([]byte, error) {
-	file, err := os.Open(path)
+	// Nonblocking open lets the type check reject FIFOs without waiting for
+	// a writer. Regular files retain their normal read semantics.
+	// #nosec G304 G703 -- The offline CLI reads caller-selected files and checks their type and size before verification.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

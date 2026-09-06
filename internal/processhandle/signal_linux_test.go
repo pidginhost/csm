@@ -88,6 +88,11 @@ func TestSignalKeepsCapturedProcessAcrossPIDReuse(t *testing.T) {
 func TestSignalRejectsCancellationVerificationAndUnavailableKernel(t *testing.T) {
 	for _, at := range []string{"cancel before open", "cancel after verify", "reject", "old kernel", "denied handle", "exited", "poll error", "invalid handle", "send error"} {
 		t.Run(at, func(t *testing.T) {
+			if at == "old kernel" {
+				oldRoot := procRoot
+				t.Cleanup(func() { procRoot = oldRoot })
+				procRoot = t.TempDir()
+			}
 			oldOpen, oldPoll, oldSend, oldClose := pidfdOpen, pidfdPoll, pidfdSend, pidfdClose
 			t.Cleanup(func() { pidfdOpen, pidfdPoll, pidfdSend, pidfdClose = oldOpen, oldPoll, oldSend, oldClose })
 			ctx, cancel := context.WithCancel(context.Background())

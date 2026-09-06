@@ -158,4 +158,10 @@ It exits zero only for an artifact signed by the given key. The installer and
 deploy scripts try OpenSSL 3.0+, then an installed `csm verify-release`, then
 `python3-cryptography`, and refuse the artifact when none is available.
 
+The Go and Python verifiers reject special files and limit input sizes: keys to
+64 KiB, signatures to exactly 64 bytes, and nonempty artifacts to 512 MiB.
+Python verification ignores the working directory, user site packages, and
+Python environment settings when importing its dependencies. Install
+python3-cryptography as a system package.
+
 If verification fails, treat the artifact as untrusted. Do not install it.

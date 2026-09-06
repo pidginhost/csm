@@ -11,8 +11,13 @@ if [ -n "${CI_COMMIT_TAG:-}" ] && [ -z "${INTEGRATION_CPANEL_IMAGE:-}" ]; then
         echo "ERROR: release requires INTEGRATION_CPANEL_IMAGE, or CSM_RELEASE_WITHOUT_CPANEL stating why it is unavailable; see docs/src/cpanel-release-tests.md" >&2
         exit 1
     fi
-    if [ "${#waiver}" -lt 12 ]; then
-        echo "ERROR: CSM_RELEASE_WITHOUT_CPANEL must state why cPanel coverage is unavailable" >&2
+    waiver="${waiver#"${waiver%%[![:space:]]*}"}"
+    waiver="${waiver%"${waiver##*[![:space:]]}"}"
+    # Padding and flag-like values are not release evidence. Keep the reason
+    # on one log line and require descriptive words after trimming it.
+    if [ "${#waiver}" -lt 12 ] || [[ "$waiver" == *[[:cntrl:]]* ]] ||
+        ! [[ "$waiver" =~ [[:alpha:]]{2,}[[:blank:]]+[[:alpha:]]{2,} ]]; then
+        echo "ERROR: CSM_RELEASE_WITHOUT_CPANEL must state why cPanel coverage is unavailable in a single-line reason of at least 12 characters and two words" >&2
         exit 1
     fi
     echo "NOTICE: releasing WITHOUT cPanel coverage: ${waiver}" >&2

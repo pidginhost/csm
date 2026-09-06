@@ -12,8 +12,9 @@ export PATH="$(go env GOROOT)/bin:$PATH"
 go version
 ```
 
-Linux tests need PHP CLI for the shipped PHP runtime regressions. Builds with
-`yara,journal,bpf` also need CGO, pkg-config, YARA-X 1.20.0 and the systemd
+Linux tests need PHP CLI and python3-cryptography for the shipped PHP runtime
+and release verification regressions. Builds with `yara,journal,bpf` also need
+CGO, pkg-config, YARA-X 1.20.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI selects the module toolchain with `GOTOOLCHAIN=auto`; the older Go versions
 in its bootstrap images are not the module requirement.
@@ -56,12 +57,15 @@ PHP-enabled test image once with an available container builder:
 ```bash
 docker build -f build/Dockerfile.systemd-test -t csm-linux-test .
 GO_LINUX_RUNTIME=docker GO_LINUX_IMAGE=csm-linux-test scripts/go-linux.sh \
-  go test -v -race -timeout=30m -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./...
+  bash -ec 'apt-get update -qq && apt-get install -y --no-install-recommends python3-cryptography
+    go test -v -race -timeout=30m -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./...'
 ```
 
 The wrapper derives the default Go version from `go.mod`, shares persistent
 caches across worktrees, and grants fanotify/nftables capabilities. Its plain
-Go image does not include PHP or the production CGO libraries. An image built
+Go image does not include PHP, python3-cryptography or the production CGO
+libraries. The command above installs Python's verifier in the disposable
+test container. An image built
 with another runtime can be selected through `GO_LINUX_RUNTIME` and
 `GO_LINUX_IMAGE`; local test execution still goes through the wrapper.
 Kernel firewall regressions use isolated network namespaces:

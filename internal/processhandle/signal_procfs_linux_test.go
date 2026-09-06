@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 
@@ -73,18 +74,70 @@ func TestProcfsHandleTreatsZombieAsDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := child.Process.Pid
-	state, err := child.Process.Wait()
-	if err != nil {
+	t.Cleanup(func() { _ = child.Wait() })
+	var info unix.Siginfo
+	if err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil); err != nil {
 		t.Fatal(err)
 	}
-	_ = state
-	// Re-running Signal against the reaped PID must not signal a replacement.
-	err = Signal(context.Background(), pid, syscall.SIGKILL, func() error {
+	err := Signal(context.Background(), pid, syscall.SIGKILL, func() error {
 		t.Fatal("verification ran for an exited process")
 		return nil
 	})
 	if !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestProcfsAliveStatesAndDescriptorCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name, stat string
+		wantDone   bool
+		wantError  bool
+	}{
+		{name: "running", stat: "42 (name with ) and spaces) R 1 2 3"},
+		{name: "zombie", stat: "42 (name) Z 1 2 3", wantDone: true},
+		{name: "dead", stat: "42 (name) X 1 2 3", wantDone: true},
+		{name: "dead lowercase", stat: "42 (name) x 1 2 3", wantDone: true},
+		{name: "missing", wantDone: true},
+		{name: "read error", wantError: true},
+		{name: "parse error", stat: "malformed", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "stat")
+			if tc.name == "read error" {
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.stat != "" {
+				if err := os.WriteFile(path, []byte(tc.stat), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := &handle{fd: fd, procfs: true}
+			defer h.close()
+			countFDs := func() int {
+				entries, err := os.ReadDir("/proc/self/fd")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return len(entries)
+			}
+			before := countFDs()
+			for range 20 {
+				err := h.alive()
+				if errors.Is(err, os.ErrProcessDone) != tc.wantDone || (err != nil) != (tc.wantDone || tc.wantError) {
+					t.Fatalf("alive: %v", err)
+				}
+			}
+			if after := countFDs(); after != before {
+				t.Fatalf("open descriptors grew from %d to %d", before, after)
+			}
+		})
 	}
 }
 

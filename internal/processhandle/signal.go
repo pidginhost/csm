@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sync"
 	"syscall"
 )
 
@@ -42,14 +41,9 @@ func Signal(ctx context.Context, pid int, sig syscall.Signal, verify func() erro
 	return handle.signal(sig)
 }
 
-var probeOnce sync.Once
-var probeResult error
-
 // Available reports whether this kernel can pin and signal a process handle.
-// Kernel capability cannot change while the process runs, so the probe is
-// performed once. Callers surface the error rather than silently skipping
-// configured termination.
+// Probe each snapshot: descriptor pressure or service restrictions can change
+// while the daemon runs, even though the kernel itself remains the same.
 func Available() error {
-	probeOnce.Do(func() { probeResult = probe() })
-	return probeResult
+	return probe()
 }

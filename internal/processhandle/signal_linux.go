@@ -88,6 +88,7 @@ func (h *handle) procfsAlive() error {
 		}
 		return fmt.Errorf("open process state: %w", err)
 	}
+	// #nosec G115 -- Successful openat returns a non-negative file descriptor.
 	file := os.NewFile(uintptr(fd), "stat")
 	defer func() { _ = file.Close() }()
 	data, err := io.ReadAll(io.LimitReader(file, maxProcStatBytes))

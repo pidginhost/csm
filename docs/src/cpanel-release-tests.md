@@ -13,7 +13,9 @@ may run without cPanel when no image is configured.
 CSM has no licensed cPanel image while no cPanel licence is available for
 disposable CI clones. Set the protected variable `CSM_RELEASE_WITHOUT_CPANEL`
 to a sentence stating why, for example `no licensed cPanel image available`.
-A bare `1` is rejected: the reason is published in the pipeline log and in
+A reason must have at least 12 characters after trimming, contain at least two
+words, and fit on one line. Blank values and bare flags such as `1` are rejected.
+The reason is published in the pipeline log and in
 `dist/cpanel-release.json` as `cpanel_coverage: "absent"`.
 
 Do not read such a release as cPanel-tested. WHM plugin installation, mail

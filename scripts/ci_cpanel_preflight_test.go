@@ -35,6 +35,14 @@ printf 'ID  NAME  SLUG\n91  cPanel WHM  csm-cpanel-a9-20260905\n'
 		// that coverage must be a recorded decision, never a silent warning.
 		{name: "acknowledged absence", tag: "v9.0.0", waiver: "no licensed cPanel image available", valid: true},
 		{name: "acknowledged absence needs a reason", tag: "v9.0.0", waiver: "1"},
+		{name: "whitespace is not a reason", tag: "v9.0.0", waiver: "             "},
+		{name: "padded flag is not a reason", tag: "v9.0.0", waiver: "      1      "},
+		{name: "long flag is not a reason", tag: "v9.0.0", waiver: "1111111111111"},
+		{name: "punctuation is not a reason", tag: "v9.0.0", waiver: "!!!!!!!!!!!!!"},
+		{name: "single word is not a reason", tag: "v9.0.0", waiver: "acknowledged"},
+		{name: "padded words are not a reason", tag: "v9.0.0", waiver: "   yes yes   "},
+		{name: "multiline reason", tag: "v9.0.0", waiver: "no licensed\ncPanel image available"},
+		{name: "padded sentence", tag: "v9.0.0", waiver: "  no licensed cPanel image available  ", valid: true},
 		{name: "acknowledgement cannot excuse a broken image", tag: "v9.0.0", image: "missing", waiver: "no licensed cPanel image available"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

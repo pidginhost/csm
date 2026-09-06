@@ -107,25 +107,43 @@ csm_release_verifier() {
 python_verifies_ed25519() {
     [ "${CSM_DISABLE_PYTHON_VERIFIER:-0}" != 1 ] || return 1
     command -v python3 >/dev/null 2>&1 || return 1
-    python3 - >/dev/null 2>&1 <<'CSM_PY_PROBE'
+    # Ignore caller-controlled module paths when running as root.
+    python3 -I - >/dev/null 2>&1 <<'CSM_PY_PROBE'
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 CSM_PY_PROBE
 }
 
 verify_with_python() {
-    python3 - "$1" "$2" "$3" <<'CSM_PY_VERIFY'
+    python3 -I - "$1" "$2" "$3" <<'CSM_PY_VERIFY'
+import os
+import stat
 import sys
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-key = load_pem_public_key(open(sys.argv[1], "rb").read())
-if not isinstance(key, Ed25519PublicKey):
-    sys.exit(1)
-signature = open(sys.argv[2], "rb").read()
-payload = open(sys.argv[3], "rb").read()
-if not payload:
-    sys.exit(1)
+
+def read_bounded_file(path, limit):
+    # Reject FIFOs before reading and bound allocations even if a file grows.
+    with open(path, "rb", opener=lambda p, flags: os.open(p, flags | os.O_NONBLOCK)) as file:
+        info = os.fstat(file.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("invalid verification input")
+        data = file.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("oversized verification input")
+        return data
+
+
 try:
+    key = load_pem_public_key(read_bounded_file(sys.argv[1], 1 << 16))
+    if not isinstance(key, Ed25519PublicKey):
+        sys.exit(1)
+    signature = read_bounded_file(sys.argv[2], 64)
+    if len(signature) != 64:
+        sys.exit(1)
+    payload = read_bounded_file(sys.argv[3], 512 << 20)
+    if not payload:
+        sys.exit(1)
     key.verify(signature, payload)
 except Exception:
     sys.exit(1)

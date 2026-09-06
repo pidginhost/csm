@@ -12,8 +12,7 @@ import (
 	"testing"
 )
 
-// Sign with Go and verify with the installed OpenSSL command. Unsupported
-// OpenSSL must reject even an authentic current artifact before execution.
+// Sign with Go and verify through each installed verifier before execution.
 func TestCurrentReleaseRequiresAuthenticityBeforeExecution(t *testing.T) {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -34,7 +33,7 @@ func TestCurrentReleaseRequiresAuthenticityBeforeExecution(t *testing.T) {
 	capable := strings.Contains(string(help), "-rawin")
 	// Where OpenSSL cannot verify Ed25519, python3-cryptography does, so an
 	// authentic artifact must still verify and run on those hosts.
-	pythonCapable := exec.Command("python3", "-c", "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey").Run() == nil
+	pythonCapable := exec.Command("python3", "-I", "-c", "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey").Run() == nil
 	payload := []byte("#!/bin/sh\nprintf executed > \"$EXECUTION_MARKER\"\n")
 	for _, script := range deploySignatureScripts() {
 		for _, tc := range []string{"valid", "tampered", "wrong-key", "missing-signature", "missing-key", "missing-verifier", "old-openssl", "old-openssl-tampered", "old-openssl-wrong-key"} {
@@ -95,7 +94,7 @@ pkg_download() { /bin/cp "$SOURCE_SIGNATURE" "$2"; printf 200; }`
 					command.Env = withEnv(command.Env, "PATH="+dir)
 				}
 				output, runErr := command.CombinedOutput()
-				wantPass := (tc == "valid" && capable) || (tc == "old-openssl" && pythonCapable)
+				wantPass := (tc == "valid" && (capable || pythonCapable)) || (tc == "old-openssl" && pythonCapable)
 				if (runErr == nil) != wantPass {
 					t.Fatalf("capable=%v error=%v output=%s", capable, runErr, output)
 				}
