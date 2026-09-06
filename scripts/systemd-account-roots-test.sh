@@ -134,6 +134,10 @@ if [[ -f /etc/systemd/system/csm-production-kernel.service ]]; then
   journalctl -u csm-production-kernel.service --no-pager > "$artifacts/kernel-journal.log"
 fi
 journalctl -u csm.service --no-pager > "$artifacts/journal.log"
+# This container is root while the checkout belongs to the CI user. Output left
+# owned by root cannot be collected or cleaned by the runner, which would fail
+# every job after the first.
+chown -R --reference=/src "$artifacts" /src/production-results 2>/dev/null || true
 # Tests have stopped and their artifacts are closed. EL8's orderly exit target
 # can restart itself through SuccessAction=exit until its start limit is hit.
 systemctl --force exit "$status"
