@@ -30,6 +30,9 @@ const dropperCheckName = "self_deleting_dropper_realtime"
 type dropperEngineConfig struct {
 	ttl     time.Duration
 	selfPID int32
+	// ignorePath reports whether a path is covered by
+	// suppressions.ignore_paths. Nil means nothing is suppressed.
+	ignorePath func(string) bool
 }
 
 // dropperEngine owns the tracker and drives the observe -> probe -> hold ->
@@ -42,14 +45,19 @@ type dropperEngine struct {
 	selfPID  int32
 	emit     dropperEmitFn
 	attempts map[dropperCandidateKey]int
+	// ignorePath mirrors the suppression every other content check already
+	// honours. Applied at admit so a suppressed path never consumes tracker
+	// capacity a real candidate could have used.
+	ignorePath func(string) bool
 }
 
 func newDropperEngine(cfg dropperEngineConfig) *dropperEngine {
 	return &dropperEngine{
-		tr:       newDropperTracker(cfg.ttl),
-		ttl:      cfg.ttl,
-		selfPID:  cfg.selfPID,
-		attempts: make(map[dropperCandidateKey]int),
+		tr:         newDropperTracker(cfg.ttl),
+		ttl:        cfg.ttl,
+		selfPID:    cfg.selfPID,
+		attempts:   make(map[dropperCandidateKey]int),
+		ignorePath: cfg.ignorePath,
 	}
 }
 
@@ -57,6 +65,9 @@ func newDropperEngine(cfg dropperEngineConfig) *dropperEngine {
 // false when the candidate was rejected by the gate or dropped by the
 // tracker capacity bound (the caller surfaces the latter as coverage loss).
 func (e *dropperEngine) admit(c dropperCandidate) bool {
+	if e.ignorePath != nil && e.ignorePath(c.Path) {
+		return false
+	}
 	if !shouldTrackDropper(c, e.selfPID, e.ttl) {
 		return false
 	}

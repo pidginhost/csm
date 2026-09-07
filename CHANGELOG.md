@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Real-time dropper detection now honours the ignored-paths list, like every other content check. Security plugins that rotate their own files under the web root produced findings an operator could not suppress without turning the check off entirely.
 - The performance panel now counts PHP workers on Apache hosts and reports database memory on MariaDB. It recognised only the LiteSpeed process name and read a pid file that does not exist on cPanel, so a busy server showed no PHP activity and no database memory, which reads as an idle machine rather than a collector looking in the wrong place.
 - Reconfiguring the firewall no longer reports the ruleset as modified outside CSM. Applying a configuration change rewrites the rules, so every legitimate edit raised a tampering alert. An edit made while the configuration is unchanged is still reported.
 - Legitimate code that uses goto for a state machine is no longer reported as obfuscation. WordPress core's HTML parser is built that way, so every site on a server reported the same unmodified core file. Obfuscated code is still reported: what counts now is whether the labels carry meaning, and whether the file reaches a code-execution call.
