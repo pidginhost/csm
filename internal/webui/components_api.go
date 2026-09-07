@@ -71,6 +71,7 @@ var componentCheckOrigin = map[string]string{
 	"credential_log_realtime":                    "fanotify",
 	"email_auth_failure_realtime":                "maillog",
 	"email_av_degraded":                          "email_av_spool",
+	"email_av_encrypted_archive":                 "email_av_spool",
 	"email_av_parse_error":                       "email_av_spool",
 	"email_av_quarantine_error":                  "email_av_spool",
 	"email_av_timeout":                           "email_av_spool",

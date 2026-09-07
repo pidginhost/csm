@@ -31,13 +31,23 @@ type ExtractedPart struct {
 
 // ExtractionResult holds all extracted parts and envelope metadata.
 type ExtractionResult struct {
-	Parts         []ExtractedPart
-	Partial       bool
-	PartialReason string
-	Direction     string
-	From          string
-	To            []string
-	Subject       string
+	Parts            []ExtractedPart
+	Partial          bool
+	PartialReason    string
+	EncryptedEntries []EncryptedArchiveEntry
+	Direction        string
+	From             string
+	To               []string
+	Subject          string
+}
+
+// EncryptedArchiveEntry names an archive member CSM cannot read because the
+// entry is encrypted. This is deliberately not a partial extraction: a partial
+// extraction is a limit or a fault that a later attempt may get past, while an
+// encrypted member stays unreadable however many times delivery is retried.
+type EncryptedArchiveEntry struct {
+	ArchiveName string
+	Filename    string
 }
 
 // Limits controls resource bounds during extraction.
@@ -574,6 +584,10 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 	}
 }
 
+// zipEncryptedFlag is bit 0 of the ZIP general purpose bit flag: the entry is
+// encrypted. APPNOTE.TXT section 4.4.4.
+const zipEncryptedFlag = 0x1
+
 func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
 	// #nosec G304 -- zipPath is CreateTemp-produced path from the caller.
 	f, err := os.Open(zipPath)
@@ -604,15 +618,30 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 
 		safeName := sanitizeAttachmentName(zf.Name)
 
+		// Bit 0 of the general purpose flag marks an encrypted entry. Both
+		// encryption schemes in the wild set it, which matters because they
+		// fail in different places otherwise: legacy ZipCrypto keeps the
+		// deflate method and fails during the read, while WinZip AES uses
+		// method 99 and fails when the entry is opened. Reading the flag
+		// catches both before either produces a misleading error.
+		if zf.Flags&zipEncryptedFlag != 0 {
+			result.EncryptedEntries = append(result.EncryptedEntries, EncryptedArchiveEntry{
+				ArchiveName: archiveName,
+				Filename:    safeName,
+			})
+			continue
+		}
+
 		rc, err := zf.Open()
 		if err != nil {
+			markPartial(result, fmt.Sprintf("could not decompress file %q in archive %q: %v", safeName, archiveName, err))
 			continue
 		}
 
 		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-zip-*")
 		if err != nil {
 			rc.Close()
-			markPartial(result, fmt.Sprintf("could not stage file %q in archive for scanning", safeName))
+			markPartial(result, fmt.Sprintf("could not stage file %q in archive %q for scanning: %v", safeName, archiveName, err))
 			continue
 		}
 
@@ -623,11 +652,14 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 
 		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
 			os.Remove(tmpFile.Name())
-			if n > limits.MaxAttachmentSize {
+			switch {
+			case n > limits.MaxAttachmentSize:
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", safeName)
-			} else {
-				markPartial(result, fmt.Sprintf("could not stage file %q in archive for scanning", safeName))
+			case err != nil:
+				markPartial(result, fmt.Sprintf("could not decompress file %q in archive %q: %v", safeName, archiveName, err))
+			default:
+				markPartial(result, fmt.Sprintf("could not stage file %q in archive %q for scanning: %v", safeName, archiveName, closeErr))
 			}
 			continue
 		}
@@ -685,7 +717,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 
 		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-tgz-*")
 		if err != nil {
-			markPartial(result, fmt.Sprintf("could not stage file %q in archive for scanning", safeName))
+			markPartial(result, fmt.Sprintf("could not stage file %q in archive %q for scanning: %v", safeName, archiveName, err))
 			continue
 		}
 
@@ -695,11 +727,14 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 
 		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
 			os.Remove(tmpFile.Name())
-			if n > limits.MaxAttachmentSize {
+			switch {
+			case n > limits.MaxAttachmentSize:
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", safeName)
-			} else {
-				markPartial(result, fmt.Sprintf("could not stage file %q in archive for scanning", safeName))
+			case err != nil:
+				markPartial(result, fmt.Sprintf("could not read file %q from archive %q: %v", safeName, archiveName, err))
+			default:
+				markPartial(result, fmt.Sprintf("could not stage file %q in archive %q for scanning: %v", safeName, archiveName, closeErr))
 			}
 			continue
 		}

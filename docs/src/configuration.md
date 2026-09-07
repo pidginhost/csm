@@ -559,6 +559,13 @@ email_av:
   quarantine_infected: true             # quarantine emails with infected attachments
   scan_concurrency: 4                   # parallel scan workers
   fail_mode: "open"                     # behavior when a scan cannot complete: "open" (default) delivers; "tempfail" defers so Exim retries
+  # Password-protected archive attachments are outside fail_mode. Their members
+  # cannot be read without the password, so no retry ever makes them scannable
+  # and "tempfail" would defer the message until it bounced. CSM delivers them
+  # and reports email_av_encrypted_archive naming the archive and the member,
+  # at most once an hour. Both encryption schemes in the wild are covered:
+  # legacy ZipCrypto and WinZip AES. Blocking such mail outright is an Exim
+  # policy decision and is not something CSM does for you.
 
 # --- Email Protection ---
 email_protection:

@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Email attachment scanning no longer passes over an encrypted archive member in silence. Archives made by 7-Zip and recent WinZip were skipped without any record, so a password-protected attachment could be delivered unscanned with nothing reported; an archive member CSM cannot decompress is now reported as well.
+
 ### Fixed
 
+- Password-protected archive attachments are reported as encrypted rather than as a failure to stage the file, at most once an hour, and no longer count as an incomplete extraction. Operators running the deferring fail mode had such messages retried until they bounced, and the alerts pointed at a disk problem that did not exist.
+- Email antivirus findings now carry the time they were raised instead of a zero date.
 - A WordPress core, plugin, or theme update now reports one finding for the staged package instead of one per file it unpacks, and that finding clears itself once WordPress removes the staging directory. A single plugin update had been producing over a hundred warnings. Files staged under a name matching nothing installed on the site still report individually, and content scanning of every staged file is unchanged.
 - Real-time scanning no longer reports credential theft for plugin screens that sign in to a vendor cloud account or send a registration notice. A match now requires the mail builtin itself to carry the posted credentials, which is what the on-demand scanner already required.
 
