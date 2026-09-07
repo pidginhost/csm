@@ -40,8 +40,14 @@ func TestBackupRestoreLargeStateArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A bbolt file may retain unused space after deletions. Extend a valid
-	// database sparsely so the test crosses the former per-file ceiling.
-	const size = 1<<30 + 4096
+	// database sparsely so the round trip has to stream it rather than hold
+	// it. The size only has to stand well clear of the allocation bound
+	// asserted below, because an implementation that buffered would allocate
+	// the whole file: at 256 MiB against a 64 MiB bound that is still a
+	// four-fold margin. Size drives the runtime directly, since -race walks
+	// every byte of the tar and gzip loops -- this test took 90s at 1 GiB and
+	// takes 22s here.
+	const size = 256<<20 + 4096
 	if err := os.Truncate(dbPath, size); err != nil {
 		t.Fatal(err)
 	}
