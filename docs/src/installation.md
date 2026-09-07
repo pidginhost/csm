@@ -55,11 +55,47 @@ repo_gpgcheck=1
 gpgkey=https://mirrors.pidginhost.com/csm/csm-signing.gpg
 EOF
 
-# 3. Install
-sudo dnf install csm
+# 3. Install (accepts the one-time repository key prompt)
+yes | sudo dnf install csm
 ```
 
-The explicit `rpm --import` is important: without it, the first `dnf install csm` prompts "Is this ok [y/N]:" to trust the repo key, and `dnf install -y` answers package install prompts but not the key-trust prompt. If the prompt goes unanswered on a non-interactive install, dnf fails with `repomd.xml GPG signature verification error: Signing key not found`.
+`rpm --import` populates the RPM keyring, which covers `gpgcheck` -- the
+signature on the package. It does not populate the separate keyring dnf keeps
+for `repo_gpgcheck`, the signature on the repository *metadata*. So the first
+transaction against a new repository still prompts, even after a successful
+import:
+
+```
+Importing GPG key 0x81CD59B1:
+ Userid     : "CSM Package Signing (CSM Repository Metadata Signing Key) <security@pidginhost.com>"
+ Fingerprint: 3A70 4D78 3CF2 6055 B2AA 8F49 4E0F 27F5 81CD 59B1
+Is this ok [y/N]:
+```
+
+`dnf -y` answers package prompts but not this one. Unanswered it defaults to
+no, and dnf then reports:
+
+```
+Error: Failed to download metadata for repo 'csm':
+repomd.xml GPG signature verification error: Bad GPG signature
+```
+
+That message is misleading: the signature is valid, the key was simply not
+trusted for this repository. Confirm that for yourself rather than taking the
+prompt's word -- the fingerprint it prints must match the one above:
+
+```bash
+base=https://mirrors.pidginhost.com/csm/rpm/el9/x86_64/repodata
+curl -fsSLO $base/repomd.xml
+curl -fsSLO $base/repomd.xml.asc
+curl -fsSL https://mirrors.pidginhost.com/csm/csm-signing.gpg | gpg --import
+gpg --verify repomd.xml.asc repomd.xml
+# gpg: Good signature from "CSM Package Signing ... <security@pidginhost.com>"
+```
+
+For unattended installs, pre-seed dnf's keyring in your provisioning step, or
+accept the prompt once with `yes | dnf install csm` after checking the
+fingerprint.
 
 The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. Works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel-managed hosts.
 
