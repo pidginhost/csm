@@ -21,9 +21,18 @@ version=$(go list -m -f '{{.Version}}' github.com/VirusTotal/yara-x/go)
 actual=$(pkg-config --modversion yara_x_capi)
 [[ "$actual" == "${version#v}" ]]
 grep -q -- "--branch $version " build/Dockerfile.builder
+cpus=$(nproc 2>/dev/null || echo 2)
+# -p bounds how many package binaries run at once. It was pinned at 2, which
+# left the suite at about 1.5x parallelism: the package times sum to roughly
+# 20 minutes against a 13 minute wall. Scale with the runner instead, capped
+# so the deadline-sensitive tests (20ms alert batches, a 100ms /proc budget)
+# keep CPU headroom rather than competing for it. Override to pin a value.
+parallel=${CSM_TEST_PARALLEL_PACKAGES:-$(( cpus < 4 ? cpus : 4 ))}
 {
   go version
   printf 'YARA-X C API %s\nTags %s\n' "$actual" "$tags"
+  printf 'CPUs %s\nParallel packages %s\n' "$cpus" "$parallel"
+  grep -m1 MemTotal /proc/meminfo 2>/dev/null || true
   uname -a
   git rev-parse HEAD
 } > "$artifacts/engines.txt"
@@ -40,7 +49,7 @@ fi
 # full -json transcript exceeds GitLab's 4 MB capture limit, which truncated
 # the output exactly where a failure would be reported. Print the failures.
 status=0
-go test -json -race -count=1 -p=2 -timeout=30m -tags "$tags" -run "$pattern" "${packages[@]}" > "$artifacts/tests.jsonl" || status=$?
+go test -json -race -count=1 -p="$parallel" -timeout=30m -tags "$tags" -run "$pattern" "${packages[@]}" > "$artifacts/tests.jsonl" || status=$?
 python3 - "$artifacts/tests.jsonl" <<'SUMMARY'
 import json, sys
 failed, output = [], {}
