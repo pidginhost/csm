@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A Revolution Slider exploit rule no longer fires on a security plugin's own block log. The rule matched the request payload wherever it appeared, so a log quoting the attack it stopped looked identical to an attack tool; it now requires the payload to sit in code that issues the request. Exploit tools in PHP, Python and shell are still detected.
 - An Exim exploit rule no longer fires on a security plugin's own signature database. The rule joined two unrelated keywords across an unbounded stretch of text, so any file discussing exim exploits matched with no exploit present, and it now requires the keywords close together or an actual command-execution primitive. Genuine exploits are still detected.
 - New installs filter IPv6 as well as IPv4. The shipped configuration never mentioned the setting, so on a dual-stack host every IPv6 packet bypassed the firewall while the blocked-address list applied only to IPv4, letting a blocked attacker return over IPv6. Existing installations keep their current setting and continue to be warned when it leaves them exposed.
 - Attack evidence attributed to the host remains visible, including failed FTP authentication through local connections.
