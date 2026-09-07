@@ -48,8 +48,10 @@ var modsecKnownLowConfRules = map[int]bool{
 	211170: true, // outbound points / scoring
 	211220: true, // outbound points / scoring
 	// OWASP CRS policy/anomaly.
+	920100: true, // invalid HTTP request line (protocol enforcement)
 	920420: true, // request content-type not allowed
 	920430: true, // HTTP protocol version not allowed (policy)
+	920440: true, // URL file extension restricted by policy
 	949110: true, // inbound anomaly score exceeded
 	959100: true, // outbound anomaly score exceeded
 	980130: true, // anomaly score reporting

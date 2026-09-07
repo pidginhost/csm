@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Two OWASP protocol-policy rules are now classified, so enabling the rule set no longer produces an unresolvable warning on every hit. They fire on unusual but legitimate requests as often as on attacks, and a rule carrying real attack evidence still overrides the classification.
 - A malware scanner that loaded no rules no longer describes itself as active, and a repeated scan failure is written once with a count of what it suppressed rather than once per file. A broken rules directory previously produced hundreds of identical log lines a minute while the daemon reported a healthy scanner.
 - Process monitoring, automatic response, scanner health, and mail relay storage errors now report the time they occurred instead of a zero date.
 - A WordPress core update staged in a generated working directory now collapses to one finding like every other update shape. That shape alone accounted for a third of one day's per-file warnings on a busy host.
