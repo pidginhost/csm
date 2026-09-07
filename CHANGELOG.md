@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The performance panel now counts PHP workers on Apache hosts and reports database memory on MariaDB. It recognised only the LiteSpeed process name and read a pid file that does not exist on cPanel, so a busy server showed no PHP activity and no database memory, which reads as an idle machine rather than a collector looking in the wrong place.
 - Reconfiguring the firewall no longer reports the ruleset as modified outside CSM. Applying a configuration change rewrites the rules, so every legitimate edit raised a tampering alert. An edit made while the configuration is unchanged is still reported.
 - Legitimate code that uses goto for a state machine is no longer reported as obfuscation. WordPress core's HTML parser is built that way, so every site on a server reported the same unmodified core file. Obfuscated code is still reported: what counts now is whether the labels carry meaning, and whether the file reaches a code-execution call.
 - Configuration validation now warns when trusted countries are listed without GeoIP credentials. Country lookups need the GeoIP database, so without it no address was ever treated as trusted and a setting operators rely on to avoid locking themselves out did nothing.
