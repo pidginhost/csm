@@ -151,10 +151,16 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "suppressions.trusted_countries", fmt.Sprintf("invalid country code: %q (expected 2-letter ISO code)", cc)})
 		}
 	}
-	// Credentials control downloads, not lookups against a database already
-	// provisioned on disk. Validation cannot infer runtime coverage from them.
-	if len(cfg.Suppressions.TrustedCountries) > 0 && (cfg.GeoIP.AccountID == "" || cfg.GeoIP.LicenseKey == "") {
-		results = append(results, ValidationResult{"warn", "suppressions.trusted_countries", "GeoIP download credentials are incomplete; trusted countries require a locally installed GeoLite2-City database. Provision that database, or set geoip.account_id and geoip.license_key and run csm update-geoip"})
+	// Credentials only authorize a download; they say nothing about whether a
+	// database exists. Checking them instead of the database let a wrong key
+	// pass validation while no database was ever fetched, so the setting was
+	// inert and reported healthy. Check what the daemon actually reads.
+	if len(cfg.Suppressions.TrustedCountries) > 0 && !geoIPCityDatabasePresent(cfg.StatePath) {
+		remedy := "Provision that database, or set geoip.account_id and geoip.license_key and run csm update-geoip"
+		if cfg.GeoIP.AccountID != "" && cfg.GeoIP.LicenseKey != "" {
+			remedy = "Credentials are set but no database has been downloaded; run csm update-geoip and check it reports success"
+		}
+		results = append(results, ValidationResult{"warn", "suppressions.trusted_countries", "configured but no GeoLite2-City database is installed, so country lookups return nothing and no address is ever treated as trusted. " + remedy})
 	}
 
 	// --- Block digest ---
@@ -1612,4 +1618,15 @@ func validateFirewallConfig(cfg *Config) error {
 		return nil
 	}
 	return errors.New(strings.Join(errs, "; "))
+}
+
+// geoIPCityDatabasePresent reports whether the City database the daemon loads
+// exists. The daemon opens only the state-path copy, so that is the location
+// that decides whether a country lookup can resolve anything.
+func geoIPCityDatabasePresent(statePath string) bool {
+	if statePath == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(statePath, "geoip", "GeoLite2-City.mmdb"))
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }

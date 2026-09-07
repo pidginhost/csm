@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/geoip"
 )
 
 func runFirewall() {
@@ -603,6 +604,33 @@ func fwUpdateGeoIP() {
 	}
 }
 
+// geoIPLookupDirs lists the database directories `csm firewall lookup` should
+// consult, most specific first.
+//
+// Two separate stores exist. The country-block feature keeps its own copy,
+// filled by `csm firewall update-geoip`; the daemon uses the GeoLite2
+// databases that the top-level `csm update-geoip` downloads under the state
+// path. Reading only the first meant the CLI reported no GeoIP data on hosts
+// where the daemon had both databases loaded and resolving.
+func geoIPLookupDirs(countryDBDir, statePath string) []string {
+	var dirs []string
+	if countryDBDir != "" {
+		dirs = append(dirs, countryDBDir)
+	}
+	if statePath != "" {
+		dirs = append(dirs, filepath.Join(statePath, "geoip"))
+	}
+	return dirs
+}
+
+// geoIPUnavailableAdvice names the command that downloads the databases this
+// lookup reads. `csm firewall update-geoip` only fills the country-block
+// store and refuses without firewall.country_block configured, so pointing an
+// operator at it cannot resolve a missing lookup.
+func geoIPUnavailableAdvice() string {
+	return "COUNTRY  unknown (no GeoIP database - run 'csm update-geoip')"
+}
+
 func fwLookup() {
 	args := fwArgs()
 	if len(args) < 1 {
@@ -658,8 +686,23 @@ func fwLookup() {
 		}
 	}
 
-	// GeoIP lookup
-	countries := firewall.LookupIP(firewall.CountryDBDir(cfg.Firewall, cfg.StatePath), ip)
+	// GeoIP lookup. The country-block store is checked first; the daemon's
+	// GeoLite2 databases answer when it is empty, which is the usual case on
+	// a host that never configured country blocking.
+	var countries []string
+	for _, dir := range geoIPLookupDirs(firewall.CountryDBDir(cfg.Firewall, cfg.StatePath), cfg.StatePath) {
+		if countries = firewall.LookupIP(dir, ip); len(countries) > 0 {
+			break
+		}
+		if db := geoip.Open(dir); db != nil {
+			if info := db.Lookup(ip); info.Country != "" {
+				countries = []string{info.Country}
+				db.Close()
+				break
+			}
+			db.Close()
+		}
+	}
 	if len(countries) > 0 {
 		fmt.Printf("COUNTRY  %s\n", strings.Join(countries, ", "))
 		for _, code := range countries {
@@ -670,7 +713,7 @@ func fwLookup() {
 			}
 		}
 	} else {
-		fmt.Printf("COUNTRY  unknown (no GeoIP data - run 'csm firewall update-geoip')\n")
+		fmt.Println(geoIPUnavailableAdvice())
 	}
 }
 

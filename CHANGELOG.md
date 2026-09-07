@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Country lookups from the command line now read the same databases the service uses. The command consulted only the country-blocking store, so it reported no data on hosts where lookups demonstrably worked, and pointed at a command that could not have fixed it.
+- Configuration validation now checks that a country database is actually installed, rather than that download credentials are filled in. Credentials only authorize a download, so a mistyped key passed validation while nothing was ever downloaded and the trusted-country setting stayed inert.
 - Host-address lookups no longer hold the cache lock while querying interfaces, and replacing the lookup source cannot restore stale results. PHP-FPM worker counts now match process titles, and database memory reporting accepts server arguments mentioning a wrapper.
 - GeoIP validation distinguishes download credentials from locally provisioned databases. Installation instructions keep repository key approval interactive and explain unattended key trust correctly.
 - Repeated scan errors remain rate-limited when failures contain many different paths or offsets, while preserving counts of suppressed failures.
