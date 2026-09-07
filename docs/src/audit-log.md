@@ -35,6 +35,10 @@ can pin on `v: 1` and ignore unknown keys.
 same finding produce the same ID, so downstream dedup works across
 re-runs.
 
+The `ts` field records when CSM raised the finding, including process
+monitoring, automatic actions, scanner health, and mail relay storage errors.
+It is independent of when a sink delivers the event.
+
 ### Process context
 
 Exec and outbound-connection findings on BPF-backed hosts carry an

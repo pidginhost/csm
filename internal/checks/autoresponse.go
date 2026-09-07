@@ -75,10 +75,11 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		}
 
 		actions = append(actions, alert.Finding{
-			Severity: alert.Critical,
-			Check:    "auto_response",
-			Message:  fmt.Sprintf("AUTO-KILL: Process %s killed (was: %s)", pid, f.Check),
-			Details:  fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
+			Severity:  alert.Critical,
+			Check:     "auto_response",
+			Message:   fmt.Sprintf("AUTO-KILL: Process %s killed (was: %s)", pid, f.Check),
+			Timestamp: time.Now(),
+			Details:   fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
 		})
 	}
 
@@ -195,10 +196,11 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			details += "\nWarning: " + quarantineWarning
 		}
 		actions = append(actions, alert.Finding{
-			Severity: alert.Critical,
-			Check:    "auto_response",
-			Message:  fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path),
-			Details:  details,
+			Severity:  alert.Critical,
+			Check:     "auto_response",
+			Message:   fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path),
+			Timestamp: time.Now(),
+			Details:   details,
 		})
 	}
 

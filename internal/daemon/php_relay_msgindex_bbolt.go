@@ -204,9 +204,10 @@ func (p *msgIndexPersister) commitBatch(ops []persistOp) {
 				p.metrics.MsgindexPersistErrors.Inc()
 			}
 			p.onError(alert.Finding{
-				Severity: alert.Critical,
-				Check:    "email_php_relay_msgindex_persist_failed",
-				Message:  fmt.Sprintf("encode %s: %v", op.msgID, err),
+				Severity:  alert.Critical,
+				Check:     "email_php_relay_msgindex_persist_failed",
+				Timestamp: time.Now(),
+				Message:   fmt.Sprintf("encode %s: %v", op.msgID, err),
 			})
 			continue
 		}
@@ -221,9 +222,10 @@ func (p *msgIndexPersister) commitBatch(ops []persistOp) {
 			p.metrics.MsgindexPersistErrors.Inc()
 		}
 		p.onError(alert.Finding{
-			Severity: alert.Critical,
-			Check:    "email_php_relay_msgindex_persist_failed",
-			Message:  fmt.Sprintf("phprelay:msgindex commit failed (%d ops): %v", len(ops), err),
+			Severity:  alert.Critical,
+			Check:     "email_php_relay_msgindex_persist_failed",
+			Timestamp: time.Now(),
+			Message:   fmt.Sprintf("phprelay:msgindex commit failed (%d ops): %v", len(ops), err),
 		})
 	}
 }
