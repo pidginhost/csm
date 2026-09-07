@@ -51,6 +51,20 @@ rules:
 - `max_file_bytes` - skip this rule when the complete scanned file is larger than the byte limit; omitted or `0` is unbounded
 - `max_file_bytes_exempt_regexes` - high-confidence regexes that let the rule continue normal evaluation above `max_file_bytes`
 
+Bundled credential-mail detection requires posted login and password fields
+plus a raw `mail()` call carrying credential data. Both engines also cover
+common kits that construct a `$message`, `$body`, `$msg`, or `$report` from named
+credential variables before mailing that same variable. They cover direct
+assembly and a credential-bearing append, with optional literal recipient,
+subject, or header assignments between them. Body bindings are case-sensitive,
+as they are in PHP. These forms require local assignment statements and a raw
+builtin call; body replacements, properties, methods, and comparison results
+do not qualify. These
+are bounded signature patterns, not general PHP data-flow analysis; ordinary
+registration notices do not qualify merely because the file reads a password.
+Single-quoted or escaped variable names are literal text and do not count as
+credential operands in these assembled-message patterns.
+
 ## YARA-X Rules (Optional)
 
 Build CSM with YARA-X support:

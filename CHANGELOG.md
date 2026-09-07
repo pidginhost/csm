@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Credential-mail detection retains coverage of common phishing kits that assemble stolen credentials into a message before sending it. Real-time and on-demand scanning apply the same checks without confusing literal text or distinct message variables with credentials.
 - Encrypted-archive reports now stay bounded for attachments with many members, without deferring delivery solely because member names were omitted. A dropped encrypted-archive warning no longer silences later warnings for an hour.
 - Email attachment scanning no longer passes over an encrypted archive member in silence. Archives made by 7-Zip and recent WinZip were skipped without any record, so a password-protected attachment could be delivered unscanned with nothing reported; an archive member CSM cannot decompress is now reported as well.
 
