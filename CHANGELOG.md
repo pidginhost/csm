@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.34.0] - 2026-09-07
+
+### Highlights
+
+- Installs and upgrades refuse a release they cannot verify. Hosts whose OpenSSL cannot check Ed25519 now verify through the installed binary or python3-cryptography instead of skipping the check, and `csm doctor` reports any deploy script on the host that could still install an unverified artifact.
+- The service no longer holds write access to all of `/etc`. Configuration writes are limited to the directories CSM manages, and mail configuration changes run in a separate constrained operation.
+- Automatic termination signals its target through a verified kernel handle, so a process that exits mid-action cannot hand the signal to whatever reuses its process ID. Kernels that cannot do this leave termination disabled and say so in health and doctor output rather than failing quietly.
+- Quarantine is a durable transaction: content and metadata are written before the original is removed, and a restore puts back the original ownership, permissions and modification time.
+- Mailbox password auditing no longer passes stored hashes or candidate passwords as command arguments.
+- Sites other than WordPress are handled properly. Administrator baselines are per installation instead of per account, configuration reads are bounded and reject symlinks and special files, and a failed query no longer retires that CMS's earlier findings.
+- Firewall changes report persistence failures instead of recording success, overlapping address ranges apply without dropping coverage, and a firewall that fails to start degrades health instead of reporting ok.
+- Mail monitoring keeps reading after an in-place log truncation, preserves records split across writes, and recovers a lost log source without a daemon restart.
 
 ### Security
 
