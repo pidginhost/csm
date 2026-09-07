@@ -403,6 +403,9 @@ done
 mkdir -p "${INSTALL_DIR}/rules"
 cp "${INSTALL_DIR}/configs/malware.yml" "${INSTALL_DIR}/rules/"
 cp "${INSTALL_DIR}/configs/malware.yar" "${INSTALL_DIR}/rules/"
+# cp preserves the archive's mode. The YARA loader refuses group- or
+# world-writable rules, so pin them here rather than trusting the tarball.
+chmod 0640 "${INSTALL_DIR}"/rules/malware.yml "${INSTALL_DIR}"/rules/malware.yar
 info "Assets OK"
 
 ## Place binary

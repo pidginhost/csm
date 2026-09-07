@@ -69,10 +69,17 @@ contents:
   - src: configs/whm/*
     dst: /opt/csm/configs/whm/
 
+  # Mode is pinned because the YARA loader refuses group- or world-writable
+  # rules. Left unset these inherit the build host umask, and a 0664 build
+  # ships a scanner that rejects its own rules on every buffer.
   - src: configs/malware.yml
     dst: /opt/csm/rules/malware.yml
+    file_info:
+      mode: 0640
   - src: configs/malware.yar
     dst: /opt/csm/rules/malware.yar
+    file_info:
+      mode: 0640
 
   # FHS layout: /etc/csm for config, /var/lib/csm for state, /usr/lib/csm for shipped assets.
   - dst: /etc/csm

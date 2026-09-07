@@ -270,8 +270,12 @@ func looksExecutableOrLibrary(path string) bool {
 func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
+	// mysql@localhost is a stock MariaDB 10.4+ account holding SUPER for
+	// unix_socket authentication of the local root shell. It is excluded by
+	// user and host together on purpose: dropping the bare username would
+	// give an attacker a hiding place at mysql@'%'.
 	rows, err := mysqlclient.RootQuery(ctx,
-		"SELECT user, host FROM mysql.user WHERE Super_priv='Y' AND user NOT IN ('root','mysql.session','mysql.sys','mysql.infoschema','debian-sys-maint')")
+		"SELECT user, host FROM mysql.user WHERE Super_priv='Y' AND user NOT IN ('root','mysql.session','mysql.sys','mysql.infoschema','debian-sys-maint') AND NOT (user='mysql' AND host='localhost')")
 	if err != nil {
 		return nil
 	}

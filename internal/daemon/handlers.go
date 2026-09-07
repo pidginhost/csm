@@ -193,6 +193,13 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 	if ip == "" || isInfraIPDaemon(ip, cfg.InfraIPs) {
 		return nil
 	}
+	// cPanel drives its own transfers over loopback, so these lines are
+	// routine. Reporting them as coming from a "non-infra IP" is wrong, and
+	// an operator cannot silence it by listing loopback as infra without
+	// suppressing genuine findings too.
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+		return nil
+	}
 
 	// Failed authentication
 	if strings.Contains(line, "Authentication failed") || strings.Contains(line, "auth failed") {
