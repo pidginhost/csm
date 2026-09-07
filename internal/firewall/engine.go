@@ -2505,6 +2505,12 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	if e.isLocalAddrLocked(ip) {
 		return nil, nil, false, "", ipProtectedErrorf("refusing to block local host IP: %s (own interface address)", ip)
 	}
+	// Loopback and link-local are excluded from the interface set above, so
+	// they need their own refusal: the panel's own proxied requests appear as
+	// loopback, and a WAF denial count for it must not become a block.
+	if isUnblockableAddress(ip) {
+		return nil, nil, false, "", ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+	}
 
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
 	if err != nil {
@@ -3642,12 +3648,33 @@ func (e *Engine) refreshLocalAddrsLocked() {
 	e.localAddrsExpiresAt = time.Now().Add(localAddrsCacheTTL)
 }
 
+// isUnblockableAddress reports addresses that can never legitimately be
+// blocked, independent of what the interface enumeration returned.
+//
+// The local-address guard is built from localAddrGuardKey, which drops
+// loopback and link-local, so those were the one class the guard did not
+// cover -- and loopback is precisely what a control panel's own proxied
+// requests appear as. A block of 127.0.0.1 was therefore accepted rather than
+// refused; nothing broke only because the input chain accepts "iifname lo"
+// before reaching the blocked set, leaving an entry that looked effective
+// while doing nothing.
+func isUnblockableAddress(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	return parsed.IsLoopback() ||
+		parsed.IsUnspecified() ||
+		parsed.IsLinkLocalUnicast() ||
+		parsed.IsLinkLocalMulticast()
+}
+
 func localAddrGuardKey(raw string) (string, bool) {
 	parsed := net.ParseIP(raw)
 	if parsed == nil {
 		return "", false
 	}
-	if parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() {
+	if isUnblockableAddress(raw) {
 		return "", false
 	}
 	return parsed.String(), true

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The firewall now refuses to block loopback and other non-routable addresses. The existing guard was built from the host's interface addresses, which deliberately omit loopback, so the one address that can never be an attacker was the one the guard did not cover; a block was accepted rather than refused and only the rule ordering kept traffic flowing.
+- WAF attacker reports no longer name the server itself. A control panel proxies its own requests, so denials attributed to loopback or to the machine's own address accumulated until the report advised permanently blocking the host.
 - A Revolution Slider exploit rule no longer fires on a security plugin's own block log. The rule matched the request payload wherever it appeared, so a log quoting the attack it stopped looked identical to an attack tool; it now requires the payload to sit in code that issues the request. Exploit tools in PHP, Python and shell are still detected.
 - An Exim exploit rule no longer fires on a security plugin's own signature database. The rule joined two unrelated keywords across an unbounded stretch of text, so any file discussing exim exploits matched with no exploit present, and it now requires the keywords close together or an actual command-execution primitive. Genuine exploits are still detected.
 - New installs filter IPv6 as well as IPv4. The shipped configuration never mentioned the setting, so on a dual-stack host every IPv6 packet bypassed the firewall while the blocked-address list applied only to IPv4, letting a blocked attacker return over IPv6. Existing installations keep their current setting and continue to be warned when it leaves them exposed.
