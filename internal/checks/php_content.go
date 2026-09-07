@@ -90,6 +90,24 @@ var callbackDecoderNames = map[string]struct{}{
 // line also carries a request superglobal (the RCE shape).
 var reVarVarCall = regexp.MustCompile(`(?:\$\$\w+|\$\{[^}]{1,64}\})\s*\(`)
 
+// Goto-obfuscation discrimination. A label an obfuscator generates carries no
+// meaning: it is short, or it is a stem plus a counter. A hand-written state
+// machine names its labels after what they mean, which is why WordPress core's
+// HTML5 insertion-mode labels must not count.
+var reGotoLabel = regexp.MustCompile(`(?i)\bgoto\s+([A-Za-z_][A-Za-z0-9_]{0,63})\s*;`)
+
+var reGotoExecSink = regexp.MustCompile(`(?i)\b(eval|assert|system|passthru|shell_exec|base64_decode|gzinflate)\s*\(`)
+
+// gotoLabelIsGenerated reports whether a goto label looks machine-generated.
+// Digits are the strongest tell (lbl0, x9k, a1); anything shorter than four
+// characters cannot carry meaning either.
+func gotoLabelIsGenerated(label string) bool {
+	if len(label) < 4 {
+		return true
+	}
+	return strings.ContainsAny(label, "0123456789")
+}
+
 // includeDangerWrappers are stream wrappers / remote schemes that, as an
 // include/require target, mean remote-file inclusion or php://input code
 // execution. Matched on the comment-stripped (strings preserved) source.
@@ -2337,9 +2355,26 @@ func analyzePHPCode(path, content string, readOK bool) phpAnalysisResult {
 	}
 
 	// --- High: Goto obfuscation (LEVIATHAN signature) ---
-	gotoCount := countOccurrences(contentLower, "goto ")
-	if gotoCount > 10 {
-		indicators = append(indicators, fmt.Sprintf("excessive goto statements (%d found - obfuscation pattern)", gotoCount))
+	// Counting goto statements alone measures the wrong thing. WordPress
+	// core's HTML API drives the HTML5 insertion-mode state machine with goto
+	// and names every label after its spec section, so a plain count reports
+	// authentic core on every site of every account. A descriptive label is
+	// evidence against obfuscation: an obfuscator emits generated labels
+	// precisely because they carry no meaning. This mirrors the split the
+	// php_goto_obfuscation YARA rule already makes.
+	var generatedGotos, alphaGotos int
+	for _, m := range reGotoLabel.FindAllStringSubmatch(content, -1) {
+		if gotoLabelIsGenerated(m[1]) {
+			generatedGotos++
+		} else {
+			alphaGotos++
+		}
+	}
+	switch {
+	case generatedGotos > 8:
+		indicators = append(indicators, fmt.Sprintf("goto obfuscation (%d generated labels)", generatedGotos))
+	case alphaGotos > 10 && reGotoExecSink.MatchString(content):
+		indicators = append(indicators, fmt.Sprintf("goto obfuscation (%d labels reaching an execution sink)", alphaGotos))
 	}
 
 	// --- High: Hex-encoded string construction ---
