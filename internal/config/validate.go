@@ -151,6 +151,13 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "suppressions.trusted_countries", fmt.Sprintf("invalid country code: %q (expected 2-letter ISO code)", cc)})
 		}
 	}
+	// Country resolution goes through the GeoIP database. Without it every
+	// lookup comes back empty and no address is ever trusted, so the setting
+	// is inert. Operators configure this as a lockout safety net, and a net
+	// they believe in but that does nothing is worse than none at all.
+	if len(cfg.Suppressions.TrustedCountries) > 0 && (cfg.GeoIP.AccountID == "" || cfg.GeoIP.LicenseKey == "") {
+		results = append(results, ValidationResult{"warn", "suppressions.trusted_countries", "configured but GeoIP is not; country lookups return nothing, so no address is ever treated as trusted. Set geoip.account_id and geoip.license_key, then run csm update-geoip"})
+	}
 
 	// --- Block digest ---
 	switch cfg.Alerts.BlockDigest.SendOn {

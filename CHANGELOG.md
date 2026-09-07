@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Configuration validation now warns when trusted countries are listed without GeoIP credentials. Country lookups need the GeoIP database, so without it no address was ever treated as trusted and a setting operators rely on to avoid locking themselves out did nothing.
 - A web front end proxying to its own backend over the machine's public address is no longer treated as a user connecting to an unusual destination. That traffic never leaves the host, but it was classed as command-and-control and drove the server's own address to a critical threat score no operator could clear. Connections to any other address are reported as before.
 - Firewall commands answer a request for help with their own usage instead of complaining that the help flag is not an address, and refuse an option-looking word where a free-text reason belongs rather than silently recording it as the reason.
 - Successful FTP logins over loopback no longer raise an unfamiliar-address warning for routine control-panel transfers.
