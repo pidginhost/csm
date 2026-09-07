@@ -115,12 +115,21 @@ func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
 		)
 	})
 
-	fmt.Fprintf(os.Stderr,
-		"[%s] YARA-X worker active: %d rule(s) compiled in child process (pid=%d)\n",
-		ts(), sup.RuleCount(), sup.ChildPID())
+	fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), yaraWorkerStatusLine(sup.RuleCount(), sup.ChildPID()))
 
 	d.reportYaraCompileStatus(sup.CompileError())
 	d.reportRealtimeRuleCoverage(yamlRuleCount(), sup.RuleCount(), sup.CompileError() == "")
+}
+
+// yaraWorkerStatusLine describes the worker's startup state. A worker that
+// compiled zero rules is running but matches nothing, so it must not be
+// called active: that wording let a host report a healthy scanner while every
+// scan silently checked against an empty rule set.
+func yaraWorkerStatusLine(ruleCount int, childPID int) string {
+	if ruleCount == 0 {
+		return fmt.Sprintf("YARA-X worker started with 0 rules compiled - scanning nothing until rules load (pid=%d)", childPID)
+	}
+	return fmt.Sprintf("YARA-X worker active: %d rule(s) compiled in child process (pid=%d)", ruleCount, childPID)
 }
 
 // retryYaraStart re-attempts a failed worker start with capped exponential

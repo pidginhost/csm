@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- An Exim exploit rule no longer fires on a security plugin's own signature database. The rule joined two unrelated keywords across an unbounded stretch of text, so any file discussing exim exploits matched with no exploit present, and it now requires the keywords close together or an actual command-execution primitive. Genuine exploits are still detected.
 - New installs filter IPv6 as well as IPv4. The shipped configuration never mentioned the setting, so on a dual-stack host every IPv6 packet bypassed the firewall while the blocked-address list applied only to IPv4, letting a blocked attacker return over IPv6. Existing installations keep their current setting and continue to be warned when it leaves them exposed.
 - Attack evidence attributed to the host remains visible, including failed FTP authentication through local connections.
 - The privileged database account audit verifies the stock MariaDB authentication setup before exempting its system account; modified accounts remain reportable.
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A malware scanner that loaded no rules no longer describes itself as active, and a repeated scan failure is written once with a count of what it suppressed rather than once per file. A broken rules directory previously produced hundreds of identical log lines a minute while the daemon reported a healthy scanner.
 - Process monitoring, automatic response, scanner health, and mail relay storage errors now report the time they occurred instead of a zero date.
 - A WordPress core update staged in a generated working directory now collapses to one finding like every other update shape. That shape alone accounted for a third of one day's per-file warnings on a busy host.
 - Suspicious email login and sensitive file write findings now carry the time they were raised instead of a zero date.

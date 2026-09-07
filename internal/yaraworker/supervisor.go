@@ -81,7 +81,29 @@ type Supervisor struct {
 	restartCount   int
 	lastExitCode   int
 	lastExitSignal syscall.Signal
+
+	// Scan-failure log suppression. A scanner that cannot load its rules
+	// fails identically for every buffer, so the same message would
+	// otherwise be written once per scanned file.
+	scanErrMu   sync.Mutex
+	scanErrSeen map[string]*scanErrRecord
 }
+
+// scanErrRecord tracks one distinct failure message: when it was last
+// written, and how many identical failures happened since.
+type scanErrRecord struct {
+	at         time.Time
+	suppressed int
+}
+
+// scanErrMaxTracked bounds the distinct-message table so a failure carrying
+// unique text (a path, an offset) cannot grow it without limit.
+const scanErrMaxTracked = 32
+
+// scanErrLogWindow bounds how often one recurring scan failure is written.
+// Long enough that a broken rules directory cannot flood the journal, short
+// enough that a persistent fault keeps reappearing.
+const scanErrLogWindow = time.Minute
 
 // NewSupervisor validates cfg and returns an unstarted supervisor.
 // Defaults: StartTimeout 10s, MinRestartInterval 1s, MaxRestartInterval
@@ -237,10 +259,49 @@ func (s *Supervisor) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	}
 	res, err := client.ScanBytes(yaraipc.ScanBytesArgs{Data: data})
 	if err != nil {
-		s.logf("scan_bytes: %v", err)
+		s.logScanErr(err)
 		return nil, fmt.Errorf("yaraworker scan_bytes: %w", err)
 	}
 	return toYaraMatches(res.Matches), nil
+}
+
+// logScanErr writes a scan failure at most once per scanErrLogWindow per
+// distinct message, reporting how many identical failures were folded into
+// the gap so the volume stays visible. Tracking is per message rather than
+// per most-recent, so two failures alternating cannot defeat suppression.
+func (s *Supervisor) logScanErr(err error) {
+	msg := err.Error()
+	now := time.Now()
+
+	s.scanErrMu.Lock()
+	if s.scanErrSeen == nil {
+		s.scanErrSeen = make(map[string]*scanErrRecord)
+	}
+	rec, ok := s.scanErrSeen[msg]
+	if ok && now.Sub(rec.at) < scanErrLogWindow {
+		rec.suppressed++
+		s.scanErrMu.Unlock()
+		return
+	}
+	if !ok {
+		// Drop the table wholesale rather than evict: it is a log-rate guard,
+		// not a cache, and a reset costs at most one extra line per message.
+		if len(s.scanErrSeen) >= scanErrMaxTracked {
+			s.scanErrSeen = make(map[string]*scanErrRecord)
+		}
+		rec = &scanErrRecord{}
+		s.scanErrSeen[msg] = rec
+	}
+	suppressed := rec.suppressed
+	rec.at = now
+	rec.suppressed = 0
+	s.scanErrMu.Unlock()
+
+	if suppressed > 0 {
+		s.logf("scan_bytes: %v (%d identical failures suppressed)", err, suppressed)
+		return
+	}
+	s.logf("scan_bytes: %v", err)
 }
 
 // Reload asks the worker to recompile its rules directory.
