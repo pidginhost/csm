@@ -4,12 +4,15 @@ package daemon
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 // WordPress unpacks every core, plugin and theme update under
@@ -282,5 +285,67 @@ func TestPHPInUpgradeStagedBackdoorStillCriticalPerFile(t *testing.T) {
 	}
 	if critical.FilePath != backdoor {
 		t.Errorf("Critical FilePath = %q, want the backdoor file %q", critical.FilePath, backdoor)
+	}
+}
+
+func TestPHPInUpgradeCollapsePreservesSignaturePaths(t *testing.T) {
+	// The global YAML scanner initializes once per process. A subprocess keeps
+	// this test's Critical rule independent of other tests' scanner setup.
+	if os.Getenv("CSM_TEST_STAGING_SCANNER") != "1" {
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(executable, "-test.run=^TestPHPInUpgradeCollapsePreservesSignaturePaths$")
+		cmd.Env = append(os.Environ(), "CSM_TEST_STAGING_SCANNER=1")
+		if output, runErr := cmd.CombinedOutput(); runErr != nil {
+			t.Fatalf("staging scanner test: %v\n%s", runErr, output)
+		}
+		return
+	}
+
+	for _, engine := range []string{"yaml", "yara"} {
+		t.Run(engine, func(t *testing.T) {
+			wpPathStatCache.Clear()
+			wpRoot := filepath.Join(t.TempDir(), "public_html")
+			if err := os.MkdirAll(filepath.Join(wpRoot, "wp-content/plugins/example-plugin"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			staging := filepath.Join(wpRoot, "wp-content/upgrade/example-plugin.1.0")
+			ch := make(chan alert.Finding, 16)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			clean := filepath.Join(staging, "example-plugin/loader.php")
+			fm.analyzeFile(fileEvent{path: clean, fd: writeStagedFile(t, clean, cleanStagedPHP)})
+			got := drainFindings(ch)
+			if len(got) != 1 || got[0].FilePath != staging || got[0].Severity != alert.Warning {
+				t.Fatalf("staging warning = %+v", got)
+			}
+			wantCheck := "signature_match_realtime"
+			body := cleanStagedPHP
+			if engine == "yaml" {
+				useRealtimeRules(t, strings.Replace(realtimeHighRule, "severity: high", "severity: critical", 1))
+				body = "<?php echo 'EVIL_MARKER_A';"
+			} else {
+				wantCheck = "yara_match_realtime"
+				previous := yara.Active()
+				yara.SetActive(matchingFanotifyYARABackend{})
+				t.Cleanup(func() { yara.SetActive(previous) })
+			}
+			var paths []string
+			for _, name := range []string{"one.php", "two.php"} {
+				path := filepath.Join(staging, "example-plugin", name)
+				paths = append(paths, path)
+				fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, body)})
+			}
+			got = drainFindings(ch)
+			if len(got) != len(paths) {
+				t.Fatalf("got %d findings, want %d: %+v", len(got), len(paths), got)
+			}
+			for i, f := range got {
+				if f.FilePath != paths[i] || f.Check != wantCheck || f.Severity != alert.Critical {
+					t.Errorf("finding %d = %+v, want Critical %s for %s", i, f, wantCheck, paths[i])
+				}
+			}
+		})
 	}
 }

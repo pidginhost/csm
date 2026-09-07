@@ -43,6 +43,7 @@ rules:
 - `file_types` - file extensions to match (or `["*"]` for all)
 - `patterns` - literal strings
 - `regexes` - regex patterns
+- `regex_bytes` - treat each input byte as one regex character instead of decoding UTF-8 (default: `false`); use ASCII expressions or `\xNN` byte literals. Applies to matching, exclusion, and size-exemption regexes. Bundled credential-mail detection uses this mode to keep its bounded spans and identifier matching consistent with YARA.
 - `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
 - `exclude_regexes` - regex patterns that suppress a match
 - `min_match` - minimum patterns that must match

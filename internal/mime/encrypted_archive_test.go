@@ -172,3 +172,26 @@ func TestPlainZipStillExtracts(t *testing.T) {
 		t.Errorf("staged %d copies of the plain member, want 1", nested)
 	}
 }
+
+func TestEncryptedZipReportingLimitDoesNotMarkPartial(t *testing.T) {
+	plain := buildZipArchive(t, map[string][]byte{"one.pdf": []byte("one"), "two.pdf": []byte("two"), "three.pdf": []byte("three")})
+	archive := patchZipEntries(t, plain, true, 99, 3)
+	path := t.TempDir() + "/archive.zip"
+	if err := os.WriteFile(path, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	limits := DefaultLimits()
+	limits.MaxArchiveFiles = 2
+	result := &ExtractionResult{}
+	var total int64
+	extractZIP(path, "archive.zip", limits, result, &total, 1)
+	if len(result.EncryptedEntries) != 2 {
+		t.Fatalf("reported %d entries, want limit of 2", len(result.EncryptedEntries))
+	}
+	if result.Partial {
+		t.Fatalf("encrypted member reporting limit must not defer delivery: %+v", result)
+	}
+	if result.EncryptedEntriesOmitted != 1 {
+		t.Fatalf("omitted %d names, want 1", result.EncryptedEntriesOmitted)
+	}
+}

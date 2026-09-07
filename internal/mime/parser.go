@@ -35,10 +35,13 @@ type ExtractionResult struct {
 	Partial          bool
 	PartialReason    string
 	EncryptedEntries []EncryptedArchiveEntry
-	Direction        string
-	From             string
-	To               []string
-	Subject          string
+	// Report names are bounded separately from extraction: encrypted members
+	// beyond the reporting limit still must not cause delivery retries.
+	EncryptedEntriesOmitted int
+	Direction               string
+	From                    string
+	To                      []string
+	Subject                 string
 }
 
 // EncryptedArchiveEntry names an archive member CSM cannot read because the
@@ -607,15 +610,9 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 
 	extracted := 0
 	for _, zf := range zr.File {
-		if extracted >= limits.MaxArchiveFiles {
-			result.Partial = true
-			result.PartialReason = fmt.Sprintf("archive %q exceeds max files %d", archiveName, limits.MaxArchiveFiles)
-			return
-		}
 		if zf.FileInfo().IsDir() {
 			continue
 		}
-
 		safeName := sanitizeAttachmentName(zf.Name)
 
 		// Bit 0 of the general purpose flag marks an encrypted entry. Both
@@ -625,11 +622,19 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		// method 99 and fails when the entry is opened. Reading the flag
 		// catches both before either produces a misleading error.
 		if zf.Flags&zipEncryptedFlag != 0 {
-			result.EncryptedEntries = append(result.EncryptedEntries, EncryptedArchiveEntry{
-				ArchiveName: archiveName,
-				Filename:    safeName,
-			})
+			if len(result.EncryptedEntries) < limits.MaxArchiveFiles {
+				result.EncryptedEntries = append(result.EncryptedEntries, EncryptedArchiveEntry{
+					ArchiveName: archiveName,
+					Filename:    safeName,
+				})
+			} else {
+				result.EncryptedEntriesOmitted++
+			}
 			continue
+		}
+		if extracted >= limits.MaxArchiveFiles {
+			markPartial(result, fmt.Sprintf("archive %q exceeds max files %d", archiveName, limits.MaxArchiveFiles))
+			return
 		}
 
 		rc, err := zf.Open()

@@ -566,7 +566,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		}
 	}()
 
-	sw.emitEncryptedArchiveWarning(msgID, extraction.EncryptedEntries)
+	sw.emitEncryptedArchiveWarning(msgID, extraction.EncryptedEntries, extraction.EncryptedEntriesOmitted)
 
 	if extraction.Partial {
 		partialResult := &emailav.ScanResult{PartialExtraction: true}
@@ -683,7 +683,7 @@ func (sw *SpoolWatcher) closeFd() {
 	}
 }
 
-func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, message string) {
+func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, message string) bool {
 	select {
 	case sw.alertCh <- alert.Finding{
 		Severity:  severity,
@@ -691,8 +691,10 @@ func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, messa
 		Message:   message,
 		Timestamp: time.Now(),
 	}:
+		return true
 	default:
 		// Alert channel full - drop
+		return false
 	}
 }
 
@@ -707,26 +709,31 @@ const encryptedArchiveAlertInterval = time.Hour
 // not an email_av_degraded finding: nothing is degraded, and no retry will
 // make the content readable. Keeping it separate lets an operator set policy
 // on unscannable mail without losing the signal that scanning itself broke.
-func (sw *SpoolWatcher) emitEncryptedArchiveWarning(msgID string, entries []emime.EncryptedArchiveEntry) {
-	if len(entries) == 0 {
+func (sw *SpoolWatcher) emitEncryptedArchiveWarning(msgID string, entries []emime.EncryptedArchiveEntry, omitted int) {
+	if len(entries) == 0 && omitted == 0 {
 		return
 	}
 
 	sw.encryptedMu.Lock()
+	defer sw.encryptedMu.Unlock()
 	if time.Since(sw.lastEncryptedAt) < encryptedArchiveAlertInterval {
-		sw.encryptedMu.Unlock()
 		return
 	}
-	sw.lastEncryptedAt = time.Now()
-	sw.encryptedMu.Unlock()
 
 	named := make([]string, 0, len(entries))
 	for _, e := range entries {
 		named = append(named, fmt.Sprintf("%s in %s", e.Filename, e.ArchiveName))
 	}
-	sw.emitFinding("email_av_encrypted_archive", alert.Warning,
+	if omitted > 0 {
+		named = append(named, fmt.Sprintf("%d additional encrypted member(s) (names omitted)", omitted))
+	}
+	if sw.emitFinding("email_av_encrypted_archive", alert.Warning,
 		fmt.Sprintf("Encrypted archive attachment could not be scanned for message %s: %s",
-			msgID, strings.Join(named, ", ")))
+			msgID, strings.Join(named, ", "))) {
+		// Only delivered warnings consume the allowance; queue pressure must
+		// not hide this condition for an hour after the queue recovers.
+		sw.lastEncryptedAt = time.Now()
+	}
 }
 
 // emitDegradedWarning emits an email_av_degraded finding, rate-limited to
