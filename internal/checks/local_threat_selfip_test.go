@@ -7,99 +7,60 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/config"
-	"github.com/pidginhost/csm/internal/netutil"
 )
 
-// A cPanel host proxies nginx to Apache over its own public address rather
-// than loopback, so the host's address accumulates inbound "attack" events
-// against itself. Alerting on that is noise: the firewall already refuses to
-// block a local address, so the finding names a threat no operator can act on
-// and no responder can resolve.
-func TestCheckLocalThreatScoreSkipsHostOwnAddress(t *testing.T) {
-	now := time.Now()
-
-	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
-		return []net.IP{
-			net.ParseIP("203.0.113.10"),
-			net.ParseIP("2001:db8::1"),
-		}, nil
-	}))
-
-	highScore := func(ip string) *attackdb.IPRecord {
-		return &attackdb.IPRecord{
-			IP:                    ip,
-			ThreatScore:           95,
-			EventCount:            300,
-			FirstSeen:             now.Add(-2 * time.Hour),
-			LastSeen:              now,
-			BruteForceWindowStart: now.Add(-2 * time.Hour),
-			BruteForceWindowCount: 300,
-			BruteForceSustainedAt: now,
-			AttackCounts: map[attackdb.AttackType]int{
-				attackdb.AttackBruteForce: 300,
-			},
-			Accounts: map[string]int{"alice": 5},
+// A host address can identify forwarded attacks or a compromised local
+// process. Interface membership cannot establish that the events are benign.
+func TestCheckLocalThreatScoreReportsHostOwnAddress(t *testing.T) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ips := map[string]bool{"198.51.100.7": true}
+	for _, addr := range addrs {
+		ip, _, err := net.ParseCIDR(addr.String())
+		if err != nil {
+			t.Fatal(err)
 		}
+		ips[ip.String()] = true
 	}
-
-	db := attackdb.NewForTest(map[string]*attackdb.IPRecord{
-		// The host's own v4 and v6 addresses: must never be reported.
-		"203.0.113.10": highScore("203.0.113.10"),
-		"2001:db8::1":  highScore("2001:db8::1"),
-		// A genuine external attacker at the same score: must be reported.
-		"198.51.100.7": highScore("198.51.100.7"),
-	})
-	attackdb.SetGlobal(db)
-	t.Cleanup(func() { attackdb.SetGlobal(nil) })
-
-	findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: t.TempDir()}, nil)
-
-	if len(findings) != 1 {
-		t.Fatalf("findings: got %d, want 1 (only the external attacker). findings=%+v", len(findings), findings)
-	}
-	if findings[0].SourceIP != "198.51.100.7" {
-		t.Errorf("SourceIP = %q, want 198.51.100.7", findings[0].SourceIP)
-	}
-	for _, f := range findings {
-		for _, own := range []string{"203.0.113.10", "2001:db8::1"} {
-			if strings.Contains(f.Message, own) {
-				t.Errorf("finding reports the host's own address %s: %q", own, f.Message)
+	for ip := range ips {
+		t.Run(ip, func(t *testing.T) {
+			db := attackdb.NewForTest(nil)
+			attackdb.SetGlobal(db)
+			t.Cleanup(func() { attackdb.SetGlobal(nil) })
+			for i := 0; i < 20; i++ {
+				for _, check := range []string{"webshell", "user_outbound_connection", "email_auth_failure_realtime"} {
+					db.RecordFinding(alert.Finding{Check: check, SourceIP: ip, Timestamp: time.Now()})
+				}
 			}
-		}
+			findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: t.TempDir()}, nil)
+			if len(findings) != 1 {
+				t.Fatalf("got %d findings, want one for attack evidence regardless of interface membership", len(findings))
+			}
+			if findings[0].SourceIP != ip || findings[0].Check != "local_threat_score" || findings[0].Severity != alert.Critical {
+				t.Errorf("unexpected finding: %+v", findings[0])
+			}
+			if !strings.Contains(findings[0].Message, ip) {
+				t.Error("finding must identify the attributed address")
+			}
+		})
 	}
 }
 
-// A failed interface enumeration must not silently discard real attackers.
-func TestCheckLocalThreatScoreReportsWhenHostLookupFails(t *testing.T) {
-	now := time.Now()
-
-	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
-		return nil, net.UnknownNetworkError("boom")
-	}))
-
-	db := attackdb.NewForTest(map[string]*attackdb.IPRecord{
-		"198.51.100.7": {
-			IP:                    "198.51.100.7",
-			ThreatScore:           95,
-			EventCount:            300,
-			FirstSeen:             now.Add(-2 * time.Hour),
-			LastSeen:              now,
-			BruteForceWindowStart: now.Add(-2 * time.Hour),
-			BruteForceWindowCount: 300,
-			BruteForceSustainedAt: now,
-			AttackCounts: map[attackdb.AttackType]int{
-				attackdb.AttackBruteForce: 300,
-			},
-			Accounts: map[string]int{"alice": 5},
-		},
-	})
+// Repeated low-signal HTTP observations alone must not produce a critical
+// score, whether the logged client is the host or a remote address.
+func TestCheckLocalThreatScoreDoesNotEscalateRoutineHTTP(t *testing.T) {
+	db := attackdb.NewForTest(nil)
 	attackdb.SetGlobal(db)
 	t.Cleanup(func() { attackdb.SetGlobal(nil) })
-
-	findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: t.TempDir()}, nil)
-	if len(findings) != 1 {
-		t.Fatalf("findings: got %d, want 1 (lookup failure must fail open)", len(findings))
+	for i := 0; i < 300; i++ {
+		db.RecordFinding(alert.Finding{Check: "http_request_flood", SourceIP: "203.0.113.10", Timestamp: time.Now()})
+	}
+	if findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: t.TempDir()}, nil); len(findings) != 0 {
+		t.Fatalf("routine HTTP observations produced a critical score: %+v", findings)
 	}
 }

@@ -71,6 +71,10 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
 
+Successful FTP logins over loopback do not raise an unfamiliar-address warning.
+Failed authentication remains reportable over loopback, including through local
+relays.
+
 cPanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
 
 The Postfix/Dovecot file reader polls every two seconds. It reads replacement

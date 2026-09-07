@@ -9,15 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Packaged malware rules now install with permissions the scanner accepts. A build could otherwise ship them group-writable, which the loader refuses, leaving real-time malware scanning off on the host while the daemon still reported a running scanner.
+- Attack evidence attributed to the host remains visible, including failed FTP authentication through local connections.
+- The privileged database account audit verifies the stock MariaDB authentication setup before exempting its system account; modified accounts remain reportable.
+- Malware rules and their directory now install with permissions the scanner accepts, including when the installer runs with a permissive umask.
 - Encrypted-archive reports now stay bounded for attachments with many members, without deferring delivery solely because member names were omitted. A dropped encrypted-archive warning no longer silences later warnings for an hour.
 - Email attachment scanning no longer passes over an encrypted archive member in silence. Archives made by 7-Zip and recent WinZip were skipped without any record, so a password-protected attachment could be delivered unscanned with nothing reported; an archive member CSM cannot decompress is now reported as well.
 
 ### Fixed
 
-- The local threat score no longer reports the server's own address. Panel hosts route their own web traffic through the machine's public address, so a busy host accumulated attack events against itself and raised a critical alert no operator could clear.
-- FTP activity over loopback is no longer reported as a login from an unrecognized address. The control panel drives its own transfers that way, so the alert was both wrong and impossible to silence without also hiding genuine logins.
-- The MySQL superuser audit no longer flags the stock MariaDB system account. It exists on every MariaDB host, so the check raised a permanent warning that could only be cleared by deleting a system account. An account with the same name on any other host is still reported.
+- Successful FTP logins over loopback no longer raise an unfamiliar-address warning for routine control-panel transfers.
+- The MySQL superuser audit no longer flags the unmodified stock MariaDB system account. Accounts with the same name on other hosts remain reportable.
 - Credential-mail detection now uses the same byte and whitespace matching as the on-demand scanner, preventing Unicode-related false positives and preserving detection across whitespace variants.
 - Password-protected archive attachments are reported as encrypted rather than as a failure to stage the file, at most once an hour, and no longer count as an incomplete extraction. Operators running the deferring fail mode had such messages retried until they bounced, and the alerts pointed at a disk problem that did not exist.
 - Email antivirus findings now carry the time they were raised instead of a zero date.

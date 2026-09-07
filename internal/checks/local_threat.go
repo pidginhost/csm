@@ -9,7 +9,6 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/config"
-	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -34,14 +33,8 @@ func CheckLocalThreatScore(ctx context.Context, cfg *config.Config, _ *state.Sto
 		if alreadyBlocked[rec.IP] {
 			continue
 		}
-		// Panel hosts proxy their own web traffic through the machine's public
-		// address rather than loopback, so the host accumulates attack events
-		// against itself. The firewall already refuses to block a local
-		// address, so reporting one raises a critical finding no operator can
-		// act on and no responder can clear.
-		if netutil.IsHostAddress(rec.IP) {
-			continue
-		}
+		// Local addresses can represent proxied attacks or compromised local
+		// processes. Firewall self-protection is not a reason to hide evidence.
 		score := attackdb.ComputeScore(rec)
 		if score >= 70 {
 			findings = append(findings, alert.Finding{

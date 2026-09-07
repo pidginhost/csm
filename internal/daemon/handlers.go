@@ -193,13 +193,6 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 	if ip == "" || isInfraIPDaemon(ip, cfg.InfraIPs) {
 		return nil
 	}
-	// cPanel drives its own transfers over loopback, so these lines are
-	// routine. Reporting them as coming from a "non-infra IP" is wrong, and
-	// an operator cannot silence it by listing loopback as infra without
-	// suppressing genuine findings too.
-	if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
-		return nil
-	}
 
 	// Failed authentication
 	if strings.Contains(line, "Authentication failed") || strings.Contains(line, "auth failed") {
@@ -214,6 +207,11 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// Successful login from non-infra
 	if strings.Contains(line, "is now logged in") {
+		// Panel transfers use loopback. Suppress only the unfamiliar-address
+		// login warning; a local relay does not make auth failures trustworthy.
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+			return findings
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "ftp_login_realtime",

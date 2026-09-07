@@ -2,6 +2,8 @@ package ci
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -33,20 +35,67 @@ func TestPackagedYARARulesAreNotGroupWritable(t *testing.T) {
 	}
 }
 
-// The standalone installer copies the same rules with plain cp, which
-// preserves the source mode, so it needs the same guarantee.
+// Run the installer's rules-copy block with a permissive umask and unsafe
+// existing paths. Checking only the file modes misses an untrusted directory.
 func TestStandaloneInstallerHardensRulesPerms(t *testing.T) {
 	data, err := os.ReadFile("../../scripts/install.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	script := string(data)
-
-	if !strings.Contains(script, "configs/malware.yar") {
-		t.Fatal("installer no longer places malware.yar; update this gate")
+	end := strings.Index(script, `info "Assets OK"`)
+	if end < 0 {
+		t.Fatal("missing asset installation boundary")
 	}
-	if !regexp.MustCompile(`chmod\s+0?6[04]0\s+.*rules/`).MatchString(script) {
-		t.Error("installer must chmod the rules directory contents to 0640 or stricter after copying")
+	start := strings.LastIndex(script[:end], "\ndone\n")
+	if start < 0 {
+		t.Fatal("missing required-assets check boundary")
+	}
+	block := script[start+len("\ndone\n") : end]
+	for _, existing := range []bool{false, true} {
+		name := "fresh"
+		if existing {
+			name = "existing"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, "configs"), 0750); err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range []string{"malware.yar", "malware.yml"} {
+				if err := os.WriteFile(filepath.Join(dir, "configs", file), []byte("test rule"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(filepath.Join(dir, "configs", file), 0664); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if existing {
+				if err := os.Mkdir(filepath.Join(dir, "rules"), 0750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(filepath.Join(dir, "rules"), 0777); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("bash", "-c", "set -eu\numask 0002\n"+block)
+			cmd.Env = append(os.Environ(), "INSTALL_DIR="+dir)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("install rules: %v: %s", err, out)
+			}
+			for _, file := range []string{"rules", "rules/malware.yar", "rules/malware.yml"} {
+				info, err := os.Stat(filepath.Join(dir, file))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm()&0022 != 0 {
+					t.Errorf("%s mode %04o is rejected by the loader", file, info.Mode().Perm())
+				}
+				if info.Mode().Perm()&0400 == 0 {
+					t.Errorf("%s is unreadable by its owner", file)
+				}
+			}
+		})
 	}
 }
 
