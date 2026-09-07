@@ -101,7 +101,7 @@ test:
 
 # Run linter
 lint:
-	$(GOBIN)/golangci-lint run --timeout 5m
+	$(GOBIN)/golangci-lint run --timeout 10m
 
 # Static security analysis. -exclude=G104 because golangci-lint's errcheck
 # already handles unhandled errors with a curated exclude-functions list

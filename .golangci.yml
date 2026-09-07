@@ -1,7 +1,10 @@
 version: "2"
 
 run:
-  timeout: 5m
+  # Package loading, not analysis, is what approaches this limit, and it grows
+  # with runner concurrency: a quiet pipeline loads in ~180s while a tag
+  # pipeline running every job at once exceeded 300s and failed a release.
+  timeout: 10m
   modules-download-mode: readonly
 
 linters:
