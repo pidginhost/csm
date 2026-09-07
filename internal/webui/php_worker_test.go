@@ -30,6 +30,8 @@ func TestIsPHPWorkerCmdline(t *testing.T) {
 		{"nginx", "nginx: worker process", false},
 		{"empty", "", false},
 		{"mentions php in a path only", "/usr/bin/grep php-fpm /etc/hosts", false},
+		{"grep of worker title", "/usr/bin/grep php-fpm: pool example", false},
+		{"master with pool text in config path", "php-fpm: master process (/etc/php-fpm: pool example.conf)", false},
 	}
 
 	for _, tc := range tests {

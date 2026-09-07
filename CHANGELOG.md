@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Firewall integrity monitoring now checks the rules CSM actually applied, so editing configuration cannot conceal an external ruleset change. Subnet safety checks cover protected scopes inside wider ranges while still allowing legitimate ranges beginning at zero.
+- Dropper path suppressions now follow configuration reloads for new and pending findings. Exploit scripts using shell download commands remain detectable without a shebang.
 - Subnet blocking and promotion to a permanent block now refuse non-routable addresses, matching the single-address path. The existing range check reads the host's interface addresses, which omit loopback, so a range covering it was accepted; promotion bypasses the ordinary block path by design and so bypassed its guard too.
 - The firewall now refuses to block loopback and other non-routable addresses. The existing guard was built from the host's interface addresses, which deliberately omit loopback, so the one address that can never be an attacker was the one the guard did not cover; a block was accepted rather than refused and only the rule ordering kept traffic flowing.
 - WAF attacker reports no longer name the server itself. A control panel proxies its own requests, so denials attributed to loopback or to the machine's own address accumulated until the report advised permanently blocking the host.
@@ -23,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Host-address lookups no longer hold the cache lock while querying interfaces, and replacing the lookup source cannot restore stale results. PHP-FPM worker counts now match process titles, and database memory reporting accepts server arguments mentioning a wrapper.
+- GeoIP validation distinguishes download credentials from locally provisioned databases. Installation instructions keep repository key approval interactive and explain unattended key trust correctly.
+- Repeated scan errors remain rate-limited when failures contain many different paths or offsets, while preserving counts of suppressed failures.
 - Two OWASP protocol-policy rules are now classified, so enabling the rule set no longer produces an unresolvable warning on every hit. They fire on unusual but legitimate requests as often as on attacks, and a rule carrying real attack evidence still overrides the classification.
 - A malware scanner that loaded no rules no longer describes itself as active, and a repeated scan failure is written once with a count of what it suppressed rather than once per file. A broken rules directory previously produced hundreds of identical log lines a minute while the daemon reported a healthy scanner.
 - Process monitoring, automatic response, scanner health, and mail relay storage errors now report the time they occurred instead of a zero date.

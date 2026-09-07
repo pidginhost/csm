@@ -17,6 +17,7 @@ func TestIsMySQLServerCmdline(t *testing.T) {
 		{"mysqld", "/usr/sbin/mysqld --daemonize", true},
 		{"mysqld bare", "mysqld", true},
 		{"mariadbd bare", "mariadbd", true},
+		{"server with wrapper log", "/usr/sbin/mysqld --log-error=/var/log/mysqld_safe.log", true},
 
 		// Wrappers and clients are not the server.
 		{"mysqld_safe wrapper", "/bin/sh /usr/bin/mysqld_safe --datadir=/var/lib/mysql", false},

@@ -2,6 +2,7 @@ package yaraworker
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -72,7 +73,7 @@ func TestScanErrLogResurfacesAfterWindowWithCount(t *testing.T) {
 	s.cfg.Logf = func(format string, args ...any) {
 		mu.Lock()
 		defer mu.Unlock()
-		msgs = append(msgs, format)
+		msgs = append(msgs, fmt.Sprintf(format, args...))
 	}
 
 	err := errors.New("rules path has unsafe mode 0664")
@@ -95,7 +96,25 @@ func TestScanErrLogResurfacesAfterWindowWithCount(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("logged %d lines, want 2 (first plus one after the window)", len(msgs))
 	}
-	if !strings.Contains(msgs[1], "suppressed") {
-		t.Errorf("second line does not report the suppressed count: %q", msgs[1])
+	if !strings.Contains(msgs[1], "9 identical failures suppressed") {
+		t.Errorf("second line does not report the exact suppressed count: %q", msgs[1])
+	}
+}
+
+func TestScanErrLogCapacityCannotResetSuppression(t *testing.T) {
+	var lines []string
+	s := &Supervisor{}
+	s.cfg.Logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	known := errors.New("rules unavailable")
+	s.logScanErr(known)
+	for i := range 500 {
+		s.logScanErr(fmt.Errorf("scan failure at offset %d", i))
+		s.logScanErr(known)
+	}
+	if len(lines) != scanErrMaxTracked+1 {
+		t.Fatalf("distinct error churn produced %d logs, want %d bounded records", len(lines), scanErrMaxTracked+1)
+	}
+	if got := s.scanErrSeen[known.Error()]; got == nil || got.suppressed != 500 {
+		t.Fatalf("capacity churn lost the recurring error's suppression: %+v", got)
 	}
 }

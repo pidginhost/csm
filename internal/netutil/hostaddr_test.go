@@ -103,3 +103,25 @@ func TestHostAddressesRefreshesAfterTTL(t *testing.T) {
 		t.Errorf("lookup called %d times, want 2 (cache must expire)", calls)
 	}
 }
+
+func TestHostLookupCanReplaceItselfWithoutPublishingStaleAddresses(t *testing.T) {
+	SetHostAddressLookupForTest(t, func() ([]net.IP, error) {
+		// A callback must be able to change the source without deadlocking.
+		// TryLock keeps the broken implementation from hanging the suite.
+		if !hostAddrMu.TryLock() {
+			t.Error("host address lookup called while the cache mutex is held")
+			return nil, net.UnknownNetworkError("cache locked")
+		}
+		hostAddrMu.Unlock()
+		SetHostAddressLookup(func() ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.11")}, nil
+		})
+		return []net.IP{net.ParseIP("203.0.113.10")}, nil
+	})
+	if IsHostAddress("203.0.113.10") {
+		t.Error("obsolete lookup repopulated the cache after its replacement")
+	}
+	if !IsHostAddress("203.0.113.11") {
+		t.Error("replacement lookup was not used")
+	}
+}

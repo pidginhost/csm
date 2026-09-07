@@ -16,10 +16,11 @@ const hostAddrCacheTTL = 5 * time.Minute
 var hostAddrLookup = enumerateHostAddresses
 
 var (
-	hostAddrMu        sync.Mutex
-	hostAddrCache     map[string]struct{}
-	hostAddrCachedAt  time.Time
-	hostAddrCacheGood bool
+	hostAddrMu         sync.Mutex
+	hostAddrCache      map[string]struct{}
+	hostAddrCachedAt   time.Time
+	hostAddrCacheGood  bool
+	hostAddrGeneration uint64
 )
 
 func enumerateHostAddresses() ([]net.IP, error) {
@@ -80,13 +81,16 @@ func hostAddrKey(ip net.IP) string {
 
 func hostAddresses() (map[string]struct{}, bool) {
 	hostAddrMu.Lock()
-	defer hostAddrMu.Unlock()
 
 	if hostAddrCacheGood && time.Since(hostAddrCachedAt) < hostAddrCacheTTL {
-		return hostAddrCache, true
+		set := hostAddrCache
+		hostAddrMu.Unlock()
+		return set, true
 	}
+	lookup, generation := hostAddrLookup, hostAddrGeneration
+	hostAddrMu.Unlock()
 
-	ips, err := hostAddrLookup()
+	ips, err := lookup()
 	if err != nil {
 		return nil, false
 	}
@@ -96,6 +100,16 @@ func hostAddresses() (map[string]struct{}, bool) {
 			continue
 		}
 		set[hostAddrKey(ip)] = struct{}{}
+	}
+	hostAddrMu.Lock()
+	defer hostAddrMu.Unlock()
+	// Replacing the source invalidates any lookup already in flight. Never
+	// let an old callback repopulate the replacement's cache.
+	if generation != hostAddrGeneration {
+		return nil, false
+	}
+	if hostAddrCacheGood && time.Since(hostAddrCachedAt) < hostAddrCacheTTL {
+		return hostAddrCache, true
 	}
 	hostAddrCache = set
 	hostAddrCachedAt = time.Now()
@@ -110,6 +124,7 @@ func SetHostAddressLookup(fn func() ([]net.IP, error)) func() {
 	hostAddrMu.Lock()
 	prev := hostAddrLookup
 	hostAddrLookup = fn
+	hostAddrGeneration++
 	hostAddrCache = nil
 	hostAddrCacheGood = false
 	hostAddrMu.Unlock()
@@ -117,6 +132,7 @@ func SetHostAddressLookup(fn func() ([]net.IP, error)) func() {
 	return func() {
 		hostAddrMu.Lock()
 		hostAddrLookup = prev
+		hostAddrGeneration++
 		hostAddrCache = nil
 		hostAddrCacheGood = false
 		hostAddrMu.Unlock()

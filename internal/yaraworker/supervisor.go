@@ -85,8 +85,9 @@ type Supervisor struct {
 	// Scan-failure log suppression. A scanner that cannot load its rules
 	// fails identically for every buffer, so the same message would
 	// otherwise be written once per scanned file.
-	scanErrMu   sync.Mutex
-	scanErrSeen map[string]*scanErrRecord
+	scanErrMu       sync.Mutex
+	scanErrSeen     map[string]*scanErrRecord
+	scanErrOverflow scanErrRecord
 }
 
 // scanErrRecord tracks one distinct failure message: when it was last
@@ -278,25 +279,33 @@ func (s *Supervisor) logScanErr(err error) {
 		s.scanErrSeen = make(map[string]*scanErrRecord)
 	}
 	rec, ok := s.scanErrSeen[msg]
+	overflow := !ok && len(s.scanErrSeen) >= scanErrMaxTracked
+	if overflow {
+		// Preserve known recurring failures. Resetting the table lets a stream
+		// of unique offsets or paths disable throttling for every message.
+		rec = &s.scanErrOverflow
+		ok = !rec.at.IsZero()
+	}
 	if ok && now.Sub(rec.at) < scanErrLogWindow {
 		rec.suppressed++
 		s.scanErrMu.Unlock()
 		return
 	}
 	if !ok {
-		// Drop the table wholesale rather than evict: it is a log-rate guard,
-		// not a cache, and a reset costs at most one extra line per message.
-		if len(s.scanErrSeen) >= scanErrMaxTracked {
-			s.scanErrSeen = make(map[string]*scanErrRecord)
+		if !overflow {
+			rec = &scanErrRecord{}
+			s.scanErrSeen[msg] = rec
 		}
-		rec = &scanErrRecord{}
-		s.scanErrSeen[msg] = rec
 	}
 	suppressed := rec.suppressed
 	rec.at = now
 	rec.suppressed = 0
 	s.scanErrMu.Unlock()
 
+	if overflow {
+		s.logf("scan_bytes: %v (%d additional scan failures suppressed)", err, suppressed)
+		return
+	}
 	if suppressed > 0 {
 		s.logf("scan_bytes: %v (%d identical failures suppressed)", err, suppressed)
 		return

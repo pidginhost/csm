@@ -1,6 +1,6 @@
 # Firewall (nftables)
 
-CSM includes a native nftables firewall engine that replaces LFD and fail2ban. It uses the kernel netlink API directly via `google/nftables` - no iptables, no Perl, no shell commands.
+CSM includes a native nftables firewall engine that replaces LFD and fail2ban. It writes rules through the kernel netlink API directly via `google/nftables`. Integrity monitoring reads the installed structure with the `nft` command.
 
 ## Features
 
@@ -22,6 +22,17 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **State persistence** with atomic writes
 
 ## Mutation failures
+
+Subnet blocks refuse ranges overlapping loopback or link-local scopes, plus
+unspecified individual addresses and default routes. Other ranges beginning
+at zero, such as `0.0.0.0/8`, remain blockable. Refusing a permanent promotion
+leaves the prior temporary block and its expiry unchanged.
+
+Integrity checks compare live rule structure with the snapshot captured after
+CSM last applied the firewall. Editing or rehashing configuration alone never
+approves a changed ruleset. A failed snapshot capture reports a monitoring gap;
+after correcting `nft` availability, re-apply the firewall to restore its
+baseline. Dynamic set membership does not affect this comparison.
 
 Firewall changes persist their intent before changing kernel rules. A failed
 atomic kernel transaction restores the previous state. Failed writes and

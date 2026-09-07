@@ -45,7 +45,7 @@ var serverLocalPorts = map[uint16]bool{
 
 // EvaluateConnection returns a populated alert.Finding and true when the
 // connection should be reported, or a zero finding and false when it should
-// be ignored. Pure function: no IO, no clock. Used by the BPF live backend
+// be ignored. Host-interface lookups are cached. Used by the BPF live backend
 // (per-event) and the polling backend (per row of /proc/net/tcp[6]).
 func EvaluateConnection(
 	cfg *config.Config,

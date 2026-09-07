@@ -151,12 +151,10 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "suppressions.trusted_countries", fmt.Sprintf("invalid country code: %q (expected 2-letter ISO code)", cc)})
 		}
 	}
-	// Country resolution goes through the GeoIP database. Without it every
-	// lookup comes back empty and no address is ever trusted, so the setting
-	// is inert. Operators configure this as a lockout safety net, and a net
-	// they believe in but that does nothing is worse than none at all.
+	// Credentials control downloads, not lookups against a database already
+	// provisioned on disk. Validation cannot infer runtime coverage from them.
 	if len(cfg.Suppressions.TrustedCountries) > 0 && (cfg.GeoIP.AccountID == "" || cfg.GeoIP.LicenseKey == "") {
-		results = append(results, ValidationResult{"warn", "suppressions.trusted_countries", "configured but GeoIP is not; country lookups return nothing, so no address is ever treated as trusted. Set geoip.account_id and geoip.license_key, then run csm update-geoip"})
+		results = append(results, ValidationResult{"warn", "suppressions.trusted_countries", "GeoIP download credentials are incomplete; trusted countries require a locally installed GeoLite2-City database. Provision that database, or set geoip.account_id and geoip.license_key and run csm update-geoip"})
 	}
 
 	// --- Block digest ---

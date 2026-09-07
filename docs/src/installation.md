@@ -55,8 +55,8 @@ repo_gpgcheck=1
 gpgkey=https://mirrors.pidginhost.com/csm/csm-signing.gpg
 EOF
 
-# 3. Install (accepts the one-time repository key prompt)
-yes | sudo dnf install csm
+# 3. Install (check the fingerprint below before accepting the key)
+sudo dnf install csm
 ```
 
 `rpm --import` populates the RPM keyring, which covers `gpgcheck` -- the
@@ -72,17 +72,17 @@ Importing GPG key 0x81CD59B1:
 Is this ok [y/N]:
 ```
 
-`dnf -y` answers package prompts but not this one. Unanswered it defaults to
-no, and dnf then reports:
+Without `-y`, an unanswered key prompt defaults to no. A rejected key can
+produce an error such as:
 
 ```
 Error: Failed to download metadata for repo 'csm':
 repomd.xml GPG signature verification error: Bad GPG signature
 ```
 
-That message is misleading: the signature is valid, the key was simply not
-trusted for this repository. Confirm that for yourself rather than taking the
-prompt's word -- the fingerprint it prints must match the one above:
+The error alone does not distinguish an untrusted key from damaged or
+incorrectly signed metadata. Check the fingerprint against the value above,
+then verify the metadata signature:
 
 ```bash
 base=https://mirrors.pidginhost.com/csm/rpm/el9/x86_64/repodata
@@ -93,9 +93,11 @@ gpg --verify repomd.xml.asc repomd.xml
 # gpg: Good signature from "CSM Package Signing ... <security@pidginhost.com>"
 ```
 
-For unattended installs, pre-seed dnf's keyring in your provisioning step, or
-accept the prompt once with `yes | dnf install csm` after checking the
-fingerprint.
+For unattended installs, approve the repository key in provisioning first,
+then use `sudo dnf -y install csm`. DNF's
+[`assumeyes` option](https://dnf.readthedocs.io/en/stable/conf_ref.html#main-options)
+accepts key-import prompts as well as package prompts. Keep both signature
+checks enabled; `-y` is not a substitute for verifying the expected key.
 
 The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. Works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel-managed hosts.
 

@@ -81,6 +81,10 @@ func (e *dropperEngine) admit(c dropperCandidate) bool {
 func (e *dropperEngine) probeStep(probeNow time.Time, prober dropperFSProber, flushNow time.Time) {
 	for _, c := range e.tr.Due(probeNow) {
 		key := candidateKey(c)
+		if e.ignorePath != nil && e.ignorePath(c.Path) {
+			delete(e.attempts, key)
+			continue
+		}
 		verdict := assessDropper(c, prober.probe(c))
 		if verdict == dropperInconclusive {
 			if e.attempts[key]+1 >= maxDropperProbeAttempts {
@@ -95,9 +99,28 @@ func (e *dropperEngine) probeStep(probeNow time.Time, prober dropperFSProber, fl
 		e.tr.HoldGone(c, verdict, flushNow)
 	}
 	for _, f := range e.tr.FlushDue(flushNow) {
-		sev, msg, details, path := dropperAlertParams(f)
-		if e.emit != nil {
-			e.emit(sev, dropperCheckName, msg, details, path)
+		items := f.Items[:0]
+		for _, item := range f.Items {
+			if e.ignorePath == nil || !e.ignorePath(item.Cand.Path) {
+				items = append(items, item)
+			}
 		}
+		// Suppress before deciding burst severity. Otherwise excluded files
+		// can turn a remaining solitary dropper into a lower-severity burst.
+		if len(items) >= dropperBurstThreshold {
+			f.Items = items
+			e.emitFinding(f)
+		} else {
+			for _, item := range items {
+				e.emitFinding(dropperFinding{Docroot: f.Docroot, Items: []dropperGone{item}})
+			}
+		}
+	}
+}
+
+func (e *dropperEngine) emitFinding(f dropperFinding) {
+	if e.emit != nil {
+		sev, msg, details, path := dropperAlertParams(f)
+		e.emit(sev, dropperCheckName, msg, details, path)
 	}
 }

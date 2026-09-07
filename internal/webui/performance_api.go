@@ -37,7 +37,7 @@ type perfMetrics struct {
 	PHPProcs    int         `json:"php_procs_total"`
 	TopPHPUsers []userProcs `json:"top_php_users"`
 	// MySQL telemetry is best-effort. Both fields are nil when csm could
-	// not read mysqld's pidfile or the mysql client failed (no /root/.my.cnf,
+	// not read the server's process status or the mysql client failed (no /root/.my.cnf,
 	// no socket auth, mysqld absent). The webui renders "n/a" in that case
 	// so operators can tell "MySQL is idle" from "we couldn't ask".
 	MySQLMemMB *uint64 `json:"mysql_mem_mb"`
@@ -137,7 +137,6 @@ func runCmdQuick(name string, args ...string) ([]byte, error) {
 	return out, err
 }
 
-// sampleMetrics gathers live system metrics and returns a populated perfMetrics.
 // isPHPWorkerCmdline reports whether a /proc cmdline belongs to a PHP process
 // that serves requests.
 //
@@ -149,10 +148,10 @@ func runCmdQuick(name string, args ...string) ([]byte, error) {
 // The php-fpm master is excluded on purpose: it runs as root and serves no
 // requests, so counting it would attribute per-account load to root.
 func isPHPWorkerCmdline(cmdline string) bool {
-	if strings.Contains(cmdline, "php-fpm: pool ") {
+	if strings.HasPrefix(cmdline, "php-fpm: pool ") {
 		return true
 	}
-	if strings.Contains(cmdline, "php-fpm: master") {
+	if strings.HasPrefix(cmdline, "php-fpm: master") {
 		return false
 	}
 	return strings.Contains(cmdline, "lsphp")
@@ -173,9 +172,6 @@ func isMySQLServerCmdline(cmdline string) bool {
 	base := filepath.Base(fields[0])
 	// A shell running mysqld_safe has the shell as argv[0]; neither it nor the
 	// wrapper is the server process.
-	if strings.Contains(cmdline, "mysqld_safe") {
-		return false
-	}
 	return base == "mysqld" || base == "mariadbd"
 }
 
@@ -211,6 +207,7 @@ func mysqlServerRSSMB() *uint64 {
 	return nil
 }
 
+// sampleMetrics gathers live system metrics and returns a populated perfMetrics.
 func sampleMetrics() *perfMetrics {
 	m := &perfMetrics{}
 

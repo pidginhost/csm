@@ -35,6 +35,9 @@ func TestValidateWarnsTrustedCountriesWithoutGeoIP(t *testing.T) {
 	if msg := trustedCountriesMessage(results); !strings.Contains(strings.ToLower(msg), "geoip") {
 		t.Errorf("warning does not name GeoIP, so it does not tell the operator what to fix: %q", msg)
 	}
+	if msg := trustedCountriesMessage(results); !strings.Contains(msg, "locally installed") {
+		t.Errorf("missing download credentials do not prevent using a locally installed database: %q", msg)
+	}
 }
 
 // With credentials present the database can be fetched, so there is nothing to

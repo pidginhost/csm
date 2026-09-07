@@ -323,7 +323,7 @@ suppressions:
   suppress_webmail_alerts: true         # don't alert on webmail logins
   suppress_cpanel_login_alerts: false   # don't alert on cPanel direct logins
   suppress_blocked_alerts: true         # don't alert on IPs that were auto-blocked
-  trusted_countries: ["RO"]             # ISO 3166-1 alpha-2 - suppress cPanel login alerts from these
+  trusted_countries: ["RO"]             # requires a loaded GeoLite2-City database; download credentials alone do not supply country data
 
 # --- Auto-Response ---
 auto_response:

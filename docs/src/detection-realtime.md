@@ -24,6 +24,7 @@ normal detection. The finding retains the actual event path.
 **Detects:**
 - Webshell creation (PHP files in web directories)
 - Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. Upgrade staging, atomic-save temp files, template compile caches, a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`.
+- Dropper admission and pending findings follow the live `suppressions.ignore_paths` list after reload. Intentionally suppressed candidates consume no tracker capacity; losses of eligible candidates still raise the capacity warning.
 - PHP in uploads, languages, upgrade directories
 - PHP in `.ssh`, `.cpanel`, mail directories (critical escalation)
 - Executable drops in `.config`

@@ -65,12 +65,11 @@ func (fm *FileMonitor) initDropperDetector(cfg *config.Config) {
 	// #nosec G115 -- os.Getpid returns this process's PID, bounded by
 	// /proc/sys/kernel/pid_max (<= 2^22 on Linux), so it always fits in int32.
 	selfPID := int32(os.Getpid())
-	ignores := append([]string(nil), cfg.Suppressions.IgnorePaths...)
 	e := newDropperEngine(dropperEngineConfig{
 		ttl:     ttl,
 		selfPID: selfPID,
 		ignorePath: func(p string) bool {
-			return checks.PathMatchesIgnore(p, ignores)
+			return checks.PathMatchesIgnore(p, fm.currentCfg().Suppressions.IgnorePaths)
 		},
 	})
 	e.emit = func(sev alert.Severity, check, msg, details, path string) {

@@ -4,6 +4,34 @@ package yara
 
 import "testing"
 
+func TestExploitRevsliderYara_ShellRequestsWithoutShebang(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+	for _, source := range []string{
+		`curl -d 'action=revslider_ajax_action&client_action=update_plugin' https://target.example/wp-admin/admin-ajax.php`,
+		`wget -O stolen.php 'https://target.example/wp-admin/admin-ajax.php?action=revslider_show_image&img=../wp-config.php'`,
+		`/usr/bin/curl -d 'action=revslider_ajax_action&client_action=update_plugin' https://target.example/wp-admin/admin-ajax.php`,
+		`command curl -d 'action=revslider_ajax_action&client_action=update_plugin' https://target.example/wp-admin/admin-ajax.php`,
+		`set -eu; curl -d 'action=revslider_ajax_action&client_action=update_plugin' https://target.example/wp-admin/admin-ajax.php`,
+		`printf start && /usr/bin/wget -O stolen.php 'https://target.example/wp-admin/admin-ajax.php?action=revslider_show_image&img=../wp-config.php'`,
+	} {
+		if !hasYaraRule(scanner.ScanBytes([]byte(source)), "exploit_revslider") {
+			t.Errorf("shell request without optional shebang escaped detection: %s", source)
+		}
+	}
+}
+
+func TestExploitRevsliderYara_BlockedRequestsAreNotTools(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+	for _, source := range []string{
+		`203.0.113.10 - - [07/Sep/2026:12:00:00 +0000] "GET /?action=revslider_show_image&img=../wp-config.php HTTP/1.1" 403`,
+		`{"action":"block","body":"action=revslider_ajax_action&client_action=update_plugin","user_agent":"curl/8.0"}`,
+	} {
+		if hasYaraRule(scanner.ScanBytes([]byte(source)), "exploit_revslider") {
+			t.Errorf("blocked request was reported as an exploit tool: %s", source)
+		}
+	}
+}
+
 // FP reconstruction for the 2026-05-05 Goya theme upload event on
 // production. The exploit_revslider YARA rule fired on a wp-content/
 // themes/goya/inc/misc.php uploaded by pure-ftpd because the rule's

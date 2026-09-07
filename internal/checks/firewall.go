@@ -88,10 +88,21 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 		}
 	}
 
-	// Verify the CSM nftables table exists and has expected components.
-	// Routed through cmdExec so tests can mock the nft response without
-	// requiring a real nftables stack.
-	out, err := cmdExec.RunAllowNonZero("nft", "list", "table", "inet", "csm")
+	// The running engine pairs live rules with its applied baseline. Standalone
+	// checks have no engine and inspect the existing table through cmdExec.
+	var out []byte
+	var applied string
+	var err error
+	monitor, managed := getIPBlocker().(interface {
+		RulesetSnapshot() (current, applied string, err error)
+	})
+	if managed {
+		var current string
+		current, applied, err = monitor.RulesetSnapshot()
+		out = []byte(current)
+	} else {
+		out, err = cmdExec.RunAllowNonZero("nft", "list", "table", "inet", "csm")
+	}
 	if err != nil {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.Critical,
@@ -119,17 +130,19 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 	// every block/unblock.
 	hash := nftRulesetStructureHash(out)
 
-	// A ruleset change is only evidence of an external edit when CSM's own
-	// policy did not change. Applying a config edit rewrites the ruleset, so
-	// comparing the structure hash alone reports tampering every time the
-	// operator legitimately reconfigures the firewall, which teaches them to
-	// ignore the alert that would matter. Pair the ruleset hash with the
-	// config hash that produced it.
+	// Only a successful engine Apply establishes a ruleset baseline. The
+	// unkeyed digest in csm.yaml can change without any firewall
+	// transaction, including when SIGHUP defers restart-required settings.
 	prev, exists := store.GetRaw("_nftables_rules_hash")
-	prevCfgHash, cfgHashKnown := store.GetRaw("_nftables_rules_config_hash")
-	cfgHash := cfg.Integrity.ConfigHash
-	explainedByOwnConfigChange := cfgHashKnown && prevCfgHash != cfgHash
-	if exists && prev != hash && !explainedByOwnConfigChange {
+	if applied != "" {
+		prev, exists = nftRulesetStructureHash([]byte(applied)), true
+	} else if managed {
+		findings = append(findings, alert.Finding{
+			Severity: alert.Warning, Check: "firewall", Timestamp: time.Now(),
+			Message: "Firewall integrity baseline unavailable after applying rules; re-apply the firewall to restore monitoring",
+		})
+	}
+	if exists && prev != hash {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.High,
 			Check:     "firewall",
@@ -137,8 +150,13 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 			Timestamp: time.Now(),
 		})
 	}
-	store.SetRaw("_nftables_rules_hash", hash)
-	store.SetRaw("_nftables_rules_config_hash", cfgHash)
+	// Retain the trusted baseline while a mismatch persists so acknowledging
+	// one finding cannot make the next check treat the modified rules as clean.
+	if applied != "" {
+		store.SetRaw("_nftables_rules_hash", prev)
+	} else if !exists {
+		store.SetRaw("_nftables_rules_hash", hash)
+	}
 
 	// Check for dangerous ports in config
 	findings = append(findings, checkDangerousPorts(cfg)...)

@@ -34,6 +34,11 @@ type Engine struct {
 	listTables func() ([]*nftables.Table, error)
 	cfg        *FirewallConfig
 
+	// Captured only after our own successful ruleset transaction. Config-file
+	// hashes cannot authenticate the rules currently installed in the kernel.
+	appliedRuleset string
+	readRuleset    func() (string, error)
+
 	// dryRunRecorder is called by BlockIP when auto_response.dry_run is
 	// active. Set by SetDryRunRecorder after construction so the firewall
 	// package does not import internal/store (which would be a cycle).
@@ -698,6 +703,9 @@ func (e *Engine) Apply() error {
 	if err := e.conn.Flush(); err != nil {
 		return fmt.Errorf("applying ruleset: %w", err)
 	}
+	// A failed capture leaves monitoring visibly unbaselined; it must neither
+	// undo an applied firewall nor bless a later, possibly external edit.
+	e.appliedRuleset, _ = e.readRulesetLocked()
 
 	return nil
 }
@@ -3331,16 +3339,16 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 	if ones, _ := network.Mask.Size(); ones == 0 {
 		return fmt.Errorf("refusing to block default route: %s", network.String())
 	}
-	// The local-address check below reads e.localAddrs, which excludes
-	// loopback and link-local by construction, so a range covering them would
-	// otherwise pass where the single address is refused. A range wide enough
-	// to swallow loopback is refused for the same reason.
-	if isUnblockableAddress(network.IP.String()) {
+	// An unspecified host is not a usable target, but its containing range
+	// can be: operators may block 0.0.0.0/8 as a bogon range.
+	if ones, bits := network.Mask.Size(); ones == bits && network.IP.IsUnspecified() {
 		return fmt.Errorf("refusing to block non-routable range: %s", network.String())
 	}
-	for _, reserved := range []string{"127.0.0.1", "::1"} {
-		if ip := net.ParseIP(reserved); ip != nil && network.Contains(ip) {
-			return fmt.Errorf("refusing to block subnet %s: contains loopback %s", network.String(), reserved)
+	// Checking only the first address misses larger ranges covering a local
+	// scope. Interface enumeration intentionally omits these scopes.
+	for _, protected := range protectedLocalRanges {
+		if network.Contains(protected.IP) || protected.Contains(network.IP) {
+			return fmt.Errorf("refusing to block subnet %s: overlaps protected range %s", network, protected)
 		}
 	}
 
@@ -3385,6 +3393,23 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 
 	return nil
 }
+
+var protectedLocalRanges = func() []*net.IPNet {
+	ranges := []*net.IPNet{
+		{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+		{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)},
+		{IP: net.IPv4(224, 0, 0, 0), Mask: net.CIDRMask(24, 32)},
+		{IP: net.ParseIP("::1"), Mask: net.CIDRMask(128, 128)},
+		{IP: net.ParseIP("fe80::"), Mask: net.CIDRMask(10, 128)},
+	}
+	// Multicast flags vary independently of the link-local scope nibble.
+	for flags := byte(0); flags < 16; flags++ {
+		ip := make(net.IP, net.IPv6len)
+		ip[0], ip[1] = 0xff, flags<<4|2
+		ranges = append(ranges, &net.IPNet{IP: ip, Mask: net.CIDRMask(16, 128)})
+	}
+	return ranges
+}()
 
 func (e *Engine) subnetBlockPlanLocked(cidr string) (*net.IPNet, bool, error) {
 	_, network, err := net.ParseCIDR(cidr)
