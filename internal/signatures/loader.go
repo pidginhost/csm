@@ -27,10 +27,6 @@ type Rule struct {
 	ExcludeRegexes  []string `yaml:"exclude_regexes"`  // regex exclusions
 	MinMatch        int      `yaml:"min_match"`        // minimum patterns that must match (default: 1)
 	RequireRegex    bool     `yaml:"require_regex"`    // if true, at least one regex must match in addition to min_match
-	// RegexBytes measures regex spans in bytes, matching YARA's byte-oriented
-	// rules. Go's default UTF-8 decoding otherwise widens bounded gaps and
-	// accepts Unicode case-fold equivalents of ASCII PHP identifiers.
-	RegexBytes bool `yaml:"regex_bytes"`
 	// MaxFileBytes skips the rule for content larger than this many bytes
 	// (0 = no limit). MaxFileBytesExemptRegexes retain high-confidence
 	// structural matches above the bound. This bounds weak heuristics by size
@@ -226,29 +222,6 @@ func (r *Rule) compile() error {
 	return nil
 }
 
-// byteRuneReader gives RE2 one character per input byte. Values above ASCII
-// stay distinct without gaining Unicode folds such as long-s -> s.
-type byteRuneReader struct {
-	data []byte
-	pos  int
-}
-
-func (r *byteRuneReader) ReadRune() (rune, int, error) {
-	if r.pos == len(r.data) {
-		return 0, 0, io.EOF
-	}
-	b := r.data[r.pos]
-	r.pos++
-	return rune(b), 1, nil
-}
-
-func (r *Rule) matchRegex(re *regexp.Regexp, content []byte) bool {
-	if r.RegexBytes {
-		return re.MatchReader(&byteRuneReader{data: content})
-	}
-	return re.Match(content)
-}
-
 // Match represents a rule that matched a file.
 type Match struct {
 	RuleName    string
@@ -306,7 +279,7 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 		}
 		if !excluded {
 			for _, re := range rule.compiledExcludeRegexes {
-				if rule.matchRegex(re, content) {
+				if re.Match(content) {
 					excluded = true
 					break
 				}
@@ -319,7 +292,7 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 		if rule.MaxFileBytes > 0 && contentSize > int64(rule.MaxFileBytes) {
 			exempt := false
 			for _, re := range rule.compiledMaxFileBytesExemptRegexes {
-				if rule.matchRegex(re, content) {
+				if re.Match(content) {
 					exempt = true
 					break
 				}
@@ -340,7 +313,7 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 		}
 
 		for _, re := range rule.compiledRegexes {
-			if rule.matchRegex(re, content) {
+			if re.Match(content) {
 				matched = append(matched, re.String())
 				regexMatched = true
 			}
