@@ -6,6 +6,30 @@ commits and `CHANGELOG.md` are the archive.
 
 This file is for contributors. End-user documentation lives in `docs/`.
 
+## How this list is ordered
+
+CSM runs as root on live shared-hosting servers and takes automatic action on
+them. That shapes the ordering, which is by **harm to a protected server**, not
+by effort or tidiness:
+
+1. **Protection that fails silently.** A capability that stops working while
+   everything still reports healthy is the worst outcome: there is no alert, no
+   failing test, and no operator prompt. Nothing else on this list matters if
+   the tool is quietly not protecting.
+2. **Precision.** A false positive is not merely noise here. Findings drive
+   automatic quarantine, and every past incident review found real compromises
+   buried under false-positive floods. Precision failures cause missed
+   detections indirectly and break customer sites directly.
+3. **Supply chain and release integrity.** This project is open source and
+   installs as root from a public repository. A compromised or unverifiable
+   artifact is total, and the verification path is itself public.
+4. **Correlation.** Turning many weak signals into few strong ones is the
+   highest-leverage way to raise precision without losing coverage.
+5. **Known coverage gaps.** Missed detections, mitigated somewhat by the
+   overlapping realtime, deep-scan, signature and taint layers.
+6. **Operability and debt.** Real work, but a server stays protected while it
+   waits.
+
 **Stable cross-references.** Older commits, CHANGELOG entries, and a few code
 comments reference `ROADMAP item N` by the number that item had when the commit
 was written. Those numbers are frozen in time and no longer map onto this list.
@@ -67,29 +91,100 @@ Main-branch cloud integration is manual and is not a publication dependency.
 
 ---
 
-# Priority 1 -- detection precision
+# Priority 1 -- protection that fails silently
 
-These block growing the clean-application corpus, which is the only automated
-evidence that a rule or analyzer does not fire on stock software. Each is a
-real defect found by extending the corpus; none should be closed by raising a
-threshold or excluding a path.
+## Curated tables go stale without failing anything
+
+**Status:** open, and the highest-leverage item on this list.
+
+Three separate subsystems narrow their behaviour through a hand-maintained
+table. In each case the table was correct when written, fell behind as the
+project grew, and **nothing failed** -- no test, no lint, no alert. Two were
+found only by pointing a new corpus at the analyzer; the third by counting.
+
+| Table | Scope when written | Actual scope needed |
+| --- | --- | --- |
+| `localPathConstants` in `internal/phptaint/sources.go` | WordPress only | every supported CMS |
+| `scripts/clean-corpus/manifest.json` | WordPress only | every supported CMS |
+| `securityEventChecks` in `internal/checks/correlation.go` | 22 checks | 221 finding names exist |
+
+The taint table meant a stock Joomla or OpenCart install reported remote
+execution on its own template cache. The corpus meant no non-WordPress CMS had
+any false-positive gate at all. The third is measured in the next item.
+
+This is a *class* of defect, not three bugs, and it is exactly the failure mode
+this project can least afford: the tool keeps reporting healthy while covering
+less than it claims.
+
+**Decision:** each narrowing table gets a completeness test that fails when the
+project grows past it. Every check that can emit Critical is either present in
+`securityEventChecks` or listed in an explicit exclusion set with a stated
+reason; every supported CMS appears in the corpus manifest and the path-constant
+table. Adding a detector without updating the table must break CI, not degrade
+detection quietly.
+
+**Acceptance:** adding a new Critical-severity check to a fixture fails the
+completeness test until it is classified. The exclusion set is readable and
+each entry says why. No table in this class is left without such a test.
+
+**Size:** about half a day, and it retires the whole class.
+
+## Cross-account correlation sees a tenth of the detectors
+
+**Status:** open. Measured, not estimated.
+
+`CorrelateFindings` raises a coordinated-attack finding when three or more
+accounts show Critical security events, but only for checks listed in
+`securityEventChecks`:
+
+```
+finding names known to the runner : 221
+checks in securityEventChecks     :  22
+not eligible for correlation      : 209
+```
+
+Not eligible: `backdoor_port_outbound`, `bad_asn_outbound`,
+`admin_cross_account_overlap`, `bulk_password_change`, and every database and
+non-WordPress CMS detector. A database-level compromise replicated across
+accounts -- a shape this project has repeatedly encountered -- cannot raise the
+cross-account signal today.
+
+The list is also Critical-only and count-based, so several corroborating
+Warnings on one account never combine into anything.
+
+**Acceptance:** classify all 221 finding names as security events or not, with
+the completeness test above holding the classification. Re-derive the
+coordinated-attack threshold against recorded finding streams rather than
+assuming three accounts is still right at ten times the detector surface.
+
+---
+
+# Priority 2 -- detection precision
+
+A false positive here is not cosmetic. Findings drive automatic quarantine on
+customer sites, and every past incident review found real compromises buried
+under false-positive floods. These block growing the clean-application corpus,
+which is the only automated evidence that a rule or analyzer does not fire on
+stock software.
 
 Verified pinned sources for Joomla, Drupal and OpenCart are ready to add to
 `scripts/clean-corpus/manifest.json` (URL, SHA-256, exact file count and
 in-archive licence path). Adding them today turns the gate red on the two
 analyzer items below, so land the fixes first, then the sources and the
-recalibrated status budgets in one commit.
+recalibrated status budgets in one commit. None of these should be closed by
+raising a threshold or excluding a path.
 
 ## Taint laundering through value encoders
 
 **Status:** open. One false positive on stock Joomla.
 
 Every template-compiling CMS reads a file, writes generated PHP to a cache and
-includes it. Joomla writes `"<?php ... return " . var_export($strings, true) . ";"`.
-`var_export` emits an escaped PHP literal and cannot introduce executable
-constructs, so it neutralises the flow, but the analyzer has no concept of a
-laundering function. The `sanitize()` in `internal/phptaint/taint.go` is display
-escaping and is unrelated.
+includes it. Joomla writes
+`"<?php ... return " . var_export($strings, true) . ";"`. `var_export` emits an
+escaped PHP literal and cannot introduce executable constructs, so it
+neutralises the flow, but the analyzer has no concept of a laundering function.
+The `sanitize()` in `internal/phptaint/taint.go` is display escaping and is
+unrelated.
 
 **Decision needed:** which encoders neutralise a code-execution sink
 (`var_export`, `json_encode`, `serialize`, integer casts) and where laundering
@@ -114,7 +209,8 @@ unknown constant still is; reassignment between the two is handled.
 
 ## Content rules versus archive containers
 
-**Status:** open. One false positive on a stock OpenCart developer tool.
+**Status:** open. One false positive on a stock developer tool shipped inside a
+supported CMS.
 
 A PHAR is an archive, so string rules match across bundled libraries that never
 appear together in one source file. `network_socks_proxy` fired on a vendored
@@ -147,7 +243,7 @@ lands. See [the corpus gate documentation](docs/src/clean-corpus.md).
 
 ---
 
-# Priority 2 -- supply chain and operability
+# Priority 3 -- supply chain and release integrity
 
 ## Decide the trust model for internal CI builds
 
@@ -177,72 +273,111 @@ tampered artifact is refused on the path operators actually use.
 
 `csm doctor` now reports any deploy script on the host that still carries a path
 able to install an unverified release. This came from a hand-maintained copy
-that silently kept a superseded, weaker verification path.
+that silently kept a superseded, weaker verification path -- the same
+stale-copy failure mode as the tables in Priority 1, on the supply chain.
 
 **Remaining:** the check emits nothing when every script is current, unlike the
 other checks which report `[OK]`. Make it report the clean result so an operator
 can tell the check ran. Consider having the installer own the operator copy so
 it is refreshed like the shipped one.
 
-## Validate CageFS mount points
+## Runner capacity for the release pipeline
 
-**Status:** open. Small, operator-facing.
+**Status:** timeout raised; capacity question open.
 
-`csm doctor` verifies that the PHP Shield event directory is a shared CageFS
-mount and that live cages actually have it. It does not validate the rest of the
-mount-point configuration, so entries pointing at directories that do not exist
-cause every `cagefsctl` invocation to print errors, including CSM's own remount
-guidance.
+The v3.34.0 tag pipeline failed on
+`context loading failed: ... context deadline exceeded` at 324s against a
+five-minute lint cap, stopping the release before any artifact was built.
+Package loading, not analysis, approaches that limit and scales with runner
+concurrency: main-branch pipelines load in 172-201s while a tag pipeline runs
+every job at once. All four invocations now allow ten minutes.
 
-**Acceptance:** doctor reports configured mount points whose source is missing,
-naming them; a correct configuration stays quiet or reports `[OK]`.
+The gates behaved correctly -- nothing was signed, published or released -- but
+the timeout hides a capacity problem rather than solving it.
 
-## `csm support-bundle`
-
-**Status:** planned, unimplemented. Operators grep the journal and copy state
-by hand today.
-
-New CLI `csm support-bundle <path>` produces a tar+zstd containing:
-
-- `csm store export` output (manifest, bbolt snapshot, state, rules cache).
-- The last N (default 2000) service journal lines.
-- The configuration file with secrets redacted: `smtp`, `webhook.url`,
-  `abuseipdb_key`, `webui.auth_token`, `verified_session.admin_secret`,
-  `captcha_fallback.secret_key`, plus whitelist-style redaction of any unknown
-  `*_key`, `*_token` or `*_secret`.
-- `system.txt` with `uname -a`, `csm version`, distro info and startup
-  integrity hashes.
-
-Requires a live daemon, mirroring `store export`. Auto-upload and encryption at
-rest are out of scope; pipe through gpg.
-
-**Size:** 1 day.
-
-## Scheduled backup exports
-
-**Status:** planned, unimplemented. `store export` needs an operator cron entry
-today.
-
-Hot-reloadable top-level config block:
-
-```yaml
-backup:
-  enabled: true
-  schedule: "@daily"            # cron spec or @hourly|@daily|@weekly
-  destination_dir: /var/backups/csm
-  filename: "csm-{date}.csmbak"
-  retention_days: 14
-```
-
-The daemon ticks the schedule, calls `store.Export` and prunes archives older
-than `retention_days`. Failures emit a `backup_export_failed` Warning.
-Off-host destinations and encryption are out of scope.
-
-**Size:** 1-2 days.
+**Remaining:** decide whether the shared runner should be given more headroom.
+Keep the existing rule that a timeout or typechecking failure is never reported
+as clean merely because the tool also prints zero issues.
 
 ---
 
-# Priority 3 -- detection coverage
+# Priority 4 -- correlation
+
+Turning many weak signals into few strong ones is the highest-leverage way to
+raise precision without giving up coverage. The incident correlator in
+`internal/incident` is already a real subsystem -- kinds, keys, groups, spray,
+reclassification, auto-close with per-kind idle thresholds, safety caps and a
+dry-run mode -- and should be extended rather than replaced. The findings-level
+`CorrelateFindings` is the weak layer; see Priority 1.
+
+**Build the evidence harness first.** Correlation logic is far harder to test
+than detection logic, and there is no equivalent of the corpus gate for it.
+Recorded finding streams in, expected incidents out. Without that, this section
+adds a second layer that can be wrong in ways nothing catches, which given the
+false-positive history here is a real risk rather than a theoretical one.
+
+## Corroboration grading
+
+**Status:** open. Highest value of this section.
+
+A Warning corroborated by an independent signal on the same account, file or
+address should escalate; an uncorroborated Warning in a family known to be noisy
+should demote. This attacks false-positive volume directly instead of adding
+detections, and it is the mechanism that would have kept past compromises
+visible above their noise.
+
+**Acceptance:** replayed streams from real incidents raise the compromise above
+its surrounding noise; replayed clean streams do not manufacture incidents;
+demotion never hides a Critical.
+
+## Sequence correlation
+
+**Status:** open.
+
+A dropper, then a new administrator, then an outbound connection is an ordered
+story, and CSM currently emits three unrelated findings. Ordering is
+high-precision evidence that costs nothing extra to observe, because every
+finding already carries a timestamp.
+
+**Acceptance:** an ordered sequence produces one incident carrying its steps;
+the same findings out of order, or far apart in time, do not.
+
+## Join findings on file identity
+
+**Status:** open.
+
+Realtime, YARA and the taint engines can each flag the same file and produce
+separate findings. Collapsing on account, path and time window is pure noise
+reduction with no detection loss.
+
+**Acceptance:** one file that trips three layers yields one finding carrying
+three pieces of evidence, and the strongest severity wins.
+
+## Spray correlation ingesting HTTP signals
+
+**Status:** open. Formerly audit item Y11.
+
+The HTTP abuse checks exist (`http_request_flood`, `http_scanner_profile`,
+`http_ua_spoof`, `http_distributed_flood`, `http_asn_crawl`) and correlate under
+the WordPress brute-force group. They do not feed the account-spray thresholds,
+which remain mail-only.
+
+**Acceptance:** add the HTTP checks to the spray signal set with a
+request-target identity dimension, and show on recorded traffic that a
+distributed low-rate campaign correlates without raising the existing
+per-source detectors' false-positive rate.
+
+## Cross-server fleet ingest
+
+**Status:** open decision. Formerly audit item Y12.
+
+Correlating activity seen by separate installations requires choosing between
+panel-side correlation and a peer-to-peer ingest endpoint, and defining the
+trust model between hosts before any protocol work. Nothing is implemented.
+
+---
+
+# Priority 5 -- known coverage gaps
 
 ## Realtime coverage for files renamed into a watched tree
 
@@ -279,37 +414,86 @@ expanding the walk. Test nested mapped and unmapped installs, custom account
 roots, tenant ownership, symlinks, cancellation and incomplete traversal.
 Document each adapter's limits alongside the resulting coverage.
 
-## Spray correlation ingesting HTTP signals
+---
 
-**Status:** open. Formerly audit item Y11.
+# Priority 6 -- operability during an incident
 
-The HTTP abuse checks exist (`http_request_flood`, `http_scanner_profile`,
-`http_ua_spoof`, `http_distributed_flood`, `http_asn_crawl`) and correlate under
-the WordPress brute-force group. They do not feed the account-spray thresholds,
-which remain mail-only.
+A server stays protected while these wait, but they decide how fast an operator
+can understand what happened.
 
-**Acceptance:** add the HTTP checks to the spray signal set with a
-request-target identity dimension, and show on recorded traffic that a
-distributed low-rate campaign correlates without raising the existing per-source
-detectors' false-positive rate.
+## `csm support-bundle`
 
-## Cross-server fleet ingest
+**Status:** planned, unimplemented. Operators grep the journal and copy state
+by hand today.
 
-**Status:** open decision. Formerly audit item Y12.
+Worth more than it looks: diagnosing this project's own failures repeatedly
+meant extracting artifacts by hand, hitting a log capture limit that truncated
+output exactly where the failure was, and sampling `/proc` manually. An
+operator under incident pressure has less time and less context.
 
-Correlating activity seen by separate installations requires choosing between
-panel-side correlation and a peer-to-peer ingest endpoint, and defining the
-trust model between hosts before any protocol work. Nothing is implemented.
+New CLI `csm support-bundle <path>` produces a tar+zstd containing:
+
+- `csm store export` output (manifest, bbolt snapshot, state, rules cache).
+- The last N (default 2000) service journal lines.
+- The configuration file with secrets redacted: `smtp`, `webhook.url`,
+  `abuseipdb_key`, `webui.auth_token`, `verified_session.admin_secret`,
+  `captcha_fallback.secret_key`, plus whitelist-style redaction of any unknown
+  `*_key`, `*_token` or `*_secret`.
+- `system.txt` with `uname -a`, `csm version`, distro info and startup
+  integrity hashes.
+
+Requires a live daemon, mirroring `store export`. Auto-upload and encryption at
+rest are out of scope; pipe through gpg.
+
+**Size:** 1 day.
+
+## Validate CageFS mount points
+
+**Status:** open. Small, operator-facing.
+
+`csm doctor` verifies that the PHP Shield event directory is a shared CageFS
+mount and that live cages actually have it. It does not validate the rest of the
+mount-point configuration, so entries pointing at directories that do not exist
+make every `cagefsctl` invocation print errors, including CSM's own remount
+guidance.
+
+**Acceptance:** doctor reports configured mount points whose source is missing,
+naming them; a correct configuration stays quiet or reports `[OK]`.
+
+## Scheduled backup exports
+
+**Status:** planned, unimplemented. `store export` needs an operator cron entry
+today.
+
+Hot-reloadable top-level config block:
+
+```yaml
+backup:
+  enabled: true
+  schedule: "@daily"            # cron spec or @hourly|@daily|@weekly
+  destination_dir: /var/backups/csm
+  filename: "csm-{date}.csmbak"
+  retention_days: 14
+```
+
+The daemon ticks the schedule, calls `store.Export` and prunes archives older
+than `retention_days`. Failures emit a `backup_export_failed` Warning.
+Off-host destinations and encryption are out of scope.
+
+**Size:** 1-2 days.
 
 ---
 
-# Priority 4 -- infrastructure
+# Priority 7 -- correctness and infrastructure debt
 
 ## Firewall state migration to bbolt
 
 **Status:** partially prepared. A `fw:blocked` bucket exists but is written only
-during migration; `state.json` remains authoritative and every mutator rewrites
-it in full, so fsync amplification and the crash window between mutators remain.
+during migration; `state.json` remains authoritative.
+
+This is a correctness item, not a performance one: every mutator rewrites the
+whole file, so a crash between mutators can leave an enforcement change
+half-applied.
 
 Move firewall state into bbolt: `fw:blocked` keyed by IP with
 `{added, expires, reason, source}`, parallel `fw:allow_*` and `fw:port_*`
@@ -320,17 +504,6 @@ along. Provide a one-shot `csm firewall migrate-state` that reads the existing
 JSON, writes the buckets and renames the file for rollback.
 
 **Size:** 2-3 days.
-
-## WordPress companion plugin for signed-cookie operator bypass
-
-**Status:** planned. A logged-in administrator has no way to obtain the bypass
-cookie without a manual request.
-
-The plugin lives in a separate repository. This repository documents
-`/challenge/admin-token` as a stable contract, with breaking changes requiring a
-roadmap item, and adds a short integration note in `docs/src/challenge.md`.
-
-**Size:** 0.5 day here; the plugin itself is separate.
 
 ## Consolidate bootstrap toolchain pins
 
@@ -347,18 +520,13 @@ their tags, and record the selected Go and linter versions in CI. Automatic
 toolchain selection still requires access to the toolchain download when it is
 absent from cache.
 
-## Lint timeout headroom
+## WordPress companion plugin for signed-cookie operator bypass
 
-**Status:** measured and raised to ten minutes; runner capacity open.
+**Status:** planned. A logged-in administrator has no way to obtain the bypass
+cookie without a manual request.
 
-This was measured the hard way: the v3.34.0 tag pipeline failed on
-`context loading failed: ... context deadline exceeded` at 324s against the
-five-minute cap, blocking a release. Package loading, not analysis, is what
-approaches the limit, and it scales with runner concurrency -- main-branch
-pipelines loaded in 172-201s while the tag pipeline runs every job at once.
-All four invocations now allow ten minutes.
+The plugin lives in a separate repository. This repository documents
+`/challenge/admin-token` as a stable contract, with breaking changes requiring a
+roadmap item, and adds a short integration note in `docs/src/challenge.md`.
 
-**Remaining:** the timeout hides a capacity problem rather than solving it.
-Decide whether the shared runner should be given more headroom, and keep the
-existing rule that a timeout or typechecking failure is never reported as clean
-merely because the tool also prints zero issues.
+**Size:** 0.5 day here; the plugin itself is separate.
