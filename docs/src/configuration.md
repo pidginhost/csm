@@ -554,11 +554,21 @@ email_av:
   scan_timeout: "30s"                   # per-attachment scan timeout
   max_attachment_size: 26214400         # max single attachment size in bytes (25MB)
   max_archive_depth: 1                  # max nested archive extraction depth
-  max_archive_files: 50                 # max files extracted from a single archive
+  max_archive_files: 50                 # max files extracted per archive; also caps encrypted member names reported per message
   max_extraction_size: 104857600        # max total extraction size in bytes (100MB)
   quarantine_infected: true             # quarantine emails with infected attachments
   scan_concurrency: 4                   # parallel scan workers
   fail_mode: "open"                     # behavior when a scan cannot complete: "open" (default) delivers; "tempfail" defers so Exim retries
+  # Password-protected archive attachments are outside fail_mode. Their members
+  # cannot be read without the password, so no retry ever makes them scannable
+  # and "tempfail" would defer the message until it bounced. CSM delivers them
+  # and reports email_av_encrypted_archive naming the archive and the member,
+  # at most once an hour. A full alert queue does not consume this allowance.
+  # Encrypted member names are capped at max_archive_files per message; the
+  # warning counts any additional encrypted members without deferring delivery.
+  # Both encryption schemes are covered:
+  # legacy ZipCrypto and WinZip AES. Blocking such mail outright is an Exim
+  # policy decision and is not something CSM does for you.
 
 # --- Email Protection ---
 email_protection:

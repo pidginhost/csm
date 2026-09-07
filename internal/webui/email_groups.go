@@ -80,6 +80,7 @@ func emailKindForCheck(check string) string {
 	case "email_malware",
 		"email_phishing_content",
 		"email_av_degraded",
+		"email_av_encrypted_archive",
 		"email_av_timeout",
 		"email_av_parse_error",
 		"email_av_quarantine_error":

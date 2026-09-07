@@ -108,8 +108,11 @@ type SpoolWatcher struct {
 	runActive      int32 // atomic - Run owns scanCh shutdown while set
 	degradedMu     sync.Mutex
 	lastDegradedAt time.Time
-	panicMu        sync.Mutex
-	lastPanicAt    time.Time
+
+	encryptedMu     sync.Mutex
+	lastEncryptedAt time.Time
+	panicMu         sync.Mutex
+	lastPanicAt     time.Time
 
 	// queueOverflows counts FAN_Q_OVERFLOW records. In permission mode a kernel
 	// queue overflow means opens were let through without a scan verdict, so
@@ -563,6 +566,8 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		}
 	}()
 
+	sw.emitEncryptedArchiveWarning(msgID, extraction.EncryptedEntries, extraction.EncryptedEntriesOmitted)
+
 	if extraction.Partial {
 		partialResult := &emailav.ScanResult{PartialExtraction: true}
 		if shouldTempfailEmailDelivery(tempfail, partialResult, nil) {
@@ -678,15 +683,56 @@ func (sw *SpoolWatcher) closeFd() {
 	}
 }
 
-func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, message string) {
+func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, message string) bool {
 	select {
 	case sw.alertCh <- alert.Finding{
-		Severity: severity,
-		Check:    check,
-		Message:  message,
+		Severity:  severity,
+		Check:     check,
+		Message:   message,
+		Timestamp: time.Now(),
 	}:
+		return true
 	default:
 		// Alert channel full - drop
+		return false
+	}
+}
+
+// encryptedArchiveAlertInterval rate-limits the encrypted-archive finding.
+// Password-protected archives are a steady part of ordinary business mail, so
+// this is a recurring condition rather than an incident; a per-minute limit
+// would put over a thousand findings a day in front of the operator.
+const encryptedArchiveAlertInterval = time.Hour
+
+// emitEncryptedArchiveWarning reports attachments delivered without being
+// scanned because their archive entries are encrypted. This is deliberately
+// not an email_av_degraded finding: nothing is degraded, and no retry will
+// make the content readable. Keeping it separate lets an operator set policy
+// on unscannable mail without losing the signal that scanning itself broke.
+func (sw *SpoolWatcher) emitEncryptedArchiveWarning(msgID string, entries []emime.EncryptedArchiveEntry, omitted int) {
+	if len(entries) == 0 && omitted == 0 {
+		return
+	}
+
+	sw.encryptedMu.Lock()
+	defer sw.encryptedMu.Unlock()
+	if time.Since(sw.lastEncryptedAt) < encryptedArchiveAlertInterval {
+		return
+	}
+
+	named := make([]string, 0, len(entries))
+	for _, e := range entries {
+		named = append(named, fmt.Sprintf("%s in %s", e.Filename, e.ArchiveName))
+	}
+	if omitted > 0 {
+		named = append(named, fmt.Sprintf("%d additional encrypted member(s) (names omitted)", omitted))
+	}
+	if sw.emitFinding("email_av_encrypted_archive", alert.Warning,
+		fmt.Sprintf("Encrypted archive attachment could not be scanned for message %s: %s",
+			msgID, strings.Join(named, ", "))) {
+		// Only delivered warnings consume the allowance; queue pressure must
+		// not hide this condition for an hour after the queue recovers.
+		sw.lastEncryptedAt = time.Now()
 	}
 }
 

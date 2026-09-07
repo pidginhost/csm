@@ -34,8 +34,6 @@ const (
 var yamlCorpusBaseline = map[string]int{
 	// A security plugin's own login handling.
 	"credential_logger": 1,
-	// Registration mail in Elementor and WooCommerce add-ons.
-	"credential_mailer": 4,
 	// The PHPMailer SMTP class shipped in WordPress core.
 	"mailer_exim_exploit": 1,
 	// The FTP sockets class shipped in WordPress core.

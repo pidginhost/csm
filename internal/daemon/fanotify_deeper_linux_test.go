@@ -162,27 +162,27 @@ func TestEvictStalePluginStatCache(t *testing.T) {
 	freshKey := "/home/a/public_html/wp-content/plugins/fresh"
 	badKey := "/home/a/public_html/wp-content/plugins/bad"
 
-	pluginStatCache.Store(staleKey, pluginCacheEntry{
+	wpPathStatCache.Store(staleKey, wpPathCacheEntry{
 		exists: true,
-		ts:     now.Add(-2*pluginCacheTTL - time.Second),
+		ts:     now.Add(-2*wpPathCacheTTL - time.Second),
 	})
-	pluginStatCache.Store(freshKey, pluginCacheEntry{
+	wpPathStatCache.Store(freshKey, wpPathCacheEntry{
 		exists: true,
-		ts:     now.Add(-2*pluginCacheTTL + time.Second),
+		ts:     now.Add(-2*wpPathCacheTTL + time.Second),
 	})
-	pluginStatCache.Store(badKey, "invalid")
+	wpPathStatCache.Store(badKey, "invalid")
 
-	evictStalePluginStatCache(now)
+	evictStaleWPPathStatCache(now)
 
-	if _, ok := pluginStatCache.Load(staleKey); ok {
+	if _, ok := wpPathStatCache.Load(staleKey); ok {
 		t.Fatal("stale plugin cache entry was not evicted")
 	}
-	if _, ok := pluginStatCache.Load(badKey); ok {
+	if _, ok := wpPathStatCache.Load(badKey); ok {
 		t.Fatal("invalid plugin cache entry was not evicted")
 	}
-	if cached, ok := pluginStatCache.Load(freshKey); !ok {
+	if cached, ok := wpPathStatCache.Load(freshKey); !ok {
 		t.Fatal("fresh plugin cache entry was evicted")
-	} else if entry := cached.(pluginCacheEntry); !entry.exists {
+	} else if entry := cached.(wpPathCacheEntry); !entry.exists {
 		t.Fatal("fresh plugin cache entry changed")
 	}
 }
@@ -190,8 +190,8 @@ func TestEvictStalePluginStatCache(t *testing.T) {
 func resetPluginStatCacheForTest(t *testing.T) {
 	t.Helper()
 	clearPluginStatCache := func() {
-		pluginStatCache.Range(func(key, _ any) bool {
-			pluginStatCache.Delete(key)
+		wpPathStatCache.Range(func(key, _ any) bool {
+			wpPathStatCache.Delete(key)
 			return true
 		})
 	}
