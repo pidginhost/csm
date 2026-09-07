@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -59,6 +60,14 @@ func EvaluateConnection(
 		return alert.Finding{}, false
 	}
 	if dstIP == nil || dstIP.IsLoopback() || dstIP.IsUnspecified() {
+		return alert.Finding{}, false
+	}
+	// Panel front ends proxy to their own backend over the machine's public
+	// address rather than loopback, so the packet never leaves the host and is
+	// no more an outbound connection than the loopback case above. Left
+	// reported, the proxy hop is classed as C2 traffic and drives the host's
+	// own address to a critical local threat score.
+	if netutil.IsHostAddress(dstIP.String()) {
 		return alert.Finding{}, false
 	}
 	if serverLocalPorts[localPort] {

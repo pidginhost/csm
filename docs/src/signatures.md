@@ -58,6 +58,11 @@ Build CSM with YARA-X support:
 CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags yara ./cmd/csm/
 ```
 
+The rules directory and rule files must be owned by root or the scanner user and
+must not be group- or world-writable. The standard service and its YARA worker
+run as root; the installer uses `0750` for the directory and `0640` for shipped
+rules. Custom rules must also remain readable by the scanner.
+
 Place `.yar` or `.yara` files alongside YAML rules in `/opt/csm/rules/`. CSM compiles them at startup and uses them for:
 - Real-time fanotify file scanning
 - Scheduled deep-scan filesystem sweeps

@@ -207,6 +207,11 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// Successful login from non-infra
 	if strings.Contains(line, "is now logged in") {
+		// Panel transfers use loopback. Suppress only the unfamiliar-address
+		// login warning; a local relay does not make auth failures trustworthy.
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+			return findings
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "ftp_login_realtime",

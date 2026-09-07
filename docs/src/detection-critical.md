@@ -72,6 +72,11 @@ All Exim queue reads and actions started by the daemon run as transient services
 | `database_dumps` | Database exfiltration attempts |
 | `exfiltration_paste` | Connections to pastebin/code-sharing sites |
 
+The MySQL audit exempts `mysql@localhost` only when MariaDB confirms its stock
+socket authentication setup with password authentication disabled. Modified
+authentication, other host literals, and accounts whose setup cannot be verified
+remain reportable.
+
 ## Threat Intelligence
 
 | Check | Description |
@@ -79,6 +84,10 @@ All Exim queue reads and actions started by the daemon run as transient services
 | `ip_reputation` | IPs against external threat databases and optional rspamd history. Passive HTTP/cPanel sightings are High; SSH and mail-auth activity is Critical |
 | `local_threat_score` | Aggregated score from internal attack database |
 | `modsec_audit` | ModSecurity audit log parsing |
+
+The local threat score retains evidence attributed to the server itself. Such
+records can represent forwarded attacks or a compromised local process; firewall
+protection against blocking the server does not establish that traffic is safe.
 
 ## Performance
 

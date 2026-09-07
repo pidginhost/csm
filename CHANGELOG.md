@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- New installs filter IPv6 as well as IPv4. The shipped configuration never mentioned the setting, so on a dual-stack host every IPv6 packet bypassed the firewall while the blocked-address list applied only to IPv4, letting a blocked attacker return over IPv6. Existing installations keep their current setting and continue to be warned when it leaves them exposed.
+- Attack evidence attributed to the host remains visible, including failed FTP authentication through local connections.
+- The privileged database account audit verifies the stock MariaDB authentication setup before exempting its system account; modified accounts remain reportable.
+- Malware rules and their directory now install with permissions the scanner accepts, including when the installer runs with a permissive umask.
 - Encrypted-archive reports now stay bounded for attachments with many members, without deferring delivery solely because member names were omitted. A dropped encrypted-archive warning no longer silences later warnings for an hour.
 - Email attachment scanning no longer passes over an encrypted archive member in silence. Archives made by 7-Zip and recent WinZip were skipped without any record, so a password-protected attachment could be delivered unscanned with nothing reported; an archive member CSM cannot decompress is now reported as well.
 
@@ -17,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Process monitoring, automatic response, scanner health, and mail relay storage errors now report the time they occurred instead of a zero date.
 - A WordPress core update staged in a generated working directory now collapses to one finding like every other update shape. That shape alone accounted for a third of one day's per-file warnings on a busy host.
 - Suspicious email login and sensitive file write findings now carry the time they were raised instead of a zero date.
+- Real-time dropper detection now honours the ignored-paths list, like every other content check. Security plugins that rotate their own files under the web root produced findings an operator could not suppress without turning the check off entirely.
+- The performance panel now counts PHP workers on Apache hosts and reports database memory on MariaDB. It recognised only the LiteSpeed process name and read a pid file that does not exist on cPanel, so a busy server showed no PHP activity and no database memory, which reads as an idle machine rather than a collector looking in the wrong place.
+- Reconfiguring the firewall no longer reports the ruleset as modified outside CSM. Applying a configuration change rewrites the rules, so every legitimate edit raised a tampering alert. An edit made while the configuration is unchanged is still reported.
+- Legitimate code that uses goto for a state machine is no longer reported as obfuscation. WordPress core's HTML parser is built that way, so every site on a server reported the same unmodified core file. Obfuscated code is still reported: what counts now is whether the labels carry meaning, and whether the file reaches a code-execution call.
+- Configuration validation now warns when trusted countries are listed without GeoIP credentials. Country lookups need the GeoIP database, so without it no address was ever treated as trusted and a setting operators rely on to avoid locking themselves out did nothing.
+- A web front end proxying to its own backend over the machine's public address is no longer treated as a user connecting to an unusual destination. That traffic never leaves the host, but it was classed as command-and-control and drove the server's own address to a critical threat score no operator could clear. Connections to any other address are reported as before.
+- Firewall commands answer a request for help with their own usage instead of complaining that the help flag is not an address, and refuse an option-looking word where a free-text reason belongs rather than silently recording it as the reason.
+- Successful FTP logins over loopback no longer raise an unfamiliar-address warning for routine control-panel transfers.
+- The MySQL superuser audit no longer flags the unmodified stock MariaDB system account. Accounts with the same name on other hosts remain reportable.
+- Credential-mail detection now uses the same byte and whitespace matching as the on-demand scanner, preventing Unicode-related false positives and preserving detection across whitespace variants.
 - Password-protected archive attachments are reported as encrypted rather than as a failure to stage the file, at most once an hour, and no longer count as an incomplete extraction. Operators running the deferring fail mode had such messages retried until they bounced, and the alerts pointed at a disk problem that did not exist.
 - Email antivirus findings now carry the time they were raised instead of a zero date.
 - A WordPress core, plugin, or theme update now reports one finding for the staged package instead of one per file it unpacks, and that finding clears itself once WordPress removes the staging directory. A single plugin update had been producing over a hundred warnings. Files staged under a name matching nothing installed on the site still report individually, and content scanning of every staged file is unchanged.

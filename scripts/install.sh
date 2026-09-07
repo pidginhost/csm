@@ -400,9 +400,14 @@ tar xzf "${TMPDIR}/assets.tar.gz" -C "$INSTALL_DIR" --no-same-owner --no-same-pe
 for required in ui configs pam deploy.sh; do
     [ -e "${INSTALL_DIR}/${required}" ] || die "Asset archive missing ${required}"
 done
-mkdir -p "${INSTALL_DIR}/rules"
+# The loader checks the directory as well as each rule. Set its mode even
+# when an earlier install created it under a group-writable umask.
+install -d -m 0750 "${INSTALL_DIR}/rules"
 cp "${INSTALL_DIR}/configs/malware.yml" "${INSTALL_DIR}/rules/"
 cp "${INSTALL_DIR}/configs/malware.yar" "${INSTALL_DIR}/rules/"
+# cp preserves the archive's mode. The YARA loader refuses group- or
+# world-writable rules, so pin them here rather than trusting the tarball.
+chmod 0640 "${INSTALL_DIR}"/rules/malware.yml "${INSTALL_DIR}"/rules/malware.yar
 info "Assets OK"
 
 ## Place binary

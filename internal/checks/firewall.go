@@ -119,8 +119,17 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 	// every block/unblock.
 	hash := nftRulesetStructureHash(out)
 
+	// A ruleset change is only evidence of an external edit when CSM's own
+	// policy did not change. Applying a config edit rewrites the ruleset, so
+	// comparing the structure hash alone reports tampering every time the
+	// operator legitimately reconfigures the firewall, which teaches them to
+	// ignore the alert that would matter. Pair the ruleset hash with the
+	// config hash that produced it.
 	prev, exists := store.GetRaw("_nftables_rules_hash")
-	if exists && prev != hash {
+	prevCfgHash, cfgHashKnown := store.GetRaw("_nftables_rules_config_hash")
+	cfgHash := cfg.Integrity.ConfigHash
+	explainedByOwnConfigChange := cfgHashKnown && prevCfgHash != cfgHash
+	if exists && prev != hash && !explainedByOwnConfigChange {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.High,
 			Check:     "firewall",
@@ -129,6 +138,7 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 		})
 	}
 	store.SetRaw("_nftables_rules_hash", hash)
+	store.SetRaw("_nftables_rules_config_hash", cfgHash)
 
 	// Check for dangerous ports in config
 	findings = append(findings, checkDangerousPorts(cfg)...)
