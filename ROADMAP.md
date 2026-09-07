@@ -347,12 +347,18 @@ their tags, and record the selected Go and linter versions in CI. Automatic
 toolchain selection still requires access to the toolchain download when it is
 absent from cache.
 
-## Measure lint timeout headroom
+## Lint timeout headroom
 
-**Status:** five-minute limit configured; cold-runner measurement open.
+**Status:** measured and raised to ten minutes; runner capacity open.
 
-`.golangci.yml`, `make lint` and both lint jobs use five minutes, and canonical
-lint passes. Record package-loading and total lint time on cold caches with two
-concurrent pipelines on the intended runner, retain timings and exit statuses,
-then tune runner resources or the timeout. A timeout or typechecking failure
-must not be reported as clean merely because the tool also prints zero issues.
+This was measured the hard way: the v3.34.0 tag pipeline failed on
+`context loading failed: ... context deadline exceeded` at 324s against the
+five-minute cap, blocking a release. Package loading, not analysis, is what
+approaches the limit, and it scales with runner concurrency -- main-branch
+pipelines loaded in 172-201s while the tag pipeline runs every job at once.
+All four invocations now allow ten minutes.
+
+**Remaining:** the timeout hides a capacity problem rather than solving it.
+Decide whether the shared runner should be given more headroom, and keep the
+existing rule that a timeout or typechecking failure is never reported as clean
+merely because the tool also prints zero issues.
