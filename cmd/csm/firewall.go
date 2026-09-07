@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -213,6 +214,10 @@ func fwStatus() {
 
 func fwDeny() {
 	args := fwArgs()
+	if isHelpRequest(args) {
+		fmt.Printf("Usage: csm firewall deny <ip> [reason]\n")
+		return
+	}
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: csm firewall deny <ip> [reason]\n")
 		os.Exit(1)
@@ -224,9 +229,10 @@ func fwDeny() {
 		os.Exit(1)
 	}
 
-	reason := "Blocked via CLI"
-	if len(args) > 1 {
-		reason = strings.Join(args[1:], " ")
+	reason, reasonErr := parseReason(args[1:], "Blocked via CLI")
+	if reasonErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
+		os.Exit(1)
 	}
 
 	raw := requireDaemon(control.CmdFirewallBlock, control.FirewallIPArgs{
@@ -238,6 +244,10 @@ func fwDeny() {
 
 func fwAllow() {
 	args := fwArgs()
+	if isHelpRequest(args) {
+		fmt.Printf("Usage: csm firewall allow <ip> [reason]\n")
+		return
+	}
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: csm firewall allow <ip> [reason]\n")
 		os.Exit(1)
@@ -249,9 +259,10 @@ func fwAllow() {
 		os.Exit(1)
 	}
 
-	reason := "Allowed via CLI"
-	if len(args) > 1 {
-		reason = strings.Join(args[1:], " ")
+	reason, reasonErr := parseReason(args[1:], "Allowed via CLI")
+	if reasonErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
+		os.Exit(1)
 	}
 
 	raw := requireDaemon(control.CmdFirewallAllow, control.FirewallIPArgs{
@@ -380,6 +391,10 @@ func fwGrep() {
 
 func fwTempban() {
 	args := fwArgs()
+	if isHelpRequest(args) {
+		fmt.Printf("Usage: csm firewall tempban <ip> <duration> [reason]\n")
+		return
+	}
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: csm firewall tempban <ip> <duration> [reason]\n")
 		fmt.Fprintf(os.Stderr, "  Duration examples: 1h, 24h, 7d, 1h30m\n")
@@ -398,9 +413,10 @@ func fwTempban() {
 		os.Exit(1)
 	}
 
-	reason := "Tempban via CLI"
-	if len(args) > 2 {
-		reason = strings.Join(args[2:], " ")
+	reason, reasonErr := parseReason(args[2:], "Tempban via CLI")
+	if reasonErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
+		os.Exit(1)
 	}
 
 	raw := requireDaemon(control.CmdFirewallTempBan, control.FirewallIPArgs{
@@ -413,6 +429,10 @@ func fwTempban() {
 
 func fwTempAllow() {
 	args := fwArgs()
+	if isHelpRequest(args) {
+		fmt.Printf("Usage: csm firewall tempallow <ip> <duration> [reason]\n")
+		return
+	}
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: csm firewall tempallow <ip> <duration> [reason]\n")
 		fmt.Fprintf(os.Stderr, "  Duration examples: 4h, 1d, 30m\n")
@@ -431,9 +451,10 @@ func fwTempAllow() {
 		os.Exit(1)
 	}
 
-	reason := "Temp allow via CLI"
-	if len(args) > 2 {
-		reason = strings.Join(args[2:], " ")
+	reason, reasonErr := parseReason(args[2:], "Temp allow via CLI")
+	if reasonErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
+		os.Exit(1)
 	}
 
 	raw := requireDaemon(control.CmdFirewallTempAllow, control.FirewallIPArgs{
@@ -728,6 +749,10 @@ func fwRollback() {
 
 func fwDenySubnet() {
 	args := fwArgs()
+	if isHelpRequest(args) {
+		fmt.Printf("Usage: csm firewall deny-subnet <cidr> [reason]\n")
+		return
+	}
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: csm firewall deny-subnet <cidr> [reason]\n")
 		fmt.Fprintf(os.Stderr, "  Example: csm firewall deny-subnet 1.2.3.0/24 brute force range\n")
@@ -740,9 +765,10 @@ func fwDenySubnet() {
 		os.Exit(1)
 	}
 
-	reason := "Blocked via CLI"
-	if len(args) > 1 {
-		reason = strings.Join(args[1:], " ")
+	reason, reasonErr := parseReason(args[1:], "Blocked via CLI")
+	if reasonErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
+		os.Exit(1)
 	}
 
 	raw := requireDaemon(control.CmdFirewallDenySubnet, control.FirewallSubnetArgs{
@@ -961,4 +987,37 @@ func fwCFStatus() {
 			fmt.Printf("  %s\n", cidr)
 		}
 	}
+}
+
+// errReasonLooksLikeFlag reports a reason argument that starts with a dash.
+// The reason position is free text, so an unrecognised flag would otherwise be
+// stored verbatim and the operator would believe it took effect.
+var errReasonLooksLikeFlag = errors.New("reason argument looks like a flag")
+
+// parseReason joins the trailing free-text reason, refusing anything that
+// looks like a flag. A bare "-" is ordinary punctuation, not a flag.
+func parseReason(args []string, fallback string) (string, error) {
+	if len(args) == 0 {
+		return fallback, nil
+	}
+	for _, arg := range args {
+		if len(arg) > 1 && strings.HasPrefix(arg, "-") {
+			return "", fmt.Errorf("%w: %s", errReasonLooksLikeFlag, arg)
+		}
+	}
+	return strings.Join(args, " "), nil
+}
+
+// isHelpRequest reports whether the operator asked for usage rather than
+// supplying arguments, so a subcommand answers with its own usage instead of
+// trying to parse "--help" as an address.
+func isHelpRequest(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		return true
+	}
+	return false
 }

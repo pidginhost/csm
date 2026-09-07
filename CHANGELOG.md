@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- New installs filter IPv6 as well as IPv4. The shipped configuration never mentioned the setting, so on a dual-stack host every IPv6 packet bypassed the firewall while the blocked-address list applied only to IPv4, letting a blocked attacker return over IPv6. Existing installations keep their current setting and continue to be warned when it leaves them exposed.
 - Attack evidence attributed to the host remains visible, including failed FTP authentication through local connections.
 - The privileged database account audit verifies the stock MariaDB authentication setup before exempting its system account; modified accounts remain reportable.
 - Malware rules and their directory now install with permissions the scanner accepts, including when the installer runs with a permissive umask.
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A web front end proxying to its own backend over the machine's public address is no longer treated as a user connecting to an unusual destination. That traffic never leaves the host, but it was classed as command-and-control and drove the server's own address to a critical threat score no operator could clear. Connections to any other address are reported as before.
+- Firewall commands answer a request for help with their own usage instead of complaining that the help flag is not an address, and refuse an option-looking word where a free-text reason belongs rather than silently recording it as the reason.
 - Successful FTP logins over loopback no longer raise an unfamiliar-address warning for routine control-panel transfers.
 - The MySQL superuser audit no longer flags the unmodified stock MariaDB system account. Accounts with the same name on other hosts remain reportable.
 - Credential-mail detection now uses the same byte and whitespace matching as the on-demand scanner, preventing Unicode-related false positives and preserving detection across whitespace variants.

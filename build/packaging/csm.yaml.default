@@ -460,6 +460,15 @@ firewall:
     - 873
     - 6277                      # DCC   (SpamAssassin)
     - 24441                     # Pyzor (SpamAssassin)
+  # IPv6. false lets every IPv6 packet bypass the firewall: the blanket
+  # accept sits ahead of the blocked sets and the port rules, and the
+  # blocked-IP sets are IPv4-only, so a blocked attacker can return over
+  # IPv6. The empty lists below inherit the IPv4 policy above.
+  ipv6: true
+  tcp6_in: []
+  tcp6_out: []
+  udp6_in: []
+  udp6_out: []
   restricted_tcp:               # ports only accessible from infra_ips
     - 2086
     - 2087
