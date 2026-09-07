@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A web front end proxying to its own backend over the machine's public address is no longer treated as a user connecting to an unusual destination. That traffic never leaves the host, but it was classed as command-and-control and drove the server's own address to a critical threat score no operator could clear. Connections to any other address are reported as before.
 - Successful FTP logins over loopback no longer raise an unfamiliar-address warning for routine control-panel transfers.
 - The MySQL superuser audit no longer flags the unmodified stock MariaDB system account. Accounts with the same name on other hosts remain reportable.
 - Credential-mail detection now uses the same byte and whitespace matching as the on-demand scanner, preventing Unicode-related false positives and preserving detection across whitespace variants.
