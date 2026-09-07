@@ -98,6 +98,16 @@ func TestWPUpdateStagingDirShapes(t *testing.T) {
 			want: filepath.Join(upgrade, "wordpress-6.4.10"),
 		},
 		{
+			// WordPress stages a core update in a uniqid working directory as
+			// well as in a wordpress-<version> one. On a production host this
+			// shape produced 1062 of one day's 3088 per-file warnings, so the
+			// unpacked directory and a real WordPress root are what identify a
+			// core package -- never the generated staging name.
+			name: "core package in a uniqid working directory",
+			path: filepath.Join(upgrade, "wp_6a9e080f774ec", "wordpress", "wp-login.php"),
+			want: filepath.Join(upgrade, "wp_6a9e080f774ec"),
+		},
+		{
 			name: "package naming nothing installed",
 			path: filepath.Join(upgrade, "totally-not-a-plugin.1.0", "totally-not-a-plugin", "shell.php"),
 			want: "",
@@ -198,6 +208,37 @@ func TestPHPInUpgradeCorePackageCollapsesToOneAlert(t *testing.T) {
 	got := drainFindings(ch)
 	if len(got) != 1 {
 		t.Fatalf("got %d findings for one staged core update, want 1: %+v", len(got), got)
+	}
+	if got[0].FilePath != staging {
+		t.Errorf("FilePath = %q, want the staging directory %q", got[0].FilePath, staging)
+	}
+}
+
+func TestPHPInUpgradeUniqidCorePackageCollapsesToOneAlert(t *testing.T) {
+	wpPathStatCache.Clear()
+	wpRoot := filepath.Join(t.TempDir(), "public_html")
+	if err := os.MkdirAll(filepath.Join(wpRoot, "wp-includes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wpRoot, "wp-includes", "version.php"), []byte("<?php $wp_version='6.4.10';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(wpRoot, "wp-content", "upgrade", "wp_6a9e080f774ec")
+
+	ch := make(chan alert.Finding, 32)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	for _, rel := range []string{
+		filepath.Join("wordpress", "wp-login.php"),
+		filepath.Join("wordpress", "wp-includes", "kses.php"),
+		filepath.Join("wordpress", "wp-admin", "includes", "user.php"),
+	} {
+		path := filepath.Join(staging, rel)
+		fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, cleanStagedPHP)})
+	}
+
+	got := drainFindings(ch)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings for a uniqid-staged core update, want 1: %+v", len(got), got)
 	}
 	if got[0].FilePath != staging {
 		t.Errorf("FilePath = %q, want the staging directory %q", got[0].FilePath, staging)

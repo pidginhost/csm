@@ -121,14 +121,16 @@ func EvaluateSensitiveFileWriteSnapshot(path string, uid, pid uint32, comm strin
 	if uid != 0 {
 		sev = alert.Critical
 	}
+	now := time.Now()
 	f := alert.Finding{
-		Severity: sev,
-		Check:    "sensitive_file_modified",
-		Message:  fmt.Sprintf("Write to sensitive system file: %s (uid=%d)", path, uid),
-		Details:  fmt.Sprintf("Class: %s, PID: %d, Comm: %s, User: %s", kind, pid, comm, LookupUser(uid)),
-		FilePath: path,
+		Severity:  sev,
+		Check:     "sensitive_file_modified",
+		Message:   fmt.Sprintf("Write to sensitive system file: %s (uid=%d)", path, uid),
+		Details:   fmt.Sprintf("Class: %s, PID: %d, Comm: %s, User: %s", kind, pid, comm, LookupUser(uid)),
+		FilePath:  path,
+		Timestamp: now,
 	}
-	return rescoreSensitive(f, kind, nil, pid, time.Now()), true
+	return rescoreSensitive(f, kind, nil, pid, now), true
 }
 
 // EvaluateSensitiveFileAppearance returns a finding when a path no previous

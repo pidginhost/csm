@@ -221,7 +221,7 @@ func (d *Daemon) reportYaraCompileStatus(compileErr string) {
 // emitYaraFinding pushes a finding without blocking; a saturated alert channel
 // is accounted for by the daemon's general drop counter.
 func (d *Daemon) emitYaraFinding(sev alert.Severity, check, msg string) bool {
-	finding := alert.Finding{Severity: sev, Check: check, Message: msg}
+	finding := alert.Finding{Severity: sev, Check: check, Message: msg, Timestamp: time.Now()}
 	select {
 	case d.alertCh <- finding:
 		return true
@@ -261,9 +261,10 @@ func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor ti
 	}
 
 	finding := alert.Finding{
-		Severity: alert.Critical,
-		Check:    "yara_worker_crashed",
-		Message:  fmt.Sprintf("YARA-X worker crashed (exit=%d signal=%v after %s); supervisor restarted it, real-time scanning recovered.", exitCode, sig, ranFor.Round(time.Millisecond)),
+		Severity:  alert.Critical,
+		Check:     "yara_worker_crashed",
+		Timestamp: now,
+		Message:   fmt.Sprintf("YARA-X worker crashed (exit=%d signal=%v after %s); supervisor restarted it, real-time scanning recovered.", exitCode, sig, ranFor.Round(time.Millisecond)),
 	}
 	select {
 	case d.alertCh <- finding:

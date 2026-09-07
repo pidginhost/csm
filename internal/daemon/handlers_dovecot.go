@@ -150,10 +150,11 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 			user, countryName, ip, previousList),
 		Details: fmt.Sprintf("Country: %s (%s)\nIP: %s\nLogin count: %d\nPreviously seen countries: %s",
 			country, countryName, ip, history.LoginCount, previousList),
-		SourceIP: ip,
-		Mailbox:  mailbox,
-		Domain:   domain,
-		TenantID: tenant,
+		SourceIP:  ip,
+		Mailbox:   mailbox,
+		Domain:    domain,
+		TenantID:  tenant,
+		Timestamp: time.Now(),
 	}}
 }
 
