@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A WordPress core, plugin, or theme update now reports one finding for the staged package instead of one per file it unpacks, and that finding clears itself once WordPress removes the staging directory. A single plugin update had been producing over a hundred warnings. Files staged under a name matching nothing installed on the site still report individually, and content scanning of every staged file is unchanged.
 - Real-time scanning no longer reports credential theft for plugin screens that sign in to a vendor cloud account or send a registration notice. A match now requires the mail builtin itself to carry the posted credentials, which is what the on-demand scanner already required.
 
 ## [3.34.1] - 2026-09-07

@@ -125,15 +125,15 @@ var knownWebshells = map[string]bool{
 	"webshell.php": true,
 }
 
-// M3 - plugin stat cache with TTL
-type pluginCacheEntry struct {
+// M3 - WordPress path stat cache with TTL
+type wpPathCacheEntry struct {
 	exists bool
 	ts     time.Time
 }
 
-var pluginStatCache sync.Map // key: pluginDir string → value: pluginCacheEntry
+var wpPathStatCache sync.Map // key: path string → value: wpPathCacheEntry
 
-const pluginCacheTTL = 5 * time.Minute
+const wpPathCacheTTL = 5 * time.Minute
 
 // alertDedupTTL is the cooldown period for duplicate alerts on the same
 // check+filepath combination. Prevents alert storms from rapid writes.
@@ -1506,6 +1506,21 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			if isWPTranslationCacheData(event.fd, data) {
 				return
 			}
+			// One WordPress update writes every PHP file of the package
+			// into this directory, and the path-only warning fired on each
+			// of them. Report the package instead: dedup is keyed on the
+			// alerted path, so the staging directory collapses the burst to
+			// one finding, and the finding clears itself once WordPress
+			// removes the directory. Only this warning is collapsed --
+			// content analysis above ran on every staged file and reports
+			// its own findings against their own paths.
+			if staging := wpUpdateStagingDir(path); staging != "" {
+				fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
+					fmt.Sprintf("WordPress update staged: %s", staging),
+					"Package names an installed plugin, theme, or WordPress core. Every staged file was content-scanned.",
+					staging, procInfo)
+				return
+			}
 			fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
 				fmt.Sprintf("PHP file created in sensitive WP directory (content clean): %s", path), "", path, procInfo)
 		}
@@ -2335,24 +2350,24 @@ func (fm *FileMonitor) overflowReporter() {
 				}
 				return true
 			})
-			evictStalePluginStatCache(now)
+			evictStaleWPPathStatCache(now)
 		}
 	}
 }
 
-// evictStalePluginStatCache bounds the package-level plugin update stat cache.
+// evictStaleWPPathStatCache bounds the package-level WordPress path stat cache.
 // The compare-delete keeps the minute sweep from removing a fresh stat result
 // stored by an analyzer worker after Range observed an older entry.
-func evictStalePluginStatCache(now time.Time) {
-	pluginCutoff := 2 * pluginCacheTTL
-	pluginStatCache.Range(func(key, value any) bool {
-		entry, ok := value.(pluginCacheEntry)
+func evictStaleWPPathStatCache(now time.Time) {
+	cutoff := 2 * wpPathCacheTTL
+	wpPathStatCache.Range(func(key, value any) bool {
+		entry, ok := value.(wpPathCacheEntry)
 		if !ok {
-			pluginStatCache.Delete(key)
+			wpPathStatCache.Delete(key)
 			return true
 		}
-		if now.Sub(entry.ts) > pluginCutoff {
-			pluginStatCache.CompareAndDelete(key, entry)
+		if now.Sub(entry.ts) > cutoff {
+			wpPathStatCache.CompareAndDelete(key, entry)
 		}
 		return true
 	})
@@ -2558,21 +2573,76 @@ func looksLikePluginUpdate(path string) bool {
 	}
 
 	// Check if a matching plugin directory exists in plugins/
-	pluginDir := wpRoot + "/wp-content/plugins/" + pluginName
+	return cachedPathExists(wpRoot + "/wp-content/plugins/" + pluginName)
+}
 
-	// M3 - check cache first
-	if cached, ok := pluginStatCache.Load(pluginDir); ok {
-		entry := cached.(pluginCacheEntry)
-		if time.Since(entry.ts) < pluginCacheTTL {
+// cachedPathExists answers whether path exists, memoised for wpPathCacheTTL.
+// The realtime path asks this once per file event during an update, so an
+// uncached stat per staged file would be paid thousands of times per package.
+func cachedPathExists(path string) bool {
+	if cached, ok := wpPathStatCache.Load(path); ok {
+		if entry, ok := cached.(wpPathCacheEntry); ok && time.Since(entry.ts) < wpPathCacheTTL {
 			return entry.exists
 		}
 	}
 
-	_, err := os.Stat(pluginDir)
+	_, err := os.Stat(path)
 	exists := err == nil
-	pluginStatCache.Store(pluginDir, pluginCacheEntry{
+	wpPathStatCache.Store(path, wpPathCacheEntry{
 		exists: exists,
 		ts:     time.Now(),
 	})
 	return exists
+}
+
+// wpUpdateStagingDir returns the directory WordPress staged an update in when
+// path names a file inside one, and "" when it does not. WordPress unpacks one
+// package per update under wp-content/upgrade/:
+//
+//	upgrade/<slug>.<version>/<slug>/...                    plugins and themes
+//	upgrade/wordpress-<version>[-partial-N]/wordpress/...  core
+//
+// A package counts as an update only when its unpacked directory names
+// something already installed on that site: a matching plugins/ or themes/
+// directory, or, for a core package, a WordPress root. A directory naming
+// nothing installed is not an update, so its files keep alerting one by one.
+func wpUpdateStagingDir(path string) string {
+	const marker = "/wp-content/upgrade/"
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	wpRoot := path[:idx]
+	rest := path[idx+len(marker):]
+
+	slash := strings.Index(rest, "/")
+	if slash <= 0 {
+		return "" // a file sitting directly in upgrade/ belongs to no package
+	}
+	inner := rest[slash+1:]
+	innerSlash := strings.Index(inner, "/")
+	if innerSlash <= 0 {
+		return "" // the package directory holds no unpacked tree
+	}
+
+	stagingName := rest[:slash]
+	stagingDir := path[:idx+len(marker)+slash]
+	unpacked := inner[:innerSlash]
+
+	if unpacked == "wordpress" {
+		if !strings.HasPrefix(stagingName, "wordpress-") {
+			return ""
+		}
+		if !cachedPathExists(wpRoot + "/wp-includes/version.php") {
+			return ""
+		}
+		return stagingDir
+	}
+
+	for _, installed := range []string{"/wp-content/plugins/", "/wp-content/themes/"} {
+		if cachedPathExists(wpRoot + installed + unpacked) {
+			return stagingDir
+		}
+	}
+	return ""
 }
