@@ -2174,6 +2174,13 @@ func (e *Engine) PromoteToPermanentBlock(ip, reason string) error {
 	}
 	ip = canonical
 
+	// This path deliberately bypasses blockIPLocked, so it does not inherit
+	// that path's address guard. An entry that reached the set before the
+	// guard existed must not be made permanent here.
+	if isUnblockableAddress(ip) {
+		return ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -3323,6 +3330,18 @@ func (e *Engine) FlushBlocked() error {
 func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 	if ones, _ := network.Mask.Size(); ones == 0 {
 		return fmt.Errorf("refusing to block default route: %s", network.String())
+	}
+	// The local-address check below reads e.localAddrs, which excludes
+	// loopback and link-local by construction, so a range covering them would
+	// otherwise pass where the single address is refused. A range wide enough
+	// to swallow loopback is refused for the same reason.
+	if isUnblockableAddress(network.IP.String()) {
+		return fmt.Errorf("refusing to block non-routable range: %s", network.String())
+	}
+	for _, reserved := range []string{"127.0.0.1", "::1"} {
+		if ip := net.ParseIP(reserved); ip != nil && network.Contains(ip) {
+			return fmt.Errorf("refusing to block subnet %s: contains loopback %s", network.String(), reserved)
+		}
 	}
 
 	for _, raw := range e.cfg.InfraIPs {

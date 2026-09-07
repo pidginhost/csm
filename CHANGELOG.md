@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Subnet blocking and promotion to a permanent block now refuse non-routable addresses, matching the single-address path. The existing range check reads the host's interface addresses, which omit loopback, so a range covering it was accepted; promotion bypasses the ordinary block path by design and so bypassed its guard too.
 - The firewall now refuses to block loopback and other non-routable addresses. The existing guard was built from the host's interface addresses, which deliberately omit loopback, so the one address that can never be an attacker was the one the guard did not cover; a block was accepted rather than refused and only the rule ordering kept traffic flowing.
 - WAF attacker reports no longer name the server itself. A control panel proxies its own requests, so denials attributed to loopback or to the machine's own address accumulated until the report advised permanently blocking the host.
 - A Revolution Slider exploit rule no longer fires on a security plugin's own block log. The rule matched the request payload wherever it appeared, so a log quoting the attack it stopped looked identical to an attack tool; it now requires the payload to sit in code that issues the request. Exploit tools in PHP, Python and shell are still detected.
