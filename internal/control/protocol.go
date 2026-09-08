@@ -73,6 +73,11 @@ const (
 	CmdPHPRelayDryRun       = "phprelay.dry_run"
 	CmdPHPRelayThaw         = "phprelay.thaw"
 
+	// Clears one address's accumulated local threat-scoring state. Kept
+	// separate from the firewall commands: it changes no block, allow or
+	// whitelist entry, only what local_threat_score reads.
+	CmdThreatForget = "threat.forget"
+
 	// Phase 2 incident correlation.
 	CmdIncidentsList       = "incidents.list"
 	CmdIncidentsShow       = "incidents.show"
@@ -225,6 +230,20 @@ type FirewallApplyConfirmedArgs struct {
 // commands that do not need to report state back (block, allow, etc).
 // Message is a short human-readable string the CLI can print verbatim.
 type FirewallAckResult struct {
+	Message string `json:"message"`
+}
+
+// ThreatForgetResult reports what clearing an address's scoring state
+// actually removed. Found distinguishes "cleared a stale record" from
+// "there was nothing to clear", which the operator cannot otherwise tell
+// apart and which decides whether the alert will stop.
+// If legacy spellings created multiple records for the same address, Events
+// is their total event count and Score is the highest removed record's score.
+type ThreatForgetResult struct {
+	IP      string `json:"ip"`
+	Found   bool   `json:"found"`
+	Score   int    `json:"score"`
+	Events  int    `json:"events"`
 	Message string `json:"message"`
 }
 

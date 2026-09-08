@@ -55,6 +55,13 @@ func (db *DB) load() {
 		return
 	}
 
+	// No configured directory means there is nowhere to persist to. Joining
+	// an empty dbPath yields a relative path, which would read and write
+	// state in whatever directory the process was started from.
+	if db.dbPath == "" {
+		return
+	}
+
 	// Fallback: flat-file records.json.
 	path := filepath.Join(db.dbPath, recordsFile)
 	// #nosec G304 -- filepath.Join under operator-configured db.dbPath.
@@ -173,6 +180,13 @@ func (db *DB) saveRecords() {
 		return
 	}
 
+	// No configured directory means there is nowhere to persist to. Joining
+	// an empty dbPath yields a relative path, which would read and write
+	// state in whatever directory the process was started from.
+	if db.dbPath == "" {
+		return
+	}
+
 	// Fallback: flat-file records.json. The whole records map is rewritten
 	// each flush, so removals are reflected by absence and deletedIPs is
 	// redundant here -- but it must still be drained or it grows for the
@@ -278,6 +292,13 @@ func (db *DB) appendEvents(events []Event) {
 		return
 	}
 
+	// No configured directory means there is nowhere to persist to. Joining
+	// an empty dbPath yields a relative path, which would read and write
+	// state in whatever directory the process was started from.
+	if db.dbPath == "" {
+		return
+	}
+
 	// Fallback: flat-file JSONL.
 	path := filepath.Join(db.dbPath, eventsFile)
 
@@ -351,6 +372,12 @@ func (db *DB) QueryEvents(ip string, limit int) []Event {
 			}
 		}
 		return result
+	}
+
+	// See the note in saveRecords: an empty dbPath would resolve to a
+	// relative path and read an unrelated file from the working directory.
+	if db.dbPath == "" {
+		return nil
 	}
 
 	// Fallback: flat-file JSONL.

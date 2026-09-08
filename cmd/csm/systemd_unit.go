@@ -16,6 +16,9 @@ Restart=always
 RestartSec=10
 TimeoutStartSec=120
 WatchdogSec=300
+# Let the daemon stop its workers before systemd kills remaining processes.
+# A cgroup-wide SIGTERM can reach a worker before the daemon enters shutdown.
+KillMode=mixed
 
 StateDirectory=csm
 StateDirectoryMode=0700
@@ -108,7 +111,9 @@ SystemCallFilter=@system-service @network-io @file-system
 SystemCallFilter=bpf fanotify_init fanotify_mark inotify_init inotify_init1 inotify_add_watch inotify_rm_watch perf_event_open
 SystemCallFilter=clone clone3 execve execveat fork vfork mmap mprotect munmap mremap brk
 SystemCallFilter=pidfd_open pidfd_send_signal
-SystemCallFilter=~@reboot ~@swap ~@module ~@raw-io ~@mount ~@cpu-emulation
+# One "~" negates the whole line; repeating it per entry makes systemd
+# read "~@swap" as a syscall NAME, fail to parse it, and drop it.
+SystemCallFilter=~@reboot @swap @module @raw-io @mount @cpu-emulation
 SystemCallErrorNumber=EPERM
 
 [Install]

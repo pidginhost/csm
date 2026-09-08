@@ -37,6 +37,8 @@ func runFirewall() {
 		fwRemovePort()
 	case "remove":
 		fwRemove()
+	case "forget":
+		fwForget()
 	case "grep":
 		fwGrep()
 	case "tempban":
@@ -92,6 +94,7 @@ Commands:
   allow-port <ip> <port> [reason]   Allow IP on specific port only (e.g. MySQL 3306)
   remove-port <ip> <port>           Remove port-specific allow
   remove <ip>                       Remove IP from blocked and allowed lists
+  forget <ip>                       Clear IP's local threat score (keeps block/allow/whitelist)
   grep <pattern>                    Search blocked/allowed IPs by pattern
   tempban <ip> <duration> [reason]  Temporary block (e.g. 24h, 7d, 1h30m)
   tempallow <ip> <duration> [reason] Temporary allow (e.g. 4h, 1d)
@@ -623,10 +626,36 @@ func geoIPLookupDirs(countryDBDir, statePath string) []string {
 	return dirs
 }
 
-// geoIPUnavailableAdvice names the command that downloads the databases this
-// lookup reads. `csm firewall update-geoip` only fills the country-block
-// store and refuses without firewall.country_block configured, so pointing an
-// operator at it cannot resolve a missing lookup.
+// geoIPReportLines renders what the lookup actually resolved. The ASN
+// database is opened on every lookup; reporting only the country threw its
+// answer away, and the network an address belongs to is usually what the
+// operator running this command is after. Fields the databases did not
+// supply are omitted rather than printed empty, so a country-only result
+// from the country-block store does not look like a failed lookup.
+func geoIPReportLines(countries []string, info geoip.Info) []string {
+	var lines []string
+	if len(countries) > 0 {
+		lines = append(lines, fmt.Sprintf("COUNTRY  %s", strings.Join(countries, ", ")))
+	}
+	if info.City != "" {
+		lines = append(lines, fmt.Sprintf("CITY     %s", info.City))
+	}
+	switch {
+	case info.ASN != 0 && info.ASOrg != "":
+		lines = append(lines, fmt.Sprintf("ASN      AS%d (%s)", info.ASN, info.ASOrg))
+	case info.ASN != 0:
+		lines = append(lines, fmt.Sprintf("ASN      AS%d", info.ASN))
+	case info.ASOrg != "":
+		lines = append(lines, fmt.Sprintf("ASN      %s", info.ASOrg))
+	}
+	if info.Network != "" {
+		lines = append(lines, fmt.Sprintf("NETWORK  %s", info.Network))
+	}
+	return lines
+}
+
+// geoIPUnavailableAdvice names the downloader for the lookup databases,
+// rather than the separate country-block store updater.
 func geoIPUnavailableAdvice() string {
 	return "COUNTRY  unknown (no GeoIP database - run 'csm update-geoip')"
 }
@@ -686,25 +715,35 @@ func fwLookup() {
 		}
 	}
 
-	// GeoIP lookup. The country-block store is checked first; the daemon's
-	// GeoLite2 databases answer when it is empty, which is the usual case on
-	// a host that never configured country blocking.
+	// Preserve country-source precedence while independently resolving
+	// network details. A country hit must not hide the daemon's ASN/City DBs.
 	var countries []string
+	var geoInfo geoip.Info
 	for _, dir := range geoIPLookupDirs(firewall.CountryDBDir(cfg.Firewall, cfg.StatePath), cfg.StatePath) {
-		if countries = firewall.LookupIP(dir, ip); len(countries) > 0 {
-			break
+		if len(countries) == 0 {
+			countries = firewall.LookupIP(dir, ip)
 		}
 		if db := geoip.Open(dir); db != nil {
-			if info := db.Lookup(ip); info.Country != "" {
-				countries = []string{info.Country}
-				db.Close()
-				break
-			}
+			info := db.Lookup(ip)
 			db.Close()
+			if len(countries) == 0 && info.Country != "" {
+				countries = []string{info.Country}
+			}
+			if geoInfo.City == "" {
+				geoInfo.City = info.City
+			}
+			if geoInfo.Network == "" {
+				geoInfo.Network = info.Network
+			}
+			if geoInfo.ASN == 0 && geoInfo.ASOrg == "" {
+				geoInfo.ASN, geoInfo.ASOrg = info.ASN, info.ASOrg
+			}
 		}
 	}
-	if len(countries) > 0 {
-		fmt.Printf("COUNTRY  %s\n", strings.Join(countries, ", "))
+	if lines := geoIPReportLines(countries, geoInfo); len(lines) > 0 {
+		for _, line := range lines {
+			fmt.Println(line)
+		}
 		for _, code := range countries {
 			for _, blocked := range cfg.Firewall.CountryBlock {
 				if strings.EqualFold(code, blocked) {
@@ -1049,6 +1088,70 @@ func parseReason(args []string, fallback string) (string, error) {
 		}
 	}
 	return strings.Join(args, " "), nil
+}
+
+// threatForgetOutput renders the daemon's reply. The daemon composes the
+// wording (it is the side that knows what the record held); this keeps a
+// usable line if an older daemon answers without one.
+func threatForgetOutput(res control.ThreatForgetResult) string {
+	if res.Message != "" {
+		return res.Message
+	}
+	if res.Found {
+		return fmt.Sprintf("Cleared local threat record for %s (was score %d/100, %d attack events)",
+			res.IP, res.Score, res.Events)
+	}
+	return fmt.Sprintf("No local threat record for %s; nothing cleared", res.IP)
+}
+
+// fwForget clears an address's accumulated local threat score without
+// whitelisting it. Needed when a detection bug attributed attacks to the
+// wrong address: fixing the detection stops new events, but the accrued
+// ones keep local_threat_score reporting until the 90-day prune.
+func fwForget() {
+	args := fwArgs()
+	if isHelpRequest(args) || len(args) < 1 {
+		fmt.Println("Usage: csm firewall forget <ip>")
+		fmt.Println()
+		fmt.Println("Clears the IP's accumulated local threat score (attack database).")
+		fmt.Println("Blocks, allow-list and whitelist entries are left untouched, so the")
+		fmt.Println("address is scored again from scratch the next time it is seen.")
+		if len(args) < 1 && !isHelpRequest(args) {
+			os.Exit(1)
+		}
+		return
+	}
+
+	output, err := runThreatForget(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(output)
+}
+
+func runThreatForget(args []string) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("usage: csm firewall forget <ip>")
+	}
+	ip := args[0]
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("invalid IP address: %s", ip)
+	}
+
+	raw, err := sendControl(control.CmdThreatForget, control.FirewallIPArgs{IP: ip})
+	if err != nil {
+		return "", err
+	}
+
+	var res control.ThreatForgetResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", fmt.Errorf("unexpected daemon reply: %w", err)
+	}
+	if res.IP == "" {
+		res.IP = ip
+	}
+	return threatForgetOutput(res), nil
 }
 
 // isHelpRequest reports whether the operator asked for usage rather than

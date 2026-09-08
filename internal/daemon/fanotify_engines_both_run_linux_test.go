@@ -31,8 +31,12 @@ func useRealtimeRules(t *testing.T, body string) {
 	if err := os.WriteFile(filepath.Join(dir, "test.yml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	signatures.Init(dir)
-	t.Cleanup(func() { signatures.Init(t.TempDir()) })
+	// Init is once-guarded, so it cannot install these rules if any earlier
+	// test already initialized the global scanner. Swap the scanner directly
+	// and restore the previous one, or every caller after the first silently
+	// runs against another test's rules.
+	previous := signatures.SetGlobal(signatures.NewScanner(dir))
+	t.Cleanup(func() { signatures.SetGlobal(previous) })
 }
 
 func drainChecks(alerts <-chan alert.Finding) map[string]alert.Severity {

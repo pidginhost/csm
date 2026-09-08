@@ -126,6 +126,12 @@ func (db *DB) readAllEvents() []Event {
 		return events
 	}
 
+	// An unset directory must not let statistics ingest an unrelated log
+	// from the process's working directory.
+	if db.dbPath == "" {
+		return nil
+	}
+
 	// Fallback: flat-file events.jsonl
 	path := filepath.Join(db.dbPath, eventsFile)
 	// #nosec G304 -- filepath.Join under operator-configured db.dbPath.
