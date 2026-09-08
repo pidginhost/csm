@@ -35,8 +35,8 @@ func TestHandleThreatForgetPreservesEnforcement(t *testing.T) {
 	}
 	path := filepath.Join(dir, "firewall", "state.json")
 	want := []byte(`{"blocked":[{"ip":"198.51.100.23","reason":"operator block"}],"allowed":[{"ip":"203.0.113.23","reason":"operator allow"}]}`)
-	if err := os.WriteFile(path, want, 0600); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(path, want, 0600); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	if !engine.IsBlocked(blocked) || !engine.IsAllowed(allowed) || !sdb.IsWhitelisted(allowed) {
 		t.Fatal("enforcement state was not seeded")
@@ -45,8 +45,8 @@ func TestHandleThreatForgetPreservesEnforcement(t *testing.T) {
 	c.d.fwEngine = engine
 	for _, ip := range []string{blocked, allowed} {
 		seedAttackRecord(t, ip)
-		if _, err := c.handleThreatForget([]byte(`{"ip":"` + ip + `"}`)); err != nil {
-			t.Fatal(err)
+		if _, forgetErr := c.handleThreatForget([]byte(`{"ip":"` + ip + `"}`)); forgetErr != nil {
+			t.Fatal(forgetErr)
 		}
 	}
 	if !engine.IsBlocked(blocked) || !engine.IsAllowed(allowed) {

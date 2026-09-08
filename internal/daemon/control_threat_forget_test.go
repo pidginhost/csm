@@ -34,11 +34,11 @@ func TestHandleThreatForgetRemovesLegacyAliases(t *testing.T) {
 			previousStore := store.Global()
 			store.SetGlobal(sdb)
 			t.Cleanup(func() { store.SetGlobal(previousStore); _ = sdb.Close() })
-			if err := os.MkdirAll(filepath.Join(dir, "threat_db"), 0700); err != nil {
-				t.Fatal(err)
+			if mkErr := os.MkdirAll(filepath.Join(dir, "threat_db"), 0700); mkErr != nil {
+				t.Fatal(mkErr)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "threat_db", "permanent.txt"), []byte(legacy+"\n"), 0600); err != nil {
-				t.Fatal(err)
+			if writeErr := os.WriteFile(filepath.Join(dir, "threat_db", "permanent.txt"), []byte(legacy+"\n"), 0600); writeErr != nil {
+				t.Fatal(writeErr)
 			}
 			db := attackdb.NewForTest(nil)
 			previousDB := attackdb.Global()
@@ -57,8 +57,8 @@ func TestHandleThreatForgetRemovesLegacyAliases(t *testing.T) {
 				wantEvents, wantScore = 41, 95
 			}
 			db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "2001:db8::24", Timestamp: time.Now()})
-			if err := db.Flush(); err != nil {
-				t.Fatal(err)
+			if flushErr := db.Flush(); flushErr != nil {
+				t.Fatal(flushErr)
 			}
 			raw, err := newListenerForTest(t).handleThreatForget([]byte(`{"ip":"` + legacy + `"}`))
 			if err != nil {
@@ -258,8 +258,8 @@ func TestHandleThreatForgetPersistsRemovalAndRetainsHistory(t *testing.T) {
 	store.SetGlobal(sdb)
 	t.Cleanup(func() { store.SetGlobal(previous); _ = sdb.Close() })
 	db := seedAttackRecord(t, ip)
-	if err := db.Flush(); err != nil {
-		t.Fatal(err)
+	if flushErr := db.Flush(); flushErr != nil {
+		t.Fatal(flushErr)
 	}
 	if _, found := sdb.LoadIPRecord(ip); !found {
 		t.Fatal("seed was not persisted")
@@ -269,11 +269,11 @@ func TestHandleThreatForgetPersistsRemovalAndRetainsHistory(t *testing.T) {
 	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: ip, Timestamp: time.Now()})
 	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "203.0.113.23", Timestamp: time.Now()})
 	c := newListenerForTest(t)
-	if _, err := c.handleThreatForget([]byte(`{"ip":"` + ip + `"}`)); err != nil {
-		t.Fatal(err)
+	if _, forgetErr := c.handleThreatForget([]byte(`{"ip":"` + ip + `"}`)); forgetErr != nil {
+		t.Fatal(forgetErr)
 	}
-	if err := sdb.Close(); err != nil {
-		t.Fatal(err)
+	if closeErr := sdb.Close(); closeErr != nil {
+		t.Fatal(closeErr)
 	}
 	reopened, err := store.Open(dir)
 	if err != nil {
