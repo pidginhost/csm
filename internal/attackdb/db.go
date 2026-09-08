@@ -582,12 +582,16 @@ func tracksSustainedBruteScore(check string) bool {
 	return check == "email_auth_failure_realtime"
 }
 
-// RemoveIP removes an IP from the attack database entirely.
-func (db *DB) RemoveIP(ip string) {
+// RemoveIP removes an IP's scoring record and returns the removed record, or
+// nil if it was absent. Event history is retained. The returned record is no
+// longer shared with the database, so new findings cannot change it.
+func (db *DB) RemoveIP(ip string) *IPRecord {
 	db.mu.Lock()
+	rec := db.records[ip]
 	delete(db.records, ip)
 	db.markDeletedLocked(ip)
 	db.mu.Unlock()
+	return rec
 }
 
 // PruneExpired removes records older than 90 days.

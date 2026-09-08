@@ -11,18 +11,13 @@ import (
 
 // handleThreatForget drops one address's record from the attack database.
 //
-// The attack database accumulates; ComputeScore has no recency term and
-// pruneExpired only runs at 90 days. So when a detection bug attributes
-// events to the wrong address, fixing the detection stops new events but
-// leaves the accrued ones behind, and local_threat_score keeps reporting
-// the stale score for the rest of the retention window.
+// Most score contributions last until the record expires after 90 days.
+// Fixing a detection that attributed events to the wrong address stops new
+// events but leaves those contributions behind.
 //
-// The Web UI could already clear a record, but only inside whitelist-ip,
-// which also unblocks the address, adds it to the firewall allow list and
-// whitelists it in the threat DB. That is the wrong trade for clearing
-// stale data: it permanently exempts the address from future detection.
-// This command touches the scoring state and nothing else, so a cleared
-// address is scored again from scratch the next time it does something.
+// The Web UI's clear and whitelist actions also change enforcement.
+// This command leaves enforcement and event history intact, so a cleared
+// address is scored again from scratch on its next finding.
 func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, error) {
 	var args control.FirewallIPArgs
 	if len(argsRaw) > 0 {
@@ -30,19 +25,21 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 			return nil, fmt.Errorf("parsing args: %w", err)
 		}
 	}
-	if net.ParseIP(args.IP) == nil {
+	ip := net.ParseIP(args.IP)
+	if ip == nil {
 		return nil, fmt.Errorf("invalid ip: %q", args.IP)
 	}
+	args.IP = ip.String()
 
 	adb := attackdb.Global()
 	if adb == nil {
 		return nil, fmt.Errorf("attack database unavailable")
 	}
 
-	// Read the record before removing it so the operator is told what was
-	// actually cleared rather than that the command ran.
+	// Read and remove under one lock so concurrent requests cannot claim
+	// the same record, or report counts from before a concurrent finding.
 	res := control.ThreatForgetResult{IP: args.IP}
-	if rec := adb.LookupIP(args.IP); rec != nil {
+	if rec := adb.RemoveIP(args.IP); rec != nil {
 		res.Found = true
 		res.Score = attackdb.ComputeScore(rec)
 		res.Events = rec.EventCount
@@ -53,16 +50,11 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 		return res, nil
 	}
 
-	adb.RemoveIP(args.IP)
 	// Persist immediately rather than waiting for the 30s background saver:
-	// a restart inside that window would reload the record just cleared,
-	// which is the symptom this command exists to end. Flush reports no
-	// error (it logs persistence failures to stderr itself), so this is
-	// best effort and the removal is confirmed below from memory.
+	// Flush does not report persistence errors, so this remains best effort.
+	// A lookup afterwards cannot verify persistence, and new findings may
+	// legitimately have created a fresh record by then.
 	_ = adb.Flush()
-	if adb.LookupIP(args.IP) != nil {
-		return nil, fmt.Errorf("record for %s still present after removal", args.IP)
-	}
 
 	res.Message = fmt.Sprintf(
 		"Cleared local threat record for %s (was score %d/100, %d attack events); block, allow and whitelist entries are unchanged",

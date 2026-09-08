@@ -1,11 +1,57 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/control"
 )
+
+func TestRunThreatForgetRejectsExtraArguments(t *testing.T) {
+	called := false
+	cleanup := fakeDaemon(t, func(req control.Request) control.Response {
+		called = true
+		return control.Response{OK: true, Result: json.RawMessage(`{"ip":"198.51.100.23","found":true}`)}
+	})
+	for _, args := range [][]string{
+		nil,
+		{"not-an-ip"},
+		{"198.51.100.23", "--dry-run"},
+		{"198.51.100.23", "203.0.113.23"},
+	} {
+		if _, err := runThreatForget(args); err == nil {
+			t.Errorf("runThreatForget(%q) accepted invalid arguments", args)
+		}
+	}
+	cleanup()
+	if called {
+		t.Fatal("invalid arguments sent a destructive request")
+	}
+}
+
+func TestRunThreatForgetSendsCommandAndReportsDaemonErrors(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		cleanup := fakeDaemon(t, func(req control.Request) control.Response {
+			if req.Cmd != control.CmdThreatForget || string(req.Args) != `{"ip":"198.51.100.23"}` {
+				t.Errorf("unexpected request: %+v", req)
+			}
+			if fail {
+				return control.Response{Error: "attack database unavailable"}
+			}
+			return control.Response{OK: true, Result: json.RawMessage(`{"ip":"198.51.100.23","found":true,"message":"cleared test record"}`)}
+		})
+		out, err := runThreatForget([]string{"198.51.100.23"})
+		cleanup()
+		if fail {
+			if err == nil || !strings.Contains(err.Error(), "attack database unavailable") || out != "" {
+				t.Fatalf("daemon error hidden: output=%q, err=%v", out, err)
+			}
+		} else if err != nil || out != "cleared test record" {
+			t.Fatalf("success reply: output=%q, err=%v", out, err)
+		}
+	}
+}
 
 // The operator has to be able to tell "the stale score is gone" from "there
 // was no record, so the alert you are chasing comes from somewhere else".
@@ -31,10 +77,8 @@ func TestThreatForgetOutputDistinguishesFoundFromMissing(t *testing.T) {
 	}
 }
 
-// A daemon on an older build answers an unknown command with an error
-// rather than a ThreatForgetResult. Falling back to a bare success line
-// would tell the operator the record was cleared when it was not.
-func TestThreatForgetOutputRejectsEmptyMessage(t *testing.T) {
+// A valid result without wording still needs to identify the address.
+func TestThreatForgetOutputFallsBackWithoutMessage(t *testing.T) {
 	got := threatForgetOutput(control.ThreatForgetResult{IP: "198.51.100.23", Found: true, Score: 90, Events: 421})
 	if got == "" {
 		t.Fatal("empty output for a result with no message")

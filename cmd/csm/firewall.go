@@ -1054,9 +1054,6 @@ func parseReason(args []string, fallback string) (string, error) {
 	return strings.Join(args, " "), nil
 }
 
-// isHelpRequest reports whether the operator asked for usage rather than
-// supplying arguments, so a subcommand answers with its own usage instead of
-// trying to parse "--help" as an address.
 // threatForgetOutput renders the daemon's reply. The daemon composes the
 // wording (it is the side that knows what the record held); this keeps a
 // usable line if an older daemon answers without one.
@@ -1089,29 +1086,41 @@ func fwForget() {
 		return
 	}
 
-	ip := args[0]
-	if net.ParseIP(ip) == nil {
-		fmt.Fprintf(os.Stderr, "Invalid IP address: %s\n", ip)
-		os.Exit(1)
-	}
-
-	raw, err := sendControl(control.CmdThreatForget, control.FirewallIPArgs{IP: ip})
+	output, err := runThreatForget(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "csm: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Println(output)
+}
+
+func runThreatForget(args []string) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("usage: csm firewall forget <ip>")
+	}
+	ip := args[0]
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("invalid IP address: %s", ip)
+	}
+
+	raw, err := sendControl(control.CmdThreatForget, control.FirewallIPArgs{IP: ip})
+	if err != nil {
+		return "", err
+	}
 
 	var res control.ThreatForgetResult
 	if err := json.Unmarshal(raw, &res); err != nil {
-		fmt.Fprintf(os.Stderr, "csm: unexpected daemon reply: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("unexpected daemon reply: %w", err)
 	}
 	if res.IP == "" {
 		res.IP = ip
 	}
-	fmt.Println(threatForgetOutput(res))
+	return threatForgetOutput(res), nil
 }
 
+// isHelpRequest reports whether the operator asked for usage rather than
+// supplying arguments, so a subcommand answers with its own usage instead of
+// trying to parse "--help" as an address.
 func isHelpRequest(args []string) bool {
 	if len(args) != 1 {
 		return false

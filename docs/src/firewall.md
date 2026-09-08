@@ -52,6 +52,22 @@ Port-specific allow additions and removals update saved state only. Run
 `csm firewall restart` to apply them to the kernel; the command acknowledgement
 states that a reload is required.
 
+## Clearing a stale local threat score
+
+Run `csm firewall forget <ip>` as root against the running daemon to clear one
+address's accumulated local threat score. It accepts exactly one IPv4 or IPv6
+address, including equivalent IPv6 spellings; CIDRs and extra arguments are
+rejected. There is no dry-run option.
+
+The command reports the score and event count removed. Blocks, allow lists,
+whitelists and raw event history remain intact. New findings immediately
+start a fresh scoring record, even if they arrive while the command runs.
+This does not suppress findings about the host's own address.
+
+Persistence is attempted immediately but remains best effort: a success reply
+confirms removal from memory, not durability across a restart. Check the daemon
+logs for attack database write failures if an old score returns after restart.
+
 ## Startup failures
 
 Overlapping, nested, duplicate, and adjacent ranges are merged for the kernel,
