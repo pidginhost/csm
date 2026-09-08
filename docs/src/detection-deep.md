@@ -131,6 +131,14 @@ Current scanner scope:
 - Magento 1 and 2.
 - OpenCart installs using the standard storefront and admin config pair.
 
+The supported kinds are declared once in `internal/cms`. The database
+scanners, the PHP taint analyzer's knowledge of each CMS's bootstrap path
+constants, and the clean-corpus manifest are each tested against that table,
+so a CMS added to one of them without the others fails the build. Support in
+that table does not by itself mean a CMS has clean-corpus false-positive
+evidence (see [the clean corpus](clean-corpus.md)), and database object
+scanning (`db_objects`) discovers WordPress installs only.
+
 ## Phishing & Malware
 
 | Check | Description |
