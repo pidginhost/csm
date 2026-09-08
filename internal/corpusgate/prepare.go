@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,10 +20,15 @@ import (
 type Manifest struct {
 	Version int      `json:"version"`
 	Sources []Source `json:"sources"`
+	// Pending lists supported CMSs with no pinned source yet. See Validate.
+	Pending []PendingCMS `json:"pending,omitempty"`
 }
 
 type Source struct {
-	ID          string `json:"id"`
+	ID string `json:"id"`
+	// CMS names the supported kind this archive belongs to; a plugin or
+	// theme names the CMS it runs on.
+	CMS         string `json:"cms"`
 	Version     string `json:"version"`
 	URL         string `json:"url"`
 	SHA256      string `json:"sha256"`
@@ -45,17 +49,10 @@ const maxExpanded = 1 << 30
 // Prepare refuses to reuse extracted trees: only authenticated archive caches
 // survive runs, so removed vendor files cannot inflate the next inventory.
 func Prepare(ctx context.Context, manifest Manifest, cache, destination string) ([]File, error) {
-	if manifest.Version != 1 || len(manifest.Sources) == 0 {
-		return nil, fmt.Errorf("empty or unsupported corpus manifest")
-	}
-	seen := make(map[string]bool)
-	for _, s := range manifest.Sources {
-		u, err := url.Parse(s.URL)
-		digest, hashErr := hex.DecodeString(s.SHA256)
-		if err != nil || u.Scheme != "https" || u.Host == "" || hashErr != nil || len(digest) != sha256.Size || s.ID == "" || s.Version == "" || strings.ContainsAny(s.ID+s.Version, "/\\\x00") || s.ID == "." || s.ID == ".." || s.License == "" || !filepath.IsLocal(s.LicenseFile) || s.Files < 1 || s.Files > 30000 || seen[s.ID] {
-			return nil, fmt.Errorf("invalid source %q", s.ID)
-		}
-		seen[s.ID] = true
+	// Validate before any directory, cache or network side effect so a
+	// drifted manifest is refused without leaving artifacts behind.
+	if err := manifest.Validate(); err != nil {
+		return nil, err
 	}
 	if err := os.Mkdir(destination, 0700); err != nil {
 		return nil, fmt.Errorf("new corpus directory: %w", err)

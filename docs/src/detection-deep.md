@@ -136,9 +136,11 @@ scanners and the PHP taint analyzer's knowledge of each CMS's bootstrap path
 constants are tested against that table. The tests also require every typed
 CMS kind constant, including local declarations and aliases, to have exactly
 one descriptor. Membership drift fails the tests. The clean-corpus manifest
-is not yet checked against the table; support does not by itself mean a CMS
-has clean-corpus false-positive evidence (see [the clean corpus](clean-corpus.md)).
-Database object scanning (`db_objects`) discovers WordPress installs only.
+is validated against the same table: every supported CMS is either pinned as
+a source or listed as pending with a reason. Support does not by itself mean
+a CMS has clean-corpus false-positive evidence (see
+[the clean corpus](clean-corpus.md)). Database object scanning (`db_objects`)
+discovers WordPress installs only.
 
 ## Phishing & Malware
 
