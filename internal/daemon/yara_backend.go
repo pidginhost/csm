@@ -256,6 +256,21 @@ func (d *Daemon) stopYaraBackend() {
 // a Critical finding the first time, then one every minute after to
 // avoid spamming alerts while a broken rule package is in place.
 func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor time.Duration) {
+	// The supervisor suppresses this callback once its own context is
+	// cancelled, but that happens in stopYaraBackend, late in shutdown.
+	// systemd's default KillMode signals the whole cgroup, so the worker
+	// child dies at the same moment as the daemon -- long before that
+	// cancel -- and an orderly restart mailed a Critical "worker crashed".
+	// stopCh closes at the top of shutdown and covers that window.
+	//
+	// A nil stopCh (zero-value Daemon, several tests) blocks forever on
+	// receive, so the default arm is what keeps those reporting.
+	select {
+	case <-d.stopCh:
+		return
+	default:
+	}
+
 	now := time.Now()
 	d.yaraCrashMu.Lock()
 	last := d.yaraLastCrashAlert

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A normal CSM restart no longer reports the YARA worker as crashed. The worker is stopped along with the daemon, and that orderly stop was raising a critical alert every time the service was restarted.
 - Clearing a local threat score now handles equivalent stored IP address spellings and concurrent requests correctly, including overlapping saves. Extra command arguments are rejected before any record is cleared.
 - The attack database no longer reads or writes state files, including event history used for statistics, when it has no configured directory. It previously resolved to a relative path and used whatever directory the process was started from.
 
