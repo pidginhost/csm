@@ -1,6 +1,8 @@
 package firewall
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"strings"
 )
@@ -31,6 +33,13 @@ type FirewallConfig struct {
 	// requirement in its own conf.d fragment and have `csm doctor` verify it
 	// against the effective policy.
 	RequiredTCPOut []int `yaml:"required_tcp_out"`
+
+	// TCPOutAllow permits outbound TCP to a specific destination on a port
+	// range. tcp_out is []int and cannot express a range, so a host acting as
+	// a client for a range-using protocol (passive FTP data channels) has no
+	// way to state its need without opening every high port to the internet.
+	// Empty means no destination-scoped egress, which is the prior behaviour.
+	TCPOutAllow []OutAllowRule `yaml:"tcp_out_allow"`
 
 	// Passive FTP range
 	PassiveFTPStart int `yaml:"passive_ftp_start"`
@@ -158,6 +167,39 @@ func (c *FirewallConfig) ExemptKnownMailProviders() bool {
 	return *c.DOSExemptKnownMailProviders
 }
 
+// ParseOutAllowDst accepts a bare IP or a CIDR and returns it as a network.
+// A bare address becomes a host route; mapped IPv4 prefixes use IPv4 widths.
+func ParseOutAllowDst(dst string) (*net.IPNet, error) {
+	if dst == "" {
+		return nil, errors.New("dst is required")
+	}
+	if _, network, err := net.ParseCIDR(dst); err == nil {
+		if ip4 := network.IP.To4(); ip4 != nil {
+			// ParseCIDR retains a 128-bit mask for mapped IPv4 prefixes.
+			// The engine loads only four bytes, so normalize both together.
+			network.IP = ip4
+			network.Mask = network.Mask[len(network.Mask)-net.IPv4len:]
+		}
+		return network, nil
+	}
+	ip := net.ParseIP(dst)
+	if ip == nil {
+		return nil, fmt.Errorf("dst %q is neither an IP address nor a CIDR", dst)
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return &net.IPNet{IP: ip4, Mask: net.CIDRMask(32, 32)}, nil
+	}
+	return &net.IPNet{IP: ip.To16(), Mask: net.CIDRMask(128, 128)}, nil
+}
+
+// OutAllowRule permits outbound TCP to one destination on a port range.
+// Dst is an IP or CIDR; 0.0.0.0/0 and ::/0 mean any destination in that family.
+type OutAllowRule struct {
+	Dst       string `yaml:"dst"`
+	PortStart int    `yaml:"port_start"`
+	PortEnd   int    `yaml:"port_end"`
+}
+
 // PortFloodRule defines per-port connection rate limiting.
 type PortFloodRule struct {
 	Port    int    `yaml:"port"`
@@ -190,6 +232,7 @@ func DefaultConfig() *FirewallConfig {
 		// Without them outbound spam-scoring queries silently fail.
 		UDPOut:          []int{53, 113, 123, 443, 853, 873, 6277, 24441},
 		RestrictedTCP:   []int{2086, 2087, 2325, 9443},
+		TCPOutAllow:     nil,
 		PassiveFTPStart: 49152,
 		PassiveFTPEnd:   65534,
 		// 200 new connections per minute per source (IPv6 aggregated per /64).
