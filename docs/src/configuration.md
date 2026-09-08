@@ -652,6 +652,21 @@ firewall:
   passive_ftp_start: 49152
   passive_ftp_end: 65534
 
+  # Destination-scoped outbound TCP. tcp_out holds single ports only, so a
+  # port range can only be expressed here -- needed when this host is an FTP
+  # *client* and must open passive data connections to a known source.
+  # dst takes an IP or CIDR. 0.0.0.0/0 (or ::/0) means any destination and
+  # validation warns: a wide range to anywhere is the outbound path the
+  # output chain exists to close. Rules are emitted after the smtp_block
+  # guard, so a range covering a mail port cannot carry outbound mail; a
+  # range that overlaps smtp_ports is rejected outright while smtp_block is on.
+  # An IPv6 destination emits no rule unless firewall.ipv6 is true.
+  tcp_out_allow: []
+  # tcp_out_allow:
+  #   - dst: 203.0.113.10/32
+  #     port_start: 49152
+  #     port_end: 65534
+
   # Infra IPs/CIDRs/hostnames for firewall rules
   infra_ips: []
 

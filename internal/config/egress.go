@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 // outboundDependency is one TCP destination the daemon dials because the
@@ -199,11 +201,17 @@ func firewallEgressResults(cfg *Config) []ValidationResult {
 		if smtpRestricted(dep.port) {
 			return !dep.daemonRoot
 		}
+		if outAllowReachesAnyDst(fw, dep.port) {
+			return false
+		}
 		return ipv4Filtered && !containsPort(fw.TCPOut, dep.port)
 	}
 	blocked6 := func(dep outboundDependency) bool {
 		if smtpRestricted(dep.port) {
 			return !dep.daemonRoot
+		}
+		if outAllowReachesAnyDst(fw, dep.port) {
+			return false
 		}
 		return !containsPort(tcp6Out, dep.port)
 	}
@@ -225,7 +233,8 @@ func firewallEgressResults(cfg *Config) []ValidationResult {
 		isBlocked4 := wantV4 && blocked4(dep)
 		if isBlocked4 {
 			results = append(results, ValidationResult{"warn", "firewall.tcp_out",
-				egressBlockedMessage(dep, "tcp_out", smtpRestricted(dep.port))})
+				egressBlockedMessage(dep, "tcp_out", smtpRestricted(dep.port)) +
+					outAllowScopedNote(fw, dep.port)})
 		}
 		// An inherited tcp6_out is the same list as tcp_out, so the IPv4
 		// warning above covers both families only when IPv4 is filtered too.
@@ -238,6 +247,42 @@ func firewallEgressResults(cfg *Config) []ValidationResult {
 		}
 	}
 	return results
+}
+
+// outAllowReachesAnyDst reports whether a tcp_out_allow rule opens the port to
+// every destination. Only then can this validator prove the endpoint is
+// reachable, because it cannot resolve a hostname to test a scoped prefix.
+func outAllowReachesAnyDst(fw *firewall.FirewallConfig, port int) bool {
+	for _, r := range fw.TCPOutAllow {
+		if port < r.PortStart || port > r.PortEnd {
+			continue
+		}
+		network, err := firewall.ParseOutAllowDst(r.Dst)
+		if err != nil {
+			continue // reported as an error by outAllowResults
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// outAllowScopedNote annotates a lockout warning when a scoped tcp_out_allow
+// rule covers the port. The warning stands -- silence here would be the silent
+// lockout these checks exist to catch -- but the operator is told where to look.
+func outAllowScopedNote(fw *firewall.FirewallConfig, port int) string {
+	var dsts []string
+	for _, r := range fw.TCPOutAllow {
+		if port >= r.PortStart && port <= r.PortEnd {
+			dsts = append(dsts, r.Dst)
+		}
+	}
+	if len(dsts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; tcp_out_allow covers the port for %s only, so confirm the endpoint resolves into that range",
+		strings.Join(dsts, ", "))
 }
 
 func egressBlockedMessage(dep outboundDependency, policy string, smtpRestricted bool) string {

@@ -826,6 +826,66 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 		}
 	}
 
+	results = append(results, outAllowResults(fw)...)
+
+	return results
+}
+
+// outAllowResults validates firewall.tcp_out_allow. A malformed entry emits no
+// nftables rule at all, so every shape error is reported rather than left to
+// fail open as "the fetch just does not work".
+func outAllowResults(fw *firewall.FirewallConfig) []ValidationResult {
+	var results []ValidationResult
+	for i, r := range fw.TCPOutAllow {
+		prefix := fmt.Sprintf("entry %d (dst %q)", i, r.Dst)
+
+		network, err := firewall.ParseOutAllowDst(r.Dst)
+		if err != nil {
+			results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: %v", prefix, err)})
+			continue
+		}
+		switch {
+		case !validPort(r.PortStart):
+			results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: port_start %d is out of range (1-65535)", prefix, r.PortStart)})
+			continue
+		case !validPort(r.PortEnd):
+			results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: port_end %d is out of range (1-65535)", prefix, r.PortEnd)})
+			continue
+		case r.PortStart > r.PortEnd:
+			results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: range starts at %d but ends at %d, so it matches nothing",
+					prefix, r.PortStart, r.PortEnd)})
+			continue
+		}
+
+		// The output chain emits the smtp_block drop before these rules, so an
+		// overlap cannot actually bypass it. Rejected anyway: rule ordering
+		// must not be the only guard between a config key and outbound mail.
+		if fw.SMTPBlock {
+			for _, port := range fw.SMTPPorts {
+				if port >= r.PortStart && port <= r.PortEnd {
+					results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+						fmt.Sprintf("%s: range %d-%d covers smtp port %d while smtp_block is on",
+							prefix, r.PortStart, r.PortEnd, port)})
+					break
+				}
+			}
+		}
+
+		if ones, bits := network.Mask.Size(); ones == 0 && bits > 0 {
+			results = append(results, ValidationResult{"warn", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: opens ports %d-%d (%d ports) to every destination; scope it to the hosts this server dials",
+					prefix, r.PortStart, r.PortEnd, r.PortEnd-r.PortStart+1)})
+		}
+
+		if network.IP.To4() == nil && !fw.IPv6 {
+			results = append(results, ValidationResult{"warn", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: IPv6 destination emits no rule while firewall.ipv6 is off", prefix)})
+		}
+	}
 	return results
 }
 

@@ -51,6 +51,7 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 		Restricted:      fmtPortsSlice(fwCfg.RestrictedTCP),
 		PassiveFTPStart: fwCfg.PassiveFTPStart,
 		PassiveFTPEnd:   fwCfg.PassiveFTPEnd,
+		TCPOutAllow:     fmtOutAllow(fwCfg.TCPOutAllow),
 		InfraIPCount:    len(fwCfg.InfraIPs),
 		BlockedCount:    len(state.Blocked),
 		BlockedNetCount: len(state.BlockedNet),
@@ -111,7 +112,32 @@ func (c *ControlListener) handleFirewallPorts(_ json.RawMessage) (any, error) {
 		lines = append(lines, fmt.Sprintf("  %d-%d", fwCfg.PassiveFTPStart, fwCfg.PassiveFTPEnd))
 	}
 
+	if out := fmtOutAllow(fwCfg.TCPOutAllow); len(out) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "TCP Outbound (destination-scoped):")
+		for _, line := range out {
+			lines = append(lines, "  "+line)
+		}
+	}
+
 	return control.FirewallListResult{Lines: lines}, nil
+}
+
+// fmtOutAllow renders tcp_out_allow one rule per line. A single-port range
+// prints as the bare port so the common case does not read as "49152-49152".
+func fmtOutAllow(rules []firewall.OutAllowRule) []string {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		ports := fmt.Sprintf("%d-%d", r.PortStart, r.PortEnd)
+		if r.PortStart == r.PortEnd {
+			ports = strconv.Itoa(r.PortStart)
+		}
+		out = append(out, fmt.Sprintf("%s tcp %s", r.Dst, ports))
+	}
+	return out
 }
 
 // joinPorts returns a comma-separated rendering of ports matching

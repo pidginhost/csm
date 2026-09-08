@@ -272,6 +272,7 @@ type FirewallStatusResult struct {
 	Restricted      []string               `json:"restricted"`
 	PassiveFTPStart int                    `json:"passive_ftp_start"`
 	PassiveFTPEnd   int                    `json:"passive_ftp_end"`
+	TCPOutAllow     []string               `json:"tcp_out_allow,omitempty"`
 	InfraIPCount    int                    `json:"infra_ip_count"`
 	BlockedCount    int                    `json:"blocked_count"`
 	BlockedNetCount int                    `json:"blocked_net_count"`

@@ -1,6 +1,8 @@
 package firewall
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"strings"
 )
@@ -31,6 +33,13 @@ type FirewallConfig struct {
 	// requirement in its own conf.d fragment and have `csm doctor` verify it
 	// against the effective policy.
 	RequiredTCPOut []int `yaml:"required_tcp_out"`
+
+	// TCPOutAllow permits outbound TCP to a specific destination on a port
+	// range. tcp_out is []int and cannot express a range, so a host acting as
+	// a client for a range-using protocol (passive FTP data channels) has no
+	// way to state its need without opening every high port to the internet.
+	// Empty means no destination-scoped egress, which is the prior behaviour.
+	TCPOutAllow []OutAllowRule `yaml:"tcp_out_allow"`
 
 	// Passive FTP range
 	PassiveFTPStart int `yaml:"passive_ftp_start"`
@@ -159,6 +168,35 @@ func (c *FirewallConfig) ExemptKnownMailProviders() bool {
 }
 
 // PortFloodRule defines per-port connection rate limiting.
+// OutAllowRule permits outbound TCP to one destination on a port range.
+// Dst is an IP or CIDR; 0.0.0.0/0 and ::/0 mean any destination and are
+// warned about at validation, since a wide range to any destination is the
+// egress path the output chain exists to close.
+// ParseOutAllowDst accepts a bare IP or a CIDR and returns it as a network.
+// A bare address becomes a host route so every caller handles one shape.
+func ParseOutAllowDst(dst string) (*net.IPNet, error) {
+	if dst == "" {
+		return nil, errors.New("dst is required")
+	}
+	if _, network, err := net.ParseCIDR(dst); err == nil {
+		return network, nil
+	}
+	ip := net.ParseIP(dst)
+	if ip == nil {
+		return nil, fmt.Errorf("dst %q is neither an IP address nor a CIDR", dst)
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return &net.IPNet{IP: ip4, Mask: net.CIDRMask(32, 32)}, nil
+	}
+	return &net.IPNet{IP: ip.To16(), Mask: net.CIDRMask(128, 128)}, nil
+}
+
+type OutAllowRule struct {
+	Dst       string `yaml:"dst"`
+	PortStart int    `yaml:"port_start"`
+	PortEnd   int    `yaml:"port_end"`
+}
+
 type PortFloodRule struct {
 	Port    int    `yaml:"port"`
 	Proto   string `yaml:"proto"`   // "tcp" or "udp"

@@ -1437,6 +1437,19 @@ func (e *Engine) createOutputChain() error {
 		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainOut, Exprs: familyBypassRuleExprs(2)})
 	}
 
+	// Destination-scoped outbound allows. Deliberately emitted AFTER the
+	// smtp_block guard above: nftables takes the first verdict, so the drop on
+	// each smtp port is already decided and no range here can bypass it. The
+	// config validator rejects an overlapping range as well; rule order must
+	// not be the only guard between a config key and outbound mail.
+	for _, r := range e.cfg.TCPOutAllow {
+		exprs := buildOutAllowExprs(r, e.cfg.IPv6)
+		if exprs == nil {
+			continue
+		}
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainOut, Exprs: exprs})
+	}
+
 	// Allow configured outbound TCP ports (skip SMTP-blocked ports - handled above)
 	for _, port := range e.cfg.TCPOut {
 		if smtpBlocked[port] {
@@ -2006,6 +2019,77 @@ func buildFamilyPortRuleExprs(nfproto byte, port int, tcp bool) []expr.Any {
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
 		&expr.Verdict{Kind: expr.VerdictAccept},
 	}
+}
+
+// buildOutAllowExprs builds one destination-scoped outbound accept rule:
+// nfproto guard, TCP, destination address, destination port range, accept.
+//
+// The neighbouring buildPortAllowExprs matches the SOURCE address because it
+// serves the input chain. This rule serves the output chain and matches the
+// DESTINATION, at offset 16 for IPv4 and 24 for IPv6.
+//
+// Returns nil when the rule cannot be expressed -- an unparseable destination,
+// or an IPv6 destination while dual-stack filtering is off. Callers must emit
+// nothing rather than a rule matching more than the operator asked for.
+func buildOutAllowExprs(r OutAllowRule, ipv6Enabled bool) []expr.Any {
+	network, err := ParseOutAllowDst(r.Dst)
+	if err != nil {
+		return nil
+	}
+	if !validOutAllowRange(r) {
+		return nil
+	}
+
+	var (
+		exprs  []expr.Any
+		addr   net.IP
+		mask   net.IPMask
+		offset uint32
+		length uint32
+	)
+	if ip4 := network.IP.To4(); ip4 != nil {
+		exprs, addr, mask, offset, length = ipv4NFProtoGuard(), ip4, network.Mask, 16, 4
+	} else {
+		if !ipv6Enabled {
+			return nil
+		}
+		exprs, addr, mask, offset, length = ipv6NFProtoGuard(), network.IP.To16(), network.Mask, 24, 16
+	}
+
+	exprs = append(exprs,
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+	)
+
+	// A zero-length prefix means every destination, and the honest encoding of
+	// that is no address match at all rather than a compare against nothing.
+	if ones, _ := mask.Size(); ones > 0 {
+		exprs = append(exprs, &expr.Payload{
+			DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: length,
+		})
+		if ones < int(length)*8 {
+			exprs = append(exprs, &expr.Bitwise{
+				SourceRegister: 1, DestRegister: 1, Len: length,
+				Mask: mask, Xor: make([]byte, length),
+			})
+		}
+		exprs = append(exprs, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: addr.Mask(mask)})
+	}
+
+	return append(exprs,
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(r.PortStart))},
+		&expr.Cmp{Op: expr.CmpOpLte, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(r.PortEnd))},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
+}
+
+// validOutAllowRange mirrors the config validator so a rule that slipped past
+// validation still emits nothing rather than a range that matches everything.
+func validOutAllowRange(r OutAllowRule) bool {
+	return r.PortStart >= 1 && r.PortStart <= 65535 &&
+		r.PortEnd >= 1 && r.PortEnd <= 65535 &&
+		r.PortStart <= r.PortEnd
 }
 
 func familyBypassRuleExprs(nfproto byte) []expr.Any {

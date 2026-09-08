@@ -182,6 +182,13 @@ func fwStatus() {
 	fmt.Printf("UDP Out:     %s\n", fmtPortsStr(s.UDPOut))
 	fmt.Printf("Restricted:  %s\n", fmtPortsStr(s.Restricted))
 	fmt.Printf("Passive FTP: %d-%d\n", s.PassiveFTPStart, s.PassiveFTPEnd)
+	for i, line := range s.TCPOutAllow {
+		label := ""
+		if i == 0 {
+			label = "Out Allow:"
+		}
+		fmt.Printf("%-12s %s\n", label, line)
+	}
 	fmt.Printf("Infra IPs:   %d entries\n", s.InfraIPCount)
 	fmt.Printf("Blocked:     %d IPs, %d subnets\n", s.BlockedCount, s.BlockedNetCount)
 	fmt.Printf("Allowed:     %d IPs\n", s.AllowedCount)
