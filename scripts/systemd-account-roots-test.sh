@@ -97,7 +97,7 @@ After=systemd-journald.service dbus.socket csm.service
 Type=oneshot
 TimeoutStartSec=45min
 ExecStart=/bin/bash /src/scripts/production-tests.sh kernel
-Environment=PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=GOPATH=/go
 Environment=GOTOOLCHAIN=auto
 Environment=GOCACHE=/gocache
