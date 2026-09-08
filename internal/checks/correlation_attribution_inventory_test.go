@@ -210,15 +210,22 @@ func TestAttributionInventoryCoversNewlyEligible(t *testing.T) {
 	}
 }
 
+// Trimmed build paths omit the source location. Go starts tests in the
+// package directory, so retain it before a test changes working directory.
+var initialTestWorkingDirectory, initialTestWorkingDirectoryErr = os.Getwd()
+
 // repoRootFromSource locates the repository from this file's own location,
-// so the scan does not depend on the process working directory.
+// or the initial package directory when built with -trimpath.
 func repoRootFromSource(t *testing.T) string {
 	t.Helper()
 	_, here, _, ok := runtime.Caller(0)
-	if !ok || !filepath.IsAbs(here) {
-		return findRepoRoot(t)
+	dir := initialTestWorkingDirectory
+	if ok && filepath.IsAbs(here) {
+		dir = filepath.Dir(here)
+	} else if initialTestWorkingDirectoryErr != nil {
+		t.Fatalf("initial working directory: %v", initialTestWorkingDirectoryErr)
 	}
-	for dir := filepath.Dir(here); ; dir = filepath.Dir(dir) {
+	for ; ; dir = filepath.Dir(dir) {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return dir
 		}

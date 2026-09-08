@@ -440,6 +440,9 @@ rather than editing rows by hand. A class says how correlation treats a check
 when it fires; it does not say the check currently reaches Critical, that its
 owner is available on every panel, or how precise it is.
 
+Regeneration preserves the surrounding prose and marker line endings, even
+when they use CRLF. The generated block itself uses LF line endings.
+
 <!-- correlation-table:begin -->
 Ignore reasons:
 

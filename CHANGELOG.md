@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
-- The correlation policy table in the incidents documentation is generated from the check registry and a test fails when it is stale.
+- The correlation policy table in the incidents documentation is generated from the check registry and a test fails when it is stale. Regeneration preserves surrounding text and marker line endings; checks also work with trimmed build paths.
 - The manual, automatic and full-scan quarantine sets and the attack database mapping are declared once each and tested against the check registry, so a renamed or never-emitted check name cannot sit inert in a response table. Three never-emitted names are removed: one dropper name from every quarantine set, and the two WAF block names the attack database listed, which means WAF blocks have never contributed to local reputation scoring.
 - Cross-account correlation initializes host detection before updating active findings, so a slow platform probe does not block readers of the current state.
 - Clean-corpus metadata tests now work with trimmed build paths and check that invalid manifests leave existing files untouched.

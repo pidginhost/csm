@@ -89,7 +89,9 @@ func markedBlock(doc []byte) (start, end int, err error) {
 		return 0, 0, errCorrelationMarkers
 	}
 	start = bi + len(begin)
-	if start < len(doc) && doc[start] == '\n' {
+	if bytes.HasPrefix(doc[start:], []byte("\r\n")) {
+		start += 2
+	} else if start < len(doc) && doc[start] == '\n' {
 		start++
 	}
 	return start, ei, nil
@@ -169,16 +171,19 @@ func TestRenderCorrelationTableExactOutput(t *testing.T) {
 	}
 	before := append([]CheckInfo(nil), rows...)
 	got := renderCorrelationTable(rows)
-	var legend strings.Builder
-	legend.WriteString("Ignore reasons:\n\n")
-	for _, token := range sortedKeys(correlationReasonSentences) {
-		fmt.Fprintf(&legend, "- `%s`: %s\n", token, correlationReasonSentences[token])
-	}
-	legend.WriteString("\nAttribution gaps:\n\n")
-	for _, token := range sortedKeys(correlationGapSentences) {
-		fmt.Fprintf(&legend, "- `%s`: %s\n", token, correlationGapSentences[token])
-	}
-	want := legend.String() +
+	want := "Ignore reasons:\n\n" +
+		"- `account-aggregate`: already summarizes several accounts without a single victim identity\n" +
+		"- `attacker-side`: attacker activity or attempted access, not evidence of compromise of the named victim\n" +
+		"- `host-scope`: host-wide condition with no account to attribute; a cross-account count cannot use it even when it is a real compromise\n" +
+		"- `informational`: audit trail or inventory event with no compromise claim\n" +
+		"- `performance`: resource usage\n" +
+		"- `posture`: static configuration, hardening or hygiene state; a Critical means a misconfiguration, not an attack on the account\n" +
+		"- `response`: record of an automatic action already taken; feeding it back would double count\n" +
+		"- `self-health`: CSM's own health, capacity or coverage state\n" +
+		"\nAttribution gaps:\n\n" +
+		"- `envelope-sender`: volume aggregate keyed by the attacker-controlled envelope sender; no verified owner exists\n" +
+		"- `partial-socket-owner`: periodic evaluator supplies no tenant; realtime process enrichment can supply one but can miss\n" +
+		"- `socket-owner`: periodic socket finding has no hosting owner; an unattributed Critical is counted in diagnostics only\n" +
 		"\n| Check | Class | Ignore reason | Attribution gap |\n| --- | --- | --- | --- |\n" +
 		"| `alpha` | ignored | posture |  |\n" +
 		"| `malw` | malware artifact |  |  |\n" +
@@ -218,16 +223,38 @@ func TestRenderCorrelationTableEscapesCells(t *testing.T) {
 func TestReplaceMarkedBlockValidatesMarkers(t *testing.T) {
 	good := "intro\n" + correlationTableBegin + "\nold\n" + correlationTableEnd + "\noutro\n"
 	cases := map[string]string{
-		"missing begin": "intro\nold\n" + correlationTableEnd + "\n",
-		"missing end":   "intro\n" + correlationTableBegin + "\nold\n",
-		"reversed":      correlationTableEnd + "\nold\n" + correlationTableBegin + "\n",
-		"duplicated":    good + correlationTableBegin + "\nmore\n" + correlationTableEnd + "\n",
-		"nested":        correlationTableBegin + "\n" + correlationTableBegin + "\nx\n" + correlationTableEnd + "\n",
+		"missing both":     "intro\nold\noutro\n",
+		"missing begin":    "intro\nold\n" + correlationTableEnd + "\n",
+		"missing end":      "intro\n" + correlationTableBegin + "\nold\n",
+		"reversed":         correlationTableEnd + "\nold\n" + correlationTableBegin + "\n",
+		"duplicated":       good + correlationTableBegin + "\nmore\n" + correlationTableEnd + "\n",
+		"duplicated begin": correlationTableBegin + "\n" + good,
+		"duplicated end":   good + correlationTableEnd + "\n",
+		"nested":           correlationTableBegin + "\n" + correlationTableBegin + "\nx\n" + correlationTableEnd + "\n",
+		"nested pairs":     correlationTableBegin + "\n" + good + correlationTableEnd + "\n",
 	}
 	for name, doc := range cases {
-		if _, err := replaceMarkedBlock([]byte(doc), "new\n"); !errors.Is(err, errCorrelationMarkers) {
-			t.Errorf("%s: err = %v, want marker error", name, err)
-		}
+		t.Run(name, func(t *testing.T) {
+			if out, err := replaceMarkedBlock([]byte(doc), "new\n"); !errors.Is(err, errCorrelationMarkers) || out != nil {
+				t.Fatalf("replacement = %q, err = %v, want nil and marker error", out, err)
+			}
+			path := filepath.Join(t.TempDir(), "incidents.md")
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, update := range []bool{false, true} {
+				if _, err := checkCorrelationDocument(path, "new\n", update); !errors.Is(err, errCorrelationMarkers) {
+					t.Fatalf("update=%v: err = %v, want marker error", update, err)
+				}
+				got, err := os.ReadFile(path) // #nosec G304 -- temp fixture
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, []byte(doc)) {
+					t.Fatalf("update=%v changed a malformed document", update)
+				}
+			}
+		})
 	}
 	out, err := replaceMarkedBlock([]byte(good), "new\n")
 	if err != nil {
@@ -235,6 +262,35 @@ func TestReplaceMarkedBlockValidatesMarkers(t *testing.T) {
 	}
 	if string(out) != "intro\n"+correlationTableBegin+"\nnew\n"+correlationTableEnd+"\noutro\n" {
 		t.Fatalf("replacement = %q", out)
+	}
+}
+
+func TestCorrelationDocumentPreservesMarkerLines(t *testing.T) {
+	for _, newline := range []string{"\n", "\r\n"} {
+		t.Run(fmt.Sprintf("newline_%q", newline), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "incidents.md")
+			prefix := "intro" + newline + correlationTableBegin + newline
+			suffix := correlationTableEnd + newline + "outro" + newline
+			doc := prefix + "old" + newline + suffix
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			body := renderCorrelationTable(checkRegistry)
+			mismatch, err := checkCorrelationDocument(path, body, true)
+			if err != nil || !mismatch {
+				t.Fatalf("update mismatch = %v, err = %v", mismatch, err)
+			}
+			got, err := os.ReadFile(path) // #nosec G304 -- temp fixture
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, []byte(prefix+body+suffix)) {
+				t.Fatal("update changed bytes outside the generated block")
+			}
+			if mismatch, err := checkCorrelationDocument(path, body, false); err != nil || mismatch {
+				t.Fatalf("updated document mismatch = %v, err = %v", mismatch, err)
+			}
+		})
 	}
 }
 

@@ -186,8 +186,9 @@ Every registered check now carries a correlation class (security event,
 malware artifact, ignored with a reason, or derived), the coverage table in
 [the incidents documentation](docs/src/incidents.md#cross-account-correlation-of-findings)
 is generated from that classification and a test fails when it is stale, and
-every eligible producer supplies the owning account itself, so a database
-compromise replicated across accounts can raise the cross-account signal.
+eligible producers supply the owning account when available, so a database
+compromise replicated across attributed accounts can raise the cross-account
+signal.
 
 What remains open:
 
@@ -200,8 +201,9 @@ What remains open:
   by the attacker-controlled envelope sender. Two host-wide aggregates
   (`admin_cross_account_overlap`, `bulk_password_change`) already summarise
   several accounts and are excluded as inputs.
-- Owner resolution needs a panel domain-owner table for mail identities;
-  on panels other than cPanel every mail finding stays unattributed.
+- Mailbox and domain identities need cPanel's domain-owner table. Those
+  lookups stay unattributed on other panels; authenticated bare hosting users
+  and PHP relay users can still resolve through validated passwd homes.
 - The three-account threshold was set when a tenth of the detectors were
   eligible. It has not been re-derived.
 
@@ -367,6 +369,12 @@ matches; the decision is applied consistently rather than rule by rule.
 
 **Status:** ongoing. The corpus is WordPress-only and pinned upstream
 packages only.
+
+Source additions depend on resolving
+[taint laundering through value encoders](#taint-laundering-through-value-encoders),
+[local-path provenance through variables](#local-path-provenance-through-variables),
+and [content rules versus archive containers](#content-rules-versus-archive-containers).
+These precision defects must be fixed before the new sources join the gate.
 
 Add the pinned Joomla, Drupal and OpenCart sources (URL, SHA-256, exact file
 count and in-archive licence path are ready) and source Magento, whose pins
