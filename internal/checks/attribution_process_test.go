@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -44,7 +45,8 @@ func writePasswdFixture(t *testing.T, root string) {
 	passwd := filepath.Join(t.TempDir(), "passwd")
 	body := "root:x:0:0:root:/root:/bin/bash\n" +
 		"nobody:x:65534:65534:nobody:/var/lib/nobody:/usr/sbin/nologin\n" +
-		"alice:x:1001:1001::" + filepath.Join(root, "alice") + ":/bin/bash\n"
+		"alice:x:1001:1001::" + filepath.Join(root, "alice") + ":/bin/bash\n" +
+		"bob:x:1002:1002::" + filepath.Join(root, "bob") + ":/bin/bash\n"
 	if err := os.WriteFile(passwd, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -136,5 +138,69 @@ type=SYSCALL msg=audit(3.0:3): a0=38 auid=4242 uid=4242 comm="bad" exe="/tmp/bad
 	res := CorrelateFindings(append([]alert.Finding{critical("db_rogue_admin", "bob"), critical("db_rogue_admin", "carol")}, got[0]))
 	if len(res.Derived) != 1 || len(res.Unattributed) != 0 {
 		t.Fatalf("attributed AF_ALG finding did not complete the aggregate: %+v", res)
+	}
+}
+
+func TestHostingAccountForUserRequiresDirectHome(t *testing.T) {
+	root := t.TempDir()
+	withAccountHomeRoots(t, root)
+	passwd := filepath.Join(t.TempDir(), "passwd")
+	body := "alice:x:1001:1001::" + filepath.Join(root, "alice", "service") + ":/bin/sh\n"
+	if err := os.WriteFile(passwd, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(swapDefaultUIDCacheForTest(passwd))
+	if got := HostingAccountForUser("alice"); got != "" {
+		t.Fatalf("nested service home attributed to %q", got)
+	}
+}
+
+func TestHostingAccountLookupCachesMissingUsers(t *testing.T) {
+	root := t.TempDir()
+	withAccountHomeRoots(t, root)
+	passwd := filepath.Join(t.TempDir(), "passwd")
+	if err := os.WriteFile(passwd, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(swapDefaultUIDCacheForTest(passwd))
+	if got := HostingAccountForUser("alice"); got != "" {
+		t.Fatalf("missing user = %q", got)
+	}
+	body := "alice:x:1001:1001::" + filepath.Join(root, "alice") + ":/bin/sh\n"
+	if err := os.WriteFile(passwd, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := HostingAccountForUser("alice"); got != "" {
+		t.Errorf("missing user was re-read before refresh: %q", got)
+	}
+	defaultUIDCache.lastHomeRead = time.Now().Add(-uidCacheMissTTL)
+	if got := HostingAccountForUser("alice"); got != "alice" {
+		t.Fatalf("new account did not resolve after miss expiry: %q", got)
+	}
+	defaultUIDCache.Refresh()
+	if got := HostingAccountForUser("alice"); got != "alice" {
+		t.Fatalf("refreshed owner = %q", got)
+	}
+}
+
+func TestSystemSymlinkAttackCarriesSourceOwner(t *testing.T) {
+	root := t.TempDir()
+	withAccountHomeRoots(t, root)
+	home := filepath.Join(root, "alice")
+	dir := filepath.Join(home, "public_html")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "peek")
+	if err := os.Symlink("/etc/shadow", link); err != nil {
+		t.Fatal(err)
+	}
+	var findings []alert.Finding
+	scanForMaliciousSymlinks(dir, "alice", home, 4, &findings)
+	if len(findings) != 1 || findings[0].Check != "symlink_attack" || findings[0].Severity != alert.Critical {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if findings[0].FilePath != link || findings[0].TenantID != "alice" {
+		t.Fatalf("missing source identity: %+v", findings[0])
 	}
 }

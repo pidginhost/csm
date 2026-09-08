@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Mail findings use verified account identities, and sender-only volume reports stay unattributed. Service users no longer count as hosting accounts, owner lookups run outside mail tracker locks, and symlink findings retain the source account.
+- Mail hold and governor alerts now require a local mail-server decision.
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
 - Cross-account correlation uses explicit detector policy and reports findings that lack account attribution.
 - Database, mail, crontab, process and realtime findings now carry the owning account, resolved from the panel's domain owner table, the passwd home directory or the file path, so the cross-account aggregate sees every eligible detector instead of a fifth of them.

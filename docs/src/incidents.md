@@ -385,8 +385,9 @@ Class membership does not mean an emitter currently reaches Critical: the
 non-WordPress administrator checks emit High after a stored baseline, so they
 are eligible but contribute nothing until a Critical variant exists.
 
-Every eligible producer supplies identity itself, and a test names the
-producer test that proves it for each check:
+Eligible producers supply verified identity when available. The test
+inventory names the producer test for each check, including unresolved
+branches:
 
 - Database and CMS scanners stamp the owner of the install's configuration
   path, resolved through the account roots. An install outside every root
@@ -396,10 +397,16 @@ producer test that proves it for each check:
   PHP relay volume) resolve a mailbox or domain to its owning account through
   the panel's domain ownership table. Without that table (any panel other
   than cPanel) the owner stays empty and the row is reported, not counted. A
-  bare account name is already the owner.
+  bare account name must resolve to a passwd home directly under an account
+  root. Credential and bulk-service findings use the authenticated identity,
+  never the envelope sender. Sender-domain volume aggregates have no verified
+  owner and stay unattributed. Owner lookups run after tracker locks are
+  released. Mail hold and governor findings require a local mail-server
+  permission decision.
 - Process, login and crontab producers accept a system user as owner only
   when its home directory sits directly under an account root, so root,
-  service users and unknown uids never become an account.
+  service users and unknown uids never become an account. Direct SMTP findings
+  apply this validation to both socket users and enriched process accounts.
 - File families (content, phishing, htaccess, file index, core integrity,
   realtime file events, PHP shield events, self-deleting droppers) carry the
   judged file's path, which resolves as described above. The collapsed

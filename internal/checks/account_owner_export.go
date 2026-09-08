@@ -60,7 +60,7 @@ var hostingAccountForUser = func(name string) string {
 	if !filepath.IsAbs(home) {
 		return ""
 	}
-	if _, account, ok := accountRootOf(filepath.Join(home, "probe")); ok && account == name {
+	if root, account, ok := accountRootOf(filepath.Join(home, "probe")); ok && account == name && filepath.Clean(home) == filepath.Join(root, account) {
 		return name
 	}
 	return ""
@@ -95,10 +95,10 @@ func ftpAccountOwner(account string) string {
 }
 
 // accountHomeExists reports whether a configured account root contains a
-// directory named user. It distinguishes a hosting account's cron spool from
-// a system or service user's.
+// directory named user and passwd identifies it as the user's home. A
+// leftover directory must not promote a service user to a hosting owner.
 func accountHomeExists(user string) bool {
-	if user == "" || user == "root" || strings.ContainsAny(user, "/\\") {
+	if HostingAccountForUser(user) == "" {
 		return false
 	}
 	for _, root := range accountHomeRoots() {

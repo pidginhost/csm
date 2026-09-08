@@ -23,6 +23,7 @@ func (d spoolDirInfo) Sys() interface{}   { return nil }
 // owner is a hosting account: root and service spools stay unattributed.
 func TestSuspiciousCrontabStampsSpoolOwner(t *testing.T) {
 	withAccountHomeRoots(t, "/home")
+	writePasswdFixture(t, "/home")
 	spool := "/var/spool/cron"
 	prevSpool := cronSpoolDir
 	cronSpoolDir = func() string { return spool }
@@ -35,7 +36,7 @@ func TestSuspiciousCrontabStampsSpoolOwner(t *testing.T) {
 		filepath.Join(spool, "root"):   line,
 		filepath.Join(spool, "nobody"): line,
 	}
-	dirs := map[string]bool{"/home/alice": true}
+	dirs := map[string]bool{"/home/alice": true, "/home/nobody": true}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			if pattern == filepath.Join(spool, "*") {
@@ -70,8 +71,8 @@ func TestSuspiciousCrontabStampsSpoolOwner(t *testing.T) {
 			}
 		}
 	}
-	if len(owners) == 0 {
-		t.Fatal("fixture produced no suspicious_crontab finding; the matcher token must trigger")
+	if len(owners) != 2 {
+		t.Fatalf("want alice and nobody spools, got %v", owners)
 	}
 	if owners["alice"] != "alice" {
 		t.Errorf("alice spool owner = %q", owners["alice"])

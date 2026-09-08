@@ -220,6 +220,8 @@ func scanForMaliciousSymlinks(dir, user, homeDir string, maxDepth int, findings 
 					Check:    "symlink_attack",
 					Message:  fmt.Sprintf("Symlink to sensitive system file: %s -> %s", fullPath, target),
 					Details:  fmt.Sprintf("User: %s", user),
+					FilePath: fullPath,
+					TenantID: user,
 				})
 				break
 			}

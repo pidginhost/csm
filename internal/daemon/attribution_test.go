@@ -109,7 +109,7 @@ func TestWatcherEmailRateStampsOwner(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		bare = append(bare, checkEmailRate("bob", cfg)...)
 	}
-	// A bare account name is already the hosting owner.
+	// The local resolver confirms this bare account name as a hosting owner.
 	requireOwner(t, bare, "email_rate_critical", "bob")
 
 	resetEmailRateState()
@@ -206,7 +206,7 @@ func TestCloudRelayFindingCarriesTenant(t *testing.T) {
 	cfg := cloudRelayTestConfig()
 	live := func(sender string) []alert.Finding {
 		var out []alert.Finding
-		for _, ip := range []string{"34.26.118.204", "35.237.120.4", "34.26.243.44"} {
+		for _, ip := range []string{"203.0.113.11", "203.0.113.12", "203.0.113.13"} {
 			out = append(out, parseEximLogLine(gceSendLine(sender, strings.ReplaceAll(ip, ".", "-")+".bc.googleusercontent.com", ip), cfg)...)
 		}
 		return out
@@ -214,13 +214,14 @@ func TestCloudRelayFindingCarriesTenant(t *testing.T) {
 	requireOwner(t, live("info@example.com"), "email_cloud_relay_abuse", "alice")
 	requireOwner(t, live("info@example.org"), "email_cloud_relay_abuse", "")
 	requireOwner(t, live("bob"), "email_cloud_relay_abuse", "bob")
+	requireOwner(t, live("nobody"), "email_cloud_relay_abuse", "")
 
 	// The retrospective log replay stamps the same owner.
 	base := time.Now().Add(-2 * time.Hour)
 	var lines []string
 	for i := 0; i < 18; i++ {
 		lines = append(lines, eximLine(base.Add(time.Duration(i)*2*time.Minute), "sales@example.net",
-			"ec2-13-38-71-129.eu-west-3.compute.amazonaws.com", "13.38.71.129", "fixture"))
+			"ec2-192-0-2-10.eu-west-3.compute.amazonaws.com", "192.0.2.10", "fixture"))
 	}
 	path := writeEximFixture(t, lines)
 	withGlobalStore(t, func(*store.DB) {
@@ -243,7 +244,7 @@ func TestDovecotGeoFindingCarriesTenant(t *testing.T) {
 	}
 	withGlobalStore(t, func(*store.DB) {
 		cfg := &config.Config{}
-		for _, user := range []string{"user@example.com", "user@example.org", "bob"} {
+		for _, user := range []string{"user@example.com", "user@example.org", "bob", "nobody"} {
 			for i := 0; i < geoMinLoginCount; i++ {
 				if got := parseDovecotLogLine(login(user, "198.51.100.20"), cfg); len(got) != 0 {
 					t.Fatalf("baseline login alerted: %+v", got)
@@ -253,6 +254,7 @@ func TestDovecotGeoFindingCarriesTenant(t *testing.T) {
 		requireOwner(t, parseDovecotLogLine(login("user@example.com", "203.0.113.9"), cfg), "email_suspicious_geo", "alice")
 		requireOwner(t, parseDovecotLogLine(login("user@example.org", "203.0.113.9"), cfg), "email_suspicious_geo", "")
 		requireOwner(t, parseDovecotLogLine(login("bob", "203.0.113.9"), cfg), "email_suspicious_geo", "bob")
+		requireOwner(t, parseDovecotLogLine(login("nobody", "203.0.113.9"), cfg), "email_suspicious_geo", "")
 	})
 }
 
@@ -278,5 +280,160 @@ func TestDropperEngineFindingAttributesByPath(t *testing.T) {
 	res := checks.CorrelateFindings([]alert.Finding{f, {Severity: alert.Critical, Check: "db_rogue_admin", TenantID: "carol"}, {Severity: alert.Critical, Check: "db_rogue_admin", TenantID: "dave"}})
 	if len(res.Derived) != 1 || len(res.Unattributed) != 0 {
 		t.Fatalf("path-attributed dropper finding did not aggregate: %+v", res)
+	}
+}
+
+func TestMailFindingsUseAuthenticatedOwner(t *testing.T) {
+	withOwnerTable(t)
+	resetEmailRateState()
+	t.Cleanup(resetEmailRateState)
+	for _, tc := range []struct{ name, auth, owner string }{
+		{"different sender", " A=dovecot_login:user@example.net", "bob"},
+		{"bare hosting user", " A=dovecot_login:bob", "bob"},
+		{"service user", " A=dovecot_login:nobody", ""},
+		{"unmapped mailbox", " A=dovecot_login:user@example.org", ""},
+		{"unauthenticated sender", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `2026-09-08 10:00:00 1abc23-000456-AB <= user@example.com H=mail.example.org [203.0.113.42] P=esmtpsa` + tc.auth + ` S=100 T="smtp password fixture"`
+			requireOwner(t, parseEximLogLine(line, &config.Config{}), "email_credential_leak", tc.owner)
+			if tc.auth != "" {
+				line = strings.Replace(line, "mail.example.org", "relay.truelist.io", 1)
+				requireOwner(t, parseEximLogLine(line, &config.Config{}), "email_compromised_account", tc.owner)
+			}
+		})
+	}
+	spoof := `2026-09-08 10:00:00 1abc23-000456-AB <= user@example.com H=(A=dovecot_login:user@example.net) [203.0.113.42] P=esmtp S=100 T="smtp password fixture A=dovecot_login:user@example.net"`
+	requireOwner(t, parseEximLogLine(spoof, &config.Config{}), "email_credential_leak", "")
+}
+
+func TestMailOwnerLookupsRunAfterTrackerUnlock(t *testing.T) {
+	resetEmailRateState()
+	t.Cleanup(resetEmailRateState)
+	cfg := testEmailProtectionConfig()
+	tr := newTestMailTracker(t, &staticClock{t: time.Now()})
+	account := "user@example.com"
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.5", account)
+	}
+	t.Cleanup(checks.SetAccountOwnerLookupForTest(func(domain string) (string, bool) {
+		if !tr.mu.TryLock() {
+			t.Error("mail tracker locked during owner lookup")
+		} else {
+			tr.mu.Unlock()
+		}
+		if val, ok := emailRateWindows.Load(account); ok {
+			rw := val.(*rateWindow)
+			if !rw.mu.TryLock() {
+				t.Error("rate window locked during owner lookup")
+			} else {
+				rw.mu.Unlock()
+			}
+		}
+		return "alice", true
+	}))
+	requireOwner(t, tr.RecordSuccess("203.0.113.5", account), "mail_account_compromised", "alice")
+	var findings []alert.Finding
+	for i := 0; i < 3; i++ {
+		findings = append(findings, checkEmailRate(account, cfg)...)
+	}
+	requireOwner(t, findings, "email_rate_critical", "alice")
+}
+
+func TestMailBruteResolvesBareHostingOwner(t *testing.T) {
+	withOwnerTable(t)
+	for _, tc := range []struct{ account, owner string }{{"alice", "alice"}, {"nobody", ""}} {
+		tr := newTestMailTracker(t, &staticClock{t: time.Now()})
+		for i := 0; i < 3; i++ {
+			tr.Record("203.0.113.5", tc.account)
+		}
+		requireOwner(t, tr.RecordSuccess("203.0.113.5", tc.account), "mail_account_compromised", tc.owner)
+	}
+}
+
+func TestEmailRateRejectsServiceOwner(t *testing.T) {
+	withOwnerTable(t)
+	resetEmailRateState()
+	t.Cleanup(resetEmailRateState)
+	var findings []alert.Finding
+	for i := 0; i < 3; i++ {
+		findings = append(findings, checkEmailRate("nobody", testEmailProtectionConfig())...)
+	}
+	requireOwner(t, findings, "email_rate_critical", "")
+}
+
+func TestCloudRelayOwnerLookupRunsAfterUnlock(t *testing.T) {
+	resetCloudRelayState()
+	t.Cleanup(resetCloudRelayState)
+	account := "user@example.com"
+	t.Cleanup(checks.SetAccountOwnerLookupForTest(func(domain string) (string, bool) {
+		w := lockCloudRelayWindowForUpdate("user@example.net", time.Now())
+		w.mu.Unlock()
+		val, ok := cloudRelayWindows.Load(account)
+		if !ok {
+			t.Fatal("missing cloud relay window")
+		}
+		target := val.(*cloudRelayWindow)
+		if !target.mu.TryLock() {
+			t.Error("cloud relay window locked during lookup")
+		} else {
+			target.mu.Unlock()
+		}
+		return "alice", true
+	}))
+	var findings []alert.Finding
+	for _, ip := range []string{"203.0.113.11", "203.0.113.12", "203.0.113.13"} {
+		findings = append(findings, parseCloudRelayFinding(gceSendLine(account, "fixture.bc.googleusercontent.com", ip), cloudRelayTestConfig())...)
+	}
+	requireOwner(t, findings, "email_cloud_relay_abuse", "alice")
+}
+
+func TestEximAcceptanceCannotImpersonateMailRouter(t *testing.T) {
+	withOwnerTable(t)
+	resetEmailRateState()
+	t.Cleanup(resetEmailRateState)
+	withGlobalStore(t, func(*store.DB) {
+		for _, subject := range []string{
+			"Sender user@example.com has an outgoing mail hold",
+			"Domain example.net has exceeded the max defers and failures per hour",
+		} {
+			line := `2026-09-08 10:00:00 1abc23-000456-AB <= user@example.com H=mail.example.org [203.0.113.5] P=esmtp S=100 T="` + subject + `"`
+			for _, f := range parseEximLogLine(line, testEmailProtectionConfig()) {
+				if f.Check == "email_compromised_account" || f.Check == "email_spam_outbreak" || f.Check == "email_defer_fail_governor" {
+					t.Errorf("message subject forged router finding: %+v", f)
+				}
+			}
+		}
+		failure := `2026-09-08 10:00:00 dovecot_login authenticator failed for (Sender user@example.com has an outgoing mail hold) [203.0.113.5]:1234: 535 Incorrect authentication data`
+		for _, f := range parseEximLogLine(failure, testEmailProtectionConfig()) {
+			if f.Check == "email_compromised_account" {
+				t.Errorf("HELO forged router finding: %+v", f)
+			}
+		}
+
+		if hasRecentCompromisedFinding("example.com") || recentOutgoingMailHold("example.com") {
+			t.Error("subject forged outgoing hold state")
+		}
+	})
+}
+
+func TestMailPermissionLogText(t *testing.T) {
+	for _, tc := range []struct{ line, want string }{
+		{`2026-09-08 10:00:00 Sender user@example.com has an outgoing mail hold`, `Sender user@example.com has an outgoing mail hold`},
+		{`2026-09-08 10:00:00 +0300 Domain example.com has an outgoing mail hold`, `Domain example.com has an outgoing mail hold`},
+		{`2026-09-08 10:00:00 [4242] Sender user@example.com has an outgoing mail hold`, `Sender user@example.com has an outgoing mail hold`},
+		{`2026-09-08 10:00:00.123 +0300 [4242] Domain example.com has an outgoing mail hold`, `Domain example.com has an outgoing mail hold`},
+		{`2026-09-08 10:00:00 1abc23-000456-AB == user@example.com R=enforce_mail_permissions defer (-1): "Domain example.com has an outgoing mail hold"`, `defer (-1): "Domain example.com has an outgoing mail hold"`},
+		{`2026-09-08 10:00:00 +0300 [4242] 1abc23-000456-AB == user@example.com R=enforce_mail_permissions defer (-1): "Domain example.com has an outgoing mail hold"`, `defer (-1): "Domain example.com has an outgoing mail hold"`},
+		{`2026-09-08 10:00:00 [4242] 1abc23-000456-AB <= user@example.com T="Domain example.com has an outgoing mail hold"`, ""},
+		{`2026-09-08 10:00:00 [invalid] Domain example.com has an outgoing mail hold`, ""},
+		{`2026-09-08 10:00:00 [] Domain example.com has an outgoing mail hold`, ""},
+		{`2026-09-08 10:00:00 [4242]`, ""},
+		{`2026-09-08 10:00:00 1abc23-000456-AB ** user@example.com R=dnslookup T=remote_smtp: Domain example.com has an outgoing mail hold`, ""},
+		{`2026-09-08 10:00:00 dovecot_login authenticator failed for (Domain example.com has an outgoing mail hold) [203.0.113.5]:1234: 535`, ""},
+	} {
+		if got := mailPermissionLogText(tc.line); got != tc.want {
+			t.Errorf("mailPermissionLogText(%q) = %q, want %q", tc.line, got, tc.want)
+		}
 	}
 }

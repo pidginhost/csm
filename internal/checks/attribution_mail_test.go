@@ -47,7 +47,7 @@ func ownersByCheck(findings []alert.Finding, check string) map[string]int {
 	return out
 }
 
-func TestMailPerAccountStampsOwner(t *testing.T) {
+func TestMailPerAccountLeavesSenderAggregateUnattributed(t *testing.T) {
 	withOwnerTable(t)
 	var b strings.Builder
 	for i := 0; i < perAccountMailThreshold; i++ {
@@ -57,7 +57,7 @@ func TestMailPerAccountStampsOwner(t *testing.T) {
 	withMockOS(t, &mockOS{open: openTempLog(t, b.String())})
 	findings := CheckMailPerAccount(context.Background(), &config.Config{}, nil)
 	owners := ownersByCheck(findings, "mail_per_account")
-	if owners["alice"] != 1 || owners[""] != 1 || len(owners) != 2 {
+	if owners[""] != 2 || len(owners) != 1 {
 		t.Fatalf("owners %v from %+v", owners, findings)
 	}
 	for _, f := range findings {
@@ -162,5 +162,41 @@ func TestFTPLoginAfterBruteforceStampsOwner(t *testing.T) {
 		if f.Check != "ftp_login_after_bruteforce" || f.TenantID != want {
 			t.Errorf("%s: %+v (want owner %q)", account, f, want)
 		}
+	}
+}
+
+func TestMailVolumeDoesNotTrustEnvelopeOwner(t *testing.T) {
+	withOwnerTable(t)
+	for _, fields := range []string{
+		"H=mail.example.org [203.0.113.5] P=esmtp",
+		"H=mail.example.org [203.0.113.5] P=esmtpsa A=dovecot_login:user@example.net",
+	} {
+		line := "2026-09-08 10:00:00 1abc23-000456-AB <= user@example.com " + fields + " S=100\n"
+		withMockOS(t, &mockOS{open: openTempLog(t, strings.Repeat(line, perAccountMailThreshold))})
+		findings := CheckMailPerAccount(context.Background(), &config.Config{}, nil)
+		if len(findings) != 1 || findings[0].Check != "mail_per_account" {
+			t.Fatalf("findings = %+v", findings)
+		}
+		if findings[0].TenantID != "" {
+			t.Errorf("sender-domain aggregate assigned to %q", findings[0].TenantID)
+		}
+	}
+}
+
+func TestCpanelMultiIPLoginDoesNotAttributeSystemUser(t *testing.T) {
+	root := t.TempDir()
+	withAccountHomeRoots(t, root)
+	writePasswdFixture(t, root)
+	var lines strings.Builder
+	stamp := time.Now().Format("2006-01-02 15:04:05 -0700")
+	for _, user := range []string{"alice", "root", "nobody"} {
+		for _, ip := range []string{"203.0.113.11", "203.0.113.12", "203.0.113.13"} {
+			lines.WriteString("[" + stamp + "] info [cpaneld] " + ip + " NEW " + user + ":fixture address=" + ip + ",app=cpaneld,method=handle_form_login\n")
+		}
+	}
+	withMockOS(t, &mockOS{open: openTempLog(t, lines.String())})
+	got := ownersByCheck(CheckCpanelLogins(context.Background(), &config.Config{}, nil), "cpanel_multi_ip_login")
+	if len(got) != 2 || got["alice"] != 1 || got[""] != 2 {
+		t.Fatalf("owners = %v, want alice and two unattributed rows", got)
 	}
 }

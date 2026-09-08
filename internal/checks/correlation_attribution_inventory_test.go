@@ -57,7 +57,7 @@ var attributionEvidence = map[string]string{
 	// Crontab.
 	"suspicious_crontab": "TestSuspiciousCrontabStampsSpoolOwner",
 	// Mail producers.
-	"mail_per_account":           "TestMailPerAccountStampsOwner",
+	"mail_per_account":           "TestMailPerAccountLeavesSenderAggregateUnattributed",
 	"email_pipe_forwarder":       "TestForwarderFindingsStampOwner",
 	"email_suspicious_forwarder": "TestForwarderFindingsStampOwner",
 	"email_filter_blackhole":     "TestMailFilterFindingsAttributeByPath",

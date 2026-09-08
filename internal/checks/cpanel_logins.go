@@ -108,7 +108,7 @@ func CheckCpanelLogins(ctx context.Context, cfg *config.Config, store *state.Sto
 				Check:    "cpanel_multi_ip_login",
 				Message:  fmt.Sprintf("Account '%s' logged in from %d distinct IPs (credential compromise likely)", account, len(ips)),
 				Details:  fmt.Sprintf("IPs: %s\nThreshold: %d IPs within %d minutes", strings.Join(ipList, ", "), threshold, multiIPWindowMin(cfg)),
-				TenantID: account,
+				TenantID: HostingAccountForUser(account),
 			})
 		}
 	}

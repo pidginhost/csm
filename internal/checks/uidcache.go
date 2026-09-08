@@ -6,17 +6,21 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+const uidCacheMissTTL = time.Minute
 
 // uidCache caches uid -> username from /etc/passwd. The first Lookup of an
 // unknown uid reads and parses the file; subsequent lookups return from the
 // in-memory map. Process-lifetime: callers that need fresh data after a
 // useradd should call Refresh().
 type uidCache struct {
-	path  string
-	mu    sync.RWMutex
-	m     map[uint32]string
-	homes map[string]string
+	lastHomeRead time.Time
+	path         string
+	mu           sync.RWMutex
+	m            map[uint32]string
+	homes        map[string]string
 }
 
 var defaultUIDCache = newUIDCache("/etc/passwd")
@@ -71,6 +75,7 @@ func (c *uidCache) Refresh() {
 	c.mu.Lock()
 	c.m = map[uint32]string{}
 	c.homes = map[string]string{}
+	c.lastHomeRead = time.Time{}
 	c.mu.Unlock()
 }
 
@@ -79,15 +84,18 @@ func (c *uidCache) Refresh() {
 func (c *uidCache) HomeDir(name string) string {
 	c.mu.RLock()
 	home, ok := c.homes[name]
+	fresh := time.Since(c.lastHomeRead) < uidCacheMissTTL
 	c.mu.RUnlock()
-	if ok {
+	if ok || fresh {
 		return home
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if home, ok := c.homes[name]; ok {
+	if home, ok = c.homes[name]; ok || time.Since(c.lastHomeRead) < uidCacheMissTTL {
 		return home
 	}
+	// Throttle misses across all names without storing attacker-chosen keys.
+	// Expiry lets newly provisioned accounts become attributable after a miss.
 	c.parseLocked()
 	return c.homes[name]
 }
@@ -95,6 +103,7 @@ func (c *uidCache) HomeDir(name string) string {
 // parseLocked replaces the cache contents with a fresh scan. Caller holds the
 // write lock.
 func (c *uidCache) parseLocked() {
+	c.lastHomeRead = time.Now()
 	data, err := os.ReadFile(c.path)
 	if err != nil {
 		return

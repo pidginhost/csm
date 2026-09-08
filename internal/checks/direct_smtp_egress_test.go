@@ -166,6 +166,9 @@ func TestEvaluateDirectSMTPEgressLegacyShapeStillSkipsMTAUser(t *testing.T) {
 }
 
 func TestEvaluateDirectSMTPEgressSetsTenantIDFromUser(t *testing.T) {
+	root := t.TempDir()
+	withAccountHomeRoots(t, root)
+	writePasswdFixture(t, root)
 	cfg := sampleDirectSMTPCfg()
 	in := DirectSMTPEgressInput{
 		UID: 1001, User: "alice", PID: 4242, Comm: "ncat",
@@ -181,6 +184,9 @@ func TestEvaluateDirectSMTPEgressSetsTenantIDFromUser(t *testing.T) {
 }
 
 func TestEvaluateDirectSMTPEgressUsesProcessAccountForTenantID(t *testing.T) {
+	root := t.TempDir()
+	withAccountHomeRoots(t, root)
+	writePasswdFixture(t, root)
 	cfg := sampleDirectSMTPCfg()
 	in := DirectSMTPEgressInput{
 		UID: 1001, User: "php-fpm", PID: 4242, Comm: "ncat",

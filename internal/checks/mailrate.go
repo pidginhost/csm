@@ -61,7 +61,9 @@ func CheckMailPerAccount(ctx context.Context, cfg *config.Config, _ *state.Store
 		counts[domain]++
 	}
 
-	// Alert on accounts exceeding threshold
+	// This aggregate is keyed by the envelope sender, which can be spoofed
+	// or shared by several authenticated accounts. It has no verified owner.
+	// Keep the volume finding, but do not infer a tenant from its domain.
 	for domain, count := range counts {
 		if count >= perAccountMailThreshold {
 			findings = append(findings, alert.Finding{
@@ -70,7 +72,6 @@ func CheckMailPerAccount(ctx context.Context, cfg *config.Config, _ *state.Store
 				Message:  fmt.Sprintf("High email volume from %s: %d messages in recent log", domain, count),
 				Details:  "Possible spam outbreak or compromised email account",
 				Domain:   domain,
-				TenantID: MailOwner(domain),
 			})
 		}
 	}

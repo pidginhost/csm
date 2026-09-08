@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/obs"
@@ -211,7 +210,7 @@ const (
 // zero or one finding. Never auto-suspends on its own — emits a finding
 // whose Message embeds the source IP; the existing autoblock + suspend
 // pipeline picks it up by check name.
-func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
+func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.Finding) {
 	// Only care about authenticated outbound acceptance lines.
 	if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
 		return nil
@@ -237,6 +236,8 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 		return nil
 	}
 
+	// Registered before the unlock defer so owner I/O runs after it.
+	defer func() { stampMailAccountOwner(findings, user) }()
 	now := time.Now()
 	w := lockCloudRelayWindowForUpdate(user, now)
 	defer w.mu.Unlock()
@@ -311,10 +312,7 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 		strings.Join(truncateIPList(ips, 8), ", "),
 	)
 
-	mailbox, domain, tenant := splitMailAccount(user)
-	if tenant == "" {
-		tenant = checks.MailOwner(domain)
-	}
+	mailbox, domain, _ := splitMailAccount(user)
 	return []alert.Finding{{
 		Severity: alert.Critical,
 		Check:    "email_cloud_relay_abuse",
@@ -323,7 +321,6 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 		SourceIP: ips[0],
 		Mailbox:  mailbox,
 		Domain:   domain,
-		TenantID: tenant,
 	}}
 }
 

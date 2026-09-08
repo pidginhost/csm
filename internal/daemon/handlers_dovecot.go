@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/store"
@@ -143,10 +142,8 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 		countryName = country
 	}
 
-	mailbox, domain, tenant := splitMailAccount(user)
-	if tenant == "" {
-		tenant = checks.MailOwner(domain)
-	}
+	mailbox, domain, _ := splitMailAccount(user)
+	tenant := mailAccountOwner(user)
 	return []alert.Finding{{
 		Severity: alert.High,
 		Check:    "email_suspicious_geo",
