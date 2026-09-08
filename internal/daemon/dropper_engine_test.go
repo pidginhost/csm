@@ -127,9 +127,14 @@ func TestEngineAdmitGatesOnShouldTrack(t *testing.T) {
 	e, _ := newTestEngine(time.Minute)
 
 	// A stale (non-created, no birth) file must not be admitted.
+	// Head/Size describe a real PHP file: this test is about the freshness
+	// gate, and a candidate with no content at all is separately rejected as
+	// inert (see dropper_inert_test.go), which would mask what is asserted here.
+	body := []byte("<?php @eval($_POST['x']);")
 	stale := dropperCandidate{
 		Path: "/home/alice/public_html/x.php", Docroot: "/home/alice/public_html",
 		Observed: now, Mode: 0o100644, Inode: 1, Device: 1,
+		Head: body, Size: int64(len(body)),
 	}
 	if e.admit(stale) {
 		t.Error("stale non-created candidate must not be admitted")

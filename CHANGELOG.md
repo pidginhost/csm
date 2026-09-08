@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A new firewall command clears one address's accumulated local threat score without changing blocks, allow lists, whitelists or event history. New findings start a fresh scoring record.
 
 ### Fixed
+- Guard files that plugins create and delete under upload directories are no longer reported as self-deleting droppers. One plugin produced hundreds of these alerts a day on a busy host, and they were enough to raise a false account-compromise incident.
 - Five of the six syscall groups the service unit meant to deny were silently discarded by systemd, so module loading, mounting and raw I/O were never blocked. The unit read as hardened while the hardening was absent.
 
 - A normal CSM restart no longer reports the YARA worker as crashed. The worker is stopped along with the daemon, and that orderly stop was raising a critical alert every time the service was restarted.
