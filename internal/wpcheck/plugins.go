@@ -421,37 +421,3 @@ func (c *Cache) fetchPluginWithRetry(slug, version string, attempt int) {
 		c.clearFetching(key)
 	})
 }
-
-// IsVerifiedPluginFile compares a file against the cached wordpress.org
-// checksum for its plugin/version. Returns true only when the on-disk
-// content hash matches. Triggers a background fetch on cache miss.
-func (c *Cache) IsVerifiedPluginFile(fd int, path string) bool {
-	root, slug := DetectPluginRoot(path)
-	if root == "" {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return false
-	}
-
-	version, err := ReadPluginVersion(root, slug)
-	if err != nil || version == "" {
-		return false
-	}
-
-	expected, ok := c.lookupPluginChecksum(slug, version, rel)
-	if !ok {
-		if !c.hasPluginChecksums(slug, version) {
-			c.startBackgroundPluginFetch(slug, version)
-		}
-		return false
-	}
-
-	data := readCompleteFileForHash(fd)
-	if data == nil {
-		return false
-	}
-	h := sha256.Sum256(data)
-	return constantTimeHexDigestEqual(h[:], expected)
-}

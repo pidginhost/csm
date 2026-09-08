@@ -21,6 +21,18 @@ checksum entry. Only a match against the complete event-file content verifies
 the file; missing checksums, partial content, and modifications proceed through
 normal detection. The finding retains the actual event path.
 
+A WordPress update is unpacked under `wp-content/upgrade/` before it is moved
+into place, and each staged PHP file is judged by hash rather than by location.
+A file that matches the official wordpress.org checksum for its package version
+is stock and skips detection like an installed stock file. A file whose
+checksums are still being fetched is content-scanned now and compared once they
+land, even if the package header was written late or WordPress has already
+moved the tree into place. A file the official package does not ship gets its
+own warning, naming the installed path when it still exists. Themes, packages
+not published on wordpress.org, a full verification queue, and a package whose
+checksums do not arrive within 60 seconds raise one warning per staging
+directory, repeated after the normal alert cooldown if activity continues.
+
 **Detects:**
 - Webshell creation (PHP files in web directories)
 - Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. Upgrade staging, atomic-save temp files, template compile caches, a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`.

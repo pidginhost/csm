@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/wpcheck"
 	"github.com/pidginhost/csm/internal/yara"
 )
 
@@ -51,101 +52,6 @@ func drainFindings(ch chan alert.Finding) []alert.Finding {
 		case <-time.After(100 * time.Millisecond):
 			return out
 		}
-	}
-}
-
-func TestWPUpdateStagingDirShapes(t *testing.T) {
-	root := t.TempDir()
-	wpRoot := filepath.Join(root, "public_html")
-	upgrade := filepath.Join(wpRoot, "wp-content", "upgrade")
-
-	if err := os.MkdirAll(filepath.Join(wpRoot, "wp-content", "plugins", "cookie-law-info"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(wpRoot, "wp-content", "themes", "twentytwentyfour"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(wpRoot, "wp-includes"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(wpRoot, "wp-includes", "version.php"), []byte("<?php $wp_version='6.4.10';"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	tests := []struct {
-		name string
-		path string
-		want string
-	}{
-		{
-			name: "installed plugin package",
-			path: filepath.Join(upgrade, "cookie-law-info.3.5.5", "cookie-law-info", "legacy", "loader.php"),
-			want: filepath.Join(upgrade, "cookie-law-info.3.5.5"),
-		},
-		{
-			name: "installed theme package",
-			path: filepath.Join(upgrade, "twentytwentyfour.1.2", "twentytwentyfour", "functions.php"),
-			want: filepath.Join(upgrade, "twentytwentyfour.1.2"),
-		},
-		{
-			name: "core partial package",
-			path: filepath.Join(upgrade, "wordpress-6.4.10-partial-8", "wordpress", "wp-login.php"),
-			want: filepath.Join(upgrade, "wordpress-6.4.10-partial-8"),
-		},
-		{
-			name: "core full package",
-			path: filepath.Join(upgrade, "wordpress-6.4.10", "wordpress", "wp-settings.php"),
-			want: filepath.Join(upgrade, "wordpress-6.4.10"),
-		},
-		{
-			// WordPress stages a core update in a uniqid working directory as
-			// well as in a wordpress-<version> one. On a production host this
-			// shape produced 1062 of one day's 3088 per-file warnings, so the
-			// unpacked directory and a real WordPress root are what identify a
-			// core package -- never the generated staging name.
-			name: "core package in a uniqid working directory",
-			path: filepath.Join(upgrade, "wp_6a9e080f774ec", "wordpress", "wp-login.php"),
-			want: filepath.Join(upgrade, "wp_6a9e080f774ec"),
-		},
-		{
-			name: "package naming nothing installed",
-			path: filepath.Join(upgrade, "totally-not-a-plugin.1.0", "totally-not-a-plugin", "shell.php"),
-			want: "",
-		},
-		{
-			name: "core-shaped package without a WordPress root",
-			path: filepath.Join(root, "elsewhere", "wp-content", "upgrade", "wordpress-6.4.10", "wordpress", "wp-login.php"),
-			want: "",
-		},
-		{
-			name: "file directly in upgrade with no package",
-			path: filepath.Join(upgrade, "version-current.php"),
-			want: "",
-		},
-		{
-			name: "package directory with no unpacked tree",
-			path: filepath.Join(upgrade, "cookie-law-info.3.5.5", "loose.php"),
-			want: "",
-		},
-		{
-			name: "rollback backup directory is not an update package",
-			path: filepath.Join(wpRoot, "wp-content", "upgrade-temp-backup", "plugins", "cookie-law-info", "loader.php"),
-			want: "",
-		},
-		{
-			name: "path outside any upgrade directory",
-			path: filepath.Join(wpRoot, "wp-content", "plugins", "cookie-law-info", "loader.php"),
-			want: "",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			wpPathStatCache.Clear()
-			if got := wpUpdateStagingDir(tc.path); got != tc.want {
-				t.Errorf("wpUpdateStagingDir(%q) = %q, want %q", tc.path, got, tc.want)
-			}
-		})
 	}
 }
 
@@ -245,37 +151,6 @@ func TestPHPInUpgradeUniqidCorePackageCollapsesToOneAlert(t *testing.T) {
 	}
 }
 
-func TestPHPInUpgradeUnknownPackageAlertsPerFile(t *testing.T) {
-	wpPathStatCache.Clear()
-	wpRoot := filepath.Join(t.TempDir(), "public_html")
-	if err := os.MkdirAll(filepath.Join(wpRoot, "wp-content", "plugins"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	staging := filepath.Join(wpRoot, "wp-content", "upgrade", "not-installed.1.0")
-
-	ch := make(chan alert.Finding, 32)
-	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	var paths []string
-	for _, rel := range []string{
-		filepath.Join("not-installed", "one.php"),
-		filepath.Join("not-installed", "two.php"),
-	} {
-		path := filepath.Join(staging, rel)
-		paths = append(paths, path)
-		fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, cleanStagedPHP)})
-	}
-
-	got := drainFindings(ch)
-	if len(got) != len(paths) {
-		t.Fatalf("got %d findings for a package naming nothing installed, want %d: %+v", len(got), len(paths), got)
-	}
-	for i, f := range got {
-		if f.FilePath != paths[i] {
-			t.Errorf("finding %d FilePath = %q, want the file %q", i, f.FilePath, paths[i])
-		}
-	}
-}
-
 func TestPHPInUpgradeTopLevelFileAlertsOnItsOwnPath(t *testing.T) {
 	wpPathStatCache.Clear()
 	wpRoot := filepath.Join(t.TempDir(), "public_html")
@@ -362,6 +237,12 @@ func TestPHPInUpgradeCollapsePreservesSignaturePaths(t *testing.T) {
 				t.Fatalf("staging warning = %+v", got)
 			}
 			wantCheck := "signature_match_realtime"
+			// Checksums still on the way: the files are not yet proven stock,
+			// so content rules run and keep reporting against their own paths.
+			fm.wpCache = &fakeWPVerifier{
+				describe: describeStagedPlugin(staging, "example-plugin", "1.0", wpcheck.VerdictPending),
+				verify:   func(wpcheck.Verification) wpcheck.Verdict { return wpcheck.VerdictPending },
+			}
 			body := cleanStagedPHP
 			if engine == "yaml" {
 				useRealtimeRules(t, strings.Replace(realtimeHighRule, "severity: high", "severity: critical", 1))
@@ -386,6 +267,17 @@ func TestPHPInUpgradeCollapsePreservesSignaturePaths(t *testing.T) {
 				if f.FilePath != paths[i] || f.Check != wantCheck || f.Severity != alert.Critical {
 					t.Errorf("finding %d = %+v, want Critical %s for %s", i, f, wantCheck, paths[i])
 				}
+			}
+			// The same matching content can be an official test fixture of an
+			// installed plugin; an inner upgrade path does not make it staged.
+			fm.wpCache = &fakeWPVerifier{
+				describe: describeStagedPlugin(filepath.Join(wpRoot, "wp-content/plugins"), "example-plugin", "1.0", wpcheck.VerdictReady),
+				verify:   func(wpcheck.Verification) wpcheck.Verdict { return wpcheck.VerdictVerified },
+			}
+			fixture := filepath.Join(wpRoot, "wp-content/plugins/example-plugin/fixtures/wp-content/upgrade/package/inner/loader.php")
+			fm.analyzeFile(fileEvent{path: fixture, fd: writeStagedFile(t, fixture, body)})
+			if got := drainFindings(ch); len(got) != 0 {
+				t.Fatalf("verified installed fixture produced findings: %+v", got)
 			}
 		})
 	}
