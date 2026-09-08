@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- An optional cron entry for nightly automatic upgrades, shipped switched off. It is installed alongside the other sample configuration and does nothing until an operator copies it into place; the file explains how, and warns that a host running a development build would be moved back onto the last release.
-
-### Added
+- An optional cron entry for nightly automatic upgrades, shipped switched off. It is installed alongside the other sample configuration and does nothing until an operator copies it into place; the file explains how, and warns about switching development builds to the release channel.
 
 - A new firewall command clears one address's accumulated local threat score without changing blocks, allow lists, whitelists or event history. New findings start a fresh scoring record.
 
 ### Fixed
+
+- Upgrades now stop an unhealthy daemon before restoring the previous release, and reject invalid health-check wait settings. Failed nightly upgrades also notify root through cron mail.
+- An upgrade now confirms the new daemon is actually working before keeping it. A daemon that stops or fails health diagnostics triggers rollback.
 - Address lookups retain available network details even when country data is missing or comes from the country-block store.
 - Service shutdown now lets the daemon stop its workers in order, closing a race that could still report an orderly restart as a worker crash.
 - Looking up an address now reports the network and organisation it belongs to. That database was already being opened and its answer discarded.
@@ -31,12 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Self-deleting dropper detection now requires conclusive content evidence before suppressing findings and handles separate file-creation events correctly. Content and signature findings retain priority over blank-file filtering.
-
-## [Unreleased]
-
-### Fixed
-
-- An upgrade now confirms the new daemon is actually working before keeping it. Previously it only checked that the service had started, so a daemon that started and then stopped, or one that came up without its watchers, was left in place instead of being rolled back.
 
 ## [3.35.0] - 2026-09-08
 

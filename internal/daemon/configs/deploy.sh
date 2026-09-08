@@ -431,6 +431,12 @@ rollback_upgrade() {
     # package and backups from the moment rollback begins.
     trap - EXIT
     echo "WARNING: ${reason}; rolling back..." >&2
+    # A failed health check can leave the new daemon running. Stop it before
+    # overwriting its executable or assets, and cancel systemd restart jobs.
+    if ! stop_services; then
+        echo "WARNING: could not stop the unhealthy daemon during rollback" >&2
+        rollback_status=1
+    fi
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     if ! cp -p "$binary_backup" "$BINARY_PATH" 2>/dev/null; then
         echo "WARNING: could not restore previous binary from ${binary_backup}" >&2
@@ -490,25 +496,22 @@ start_services() {
     echo "Service running (PID $(systemctl show -p MainPID --value "${SERVICE_NAME}"))"
 }
 
-# verify_upgrade_health decides whether an upgrade actually worked.
-#
-# start_services only asks systemd whether the unit is active two seconds
-# after start. That misses the two failures that matter most for an
-# unattended upgrade: a daemon that starts and then exits, and one that stays
-# up but cannot do its job -- a watcher that would not attach, an unreadable
-# bbolt store, a firewall it no longer manages. Both leave the host running a
-# build that does not protect it, with no rollback.
-#
-# The settle window catches the first; `csm doctor` catches the second, since
-# it already reports watcher, store and firewall state.
-#
-# Override the window with CSM_UPGRADE_HEALTH_SETTLE (seconds) when a slow
-# host needs longer; tests set it low.
+# Check sustained liveness before asking doctor about watchers, store and
+# firewall state. CSM_UPGRADE_HEALTH_SETTLE accepts 1-3600 seconds (default 20).
 verify_upgrade_health() {
     local settle="${CSM_UPGRADE_HEALTH_SETTLE:-20}"
+    # Invalid input to test's integer comparison only ends the loop; it does
+    # not fail the gate, even under errexit. Bound it before comparing.
+    if [[ ! "$settle" =~ ^[1-9][0-9]{0,3}$ ]] || [ "$settle" -gt 3600 ]; then
+        echo "Health check failed: CSM_UPGRADE_HEALTH_SETTLE must be an integer from 1 to 3600" >&2
+        return 1
+    fi
     local i=0
     while [ "$i" -lt "$settle" ]; do
-        sleep 1
+        if ! sleep 1; then
+            echo "Health check failed: could not wait for the daemon to settle" >&2
+            return 1
+        fi
         i=$((i + 1))
         if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
             echo "Health check failed: ${SERVICE_NAME} is not running ${i}s after start" >&2
@@ -522,6 +525,10 @@ verify_upgrade_health() {
     if ! doctor_output=$("${BINARY_PATH}" doctor 2>&1); then
         echo "Health check failed: csm doctor reported a problem after upgrade" >&2
         printf '%s\n' "$doctor_output" >&2
+        return 1
+    fi
+    if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
+        echo "Health check failed: ${SERVICE_NAME} is not running after doctor" >&2
         return 1
     fi
     echo "Health check passed (service running, doctor clean)"

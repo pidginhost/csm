@@ -1421,6 +1421,7 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 					"chattr() { printf '%s\\n' \"$*\" >> \"$CHATTR_CAPTURE\"; }",
 					"lsattr() { :; }",
 					"cp() { :; }",
+					"stop_services() { :; }",
 					"start_services() { :; }",
 					"rollback_assets() { :; }",
 					extractShellFunction(t, script, "rollback_upgrade"),
@@ -1444,8 +1445,8 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 				if data, readErr := os.ReadFile(capture); readErr == nil {
 					calls = string(data)
 				}
-				if runErr == nil {
-					t.Fatalf("rollback_upgrade must die, but exited 0:\n%s", out)
+				if runErr == nil || !strings.Contains(string(out), "rolled back to previous version") {
+					t.Fatalf("rollback_upgrade must restore the release and report failure: %v\n%s", runErr, out)
 				}
 				if _, statErr := os.Stat(tmpdir); statErr != nil {
 					t.Fatalf("rollback material was removed despite trap disarm: %v\n%s", statErr, out)
@@ -1488,6 +1489,7 @@ func TestRollbackUpgradeDisarmsCleanupBeforeRecovery(t *testing.T) {
 				"die() { exit 1; }",
 				"chattr() { :; }",
 				"cp() { exit 70; }",
+				"stop_services() { :; }",
 				"start_services() { :; }",
 				"rollback_assets() { :; }",
 				extractShellFunction(t, script, "rollback_upgrade"),
@@ -1507,8 +1509,9 @@ func TestRollbackUpgradeDisarmsCleanupBeforeRecovery(t *testing.T) {
 
 			cmd := exec.Command("/bin/bash", wrapper)
 			cmd.Env = withEnv(os.Environ(), "TEST_TMPDIR="+tmpdir)
-			if out, err := cmd.CombinedOutput(); err == nil {
-				t.Fatalf("interrupted rollback unexpectedly succeeded:\n%s", out)
+			out, runErr := cmd.CombinedOutput()
+			if exitErr, ok := runErr.(*exec.ExitError); !ok || exitErr.ExitCode() != 70 {
+				t.Fatalf("rollback did not reach the interrupted restore: %v\n%s", runErr, out)
 			}
 			if _, err := os.Stat(tmpdir); err != nil {
 				t.Fatalf("interrupted rollback removed recovery material: %v", err)
@@ -1529,6 +1532,7 @@ func TestRollbackUpgradeReportsIncompleteRecovery(t *testing.T) {
 				"die() { echo \"ERROR: $1\" >&2; exit 1; }",
 				"chattr() { :; }",
 				"cp() { return 1; }",
+				"stop_services() { :; }",
 				"start_services() { :; }",
 				"rollback_assets() { :; }",
 				extractShellFunction(t, script, "rollback_upgrade"),
