@@ -101,7 +101,7 @@ func (c *PHPRelayController) Status(_ context.Context, _ control.PHPRelayStatusR
 // json.RawMessage args to the typed Status method.
 func (c *ControlListener) handlePHPRelayStatus(argsRaw json.RawMessage) (any, error) {
 	if c.phprelay == nil {
-		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+		return nil, c.phpRelayUnavailable()
 	}
 	var req control.PHPRelayStatusRequest
 	if len(argsRaw) > 0 {
@@ -163,7 +163,7 @@ func (c *PHPRelayController) IgnoreList(_ context.Context, _ struct{}) (control.
 
 func (c *ControlListener) handlePHPRelayIgnoreScript(argsRaw json.RawMessage) (any, error) {
 	if c.phprelay == nil {
-		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+		return nil, c.phpRelayUnavailable()
 	}
 	var req control.PHPRelayIgnoreScriptRequest
 	if len(argsRaw) > 0 {
@@ -176,7 +176,7 @@ func (c *ControlListener) handlePHPRelayIgnoreScript(argsRaw json.RawMessage) (a
 
 func (c *ControlListener) handlePHPRelayUnignore(argsRaw json.RawMessage) (any, error) {
 	if c.phprelay == nil {
-		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+		return nil, c.phpRelayUnavailable()
 	}
 	var req control.PHPRelayUnignoreRequest
 	if len(argsRaw) > 0 {
@@ -189,7 +189,7 @@ func (c *ControlListener) handlePHPRelayUnignore(argsRaw json.RawMessage) (any, 
 
 func (c *ControlListener) handlePHPRelayIgnoreList(argsRaw json.RawMessage) (any, error) {
 	if c.phprelay == nil {
-		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+		return nil, c.phpRelayUnavailable()
 	}
 	_ = argsRaw // no args expected
 	return c.phprelay.IgnoreList(context.Background(), struct{}{})
@@ -237,7 +237,7 @@ func (c *PHPRelayController) DryRunFn() func(*config.Config) bool {
 
 func (c *ControlListener) handlePHPRelayDryRun(argsRaw json.RawMessage) (any, error) {
 	if c.phprelay == nil {
-		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+		return nil, c.phpRelayUnavailable()
 	}
 	var req control.PHPRelayDryRunRequest
 	if len(argsRaw) > 0 {
@@ -275,7 +275,7 @@ func (c *PHPRelayController) Thaw(ctx context.Context, req control.PHPRelayThawR
 
 func (c *ControlListener) handlePHPRelayThaw(argsRaw json.RawMessage) (any, error) {
 	if c.phprelay == nil {
-		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+		return nil, c.phpRelayUnavailable()
 	}
 	var req control.PHPRelayThawRequest
 	if len(argsRaw) > 0 {
