@@ -704,7 +704,7 @@ func TestAutoQuarantineFiles_ExercisesAllCheckTypes(t *testing.T) {
 	cfg.AutoResponse.QuarantineFiles = true
 	for _, ct := range []string{
 		"backdoor_binary", "new_webshell_file", "obfuscated_php",
-		"php_dropper", "suspicious_php_content", "phishing_page",
+		"suspicious_php_content", "phishing_page",
 		"htaccess_handler_abuse", "new_php_in_languages", "new_php_in_upgrade",
 	} {
 		findings := []alert.Finding{{

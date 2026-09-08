@@ -22,7 +22,6 @@ var eligibleFullScanChecks = map[string]bool{
 	"webshell":               true,
 	"new_webshell_file":      true,
 	"obfuscated_php":         true,
-	"php_dropper":            true,
 	"suspicious_php_content": true,
 	"new_php_in_languages":   true,
 	"new_php_in_upgrade":     true,

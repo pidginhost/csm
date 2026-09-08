@@ -88,7 +88,7 @@ func TestAutoResponseFindingsStampTimestamp(t *testing.T) {
 		cfg.AutoResponse.Enabled, cfg.AutoResponse.QuarantineFiles = true, true
 		before := time.Now()
 		findings := AutoQuarantineFiles(cfg, []alert.Finding{{
-			Check: "php_dropper", Severity: alert.Critical, FilePath: path,
+			Check: "webshell", Severity: alert.Critical, FilePath: path,
 		}})
 		after := time.Now()
 		if len(findings) != 1 || !strings.Contains(findings[0].Message, "AUTO-QUARANTINE") {

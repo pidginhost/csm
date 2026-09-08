@@ -1042,7 +1042,7 @@ func TestAutoQuarantineFilesDirectoryQuarantine(t *testing.T) {
 func TestAutoQuarantineFilesAllCheckTypesNonexistent(t *testing.T) {
 	checks := []string{
 		"webshell", "backdoor_binary", "new_webshell_file", "new_executable_in_config",
-		"obfuscated_php", "php_dropper", "suspicious_php_content",
+		"obfuscated_php", "suspicious_php_content",
 		"new_php_in_languages", "new_php_in_upgrade",
 		"phishing_page", "phishing_directory",
 		"htaccess_handler_abuse",

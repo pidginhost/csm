@@ -425,9 +425,15 @@ Two file-index names, `new_php_in_languages` and `new_php_in_upgrade`, are
 in that state: findings written by releases before the content-first file
 index are cleared by the next completed `file_index` scan, are kept while
 that scan is incomplete, and are kept per file while the scan reports a
-coverage gap for that file. Nothing emits them again. `php_dropper`, which
-some response tables listed, was never emitted by any release and is not
-registered.
+coverage gap for that file. Nothing emits them again. `php_dropper` was
+never emitted by any release, is not registered, and no response table lists
+it: the manual, automatic and full-scan quarantine sets and the attack
+database mapping are each declared once and tested against the registry, so a
+renamed or never-emitted name cannot sit inert in a response table. The same
+guard removed `modsec_block` and `waf_block` from the attack database mapping;
+neither was ever emitted, so WAF blocks have never fed local reputation
+scoring through that database. Whether the emitted ModSecurity block names
+should is an open scoring decision, not something the guard decides.
 
 Directory enumeration and PHP handler-configuration read errors make the
 file-index scan incomplete, including when only one account root is unreadable.

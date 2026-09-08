@@ -21,6 +21,26 @@ import (
 // var (not const) so tests can redirect to t.TempDir().
 var quarantineDir = "/opt/csm/quarantine"
 
+// autoQuarantineChecks are the findings the scheduled auto-responder may
+// quarantine on its own: the manual move set plus the kill-and-quarantine
+// and handler-abuse families, and the realtime signature match, which must
+// additionally pass isHighConfidenceRealtimeMatch. Membership is pinned by
+// test against the check registry.
+var autoQuarantineChecks = map[string]bool{
+	"webshell":                 true,
+	"backdoor_binary":          true,
+	"new_webshell_file":        true,
+	"new_executable_in_config": true,
+	"obfuscated_php":           true,
+	"suspicious_php_content":   true,
+	"new_php_in_languages":     true,
+	"new_php_in_upgrade":       true,
+	"phishing_page":            true,
+	"phishing_directory":       true,
+	"htaccess_handler_abuse":   true,
+	"signature_match_realtime": true,
+}
+
 var signalProcess = processhandle.Signal
 var errProcessNotEligible = errors.New("process is no longer eligible for termination")
 
@@ -96,19 +116,11 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 	var actions []alert.Finding
 
 	for _, f := range findings {
-		// Only quarantine specific file-based findings
-		isRealtimeMatch := false
-		switch f.Check {
-		case "webshell", "backdoor_binary", "new_webshell_file", "new_executable_in_config",
-			"obfuscated_php", "php_dropper", "suspicious_php_content",
-			"new_php_in_languages", "new_php_in_upgrade",
-			"phishing_page", "phishing_directory",
-			"htaccess_handler_abuse":
-		case "signature_match_realtime":
-			isRealtimeMatch = true
-		default:
+		// Only quarantine specific file-based findings.
+		if !autoQuarantineChecks[f.Check] {
 			continue
 		}
+		isRealtimeMatch := f.Check == "signature_match_realtime"
 		if f.Severity != alert.Critical {
 			continue
 		}
