@@ -57,7 +57,6 @@ var attributionEvidence = map[string]string{
 	// Crontab.
 	"suspicious_crontab": "TestSuspiciousCrontabStampsSpoolOwner",
 	// Mail producers.
-	"mail_per_account":           "TestMailPerAccountLeavesSenderAggregateUnattributed",
 	"email_pipe_forwarder":       "TestForwarderFindingsStampOwner",
 	"email_suspicious_forwarder": "TestForwarderFindingsStampOwner",
 	"email_filter_blackhole":     "TestMailFilterFindingsAttributeByPath",
@@ -125,10 +124,13 @@ var attributionEvidence = map[string]string{
 	"password_hijack_confirmed":    "TestPasswordHijackFindingsCarryTenant",
 	"whm_password_change_noninfra": "TestPasswordHijackFindingsCarryTenant",
 	"direct_smtp_egress":           "TestDirectSMTPEgressCarriesTenant",
-	// Documented gaps (registry CorrelationGap).
+	// Documented gaps (registry CorrelationGap). The sender aggregate is
+	// keyed by the attacker-controlled envelope sender, so it never carries
+	// an owner; TestMailPerAccountLeavesSenderAggregateUnattributed proves it.
 	"backdoor_port":          "gap:" + gapSocketOwner,
 	"backdoor_port_outbound": "gap:" + gapSocketOwner,
 	"bad_asn_outbound":       "gap:" + gapPartialSocketOwner,
+	"mail_per_account":       "gap:" + gapEnvelopeSender,
 }
 
 func newlyEligibleChecks() map[string]CheckInfo {

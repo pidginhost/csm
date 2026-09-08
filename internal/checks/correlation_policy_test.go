@@ -164,6 +164,7 @@ func TestAttributionGapsArePinned(t *testing.T) {
 		"backdoor_port":          gapSocketOwner,
 		"backdoor_port_outbound": gapSocketOwner,
 		"bad_asn_outbound":       gapPartialSocketOwner,
+		"mail_per_account":       gapEnvelopeSender,
 	}
 	for _, c := range checkRegistry {
 		if want := gaps[c.Name]; c.CorrelationGap != want {
@@ -228,6 +229,7 @@ func checkRequiredGaps(entries []CheckInfo) error {
 	required := map[string]string{
 		"c2_connection": gapSocketOwner, "backdoor_port": gapSocketOwner,
 		"backdoor_port_outbound": gapSocketOwner, "bad_asn_outbound": gapPartialSocketOwner,
+		"mail_per_account": gapEnvelopeSender,
 	}
 	for _, c := range entries {
 		if want := required[c.Name]; c.CorrelationGap != want {

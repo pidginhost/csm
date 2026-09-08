@@ -53,11 +53,13 @@ var correlationReasonSentences = map[string]string{
 const (
 	gapSocketOwner        = "socket-owner"
 	gapPartialSocketOwner = "partial-socket-owner"
+	gapEnvelopeSender     = "envelope-sender"
 )
 
 var correlationGapSentences = map[string]string{
 	gapSocketOwner:        "periodic socket finding has no hosting owner; an unattributed Critical is counted in diagnostics only",
 	gapPartialSocketOwner: "periodic evaluator supplies no tenant; realtime process enrichment can supply one but can miss",
+	gapEnvelopeSender:     "volume aggregate keyed by the attacker-controlled envelope sender; no verified owner exists",
 }
 
 // validateCorrelationPolicy returns the first policy violation in entries,

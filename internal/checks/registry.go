@@ -295,7 +295,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_weak_password", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
 	{Name: "email_password_audit_incomplete", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "exim_frozen_realtime", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
-	{Name: "mail_per_account", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
+	{Name: "mail_per_account", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, CorrelationGap: gapEnvelopeSender},
 	{Name: "mail_queue", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "mail_queue_unavailable", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "phishing_credential_log", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},

@@ -411,8 +411,10 @@ branches:
   realtime file events, PHP shield events, self-deleting droppers) carry the
   judged file's path, which resolves as described above. The collapsed
   core-integrity finding has no single path and carries the install owner.
-- The periodic socket checks have no hosting owner; their unattributed
-  Criticals reach only the diagnostic count.
+- The periodic socket checks have no hosting owner, and the per-domain mail
+  volume aggregate is keyed by the attacker-controlled envelope sender. Both
+  are declared gaps in the registry; their unattributed Criticals reach only
+  the diagnostic count.
 
 ## Findings from retired checks
 
