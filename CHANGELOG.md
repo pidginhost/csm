@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
+- The correlation policy table in the incidents documentation is generated from the check registry and a test fails when it is stale.
 - The manual, automatic and full-scan quarantine sets and the attack database mapping are declared once each and tested against the check registry, so a renamed or never-emitted check name cannot sit inert in a response table. Three never-emitted names are removed: one dropper name from every quarantine set, and the two WAF block names the attack database listed, which means WAF blocks have never contributed to local reputation scoring.
 - Cross-account correlation initializes host detection before updating active findings, so a slow platform probe does not block readers of the current state.
 - Clean-corpus metadata tests now work with trimmed build paths and check that invalid manifests leave existing files untouched.
@@ -34,11 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Mail findings use verified account identities, and sender-only volume reports stay unattributed. Service users no longer count as hosting accounts, owner lookups run outside mail tracker locks, and symlink findings retain the source account.
-- Mail hold and governor alerts now require a local mail-server decision.
+- Mail hold and governor alerts now require a local mail-server decision; a message subject or peer name can no longer forge one.
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
-- Cross-account correlation uses explicit detector policy and reports findings that lack account attribution.
-- Database, mail, crontab, process and realtime findings now carry the owning account, resolved from the panel's domain owner table, the passwd home directory or the file path, so the cross-account aggregate sees every eligible detector instead of a fifth of them.
+- Cross-account correlation now follows the explicit per-check policy, and database, mail, crontab, process and realtime findings carry the owning account, resolved from the panel's domain owner table, a passwd home directly under an account root, or the file path. Service users, envelope senders and display labels never become an owner; an eligible finding without one is reported rather than counted.
 - Self-deleting dropper detection now requires conclusive content evidence before suppressing findings and handles separate file-creation events correctly. Content and signature findings retain priority over blank-file filtering.
 
 ## [3.35.0] - 2026-09-08
