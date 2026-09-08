@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
 - Self-deleting dropper detection now requires conclusive content evidence before suppressing findings and handles separate file-creation events correctly. Content and signature findings retain priority over blank-file filtering.
 
 ## [3.35.0] - 2026-09-08

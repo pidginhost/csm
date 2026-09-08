@@ -26,10 +26,19 @@ func (h accountHome) Path() string { return filepath.Join(h.Root, h.Entry.Name()
 // Name is the account name.
 func (h accountHome) Name() string { return h.Entry.Name() }
 
-// listAccountHomes enumerates every account directory under every root.
-// A root that does not exist is skipped; any other read error is returned
-// so callers can tell a broken enumeration from an empty host.
+// listAccountHomes provides a best-effort account inventory. Stateful scanners
+// use readAccountHomes so a partial inventory cannot retire unseen findings.
 func listAccountHomes() ([]accountHome, error) {
+	homes, err := readAccountHomes()
+	if len(homes) > 0 {
+		return homes, nil
+	}
+	return homes, err
+}
+
+// readAccountHomes skips absent roots, but reports other read failures even
+// when another root supplies accounts.
+func readAccountHomes() ([]accountHome, error) {
 	var homes []accountHome
 	var firstErr error
 	for _, root := range accountHomeRoots() {
@@ -44,10 +53,7 @@ func listAccountHomes() ([]accountHome, error) {
 			homes = append(homes, accountHome{Root: root, Entry: e})
 		}
 	}
-	if len(homes) == 0 && firstErr != nil {
-		return nil, firstErr
-	}
-	return homes, nil
+	return homes, firstErr
 }
 
 // accountHomeDir resolves an account's home directory: the first root that

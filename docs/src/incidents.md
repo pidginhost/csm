@@ -339,6 +339,15 @@ coverage gap for that file. Nothing emits them again. `php_dropper`, which
 some response tables listed, was never emitted by any release and is not
 registered.
 
+Directory enumeration and PHP handler-configuration read errors make the
+file-index scan incomplete, including when only one account root is unreadable.
+The scanner keeps its previous index and directory cache, preserves its active
+findings, and still reports new findings from readable directories. A later
+completed scan clears the retired names; absent optional directories do not
+prevent completion. The first scan after startup and every retry after an
+incomplete or interrupted walk enumerate directories again, even if their
+cached modification times still match.
+
 ## API
 
 - `GET /api/v1/incidents` -- list, newest first. Without query
