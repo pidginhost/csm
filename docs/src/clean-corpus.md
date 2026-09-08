@@ -20,6 +20,11 @@ When a source for a pending CMS lands, its pending entry is removed in the
 same change. The manifest, not this page, is the record of which CMS has a
 false-positive gate.
 
+Ordinary unit tests validate the manifest offline, including with
+`go test -trimpath`. Invalid metadata is rejected before cache, extraction or
+report files are created or changed. Command tests check the full archived manifest
+and every inventory record; these checks do not replace the detector gate.
+
 The initial corpus contains 10,178 files: WordPress 6.8.2 (GPL-2.0-or-later),
 WooCommerce 9.9.5 (GPL-3.0-or-later), and Elementor 3.29.2 (GPL-3.0-only).
 The archives retain their license notices, including notices for bundled

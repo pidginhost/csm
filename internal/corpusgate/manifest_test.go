@@ -55,21 +55,24 @@ func TestManifestValidateAcceptsCompleteDisposition(t *testing.T) {
 	}
 }
 
-func TestManifestValidateRejects(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(*Manifest)
-		want   []string // substrings the error must contain
-	}{
+type invalidManifestCase struct {
+	name   string
+	mutate func(*Manifest)
+	want   []string // substrings the error must contain
+}
+
+func invalidManifestCases() []invalidManifestCase {
+	return []invalidManifestCase{
 		{"version 0", func(m *Manifest) { m.Version = 0 }, []string{"version 0", "version 2", "cms"}},
 		{"version 1", func(m *Manifest) { m.Version = 1 }, []string{"version 1", "version 2", "cms"}},
 		{"version 3", func(m *Manifest) { m.Version = 3 }, []string{"version 3", "version 2", "cms"}},
-		{"no sources", func(m *Manifest) { m.Sources = nil; m.Pending = pendingExcept() }, []string{"no source"}},
+		{"no sources", func(m *Manifest) { m.Sources = nil; m.Pending = nil }, []string{"no source"}},
 		{"all pending", func(m *Manifest) { m.Sources = nil; m.Pending = pendingExcept() }, []string{"no source"}},
 		{"missing source cms", func(m *Manifest) { m.Sources[0].CMS = "" }, []string{"wordpress", "cms"}},
 		{"unknown source cms", func(m *Manifest) { m.Sources[2].CMS = "prestashop" }, []string{"joomla", "prestashop"}},
 		{"whitespace source cms", func(m *Manifest) { m.Sources[2].CMS = " joomla" }, []string{`" joomla"`}},
 		{"case-variant source cms", func(m *Manifest) { m.Sources[2].CMS = "Joomla" }, []string{`"Joomla"`}},
+		{"missing pending cms", func(m *Manifest) { m.Pending[0].CMS = "" }, []string{"pending", "cms"}},
 		{"unknown pending cms", func(m *Manifest) { m.Pending[0].CMS = "prestashop" }, []string{"pending", "prestashop"}},
 		{"whitespace pending cms", func(m *Manifest) { m.Pending[0].CMS = "drupal " }, []string{`"drupal "`}},
 		{"case-variant pending cms", func(m *Manifest) { m.Pending[0].CMS = "DRUPAL" }, []string{`"DRUPAL"`}},
@@ -86,18 +89,26 @@ func TestManifestValidateRejects(t *testing.T) {
 		{"non-hex digest", func(m *Manifest) { m.Sources[0].SHA256 = strings.Repeat("zz", 32) }, []string{"wordpress", "sha256"}},
 		{"empty id", func(m *Manifest) { m.Sources[0].ID = "" }, []string{"id"}},
 		{"slash in id", func(m *Manifest) { m.Sources[0].ID = "a/b" }, []string{"a/b", "id"}},
+		{"backslash in id", func(m *Manifest) { m.Sources[0].ID = "a\\b" }, []string{"id"}},
+		{"nul in id", func(m *Manifest) { m.Sources[0].ID = "a\x00b" }, []string{"id"}},
 		{"dot id", func(m *Manifest) { m.Sources[0].ID = "." }, []string{"id"}},
 		{"dot-dot id", func(m *Manifest) { m.Sources[0].ID = ".." }, []string{"id"}},
 		{"empty version", func(m *Manifest) { m.Sources[0].Version = "" }, []string{"wordpress", "version"}},
 		{"unsafe version", func(m *Manifest) { m.Sources[0].Version = "1\\0" }, []string{"wordpress", "version"}},
+		{"slash in version", func(m *Manifest) { m.Sources[0].Version = "1/0" }, []string{"wordpress", "version"}},
+		{"nul in version", func(m *Manifest) { m.Sources[0].Version = "1\x000" }, []string{"wordpress", "version"}},
 		{"empty license", func(m *Manifest) { m.Sources[0].License = "" }, []string{"wordpress", "license"}},
 		{"empty license path", func(m *Manifest) { m.Sources[0].LicenseFile = "" }, []string{"wordpress", "license_file"}},
 		{"absolute license path", func(m *Manifest) { m.Sources[0].LicenseFile = "/etc/passwd" }, []string{"wordpress", "license_file"}},
 		{"escaping license path", func(m *Manifest) { m.Sources[0].LicenseFile = "../x" }, []string{"wordpress", "license_file"}},
 		{"zero files", func(m *Manifest) { m.Sources[0].Files = 0 }, []string{"wordpress", "files"}},
+		{"negative files", func(m *Manifest) { m.Sources[0].Files = -1 }, []string{"wordpress", "files"}},
 		{"too many files", func(m *Manifest) { m.Sources[0].Files = 30001 }, []string{"wordpress", "files"}},
 	}
-	for _, tc := range cases {
+}
+
+func TestManifestValidateRejects(t *testing.T) {
+	for _, tc := range invalidManifestCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			m := coveredManifest()
 			tc.mutate(&m)
@@ -167,35 +178,51 @@ func assertUntouched(t *testing.T, dir string, sentinel string) {
 
 func TestPrepareInvalidManifestHasNoSideEffects(t *testing.T) {
 	ct := installCountingTransport(t)
-	cases := map[string]func(*Manifest){
-		"version 1":           func(m *Manifest) { m.Version = 1 },
-		"missing cms":         func(m *Manifest) { m.Sources[0].CMS = "" },
-		"bad later source":    func(m *Manifest) { m.Sources[2].SHA256 = "nope" },
-		"missing disposition": func(m *Manifest) { m.Pending = nil },
-		"overlap":             func(m *Manifest) { m.Pending = append(m.Pending, PendingCMS{CMS: "wordpress", Reason: "x"}) },
-		"unknown pending":     func(m *Manifest) { m.Pending[0].CMS = "prestashop" },
-	}
-	for name, mutate := range cases {
-		t.Run(name, func(t *testing.T) {
-			cache := filepath.Join(t.TempDir(), "cache")
-			sentinel := writeSentinel(t, cache, "keep.zip")
-			dest := filepath.Join(t.TempDir(), "corpus")
-			m := coveredManifest()
-			mutate(&m)
-			before := ct.n.Load()
-			if _, err := Prepare(context.Background(), m, cache, dest); err == nil {
-				t.Fatal("invalid manifest accepted")
+	for _, tc := range invalidManifestCases() {
+		for _, existing := range []bool{false, true} {
+			name := "absent"
+			if existing {
+				name = "existing"
 			}
-			if ct.n.Load() != before {
-				t.Fatal("invalid manifest caused an HTTP request")
-			}
-			if _, err := os.Stat(dest); !os.IsNotExist(err) {
-				t.Fatalf("destination created for invalid manifest: %v", err)
-			}
-			assertUntouched(t, cache, sentinel)
-		})
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				cache := filepath.Join(t.TempDir(), "cache")
+				dest := filepath.Join(t.TempDir(), "corpus")
+				sentinels := make(map[string]string)
+				if existing {
+					for _, dir := range []string{cache, dest} {
+						sentinels[dir] = writeSentinel(t, dir, "keep")
+					}
+				}
+				m := coveredManifest()
+				tc.mutate(&m)
+				before := ct.n.Load()
+				_, err := Prepare(context.Background(), m, cache, dest)
+				if err == nil {
+					t.Fatal("invalid manifest accepted")
+				}
+				for _, want := range tc.want {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err, want)
+					}
+				}
+				if ct.n.Load() != before {
+					t.Fatal("invalid manifest caused an HTTP request")
+				}
+				for _, dir := range []string{cache, dest} {
+					if existing {
+						assertUntouched(t, dir, sentinels[dir])
+					} else if _, err := os.Stat(dir); !os.IsNotExist(err) {
+						t.Errorf("%s created for invalid manifest: %v", dir, err)
+					}
+				}
+			})
+		}
 	}
 }
+
+// go test starts in the package directory. Retain it before tests change cwd,
+// since -trimpath removes the filesystem location from runtime.Caller.
+var initialPackageDir, initialPackageDirErr = os.Getwd()
 
 // repoManifestPath locates the checked-in manifest from this source file,
 // independent of the process working directory.
@@ -205,7 +232,14 @@ func repoManifestPath(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	for dir := filepath.Dir(here); ; dir = filepath.Dir(dir) {
+	dir := filepath.Dir(here)
+	if !filepath.IsAbs(dir) {
+		if initialPackageDirErr != nil {
+			t.Fatal(initialPackageDirErr)
+		}
+		dir = initialPackageDir
+	}
+	for ; ; dir = filepath.Dir(dir) {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return filepath.Join(dir, "scripts", "clean-corpus", "manifest.json")
 		}

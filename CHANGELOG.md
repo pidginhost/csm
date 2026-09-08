@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
+- Clean-corpus metadata tests now work with trimmed build paths and check that invalid manifests leave existing files untouched.
 - The list of supported content management systems is now declared once and tested against the taint analyzer's path knowledge and the database scanners. Tests reject incomplete or duplicate declarations; clean-corpus coverage remains separate.
 - Destination-scoped outbound rules now handle IPv4-mapped subnets correctly. Lockout warnings remain visible when an exception cannot cover the connection's address family or has invalid ports.
 - Address lookups retain available network details even when country data is missing or comes from the country-block store.

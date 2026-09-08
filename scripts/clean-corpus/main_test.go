@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -113,18 +115,8 @@ func TestRunPrintsSourcedAndPendingSummary(t *testing.T) {
 	if err = json.Unmarshal(archived, &back); err != nil {
 		t.Fatal(err)
 	}
-	if back.Version != corpusgate.ManifestVersion || len(back.Sources) != 3 || len(back.Pending) != 3 {
-		t.Fatalf("archived manifest lost fields: %+v", back)
-	}
-	for i, s := range back.Sources {
-		if s.CMS != m.Sources[i].CMS || s.SHA256 != m.Sources[i].SHA256 {
-			t.Errorf("source %d changed: %+v", i, s)
-		}
-	}
-	for i, p := range back.Pending {
-		if p != m.Pending[i] {
-			t.Errorf("pending %d changed: %+v", i, p)
-		}
+	if !reflect.DeepEqual(back, m) {
+		t.Fatalf("archived manifest = %+v, want %+v", back, m)
 	}
 	inventory, err := os.ReadFile(filepath.Join(out, "inventory.json"))
 	if err != nil {
@@ -134,63 +126,150 @@ func TestRunPrintsSourcedAndPendingSummary(t *testing.T) {
 	if err = json.Unmarshal(inventory, &rows); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 6 || rows[0].SHA256 == "" {
-		t.Fatalf("inventory %+v", rows)
+	var wantRows []corpusgate.File
+	for _, id := range []string{"wp", "plugin", "joomla"} {
+		for _, entry := range []struct{ name, body string }{{"index.php", "<?php echo 'clean';"}, {"license.txt", "test license"}} {
+			digest := sha256.Sum256([]byte(entry.body))
+			wantRows = append(wantRows, corpusgate.File{Path: id + "/" + id + "/" + entry.name,
+				SHA256: hex.EncodeToString(digest[:]), Bytes: int64(len(entry.body))})
+		}
+	}
+	sort.Slice(wantRows, func(i, j int) bool { return wantRows[i].Path < wantRows[j].Path })
+	if !reflect.DeepEqual(rows, wantRows) {
+		t.Fatalf("inventory = %+v, want %+v", rows, wantRows)
 	}
 }
 
 func TestRunInvalidManifestHasNoSideEffects(t *testing.T) {
 	ct := installCountingTransport(t)
-	cache := filepath.Join(t.TempDir(), "cache")
-	good := fixtureSource(t, cache, "wp", "wordpress")
-	sentinel := filepath.Join(cache, "wp-1.0.zip")
-	sentinelBytes, err := os.ReadFile(sentinel)
+	fixtureCache := t.TempDir()
+	good := fixtureSource(t, fixtureCache, "wp", "wordpress")
+	archive, err := os.ReadFile(filepath.Join(fixtureCache, "wp-1.0.zip"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending := []corpusgate.PendingCMS{{CMS: "joomla", Reason: "x"}, {CMS: "drupal", Reason: "x"}, {CMS: "opencart", Reason: "x"}, {CMS: "magento", Reason: "x"}}
-	cases := map[string]string{
-		"malformed json": "{not json",
-		"version 1":      string(mustJSON(t, corpusgate.Manifest{Version: 1, Sources: []corpusgate.Source{good}, Pending: pending})),
-		"missing cms": string(mustJSON(t, corpusgate.Manifest{Version: 2, Sources: []corpusgate.Source{{ID: good.ID, Version: good.Version, URL: good.URL,
-			SHA256: good.SHA256, License: good.License, LicenseFile: good.LicenseFile, Files: good.Files}}, Pending: pending})),
-		"bad second source": string(mustJSON(t, corpusgate.Manifest{Version: 2, Sources: []corpusgate.Source{good, {ID: "second", CMS: "wordpress", Version: "1.0",
-			URL: "https://downloads.example.com/second.zip", SHA256: "nope", License: "x", LicenseFile: "second/license.txt", Files: 1}}, Pending: pending})),
-		"missing disposition": string(mustJSON(t, corpusgate.Manifest{Version: 2, Sources: []corpusgate.Source{good}, Pending: pending[1:]})),
+	type invalidCase struct{ name, body, want string }
+	cases := []invalidCase{{"malformed json", "{not json", "invalid character"}}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*corpusgate.Manifest)
+		want   string
+	}{
+		{"version 0", func(m *corpusgate.Manifest) { m.Version = 0 }, "version 0"},
+		{"version 1", func(m *corpusgate.Manifest) { m.Version = 1 }, "version 1"},
+		{"version 3", func(m *corpusgate.Manifest) { m.Version = 3 }, "version 3"},
+		{"no sources", func(m *corpusgate.Manifest) { m.Sources = nil; m.Pending = nil }, "no source"},
+		{"all pending", func(m *corpusgate.Manifest) {
+			m.Sources = nil
+			m.Pending = append(m.Pending, corpusgate.PendingCMS{CMS: "wordpress", Reason: "await corpus"})
+		}, "no source"},
+		{"missing cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = "" }, "cms field"},
+		{"unknown cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = "prestashop" }, "prestashop"},
+		{"whitespace cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = " wordpress" }, `" wordpress"`},
+		{"case-variant cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = "WordPress" }, `"WordPress"`},
+		{"missing pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = "" }, `pending cms ""`},
+		{"unknown pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = "prestashop" }, "prestashop"},
+		{"whitespace pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = " joomla" }, `" joomla"`},
+		{"case-variant pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = "Joomla" }, `"Joomla"`},
+		{"duplicate pending", func(m *corpusgate.Manifest) { m.Pending = append(m.Pending, m.Pending[0]) }, "twice"},
+		{"blank reason", func(m *corpusgate.Manifest) { m.Pending[0].Reason = "" }, "reason"},
+		{"whitespace reason", func(m *corpusgate.Manifest) { m.Pending[0].Reason = " \t\n" }, "reason"},
+		{"overlap", func(m *corpusgate.Manifest) {
+			m.Pending = append(m.Pending, corpusgate.PendingCMS{CMS: "wordpress", Reason: "await corpus"})
+		}, "both"},
+		{"missing disposition", func(m *corpusgate.Manifest) { m.Pending = m.Pending[1:] }, "neither"},
+		{"duplicate source", func(m *corpusgate.Manifest) { m.Sources = append(m.Sources, good) }, "twice"},
+		{"bad second source", func(m *corpusgate.Manifest) {
+			bad := good
+			bad.ID, bad.SHA256 = "second", "nope"
+			m.Sources = append(m.Sources, bad)
+		}, `source "second": sha256`},
+		{"http url", func(m *corpusgate.Manifest) { m.Sources[0].URL = "http://example.org/app.zip" }, "url"},
+		{"unparseable url", func(m *corpusgate.Manifest) { m.Sources[0].URL = "https://[bad" }, "url"},
+		{"url without host", func(m *corpusgate.Manifest) { m.Sources[0].URL = "https:///app.zip" }, "url"},
+		{"short digest", func(m *corpusgate.Manifest) { m.Sources[0].SHA256 = "abcd" }, "sha256"},
+		{"nonhex digest", func(m *corpusgate.Manifest) { m.Sources[0].SHA256 = strings.Repeat("zz", 32) }, "sha256"},
+		{"empty id", func(m *corpusgate.Manifest) { m.Sources[0].ID = "" }, "id"},
+		{"slash in id", func(m *corpusgate.Manifest) { m.Sources[0].ID = "a/b" }, "id"},
+		{"backslash in id", func(m *corpusgate.Manifest) { m.Sources[0].ID = "a\\b" }, "id"},
+		{"nul in id", func(m *corpusgate.Manifest) { m.Sources[0].ID = "a\x00b" }, "id"},
+		{"dot id", func(m *corpusgate.Manifest) { m.Sources[0].ID = "." }, "id"},
+		{"dot-dot id", func(m *corpusgate.Manifest) { m.Sources[0].ID = ".." }, "id"},
+		{"empty version", func(m *corpusgate.Manifest) { m.Sources[0].Version = "" }, "version"},
+		{"slash in version", func(m *corpusgate.Manifest) { m.Sources[0].Version = "1/0" }, "version"},
+		{"backslash in version", func(m *corpusgate.Manifest) { m.Sources[0].Version = "1\\0" }, "version"},
+		{"nul in version", func(m *corpusgate.Manifest) { m.Sources[0].Version = "1\x000" }, "version"},
+		{"empty license", func(m *corpusgate.Manifest) { m.Sources[0].License = "" }, "license"},
+		{"empty license path", func(m *corpusgate.Manifest) { m.Sources[0].LicenseFile = "" }, "license_file"},
+		{"absolute license path", func(m *corpusgate.Manifest) { m.Sources[0].LicenseFile = "/license.txt" }, "license_file"},
+		{"escaping license path", func(m *corpusgate.Manifest) { m.Sources[0].LicenseFile = "../license.txt" }, "license_file"},
+		{"zero files", func(m *corpusgate.Manifest) { m.Sources[0].Files = 0 }, "files"},
+		{"negative files", func(m *corpusgate.Manifest) { m.Sources[0].Files = -1 }, "files"},
+		{"too many files", func(m *corpusgate.Manifest) { m.Sources[0].Files = 30001 }, "files"},
+	} {
+		m := corpusgate.Manifest{Version: corpusgate.ManifestVersion, Sources: []corpusgate.Source{good},
+			Pending: []corpusgate.PendingCMS{{CMS: "joomla", Reason: "x"}, {CMS: "drupal", Reason: "x"}, {CMS: "opencart", Reason: "x"}, {CMS: "magento", Reason: "x"}}}
+		tc.mutate(&m)
+		cases = append(cases, invalidCase{tc.name, string(mustJSON(t, m)), tc.want})
 	}
-	for name, body := range cases {
-		t.Run(name, func(t *testing.T) {
-			p := filepath.Join(t.TempDir(), "manifest.json")
-			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-				t.Fatal(err)
+	for _, tc := range cases {
+		for _, existing := range []bool{false, true} {
+			state := "absent"
+			if existing {
+				state = "existing"
 			}
-			dest := filepath.Join(t.TempDir(), "corpus")
-			out := filepath.Join(t.TempDir(), "out")
-			var stdout bytes.Buffer
-			before := ct.n.Load()
-			err := run(p, cache, dest, out, &stdout)
-			if err == nil {
-				t.Fatal("invalid manifest accepted")
-			}
-			if name == "version 1" && !strings.Contains(err.Error(), "version 1") {
-				t.Errorf("diagnostic %q does not name the version", err)
-			}
-			if ct.n.Load() != before {
-				t.Error("HTTP request made for an invalid manifest")
-			}
-			if stdout.Len() != 0 {
-				t.Errorf("summary printed on failure: %q", stdout.String())
-			}
-			for _, d := range []string{dest, out} {
-				if _, statErr := os.Stat(d); !os.IsNotExist(statErr) {
-					t.Errorf("%s created for an invalid manifest", d)
+			t.Run(tc.name+"/"+state, func(t *testing.T) {
+				p := filepath.Join(t.TempDir(), "manifest.json")
+				if err := os.WriteFile(p, []byte(tc.body), 0o600); err != nil {
+					t.Fatal(err)
 				}
-			}
-			now, err := os.ReadFile(sentinel)
-			if err != nil || !bytes.Equal(now, sentinelBytes) {
-				t.Error("cached archive changed")
-			}
-		})
+				cache := filepath.Join(t.TempDir(), "cache")
+				dest := filepath.Join(t.TempDir(), "corpus")
+				out := filepath.Join(t.TempDir(), "out")
+				sentinels := []struct {
+					dir, name string
+					data      []byte
+				}{{cache, "wp-1.0.zip", archive}, {dest, "keep", []byte("sentinel")}, {out, "keep", []byte("sentinel")}}
+				if existing {
+					for _, s := range sentinels {
+						if err := os.Mkdir(s.dir, 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(filepath.Join(s.dir, s.name), s.data, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				var stdout bytes.Buffer
+				before := ct.n.Load()
+				err := run(p, cache, dest, out, &stdout)
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("error = %v, want diagnostic containing %q", err, tc.want)
+				}
+				if ct.n.Load() != before {
+					t.Error("HTTP request made for an invalid manifest")
+				}
+				if stdout.Len() != 0 {
+					t.Errorf("summary printed on failure: %q", stdout.String())
+				}
+				for _, s := range sentinels {
+					if !existing {
+						if _, statErr := os.Stat(s.dir); !os.IsNotExist(statErr) {
+							t.Errorf("%s created for an invalid manifest: %v", s.dir, statErr)
+						}
+						continue
+					}
+					entries, err := os.ReadDir(s.dir)
+					if err != nil || len(entries) != 1 || entries[0].Name() != s.name {
+						t.Errorf("directory %s changed: %v, %v", s.dir, entries, err)
+					}
+					now, err := os.ReadFile(filepath.Join(s.dir, s.name))
+					if err != nil || !bytes.Equal(now, s.data) {
+						t.Errorf("sentinel in %s changed: %v", s.dir, err)
+					}
+				}
+			})
+		}
 	}
 }
 
