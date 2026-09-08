@@ -16,6 +16,9 @@ Restart=always
 RestartSec=10
 TimeoutStartSec=120
 WatchdogSec=300
+# Let the daemon stop its workers before systemd kills remaining processes.
+# A cgroup-wide SIGTERM can reach a worker before the daemon enters shutdown.
+KillMode=mixed
 
 StateDirectory=csm
 StateDirectoryMode=0700

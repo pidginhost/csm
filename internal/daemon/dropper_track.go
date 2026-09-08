@@ -36,6 +36,12 @@ type dropperCandidate struct {
 	// ContentSuspicious prevents FP heuristics from demoting a file whose
 	// realtime content/signature pass already found malicious structure.
 	ContentSuspicious bool
+	// A create event can precede the writer's first bytes. Retain its
+	// freshness evidence until a close-write supplies the payload.
+	WritePending bool
+	// Sticky across refreshes: truncating a previously executable snapshot
+	// must not turn its later deletion into a harmless empty guard.
+	ContentMayExecute bool
 	Digest            [32]byte
 	DigestKnown       bool
 	Head              []byte
@@ -167,6 +173,7 @@ func candidateKey(c dropperCandidate) dropperCandidateKey {
 }
 
 func ownDropperCandidate(c dropperCandidate) dropperCandidate {
+	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsInert(c)
 	if len(c.Head) > dropperTrackedHeadMax {
 		c.Head = c.Head[:dropperTrackedHeadMax]
 	}
@@ -185,6 +192,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.Created = prev.Created || next.Created
 	merged.PHPExecutable = prev.PHPExecutable || next.PHPExecutable
 	merged.ContentSuspicious = prev.ContentSuspicious || next.ContentSuspicious
+	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
 	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
 	if !merged.BirthKnown {
 		switch {
@@ -429,6 +437,9 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	}
 	if c.ContentSuspicious {
 		return dropperSuspect
+	}
+	if !c.WritePending && !c.ContentMayExecute && dropperCandidateIsInert(c) {
+		return dropperBenign
 	}
 	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
 		return dropperDemotedReplaced

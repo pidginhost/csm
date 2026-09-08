@@ -1247,7 +1247,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			return
 		}
 		cand.ContentSuspicious = true
-		fm.dropper.tr.Refresh(*cand)
+		if !fm.dropper.tr.Refresh(*cand) {
+			fm.dropper.admit(*cand)
+		}
 	}
 
 	// Some events are admitted only for dropper tracking. Handler-mapped PHP

@@ -8,17 +8,8 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// The unit sets no KillMode, so systemd's default (control-group) sends
-// SIGTERM to every process in the cgroup, the yara-worker child included.
-// The worker therefore dies at the same moment as the daemon, well before
-// shutdown reaches stopYaraBackend and cancels the supervisor context. The
-// supervisor's own "ctx cancelled" guard has not fired yet, so the exit
-// looked unplanned and every `systemctl restart csm` mailed the operator a
-// Critical "YARA-X worker crashed".
-//
-// Observed on a production host: an orderly restart produced
-// "YARA-X worker crashed (exit=-1 signal=terminated after 35m33.386s)"
-// twice, at the same second as "Stopping CSM".
+// A worker exit during the daemon's drain precedes cancellation of the
+// supervisor. The shutdown channel must suppress that late crash finding.
 func TestOnYaraWorkerRestartSilentDuringShutdown(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
 	d.stopCh = make(chan struct{})

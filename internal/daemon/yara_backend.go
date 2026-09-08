@@ -258,10 +258,9 @@ func (d *Daemon) stopYaraBackend() {
 func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor time.Duration) {
 	// The supervisor suppresses this callback once its own context is
 	// cancelled, but that happens in stopYaraBackend, late in shutdown.
-	// systemd's default KillMode signals the whole cgroup, so the worker
-	// child dies at the same moment as the daemon -- long before that
-	// cancel -- and an orderly restart mailed a Critical "worker crashed".
-	// stopCh closes at the top of shutdown and covers that window.
+	// stopCh closes at the top of shutdown and covers that window. The unit's
+	// KillMode=mixed lets the daemon begin shutdown before stopping workers;
+	// a worker can still exit independently during the drain.
 	//
 	// A nil stopCh (zero-value Daemon, several tests) blocks forever on
 	// receive, so the default arm is what keeps those reporting.

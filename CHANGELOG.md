@@ -12,14 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A new firewall command clears one address's accumulated local threat score without changing blocks, allow lists, whitelists or event history. New findings start a fresh scoring record.
 
 ### Fixed
+- Address lookups retain available network details even when country data is missing or comes from the country-block store.
+- Service shutdown now lets the daemon stop its workers in order, closing a race that could still report an orderly restart as a worker crash.
 - Looking up an address now reports the network and organisation it belongs to. That database was already being opened and its answer discarded.
 - The PHP relay guard now says why it is inactive and which setting turns it on, instead of reporting itself as unimplemented.
-- Guard files that plugins create and delete under upload directories are no longer reported as self-deleting droppers. One plugin produced hundreds of these alerts a day on a busy host, and they were enough to raise a false account-compromise incident.
+- Empty guard files that plugins create and delete under upload directories are no longer reported as self-deleting droppers. One plugin produced hundreds of these alerts a day on a busy host, and they were enough to raise a false account-compromise incident.
 - Five of the six syscall groups the service unit meant to deny were silently discarded by systemd, so module loading, mounting and raw I/O were never blocked. The unit read as hardened while the hardening was absent.
 
 - A normal CSM restart no longer reports the YARA worker as crashed. The worker is stopped along with the daemon, and that orderly stop was raising a critical alert every time the service was restarted.
 - Clearing a local threat score now handles equivalent stored IP address spellings and concurrent requests correctly, including overlapping saves. Extra command arguments are rejected before any record is cleared.
 - The attack database no longer reads or writes state files, including event history used for statistics, when it has no configured directory. It previously resolved to a relative path and used whatever directory the process was started from.
+
+### Security
+
+- Self-deleting dropper detection now requires conclusive content evidence before suppressing findings and handles separate file-creation events correctly. Content and signature findings retain priority over blank-file filtering.
 
 ## [3.35.0] - 2026-09-08
 

@@ -74,7 +74,7 @@ func (e *dropperEngine) admit(c dropperCandidate) bool {
 	// A file whose whole content carries no executable statement cannot be a
 	// dropper payload. ContentSuspicious wins: a realtime content or signature
 	// hit already found structure, and no later heuristic may demote that.
-	if !c.ContentSuspicious && dropperContentIsInert(c.Head, c.Size) {
+	if !c.WritePending && !c.ContentSuspicious && !c.ContentMayExecute && dropperCandidateIsInert(c) {
 		return false
 	}
 	return e.tr.Observe(c)

@@ -11,11 +11,9 @@ import (
 // one path, and those findings were what promoted an ordinary account to a
 // "web_account_compromise" incident.
 //
-// The distinguishing fact is not the path -- allowlisting a path hands an
-// attacker a place to work -- but the content. A file that contains no
-// executable statement does nothing when it is included, so it cannot be the
-// payload half of a dropper. Demoting on that fact costs no detection: an
-// attacker who strips the code out of their dropper has no dropper.
+// Blank content is the discriminator, not the path. Comment-bearing files
+// remain candidates because source-encoding conversion can change their
+// tokens before PHP parses them.
 //
 // The guard only applies when the retained head covers the whole file. A big
 // file whose first bytes are a comment says nothing about the rest.
@@ -32,11 +30,15 @@ func TestDropperInertContentIsNotADropper(t *testing.T) {
 		// The actual production false positive: WP All Import writes a
 		// zero-byte index.php as a directory guard, then removes it.
 		{"empty guard file", "", 0, true},
-		// Redux framework's guard file, verbatim from the same host.
-		{"open tag and line comment", "<?php\n//Silence is golden", 25, true},
-		{"open tag only", "<?php", 5, true},
-		{"open tag and block comment", "<?php /* nothing here */", 24, true},
+		// Nonblank guards cannot be exempted without interpreter settings.
+		{"open tag and line comment", "<?php\n//Silence is golden", 25, false},
+		{"open tag only", "<?php", 5, false},
+		{"open tag and block comment", "<?php /* nothing here */", 24, false},
 		{"whitespace only", "\n\n  \n", 5, true},
+		{"all PHP whitespace", " \t\r\n", 4, true},
+		{"Unicode whitespace", "\xc2\xa0", 2, false},
+		{"form feed", "\f", 1, false},
+		{"blank head of a larger file", " \t\r\n", 4096, false},
 
 		// wpforms' guard file, verbatim: this one really does run code.
 		{"header calls are code", "<?php\nheader( $_SERVER['SERVER_PROTOCOL'] . ' 404 Not Found' );\n", 63, false},
@@ -93,6 +95,131 @@ func TestDropperEngineAdmitsCodeBearingFile(t *testing.T) {
 
 	if !e.admit(c) {
 		t.Fatal("a code-bearing self-deleting file was rejected")
+	}
+}
+
+func TestDropperInertGateDoesNotParseExecutablesAsPHP(t *testing.T) {
+	// A shell executes the second line after the first line's redirection
+	// fails. PHP instead sees an unterminated comment and executes nothing.
+	c := inertTestCandidate()
+	c.Path = "/home/alice/public_html/payload.sh"
+	c.Mode = 0o100755
+	c.Head = []byte("<?php /*\nprintf EXECUTED\n")
+	c.Size = int64(len(c.Head))
+	e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+	if !e.admit(c) {
+		t.Fatal("shell payload rejected using PHP comment syntax")
+	}
+	due := e.tr.Due(c.Observed.Add(2 * dropperTestTTL))
+	if len(due) != 1 || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
+		t.Fatalf("executable payload demoted as an inert PHP guard: %+v", due)
+	}
+}
+
+func TestDropperInertGateExecutableCarriageReturnIsNotWhitespace(t *testing.T) {
+	c := inertTestCandidate()
+	c.Mode = 0o100755
+	c.Head, c.Size = []byte("\r"), 1
+	// A POSIX shell treats CR as a command word, not blank space.
+	if dropperCandidateIsInert(c) {
+		t.Fatal("executable script discarded using PHP whitespace rules")
+	}
+}
+
+func TestDropperInertGatePendingWriteIsNotComplete(t *testing.T) {
+	c := inertTestCandidate()
+	c.WritePending = true
+	e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+	if !e.admit(c) {
+		t.Fatal("pending create was not admitted")
+	}
+	// An unlinked file can still have a writer holding it open. Without a
+	// close-write snapshot, its initially empty contents prove nothing.
+	due := e.tr.Due(c.Observed.Add(2 * dropperTestTTL))
+	if len(due) != 1 || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
+		t.Fatalf("unfinished write demoted as an empty guard: %+v", due)
+	}
+}
+
+func TestDropperInertGatePHPBoundaries(t *testing.T) {
+	for _, body := range []string{
+		"<?php/*/\r\n?><?php echo 1;",
+		"<?php ?><?php echo 1;",
+		"<?php ?><?=1?>",
+		"<?php // ?><?php echo 1;",
+		"<?php # ?><?=1?>",
+		"<?php // %><?php echo 1;",
+		"<?php # %><%=1%>",
+		"<?php // comment\recho 1;",
+		"<?php # comment\recho 1;",
+		"<?php /* outer /* inner */ echo 1; // */",
+		"<?php ?>text<script language=\"php\">echo 1;</script>",
+		"<?=1?>",
+		"<script language=\"php\">echo 1;</script>",
+		"<?php #[Example] function f() {}",
+		"\xef\xbb\xbf<?php echo 1;",
+		"\xff\xfe<\x00?\x00p\x00h\x00p\x00 \x00",
+		"<?php \xc2\xa0// not PHP whitespace",
+		"<?php ?>non-PHP payload",
+	} {
+		t.Run(body, func(t *testing.T) {
+			c := inertTestCandidate()
+			c.Head, c.Size = []byte(body), int64(len(body))
+			if dropperContentIsInert(c.Head, c.Size) {
+				t.Fatal("unproven content classified as inert")
+			}
+			e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+			if !e.admit(c) {
+				t.Fatal("potential payload rejected by admission gate")
+			}
+		})
+	}
+	for _, body := range []string{
+		"<?php // guard\r# guard\r\n/* guard */ ?> \n",
+		"<?php /* ?> <?=1?> */",
+		"<?php /* unterminated <?=1?>",
+	} {
+		if dropperContentIsInert([]byte(body), int64(len(body))) {
+			t.Errorf("comment-only guard exempted without interpreter settings: %q", body)
+		}
+	}
+	head := []byte("<?php // guard")
+	for _, size := range []int64{-1, int64(len(head) + 1), 4096} {
+		if dropperContentIsInert(head, size) {
+			t.Errorf("incomplete head classified as inert at size %d", size)
+		}
+	}
+}
+
+func TestDropperInertGateRejectsSourceEncodingAmbiguity(t *testing.T) {
+	for _, body := range []string{
+		"<?php // non-ASCII \x85echo 1;",
+		"<?php /* non-ASCII \xc2\xa0 */",
+		// UTF-7 and its IMAP variant can encode newlines or comment
+		// terminators using only ASCII bytes before PHP tokenizes them.
+		"<?php // +AAo-echo 1;",
+		"<?php /* +ACoALw-echo 1; /* */",
+		"<?php // &AAo-echo 1;",
+		// PHP also accepts transfer encodings as source encodings.
+		"<?php // =0Aecho 1;",
+		"<?php //AAAPD9waHAgZWNobyAxOyAg",
+		// Stateful encodings and wide characters cannot be proven inert
+		// without knowing the interpreter's source-encoding settings.
+		"<?php /* \x1b$B text */",
+		"<?php /* ~{ text */",
+		"<?php // \x00 text",
+	} {
+		t.Run(body, func(t *testing.T) {
+			c := inertTestCandidate()
+			c.Head, c.Size = []byte(body), int64(len(body))
+			if dropperCandidateIsInert(c) {
+				t.Fatal("encoding-dependent content classified as inert")
+			}
+			e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+			if !e.admit(c) {
+				t.Fatal("encoding-dependent candidate rejected")
+			}
+		})
 	}
 }
 

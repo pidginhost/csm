@@ -41,6 +41,13 @@ normal detection. The finding retains the actual event path.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
+Complete blank files are excluded from dropper alerts after the writer closes.
+Comment-bearing PHP remains eligible because source-encoding conversion can
+change its tokens before execution. Executable scripts are not judged by PHP
+comment syntax. Separate creation and write events retain freshness and any
+previously observed code; content or signature findings always override
+blank-file filtering.
+
 **Features:**
 - Per-path alert deduplication (30s cooldown)
 - Process info enrichment (PID, command, UID)

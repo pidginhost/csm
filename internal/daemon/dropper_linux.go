@@ -181,6 +181,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		PID:           event.pid,
 		ProcInfo:      procInfo,
 		Created:       event.mask&FAN_CREATE != 0,
+		WritePending:  event.mask&FAN_CREATE != 0 && event.mask&FAN_CLOSE_WRITE == 0,
 		PHPExecutable: event.phpExecutable,
 	}
 	if birth, ok := statxBirthFromFD(event.fd); ok {
@@ -208,7 +209,9 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	if parent, err := statDropperCandidateParent(c.Path, c.Device, c.Inode); err == nil {
 		c.Parent = parent
 	}
-	c.Head = readFromFd(event.fd, dropperTrackedHeadMax)
+	var stable bool
+	c.Head, stable = readDropperHead(event.fd, st, readFromFd)
+	c.ContentMayExecute = !stable
 	// Only known install/atomic staging shapes need a digest for cross-filesystem
 	// copy-delete matching. A separate CLOSE_WRITE refresh normally follows
 	// FAN_CREATE with the final bytes, so create-only snapshots keep identity
@@ -226,10 +229,22 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	if !c.Created && fm.dropper.tr.Refresh(c) {
 		return &c
 	}
-	if !trackFresh || !fm.dropper.admit(c) {
+	if !trackFresh {
 		return nil
 	}
+	fm.dropper.admit(c)
+	// Even an inert snapshot must reach the content pass: a signature hit
+	// can override the admission gate without another filesystem read.
 	return &c
+}
+
+func readDropperHead(fd int, before unix.Stat_t, read func(int, int) []byte) ([]byte, bool) {
+	head := read(fd, dropperTrackedHeadMax)
+	// Size from before the read cannot prove completeness if another writer
+	// changed the file in the meantime, even when the retained head is empty.
+	var after unix.Stat_t
+	stable := unix.Fstat(fd, &after) == nil && sameReadSnapshot(before, after)
+	return head, stable
 }
 
 // dropperProbeLoop probes overdue candidates for deletion and flushes findings.

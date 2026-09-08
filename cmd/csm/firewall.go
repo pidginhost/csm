@@ -626,10 +626,6 @@ func geoIPLookupDirs(countryDBDir, statePath string) []string {
 	return dirs
 }
 
-// geoIPUnavailableAdvice names the command that downloads the databases this
-// lookup reads. `csm firewall update-geoip` only fills the country-block
-// store and refuses without firewall.country_block configured, so pointing an
-// operator at it cannot resolve a missing lookup.
 // geoIPReportLines renders what the lookup actually resolved. The ASN
 // database is opened on every lookup; reporting only the country threw its
 // answer away, and the network an address belongs to is usually what the
@@ -637,7 +633,10 @@ func geoIPLookupDirs(countryDBDir, statePath string) []string {
 // supply are omitted rather than printed empty, so a country-only result
 // from the country-block store does not look like a failed lookup.
 func geoIPReportLines(countries []string, info geoip.Info) []string {
-	lines := []string{fmt.Sprintf("COUNTRY  %s", strings.Join(countries, ", "))}
+	var lines []string
+	if len(countries) > 0 {
+		lines = append(lines, fmt.Sprintf("COUNTRY  %s", strings.Join(countries, ", ")))
+	}
 	if info.City != "" {
 		lines = append(lines, fmt.Sprintf("CITY     %s", info.City))
 	}
@@ -655,6 +654,8 @@ func geoIPReportLines(countries []string, info geoip.Info) []string {
 	return lines
 }
 
+// geoIPUnavailableAdvice names the downloader for the lookup databases,
+// rather than the separate country-block store updater.
 func geoIPUnavailableAdvice() string {
 	return "COUNTRY  unknown (no GeoIP database - run 'csm update-geoip')"
 }
@@ -714,27 +715,33 @@ func fwLookup() {
 		}
 	}
 
-	// GeoIP lookup. The country-block store is checked first; the daemon's
-	// GeoLite2 databases answer when it is empty, which is the usual case on
-	// a host that never configured country blocking.
+	// Preserve country-source precedence while independently resolving
+	// network details. A country hit must not hide the daemon's ASN/City DBs.
 	var countries []string
 	var geoInfo geoip.Info
 	for _, dir := range geoIPLookupDirs(firewall.CountryDBDir(cfg.Firewall, cfg.StatePath), cfg.StatePath) {
-		if countries = firewall.LookupIP(dir, ip); len(countries) > 0 {
-			break
+		if len(countries) == 0 {
+			countries = firewall.LookupIP(dir, ip)
 		}
 		if db := geoip.Open(dir); db != nil {
-			if info := db.Lookup(ip); info.Country != "" {
-				countries = []string{info.Country}
-				geoInfo = info
-				db.Close()
-				break
-			}
+			info := db.Lookup(ip)
 			db.Close()
+			if len(countries) == 0 && info.Country != "" {
+				countries = []string{info.Country}
+			}
+			if geoInfo.City == "" {
+				geoInfo.City = info.City
+			}
+			if geoInfo.Network == "" {
+				geoInfo.Network = info.Network
+			}
+			if geoInfo.ASN == 0 && geoInfo.ASOrg == "" {
+				geoInfo.ASN, geoInfo.ASOrg = info.ASN, info.ASOrg
+			}
 		}
 	}
-	if len(countries) > 0 {
-		for _, line := range geoIPReportLines(countries, geoInfo) {
+	if lines := geoIPReportLines(countries, geoInfo); len(lines) > 0 {
+		for _, line := range lines {
 			fmt.Println(line)
 		}
 		for _, code := range countries {

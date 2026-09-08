@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+func FuzzDropperContentIsInert(f *testing.F) {
+	for _, head := range []string{"", "<?php // guard", "<?php # guard\r", "<?php /*", "<?php ?><?=1?>", "<?php // +AAo-echo 1;", "<?php /* \xc2\xa0 */", "<?php // =0Aecho 1;", "<?php //AAAPD9waHAgZWNobyAxOyAg"} {
+		f.Add([]byte(head))
+	}
+	f.Fuzz(func(t *testing.T, head []byte) {
+		if dropperContentIsInert(head, int64(len(head))+1) {
+			t.Fatal("partial content declared inert")
+		}
+		// Close any comment before adding a new PHP block. The trailing
+		// statement must never disappear behind an earlier closing tag.
+		withCode := append(append([]byte(nil), head...), []byte("\n*/\r\n?><?php echo 1;")...)
+		if dropperContentIsInert(withCode, int64(len(withCode))) {
+			t.Fatalf("trailing code declared inert: %q", withCode)
+		}
+	})
+}
+
 func FuzzAtomicWriteContentPath(f *testing.F) {
 	for _, path := range []string{"/home/site/.temp.1.example.php", "/home/site/.temp.1..htaccess", "/home/site/.temp.1...", ".temp.1..", "", "/", ".temp.1.\x00"} {
 		f.Add(path)
