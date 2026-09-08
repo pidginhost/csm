@@ -1,7 +1,6 @@
 package wpcheck
 
 import (
-	"crypto/md5" // #nosec G501 -- MD5 is the hash wordpress.org publishes for core file checksums; this is integrity verification against a published reference, not a security primitive.
 	"errors"
 	"fmt"
 	"os"
@@ -249,72 +248,4 @@ func readCompleteFileForHash(fd int) []byte {
 		return nil
 	}
 	return data
-}
-
-func (c *Cache) IsVerifiedCoreFile(fd int, path string) bool {
-	root := DetectWPRoot(path)
-	if root == "" {
-		return false
-	}
-
-	relPath := RelativePath(root, path)
-	if relPath == "" {
-		return false
-	}
-
-	if relPath == filepath.Join("wp-includes", "version.php") {
-		c.invalidateRoot(root)
-	}
-
-	version, locale, ok := c.getRoot(root)
-	if !ok {
-		var err error
-		version, locale, err = ReadVersionFile(root)
-		if err != nil {
-			return false
-		}
-		c.setRoot(root, version, locale)
-	}
-
-	if !c.hasChecksums(version, locale) {
-		c.startBackgroundFetch(version, locale)
-		return false
-	}
-
-	expectedMD5, ok := c.lookupChecksum(version, locale, relPath)
-	if !ok {
-		return false
-	}
-
-	data := readCompleteFileForHash(fd)
-	if data == nil {
-		return false
-	}
-
-	// #nosec G401 -- MD5 is required here: wordpress.org ships MD5 digests
-	// as the canonical integrity reference for core files. We compare
-	// against their published values, not derive authority from the hash.
-	hash := md5.Sum(data)
-
-	if constantTimeHexDigestEqual(hash[:], expectedMD5) {
-		return true
-	}
-
-	c.invalidateRoot(root)
-	newVersion, newLocale, err := ReadVersionFile(root)
-	if err != nil || (newVersion == version && newLocale == locale) {
-		return false
-	}
-
-	c.setRoot(root, newVersion, newLocale)
-	if !c.hasChecksums(newVersion, newLocale) {
-		c.startBackgroundFetch(newVersion, newLocale)
-		return false
-	}
-
-	newExpectedMD5, ok := c.lookupChecksum(newVersion, newLocale, relPath)
-	if !ok {
-		return false
-	}
-	return constantTimeHexDigestEqual(hash[:], newExpectedMD5)
 }

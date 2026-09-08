@@ -192,8 +192,13 @@ type FileMonitor struct {
 	// startup from account_roots and platform discovery.
 	webRootPatterns []string
 
-	// WordPress core checksum verifier - skips detection on unmodified WP core files
-	wpCache *wpcheck.Cache
+	// WordPress checksum verifier: skips detection on unmodified core and
+	// plugin files and judges staged update packages file by file.
+	wpCache wpVerifier
+	// wpPending holds staged package files whose checksums are still being
+	// fetched; stagedPackageLoop resolves them once a second.
+	wpPending     *stagedPackageQueue
+	wpPendingInit sync.Once
 
 	// Drop-recovery reconcile: directories that had fanotify events dropped
 	// because the analyzer queue was full. The overflow reporter walks this
@@ -449,8 +454,10 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
 	}
 
-	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
-	fm.wpCache.SetStopCh(fm.stopCh)
+	wpCache := wpcheck.NewCache(cfg.StatePath)
+	wpCache.SetStopCh(fm.stopCh)
+	fm.wpCache = wpCache
+	fm.wpPending = newStagedPackageQueue(stagedPackageQueueMax)
 
 	fm.initDropperDetector(cfg)
 
@@ -515,6 +522,10 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	// Start overflow reporter
 	fm.wg.Add(1)
 	obs.Go("fanotify-overflow", fm.overflowReporter)
+
+	// Resolve staged WordPress package files once their checksums land.
+	fm.wg.Add(1)
+	obs.Go("fanotify-wp-package", fm.stagedPackageLoop)
 
 	// Start the self-deleting-dropper probe loop when the detector is enabled.
 	if fm.dropper != nil {
@@ -1273,19 +1284,20 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		}
 	}
 
-	// Skip verified WordPress core files - checksum matches official WP.org checksums.
-	// For atomic writes, the intended basename only selects the checksum
-	// entry. Trust requires hashing the complete original event descriptor.
-	if fm.wpCache != nil && fm.wpCache.IsVerifiedCoreFile(event.fd, contentPath) {
-		return
-	}
-
-	// Verified WordPress plugin files: hash matches the plugin's official
-	// wordpress.org ZIP for its declared version. Stops signature/YARA FPs
-	// on stock plugin code (Wordfence, Contact Form 7, etc.). Cache miss
-	// triggers a background fetch; misses fall through to rule evaluation.
-	if fm.wpCache != nil && fm.wpCache.IsVerifiedPluginFile(event.fd, contentPath) {
-		return
+	// Skip unmodified WordPress core and plugin files: the hash matches the
+	// official wordpress.org checksums for the version the install or
+	// package declares. Stops signature/YARA FPs on stock code. A cache miss
+	// triggers a background fetch and falls through to rule evaluation; the
+	// description is kept for the update-staging branch below, which judges
+	// a staged package by these verdicts. For atomic writes, the intended
+	// basename only selects the checksum entry. Trust requires hashing the
+	// complete original event descriptor.
+	var wpVerdict wpcheck.Verification
+	if fm.wpCache != nil {
+		wpVerdict = fm.wpCache.VerifyFile(event.fd, contentPath)
+		if wpVerdict.Verdict == wpcheck.VerdictVerified {
+			return
+		}
 	}
 
 	// User crontab written under /var/spool/cron/<user>. Scan content
@@ -1508,17 +1520,13 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			}
 			// One WordPress update writes every PHP file of the package
 			// into this directory, and the path-only warning fired on each
-			// of them. Report the package instead: dedup is keyed on the
-			// alerted path, so the staging directory collapses the burst to
-			// one finding, and the finding clears itself once WordPress
-			// removes the directory. Only this warning is collapsed --
-			// content analysis above ran on every staged file and reports
-			// its own findings against their own paths.
-			if staging := wpUpdateStagingDir(path); staging != "" {
-				fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
-					fmt.Sprintf("WordPress update staged: %s", staging),
-					"Package names an installed plugin, theme, or WordPress core. Every staged file was content-scanned.",
-					staging, procInfo)
+			// of them. A staged package is judged by hash instead: stock
+			// files are silent, a file the official package does not ship
+			// gets its own finding, and a package with no checksum source
+			// collapses to one finding on its staging directory. Only this
+			// warning is governed -- content analysis above ran on every
+			// staged file and reports its own findings against their paths.
+			if fm.handleStagedPackageFile(path, wpVerdict, procInfo) {
 				return
 			}
 			fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
@@ -2576,13 +2584,21 @@ func looksLikePluginUpdate(path string) bool {
 	return cachedPathExists(wpRoot + "/wp-content/plugins/" + pluginName)
 }
 
-// cachedPathExists answers whether path exists, memoised for wpPathCacheTTL.
-// The realtime path asks this once per file event during an update, so an
-// uncached stat per staged file would be paid thousands of times per package.
+// cachedPathExists answers whether path exists, memoised for wpPathCacheTTL
+// when it does and for wpPathNegativeTTL when it does not. The realtime path
+// asks this once per file event during an update, so an uncached stat per
+// staged file would be paid thousands of times per package; a missing path
+// during an update is transient, so its answer must expire quickly.
 func cachedPathExists(path string) bool {
 	if cached, ok := wpPathStatCache.Load(path); ok {
-		if entry, ok := cached.(wpPathCacheEntry); ok && time.Since(entry.ts) < wpPathCacheTTL {
-			return entry.exists
+		if entry, ok := cached.(wpPathCacheEntry); ok {
+			ttl := wpPathCacheTTL
+			if !entry.exists {
+				ttl = wpPathNegativeTTL
+			}
+			if time.Since(entry.ts) < ttl {
+				return entry.exists
+			}
 		}
 	}
 
@@ -2593,58 +2609,4 @@ func cachedPathExists(path string) bool {
 		ts:     time.Now(),
 	})
 	return exists
-}
-
-// wpUpdateStagingDir returns the directory WordPress staged an update in when
-// path names a file inside one, and "" when it does not. WordPress unpacks one
-// package per update under wp-content/upgrade/:
-//
-//	upgrade/<slug>.<version>/<slug>/...                    plugins and themes
-//	upgrade/<slug>-<random>/<slug>/...                     plugins and themes
-//	upgrade/wordpress-<version>[-partial-N]/wordpress/...  core
-//	upgrade/wp_<uniqid>/wordpress/...                      core
-//
-// Only the unpacked directory identifies the package. The staging name is
-// generated by WordPress in at least four shapes and carries no authority
-// anyway, since anything able to write a staged tree chooses both names.
-//
-// A package counts as an update only when its unpacked directory names
-// something already installed on that site: a matching plugins/ or themes/
-// directory, or, for a core package, a WordPress root. A directory naming
-// nothing installed is not an update, so its files keep alerting one by one.
-func wpUpdateStagingDir(path string) string {
-	const marker = "/wp-content/upgrade/"
-	idx := strings.Index(path, marker)
-	if idx < 0 {
-		return ""
-	}
-	wpRoot := path[:idx]
-	rest := path[idx+len(marker):]
-
-	slash := strings.Index(rest, "/")
-	if slash <= 0 {
-		return "" // a file sitting directly in upgrade/ belongs to no package
-	}
-	inner := rest[slash+1:]
-	innerSlash := strings.Index(inner, "/")
-	if innerSlash <= 0 {
-		return "" // the package directory holds no unpacked tree
-	}
-
-	stagingDir := path[:idx+len(marker)+slash]
-	unpacked := inner[:innerSlash]
-
-	if unpacked == "wordpress" {
-		if !cachedPathExists(wpRoot + "/wp-includes/version.php") {
-			return ""
-		}
-		return stagingDir
-	}
-
-	for _, installed := range []string{"/wp-content/plugins/", "/wp-content/themes/"} {
-		if cachedPathExists(wpRoot + installed + unpacked) {
-			return stagingDir
-		}
-	}
-	return ""
 }
