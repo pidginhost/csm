@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Self-deleting dropper detection now requires conclusive content evidence before suppressing findings and handles separate file-creation events correctly. Content and signature findings retain priority over blank-file filtering.
 
+## [Unreleased]
+
+### Fixed
+
+- An upgrade now confirms the new daemon is actually working before keeping it. Previously it only checked that the service had started, so a daemon that started and then stopped, or one that came up without its watchers, was left in place instead of being rolled back.
+
 ## [3.35.0] - 2026-09-08
 
 ### Highlights

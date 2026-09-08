@@ -949,6 +949,9 @@ func TestUpgradeHandlesBinaryPlacementFailures(t *testing.T) {
 					"}",
 					"stop_services() { : > \"$TEST_STOPPED\"; }",
 					"start_services() { : > \"$TEST_STARTED\"; }",
+					// This test covers tmpdir lifecycle; the health gate has its
+					// own coverage in deploy_health_gate_test.go.
+					"verify_upgrade_health() { :; }",
 					"activate_assets() { :; }",
 					"rollback_assets() { :; }",
 					"lsattr() { :; }",
@@ -1198,6 +1201,7 @@ func TestUpgradeTmpdirLifecycle(t *testing.T) {
 					"}",
 					"stop_services() { :; }",
 					"start_services() { : > \"$TEST_STARTED\"; }",
+					"verify_upgrade_health() { :; }",
 					"activate_assets() { :; }",
 					"lsattr() { :; }",
 					"chattr() { :; }",
