@@ -654,11 +654,6 @@ var latestVolatileCheckNames = []string{
 	"check_timeout",
 }
 
-var latestDerivedCheckNames = []string{
-	"coordinated_attack",
-	"cross_account_malware",
-}
-
 // StoreLatestScanFindings replaces the latest findings owned by a scan, then
 // rebuilds derived correlation findings from the merged current set. One-shot
 // auto-response actions stay in history and alerts, not the active findings
@@ -679,21 +674,27 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 		return
 	}
 	now := time.Now()
+	// The merge callback runs under the store's latest-findings lock, so it
+	// only captures the unattributed snapshot; reporting happens after the
+	// store call returns and must never re-enter the store.
+	var unattributed map[string]int
 	st.PurgeAndMergeFindingsDerivedWithGaps(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
 		gapPaths,
-		latestDerivedCheckNames,
+		DerivedCorrelationChecks(),
 		func(merged []alert.Finding) []alert.Finding {
-			derived := CorrelateFindings(merged)
-			for i := range derived {
-				if derived[i].Timestamp.IsZero() {
-					derived[i].Timestamp = now
+			res := CorrelateFindings(merged)
+			unattributed = res.Unattributed
+			for i := range res.Derived {
+				if res.Derived[i].Timestamp.IsZero() {
+					res.Derived[i].Timestamp = now
 				}
 			}
-			return derived
+			return res.Derived
 		},
 	)
+	ReportUnattributedCorrelation(unattributed)
 }
 
 func latestPurgeWithVolatile(purgeChecks []string) []string {
@@ -724,12 +725,7 @@ func isLatestVolatileFinding(check string) bool {
 }
 
 func isLatestDerivedFinding(check string) bool {
-	for _, name := range latestDerivedCheckNames {
-		if check == name {
-			return true
-		}
-	}
-	return false
+	return IsDerivedCorrelationCheck(check)
 }
 
 func checksForTier(tier Tier) []namedCheck {
@@ -1112,13 +1108,14 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	}
 
 	// Cross-account correlation
-	extra := CorrelateFindings(findings)
-	for i := range extra {
-		if extra[i].Timestamp.IsZero() {
-			extra[i].Timestamp = now
+	correlated := CorrelateFindings(findings)
+	for i := range correlated.Derived {
+		if correlated.Derived[i].Timestamp.IsZero() {
+			correlated.Derived[i].Timestamp = now
 		}
 	}
-	findings = append(findings, extra...)
+	findings = append(findings, correlated.Derived...)
+	ReportUnattributedCorrelation(correlated.Unattributed)
 
 	// Auto-response: skip when the caller requested a dry run
 	// (check/baseline commands).

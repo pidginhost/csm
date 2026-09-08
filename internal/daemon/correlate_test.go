@@ -66,7 +66,7 @@ func TestExpandWithCorrelation_DoesNotDuplicateExistingSyntheticFindings(t *test
 		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/bob/public_html/q.php"},
 		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/carol/public_html/r.php"},
 	}
-	preCorrelated := append(append([]alert.Finding(nil), findings...), checks.CorrelateFindings(findings)...)
+	preCorrelated := append(append([]alert.Finding(nil), findings...), checks.CorrelateFindings(findings).Derived...)
 
 	out := expandWithCorrelation(preCorrelated, stamp)
 
@@ -75,7 +75,7 @@ func TestExpandWithCorrelation_DoesNotDuplicateExistingSyntheticFindings(t *test
 	}
 	gotCounts := map[string]int{}
 	for _, f := range out {
-		if !isCorrelationFinding(f.Check) {
+		if !checks.IsDerivedCorrelationCheck(f.Check) {
 			continue
 		}
 		gotCounts[f.Check]++
@@ -98,5 +98,57 @@ func TestExpandWithCorrelation_BelowThresholdEmitsNothingExtra(t *testing.T) {
 	out := expandWithCorrelation(findings, now)
 	if len(out) != len(findings) {
 		t.Errorf("single-account batch should not synthesize anything, got %d vs %d", len(out), len(findings))
+	}
+}
+
+func TestExpandWithCorrelation_ExactCountsAndIdempotence(t *testing.T) {
+	stamp := time.Date(2026, 9, 8, 22, 0, 0, 0, time.UTC)
+	batch := []alert.Finding{
+		{Severity: alert.Critical, Check: "db_rogue_admin", TenantID: "alice", Message: "rogue admin on alice"},
+		{Severity: alert.Critical, Check: "webshell", TenantID: "bob", Message: "shell on bob"},
+		{Severity: alert.Critical, Check: "webshell", TenantID: "carol", Message: "shell on carol"},
+	}
+	out := expandWithCorrelation(append([]alert.Finding(nil), batch...), stamp)
+	if len(out) != len(batch)+2 {
+		t.Fatalf("expanded to %d rows, want %d", len(out), len(batch)+2)
+	}
+	derived := map[string]alert.Finding{}
+	for _, f := range out[len(batch):] {
+		if !checks.IsDerivedCorrelationCheck(f.Check) {
+			t.Fatalf("appended non-derived row %+v", f)
+		}
+		if !f.Timestamp.Equal(stamp) {
+			t.Fatalf("derived row not stamped: %+v", f)
+		}
+		derived[f.Check] = f
+	}
+	if len(derived) != 2 {
+		t.Fatalf("derived %v", derived)
+	}
+	keys := map[string]bool{}
+	for _, f := range derived {
+		keys[f.Key()] = true
+	}
+	again := expandWithCorrelation(append([]alert.Finding(nil), out...), stamp.Add(time.Hour))
+	if len(again) != len(out) {
+		t.Fatalf("re-expansion grew the batch from %d to %d", len(out), len(again))
+	}
+	for _, f := range again[len(batch):] {
+		if !keys[f.Key()] || !f.Timestamp.Equal(stamp) {
+			t.Fatalf("re-expansion changed a derived row: %+v", f)
+		}
+	}
+}
+
+func TestExpandWithCorrelation_UnattributedRowsAreNotAppended(t *testing.T) {
+	now := time.Now()
+	batch := []alert.Finding{
+		{Severity: alert.Critical, Check: "db_rogue_admin", Message: "rogue admin (account: alice)"},
+		{Severity: alert.Critical, Check: "db_rogue_admin", Message: "rogue admin (account: bob)"},
+		{Severity: alert.Critical, Check: "db_rogue_admin", Message: "rogue admin (account: carol)"},
+	}
+	out := expandWithCorrelation(append([]alert.Finding(nil), batch...), now)
+	if len(out) != len(batch) {
+		t.Fatalf("unattributed rows aggregated: %+v", out[len(batch):])
 	}
 }

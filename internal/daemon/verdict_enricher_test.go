@@ -239,3 +239,18 @@ func TestVerdictEnricher_BoundsCache(t *testing.T) {
 		t.Fatalf("cache entries = %d, want at most queue capacity %d", entries, cap(e.jobs))
 	}
 }
+
+// A producer's owner is authoritative: callback enrichment fills an empty
+// TenantID and never overrides a populated one. The wire contract is unchanged.
+func TestVerdictEnrichmentNeverOverridesProducerTenant(t *testing.T) {
+	owned := alert.Finding{Check: "db_rogue_admin", TenantID: "alice"}
+	applyVerdictEntry(&owned, verdictEntry{tenantID: "panel-42", verdict: "allow"})
+	if owned.TenantID != "alice" {
+		t.Fatalf("producer tenant overridden: %q", owned.TenantID)
+	}
+	empty := alert.Finding{Check: "db_rogue_admin"}
+	applyVerdictEntry(&empty, verdictEntry{tenantID: "panel-42"})
+	if empty.TenantID != "panel-42" {
+		t.Fatalf("empty tenant not enriched verbatim: %q", empty.TenantID)
+	}
+}

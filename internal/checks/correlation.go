@@ -2,114 +2,78 @@ package checks
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// Checks that indicate active security events (not static config issues).
-// Only these are used for cross-account correlation.
-var securityEventChecks = map[string]bool{
-	"fake_kernel_thread":            true,
-	"suspicious_process":            true,
-	"php_suspicious_execution":      true,
-	"backdoor_binary":               true,
-	"webshell":                      true,
-	"new_webshell_file":             true,
-	"new_executable_in_config":      true,
-	"new_php_in_uploads":            true,
-	"new_php_in_languages":          true,
-	"new_php_in_upgrade":            true,
-	"obfuscated_php":                true,
-	"php_dropper":                   true,
-	"webshell_realtime":             true,
-	"php_in_uploads_realtime":       true,
-	"php_in_sensitive_dir_realtime": true,
-	"executable_in_config_realtime": true,
-	"obfuscated_php_realtime":       true,
-	"webshell_content_realtime":     true,
-	"c2_connection":                 true,
-	"cpanel_file_upload_realtime":   true,
-	"shadow_change":                 true,
-	"root_password_change":          true,
+// CorrelationResult is the output of one CorrelateFindings call.
+type CorrelationResult struct {
+	// Derived findings: the coordinated_attack result first, then one
+	// cross_account_malware result per qualifying check, sorted by check.
+	// Timestamps are left unset for the caller to stamp.
+	Derived []alert.Finding
+	// Unattributed counts qualifying input rows per check that carried no
+	// account identity. It is a snapshot for this call, not a running total.
+	Unattributed map[string]int
 }
 
-// CorrelateFindings analyzes findings for cross-account attack patterns.
-// Only considers active security events, not static config issues
-// (like WAF status, open_basedir, world-writable files).
-func CorrelateFindings(findings []alert.Finding) []alert.Finding {
-	var extra []alert.Finding
-
-	// Count security event findings per account
-	accountCriticals := make(map[string]int)
+// CorrelateFindings raises cross-account findings. Eligibility comes from
+// the registry classification and identity from extractAccountFromFinding.
+// It performs no I/O, does not log and does not mutate its input.
+func CorrelateFindings(findings []alert.Finding) CorrelationResult {
+	res := CorrelationResult{Unattributed: make(map[string]int)}
+	accounts := make(map[string]bool)
+	malwareByCheck := make(map[string]map[string]bool)
 	for _, f := range findings {
-		if f.Severity != alert.Critical {
+		class := correlationClassOf(f.Check)
+		if class != CorrelationSecurityEvent && class != CorrelationMalwareArtifact {
 			continue
 		}
-		if !securityEventChecks[f.Check] {
+		countsForAttack := f.Severity == alert.Critical
+		countsForMalware := class == CorrelationMalwareArtifact
+		if !countsForAttack && !countsForMalware {
 			continue
 		}
 		account := extractAccountFromFinding(f)
-		if account != "" {
-			accountCriticals[account]++
+		if account == "" {
+			res.Unattributed[f.Check]++
+			continue
+		}
+		if countsForAttack {
+			accounts[account] = true
+		}
+		if countsForMalware {
+			if malwareByCheck[f.Check] == nil {
+				malwareByCheck[f.Check] = make(map[string]bool)
+			}
+			malwareByCheck[f.Check][account] = true
 		}
 	}
-
-	// If 3+ accounts have critical security events, it's a coordinated attack
-	affectedAccounts := 0
-	var accountNames []string
-	for account, count := range accountCriticals {
-		if count > 0 {
-			affectedAccounts++
-			accountNames = append(accountNames, account)
-		}
-	}
-
-	if affectedAccounts >= 3 {
-		sort.Strings(accountNames)
-		extra = append(extra, alert.Finding{
+	if len(accounts) >= 3 {
+		names := sortedKeys(accounts)
+		res.Derived = append(res.Derived, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "coordinated_attack",
-			Message:  fmt.Sprintf("Possible coordinated attack: %d accounts have critical security events", affectedAccounts),
-			Details:  fmt.Sprintf("Affected accounts: %s", strings.Join(accountNames, ", ")),
+			Message:  fmt.Sprintf("Possible coordinated attack: %d accounts have critical security events", len(names)),
+			Details:  fmt.Sprintf("Affected accounts: %s", strings.Join(names, ", ")),
 		})
 	}
-
-	// Check for same malware type across accounts
-	malwareByCheck := make(map[string][]string)
-	for _, f := range findings {
-		if f.Check == "new_executable_in_config" || f.Check == "backdoor_binary" ||
-			f.Check == "webshell" || f.Check == "new_webshell_file" {
-			account := extractAccountFromFinding(f)
-			if account != "" {
-				malwareByCheck[f.Check] = append(malwareByCheck[f.Check], account)
-			}
+	for _, check := range sortedKeys(malwareByCheck) {
+		names := sortedKeys(malwareByCheck[check])
+		if len(names) < 2 {
+			continue
 		}
+		res.Derived = append(res.Derived, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "cross_account_malware",
+			Message:  fmt.Sprintf("Same malware type (%s) found in %d accounts", check, len(names)),
+			Details:  fmt.Sprintf("Accounts: %s", strings.Join(names, ", ")),
+		})
 	}
-	for check, accounts := range malwareByCheck {
-		unique := uniqueStrings(accounts)
-		if len(unique) >= 2 {
-			sort.Strings(unique)
-			extra = append(extra, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "cross_account_malware",
-				Message:  fmt.Sprintf("Same malware type (%s) found in %d accounts", check, len(unique)),
-				Details:  fmt.Sprintf("Accounts: %s", strings.Join(unique, ", ")),
-			})
-		}
-	}
-
-	return extra
-}
-
-func extractAccountFromFinding(f alert.Finding) string {
-	for _, s := range []string{f.Message, f.Details} {
-		if account := accountNameInText(s); account != "" {
-			return account
-		}
-	}
-	return ""
+	return res
 }
 
 func uniqueStrings(input []string) []string {
@@ -122,4 +86,35 @@ func uniqueStrings(input []string) []string {
 		}
 	}
 	return result
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// extractAccountFromFinding resolves the hosting account a finding belongs
+// to: the producer's TenantID verbatim, then the account home that contains
+// an absolute FilePath, then the legacy free-text scan of Message and
+// Details. The structured sources win so a path mentioned in free text
+// cannot re-attribute a finding whose producer knew its owner.
+func extractAccountFromFinding(f alert.Finding) string {
+	if f.TenantID != "" {
+		return f.TenantID
+	}
+	if filepath.IsAbs(f.FilePath) {
+		if _, account, ok := accountRootOf(f.FilePath); ok {
+			return account
+		}
+	}
+	for _, s := range []string{f.Message, f.Details} {
+		if account := accountNameInText(s); account != "" {
+			return account
+		}
+	}
+	return ""
 }

@@ -326,6 +326,47 @@ The stored incident includes the full correlation key, including process
 PID/UID and remote IP when those are the only available dimensions, so
 active incidents keep merging after daemon restart.
 
+## Cross-account correlation of findings
+
+Separately from incidents, the scan runner, the latest-state merge and the
+realtime dispatcher derive two findings from the findings they see:
+
+- `coordinated_attack` (Critical) when at least three distinct hosting
+  accounts each carry at least one Critical finding from a check classified
+  as a security event. The checks may differ between accounts. Repeated
+  findings or several installs inside one account never raise the count.
+- `cross_account_malware` (Critical) when the same malware-artifact check
+  (`webshell`, `new_webshell_file`, `backdoor_binary`,
+  `new_executable_in_config`) is present on two or more accounts at any
+  severity. Different malware checks on different accounts do not combine.
+
+Every registered check is classified as a security event, a malware
+artifact, ignored with a stated reason, or derived. Derived findings are never
+inputs. The account identity comes from the producer's tenant field first,
+then the account home that contains the finding's absolute file path, then a
+legacy scan of the message text for an account-root path. Findings a
+producer cannot attribute never count toward either aggregate; they are
+counted per call and logged once per check name per process so a detector
+that never attributes becomes visible. Some eligible checks document a known
+missing identity path: the periodic socket checks have no hosting owner, so
+their Criticals only ever reach that diagnostic count.
+
+The two per-batch derivations (scan runner, realtime dispatcher) see only
+their batch and produce alerts. The latest-state merge derives from the
+merged, deduplicated persisted active set under the same lock as the purge,
+so evidence from separate scans combines: three accounts compromised in three
+different scans still produce a persisted `coordinated_attack`, and it clears
+only when fewer than three accounts still carry a qualifying Critical there.
+Demotion, dismissal or re-verification of a contributing row takes effect at
+the next scan merge. There is no time window.
+
+Class membership does not mean an emitter currently reaches Critical: the
+non-WordPress administrator checks emit High after a stored baseline, so they
+are eligible but contribute nothing until a Critical variant exists.
+Producer attribution for every eligible check is completed by the producer
+work that follows this change; until then an eligible finding without an
+owner is reported, not counted.
+
 ## Findings from retired checks
 
 A check name that no version of CSM emits any more stays registered while
