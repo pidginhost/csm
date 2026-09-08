@@ -21,7 +21,7 @@ func TestFixturePrivacyGateIsRequired(t *testing.T) {
 			t.Fatalf("fixture job can be skipped: %s", skip)
 		}
 	}
-	for _, name := range []string{"publish", "release:github"} {
+	for _, name := range []string{"publish:linux-amd64", "release:github"} {
 		block := gitlabJobBlock(t, ci, name)
 		if !strings.Contains(block, "job: check-fixtures") {
 			t.Errorf("%s bypasses fixture gate", name)

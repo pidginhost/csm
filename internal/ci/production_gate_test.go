@@ -22,7 +22,7 @@ func TestProductionTagsAndKernelGateAreRequired(t *testing.T) {
 		if !strings.Contains(job, "when: always") || !strings.Contains(job, "production-results/") {
 			t.Errorf("%s does not preserve execution evidence", name)
 		}
-		for _, publisher := range []string{"publish", "release:github"} {
+		for _, publisher := range []string{"publish:linux-amd64", "release:github"} {
 			block := gitlabJobBlock(t, ci, publisher)
 			if !strings.Contains(block, "job: "+name) {
 				t.Errorf("%s bypasses %s", publisher, name)

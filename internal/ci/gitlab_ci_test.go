@@ -96,6 +96,21 @@ func TestReleaseCriticalJobsAreBlocking(t *testing.T) {
 	}
 }
 
+// publish:linux-arm64 carries none of the release gates itself. It inherits
+// them by depending on publish:linux-amd64, which is also what serialises the
+// stale-"latest" delete against these uploads. If that edge is ever dropped,
+// arm64 would publish ungated, so assert the chain rather than trusting it.
+func TestArmPublishInheritsReleaseGates(t *testing.T) {
+	data, err := os.ReadFile("../../.gitlab-ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arm := gitlabJobBlock(t, string(data), "publish:linux-arm64")
+	if !strings.Contains(arm, "job: publish:linux-amd64") {
+		t.Fatal("publish:linux-arm64 must depend on publish:linux-amd64 or it publishes without the release gates")
+	}
+}
+
 func gitlabJobBlock(t *testing.T, ci, name string) string {
 	t.Helper()
 

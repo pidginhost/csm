@@ -24,7 +24,7 @@ func TestCleanCorpusGateIsRequired(t *testing.T) {
 		}
 	}
 	// Publishing has explicit DAG dependencies, so stage order alone cannot gate it.
-	for _, job := range []string{"publish", "release:github"} {
+	for _, job := range []string{"publish:linux-amd64", "release:github"} {
 		if !strings.Contains(gitlabJobBlock(t, ci, job), "test:clean-corpus") {
 			t.Errorf("%s can bypass clean corpus", job)
 		}

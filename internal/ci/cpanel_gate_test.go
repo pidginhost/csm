@@ -23,7 +23,7 @@ func TestReleaseRequiresCPanelBeforePublication(t *testing.T) {
 	if !strings.Contains(integration, "bash scripts/ci-cpanel-preflight.sh") {
 		t.Fatal("integration can bypass preflight")
 	}
-	publish := gitlabJobBlock(t, ci, "publish")
+	publish := gitlabJobBlock(t, ci, "publish:linux-amd64")
 	tagRule := strings.Index(publish, "- if: $CI_COMMIT_TAG =~ /^v/")
 	if tagRule < 0 || !strings.Contains(publish[tagRule:], "job: integration") || !strings.Contains(publish[tagRule:], "job: release-preflight") {
 		t.Fatal("tag publication can bypass required integration or preflight")
