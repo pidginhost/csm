@@ -442,6 +442,7 @@ func (l *AFAlgAuditListener) handleLine(line string) {
 		Severity:  alert.Critical,
 		Check:     "af_alg_socket_use",
 		Message:   fmt.Sprintf("AF_ALG socket opened by uid=%s exe=%s", ev.UID, ev.Exe),
+		TenantID:  checks.AFAlgOwner(ev),
 		Timestamp: time.Now(),
 		Details: fmt.Sprintf(
 			"Live audit-log detection: timestamp=%s serial=%s\nauid=%s uid=%s comm=%q exe=%q pid=%s\n"+

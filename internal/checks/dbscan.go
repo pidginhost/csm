@@ -100,6 +100,19 @@ func wpConfigPathsWithDomains(ctx context.Context) ([]string, map[string]servedS
 	return paths, served, panelDomains
 }
 
+// wpConfigOwners maps each discovered wp-config.php to the hosting account
+// discovery attributed it to; unattributable installs are absent so their
+// findings stay unstamped.
+func wpConfigOwners(installs []wpInstall) map[string]string {
+	owners := make(map[string]string, len(installs))
+	for _, in := range installs {
+		if in.Account != "" {
+			owners[in.ConfigPath] = in.Account
+		}
+	}
+	return owners
+}
+
 // The shared vhost parser omits wildcard names because they cannot be used as
 // an HTTP Host for exposure probes. They still declare a served document root
 // and tenant ownership, so the database scan parses those rows separately.
@@ -166,10 +179,17 @@ func spamCountLabel(n int, truncated bool) string {
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, servedRoots, panelDomains := wpConfigPathsWithDomains(ctx)
-	if len(wpConfigs) == 0 {
+	installs, panelDomains := wpInstallsWithDomains(ctx, "db_content")
+	if len(installs) == 0 {
 		return appendDatabaseScanIncompleteFinding(ctx, nil)
 	}
+	wpConfigs := make([]string, 0, len(installs))
+	servedRoots := make(map[string]servedState, len(installs))
+	for _, in := range installs {
+		wpConfigs = append(wpConfigs, in.ConfigPath)
+		servedRoots[in.ConfigPath] = in.Served
+	}
+	owners := wpConfigOwners(installs)
 	domainOwnership := newPanelDomainOwnership(panelDomains)
 
 	seenDatabases := make(map[string]struct{}, len(wpConfigs))
@@ -207,31 +227,44 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 			continue
 		}
 		seenDatabases[databaseKey] = struct{}{}
-		var installFindings []alert.Finding
-
-		// Always scan the main-site (or single-site) tables. In
-		// multisite, blog ID 1 keeps the unprefixed names; in a
-		// single-site install these are the only tables.
-		installFindings = append(installFindings, scanWPBlog(user, creds, prefix, prefix)...)
-
-		// wp_users / wp_usermeta are network-wide in multisite, so
-		// the user-table scan runs once regardless of the layout.
-		installFindings = append(installFindings, checkWPUsers(user, creds, prefix)...)
-
-		// Multisite: enumerate active secondary blog IDs and scan
-		// each one's wp_<N>_options / wp_<N>_posts. Spam, archived,
-		// and deleted blogs are excluded -- their content is
-		// already operator-suppressed at the WP level, and most
-		// hosts have stale ones we'd otherwise alert on
-		// indefinitely.
-		if creds.multisite {
-			installFindings = append(installFindings, scanMultisiteSecondaryBlogs(ctx, user, creds, prefix)...)
-		}
-		findings = append(findings,
-			capPhantomAuthorFindings(installFindings, maxPhantomAuthorsReported)...)
+		// Stamp each install's own slice before merging: the host-wide
+		// summary appended below must never inherit an owner.
+		installFindings := capPhantomAuthorFindings(wpInstallScanner(ctx, user, creds, prefix), maxPhantomAuthorsReported)
+		findings = append(findings, stampTenantIDIfEmpty(installFindings, owners[wpConfig])...)
 	}
 
 	return appendDatabaseScanIncompleteFinding(ctx, findings)
+}
+
+// wpInstallScanner is the per-install scan boundary. Tests replace it with
+// an inert scanner to prove ownership stamping for every finding name
+// without driving each SQL scanner.
+var wpInstallScanner = scanWPInstall
+
+// scanWPInstall runs every content, user and multisite scanner for one
+// discovered install and returns the unstamped findings.
+func scanWPInstall(ctx context.Context, user string, creds wpDBCreds, prefix string) []alert.Finding {
+	var installFindings []alert.Finding
+
+	// Always scan the main-site (or single-site) tables. In
+	// multisite, blog ID 1 keeps the unprefixed names; in a
+	// single-site install these are the only tables.
+	installFindings = append(installFindings, scanWPBlog(user, creds, prefix, prefix)...)
+
+	// wp_users / wp_usermeta are network-wide in multisite, so
+	// the user-table scan runs once regardless of the layout.
+	installFindings = append(installFindings, checkWPUsers(user, creds, prefix)...)
+
+	// Multisite: enumerate active secondary blog IDs and scan
+	// each one's wp_<N>_options / wp_<N>_posts. Spam, archived,
+	// and deleted blogs are excluded -- their content is
+	// already operator-suppressed at the WP level, and most
+	// hosts have stale ones we'd otherwise alert on
+	// indefinitely.
+	if creds.multisite {
+		installFindings = append(installFindings, scanMultisiteSecondaryBlogs(ctx, user, creds, prefix)...)
+	}
+	return installFindings
 }
 
 // scanWPBlog runs checks whose tables belong to one blog. usersPrefix stays

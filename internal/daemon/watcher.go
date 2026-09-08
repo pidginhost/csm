@@ -531,6 +531,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Details:  truncateDaemon(line, 300),
 					Mailbox:  mailboxOnly(sender),
 					Domain:   domain,
+					TenantID: checks.MailOwner(domain),
 				})
 			}
 		}
@@ -567,6 +568,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				Message:  message,
 				Details:  truncateDaemon(line, 300),
 				Domain:   domain,
+				TenantID: checks.MailOwner(domain),
 			})
 			if domain != "" {
 				RecordCompromisedDomain(domain)
@@ -600,6 +602,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				Details:  fmt.Sprintf("The email subject contains what appears to be SMTP credentials (host:port,user,password). This account is likely compromised by a bulk mail service.\nSubject: %s", truncateDaemon(subject, 100)),
 				Mailbox:  mailboxOnly(sender),
 				Domain:   extractDomainFromEmail(sender),
+				TenantID: checks.MailOwner(sender),
 			})
 		}
 		// Also detect common spam subject patterns
@@ -612,6 +615,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				Details:  truncateDaemon(line, 300),
 				Mailbox:  mailboxOnly(sender),
 				Domain:   extractDomainFromEmail(sender),
+				TenantID: checks.MailOwner(sender),
 			})
 		}
 	}
@@ -633,6 +637,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Details:  truncateDaemon(line, 300),
 					Mailbox:  mailboxOnly(sender),
 					Domain:   extractDomainFromEmail(sender),
+					TenantID: checks.MailOwner(sender),
 				})
 				break
 			}
@@ -1386,6 +1391,10 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
 	mailbox, domain, tenant := splitMailAccount(user)
+	if tenant == "" {
+		// A full mailbox belongs to the account that owns its domain.
+		tenant = checks.MailOwner(domain)
+	}
 	if count >= cfg.EmailProtection.RateCritThreshold {
 		if rw.alerted != "crit" {
 			rw.alerted = "crit"

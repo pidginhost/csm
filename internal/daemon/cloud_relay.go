@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/obs"
@@ -311,6 +312,9 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 	)
 
 	mailbox, domain, tenant := splitMailAccount(user)
+	if tenant == "" {
+		tenant = checks.MailOwner(domain)
+	}
 	return []alert.Finding{{
 		Severity: alert.Critical,
 		Check:    "email_cloud_relay_abuse",

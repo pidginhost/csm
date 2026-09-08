@@ -120,6 +120,7 @@ func CheckOutboundPasteSites(ctx context.Context, cfg *config.Config, _ *state.S
 					Check:    "exfiltration_paste_site",
 					Message:  fmt.Sprintf("Process connecting to paste/exfiltration site: %s (user: %s)", site, user),
 					Details:  fmt.Sprintf("PID: %s, cmdline: %s", pid, safeCmdStr),
+					TenantID: HostingAccountForUser(user),
 				})
 				break
 			}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -1074,6 +1075,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 		SourceIP:  ip,
 		Domain:    compDomain,
 		Mailbox:   account,
+		TenantID:  checks.MailOwner(compDomain),
 	}}
 }
 

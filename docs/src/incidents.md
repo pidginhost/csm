@@ -384,9 +384,28 @@ and attribution warnings are reported after the merge releases that lock.
 Class membership does not mean an emitter currently reaches Critical: the
 non-WordPress administrator checks emit High after a stored baseline, so they
 are eligible but contribute nothing until a Critical variant exists.
-Producer attribution for every eligible check is completed by the producer
-work that follows this change; until then an eligible finding without an
-owner is reported, not counted.
+
+Every eligible producer supplies identity itself, and a test names the
+producer test that proves it for each check:
+
+- Database and CMS scanners stamp the owner of the install's configuration
+  path, resolved through the account roots. An install outside every root
+  keeps its display label but no owner.
+- Mail producers (rate windows, mail holds, credential leaks, bulk-service
+  logins, forwarders, filters, mail brute force, cloud relay, geo logins,
+  PHP relay volume) resolve a mailbox or domain to its owning account through
+  the panel's domain ownership table. Without that table (any panel other
+  than cPanel) the owner stays empty and the row is reported, not counted. A
+  bare account name is already the owner.
+- Process, login and crontab producers accept a system user as owner only
+  when its home directory sits directly under an account root, so root,
+  service users and unknown uids never become an account.
+- File families (content, phishing, htaccess, file index, core integrity,
+  realtime file events, PHP shield events, self-deleting droppers) carry the
+  judged file's path, which resolves as described above. The collapsed
+  core-integrity finding has no single path and carries the install owner.
+- The periodic socket checks have no hosting owner; their unattributed
+  Criticals reach only the diagnostic count.
 
 ## Findings from retired checks
 

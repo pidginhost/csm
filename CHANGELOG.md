@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
 - Cross-account correlation uses explicit detector policy and reports findings that lack account attribution.
+- Database, mail, crontab, process and realtime findings now carry the owning account, resolved from the panel's domain owner table, the passwd home directory or the file path, so the cross-account aggregate sees every eligible detector instead of a fifth of them.
 - Self-deleting dropper detection now requires conclusive content evidence before suppressing findings and handles separate file-creation events correctly. Content and signature findings retain priority over blank-file filtering.
 
 ## [3.35.0] - 2026-09-08

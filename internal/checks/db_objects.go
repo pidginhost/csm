@@ -142,7 +142,8 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 			markCheckIncomplete(ctx, "db_objects")
 			continue
 		}
-		hits, err := scanDBObjects(account, creds)
+		var installFindings []alert.Finding
+		hits, err := dbObjectScanner(account, creds)
 		if err != nil {
 			markCheckIncomplete(ctx, "db_objects")
 		}
@@ -150,7 +151,7 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 			if !h.IsMalw && allowlist[allowlistKey(h)] {
 				continue
 			}
-			findings = append(findings, h.toFinding())
+			installFindings = append(installFindings, h.toFinding())
 		}
 		// Retro-scan: when a trigger gates a privileged action on a
 		// secret token in display_name, find users whose display_name
@@ -160,19 +161,34 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 			if h.Kind != dbObjectTrigger {
 				continue
 			}
-			tokens := extractMagicTokens(h.Body)
+			tokens := magicTokensOf(h.Body)
 			if len(tokens) == 0 {
 				continue
 			}
-			tokenFindings, err := scanMagicTokenUsers(account, creds.dbName, creds.tablePrefix, tokens)
+			tokenFindings, err := magicTokenScanner(account, creds.dbName, creds.tablePrefix, tokens)
 			if err != nil {
 				markCheckIncomplete(ctx, "db_objects")
 			}
-			findings = append(findings, tokenFindings...)
+			installFindings = append(installFindings, tokenFindings...)
 		}
+		// The display label may be a lookup sentinel; only a resolved
+		// account root owner is stamped, per install, before merging.
+		owner, ok := installOwner(wpConfig)
+		if ok {
+			installFindings = stampTenantIDIfEmpty(installFindings, owner)
+		}
+		findings = append(findings, installFindings...)
 	}
 	return findings
 }
+
+// Per-install scan boundaries. Tests replace them with inert scanners to
+// prove ownership stamping for every finding name the check owns.
+var (
+	dbObjectScanner   = scanDBObjects
+	magicTokenScanner = scanMagicTokenUsers
+	magicTokensOf     = extractMagicTokens
+)
 
 // scanDBObjects runs the three INFORMATION_SCHEMA queries and
 // classifies every row. Pure function over the cmdExec injector --

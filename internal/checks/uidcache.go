@@ -13,15 +13,16 @@ import (
 // in-memory map. Process-lifetime: callers that need fresh data after a
 // useradd should call Refresh().
 type uidCache struct {
-	path string
-	mu   sync.RWMutex
-	m    map[uint32]string
+	path  string
+	mu    sync.RWMutex
+	m     map[uint32]string
+	homes map[string]string
 }
 
 var defaultUIDCache = newUIDCache("/etc/passwd")
 
 func newUIDCache(path string) *uidCache {
-	return &uidCache{path: path, m: map[uint32]string{}}
+	return &uidCache{path: path, m: map[uint32]string{}, homes: map[string]string{}}
 }
 
 // LookupUser returns the username for uid, or "uid:<n>" if not resolvable.
@@ -38,6 +39,10 @@ func swapDefaultUIDCacheForTest(path string) func() {
 	defaultUIDCache = newUIDCache(path)
 	return func() { defaultUIDCache = prev }
 }
+
+// SwapUIDCacheForTest is the exported form of swapDefaultUIDCacheForTest for
+// packages whose producers resolve uids through LookupUser.
+func SwapUIDCacheForTest(path string) func() { return swapDefaultUIDCacheForTest(path) }
 
 func (c *uidCache) Lookup(uid uint32) string {
 	c.mu.RLock()
@@ -65,7 +70,26 @@ func (c *uidCache) Lookup(uid uint32) string {
 func (c *uidCache) Refresh() {
 	c.mu.Lock()
 	c.m = map[uint32]string{}
+	c.homes = map[string]string{}
 	c.mu.Unlock()
+}
+
+// HomeDir returns the home directory recorded for name, or "" when the user
+// is unknown. Producers use it to tell a hosting account from a system user.
+func (c *uidCache) HomeDir(name string) string {
+	c.mu.RLock()
+	home, ok := c.homes[name]
+	c.mu.RUnlock()
+	if ok {
+		return home
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if home, ok := c.homes[name]; ok {
+		return home
+	}
+	c.parseLocked()
+	return c.homes[name]
 }
 
 // parseLocked replaces the cache contents with a fresh scan. Caller holds the
@@ -76,7 +100,7 @@ func (c *uidCache) parseLocked() {
 		return
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.SplitN(line, ":", 4)
+		fields := strings.SplitN(line, ":", 7)
 		if len(fields) < 3 {
 			continue
 		}
@@ -85,5 +109,8 @@ func (c *uidCache) parseLocked() {
 			continue
 		}
 		c.m[uint32(uid64)] = fields[0]
+		if len(fields) >= 6 {
+			c.homes[fields[0]] = fields[5]
+		}
 	}
 }

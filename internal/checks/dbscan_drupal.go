@@ -100,6 +100,40 @@ func (c drupalCreds) asWPDBCreds() wpDBCreds {
 // without sharing code -- the credential layout and table set are
 // distinct enough that a generic dispatcher would be more
 // abstraction than a 4-CMS pipeline calls for.
+// scanDrupalInstall scans one discovered install and stamps its findings
+// with the owner resolved from the settings path. The display label stays
+// as before; an install outside every account root is not stamped.
+func scanDrupalInstall(ctx context.Context, path string, store *state.Store) []alert.Finding {
+	// public_html is three dirs up from sites/default/settings.php.
+	publicHTML := filepath.Dir(filepath.Dir(filepath.Dir(path)))
+	matched, err := looksLikeDrupal8Plus(publicHTML)
+	if err != nil {
+		markCheckIncomplete(ctx, "db_content_drupal")
+		return nil
+	}
+	if !matched {
+		return nil
+	}
+	// /home/<account> is one level above public_html.
+	account := extractUser(filepath.Dir(publicHTML))
+	creds, err := parseDrupalSettings(ctx, path)
+	if err != nil || creds.dbName == "" || creds.dbUser == "" {
+		markCheckIncomplete(ctx, "db_content_drupal")
+		return nil
+	}
+	creds.ctx = ctx
+	creds.queryFailed = new(bool)
+
+	var findings []alert.Finding
+	findings = append(findings, scanDrupalConfig(account, creds)...)
+	findings = append(findings, scanDrupalContent(account, creds)...)
+	findings = append(findings, scanDrupalAdmins(store, account, creds)...)
+	if owner, ok := installOwner(path); ok {
+		findings = stampTenantIDIfEmpty(findings, owner)
+	}
+	return findings
+}
+
 func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
@@ -117,29 +151,7 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.St
 		if ctx.Err() != nil {
 			return findings
 		}
-		// public_html is three dirs up from sites/default/settings.php.
-		publicHTML := filepath.Dir(filepath.Dir(filepath.Dir(path)))
-		matched, err := looksLikeDrupal8Plus(publicHTML)
-		if err != nil {
-			markCheckIncomplete(ctx, "db_content_drupal")
-			continue
-		}
-		if !matched {
-			continue
-		}
-		// /home/<account> is one level above public_html.
-		account := extractUser(filepath.Dir(publicHTML))
-		creds, err := parseDrupalSettings(ctx, path)
-		if err != nil || creds.dbName == "" || creds.dbUser == "" {
-			markCheckIncomplete(ctx, "db_content_drupal")
-			continue
-		}
-		creds.ctx = ctx
-		creds.queryFailed = new(bool)
-
-		findings = append(findings, scanDrupalConfig(account, creds)...)
-		findings = append(findings, scanDrupalContent(account, creds)...)
-		findings = append(findings, scanDrupalAdmins(store, account, creds)...)
+		findings = append(findings, scanDrupalInstall(ctx, path, store)...)
 	}
 	return findings
 }

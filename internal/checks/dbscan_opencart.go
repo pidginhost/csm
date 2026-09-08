@@ -75,6 +75,43 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 // four canonical attacker-touched tables. Mirrors the other CMS
 // scanners; the discovery and credentials parsing are the only
 // OC-specific bits.
+// scanOpenCartInstall scans one discovered install and stamps its findings
+// with the owner resolved from the configuration path. The display label
+// stays as before; an install outside every account root is not stamped.
+func scanOpenCartInstall(ctx context.Context, path string, store *state.Store) []alert.Finding {
+	matched, err := looksLikeOpenCart(ctx, path)
+	if err != nil {
+		markCheckIncomplete(ctx, "db_content_opencart")
+		return nil
+	}
+	if !matched {
+		return nil
+	}
+	account := extractUser(filepath.Dir(path))
+	creds, err := parseOpenCartConfig(ctx, path)
+	if err != nil || creds.dbName == "" || creds.dbUser == "" {
+		markCheckIncomplete(ctx, "db_content_opencart")
+		return nil
+	}
+	creds.ctx = ctx
+	creds.queryFailed = new(bool)
+	prefix := creds.dbPrefix
+	if prefix == "" {
+		prefix = "oc_"
+	}
+	creds.dbPrefix = prefix
+
+	var findings []alert.Finding
+	findings = append(findings, scanOpenCartSettings(account, creds)...)
+	findings = append(findings, scanOpenCartContentTable(account, creds, "product_description", "description")...)
+	findings = append(findings, scanOpenCartContentTable(account, creds, "information_description", "description")...)
+	findings = append(findings, scanOpenCartAdmins(store, account, creds)...)
+	if owner, ok := installOwner(path); ok {
+		findings = stampTenantIDIfEmpty(findings, owner)
+	}
+	return findings
+}
+
 func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
@@ -92,32 +129,7 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.
 		if ctx.Err() != nil {
 			return findings
 		}
-		matched, err := looksLikeOpenCart(ctx, path)
-		if err != nil {
-			markCheckIncomplete(ctx, "db_content_opencart")
-			continue
-		}
-		if !matched {
-			continue
-		}
-		account := extractUser(filepath.Dir(path))
-		creds, err := parseOpenCartConfig(ctx, path)
-		if err != nil || creds.dbName == "" || creds.dbUser == "" {
-			markCheckIncomplete(ctx, "db_content_opencart")
-			continue
-		}
-		creds.ctx = ctx
-		creds.queryFailed = new(bool)
-		prefix := creds.dbPrefix
-		if prefix == "" {
-			prefix = "oc_"
-		}
-		creds.dbPrefix = prefix
-
-		findings = append(findings, scanOpenCartSettings(account, creds)...)
-		findings = append(findings, scanOpenCartContentTable(account, creds, "product_description", "description")...)
-		findings = append(findings, scanOpenCartContentTable(account, creds, "information_description", "description")...)
-		findings = append(findings, scanOpenCartAdmins(store, account, creds)...)
+		findings = append(findings, scanOpenCartInstall(ctx, path, store)...)
 	}
 	return findings
 }

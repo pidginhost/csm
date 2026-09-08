@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/store"
@@ -160,6 +161,9 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 		)
 
 		mailbox, domain, tenant := splitMailAccount(user)
+		if tenant == "" {
+			tenant = checks.MailOwner(domain)
+		}
 		findings = append(findings, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "email_cloud_relay_abuse",
