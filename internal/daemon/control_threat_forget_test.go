@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,78 @@ import (
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/store"
 )
+
+func TestHandleThreatForgetRemovesLegacyAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name, legacy, canonical string
+		mixed                   bool
+	}{
+		{"IPv6 legacy only", "2001:0DB8:0000:0000:0000:0000:0000:0023", "2001:db8::23", false},
+		{"IPv6 mixed aliases", "2001:0DB8:0000:0000:0000:0000:0000:0023", "2001:db8::23", true},
+		{"mapped IPv4 legacy only", "::ffff:198.51.100.23", "198.51.100.23", false},
+		{"mapped IPv4 mixed aliases", "::ffff:198.51.100.23", "198.51.100.23", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			legacy, canonical := tc.legacy, tc.canonical
+			dir := t.TempDir()
+			sdb, err := store.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			previousStore := store.Global()
+			store.SetGlobal(sdb)
+			t.Cleanup(func() { store.SetGlobal(previousStore); _ = sdb.Close() })
+			if err := os.MkdirAll(filepath.Join(dir, "threat_db"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "threat_db", "permanent.txt"), []byte(legacy+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			db := attackdb.NewForTest(nil)
+			previousDB := attackdb.Global()
+			attackdb.SetGlobal(db)
+			t.Cleanup(func() { attackdb.SetGlobal(previousDB) })
+			if n := db.SeedFromPermanentBlocklist(dir); n != 1 {
+				t.Fatalf("imported %d legacy records, want 1", n)
+			}
+			wantEvents, wantScore := 1, 50
+			if tc.mixed {
+				for i := 0; i < 20; i++ {
+					for _, check := range []string{"webshell", "user_outbound_connection"} {
+						db.RecordFinding(alert.Finding{Check: check, SourceIP: canonical, Timestamp: time.Now()})
+					}
+				}
+				wantEvents, wantScore = 41, 95
+			}
+			db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "2001:db8::24", Timestamp: time.Now()})
+			if err := db.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := newListenerForTest(t).handleThreatForget([]byte(`{"ip":"` + legacy + `"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := raw.(control.ThreatForgetResult)
+			if !res.Found || res.IP != canonical || res.Events != wantEvents || res.Score != wantScore {
+				t.Fatalf("removed aliases: %+v, want %d events and score %d", res, wantEvents, wantScore)
+			}
+			for _, ip := range []string{legacy, canonical} {
+				if _, found := sdb.LoadIPRecord(ip); found || db.LookupIP(ip) != nil {
+					t.Fatalf("alias %s survived forget", ip)
+				}
+			}
+			if events := db.QueryEvents(legacy, 100); len(events) != 1 || events[0].CheckName != "permanent_blocklist_import" {
+				t.Fatalf("legacy event history changed: %+v", events)
+			}
+			if events := db.QueryEvents(canonical, 100); len(events) != wantEvents-1 {
+				t.Fatalf("canonical event history = %d, want %d", len(events), wantEvents-1)
+			}
+			if rec, found := sdb.LoadIPRecord("2001:db8::24"); !found || rec.EventCount != 1 || db.LookupIP("2001:db8::24") == nil {
+				t.Fatal("forget changed an unrelated record")
+			}
+		})
+	}
+}
 
 func TestHandleThreatForgetCanonicalizesIP(t *testing.T) {
 	for _, tc := range []struct{ input, canonical string }{

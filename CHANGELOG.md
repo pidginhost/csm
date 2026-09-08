@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Clearing a local threat score now handles equivalent IP address spellings and concurrent requests correctly. Extra command arguments are rejected before any record is cleared.
+- Clearing a local threat score now handles equivalent stored IP address spellings and concurrent requests correctly, including overlapping saves. Extra command arguments are rejected before any record is cleared.
 - The attack database no longer reads or writes state files when it has no configured directory. It previously resolved to a relative path and used whatever directory the process was started from.
 
 ## [3.35.0] - 2026-09-08

@@ -59,8 +59,9 @@ address's accumulated local threat score. It accepts exactly one IPv4 or IPv6
 address, including equivalent IPv6 spellings; CIDRs and extra arguments are
 rejected. There is no dry-run option.
 
-The command reports the score and event count removed. Blocks, allow lists,
-whitelists and raw event history remain intact. New findings immediately
+The command clears equivalent stored spellings together and reports their
+highest score and total event count. Blocks, allow lists, whitelists and raw
+event history remain intact. New findings immediately
 start a fresh scoring record, even if they arrive while the command runs.
 This does not suppress findings about the host's own address.
 

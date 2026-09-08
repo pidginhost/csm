@@ -148,6 +148,7 @@ type IPRecord struct {
 
 // DB is the in-memory attack database backed by JSON files.
 type DB struct {
+	flushMu       sync.Mutex
 	mu            sync.RWMutex
 	records       map[string]*IPRecord
 	deletedIPs    map[string]struct{}
@@ -436,6 +437,11 @@ func (db *DB) TopAttackers(n int) []*IPRecord {
 
 // Flush saves all pending data to disk. Called on daemon shutdown.
 func (db *DB) Flush() error {
+	// Keep snapshots and disk writes in the same order. A command can flush
+	// alongside the background saver; an older write must not undo its delete.
+	db.flushMu.Lock()
+	defer db.flushMu.Unlock()
+
 	db.mu.Lock()
 	events := db.pendingEvents
 	db.pendingEvents = nil
@@ -582,16 +588,29 @@ func tracksSustainedBruteScore(check string) bool {
 	return check == "email_auth_failure_realtime"
 }
 
-// RemoveIP removes an IP's scoring record and returns the removed record, or
-// nil if it was absent. Event history is retained. The returned record is no
-// longer shared with the database, so new findings cannot change it.
-func (db *DB) RemoveIP(ip string) *IPRecord {
+// RemoveIP removes an IP from the attack database entirely.
+func (db *DB) RemoveIP(ip string) {
 	db.mu.Lock()
-	rec := db.records[ip]
 	delete(db.records, ip)
 	db.markDeletedLocked(ip)
 	db.mu.Unlock()
-	return rec
+}
+
+// ForgetIP atomically removes all scoring records for a parsed IP, including
+// legacy imports stored under equivalent spellings. Event history is retained.
+// The returned records are detached, so later findings cannot change them.
+func (db *DB) ForgetIP(ip net.IP) []*IPRecord {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	var removed []*IPRecord
+	for key, rec := range db.records {
+		if ip.Equal(net.ParseIP(key)) {
+			removed = append(removed, rec)
+			delete(db.records, key)
+			db.markDeletedLocked(key)
+		}
+	}
+	return removed
 }
 
 // PruneExpired removes records older than 90 days.

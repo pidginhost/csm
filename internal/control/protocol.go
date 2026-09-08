@@ -237,6 +237,8 @@ type FirewallAckResult struct {
 // actually removed. Found distinguishes "cleared a stale record" from
 // "there was nothing to clear", which the operator cannot otherwise tell
 // apart and which decides whether the alert will stop.
+// If legacy spellings created multiple records for the same address, Events
+// is their total event count and Score is the highest removed record's score.
 type ThreatForgetResult struct {
 	IP      string `json:"ip"`
 	Found   bool   `json:"found"`

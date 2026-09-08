@@ -39,10 +39,10 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 	// Read and remove under one lock so concurrent requests cannot claim
 	// the same record, or report counts from before a concurrent finding.
 	res := control.ThreatForgetResult{IP: args.IP}
-	if rec := adb.RemoveIP(args.IP); rec != nil {
+	for _, rec := range adb.ForgetIP(ip) {
 		res.Found = true
-		res.Score = attackdb.ComputeScore(rec)
-		res.Events = rec.EventCount
+		res.Score = max(res.Score, attackdb.ComputeScore(rec))
+		res.Events += rec.EventCount
 	}
 
 	if !res.Found {
