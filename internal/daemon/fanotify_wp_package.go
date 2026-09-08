@@ -7,7 +7,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/wpcheck"
@@ -69,6 +72,11 @@ func parseWPStagedPackage(path string) wpStagedPackage {
 	if idx < 0 {
 		return wpStagedPackage{}
 	}
+	// An installed plugin may ship upgrade-layout fixtures. Its outer root
+	// owns those files, just as it does when wpcheck describes their manifest.
+	if root, _ := wpcheck.DetectPluginRoot(path); root != "" && len(root) <= idx {
+		return wpStagedPackage{}
+	}
 	rest := path[idx+len(marker):]
 	pkg, inner, ok := strings.Cut(rest, "/")
 	if !ok || pkg == "" {
@@ -109,7 +117,16 @@ type stagedPackageFile struct {
 	procInfo string
 	v        wpcheck.Verification
 	pkg      wpStagedPackage
+	key      stagedPackageKey
 	queuedAt time.Time
+}
+
+// A pathname can be reused by a later unpack. Retained headers only belong
+// to the tree whose directory identity was observed with the queued file.
+type stagedPackageKey struct {
+	root string
+	dev  uint64
+	ino  uint64
 }
 
 // stagedPackageInfo is what the directory-level finding says about a package.
@@ -117,9 +134,7 @@ type stagedPackageFile struct {
 // rollback copy is still on disk.
 type stagedPackageInfo struct {
 	installed bool
-	kind      wpcheck.PackageKind
-	slug      string
-	version   string
+	identity  wpcheck.Verification
 	lastSeen  time.Time
 }
 
@@ -127,76 +142,88 @@ type stagedPackageQueue struct {
 	mu       sync.Mutex
 	limit    int
 	files    []stagedPackageFile
-	packages map[string]stagedPackageInfo
+	inFlight int
+	packages map[stagedPackageKey]stagedPackageInfo
 }
 
 func newStagedPackageQueue(limit int) *stagedPackageQueue {
-	return &stagedPackageQueue{limit: limit, packages: make(map[string]stagedPackageInfo)}
+	return &stagedPackageQueue{limit: limit, packages: make(map[stagedPackageKey]stagedPackageInfo)}
 }
 
 func (q *stagedPackageQueue) pendingCount() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.files)
+	return len(q.files) + q.inFlight
 }
 
 // note records a package the analyzer saw a file of and returns its info,
 // resolving installed-ness on first sight and the identity as soon as a
 // description carries one.
-func (q *stagedPackageQueue) note(pkg wpStagedPackage, v wpcheck.Verification, now time.Time) stagedPackageInfo {
+func (q *stagedPackageQueue) note(pkg wpStagedPackage, v wpcheck.Verification, now time.Time) (stagedPackageKey, stagedPackageInfo) {
+	key := stagedPackageKey{root: pkg.dir + "/" + pkg.unpacked}
+	// Use the identity captured with the header, before content scanning:
+	// by now WordPress may already have renamed or replaced this pathname.
+	if v.RootInfo != nil && v.Root == key.root {
+		if st, ok := v.RootInfo.Sys().(*syscall.Stat_t); ok {
+			key.dev, key.ino = st.Dev, st.Ino
+		}
+	}
+	return key, q.record(pkg, key, v, now)
+}
+
+func (q *stagedPackageQueue) record(pkg wpStagedPackage, key stagedPackageKey, v wpcheck.Verification, now time.Time) stagedPackageInfo {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	info, ok := q.packages[pkg.dir]
+	info, ok := q.packages[key]
 	if !ok {
 		info.installed = wpPackageInstalled(pkg.wpRoot, pkg.unpacked)
 	}
-	if v.Kind != wpcheck.KindNone {
-		info.kind = v.Kind
-	}
-	if v.Slug != "" {
-		info.slug = v.Slug
-	}
-	if v.Version != "" {
-		info.version = v.Version
+	if v.Kind != wpcheck.KindNone && (info.identity.Kind == wpcheck.KindNone || v.Version != "" ||
+		(v.Kind == wpcheck.KindTheme && info.identity.Version == "")) {
+		info.identity = v
+		info.identity.Rel, info.identity.Digest = "", ""
+		// Drains can discover the header at its installed location. Keep
+		// its identity tied to the original tree for other queued files.
+		info.identity.Root = key.root
 	}
 	info.lastSeen = now
-	q.packages[pkg.dir] = info
+	q.packages[key] = info
 	return info
 }
 
-func (q *stagedPackageQueue) info(dir string) stagedPackageInfo {
+func (q *stagedPackageQueue) info(key stagedPackageKey) stagedPackageInfo {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.packages[dir]
+	return q.packages[key]
 }
 
 func (q *stagedPackageQueue) push(f stagedPackageFile) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.files) >= q.limit {
+	if len(q.files)+q.inFlight >= q.limit {
 		return false
 	}
 	q.files = append(q.files, f)
 	return true
 }
 
-// take hands every queued file to the caller, which requeues the ones still
-// waiting. Files queued while a drain runs are appended after them.
+// take hands every queued file to the single drain loop, which requeues the
+// ones still waiting. Reserve their capacity until requeue completes; new
+// arrivals must not overfill the queue while the slice is detached.
 func (q *stagedPackageQueue) take() []stagedPackageFile {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	files := q.files
 	q.files = nil
+	q.inFlight = len(files)
 	return files
 }
 
 func (q *stagedPackageQueue) requeue(files []stagedPackageFile) {
-	if len(files) == 0 {
-		return
-	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.files = append(files, q.files...)
+	q.inFlight = 0
 }
 
 func (q *stagedPackageQueue) evictIdle(now time.Time) {
@@ -228,13 +255,14 @@ func (fm *FileMonitor) handleStagedPackageFile(path string, v wpcheck.Verificati
 	}
 	now := time.Now()
 	q := fm.stagedPackages()
-	info := q.note(pkg, v, now)
+	key, info := q.note(pkg, v, now)
 
 	switch v.Verdict {
+	case wpcheck.VerdictVerified:
 	case wpcheck.VerdictMismatch, wpcheck.VerdictUnverifiable:
 		fm.alertStagedFileMismatch(path, pkg, v, procInfo)
 	case wpcheck.VerdictPending, wpcheck.VerdictNoVersion, wpcheck.VerdictReady:
-		if !q.push(stagedPackageFile{path: path, procInfo: procInfo, v: v, pkg: pkg, queuedAt: now}) {
+		if !q.push(stagedPackageFile{path: path, procInfo: procInfo, v: v, pkg: pkg, key: key, queuedAt: now}) {
 			fm.alertStagedPackage(pkg, info, "verification queue full", procInfo)
 		}
 	default:
@@ -254,12 +282,12 @@ func stagedPackageReason(v wpcheck.Verification) string {
 }
 
 func stagedPackageWhat(info stagedPackageInfo, pkg wpStagedPackage) string {
-	name := info.slug
+	name := info.identity.Slug
 	if name == "" {
 		name = pkg.unpacked
 	}
 	var what string
-	switch info.kind {
+	switch info.identity.Kind {
 	case wpcheck.KindCore:
 		what = "WordPress core"
 	case wpcheck.KindPlugin:
@@ -269,8 +297,8 @@ func stagedPackageWhat(info stagedPackageInfo, pkg wpStagedPackage) string {
 	default:
 		what = "package " + name
 	}
-	if info.version != "" {
-		what += " " + info.version
+	if info.identity.Version != "" {
+		what += " " + info.identity.Version
 	}
 	return what
 }
@@ -282,11 +310,11 @@ func (fm *FileMonitor) alertStagedPackage(pkg wpStagedPackage, info stagedPackag
 	what := stagedPackageWhat(info, pkg)
 	state := "new install"
 	if info.installed {
-		state = "updates installed " + strings.TrimSuffix(what, " "+info.version)
+		state = "updates installed " + strings.TrimSuffix(what, " "+info.identity.Version)
 	}
 	fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
 		fmt.Sprintf("WordPress package staged, not verified against wordpress.org: %s", pkg.dir),
-		fmt.Sprintf("%s; %s; %s. Every staged file was content-scanned and none was flagged.", what, state, reason),
+		fmt.Sprintf("%s; %s; %s. Content findings are reported separately for individual files.", what, state, reason),
 		pkg.dir, procInfo)
 }
 
@@ -332,7 +360,7 @@ func (fm *FileMonitor) alertStagedFileMismatch(stagedPath string, pkg wpStagedPa
 	details := "Content rules found nothing. The file differs from the official package or is not part of it."
 	if v.Verdict == wpcheck.VerdictUnverifiable {
 		message = fmt.Sprintf("Staged file could not be verified against wordpress.org %s: %s", what, reportPath)
-		details = "Content rules found nothing. The file is larger than the hash size cap, so the official checksum could not be compared."
+		details = "Content rules found nothing. The file could not be hashed completely, so the official checksum could not be compared."
 	}
 	if moved {
 		details += fmt.Sprintf(" Staged at %s, since installed.", stagedPath)
@@ -345,21 +373,55 @@ func (fm *FileMonitor) alertStagedFileMismatch(stagedPath string, pkg wpStagedPa
 // The digest taken at event time is kept: a rename does not change content,
 // and a later write is a new event.
 func (fm *FileMonitor) redescribeStaged(f stagedPackageFile) wpcheck.Verification {
+	// A later event may have identified this same tree before WordPress
+	// removed it. Prefer that header to an installed copy that may still be
+	// the old release; never borrow an identity from a sibling unpacked tree.
+	identity := fm.stagedPackages().info(f.key).identity
+	if f.key.ino != 0 && identity.Root == f.v.Root && identity.Version != "" {
+		identity.Rel, identity.Digest = f.v.Rel, f.v.Digest
+		// Another file's comparison result says nothing about this digest.
+		if identity.Kind == wpcheck.KindCore || identity.Kind == wpcheck.KindPlugin {
+			identity.Verdict = wpcheck.VerdictPending
+		}
+		return identity
+	}
 	unresolved := func(v wpcheck.Verification) bool {
 		return v.Verdict == wpcheck.VerdictNoVersion || v.Verdict == wpcheck.VerdictUnknown
 	}
+	var st unix.Stat_t
+	err := unix.Lstat(f.v.Root, &st)
+	if err == nil && (f.key.ino == 0 || st.Dev != f.key.dev || st.Ino != f.key.ino) {
+		return f.v // a replacement tree cannot identify an older event
+	}
 	v := fm.wpCache.Describe(f.path)
-	if unresolved(v) {
-		if installed := stagedFileInstalledPath(f.pkg, f.v); installed != "" && pathPresent(installed) {
-			if iv := fm.wpCache.Describe(installed); !unresolved(iv) {
-				v = iv
-			}
+	if !unresolved(v) {
+		if f.v.RootInfo == nil || v.RootInfo == nil || !os.SameFile(f.v.RootInfo, v.RootInfo) {
+			return f.v // the tree changed during header detection
+		}
+		v.Digest = f.v.Digest
+		return v
+	}
+	// The drain tick can fall during unpacking. An installed header is
+	// still the old release until the staged tree has gone away.
+	if !os.IsNotExist(err) {
+		return f.v
+	}
+	if installed := stagedFileInstalledPath(f.pkg, f.v); installed != "" {
+		// Extra root files and bundled plugins are still paths in the
+		// core manifest. Resolve its header without reclassifying them
+		// from their installed filenames.
+		if f.v.Kind == wpcheck.KindCore {
+			installed = f.pkg.wpRoot + "/wp-includes/version.php"
+		}
+		if iv := fm.wpCache.Describe(installed); !unresolved(iv) {
+			v = iv
+			v.Rel = f.v.Rel
 		}
 	}
 	if unresolved(v) {
 		return f.v
 	}
-	v.Digest = f.v.Digest
+	v.Digest, v.Staged = f.v.Digest, true
 	return v
 }
 
@@ -377,7 +439,7 @@ func (fm *FileMonitor) drainStagedPackages(now time.Time) {
 		v := f.v
 		if v.Verdict == wpcheck.VerdictNoVersion || v.Version == "" {
 			v = fm.redescribeStaged(f)
-			q.note(f.pkg, v, now)
+			q.record(f.pkg, f.key, v, now)
 		}
 		verdict := v.Verdict
 		if verdict == wpcheck.VerdictPending || verdict == wpcheck.VerdictReady {
@@ -390,14 +452,14 @@ func (fm *FileMonitor) drainStagedPackages(now time.Time) {
 			fm.alertStagedFileMismatch(f.path, f.pkg, v, f.procInfo)
 		case wpcheck.VerdictPending, wpcheck.VerdictNoVersion, wpcheck.VerdictReady:
 			if now.Sub(f.queuedAt) > stagedPackageTimeout {
-				fm.alertStagedPackage(f.pkg, q.info(f.pkg.dir),
+				fm.alertStagedPackage(f.pkg, q.info(f.key),
 					fmt.Sprintf("checksums not fetched within %s", stagedPackageTimeout), f.procInfo)
 				continue
 			}
 			f.v = v
 			keep = append(keep, f)
 		default:
-			fm.alertStagedPackage(f.pkg, q.info(f.pkg.dir), stagedPackageReason(v), f.procInfo)
+			fm.alertStagedPackage(f.pkg, q.info(f.key), stagedPackageReason(v), f.procInfo)
 		}
 	}
 	q.requeue(keep)

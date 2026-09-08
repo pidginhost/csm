@@ -3,8 +3,10 @@
 package daemon
 
 import (
+	"crypto/md5" // #nosec G501 -- official WordPress core checksum format
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +35,12 @@ type fakeWPVerifier struct {
 func (f *fakeWPVerifier) Describe(path string) wpcheck.Verification {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.describe(path)
+	v := f.describe(path)
+	if v.RootInfo == nil {
+		v.RootInfo, _ = os.Lstat(v.Root)
+	}
+	v.Staged = parseWPStagedPackage(path).dir != ""
+	return v
 }
 
 func (f *fakeWPVerifier) Verify(v wpcheck.Verification) wpcheck.Verdict {
@@ -377,6 +384,8 @@ func TestParseWPStagedPackageShapes(t *testing.T) {
 		{"package directory with no unpacked tree", upgrade + "/cookie-law-info.3.5.5/loose.php", "", ""},
 		{"rollback backup is not staging", "/home/u/public_html/wp-content/upgrade-temp-backup/plugins/x/loader.php", "", ""},
 		{"installed plugin", "/home/u/public_html/wp-content/plugins/x/loader.php", "", ""},
+		{"installed plugin upgrade fixture", "/home/u/public_html/wp-content/plugins/x/fixtures/wp-content/upgrade/package/inner/loader.php", "", ""},
+		{"staged core bundled plugin", upgrade + "/core/wordpress/wp-content/plugins/x/loader.php", upgrade + "/core", "wordpress"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -436,5 +445,401 @@ func TestCachedPathExistsRetriesNegativeSoon(t *testing.T) {
 	}
 	if !cachedPathExists(path) {
 		t.Error("a positive answer keeps the long TTL")
+	}
+}
+
+func TestStagedPackageLateIdentityKeepsDeletedFileDigest(t *testing.T) {
+	for _, kind := range []wpcheck.PackageKind{wpcheck.KindPlugin, wpcheck.KindCore} {
+		for _, source := range []string{"installed-header", "staged-event", "installed-event"} {
+			t.Run(fmt.Sprintf("kind=%d/source=%s", kind, source), func(t *testing.T) {
+				usePackageIdentity := source != "installed-header"
+				wpRoot, staging := stagedPluginFixture(t)
+				slug, rel := "gtm-kit", "inc/deleted.php"
+				installed := filepath.Join(wpRoot, "wp-content", "plugins", slug, rel)
+				if kind == wpcheck.KindCore {
+					slug, rel = "wordpress", "wp-admin/deleted.php"
+					installed = filepath.Join(wpRoot, "wp-includes", "version.php")
+				}
+				staged := filepath.Join(staging, slug, rel)
+				initial := wpcheck.Verification{Verdict: wpcheck.VerdictNoVersion, Kind: kind, Root: filepath.Join(staging, slug), Slug: slug, Rel: rel, Digest: strings.Repeat("a", 64), Staged: true}
+				if kind == wpcheck.KindCore {
+					initial.Digest = strings.Repeat("a", 32)
+				}
+				resolved := initial
+				resolved.Verdict, resolved.Version, resolved.Locale = wpcheck.VerdictReady, "7.1", "ro_RO"
+				if source != "staged-event" {
+					resolved.Root = strings.TrimSuffix(installed, "/"+rel)
+					if kind == wpcheck.KindCore {
+						resolved.Root, resolved.Rel = wpRoot, "wp-includes/version.php"
+					}
+				}
+				ready, compared := false, false
+				fake := &fakeWPVerifier{
+					describe: func(path string) wpcheck.Verification {
+						if ready && path == installed {
+							v := resolved
+							if usePackageIdentity {
+								v.Version = "6.9" // the installed copy may still be the old release
+							}
+							return v
+						}
+						return wpcheck.Verification{Verdict: wpcheck.VerdictUnknown}
+					},
+					verify: func(v wpcheck.Verification) wpcheck.Verdict {
+						compared = true
+						if v.Digest != initial.Digest || v.Rel != rel || v.Kind != kind || v.Locale != resolved.Locale || v.Version != resolved.Version || !v.Staged {
+							t.Errorf("verification lost event identity: %+v", v)
+						}
+						return wpcheck.VerdictMismatch
+					},
+				}
+				fm, ch := newStagedPackageMonitor(t, fake)
+				if err := os.MkdirAll(initial.Root, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				initial.RootInfo, _ = os.Lstat(initial.Root)
+				resolved.RootInfo = initial.RootInfo
+				fm.handleStagedPackageFile(staged, initial, "")
+				fm.drainStagedPackages(time.Now())
+				if fm.stagedPackages().pendingCount() != 1 || compared {
+					t.Fatal("unresolved entry was not kept waiting")
+				}
+				ready = true
+				if usePackageIdentity {
+					// Another file carried the header before the package disappeared.
+					resolved.Verdict = wpcheck.VerdictVerified
+					pkg := parseWPStagedPackage(staged)
+					key, _ := fm.stagedPackages().note(pkg, initial, time.Now())
+					fm.stagedPackages().record(pkg, key, resolved, time.Now())
+				}
+				if err := os.RemoveAll(initial.Root); err != nil {
+					t.Fatal(err)
+				}
+				fm.drainStagedPackages(time.Now())
+				got := drainFindings(ch)
+				if !compared || len(got) != 1 || got[0].FilePath != staged || fm.stagedPackages().pendingCount() != 0 {
+					t.Fatalf("deleted mismatch: compared=%v findings=%+v pending=%d", compared, got, fm.stagedPackages().pendingCount())
+				}
+			})
+		}
+	}
+}
+
+func TestStagedPackageQueueCountsDrainingFiles(t *testing.T) {
+	q := newStagedPackageQueue(2)
+	if !q.push(stagedPackageFile{path: "first"}) {
+		t.Fatal("first push rejected")
+	}
+	files := q.take()
+	var workers sync.WaitGroup
+	accepted := make(chan string, 16)
+	for i := range 16 {
+		workers.Go(func() {
+			path := fmt.Sprintf("worker-%d", i)
+			if q.push(stagedPackageFile{path: path}) {
+				accepted <- path
+			}
+		})
+	}
+	workers.Wait()
+	close(accepted)
+	want := map[string]bool{"first": true}
+	for path := range accepted {
+		want[path] = true
+	}
+	if len(want) != 2 {
+		t.Errorf("accepted %d total entries with limit 2 while draining", len(want))
+	}
+	q.requeue(files)
+	got := q.take()
+	if len(got) != len(want) || got[0].path != "first" {
+		t.Fatalf("requeue lost entries or order: %+v, want %v", got, want)
+	}
+	for _, f := range got {
+		if !want[f.path] {
+			t.Errorf("duplicate or unexpected entry %s", f.path)
+		}
+		delete(want, f.path)
+	}
+	if len(want) != 0 {
+		t.Errorf("lost entries: %v", want)
+	}
+	q.requeue(nil)
+	if !q.push(stagedPackageFile{path: "after-drain"}) {
+		t.Error("completed drain did not release capacity")
+	}
+}
+
+func TestStagedPackageIdentityCannotComeFromSiblingTree(t *testing.T) {
+	_, staging := stagedPluginFixture(t)
+	path := filepath.Join(staging, "gtm-kit", "extra.php")
+	fake := &fakeWPVerifier{
+		describe: func(string) wpcheck.Verification { return wpcheck.Verification{Verdict: wpcheck.VerdictUnknown} },
+		verify: func(wpcheck.Verification) wpcheck.Verdict {
+			t.Error("unidentified file borrowed a sibling's package identity")
+			return wpcheck.VerdictVerified
+		},
+	}
+	fm, ch := newStagedPackageMonitor(t, fake)
+	v := wpcheck.Verification{Verdict: wpcheck.VerdictNoVersion, Kind: wpcheck.KindPlugin, Root: filepath.Join(staging, "gtm-kit"), Slug: "gtm-kit", Rel: "extra.php", Digest: strings.Repeat("a", 64)}
+	fm.handleStagedPackageFile(path, v, "")
+	sibling := parseWPStagedPackage(filepath.Join(staging, "other", "other.php"))
+	v.Root, v.Slug, v.Version, v.Verdict = filepath.Join(staging, "other"), "other", "1.0", wpcheck.VerdictVerified
+	fm.stagedPackages().note(sibling, v, time.Now())
+	fm.drainStagedPackages(time.Now())
+	if fm.stagedPackages().pendingCount() != 1 || len(drainFindings(ch)) != 0 {
+		t.Fatal("unidentified file did not remain queued")
+	}
+}
+
+func TestStagedPackageMismatchDoesNotDiscardInertContent(t *testing.T) {
+	for _, body := range []string{"<?php // placeholder\n", "<?php return array('a' => 'b');"} {
+		_, staging := stagedPluginFixture(t)
+		fake := &fakeWPVerifier{
+			describe: describeStagedPlugin(staging, "gtm-kit", "2.18.1", wpcheck.VerdictReady),
+			verify:   func(wpcheck.Verification) wpcheck.Verdict { return wpcheck.VerdictMismatch },
+		}
+		fm, ch := newStagedPackageMonitor(t, fake)
+		path := filepath.Join(staging, "gtm-kit", "extra.php")
+		fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, body)})
+		if got := drainFindings(ch); len(got) != 1 || got[0].FilePath != path {
+			t.Errorf("mismatching inert content findings = %+v, want per-file warning", got)
+		}
+	}
+}
+
+func TestStagedPackageCoreResolvesAfterMoveWithoutStagedHeader(t *testing.T) {
+	for _, rel := range []string{"index.php", "extra.php", "wp-content/plugins/akismet/extra.php"} {
+		t.Run(rel, func(t *testing.T) {
+			wpRoot := filepath.Join(t.TempDir(), "public_html")
+			staging := filepath.Join(wpRoot, "wp-content", "upgrade", "wp_random", "wordpress")
+			path := filepath.Join(staging, rel)
+			cache := wpcheck.NewCache(t.TempDir())
+			stock := cleanStagedPHP
+			sum := md5.Sum([]byte(stock)) // #nosec G401 -- official core digest
+			manifest := map[string]string{rel: hex.EncodeToString(sum[:])}
+			if err := cache.PersistChecksums("7.1", "en_US", nil, manifest); err != nil {
+				t.Fatal(err)
+			}
+			fm, ch := newStagedPackageMonitor(t, cache)
+			// Hash the modified event before either the header or installed copy exists.
+			fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, stock+"// changed\n")})
+			if fm.stagedPackages().pendingCount() != 1 {
+				t.Fatal("staged file was not retained before version.php existed")
+			}
+			installed := filepath.Join(wpRoot, rel)
+			if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path, installed); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(staging); err != nil {
+				t.Fatal(err)
+			}
+			// A replacement at the installed path cannot erase the original mismatch.
+			writeStagedFile(t, installed, stock)
+			writeStagedFile(t, filepath.Join(wpRoot, "wp-includes", "version.php"), "<?php $wp_version = '7.1';")
+			fm.drainStagedPackages(time.Now())
+			got := drainFindings(ch)
+			if len(got) != 1 || got[0].FilePath != installed || !strings.Contains(got[0].Message, "does not match") {
+				t.Fatalf("findings = %+v, want retained core mismatch on %s", got, installed)
+			}
+			if fm.stagedPackages().pendingCount() != 0 {
+				t.Fatal("resolved core mismatch remains queued")
+			}
+		})
+	}
+}
+
+func TestStagedPackageWarningsDoNotInventScanResults(t *testing.T) {
+	_, staging := stagedPluginFixture(t)
+	fm, ch := newStagedPackageMonitor(t, nil)
+	path := filepath.Join(staging, "gtm-kit", "file.php")
+	v := wpcheck.Verification{Verdict: wpcheck.VerdictUnavailable, Kind: wpcheck.KindPlugin, Slug: "gtm-kit", Version: "2.18.1", Rel: "file.php"}
+	fm.handleStagedPackageFile(path, v, "")
+	v.Verdict = wpcheck.VerdictUnverifiable
+	fm.handleStagedPackageFile(path, v, "")
+	got := drainFindings(ch)
+	if len(got) != 2 {
+		t.Fatalf("findings = %+v, want package and file warnings", got)
+	}
+	if strings.Contains(got[0].Details, "none was flagged") {
+		t.Error("one content-clean event cannot declare every file in a package clean")
+	}
+	if strings.Contains(got[1].Details, "larger than") {
+		t.Error("an absent digest does not prove the file exceeds the size cap")
+	}
+}
+
+func TestStagedPackageWaitsForItsOwnRelease(t *testing.T) {
+	for _, oldContent := range []bool{false, true} {
+		t.Run(fmt.Sprint(oldContent), func(t *testing.T) {
+			wpRoot, staging := stagedPluginFixture(t)
+			root := filepath.Join(staging, "wordpress")
+			rel := "wp-admin/file.php"
+			oldBody, newBody := cleanStagedPHP+"// old\n", cleanStagedPHP+"// new\n"
+			cache := wpcheck.NewCache(t.TempDir())
+			for version, body := range map[string]string{"6.9": oldBody, "7.1": newBody} {
+				sum := md5.Sum([]byte(body)) // #nosec G401 -- official core digest
+				if err := cache.PersistChecksums(version, "en_US", nil, map[string]string{rel: hex.EncodeToString(sum[:])}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeStagedFile(t, filepath.Join(wpRoot, "wp-includes/version.php"), "<?php $wp_version = '6.9';")
+			fm, ch := newStagedPackageMonitor(t, cache)
+			body := newBody
+			if oldContent {
+				body = oldBody
+			}
+			path := filepath.Join(root, rel)
+			fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, body)})
+			fm.drainStagedPackages(time.Now())
+			if fm.stagedPackages().pendingCount() != 1 || len(drainFindings(ch)) != 0 {
+				t.Fatal("unfinished staged package was compared against the old installed release")
+			}
+			writeStagedFile(t, filepath.Join(root, "wp-includes/version.php"), "<?php $wp_version = '7.1';")
+			fm.drainStagedPackages(time.Now())
+			got := drainFindings(ch)
+			if oldContent {
+				if len(got) != 1 || got[0].FilePath != path {
+					t.Fatalf("old release content must mismatch the staged release: %+v", got)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("stock new release content must verify: %+v", got)
+			}
+			if fm.stagedPackages().pendingCount() != 0 {
+				t.Fatal("identified package remains queued")
+			}
+		})
+	}
+}
+
+func TestStagedPackageRecreatedTreeCannotReuseIdentity(t *testing.T) {
+	_, staging := stagedPluginFixture(t)
+	root := filepath.Join(staging, "gtm-kit")
+	path := filepath.Join(root, "file.php")
+	writeStagedFile(t, path, cleanStagedPHP)
+	initial := wpcheck.Verification{Verdict: wpcheck.VerdictNoVersion, Kind: wpcheck.KindPlugin, Root: root, Slug: "gtm-kit", Rel: "file.php", Digest: strings.Repeat("a", 64)}
+	old := initial
+	old.RootInfo, _ = os.Lstat(root)
+	old.Verdict, old.Version = wpcheck.VerdictReady, "1.0"
+	fake := &fakeWPVerifier{
+		describe: func(string) wpcheck.Verification { return initial },
+		verify: func(wpcheck.Verification) wpcheck.Verdict {
+			t.Error("replacement tree reused an old package identity")
+			return wpcheck.VerdictVerified
+		},
+	}
+	fm, ch := newStagedPackageMonitor(t, fake)
+	fm.stagedPackages().note(parseWPStagedPackage(path), old, time.Now())
+	if err := os.Rename(root, root+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	writeStagedFile(t, path, cleanStagedPHP)
+	initial.RootInfo, _ = os.Lstat(root)
+	fm.handleStagedPackageFile(path, initial, "")
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	fm.drainStagedPackages(time.Now())
+	if fm.stagedPackages().pendingCount() != 1 || len(drainFindings(ch)) != 0 {
+		t.Fatal("replacement tree did not keep waiting for its own identity")
+	}
+}
+
+func TestStagedPackageRetainsEachUnpackedIdentity(t *testing.T) {
+	_, staging := stagedPluginFixture(t)
+	compared := 0
+	fake := &fakeWPVerifier{
+		describe: func(string) wpcheck.Verification { return wpcheck.Verification{Verdict: wpcheck.VerdictUnknown} },
+		verify: func(v wpcheck.Verification) wpcheck.Verdict {
+			compared++
+			if v.Version != "1.0" || v.Digest != strings.Repeat("a", 64) {
+				t.Errorf("lost file evidence: %+v", v)
+			}
+			return wpcheck.VerdictMismatch
+		},
+	}
+	fm, ch := newStagedPackageMonitor(t, fake)
+	for _, slug := range []string{"one", "two"} {
+		path := filepath.Join(staging, slug, "file.php")
+		writeStagedFile(t, path, cleanStagedPHP)
+		v := wpcheck.Verification{Verdict: wpcheck.VerdictNoVersion, Kind: wpcheck.KindPlugin, Root: filepath.Join(staging, slug), Slug: slug, Rel: "file.php", Digest: strings.Repeat("a", 64)}
+		v.RootInfo, _ = os.Lstat(v.Root)
+		fm.handleStagedPackageFile(path, v, "")
+		v.Version, v.Verdict = "1.0", wpcheck.VerdictReady
+		fm.stagedPackages().note(parseWPStagedPackage(path), v, time.Now())
+	}
+	if err := os.RemoveAll(staging); err != nil {
+		t.Fatal(err)
+	}
+	fm.drainStagedPackages(time.Now())
+	got := drainFindings(ch)
+	if compared != 2 || len(got) != 2 || got[0].FilePath == got[1].FilePath || fm.stagedPackages().pendingCount() != 0 {
+		t.Fatalf("sibling identities overwritten: compared=%d findings=%+v", compared, got)
+	}
+}
+
+func TestStagedPackageMissingGenerationCannotUseRecreatedTree(t *testing.T) {
+	_, staging := stagedPluginFixture(t)
+	root := filepath.Join(staging, "gtm-kit")
+	path := filepath.Join(root, "file.php")
+	v := wpcheck.Verification{Verdict: wpcheck.VerdictNoVersion, Kind: wpcheck.KindPlugin, Root: root, Slug: "gtm-kit", Rel: "file.php", Digest: strings.Repeat("a", 64)}
+	fake := &fakeWPVerifier{
+		describe: func(string) wpcheck.Verification {
+			fresh := v
+			fresh.Verdict, fresh.Version = wpcheck.VerdictReady, "2.0"
+			return fresh
+		},
+		verify: func(wpcheck.Verification) wpcheck.Verdict {
+			t.Error("unidentified old event was verified against a recreated tree")
+			return wpcheck.VerdictVerified
+		},
+	}
+	fm, ch := newStagedPackageMonitor(t, fake)
+	fm.handleStagedPackageFile(path, v, "")
+	writeStagedFile(t, path, cleanStagedPHP)
+	fm.drainStagedPackages(time.Now())
+	if fm.stagedPackages().pendingCount() != 1 || len(drainFindings(ch)) != 0 {
+		t.Fatal("unknown-generation event did not remain pending")
+	}
+}
+
+func TestStagedPackageDescriptionKeepsItsOriginalTree(t *testing.T) {
+	_, staging := stagedPluginFixture(t)
+	root := filepath.Join(staging, "wordpress")
+	path := filepath.Join(root, "file.php")
+	writeStagedFile(t, filepath.Join(root, "wp-includes/version.php"), "<?php $wp_version = '7.1';")
+	cache := wpcheck.NewCache(t.TempDir())
+	if err := cache.PersistChecksums("7.1", "en_US", nil, map[string]string{"file.php": strings.Repeat("a", 32)}); err != nil {
+		t.Fatal(err)
+	}
+	old := cache.Describe(path)
+	old.Verdict = wpcheck.VerdictVerified
+	// Another worker can see a replacement while the old event is still
+	// scanning content, before it reaches the staged-package handler.
+	if err := os.Rename(root, root+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	writeStagedFile(t, path, cleanStagedPHP)
+	fresh := cache.Describe(path)
+	fresh.Digest = strings.Repeat("a", 32)
+	fake := &fakeWPVerifier{
+		describe: func(string) wpcheck.Verification { return wpcheck.Verification{Verdict: wpcheck.VerdictUnknown} },
+		verify: func(wpcheck.Verification) wpcheck.Verdict {
+			t.Error("old description was attributed to the replacement tree")
+			return wpcheck.VerdictVerified
+		},
+	}
+	fm, ch := newStagedPackageMonitor(t, fake)
+	fm.handleStagedPackageFile(path, old, "")
+	fm.handleStagedPackageFile(path, fresh, "")
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	fm.drainStagedPackages(time.Now())
+	if fm.stagedPackages().pendingCount() != 1 || len(drainFindings(ch)) != 0 {
+		t.Fatal("replacement event did not keep waiting for its own header")
 	}
 }

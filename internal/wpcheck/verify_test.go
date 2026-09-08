@@ -315,3 +315,118 @@ func TestVerifyFile_InstalledPluginMatchesCachedHash(t *testing.T) {
 		t.Errorf("VerifyFile = %+v, want Mismatch after tampering", v)
 	}
 }
+
+func TestVerifyFile_StagedCoreUsesPackageRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wp-content", "upgrade", "wp_random", "wordpress")
+	c := NewCache(t.TempDir())
+	body := "<?php return 42;\n"
+	sum := md5.Sum([]byte(body)) // #nosec G401 -- test uses official core digest format
+	rels := []string{"index.php", "extra.php", "wp-admin/includes/a.php", "wp-content/plugins/akismet/class.php"}
+	var pending []Verification
+	for _, rel := range rels {
+		path := filepath.Join(root, rel)
+		writeStaged(t, path, body)
+		v := c.VerifyFile(openFd(t, path), path)
+		if v.Kind != KindCore || v.Root != root || v.Rel != rel || v.Verdict != VerdictNoVersion || v.Digest != hex.EncodeToString(sum[:]) {
+			t.Errorf("VerifyFile(%s) = %+v, want core identity and digest before version.php exists", rel, v)
+		}
+		pending = append(pending, v)
+	}
+	writeStaged(t, filepath.Join(root, "wp-includes", "version.php"), "<?php $wp_version = '7.1';")
+	c.checksums[cacheKey("7.1", "en_US")] = map[string]string{"index.php": hex.EncodeToString(sum[:])}
+	for i, rel := range rels {
+		v := c.Describe(filepath.Join(root, rel))
+		v.Digest = pending[i].Digest
+		want := VerdictMismatch
+		if rel == "index.php" {
+			want = VerdictVerified
+		}
+		if got := c.Verify(v); got != want {
+			t.Errorf("Verify(%s) = %v, want %v", rel, got, want)
+		}
+	}
+}
+
+func TestVerifyFile_PluginCoreNamesKeepPluginIdentity(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		for _, slug := range []string{"example", "wordpress"} {
+			if staged && slug == "wordpress" {
+				continue // this staging layout denotes the core distribution
+			}
+			root := filepath.Join(t.TempDir(), "wp-content", "plugins", slug)
+			if staged {
+				root = filepath.Join(t.TempDir(), "wp-content", "upgrade", "example.1.0", slug)
+			}
+			writeStaged(t, filepath.Join(root, slug+".php"), "<?php\n/* Plugin Name: Example\nVersion: 1.0\n*/")
+			c := NewCache(t.TempDir())
+			body := "<?php return 1;"
+			sum := sha256.Sum256([]byte(body))
+			c.setPluginChecksums(slug, "1.0", map[string]string{"wp-load.php": hex.EncodeToString(sum[:])})
+			path := filepath.Join(root, "wp-load.php")
+			writeStaged(t, path, body)
+			for _, nestedCore := range []bool{false, true} {
+				if nestedCore {
+					writeStaged(t, filepath.Join(root, "wp-includes", "version.php"), "<?php $wp_version = '7.1';")
+					c.checksums[cacheKey("7.1", "en_US")] = map[string]string{"wp-load.php": strings.Repeat("0", 32)}
+				}
+				if v := c.VerifyFile(openFd(t, path), path); v.Kind != KindPlugin || v.Verdict != VerdictVerified {
+					t.Errorf("staged=%v slug=%s nestedCore=%v: %+v, want verified plugin", staged, slug, nestedCore, v)
+				}
+			}
+		}
+	}
+}
+
+func TestDescribe_InstalledPluginOwnsNestedUpgradeFixture(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wp-content/plugins/outer")
+	writeStaged(t, filepath.Join(root, "outer.php"), "<?php\n/* Plugin Name: Outer\nVersion: 1.0\n*/")
+	rel := "tests/wp-content/upgrade/package/inner/file.php"
+	c := NewCache(t.TempDir())
+	c.setPluginChecksums("outer", "1.0", map[string]string{})
+	if v := c.Describe(filepath.Join(root, rel)); v.Kind != KindPlugin || v.Root != root || v.Rel != rel || v.Verdict != VerdictReady {
+		t.Fatalf("nested fixture escaped its outer plugin identity: %+v", v)
+	}
+}
+
+func TestDescribe_RecreatedCoreTreeNeedsItsOwnHeader(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wp-content/upgrade/package/wordpress")
+	path := filepath.Join(root, "wp-admin/file.php")
+	writeStaged(t, filepath.Join(root, "wp-includes/version.php"), "<?php $wp_version = '6.9';")
+	writeStaged(t, path, "<?php return 1;")
+	sum := md5.Sum([]byte("<?php return 1;")) // #nosec G401 -- official core digest
+	c := NewCache(t.TempDir())
+	c.checksums[cacheKey("6.9", "en_US")] = map[string]string{"wp-admin/file.php": hex.EncodeToString(sum[:])}
+	if v := c.Describe(path); v.Version != "6.9" {
+		t.Fatalf("old tree was not identified: %+v", v)
+	}
+	if !c.IsVerifiedCoreFile(openFd(t, path), path) {
+		t.Fatal("stock old tree did not verify")
+	}
+	if err := os.Rename(root, root+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	writeStaged(t, path, "<?php return 1;")
+	if v := c.Describe(path); v.Verdict != VerdictNoVersion || v.Version != "" {
+		t.Fatalf("replacement reused old core header: %+v", v)
+	}
+	if c.IsVerifiedCoreFile(openFd(t, path), path) {
+		t.Fatal("core verification reused the old tree's cached header")
+	}
+}
+
+func TestVerify_StagedCoreCannotChangeItsRecordedRelease(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wp-content/upgrade/package/wordpress")
+	path := filepath.Join(root, "wp-admin/file.php")
+	body := "<?php return 1;"
+	writeStaged(t, path, body)
+	writeStaged(t, filepath.Join(root, "wp-includes/version.php"), "<?php $wp_version = '7.1';")
+	c := NewCache(t.TempDir())
+	c.checksums[cacheKey("7.1", "en_US")] = map[string]string{"wp-admin/file.php": strings.Repeat("0", 32)}
+	v := c.Describe(path)
+	v.Digest = c.Digest(KindCore, openFd(t, path))
+	writeStaged(t, filepath.Join(root, "wp-includes/version.php"), "<?php $wp_version = '7.2';")
+	c.checksums[cacheKey("7.2", "en_US")] = map[string]string{"wp-admin/file.php": v.Digest}
+	if got := c.Verify(v); got != VerdictMismatch {
+		t.Fatalf("recorded 7.1 mismatch was verified against a later header: %v", got)
+	}
+}

@@ -21,6 +21,14 @@ checksum entry. Only a match against the complete event-file content verifies
 the file; missing checksums, partial content, and modifications proceed through
 normal detection. The finding retains the actual event path.
 
+Staged WordPress PHP files undergo content analysis before package verification
+controls their path-only warning. Core and plugin checksums compare the original
+event digest, including when package headers arrive late or files move into the
+installed tree. Mismatches produce per-file warnings, using the installed path
+when it still exists. Unavailable checksums, queue overflow, or a 60-second
+verification timeout produce warnings grouped by staging directory; continued
+activity can repeat a directory warning after the normal alert cooldown.
+
 **Detects:**
 - Webshell creation (PHP files in web directories)
 - Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. Upgrade staging, atomic-save temp files, template compile caches, a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/wpcheck"
 	"github.com/pidginhost/csm/internal/yara"
 )
 
@@ -236,6 +237,10 @@ func TestPHPInUpgradeCollapsePreservesSignaturePaths(t *testing.T) {
 				t.Fatalf("staging warning = %+v", got)
 			}
 			wantCheck := "signature_match_realtime"
+			fm.wpCache = &fakeWPVerifier{
+				describe: describeStagedPlugin(staging, "example-plugin", "1.0", wpcheck.VerdictReady),
+				verify:   func(wpcheck.Verification) wpcheck.Verdict { return wpcheck.VerdictVerified },
+			}
 			body := cleanStagedPHP
 			if engine == "yaml" {
 				useRealtimeRules(t, strings.Replace(realtimeHighRule, "severity: high", "severity: critical", 1))
@@ -260,6 +265,17 @@ func TestPHPInUpgradeCollapsePreservesSignaturePaths(t *testing.T) {
 				if f.FilePath != paths[i] || f.Check != wantCheck || f.Severity != alert.Critical {
 					t.Errorf("finding %d = %+v, want Critical %s for %s", i, f, wantCheck, paths[i])
 				}
+			}
+			// The same matching content can be an official test fixture of an
+			// installed plugin; an inner upgrade path does not make it staged.
+			fm.wpCache = &fakeWPVerifier{
+				describe: describeStagedPlugin(filepath.Join(wpRoot, "wp-content/plugins"), "example-plugin", "1.0", wpcheck.VerdictReady),
+				verify:   func(wpcheck.Verification) wpcheck.Verdict { return wpcheck.VerdictVerified },
+			}
+			fixture := filepath.Join(wpRoot, "wp-content/plugins/example-plugin/fixtures/wp-content/upgrade/package/inner/loader.php")
+			fm.analyzeFile(fileEvent{path: fixture, fd: writeStagedFile(t, fixture, body)})
+			if got := drainFindings(ch); len(got) != 0 {
+				t.Fatalf("verified installed fixture produced findings: %+v", got)
 			}
 		})
 	}

@@ -1286,7 +1286,8 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// Skip unmodified WordPress core and plugin files: the hash matches the
 	// official wordpress.org checksums for the version the install or
-	// package declares. Stops signature/YARA FPs on stock code. A cache miss
+	// package declares. Installed stock code avoids signature/YARA FPs;
+	// staged files continue through content analysis. A cache miss
 	// triggers a background fetch and falls through to rule evaluation; the
 	// description is kept for the update-staging branch below, which judges
 	// a staged package by these verdicts. For atomic writes, the intended
@@ -1295,7 +1296,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	var wpVerdict wpcheck.Verification
 	if fm.wpCache != nil {
 		wpVerdict = fm.wpCache.VerifyFile(event.fd, contentPath)
-		if wpVerdict.Verdict == wpcheck.VerdictVerified {
+		if wpVerdict.Verdict == wpcheck.VerdictVerified && parseWPStagedPackage(path).dir == "" {
 			return
 		}
 	}
@@ -1502,6 +1503,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		if fm.checkPHPContent(event.fd, path, procInfo) {
 			markDropperContentSuspicious()
 		} else {
+			// Every staged file reaches content analysis first. Its original
+			// digest then decides the path-only warning, even for inert files
+			// absent from the official manifest.
+			if fm.handleStagedPackageFile(path, wpVerdict, procInfo) {
+				return
+			}
 			// Translation caches and comment-only stubs require a stable,
 			// complete body. A no-argument PHP terminator is safe from a
 			// prefix because all following bytes are unreachable, so retain
@@ -1516,17 +1523,6 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			// WordPress 6.5+ writes *.l10n.php translation caches here as pure
 			// data return arrays. Suppress by content structure, not filename.
 			if isWPTranslationCacheData(event.fd, data) {
-				return
-			}
-			// One WordPress update writes every PHP file of the package
-			// into this directory, and the path-only warning fired on each
-			// of them. A staged package is judged by hash instead: stock
-			// files are silent, a file the official package does not ship
-			// gets its own finding, and a package with no checksum source
-			// collapses to one finding on its staging directory. Only this
-			// warning is governed -- content analysis above ran on every
-			// staged file and reports its own findings against their paths.
-			if fm.handleStagedPackageFile(path, wpVerdict, procInfo) {
 				return
 			}
 			fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",

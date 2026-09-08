@@ -87,6 +87,11 @@ type Verification struct {
 	Locale  string
 	Rel     string
 	Digest  string
+	// Staged pins a retained digest to this release instead of retrying it
+	// against a later installed-core header. RootInfo identifies the staged
+	// directory observed while reading the header, before content analysis.
+	Staged   bool
+	RootInfo os.FileInfo
 }
 
 var reThemeVersionHeader = regexp.MustCompile(`(?im)^[ \t/*#@]*Version:[ \t]*([^\s]+)`)
@@ -97,12 +102,19 @@ var reThemeNameHeader = regexp.MustCompile(`(?im)^[ \t/*#@]*Theme Name:[ \t]*[^ 
 // being fetched, or do not exist. It reads package headers only, never the
 // file at path, and starts a background fetch on a cache miss.
 func (c *Cache) Describe(path string) Verification {
+	// The outer package owns every manifest path, including bundled plugins
+	// in a core ZIP and plugin files with core-like names or subdirectories.
+	stagedRoot, stagedSlug := detectStagedPluginRoot(path)
+	installedRoot, installedSlug := detectInstalledPluginRoot(path)
+	if installedRoot != "" && (stagedRoot == "" || len(installedRoot) < len(stagedRoot)) {
+		return c.describePluginRoot(installedRoot, installedSlug, path)
+	}
+	if root, slug := stagedRoot, stagedSlug; root != "" {
+		return c.describeStagedRoot(root, slug, path)
+	}
 	core := c.describeCore(path)
 	if core.Verdict != VerdictUnknown && core.Verdict != VerdictNoVersion {
 		return core
-	}
-	if plugin := c.describePlugin(path); plugin.Verdict != VerdictUnknown {
-		return plugin
 	}
 	if theme := describeTheme(path); theme.Verdict != VerdictUnknown {
 		return theme
@@ -110,8 +122,33 @@ func (c *Cache) Describe(path string) Verification {
 	return core
 }
 
+func (c *Cache) describeStagedRoot(root, slug, path string) Verification {
+	before, beforeErr := os.Lstat(root)
+	var v Verification
+	if slug == "wordpress" {
+		v = c.describeCoreRoot(root, path, true)
+	} else {
+		v = c.describePluginRoot(root, slug, path)
+	}
+	v.Staged = true
+	after, afterErr := os.Lstat(root)
+	if beforeErr == nil && afterErr == nil && before.IsDir() && os.SameFile(before, after) {
+		v.RootInfo = before
+	} else {
+		// A header from a replacement tree cannot identify this event. Keep
+		// its kind and relative path so its digest can still be retained.
+		v.Version, v.Locale = "", ""
+		v.Verdict = VerdictNoVersion
+	}
+	return v
+}
+
 func (c *Cache) describeCore(path string) Verification {
 	root := DetectWPRoot(path)
+	return c.describeCoreRoot(root, path, false)
+}
+
+func (c *Cache) describeCoreRoot(root, path string, staged bool) Verification {
 	if root == "" {
 		return Verification{Verdict: VerdictUnknown}
 	}
@@ -124,7 +161,13 @@ func (c *Cache) describeCore(path string) Verification {
 	if rel == filepath.Join("wp-includes", "version.php") {
 		c.invalidateRoot(root)
 	}
-	version, locale, ok := c.getRoot(root)
+	// A staging pathname can be reused while its next header is still
+	// missing. Only installed roots may reuse a cached version.
+	var version, locale string
+	var ok bool
+	if !staged {
+		version, locale, ok = c.getRoot(root)
+	}
 	if !ok {
 		var err error
 		version, locale, err = ReadVersionFile(root)
@@ -132,7 +175,9 @@ func (c *Cache) describeCore(path string) Verification {
 			v.Verdict = VerdictNoVersion
 			return v
 		}
-		c.setRoot(root, version, locale)
+		if !staged {
+			c.setRoot(root, version, locale)
+		}
 	}
 	v.Version, v.Locale = version, locale
 	if c.hasChecksums(version, locale) {
@@ -144,13 +189,7 @@ func (c *Cache) describeCore(path string) Verification {
 	return v
 }
 
-func (c *Cache) describePlugin(path string) Verification {
-	root, slug := DetectPluginRoot(path)
-	// A core package unpacks into a directory named wordpress; it is never a
-	// plugin, and describeCore has already classified it.
-	if root == "" || slug == "wordpress" {
-		return Verification{Verdict: VerdictUnknown}
-	}
+func (c *Cache) describePluginRoot(root, slug, path string) Verification {
 	rel := RelativePath(root, path)
 	if rel == "" {
 		return Verification{Verdict: VerdictUnknown}
@@ -181,7 +220,7 @@ func (c *Cache) describePlugin(path string) Verification {
 }
 
 // describeTheme handles the installed theme layout. Staged themes share the
-// staged plugin layout and are recognised from describePlugin.
+// staged plugin layout and are recognised from describePluginRoot.
 func describeTheme(path string) Verification {
 	const themesSegment = "/wp-content/themes/"
 	idx := strings.Index(path, themesSegment)
@@ -290,6 +329,9 @@ func (c *Cache) verifyCore(v Verification) Verdict {
 	if expected, ok := c.lookupChecksum(v.Version, v.Locale, v.Rel); ok && hexDigestEqual(v.Digest, expected) {
 		return VerdictVerified
 	}
+	if v.Staged {
+		return VerdictMismatch
+	}
 	// A core update rewrites version.php part-way through. A file that fails
 	// against the version cached for this root may be stock for the version
 	// the root now declares.
@@ -344,12 +386,13 @@ func (c *Cache) resolve(fd int, v Verification) Verdict {
 // IsVerifiedCoreFile reports whether path is an unmodified file of the
 // WordPress core version its install declares.
 func (c *Cache) IsVerifiedCoreFile(fd int, path string) bool {
-	return c.resolve(fd, c.describeCore(path)) == VerdictVerified
+	v := c.Describe(path)
+	return v.Kind == KindCore && c.resolve(fd, v) == VerdictVerified
 }
 
 // IsVerifiedPluginFile reports whether path is an unmodified file of the
 // wordpress.org release its plugin header declares, installed or staged.
 func (c *Cache) IsVerifiedPluginFile(fd int, path string) bool {
-	v := c.describePlugin(path)
+	v := c.Describe(path)
 	return v.Kind == KindPlugin && c.resolve(fd, v) == VerdictVerified
 }
