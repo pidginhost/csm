@@ -630,6 +630,31 @@ func geoIPLookupDirs(countryDBDir, statePath string) []string {
 // lookup reads. `csm firewall update-geoip` only fills the country-block
 // store and refuses without firewall.country_block configured, so pointing an
 // operator at it cannot resolve a missing lookup.
+// geoIPReportLines renders what the lookup actually resolved. The ASN
+// database is opened on every lookup; reporting only the country threw its
+// answer away, and the network an address belongs to is usually what the
+// operator running this command is after. Fields the databases did not
+// supply are omitted rather than printed empty, so a country-only result
+// from the country-block store does not look like a failed lookup.
+func geoIPReportLines(countries []string, info geoip.Info) []string {
+	lines := []string{fmt.Sprintf("COUNTRY  %s", strings.Join(countries, ", "))}
+	if info.City != "" {
+		lines = append(lines, fmt.Sprintf("CITY     %s", info.City))
+	}
+	switch {
+	case info.ASN != 0 && info.ASOrg != "":
+		lines = append(lines, fmt.Sprintf("ASN      AS%d (%s)", info.ASN, info.ASOrg))
+	case info.ASN != 0:
+		lines = append(lines, fmt.Sprintf("ASN      AS%d", info.ASN))
+	case info.ASOrg != "":
+		lines = append(lines, fmt.Sprintf("ASN      %s", info.ASOrg))
+	}
+	if info.Network != "" {
+		lines = append(lines, fmt.Sprintf("NETWORK  %s", info.Network))
+	}
+	return lines
+}
+
 func geoIPUnavailableAdvice() string {
 	return "COUNTRY  unknown (no GeoIP database - run 'csm update-geoip')"
 }
@@ -693,6 +718,7 @@ func fwLookup() {
 	// GeoLite2 databases answer when it is empty, which is the usual case on
 	// a host that never configured country blocking.
 	var countries []string
+	var geoInfo geoip.Info
 	for _, dir := range geoIPLookupDirs(firewall.CountryDBDir(cfg.Firewall, cfg.StatePath), cfg.StatePath) {
 		if countries = firewall.LookupIP(dir, ip); len(countries) > 0 {
 			break
@@ -700,6 +726,7 @@ func fwLookup() {
 		if db := geoip.Open(dir); db != nil {
 			if info := db.Lookup(ip); info.Country != "" {
 				countries = []string{info.Country}
+				geoInfo = info
 				db.Close()
 				break
 			}
@@ -707,7 +734,9 @@ func fwLookup() {
 		}
 	}
 	if len(countries) > 0 {
-		fmt.Printf("COUNTRY  %s\n", strings.Join(countries, ", "))
+		for _, line := range geoIPReportLines(countries, geoInfo) {
+			fmt.Println(line)
+		}
 		for _, code := range countries {
 			for _, blocked := range cfg.Firewall.CountryBlock {
 				if strings.EqualFold(code, blocked) {
