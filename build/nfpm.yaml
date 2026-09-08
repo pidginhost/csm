@@ -69,6 +69,14 @@ contents:
   - src: configs/whm/*
     dst: /opt/csm/configs/whm/
 
+  # Shipped for the operator to install deliberately, NOT into /etc/cron.d.
+  # Landing it there would start unattended upgrades on every host that
+  # installs the package; that is the operator's decision, not a default.
+  - src: build/packaging/cron/csm-auto-upgrade
+    dst: /opt/csm/configs/cron/csm-auto-upgrade
+    file_info:
+      mode: 0644
+
   # Mode is pinned because the YARA loader refuses group- or world-writable
   # rules. Left unset these inherit the build host umask, and a 0664 build
   # ships a scanner that rejects its own rules on every buffer.

@@ -1,0 +1,32 @@
+# Automatic CSM upgrade -- SHIPPED DISABLED.
+#
+# This file does nothing where it sits. To enable it:
+#
+#   install -m 0644 /opt/csm/configs/cron/csm-auto-upgrade /etc/cron.d/csm-auto-upgrade
+#
+# cron.d ignores any filename containing a dot, so a copy kept as
+# "csm-auto-upgrade.disabled" also stays inert.
+#
+# Before enabling, confirm the host runs a published release. `deploy.sh
+# check` compares against the newest release, so a host running a newer
+# development build is reported as having an update available and would be
+# moved BACKWARDS onto the last release.  Check with:
+#
+#   csm version && /opt/csm/deploy.sh check
+#
+# What runs: deploy.sh upgrade verifies the download's SHA256 and Ed25519
+# signature, swaps binary and assets, rehashes the integrity baseline, starts
+# the service, then holds it for CSM_UPGRADE_HEALTH_SETTLE seconds and runs
+# `csm doctor`. Any failure -- including a daemon that starts and then dies,
+# or one that comes up without its watchers -- rolls the previous release back
+# and restores the baseline.
+#
+# The random delay matters on a fleet: a fixed minute means one bad release
+# takes every host down together, and staggering turns that into one host.
+# flock keeps a slow upgrade from overlapping the next night's run.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+MAILTO=""
+
+30 3 * * * root sleep $((RANDOM \% 3600)); flock -n /var/lock/csm-auto-upgrade.lock /opt/csm/deploy.sh upgrade >> /var/log/csm/auto-upgrade.log 2>&1
