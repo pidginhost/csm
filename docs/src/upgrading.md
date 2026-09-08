@@ -37,9 +37,26 @@ The helper:
 2. Stages the UI, rules, PAM files, and deploy helper before downtime
 3. Stops the daemon and keeps the previous binary and assets as rollback material
 4. Activates the staged release and rehashes the config once
-5. Restarts the daemon and confirms it is active
+5. Restarts the daemon, checks sustained liveness, and runs `csm doctor`
 
-If activation, rehash, or startup fails, the helper restores the previous binary and assets, re-signs the restored binary hash, and starts the previous version.
+The health gate waits 20 seconds by default. Set `CSM_UPGRADE_HEALTH_SETTLE` to an integer from 1 to 3600 seconds for a longer or shorter observation window. Invalid values fail the gate. Doctor warnings do not trigger rollback; failed checks do.
+
+If activation, rehash, startup, or the health gate fails, the helper stops the new daemon, restores the previous binary and assets, re-signs the restored binary hash, and starts the previous version. It exits nonzero and reports where it retained recovery material. If recovery itself fails, it reports an incomplete rollback that needs operator attention.
+
+## Optional nightly upgrades
+
+Packages ship a disabled sample at `/opt/csm/configs/cron/csm-auto-upgrade`. It runs only after an operator installs it into `/etc/cron.d/`:
+
+```bash
+csm version && /opt/csm/deploy.sh check
+sudo install -m 0644 /opt/csm/configs/cron/csm-auto-upgrade /etc/cron.d/csm-auto-upgrade
+```
+
+Confirm the host runs a published release first. The checksum check reports any different build as an available update. The downgrade guard rejects a lower version, but a development build with the same version can still be replaced by the published release.
+
+The job invokes the standalone deploy helper every night between 03:30 and 04:30, with a random delay and a nonblocking lock. This updates runtime files directly; it does not update APT/DNF's installed package version. Hosts that need package-manager ownership and version tracking should use their package upgrade automation instead.
+
+Output goes to `/var/log/csm/auto-upgrade.log`. Failures also produce cron mail to root; configure and test root's mail alias before enabling the job. This notification does not depend on CSM's alert channels or on successful daemon recovery. Successful runs and an already-held lock produce no mail. Staggering spreads upgrades over an hour but does not stop a bad release from reaching the fleet.
 
 ## Troubleshooting
 

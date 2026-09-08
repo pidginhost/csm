@@ -1,0 +1,38 @@
+# Automatic CSM upgrade -- SHIPPED DISABLED.
+#
+# This file does nothing where it sits. To enable it:
+#
+#   install -m 0644 /opt/csm/configs/cron/csm-auto-upgrade /etc/cron.d/csm-auto-upgrade
+#
+# cron.d ignores any filename containing a dot, so a copy kept as
+# "csm-auto-upgrade.disabled" also stays inert.
+#
+# Before enabling, confirm the host runs a published release. deploy.sh check
+# compares checksums, so it also reports an update for a development build.
+# The downgrade guard refuses a lower release version, but cannot distinguish
+# development and release builds with the same version number. Switching a
+# development host to this release channel can therefore move it BACKWARDS.
+# Check with:
+#
+#   csm version && /opt/csm/deploy.sh check
+#
+# What runs: deploy.sh upgrade verifies the download's SHA256 and Ed25519
+# signature, swaps binary and assets, rehashes the integrity baseline, starts
+# the service, then checks it for CSM_UPGRADE_HEALTH_SETTLE seconds (default
+# 20, allowed range 1-3600) and runs `csm doctor`. A failure after activation
+# stops the new daemon and attempts to restore the previous release and
+# baseline. Rollback failures are reported and recovery material is retained.
+#
+# The random delay matters on a fleet: a fixed minute means one bad release
+# reaches every host together. Staggering spreads that risk over an hour;
+# it does not stop other hosts from installing the same bad release.
+# flock keeps a slow upgrade from overlapping the next night's run.
+# Failed upgrades produce cron mail to root, even if CSM cannot restart to
+# send its configured alerts. Configure root's mail alias before enabling.
+# Successful runs and lock contention stay quiet; full output is in the log.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+MAILTO=root
+
+30 3 * * * root sleep $((RANDOM \% 3600)); flock -n -E 0 /var/lock/csm-auto-upgrade.lock /opt/csm/deploy.sh upgrade >> /var/log/csm/auto-upgrade.log 2>&1 || { status=$?; echo "CSM automatic upgrade failed (exit $status); inspect /var/log/csm/auto-upgrade.log" >&2; exit "$status"; }

@@ -11,9 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `firewall.tcp_out_allow` permits outbound TCP to a destination IP or CIDR on a port range, which `tcp_out` cannot express; it is emitted after the `smtp_block` guard and warns when the destination is `0.0.0.0/0`.
 - A new firewall command clears one address's accumulated local threat score without changing blocks, allow lists, whitelists or event history. New findings start a fresh scoring record.
+- An optional cron entry for nightly automatic upgrades, shipped switched off. It is installed alongside the other sample configuration and does nothing until an operator copies it into place; the file explains how, and warns about switching development builds to the release channel.
 
 ### Fixed
 - Destination-scoped outbound rules now handle IPv4-mapped subnets correctly. Lockout warnings remain visible when an exception cannot cover the connection's address family or has invalid ports.
+- An upgrade now confirms the new daemon is actually working before keeping it. A daemon that stops or fails health diagnostics triggers rollback.
+- Upgrades now stop an unhealthy daemon before restoring the previous release, and reject invalid health-check wait settings. Failed nightly upgrades also notify root through cron mail.
 - Address lookups retain available network details even when country data is missing or comes from the country-block store.
 - Service shutdown now lets the daemon stop its workers in order, closing a race that could still report an orderly restart as a worker crash.
 - Looking up an address now reports the network and organisation it belongs to. That database was already being opened and its answer discarded.
