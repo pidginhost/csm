@@ -655,12 +655,15 @@ firewall:
   # Destination-scoped outbound TCP. tcp_out holds single ports only, so a
   # port range can only be expressed here -- needed when this host is an FTP
   # *client* and must open passive data connections to a known source.
-  # dst takes an IP or CIDR. 0.0.0.0/0 (or ::/0) means any destination and
+  # dst takes an IP or CIDR. 0.0.0.0/0 means any IPv4 destination; ::/0 means
+  # any IPv6 destination. Each rule applies to its own address family, and
   # validation warns: a wide range to anywhere is the outbound path the
-  # output chain exists to close. Rules are emitted after the smtp_block
-  # guard, so a range covering a mail port cannot carry outbound mail; a
-  # range that overlaps smtp_ports is rejected outright while smtp_block is on.
+  # output chain exists to close. When smtp_block is on, these rules follow
+  # its guard and ranges that overlap smtp_ports are rejected.
   # An IPv6 destination emits no rule unless firewall.ipv6 is true.
+  # IPv4-mapped prefixes under ::ffff:0:0/96 are treated as IPv4 prefixes.
+  # Lockout warnings only credit valid rules in the connection's family;
+  # scoped exceptions still warn because hostname resolution is not checked.
   tcp_out_allow: []
   # tcp_out_allow:
   #   - dst: 203.0.113.10/32

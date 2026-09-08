@@ -110,3 +110,84 @@ func TestEgressStillWarnsWhenOutAllowIsScoped(t *testing.T) {
 
 	assertWarnMentions(t, egressWarnings(cfg), "firewall.tcp_out", "8443", "tcp_out_allow")
 }
+
+func TestEgressOutAllowRequiresEffectiveFamilyAndRange(t *testing.T) {
+	for _, tc := range []struct {
+		name, dst, host, warning string
+		ipv6                     bool
+		start, end               int
+	}{
+		{"v4 allow leaves v6 blocked", "0.0.0.0/0", "[2001:db8::10]", "firewall.tcp6_out", true, 8443, 8443},
+		{"v6 allow leaves v4 blocked", "::/0", "203.0.113.10", "firewall.tcp_out", true, 8443, 8443},
+		{"disabled v6 rule", "::/0", "panel.example.com", "firewall.tcp_out", false, 8443, 8443},
+		{"unparseable rule", "not-an-ip", "panel.example.com", "firewall.tcp_out", true, 8443, 8443},
+		{"invalid lower bound", "0.0.0.0/0", "203.0.113.10", "firewall.tcp_out", true, 0, 8443},
+		{"invalid upper bound", "0.0.0.0/0", "203.0.113.10", "firewall.tcp_out", true, 8443, 65536},
+		{"inverted range", "0.0.0.0/0", "203.0.113.10", "firewall.tcp_out", true, 8444, 8443},
+		{"v4 hostname retains v6 warning", "0.0.0.0/0", "panel.example.com", "firewall.tcp6_out", true, 8443, 8443},
+		{"v6 hostname retains v4 warning", "::/0", "panel.example.com", "firewall.tcp_out", true, 8443, 8443},
+		{"v4 endpoint allowed", "0.0.0.0/0", "203.0.113.10", "", true, 8443, 8443},
+		{"v6 endpoint allowed", "::/0", "[2001:db8::10]", "", true, 8443, 8443},
+		{"mapped v4 endpoint allowed", "::ffff:0.0.0.0/96", "203.0.113.10", "", true, 8443, 8443},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := egressTestConfig([]int{443})
+			cfg.Firewall.IPv6 = tc.ipv6
+			cfg.Firewall.TCPOutAllow = []firewall.OutAllowRule{{Dst: tc.dst, PortStart: tc.start, PortEnd: tc.end}}
+			cfg.Alerts.Webhook.Enabled = true
+			cfg.Alerts.Webhook.URL = "https://" + tc.host + ":8443/api"
+			got := egressWarnings(cfg)
+			if tc.warning == "" {
+				if len(got) != 0 {
+					t.Fatalf("allowed endpoint warned: %v", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Field != tc.warning || !strings.Contains(got[0].Message, "8443") {
+				t.Fatalf("warnings = %v, want one %s warning for 8443", got, tc.warning)
+			}
+			if strings.Contains(got[0].Message, "tcp_out_allow covers") {
+				t.Errorf("ineffective rule must not be advertised as covering the port: %s", got[0].Message)
+			}
+		})
+	}
+}
+
+func TestEgressIPv6ScopedOutAllowExplainsWarning(t *testing.T) {
+	cfg := egressTestConfig([]int{443})
+	cfg.Firewall.IPv6 = true
+	cfg.Firewall.TCPOutAllow = []firewall.OutAllowRule{{Dst: "2001:db8::/32", PortStart: 8443, PortEnd: 8443}}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = "https://[2001:db8::10]:8443/api"
+	assertWarnMentions(t, egressWarnings(cfg), "firewall.tcp6_out", "8443", "tcp_out_allow", "2001:db8::/32")
+}
+
+func TestEgressOutAllowPreservesSMTPWarning(t *testing.T) {
+	for _, dst := range []string{"0.0.0.0/0", "203.0.113.0/24", "::/0", "2001:db8::/32"} {
+		cfg := egressTestConfig([]int{443})
+		cfg.Firewall.IPv6 = true
+		cfg.Firewall.SMTPBlock = true
+		cfg.Firewall.SMTPPorts = []int{587}
+		cfg.Firewall.RequiredTCPOut = []int{587}
+		cfg.Firewall.TCPOutAllow = []firewall.OutAllowRule{{Dst: dst, PortStart: 587, PortEnd: 587}}
+		got := egressWarnings(cfg)
+		assertWarnMentions(t, got, "firewall.tcp_out", "required_tcp_out", "587", "smtp_block")
+		if len(got) != 1 || strings.Contains(got[0].Message, "tcp_out_allow covers") {
+			t.Fatalf("SMTP-blocked exception %s must not claim to cover the port: %v", dst, got)
+		}
+	}
+}
+
+func TestEgressOutAllowBothFamiliesReachHostname(t *testing.T) {
+	cfg := egressTestConfig([]int{443})
+	cfg.Firewall.IPv6 = true
+	cfg.Firewall.TCPOutAllow = []firewall.OutAllowRule{
+		{Dst: "0.0.0.0/0", PortStart: 8443, PortEnd: 8443},
+		{Dst: "::/0", PortStart: 8443, PortEnd: 8443},
+	}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = "https://panel.example.com:8443/api"
+	if got := egressWarnings(cfg); len(got) != 0 {
+		t.Fatalf("both families allow the endpoint, got %v", got)
+	}
+}

@@ -963,9 +963,9 @@ firewall:
   # Destination-scoped outbound TCP. tcp_out holds single ports only, so a
   # port RANGE can only be expressed here -- needed when this host is an FTP
   # CLIENT and must open passive data connections to a known source.
-  # dst takes an IP or CIDR; 0.0.0.0/0 means any destination and warns,
-  # because a wide range to anywhere is the egress path this chain closes.
-  # Emitted after the smtp_block guard, so it can never carry outbound mail.
+  # dst takes an IP or CIDR; 0.0.0.0/0 means any IPv4 destination and ::/0
+  # means any IPv6 destination. Either warns; IPv6 requires ipv6: true.
+  # Emitted after smtp_block; overlaps with smtp_ports are rejected when on.
   tcp_out_allow: []
   # tcp_out_allow:
   #   - dst: 203.0.113.10/32

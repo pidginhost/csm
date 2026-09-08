@@ -167,18 +167,19 @@ func (c *FirewallConfig) ExemptKnownMailProviders() bool {
 	return *c.DOSExemptKnownMailProviders
 }
 
-// PortFloodRule defines per-port connection rate limiting.
-// OutAllowRule permits outbound TCP to one destination on a port range.
-// Dst is an IP or CIDR; 0.0.0.0/0 and ::/0 mean any destination and are
-// warned about at validation, since a wide range to any destination is the
-// egress path the output chain exists to close.
 // ParseOutAllowDst accepts a bare IP or a CIDR and returns it as a network.
-// A bare address becomes a host route so every caller handles one shape.
+// A bare address becomes a host route; mapped IPv4 prefixes use IPv4 widths.
 func ParseOutAllowDst(dst string) (*net.IPNet, error) {
 	if dst == "" {
 		return nil, errors.New("dst is required")
 	}
 	if _, network, err := net.ParseCIDR(dst); err == nil {
+		if ip4 := network.IP.To4(); ip4 != nil {
+			// ParseCIDR retains a 128-bit mask for mapped IPv4 prefixes.
+			// The engine loads only four bytes, so normalize both together.
+			network.IP = ip4
+			network.Mask = network.Mask[len(network.Mask)-net.IPv4len:]
+		}
 		return network, nil
 	}
 	ip := net.ParseIP(dst)
@@ -191,12 +192,15 @@ func ParseOutAllowDst(dst string) (*net.IPNet, error) {
 	return &net.IPNet{IP: ip.To16(), Mask: net.CIDRMask(128, 128)}, nil
 }
 
+// OutAllowRule permits outbound TCP to one destination on a port range.
+// Dst is an IP or CIDR; 0.0.0.0/0 and ::/0 mean any destination in that family.
 type OutAllowRule struct {
 	Dst       string `yaml:"dst"`
 	PortStart int    `yaml:"port_start"`
 	PortEnd   int    `yaml:"port_end"`
 }
 
+// PortFloodRule defines per-port connection rate limiting.
 type PortFloodRule struct {
 	Port    int    `yaml:"port"`
 	Proto   string `yaml:"proto"`   // "tcp" or "udp"
@@ -228,6 +232,7 @@ func DefaultConfig() *FirewallConfig {
 		// Without them outbound spam-scoring queries silently fail.
 		UDPOut:          []int{53, 113, 123, 443, 853, 873, 6277, 24441},
 		RestrictedTCP:   []int{2086, 2087, 2325, 9443},
+		TCPOutAllow:     nil,
 		PassiveFTPStart: 49152,
 		PassiveFTPEnd:   65534,
 		// 200 new connections per minute per source (IPv6 aggregated per /64).

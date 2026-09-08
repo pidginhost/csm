@@ -4,10 +4,125 @@ package firewall
 
 import (
 	"bytes"
+	"net"
+	"reflect"
 	"testing"
 
+	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
 )
+
+func TestOutAllowMappedCIDRMatchesIPv4Subnet(t *testing.T) {
+	for _, tc := range []struct{ mapped, plain string }{
+		{"::ffff:203.0.113.155/120", "203.0.113.0/24"},
+		{"::ffff:203.0.113.155/96", "0.0.0.0/0"},
+		{"::ffff:203.0.113.155/128", "203.0.113.155/32"},
+	} {
+		t.Run(tc.mapped, func(t *testing.T) {
+			got := buildOutAllowExprs(rule(tc.mapped, 49152, 65534), false)
+			want := buildOutAllowExprs(rule(tc.plain, 49152, 65534), false)
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("mapped prefix must enforce the same subnet as %s", tc.plain)
+			}
+		})
+	}
+}
+
+func TestOutAllowAddressExpressionWidthsAndGuards(t *testing.T) {
+	for _, dst := range []string{"203.0.113.155/24", "203.0.113.155/32", "2001:db8::1234/64", "2001:db8::1/128", "0.0.0.0/0", "::/0"} {
+		t.Run(dst, func(t *testing.T) {
+			_, network, err := net.ParseCIDR(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ones, bits := network.Mask.Size()
+			length, offset, family := uint32(4), uint32(16), byte(2)
+			if bits == 128 {
+				length, offset, family = 16, 24, 10
+			}
+			exprs := buildOutAllowExprs(rule(dst, 49152, 65534), true)
+			if len(exprs) < 8 {
+				t.Fatalf("missing family/protocol/port guards: %v", exprs)
+			}
+			wantGuard := []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{family}},
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
+			}
+			if !reflect.DeepEqual(exprs[:4], wantGuard) {
+				t.Fatal("family and TCP guards must precede all payload loads")
+			}
+			p := networkPayload(t, exprs)
+			if ones == 0 {
+				if p != nil || len(exprs) != 8 {
+					t.Fatal("any-destination rule must retain family guard without address expressions")
+				}
+				return
+			}
+			if p == nil || p.Offset != offset || p.Len != length {
+				t.Fatalf("destination payload = %+v, want offset %d len %d", p, offset, length)
+			}
+			cmpIndex := 5
+			if ones < bits {
+				b, ok := exprs[5].(*expr.Bitwise)
+				if !ok || b.Len != length || len(b.Mask) != int(length) || len(b.Xor) != int(length) || !bytes.Equal(b.Mask, network.Mask) || !bytes.Equal(b.Xor, make([]byte, length)) {
+					t.Fatalf("bitwise must mask exactly the loaded address width: %#v", exprs[5])
+				}
+				cmpIndex++
+			}
+			c, ok := exprs[cmpIndex].(*expr.Cmp)
+			if !ok || c.Op != expr.CmpOpEq || !bytes.Equal(c.Data, network.IP) {
+				t.Fatalf("destination comparison must use the masked network: %#v", exprs[cmpIndex])
+			}
+		})
+	}
+}
+
+func TestOutAllowFollowsEverySMTPDrop(t *testing.T) {
+	for _, ipv4Bypass := range []bool{false, true} {
+		cfg := &FirewallConfig{IPv6: true, TCPOut: []int{443}, TCP6Out: []int{443}, SMTPBlock: true, SMTPPorts: []int{25, 465, 587}}
+		if ipv4Bypass {
+			cfg.TCPOut = nil
+		}
+		cfg.TCPOutAllow = []OutAllowRule{rule("203.0.113.155", 1, 65535), rule("2001:db8::1", 1, 65535)}
+		conn, captured := nftConnCapturingRules(t)
+		e := &Engine{cfg: cfg, conn: conn}
+		e.table = conn.AddTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
+		if err := e.createOutputChain(); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range cfg.TCPOutAllow {
+			allowIndex := outputRuleIndex(*captured, captureOutputRuleData(t, buildOutAllowExprs(r, true)))
+			if allowIndex < 0 {
+				t.Fatalf("outbound allow missing for %s", r.Dst)
+			}
+			for _, port := range cfg.SMTPPorts {
+				dropIndex := outputRuleIndex(*captured, captureOutputRuleData(t, smtpDropRuleExprsForTest(port)))
+				if dropIndex < 0 || dropIndex >= allowIndex {
+					t.Fatalf("SMTP %d drop index %d must precede allow index %d", port, dropIndex, allowIndex)
+				}
+				if ipv4Bypass {
+					bypassIndex := outputRuleIndex(*captured, captureOutputRuleData(t, familyBypassRuleExprs(2)))
+					if bypassIndex <= dropIndex || bypassIndex >= allowIndex {
+						t.Fatalf("IPv4 bypass index %d must be between SMTP drop %d and allow %d", bypassIndex, dropIndex, allowIndex)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestOutAllowSkipsInvalidRanges(t *testing.T) {
+	for _, bounds := range [][2]int{{0, 8443}, {8443, 65536}, {8444, 8443}, {-1, 65535}} {
+		if got := buildOutAllowExprs(rule("0.0.0.0/0", bounds[0], bounds[1]), true); got != nil {
+			t.Errorf("invalid bounds %v emitted %d expressions", bounds, len(got))
+		}
+	}
+}
 
 func networkPayload(t *testing.T, exprs []expr.Any) *expr.Payload {
 	t.Helper()
