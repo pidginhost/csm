@@ -22,7 +22,8 @@ type CorrelationResult struct {
 
 // CorrelateFindings raises cross-account findings. Eligibility comes from
 // the registry classification and identity from extractAccountFromFinding.
-// It performs no I/O, does not log and does not mutate its input.
+// Callers initialize platform.Detect before correlation so account roots
+// come from its cache. It does not log or mutate its input.
 func CorrelateFindings(findings []alert.Finding) CorrelationResult {
 	res := CorrelationResult{Unattributed: make(map[string]int)}
 	accounts := make(map[string]bool)

@@ -333,7 +333,7 @@ realtime dispatcher derive two findings from the findings they see:
 
 - `coordinated_attack` (Critical) when at least three distinct hosting
   accounts each carry at least one Critical finding from a check classified
-  as a security event. The checks may differ between accounts. Repeated
+  as a security event or malware artifact. The checks may differ between accounts. Repeated
   findings or several installs inside one account never raise the count.
 - `cross_account_malware` (Critical) when the same malware-artifact check
   (`webshell`, `new_webshell_file`, `backdoor_binary`,
@@ -342,23 +342,44 @@ realtime dispatcher derive two findings from the findings they see:
 
 Every registered check is classified as a security event, a malware
 artifact, ignored with a stated reason, or derived. Derived findings are never
-inputs. The account identity comes from the producer's tenant field first,
-then the account home that contains the finding's absolute file path, then a
-legacy scan of the message text for an account-root path. Findings a
-producer cannot attribute never count toward either aggregate; they are
-counted per call and logged once per check name per process so a detector
-that never attributes becomes visible. Some eligible checks document a known
-missing identity path: the periodic socket checks have no hosting owner, so
-their Criticals only ever reach that diagnostic count.
+inputs. A nonempty `TenantID` wins verbatim, including case, over the file
+path and text. It must identify the host-local hosting account. Existing
+stored values and verdict callbacks use the same precedence; callbacks must
+supply the same owner keys as producers. External identifiers can split one
+owner or combine distinct owners, and correlation does not validate them.
+
+If that field is empty, correlation uses the account home containing the
+cleaned absolute `FilePath`. Relative paths, root/home-only paths and paths
+that escape the home after cleaning do not identify that home. This is a
+lexical mapping through the platform's account roots, including Plesk roots;
+it does not resolve symlinks or prove that directory aliases are distinct
+owners. Nonstandard content roots need producer-supplied identity.
+
+The final fallback scans Message before Details for an account-root path.
+It recognizes `<account-root>/<user>/`, not `(account: user)` labels. Within
+each field it searches roots in configured order, can match an embedded root
+substring, and can select an incidental path. These compatibility limits are
+why account-aware producers should supply identity.
+
+Qualifying rows with no identity from any source do not count toward either
+aggregate. They are counted once per call and logged once per check name per
+process, using only that call's row count. Repeated snapshots are not summed;
+ignored, derived, unknown and below-threshold security-event rows produce no
+diagnostic count. Periodic socket checks have no hosting owner, so their
+unattributed Criticals reach only this diagnostic count.
 
 The two per-batch derivations (scan runner, realtime dispatcher) see only
 their batch and produce alerts. The latest-state merge derives from the
-merged, deduplicated persisted active set under the same lock as the purge,
+merged, deduplicated, capped persisted active set under the same lock as the purge,
 so evidence from separate scans combines: three accounts compromised in three
 different scans still produce a persisted `coordinated_attack`, and it clears
 only when fewer than three accounts still carry a qualifying Critical there.
 Demotion, dismissal or re-verification of a contributing row takes effect at
 the next scan merge. There is no time window.
+
+Callers initialize platform detection before correlation; the latest-state
+caller does so before taking the store lock. Correlation reads cached roots,
+and attribution warnings are reported after the merge releases that lock.
 
 Class membership does not mean an emitter currently reaches Critical: the
 non-WordPress administrator checks emit High after a stored baseline, so they

@@ -1,12 +1,106 @@
 package daemon
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/state"
 )
+
+func TestExpandWithCorrelationSharesUnattributedReporter(t *testing.T) {
+	// A subprocess starts with a fresh process-wide seen set without
+	// resetting a reporter that other daemon tests may have used.
+	if os.Getenv("CSM_TEST_CORRELATION_REPORTER") == "1" {
+		csmlog.Init()
+		batch := []alert.Finding{
+			{Severity: alert.Critical, Check: "db_rogue_admin", Message: "rogue admin (account: alice)"},
+			{Severity: alert.Critical, Check: "db_rogue_admin", Message: "rogue admin (account: bob)"},
+		}
+		expandWithCorrelation(batch, time.Now())
+		st, err := state.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := st.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
+		batch = append(batch, alert.Finding{Severity: alert.Warning, Check: "webshell", Message: "unattributed shell"})
+		checks.StoreLatestScanFindings(st, []string{"db_rogue_admin", "webshell"}, batch)
+		expandWithCorrelation(batch, time.Now())
+		checks.ReportUnattributedCorrelation(map[string]int{"db_rogue_admin": 9, "webshell": 7})
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestExpandWithCorrelationSharesUnattributedReporter$")
+	cmd.Env = append(os.Environ(), "CSM_TEST_CORRELATION_REPORTER=1", "CSM_LOG_FORMAT=json", "CSM_LOG_LEVEL=warn")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("reporter subprocess: %v\n%s", err, out)
+	}
+	type warning struct {
+		Level string `json:"level"`
+		Msg   string `json:"msg"`
+		Check string `json:"check"`
+		Rows  int    `json:"rows"`
+	}
+	var got []warning
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var w warning
+		if err := json.Unmarshal([]byte(line), &w); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, w)
+	}
+	const message = "cross-account correlation could not attribute findings to an account"
+	want := []warning{{"WARN", message, "db_rogue_admin", 2}, {"WARN", message, "webshell", 1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("shared reporter warnings = %+v, want %+v", got, want)
+	}
+}
+
+func TestExpandWithCorrelationInitializesPlatform(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	batch := []alert.Finding{{Severity: alert.Critical, Check: "db_rogue_admin", TenantID: "alice"}}
+	got := expandWithCorrelation(batch, time.Now())
+	if !reflect.DeepEqual(got, batch) {
+		t.Fatalf("single-account batch changed: %+v", got)
+	}
+	if platform.SetOverrides(platform.Overrides{}) {
+		t.Fatal("dispatcher left platform discovery to the correlator")
+	}
+}
+
+func TestExpandWithCorrelationEmptySkipsPlatformDiscovery(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	if got := expandWithCorrelation(nil, time.Now()); got != nil {
+		t.Fatalf("empty batch changed: %+v", got)
+	}
+	if !platform.SetOverrides(platform.Overrides{}) {
+		t.Fatal("empty batch initialized platform detection")
+	}
+}
 
 func TestExpandWithCorrelation_EmitsCoordinatedAttack(t *testing.T) {
 	now := time.Now()

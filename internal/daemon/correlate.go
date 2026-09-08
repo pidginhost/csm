@@ -7,6 +7,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // infraHostnames partitions the cfg.InfraIPs operator list into the
@@ -49,6 +50,10 @@ func containsString(haystack []string, s string) bool {
 // The scan runner may have already produced the same synthetic findings, so
 // this helper must be idempotent to avoid double-alerting the first batch.
 func expandWithCorrelation(findings []alert.Finding, now time.Time) []alert.Finding {
+	if len(findings) == 0 {
+		return findings
+	}
+	platform.Detect()
 	seen := make(map[string]struct{})
 	for i := range findings {
 		if !checks.IsDerivedCorrelationCheck(findings[i].Check) {

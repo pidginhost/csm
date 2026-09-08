@@ -1,8 +1,13 @@
 package checks
 
 import (
+	"context"
 	"sync"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 type warnCall struct {
@@ -72,19 +77,39 @@ func TestUnattributedReporterWarnsOncePerCheck(t *testing.T) {
 	}
 }
 
-func TestUnattributedReporterIsSharedByAllCallers(t *testing.T) {
-	// The three production consumers report through one process-wide
-	// reporter, so suppression is shared rather than three separate sets.
-	if defaultUnattributedReporter == nil || defaultUnattributedReporter.warn == nil {
-		t.Fatal("default reporter not wired")
-	}
-	rec := &warnRecorder{}
-	prev := defaultUnattributedReporter
-	defaultUnattributedReporter = newUnattributedReporter(rec.warn)
-	t.Cleanup(func() { defaultUnattributedReporter = prev })
-	ReportUnattributedCorrelation(map[string]int{"suspicious_crontab": 2})
-	ReportUnattributedCorrelation(map[string]int{"suspicious_crontab": 4})
-	if len(rec.snapshot()) != 1 {
-		t.Fatalf("exported helper does not share suppression: %+v", rec.snapshot())
+func TestUnattributedReporterIsSharedByScanAndLatestState(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	for _, scanFirst := range []bool{true, false} {
+		rec := &warnRecorder{}
+		prev := defaultUnattributedReporter
+		defaultUnattributedReporter = newUnattributedReporter(rec.warn)
+		t.Cleanup(func() { defaultUnattributedReporter = prev })
+		st := newTestStore(t)
+		batch := []alert.Finding{
+			{Severity: alert.Critical, Check: "db_rogue_admin", Message: "rogue admin (account: alice)"},
+			{Severity: alert.Critical, Check: "db_rogue_admin", Message: "rogue admin (account: bob)"},
+		}
+		scan := func() {
+			rows, _ := runParallel(&config.Config{}, nil, []namedCheck{{name: "db_content", fn: func(context.Context, *config.Config, *state.Store) []alert.Finding {
+				return batch
+			}}}, "test", true)
+			if len(rows) != 2 {
+				t.Fatalf("scan returned %d rows, want 2", len(rows))
+			}
+		}
+		merge := func() { StoreLatestScanFindings(st, purgeNamesFor("db_content"), batch) }
+		first, second := scan, merge
+		if !scanFirst {
+			first, second = merge, scan
+		}
+		first()
+		if calls := rec.snapshot(); len(calls) != 1 || len(calls[0].args) != 4 || argValue(calls[0].args, "check") != "db_rogue_admin" || argValue(calls[0].args, "rows") != 2 {
+			t.Fatalf("first caller (scan=%v) did not report its snapshot: %+v", scanFirst, calls)
+		}
+		second()
+		ReportUnattributedCorrelation(map[string]int{"db_rogue_admin": 9})
+		if len(rec.snapshot()) != 1 {
+			t.Fatalf("scan, state and exported helper did not share suppression: %+v", rec.snapshot())
+		}
 	}
 }

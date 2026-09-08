@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
+- Cross-account correlation initializes host detection before updating active findings, so a slow platform probe does not block readers of the current state.
 - Clean-corpus metadata tests now work with trimmed build paths and check that invalid manifests leave existing files untouched.
 - The list of supported content management systems is now declared once and tested against the taint analyzer's path knowledge and the database scanners. Tests reject incomplete or duplicate declarations; clean-corpus coverage remains separate.
 - Every check now carries an explicit cross-account correlation policy with a stated reason when it is excluded, and a test refuses a new check that has none. Two file-index finding names that older releases emitted are registered again so a completed scan can finally clear them from the active list.
@@ -33,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
-- Cross-account correlation now uses the explicit per-check policy instead of a fixed list of twenty-two checks that named three checks no longer emitted, so database compromise, rogue administrators and persistence findings can count toward a coordinated attack. Findings that lack an account are reported once per check instead of being silently skipped.
+- Cross-account correlation uses explicit detector policy and reports findings that lack account attribution.
 - Self-deleting dropper detection now requires conclusive content evidence before suppressing findings and handles separate file-creation events correctly. Content and signature findings retain priority over blank-file filtering.
 
 ## [3.35.0] - 2026-09-08

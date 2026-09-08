@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -673,6 +674,9 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 	if len(purgeChecks) == 0 && len(findings) == 0 {
 		return
 	}
+	// Cold detection runs commands; correlation under latestMu must only
+	// read cached platform roots.
+	platform.Detect()
 	now := time.Now()
 	// The merge callback runs under the store's latest-findings lock, so it
 	// only captures the unattributed snapshot; reporting happens after the
@@ -1108,6 +1112,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	}
 
 	// Cross-account correlation
+	if len(findings) > 0 {
+		platform.Detect()
+	}
 	correlated := CorrelateFindings(findings)
 	for i := range correlated.Derived {
 		if correlated.Derived[i].Timestamp.IsZero() {

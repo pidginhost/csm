@@ -2,6 +2,7 @@ package checks
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -15,7 +16,10 @@ func deepCopyFindings(in []alert.Finding) []alert.Finding {
 	out := make([]alert.Finding, len(in))
 	for i, f := range in {
 		out[i] = f
-		out[i].RelayBreakdown = append([]alert.RelayScriptHit(nil), f.RelayBreakdown...)
+		out[i].MsgIDs = slices.Clone(f.MsgIDs)
+		out[i].RelayBreakdown = slices.Clone(f.RelayBreakdown)
+		out[i].SprayTargets = slices.Clone(f.SprayTargets)
+		out[i].CIDRs = slices.Clone(f.CIDRs)
 	}
 	return out
 }
@@ -171,6 +175,10 @@ func TestMalwareArtifactAggregateAtAnySeverity(t *testing.T) {
 func TestDerivedOutputIsDeterministicAndInputUntouched(t *testing.T) {
 	withAccountHomeRoots(t, "/home")
 	in := []alert.Finding{critical("webshell", "carol"), critical("backdoor_binary", "bob"), critical("webshell", "alice"), critical("backdoor_binary", "alice"), critical("db_rogue_admin", "bob")}
+	in[0].MsgIDs = []string{"message-1"}
+	in[0].RelayBreakdown = []alert.RelayScriptHit{{ScriptKey: "example.test:/site.php", Hits: 2}}
+	in[0].SprayTargets = []string{"carol"}
+	in[0].CIDRs = []string{"192.0.2.0/24"}
 	snapshot := deepCopyFindings(in)
 	first := CorrelateFindings(in)
 	shuffled := []alert.Finding{in[4], in[3], in[2], in[1], in[0]}

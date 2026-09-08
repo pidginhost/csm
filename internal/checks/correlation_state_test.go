@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -48,8 +49,16 @@ func TestLatestStateAggregatesAcrossMerges(t *testing.T) {
 	withAccountHomeRoots(t, "/home")
 	dir := t.TempDir()
 	st := openStoreAt(t, dir)
+	t.Cleanup(func() {
+		if st != nil {
+			closeStore(t, st)
+		}
+	})
 
 	StoreLatestScanFindings(st, purgeNamesFor("db_content"), []alert.Finding{stamped("db_rogue_admin", "alice", alert.Critical)})
+	if got := checksIn(st.LatestFindings()); !reflect.DeepEqual(got, map[string]int{"db_rogue_admin": 1}) {
+		t.Fatalf("after first merge: %v", got)
+	}
 	StoreLatestScanFindings(st, purgeNamesFor("file_index"), []alert.Finding{stamped("new_php_in_uploads", "bob", alert.Critical)})
 	got := checksIn(st.LatestFindings())
 	if got["coordinated_attack"] != 0 || got["db_rogue_admin"] != 1 || got["new_php_in_uploads"] != 1 || len(st.LatestFindings()) != 2 {
@@ -65,6 +74,23 @@ func TestLatestStateAggregatesAcrossMerges(t *testing.T) {
 			t.Fatalf("persisted aggregate %+v", f)
 		}
 	}
+	// Reload while the derived row and all three owners are still present.
+	// Normalize time locations/monotonic clocks to compare persisted values.
+	snapshot := func() map[string]alert.Finding {
+		rows := make(map[string]alert.Finding)
+		for _, f := range st.LatestFindings() {
+			f.Timestamp = f.Timestamp.UTC()
+			rows[f.Key()] = f
+		}
+		return rows
+	}
+	before := snapshot()
+	closeStore(t, st)
+	st = nil
+	st = openStoreAt(t, dir)
+	if after := snapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("reload disagrees: before %+v after %+v", before, after)
+	}
 
 	// The same runner replacing its snapshot with a demoted row clears the
 	// aggregate; an alternative Critical for that owner keeps it.
@@ -72,8 +98,11 @@ func TestLatestStateAggregatesAcrossMerges(t *testing.T) {
 	if got := checksIn(st.LatestFindings()); got["coordinated_attack"] != 0 {
 		t.Fatalf("aggregate survived demotion below Critical: %v", got)
 	}
-	StoreLatestScanFindings(st, purgeNamesFor("yara_deep"), []alert.Finding{stamped("yara_match_scheduled", "carol", alert.High), stamped("yara_match_scheduled", "carol", alert.Critical)})
-	if got := checksIn(st.LatestFindings()); got["coordinated_attack"] != 1 {
+	alternative := stamped("yara_match_scheduled", "carol", alert.Critical)
+	alternative.Message += " in another file"
+	alternative.FilePath = "/home/carol/public_html/other.php"
+	StoreLatestScanFindings(st, purgeNamesFor("yara_deep"), []alert.Finding{stamped("yara_match_scheduled", "carol", alert.High), alternative})
+	if got := checksIn(st.LatestFindings()); got["coordinated_attack"] != 1 || got["yara_match_scheduled"] != 2 || len(st.LatestFindings()) != 5 {
 		t.Fatalf("alternative Critical did not keep the aggregate: %v", got)
 	}
 	// Replacing a runner's complete snapshot drops owners absent from it.
@@ -88,14 +117,40 @@ func TestLatestStateAggregatesAcrossMerges(t *testing.T) {
 	if got := checksIn(st.LatestFindings()); got["coordinated_attack"] != 0 {
 		t.Fatalf("stale derived row survived a merge: %v", got)
 	}
+}
 
-	// Persisted state reloads to the same active set.
-	before := checksIn(st.LatestFindings())
-	closeStore(t, st)
-	reopened := openStoreAt(t, dir)
-	defer closeStore(t, reopened)
-	if after := checksIn(reopened.LatestFindings()); len(after) != len(before) || after["db_rogue_admin"] != before["db_rogue_admin"] || after["coordinated_attack"] != before["coordinated_attack"] {
-		t.Fatalf("reload disagrees: before %v after %v", before, after)
+func TestLatestStateRecomputesAfterEvidenceChanges(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	for _, change := range []string{"dismiss", "verified clear", "demote"} {
+		t.Run(change, func(t *testing.T) {
+			st := newTestStore(t)
+			rows := []alert.Finding{stamped("db_rogue_admin", "alice", alert.Critical), stamped("db_rogue_admin", "bob", alert.Critical), stamped("db_rogue_admin", "carol", alert.Critical)}
+			StoreLatestScanFindings(st, purgeNamesFor("db_content"), rows)
+			wantRows := 2
+			switch change {
+			case "dismiss":
+				st.DismissFinding(rows[2].Key())
+				st.DismissLatestFinding(rows[2].Key())
+			case "verified clear":
+				if !st.DismissFindingIfLatest(rows[2]) {
+					t.Fatal("verified snapshot was not removed")
+				}
+			case "demote":
+				if !st.DemoteLatestFinding(rows[2], alert.Warning) {
+					t.Fatal("verified snapshot was not demoted")
+				}
+				wantRows = 3
+			}
+			// A no-op must leave recomputation to the next real scan merge.
+			StoreLatestScanFindings(st, nil, nil)
+			if got := checksIn(st.LatestFindings()); !reflect.DeepEqual(got, map[string]int{"db_rogue_admin": wantRows, "coordinated_attack": 1}) {
+				t.Fatalf("before recomputation: %v", got)
+			}
+			StoreLatestScanFindings(st, purgeNamesFor("file_index"), nil)
+			if got := checksIn(st.LatestFindings()); !reflect.DeepEqual(got, map[string]int{"db_rogue_admin": wantRows}) {
+				t.Fatalf("after recomputation: %v", got)
+			}
+		})
 	}
 }
 
@@ -155,9 +210,17 @@ func TestLatestStateNoOpPathsAndRace(t *testing.T) {
 	}()
 	wg.Wait()
 	got := checksIn(st.LatestFindings())
+	if len(st.LatestFindings()) != 4 {
+		t.Fatalf("concurrent merges left extra or missing rows: %v", got)
+	}
 	for _, want := range []string{"db_rogue_admin", "new_php_in_uploads", "yara_match_scheduled", "coordinated_attack"} {
 		if got[want] != 1 {
 			t.Errorf("after concurrent merges %s = %d: %v", want, got[want], got)
+		}
+	}
+	for _, f := range st.LatestFindings() {
+		if f.Check == "coordinated_attack" && f.Details != "Affected accounts: alice, bob, carol" {
+			t.Fatalf("concurrent aggregate has wrong owners: %+v", f)
 		}
 	}
 }
