@@ -54,11 +54,14 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 	}
 
 	adb.RemoveIP(args.IP)
-	// Persist immediately. The background saver runs every 30s and a
-	// restart inside that window would reload the record we just cleared,
-	// which is exactly the symptom this command exists to end.
-	if err := adb.Flush(); err != nil {
-		return nil, fmt.Errorf("removed %s from memory but could not persist: %w", args.IP, err)
+	// Persist immediately rather than waiting for the 30s background saver:
+	// a restart inside that window would reload the record just cleared,
+	// which is the symptom this command exists to end. Flush reports no
+	// error (it logs persistence failures to stderr itself), so this is
+	// best effort and the removal is confirmed below from memory.
+	_ = adb.Flush()
+	if adb.LookupIP(args.IP) != nil {
+		return nil, fmt.Errorf("record for %s still present after removal", args.IP)
 	}
 
 	res.Message = fmt.Sprintf(

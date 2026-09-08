@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A new firewall command clears one address's accumulated local threat score. Until now the only way to clear a stale score was to whitelist the address, which also unblocks it and exempts it from future detection; the new command leaves blocks, allow lists and whitelists alone, so the address is scored again from scratch the next time it is seen.
 
+### Fixed
+
+- The attack database no longer reads or writes state files when it has no configured directory. It previously resolved to a relative path and used whatever directory the process was started from.
+
 ## [3.35.0] - 2026-09-08
 
 ### Highlights
