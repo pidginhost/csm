@@ -37,6 +37,8 @@ func runFirewall() {
 		fwRemovePort()
 	case "remove":
 		fwRemove()
+	case "forget":
+		fwForget()
 	case "grep":
 		fwGrep()
 	case "tempban":
@@ -92,6 +94,7 @@ Commands:
   allow-port <ip> <port> [reason]   Allow IP on specific port only (e.g. MySQL 3306)
   remove-port <ip> <port>           Remove port-specific allow
   remove <ip>                       Remove IP from blocked and allowed lists
+  forget <ip>                       Clear IP's local threat score (keeps block/allow/whitelist)
   grep <pattern>                    Search blocked/allowed IPs by pattern
   tempban <ip> <duration> [reason]  Temporary block (e.g. 24h, 7d, 1h30m)
   tempallow <ip> <duration> [reason] Temporary allow (e.g. 4h, 1d)
@@ -1054,6 +1057,61 @@ func parseReason(args []string, fallback string) (string, error) {
 // isHelpRequest reports whether the operator asked for usage rather than
 // supplying arguments, so a subcommand answers with its own usage instead of
 // trying to parse "--help" as an address.
+// threatForgetOutput renders the daemon's reply. The daemon composes the
+// wording (it is the side that knows what the record held); this keeps a
+// usable line if an older daemon answers without one.
+func threatForgetOutput(res control.ThreatForgetResult) string {
+	if res.Message != "" {
+		return res.Message
+	}
+	if res.Found {
+		return fmt.Sprintf("Cleared local threat record for %s (was score %d/100, %d attack events)",
+			res.IP, res.Score, res.Events)
+	}
+	return fmt.Sprintf("No local threat record for %s; nothing cleared", res.IP)
+}
+
+// fwForget clears an address's accumulated local threat score without
+// whitelisting it. Needed when a detection bug attributed attacks to the
+// wrong address: fixing the detection stops new events, but the accrued
+// ones keep local_threat_score reporting until the 90-day prune.
+func fwForget() {
+	args := fwArgs()
+	if isHelpRequest(args) || len(args) < 1 {
+		fmt.Println("Usage: csm firewall forget <ip>")
+		fmt.Println()
+		fmt.Println("Clears the IP's accumulated local threat score (attack database).")
+		fmt.Println("Blocks, allow-list and whitelist entries are left untouched, so the")
+		fmt.Println("address is scored again from scratch the next time it is seen.")
+		if len(args) < 1 && !isHelpRequest(args) {
+			os.Exit(1)
+		}
+		return
+	}
+
+	ip := args[0]
+	if net.ParseIP(ip) == nil {
+		fmt.Fprintf(os.Stderr, "Invalid IP address: %s\n", ip)
+		os.Exit(1)
+	}
+
+	raw, err := sendControl(control.CmdThreatForget, control.FirewallIPArgs{IP: ip})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+		os.Exit(1)
+	}
+
+	var res control.ThreatForgetResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		fmt.Fprintf(os.Stderr, "csm: unexpected daemon reply: %v\n", err)
+		os.Exit(1)
+	}
+	if res.IP == "" {
+		res.IP = ip
+	}
+	fmt.Println(threatForgetOutput(res))
+}
+
 func isHelpRequest(args []string) bool {
 	if len(args) != 1 {
 		return false
