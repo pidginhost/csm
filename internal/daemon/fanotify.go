@@ -1286,8 +1286,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// Skip unmodified WordPress core and plugin files: the hash matches the
 	// official wordpress.org checksums for the version the install or
-	// package declares. Installed stock code avoids signature/YARA FPs;
-	// staged files continue through content analysis. A cache miss
+	// package declares. Stops signature/YARA FPs on stock code, installed or
+	// staged: a realtime Critical feeds inline quarantine, and a byte-for-byte
+	// copy of the official release is not what that is for. A cache miss
 	// triggers a background fetch and falls through to rule evaluation; the
 	// description is kept for the update-staging branch below, which judges
 	// a staged package by these verdicts. For atomic writes, the intended
@@ -1296,7 +1297,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	var wpVerdict wpcheck.Verification
 	if fm.wpCache != nil {
 		wpVerdict = fm.wpCache.VerifyFile(event.fd, contentPath)
-		if wpVerdict.Verdict == wpcheck.VerdictVerified && parseWPStagedPackage(path).dir == "" {
+		if wpVerdict.Verdict == wpcheck.VerdictVerified {
 			return
 		}
 	}

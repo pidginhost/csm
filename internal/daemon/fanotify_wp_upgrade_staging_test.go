@@ -237,9 +237,11 @@ func TestPHPInUpgradeCollapsePreservesSignaturePaths(t *testing.T) {
 				t.Fatalf("staging warning = %+v", got)
 			}
 			wantCheck := "signature_match_realtime"
+			// Checksums still on the way: the files are not yet proven stock,
+			// so content rules run and keep reporting against their own paths.
 			fm.wpCache = &fakeWPVerifier{
-				describe: describeStagedPlugin(staging, "example-plugin", "1.0", wpcheck.VerdictReady),
-				verify:   func(wpcheck.Verification) wpcheck.Verdict { return wpcheck.VerdictVerified },
+				describe: describeStagedPlugin(staging, "example-plugin", "1.0", wpcheck.VerdictPending),
+				verify:   func(wpcheck.Verification) wpcheck.Verdict { return wpcheck.VerdictPending },
 			}
 			body := cleanStagedPHP
 			if engine == "yaml" {

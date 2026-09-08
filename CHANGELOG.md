@@ -7,13 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
-
-- Staged WordPress updates retain content scanning and report checksum mismatches even after files move or disappear. Delayed package identification and concurrent verification now preserve the original file evidence within the queue limit.
-
 ### Fixed
 
-- A staged WordPress core or plugin update is now checked against the official wordpress.org checksums instead of trusting the directory name: stock files avoid path-only warnings, a file the official package does not ship gets its own warning, and a package with no checksum source raises a warning for the staging directory. Small updates no longer produce one warning per file because WordPress finished moving the old plugin out before real-time scanning looked for it.
+- A staged WordPress core or plugin update is now checked against the official wordpress.org checksums instead of trusting the directory name: stock files stay silent, a file the official package does not ship gets its own warning even after WordPress has moved it into place, and a package with no checksum source raises one warning for the staging directory. Small updates no longer produce one warning per file because WordPress finished moving the old plugin out before real-time scanning looked for it.
 
 ## [3.35.0] - 2026-09-08
 

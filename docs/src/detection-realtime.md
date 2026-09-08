@@ -21,13 +21,17 @@ checksum entry. Only a match against the complete event-file content verifies
 the file; missing checksums, partial content, and modifications proceed through
 normal detection. The finding retains the actual event path.
 
-Staged WordPress PHP files undergo content analysis before package verification
-controls their path-only warning. Core and plugin checksums compare the original
-event digest, including when package headers arrive late or files move into the
-installed tree. Mismatches produce per-file warnings, using the installed path
-when it still exists. Unavailable checksums, queue overflow, or a 60-second
-verification timeout produce warnings grouped by staging directory; continued
-activity can repeat a directory warning after the normal alert cooldown.
+A WordPress update is unpacked under `wp-content/upgrade/` before it is moved
+into place, and each staged PHP file is judged by hash rather than by location.
+A file that matches the official wordpress.org checksum for its package version
+is stock and skips detection like an installed stock file. A file whose
+checksums are still being fetched is content-scanned now and compared once they
+land, even if the package header was written late or WordPress has already
+moved the tree into place. A file the official package does not ship gets its
+own warning, naming the installed path when it still exists. Themes, packages
+not published on wordpress.org, a full verification queue, and a package whose
+checksums do not arrive within 60 seconds raise one warning per staging
+directory, repeated after the normal alert cooldown if activity continues.
 
 **Detects:**
 - Webshell creation (PHP files in web directories)
