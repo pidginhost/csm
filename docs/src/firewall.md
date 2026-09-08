@@ -69,6 +69,10 @@ Persistence is attempted immediately but remains best effort: a success reply
 confirms removal from memory, not durability across a restart. Check the daemon
 logs for attack database write failures if an old score returns after restart.
 
+Attack statistics and event queries use the daemon's state database or its
+configured attack database directory. If neither is available, they do not
+read event files from the working directory.
+
 ## Startup failures
 
 Overlapping, nested, duplicate, and adjacent ranges are merged for the kernel,

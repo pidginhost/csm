@@ -101,6 +101,9 @@ func TestWithoutPathIgnoresWorkingDirectoryState(t *testing.T) {
 	if events := db.QueryEvents("198.51.100.23", 10); len(events) != 0 {
 		t.Fatalf("read unrelated working-directory events: %+v", events)
 	}
+	if events := db.readAllEvents(); len(events) != 0 {
+		t.Fatalf("statistics read unrelated working-directory events: %+v", events)
+	}
 	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23", Timestamp: time.Now()})
 	if err := db.Flush(); err != nil {
 		t.Fatal(err)
@@ -132,6 +135,9 @@ func TestWithoutPathStillUsesBbolt(t *testing.T) {
 	}
 	if events := reloaded.QueryEvents("198.51.100.23", 10); len(events) != 1 || events[0].CheckName != "webshell" {
 		t.Fatalf("bbolt events lost with no flat-file path: %+v", events)
+	}
+	if events := reloaded.readAllEvents(); len(events) != 1 || events[0].CheckName != "webshell" {
+		t.Fatalf("bbolt statistics lost with no flat-file path: %+v", events)
 	}
 	entries, err := os.ReadDir(".")
 	if err != nil || len(entries) != 0 {
