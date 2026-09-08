@@ -85,7 +85,23 @@ func TestDBContentAdapterGuardRejectsDrift(t *testing.T) {
 	}
 	renamed := cms.All()
 	renamed[0].DBContentCheck = "db_content_wp"
-	if err := compareAdaptersToCMSTable(owners, renamed); err == nil {
-		t.Error("renamed WordPress owner accepted")
+	renamedOwners := append([]string(nil), owners...)
+	for i, owner := range renamedOwners {
+		if owner == "db_content" {
+			renamedOwners[i] = "db_content_wp"
+		}
+	}
+	// Keep both sets equal so only the independent WordPress pin can reject
+	// the rename, rather than the ordinary membership comparison.
+	if err := compareAdaptersToCMSTable(renamedOwners, renamed); err == nil || !strings.Contains(err.Error(), "WordPress adapter owner") {
+		t.Errorf("renamed WordPress owner accepted: %v", err)
+	}
+	duplicateOwners := append(append([]string(nil), owners...), owners[0])
+	if err := compareAdaptersToCMSTable(duplicateOwners, cms.All()); err == nil || !strings.Contains(err.Error(), "listed twice") {
+		t.Errorf("duplicate runner owner accepted: %v", err)
+	}
+	duplicateDescriptors := append(cms.All(), cms.All()[0])
+	if err := compareAdaptersToCMSTable(owners, duplicateDescriptors); err == nil || !strings.Contains(err.Error(), "declared by both") {
+		t.Errorf("duplicate descriptor owner accepted: %v", err)
 	}
 }

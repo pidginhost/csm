@@ -1,7 +1,7 @@
 // Package cms is the single declaration of the content management systems
-// CSM supports. The taint analyzer, the database adapters and the clean
-// corpus manifest are each tested against this table, so a CMS added to one
-// of them without being declared here fails the build.
+// CSM supports. Tests compare the taint analyzer's path constants and the
+// database adapter owners against this table. Clean-corpus coverage is
+// tracked separately.
 package cms
 
 import (

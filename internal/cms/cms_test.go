@@ -2,10 +2,12 @@ package cms
 
 import (
 	"go/ast"
+	"go/constant"
 	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,7 +128,8 @@ func declaredKindValues(t *testing.T) map[string]int {
 		files = append(files, f)
 	}
 	conf := types.Config{Importer: importer.Default()}
-	pkg, err := conf.Check("cms", fset, files, nil)
+	info := types.Info{Defs: make(map[*ast.Ident]types.Object)}
+	pkg, err := conf.Check("cms", fset, files, &info)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,12 +138,14 @@ func declaredKindValues(t *testing.T) map[string]int {
 		t.Fatal("type Kind not declared")
 	}
 	out := map[string]int{}
-	for _, name := range pkg.Scope().Names() {
-		c, ok := pkg.Scope().Lookup(name).(*types.Const)
+	// Package scope omits local and blank-identifier declarations. Defs
+	// retains both, including inferred aliases of a supported kind.
+	for _, obj := range info.Defs {
+		c, ok := obj.(*types.Const)
 		if !ok || !types.Identical(c.Type(), kindObj.Type()) {
 			continue
 		}
-		out[strings.Trim(c.Val().ExactString(), `"`)]++
+		out[constant.StringVal(c.Val())]++
 	}
 	return out
 }
@@ -194,6 +199,47 @@ func TestDeclaredKindConstantsMatchDescriptors(t *testing.T) {
 	}
 	if err := compareDeclaredKinds(declared, All()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeclaredKindValuesIncludesEveryDeclaration(t *testing.T) {
+	for name, source := range map[string]string{
+		"explicit":     `const Extra Kind = "future"`,
+		"inferred":     `const Extra = Kind("future")`,
+		"type alias":   `type Alias = Kind; const Extra Alias = "future"`,
+		"local":        `func f() { const Extra Kind = "future" }`,
+		"local alias":  `func f() { const Extra = WordPress }`,
+		"blank":        `const _ Kind = "future"`,
+		"implicit":     "const (\nExtra Kind = \"future\"\nAlias\n)",
+		"local shadow": `func f() { const WordPress Kind = "future" }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := map[string]string{
+				"cms.go":   "package cms\ntype Kind string\nconst WordPress Kind = \"wordpress\"\n",
+				"extra.go": "package cms\n" + source + "\n",
+			}
+			for filename, contents := range files {
+				if err := os.WriteFile(filepath.Join(dir, filename), []byte(contents), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(dir)
+			want := map[string]int{"wordpress": 1, "future": 1}
+			switch name {
+			case "local alias":
+				want = map[string]int{"wordpress": 2}
+			case "implicit":
+				want["future"] = 2
+			}
+			got := declaredKindValues(t)
+			if !maps.Equal(got, want) {
+				t.Fatalf("declared kinds = %v, want %v", got, want)
+			}
+			if err := compareDeclaredKinds(got, []Descriptor{{Kind: WordPress}}); err == nil {
+				t.Fatal("extra typed Kind declaration passed the descriptor guard")
+			}
+		})
 	}
 }
 

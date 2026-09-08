@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A new firewall command clears one address's accumulated local threat score without changing blocks, allow lists, whitelists or event history. New findings start a fresh scoring record.
 
 ### Fixed
-- The list of supported content management systems is now declared once and tested against the taint analyzer's path knowledge and the database scanners, so a CMS added to one without the other fails the build instead of silently reporting stock installs as compromised.
+- The list of supported content management systems is now declared once and tested against the taint analyzer's path knowledge and the database scanners. Tests reject incomplete or duplicate declarations; clean-corpus coverage remains separate.
 - Destination-scoped outbound rules now handle IPv4-mapped subnets correctly. Lockout warnings remain visible when an exception cannot cover the connection's address family or has invalid ports.
 - Address lookups retain available network details even when country data is missing or comes from the country-block store.
 - Service shutdown now lets the daemon stop its workers in order, closing a race that could still report an orderly restart as a worker crash.
