@@ -326,6 +326,19 @@ The stored incident includes the full correlation key, including process
 PID/UID and remote IP when those are the only available dimensions, so
 active incidents keep merging after daemon restart.
 
+## Findings from retired checks
+
+A check name that no version of CSM emits any more stays registered while
+older installations can still hold findings under it, because a finding is
+only ever cleared when its name appears in the owning runner's purge list.
+Two file-index names, `new_php_in_languages` and `new_php_in_upgrade`, are
+in that state: findings written by releases before the content-first file
+index are cleared by the next completed `file_index` scan, are kept while
+that scan is incomplete, and are kept per file while the scan reports a
+coverage gap for that file. Nothing emits them again. `php_dropper`, which
+some response tables listed, was never emitted by any release and is not
+registered.
+
 ## API
 
 - `GET /api/v1/incidents` -- list, newest first. Without query
