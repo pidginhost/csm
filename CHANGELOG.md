@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A new firewall command clears one address's accumulated local threat score without changing blocks, allow lists, whitelists or event history. New findings start a fresh scoring record.
 
 ### Fixed
+- Five of the six syscall groups the service unit meant to deny were silently discarded by systemd, so module loading, mounting and raw I/O were never blocked. The unit read as hardened while the hardening was absent.
 
 - A normal CSM restart no longer reports the YARA worker as crashed. The worker is stopped along with the daemon, and that orderly stop was raising a critical alert every time the service was restarted.
 - Clearing a local threat score now handles equivalent stored IP address spellings and concurrent requests correctly, including overlapping saves. Extra command arguments are rejected before any record is cleared.
