@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recovered file and mail scanner failures now count as lost work, so repeated panics degrade health even while workers continue scanning later events.
+
 - BPF queue health no longer reports a permanent measurement failure when a reader consumes an event during shutdown.
 
 - Dropper queue health now times probes and finding delivery from their actual start, so earlier delays do not trigger a false stalled-worker warning.

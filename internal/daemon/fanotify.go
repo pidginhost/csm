@@ -1069,14 +1069,13 @@ var fileAnalyzer = (*FileMonitor).analyzeFile
 // must not restart the daemon and reopen the detection gap for every other
 // write in flight. The caller still closes the event fd.
 func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
-	event.queueTicket.Start(time.Now())
-	defer func() { event.queueTicket.Finish(time.Now()) }()
 	defer func() {
 		if r := recover(); r != nil {
 			fm.reportScannerPanic(event.path, r)
 		}
 	}()
-	fileAnalyzer(fm, event)
+	work := queuehealth.Work[fileEvent]{Value: event, Ticket: event.queueTicket}
+	work.Process(func(queued fileEvent) { fileAnalyzer(fm, queued) })
 }
 
 // reportScannerPanic logs the panic with its stack, forwards it to

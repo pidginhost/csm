@@ -41,10 +41,13 @@ func TestSpoolScanWorkerSurvivesHandlerPanic(t *testing.T) {
 		scanCh:  make(chan spoolEvent, 4),
 		stopCh:  make(chan struct{}),
 	}
+	sw.initQueueHealth()
 	sw.wg.Add(1)
 	go sw.scanWorker()
-	sw.scanCh <- spoolEvent{path: "/spool/bad-D", fd: -1}
-	sw.scanCh <- spoolEvent{path: "/spool/good-D", fd: -1}
+	for range 3 {
+		sw.scanCh <- spoolEvent{path: "/spool/bad-D", fd: -1, queueTicket: sw.scannerHealth.Begin(time.Now())}
+	}
+	sw.scanCh <- spoolEvent{path: "/spool/good-D", fd: -1, queueTicket: sw.scannerHealth.Begin(time.Now())}
 	close(sw.scanCh)
 
 	done := make(chan struct{})
@@ -57,8 +60,11 @@ func TestSpoolScanWorkerSurvivesHandlerPanic(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(handled) != 2 || handled[1] != "/spool/good-D" {
+	if len(handled) != 4 || handled[3] != "/spool/good-D" {
 		t.Fatalf("handled = %v, want the event after the panic to be processed", handled)
+	}
+	if got := sw.scannerHealth.Snapshot(time.Now()); got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 3 || got.RecentDrops != 3 || got.Reason != "dropped_work" || got.Status != "degraded" {
+		t.Fatalf("recovered spool panic was counted as completed protection: %+v", got)
 	}
 	select {
 	case f := <-alertCh:
@@ -67,6 +73,9 @@ func TestSpoolScanWorkerSurvivesHandlerPanic(t *testing.T) {
 		}
 	default:
 		t.Fatal("no finding reported for the recovered panic")
+	}
+	if len(alertCh) != 0 {
+		t.Fatalf("spool panic findings were not bounded: %d extra", len(alertCh))
 	}
 }
 
@@ -92,10 +101,12 @@ func TestHandleSpoolEventPanicStillAllowsAndCloses(t *testing.T) {
 	// A nil config panics after handleSpoolEvent installs its response/close
 	// defer. reportScannerPanic must also tolerate the nil alert channel.
 	sw := &SpoolWatcher{fd: responsePipe[1]}
+	sw.initQueueHealth()
 	sw.handleSpoolEventSafe(spoolEvent{
-		path:     "/spool/panic-D",
-		fd:       eventPipe[0],
-		needResp: true,
+		path:        "/spool/panic-D",
+		fd:          eventPipe[0],
+		needResp:    true,
+		queueTicket: sw.scannerHealth.Begin(time.Now()),
 	})
 
 	buf := make([]byte, responseSize)
@@ -111,5 +122,8 @@ func TestHandleSpoolEventPanicStillAllowsAndCloses(t *testing.T) {
 	}
 	if _, err := unix.FcntlInt(uintptr(eventPipe[0]), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
 		t.Fatalf("event fd remained open after panic: %v", err)
+	}
+	if got := sw.scannerHealth.Snapshot(time.Now()); got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 1 {
+		t.Fatalf("failed scan disappeared after its deferred permission response: %+v", got)
 	}
 }

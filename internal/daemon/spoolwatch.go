@@ -496,14 +496,13 @@ var spoolEventHandler = (*SpoolWatcher).handleSpoolEvent
 // Re-raising would restart the daemon, and Exim would redeliver the same
 // message into the same panic.
 func (sw *SpoolWatcher) handleSpoolEventSafe(evt spoolEvent) {
-	evt.queueTicket.Start(time.Now())
-	defer func() { evt.queueTicket.Finish(time.Now()) }()
 	defer func() {
 		if r := recover(); r != nil {
 			sw.reportScannerPanic(evt.path, r)
 		}
 	}()
-	spoolEventHandler(sw, evt)
+	work := queuehealth.Work[spoolEvent]{Value: evt, Ticket: evt.queueTicket}
+	work.Process(func(queued spoolEvent) { spoolEventHandler(sw, queued) })
 }
 
 // reportScannerPanic logs the panic with its stack, forwards it to

@@ -16,7 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
-func TestFanotifyQueueHealthTracksOverflowAndWorkerCompletion(t *testing.T) {
+func TestFanotifyQueueHealthTracksOverflowAndScannerFailure(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "candidate.php")
 	if err := os.WriteFile(path, []byte("<?php return true;"), 0600); err != nil {
@@ -56,7 +56,8 @@ func TestFanotifyQueueHealthTracksOverflowAndWorkerCompletion(t *testing.T) {
 	fm.wg.Add(1)
 	fm.analyzerWorker()
 	s = d.QueueStatuses()["fanotify.analyzer"]
-	if processed != 1 || s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 3 {
+	// Three events were refused at admission; the fourth failed in the scanner.
+	if processed != 1 || s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 4 {
 		t.Fatalf("panic/drain lost work accounting: processed=%d status=%+v", processed, s)
 	}
 }
@@ -139,7 +140,7 @@ func TestSpoolQueueHealthAccountsForPanicAndCanceledAdmission(t *testing.T) {
 	}
 	sw.handleSpoolEventSafe(<-sw.scanCh)
 	s = d.QueueStatuses()["spool.scanner"]
-	if processed != 1 || s.Depth != 0 || s.InFlight != 0 {
+	if processed != 1 || s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 1 {
 		t.Fatalf("spool panic leaked tracked work: processed=%d status=%+v", processed, s)
 	}
 	assertFDClosed(t, fd, "spool scanner panic")
@@ -154,7 +155,7 @@ func TestSpoolQueueHealthAccountsForPanicAndCanceledAdmission(t *testing.T) {
 	sw.dispatchEvent(int32(fd), 2)
 	assertFDClosed(t, fd, "canceled spool admission")
 	s = d.QueueStatuses()["spool.scanner"]
-	if s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 1 {
+	if s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 2 {
 		t.Fatalf("canceled spool admission lost accounting: %+v", s)
 	}
 }

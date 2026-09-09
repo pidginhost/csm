@@ -106,6 +106,8 @@ Waiting work includes producers blocked on admission. Ingest work remains
 running while the dispatcher holds or processes its batch, including startup.
 Loss totals include the undelivered tail of a batch canceled during shutdown;
 scan warnings intentionally excluded from alerts do not count as lost work.
+Recovered file and spool scanner panics count as lost scan work. The workers
+continue processing later events, but repeated failures still degrade health.
 Staged package verification reserves capacity for its whole running batch.
 Its full-queue timer starts when admission fills the queue and continues while
 the verifier retains those slots, including between retries.
