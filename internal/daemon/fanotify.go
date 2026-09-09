@@ -154,6 +154,7 @@ type FileMonitor struct {
 	queueHealthOnce   sync.Once
 	analyzerHealth    *queuehealth.Tracker
 	kernelQueueHealth *queuehealth.Tracker
+	kernelQueue       *notificationQueue
 
 	// M7 - separate counters for dropped events and alerts
 	droppedEvents int64
@@ -618,13 +619,12 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 			// #nosec G115 -- POSIX fd fits in int32.
 			if events[i].Fd == int32(fm.fd) {
 				// fanotify events ready — single read per epoll wake
-				nr, readErr := unix.Read(fm.fd, buf)
+				fm.initQueueHealth()
+				_, readErr := fm.kernelQueue.read(buf, fm.processEvents)
 				if readErr != nil {
 					if readErr != unix.EAGAIN && readErr != unix.EINTR {
 						fmt.Fprintf(os.Stderr, "[%s] fanotify read error: %v\n", ts(), readErr)
 					}
-				} else if nr >= metadataSize {
-					fm.processEvents(buf[:nr])
 				}
 			}
 		}
@@ -652,7 +652,8 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 		default:
 		}
 
-		n, err := unix.Read(fm.fd, buf)
+		fm.initQueueHealth()
+		_, err := fm.kernelQueue.read(buf, fm.processEvents)
 		if err != nil {
 			if err == unix.EAGAIN || err == unix.EINTR {
 				time.Sleep(100 * time.Millisecond)
@@ -663,11 +664,6 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 			continue
 		}
 
-		if n < metadataSize {
-			continue
-		}
-
-		fm.processEvents(buf[:n])
 	}
 }
 
@@ -760,7 +756,8 @@ func (fm *FileMonitor) Stop() {
 			_, _ = unix.Write(fm.pipeFds[1], []byte{0})
 		}
 		// Close fanotify fd - causes any pending Read/EpollWait to return
-		_ = unix.Close(fm.fd)
+		fm.initQueueHealth()
+		_ = fm.kernelQueue.close()
 	})
 }
 

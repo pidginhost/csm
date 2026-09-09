@@ -9,10 +9,14 @@ func (s Status) Evidence() string {
 	if unit == "" {
 		unit = "items"
 	}
-	depth := fmt.Sprintf("%d/%d", s.Depth, s.Capacity)
+	pending, capacity := fmt.Sprint(s.Depth), fmt.Sprint(s.Capacity)
 	if s.DepthUnavailable {
-		depth = fmt.Sprintf("unknown/%d", s.Capacity)
+		pending = "unknown"
 	}
+	if s.CapacityUnavailable {
+		capacity = "unknown"
+	}
+	depth := pending + "/" + capacity
 	lag := fmt.Sprintf("lag=%.0fs", s.LagSeconds)
 	switch s.LagBasis {
 	case "consumer_progress":

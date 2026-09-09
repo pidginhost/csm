@@ -22,5 +22,9 @@
   {
     "Package": "github.com/pidginhost/csm/internal/daemon",
     "Name": "TestKernelConnectionQueueLoss"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestNotificationKernelQueuesExposePendingRecords"
   }
 ]

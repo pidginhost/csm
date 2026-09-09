@@ -234,9 +234,8 @@ ring buffers, the dropper tracker and the staged-package verification queue.
 Finding delivery, the analyzer, staged package verification, dropper processing
 and the spool scanner now report depth, drops and waiting/processing lag through status and
 doctor. Sustained pressure degrades health and produces bounded degradation
-and recovery findings through an independent delivery path. Kernel fanotify
-overflow records also reach health; their occupancy and lag are not measured
-yet. Dropper candidate and held-finding stages have separate bounds and health evidence,
+and recovery findings through an independent delivery path. Dropper candidate
+and held-finding stages have separate bounds and health evidence,
 including exhausted probes and shutdown losses. The remaining queues
 and the inventory completeness gate are still open.
 
@@ -244,7 +243,12 @@ BPF userspace delivery also reports pressure, decoding loss, running consumers
 and unconsumed shutdown output. Kernel rings report byte occupancy, reservation
 failures and time without observed reader progress. Their final shutdown loss
 is marked as a lower bound because kernel detachment can leave callbacks
-finishing. The other kernel queue measurements remain open.
+finishing.
+
+File and spool notification queues report pending records and stalled readers,
+with separate running-batch health after each kernel read. Overflow and unread
+shutdown counts are lower bounds; the unexposed kernel group capacity is
+explicitly unknown. Other kernel queue measurements remain open.
 
 The selected mail-log reader now reports delivery depth, stalled consumers
 and known lost records, retaining its counters across reader replacements

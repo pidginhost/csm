@@ -12,14 +12,17 @@ func (fm *FileMonitor) initQueueHealth() {
 	fm.queueHealthOnce.Do(func() {
 		fm.analyzerHealth = queuehealth.New(cap(fm.analyzerCh), time.Minute)
 		fm.kernelQueueHealth = queuehealth.New(0, time.Minute)
+		fm.kernelQueue = newNotificationQueue(fanotifyDescriptor(fm.fd), fm.kernelQueueHealth, queuehealth.New(1, time.Minute))
 	})
 }
 
 func (fm *FileMonitor) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	fm.initQueueHealth()
+	kernel, reader := fm.kernelQueue.snapshot(time.Now)
 	statuses := map[string]queuehealth.Status{
 		"fanotify.analyzer":        fm.analyzerHealth.Snapshot(now),
-		"fanotify.kernel":          fm.kernelQueueHealth.Snapshot(now),
+		"fanotify.kernel":          kernel,
+		"fanotify.reader":          reader,
 		"fanotify.staged_packages": fm.stagedPackages().snapshot(now),
 	}
 	if fm.dropper != nil {
@@ -32,6 +35,7 @@ func (sw *SpoolWatcher) initQueueHealth() {
 	sw.queueHealthOnce.Do(func() {
 		sw.scannerHealth = queuehealth.New(cap(sw.scanCh), time.Minute)
 		sw.kernelQueueHealth = queuehealth.New(0, time.Minute)
+		sw.kernelQueue = newNotificationQueue(fanotifyDescriptor(sw.fd), sw.kernelQueueHealth, queuehealth.New(1, time.Minute))
 	})
 }
 
@@ -42,13 +46,16 @@ func (sw *SpoolWatcher) inheritQueueHealth(previous *SpoolWatcher) {
 	sw.queueHealthOnce.Do(func() {
 		sw.scannerHealth = previous.scannerHealth
 		sw.kernelQueueHealth = previous.kernelQueueHealth
+		sw.kernelQueue = newNotificationQueue(fanotifyDescriptor(sw.fd), sw.kernelQueueHealth, previous.kernelQueue.batches)
 	})
 }
 
 func (sw *SpoolWatcher) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	sw.initQueueHealth()
+	kernel, reader := sw.kernelQueue.snapshot(time.Now)
 	return map[string]queuehealth.Status{
 		"spool.scanner": sw.scannerHealth.Snapshot(now),
-		"spool.kernel":  sw.kernelQueueHealth.Snapshot(now),
+		"spool.kernel":  kernel,
+		"spool.reader":  reader,
 	}
 }

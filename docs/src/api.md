@@ -154,9 +154,25 @@ for that bound. Counter lookup failure degrades the row as
 `measurement_unavailable`; a failed final sample remains degraded.
 The required kernel suite fills the shipped connection program's ring with
 real non-root connect calls and checks reservation loss and retained output.
-Kernel rows (`fanotify.kernel` and `spool.kernel`) currently count overflow
-records, not the unknown number of lost events; their zero depth, capacity
-and lag fields do not measure kernel occupancy.
+`fanotify.kernel` and `spool.kernel` report pending notification records and
+use the same consumer-progress lag measurement. Their group capacity is not
+exposed by the kernel: `capacity_unavailable: true` marks it as unknown, and
+doctor prints `depth=N/unknown records`. The current system queue limit may
+differ from the limit captured when the watcher was created.
+Their loss totals are lower bounds: each overflow record proves at least one
+loss, and shutdown adds the records known to be unread before closing the
+descriptor. Events can still arrive between that sample and close.
+An unavailable pending-record measurement degrades the row; a failed final
+sample remains degraded. Closing a descriptor leaves known zero occupancy.
+`fanotify.reader` and `spool.reader` track batches after a kernel read, until
+all records have been dispatched or filtered. A stalled batch remains visible
+even when the kernel queue is empty. Reader losses count batches interrupted
+by consumer failure, separately from kernel-record losses.
+Spool replacements retain loss and running-batch evidence, while the new
+descriptor starts its own occupancy and progress measurements. Health reads,
+event reads and permission responses cannot use a descriptor after close.
+The required kernel suite verifies pending records, stalls, drain recovery
+and unread shutdown loss using real fanotify events.
 
 A queue becomes degraded after three losses in a minute, thirty seconds
 continuously full, or a minute waiting or processing. These are operational
@@ -170,9 +186,9 @@ spool watcher also preserves it. Restarting the daemon resets the counters.
 
 Inspect worker errors and CPU, memory and I/O pressure when a queue degrades.
 Reduce competing bulk work and confirm the queue drains and recent losses
-stop. This surface currently covers finding delivery, the file analyzer,
-staged package verification, dropper processing and the mail scanner; other
-bounded queues remain listed in the roadmap.
+stop. This surface currently covers finding delivery, file and spool kernel
+readers and scanners, staged package verification, dropper processing, BPF
+queues and mail-log delivery; other bounded queues remain in the roadmap.
 
 ## GeoIP
 

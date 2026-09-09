@@ -125,6 +125,7 @@ type SpoolWatcher struct {
 	queueHealthOnce   sync.Once
 	scannerHealth     *queuehealth.Tracker
 	kernelQueueHealth *queuehealth.Tracker
+	kernelQueue       *notificationQueue
 }
 
 type spoolEvent struct {
@@ -332,12 +333,12 @@ func (sw *SpoolWatcher) Run() {
 }
 
 func (sw *SpoolWatcher) readEvents(buf []byte) {
+	sw.initQueueHealth()
 	for {
-		n, err := unix.Read(sw.fd, buf)
+		n, err := sw.kernelQueue.read(buf, sw.parseEvents)
 		if err != nil || n < metadataSize {
 			return
 		}
-		sw.parseEvents(buf[:n])
 	}
 }
 
@@ -676,7 +677,8 @@ func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 	// #nosec G103 -- serializing the fanotify response struct for the
 	// kernel write; unsafe cast to a byte slice of the exact struct size.
 	respBytes := (*[responseSize]byte)(unsafe.Pointer(&resp))[:]
-	_, err := unix.Write(sw.fd, respBytes)
+	sw.initQueueHealth()
+	_, err := sw.kernelQueue.write(respBytes)
 	if err != nil {
 		// The kernel holds blocked processes until a response is written or
 		// the fanotify fd is closed. A failed write means the fd is broken -
@@ -691,7 +693,8 @@ func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 // closeFd closes the fanotify fd exactly once, even if called from multiple paths.
 func (sw *SpoolWatcher) closeFd() {
 	if atomic.CompareAndSwapInt32(&sw.fdClosed, 0, 1) {
-		_ = unix.Close(sw.fd)
+		sw.initQueueHealth()
+		_ = sw.kernelQueue.close()
 	}
 }
 
