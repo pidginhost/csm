@@ -58,6 +58,7 @@ var systemUsers = map[string]bool{
 // identities together with underscores. Boundaries are checked by hand.
 var (
 	emailRe           = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
+	localPartRe       = regexp.MustCompile(`[A-Za-z0-9._%+-]+@`)
 	ipv6Re            = regexp.MustCompile(`[0-9A-Fa-f]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*`)
 	homePathRe        = regexp.MustCompile(`(/home\d*/)([^/\s"',;:]+)`)
 	accountRe         = regexp.MustCompile(`Account: ([A-Za-z0-9._-]+)`)
@@ -264,6 +265,16 @@ func (a *Anonymizer) Text(s string) string {
 	}
 	s = secretRe.ReplaceAllString(s, "${1}[redacted]")
 	s = emailRe.ReplaceAllStringFunc(s, func(m string) string { a.counts["emails"]++; return a.Email(m) })
+	// A mailbox truncated after the "@" still names a mailbox; map the local
+	// part the way Email does so both forms agree.
+	s = replaceLeftBounded(s, localPartRe, func(m string) (string, bool) {
+		local := m[:len(m)-1]
+		if systemUsers[local] || a.isPseudonym(local) {
+			return m, false
+		}
+		a.counts["emails"]++
+		return a.remember("user-"+a.label("mailbox", local)) + "@", true
+	})
 	s = a.scrubIPv6(s)
 	s = homePathRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := homePathRe.FindStringSubmatch(m)
@@ -275,40 +286,54 @@ func (a *Anonymizer) Text(s string) string {
 }
 
 // A field separator or a hex letter at the end of its key can be part of
-// the regex match. Try suffixes at group boundaries before rejecting it.
+// the regex match, and so can a colon that belongs to the sentence after
+// the address. Try every start after a colon and every end at a group
+// boundary, longest first, before rejecting the match.
 func (a *Anonymizer) scrubIPv6(s string) string {
 	var b strings.Builder
 	last := 0
 	for _, loc := range ipv6Re.FindAllStringIndex(s, -1) {
-		end := loc[1]
-		for end > loc[0] && s[end-1] == '.' {
-			end--
+		if loc[0] < last {
+			continue
 		}
-		for start := loc[0]; start < end; start++ {
-			if start != loc[0] && s[start-1] != ':' {
-				continue
-			}
-			if !bounded(s, start, end) {
-				continue
-			}
-			raw := s[start:end]
-			if !looksLikeIPv6(raw) {
-				continue
-			}
-			if !net.ParseIP(raw).IsLoopback() {
-				a.counts["ipv6"]++
-				b.WriteString(s[last:start])
-				b.WriteString(a.IPv6(raw))
-				last = end
-			}
-			break
+		start, end, ok := longestIPv6(s, loc[0], loc[1])
+		if !ok {
+			continue
 		}
+		raw := s[start:end]
+		if net.ParseIP(raw).IsLoopback() {
+			continue
+		}
+		a.counts["ipv6"]++
+		b.WriteString(s[last:start])
+		b.WriteString(a.IPv6(raw))
+		last = end
 	}
 	if last == 0 {
 		return s
 	}
 	b.WriteString(s[last:])
 	return b.String()
+}
+
+func longestIPv6(s string, lo, hi int) (int, int, bool) {
+	for start := lo; start < hi; start++ {
+		if start != lo && s[start-1] != ':' {
+			continue
+		}
+		if start > 0 && isAlnum(s[start-1]) {
+			continue
+		}
+		for end := hi; end > start; end-- {
+			if end < len(s) && isAlnum(s[end]) {
+				continue
+			}
+			if looksLikeIPv6(s[start:end]) {
+				return start, end, true
+			}
+		}
+	}
+	return 0, 0, false
 }
 
 // token rewrites one name-shaped token (letters, digits, dots, hyphens).
@@ -501,6 +526,42 @@ func replaceBounded(s string, re *regexp.Regexp, fn func(m string) (string, bool
 	return b.String()
 }
 
+// findBoundedMatches returns the matches of re that are not glued to a
+// letter or digit on the left; the match itself ends at a separator.
+func findBoundedMatches(s string, re *regexp.Regexp) []string {
+	var out []string
+	for _, loc := range re.FindAllStringIndex(s, -1) {
+		if loc[0] == 0 || !isAlnum(s[loc[0]-1]) {
+			out = append(out, s[loc[0]:loc[1]])
+		}
+	}
+	return out
+}
+
+// replaceLeftBounded applies fn to every match of re that is not glued to
+// a letter or digit on the left; the match itself ends at a separator.
+func replaceLeftBounded(s string, re *regexp.Regexp, fn func(m string) (string, bool)) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range re.FindAllStringIndex(s, -1) {
+		if loc[0] > 0 && isAlnum(s[loc[0]-1]) {
+			continue
+		}
+		r, ok := fn(s[loc[0]:loc[1]])
+		if !ok {
+			continue
+		}
+		b.WriteString(s[last:loc[0]])
+		b.WriteString(r)
+		last = loc[1]
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
 func bounded(s string, start, end int) bool {
 	return (start == 0 || !isAlnum(s[start-1])) && (end == len(s) || !isAlnum(s[end]))
 }
@@ -564,9 +625,21 @@ func (a *Anonymizer) leaksIn(text string) []string {
 			found["host "+name] = struct{}{}
 		}
 	}
+	// Pseudonyms this run emitted are blanked first, so a token that now
+	// reads "kit-dom-xxxxxx.example" is not mistaken for a domain. Only
+	// emitted values are blanked; a raw name shaped like one stays visible.
+	masked := replaceBounded(lowerText, emittedNameRe, func(m string) (string, bool) {
+		return " ", a.isPseudonym(m)
+	})
 	// This pass deliberately does not use Text, scrubTokens or labelBounds:
 	// a replacement bug must not also disable the final refusal check.
-	for _, candidate := range domainCandidateRe.FindAllString(lowerText, -1) {
+	for _, loc := range domainCandidateRe.FindAllStringIndex(masked, -1) {
+		// A candidate that stops inside a token ("el" of "el8") is a version
+		// or a temp-file suffix, not a name.
+		if !bounded(masked, loc[0], loc[1]) {
+			continue
+		}
+		candidate := masked[loc[0]:loc[1]]
 		for end := len(candidate); end > 0; end-- {
 			if end != len(candidate) && candidate[end] != '.' && candidate[end] != '-' {
 				continue
@@ -577,9 +650,6 @@ func (a *Anonymizer) leaksIn(text string) []string {
 			}
 		}
 	}
-	masked := replaceBounded(lowerText, emittedNameRe, func(m string) (string, bool) {
-		return " ", a.isPseudonym(m)
-	})
 	for name := range a.accounts {
 		if containsLabel(masked, name) {
 			found["account "+name] = struct{}{}
@@ -620,6 +690,11 @@ func (a *Anonymizer) leaksIn(text string) []string {
 	for _, m := range emailRe.FindAllString(text, -1) {
 		local, domain, _ := strings.Cut(m, "@")
 		if !a.isPseudonym(local) || !a.isPseudonym(domain) {
+			found["mailbox "+m] = struct{}{}
+		}
+	}
+	for _, m := range findBoundedMatches(text, localPartRe) {
+		if local := m[:len(m)-1]; !systemUsers[local] && !a.isPseudonym(local) {
 			found["mailbox "+m] = struct{}{}
 		}
 	}

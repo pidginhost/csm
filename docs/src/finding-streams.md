@@ -21,7 +21,8 @@ go run ./scripts/finding-stream anonymize \
 What the tool replaces, in every structured field and in free text:
 
 - Host names become `host-<id>`, account names `acct-<id>`, domains
-  `dom-<id>.example`, mailboxes `user-<id>@dom-<id>.example`. The `<id>` is
+  `dom-<id>.example`, mailboxes `user-<id>@dom-<id>.example` (a mailbox
+  truncated after the `@` keeps the same `user-<id>`). The `<id>` is
   derived from an HMAC of the value under a private salt, so the same salt
   maps one account to one pseudonym on every host and streams can be joined
   without knowing who is who. Names are replaced wherever they sit: in

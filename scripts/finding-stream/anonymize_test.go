@@ -445,3 +445,98 @@ func TestLearnRejectsFileNamesAndNumbers(t *testing.T) {
 		t.Fatalf("clean output reported leaks: %v", problems)
 	}
 }
+
+// An address followed by a colon ("from <addr>: 44 requests") must still
+// be replaced: the trailing colon belongs to the sentence, not the address.
+func TestAnonymizerScrubsIPv6BeforeTrailingColon(t *testing.T) {
+	e := alert.AuditEvent{
+		V: 1, Check: "auto_block", Severity: "CRITICAL",
+		Message:  "AUTO-BLOCK: 2001:db8:1::7 blocked (expires in 24h0m0s)",
+		Details:  "Reason: XML-RPC abuse from 2001:db8:1::7: 44 requests; also 2001:db8:: and [2001:db8:2::9]:443",
+		Hostname: "host7.example.com",
+	}
+	a := NewAnonymizer(testSalt())
+	a.Learn([]alert.AuditEvent{e})
+	got := a.Event(e)
+	one := a.IPv6("2001:db8:1::7")
+	for _, want := range []string{"from " + one + ": 44 requests", "AUTO-BLOCK: " + one + " blocked", "also " + a.IPv6("2001:db8::") + " and", "[" + a.IPv6("2001:db8:2::9") + "]:443"} {
+		if !strings.Contains(got.Message+"\n"+got.Details, want) {
+			t.Errorf("missing %q in %q / %q", want, got.Message, got.Details)
+		}
+	}
+	for _, raw := range []string{"2001:db8:1::7", "2001:db8:2::9", "2001:db8:: "} {
+		if strings.Contains(got.Details, raw) {
+			t.Errorf("%q survived: %q", raw, got.Details)
+		}
+	}
+}
+
+// A domain-shaped prefix of a longer token is not a domain: package
+// versions end in "el8" or "fc39", temp files in random suffixes.
+func TestVerifyIgnoresDomainShapedPrefixesOfTokens(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	a.Learn([]alert.AuditEvent{{TenantID: "alice"}})
+	clean := alert.AuditEvent{Details: "kmod-1.40.16-20.el8 python3-4.3.1-3.fc39 /lib/modules/weak-modules.bcvn9 /tmp/example.com7"}
+	if problems := a.Verify([]alert.AuditEvent{clean}); len(problems) != 0 {
+		t.Fatalf("version strings reported as domains: %v", problems)
+	}
+	if got := a.Text(clean.Details); got != clean.Details {
+		t.Fatalf("version strings rewritten: %q", got)
+	}
+	dirty := alert.AuditEvent{Details: "kmod-1.40.16-20.el8 from example.com7.example.org and www.example.net"}
+	problems := strings.Join(a.Verify([]alert.AuditEvent{dirty}), "\n")
+	for _, want := range []string{"domain example.com7.example.org", "domain www.example.net"} {
+		if !strings.Contains(problems, want) {
+			t.Errorf("Verify missed %q: %s", want, problems)
+		}
+	}
+}
+
+// A pseudonym replaced inside a longer token ("kit-<domain>" whose domain
+// was learned) leaves a token that reads like a domain; that is not a leak.
+// The raw form of the same token must still be one.
+func TestVerifyIgnoresEmittedPseudonymsInsideTokens(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	a.Learn([]alert.AuditEvent{{Domain: "example.com", TenantID: "alice"}})
+	clean := alert.AuditEvent{Details: "kit at assistant-server-credentials-" + a.Domain("example.com") + " owner backup-" + a.Account("alice") + ".log"}
+	if problems := a.Verify([]alert.AuditEvent{clean}); len(problems) != 0 {
+		t.Fatalf("pseudonym inside a token reported as a leak: %v", problems)
+	}
+	dirty := alert.AuditEvent{Details: "kit at assistant-server-credentials-example.com owner backup-alice.log"}
+	problems := strings.Join(a.Verify([]alert.AuditEvent{dirty}), "\n")
+	for _, want := range []string{"domain example.com", "account alice"} {
+		if !strings.Contains(problems, want) {
+			t.Errorf("Verify missed %q: %s", want, problems)
+		}
+	}
+}
+
+// A mailbox truncated after the "@" ("alice@ex...") still names a mailbox.
+// Its local part is mapped like the full address so both agree; system
+// users and pseudonyms pass through.
+func TestAnonymizerScrubsTruncatedMailboxes(t *testing.T) {
+	e := alert.AuditEvent{
+		V: 1, Check: "mail_account_spray",
+		Message: "spray against alice@ex... and alice@example.com from root@localhost; see <@base64>",
+	}
+	a := NewAnonymizer(testSalt())
+	a.Learn([]alert.AuditEvent{e})
+	got := a.Event(e).Message
+	full := a.Email("alice@example.com")
+	local, _, _ := strings.Cut(full, "@")
+	for _, want := range []string{"against " + local + "@ex... and " + full + " from root@localhost", "<@base64>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "alice") {
+		t.Errorf("local part survived: %q", got)
+	}
+	if problems := a.Verify([]alert.AuditEvent{a.Event(e)}); len(problems) != 0 {
+		t.Fatalf("clean output reported leaks: %v", problems)
+	}
+	raw := strings.Join(a.Verify([]alert.AuditEvent{e}), "\n")
+	if !strings.Contains(raw, "mailbox alice@") {
+		t.Errorf("Verify missed the truncated mailbox: %s", raw)
+	}
+}
