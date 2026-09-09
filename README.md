@@ -69,6 +69,7 @@ The baseline signs the binary, `csm.yaml`, and every non-exempt conf.d drop-in. 
 
 ## Safety defaults
 
+- `mode: observe` runs detection and alerting with no host changes at all, and refuses a config that still enables a state-changing subsystem. See [Observe mode](docs/src/observe-mode.md).
 - Auto-response is disabled until explicitly enabled.
 - Automatic IP and subnet blocking starts in dry-run unless `auto_response.dry_run: false` is explicit. This is a network-response guard, not a universal simulation mode for file cleanup or process actions.
 - Exposed-file virtual patches are off by default. Set manual mode to preview or apply them by hand. Automatic mode also requires auto-response and honors its dry-run setting.

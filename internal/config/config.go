@@ -157,6 +157,15 @@ type Config struct {
 
 	Hostname string `yaml:"hostname" hotreload:"restart"`
 
+	// Mode is the operator's posture for this host. "enforce" (default)
+	// leaves every subsystem under its own switch. "observe" declares that
+	// CSM must not change host state: the daemon skips the host integration
+	// files it otherwise deploys at startup, and a config that still enables
+	// a state-changing subsystem is refused by name instead of being
+	// silently rewritten. Rewriting would be persisted: the config
+	// re-signing path marshals the in-memory config back over csm.yaml.
+	Mode string `yaml:"mode" hotreload:"restart"`
+
 	Alerts struct {
 		Email struct {
 			Enabled        bool     `yaml:"enabled"`
@@ -1615,6 +1624,11 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/var/lib/csm/state"
 	}
+	if cfg.Mode == "" {
+		cfg.Mode = ModeEnforce
+	} else {
+		cfg.Mode = normalizeMode(cfg.Mode)
+	}
 	// Binary immutability defaults on; a config written before the key existed
 	// must not read as "disable protection". Explicit false is kept.
 	if !presence.integrityImmutable {
@@ -2168,6 +2182,9 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	applyDefaults(cfg, presence)
+	if err := validateMode(cfg); err != nil {
+		return nil, err
+	}
 	if err := validateWebUITokens(cfg); err != nil {
 		return nil, err
 	}

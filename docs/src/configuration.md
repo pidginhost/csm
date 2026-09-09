@@ -7,6 +7,16 @@ at daemon startup. After changing an environment file, restart the daemon;
 configuration reload alone does not import those changes. See
 [credential rotation](credential-rotation.md) for the systemd procedure.
 
+## Operating mode
+
+`mode` declares what CSM may do to the host. `enforce` (default) leaves every
+subsystem under its own switch; `observe` runs detection and alerting and
+changes no host state. Full reference: [Observe mode](observe-mode.md).
+
+```yaml
+mode: enforce
+```
+
 ## Platform & Web Server
 
 CSM auto-detects the host OS (Ubuntu, Debian, AlmaLinux, Rocky, RHEL, CloudLinux), control panel (cPanel, Plesk, DirectAdmin, or none), and web server (Apache, Nginx, LiteSpeed, or none) at daemon startup. The detected platform is logged as:

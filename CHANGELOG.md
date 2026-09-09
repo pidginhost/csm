@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mode: observe` runs CSM as a detection-only sensor: nothing outside its own state, log and quarantine directories is written, including the auditd rules and panel integration files it otherwise refreshes at startup. A config that still enables a state-changing subsystem is refused at load, naming every conflicting key.
+
 - `firewall.tcp_out_allow` permits outbound TCP to a destination IP or CIDR on a port range, which `tcp_out` cannot express; it is emitted after the `smtp_block` guard and warns when the destination is `0.0.0.0/0`.
 - A new firewall command clears one address's accumulated local threat score without changing blocks, allow lists, whitelists or event history. New findings start a fresh scoring record.
 - An optional cron entry for nightly automatic upgrades, shipped switched off. It is installed alongside the other sample configuration and does nothing until an operator copies it into place; the file explains how, and warns about switching development builds to the release channel.

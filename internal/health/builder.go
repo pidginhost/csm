@@ -22,6 +22,7 @@ type Provider interface {
 	DryRunBlocksCount() int
 	AutomationStatus() AutomationStatus
 	UpdateInfo() UpdateInfo
+	Mode() string
 }
 
 // Build assembles a Snapshot from the provider plus the static version
@@ -55,6 +56,7 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 		DryRunBlocks:         p.DryRunBlocksCount(),
 		Automation:           p.AutomationStatus(),
 		Update:               p.UpdateInfo(),
+		Mode:                 p.Mode(),
 	}
 }
 

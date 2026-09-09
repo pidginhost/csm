@@ -654,22 +654,7 @@ func (d *Daemon) Run() error {
 		return err
 	}
 
-	// Self-heal the auditd rules file. Package upgrades sometimes ship
-	// a new csm binary without re-running auditd.Deploy() (postinstall
-	// hooks differ across apt/dnf and across operator deploy automation),
-	// which leaves new rules — including detection layers like
-	// csm_af_alg_socket — silently inactive on the upgraded host. The
-	// startup compare-and-redeploy here closes that gap. Errors are
-	// non-fatal: if auditd is absent or augenrules fails, the rest of
-	// CSM still runs.
-	if redeployed, err := auditd.EnsureDeployed(); err != nil {
-		csmlog.Warn("auditd rules ensure failed", "err", err)
-	} else if redeployed {
-		csmlog.Info("auditd rules redeployed (drift from embedded constant)")
-	}
-
-	// Deploy WHM plugin and configs if cPanel is present
-	deployConfigs()
+	d.applyStartupIntegrations()
 
 	// Initialize signature scanners and threat DB (fast, no I/O scan)
 	d.registerBuildInfo()
@@ -3358,6 +3343,36 @@ func (d *Daemon) reloadSignatures() {
 		}
 	}
 	d.reportRealtimeRuleCoverage(yamlRuleCount(), yaraRules, yaraActive)
+}
+
+// ensureAuditdRules and deployHostConfigs are indirected so the observe-mode
+// gate around them can be tested without a host to write to.
+var (
+	ensureAuditdRules = auditd.EnsureDeployed
+	deployHostConfigs = deployConfigs
+)
+
+// applyStartupIntegrations refreshes the host-side files CSM owns: the auditd
+// rules, the WHM plugin, the ModSecurity section and the deploy script. None
+// of them has a switch of its own, so observe mode is what turns them off.
+//
+// Self-healing the auditd rules matters because package upgrades sometimes
+// ship a new csm binary without re-running auditd.Deploy() (postinstall hooks
+// differ across apt/dnf and across operator deploy automation), which leaves
+// new rules -- including detection layers like csm_af_alg_socket -- silently
+// inactive on the upgraded host. Errors are non-fatal: if auditd is absent or
+// augenrules fails, the rest of CSM still runs.
+func (d *Daemon) applyStartupIntegrations() {
+	if d.cfg.ObserveMode() {
+		csmlog.Info("observe mode: skipping host integration deploy (auditd rules, WHM plugin, ModSecurity section, deploy script)")
+		return
+	}
+	if redeployed, err := ensureAuditdRules(); err != nil {
+		csmlog.Warn("auditd rules ensure failed", "err", err)
+	} else if redeployed {
+		csmlog.Info("auditd rules redeployed (drift from embedded constant)")
+	}
+	deployHostConfigs()
 }
 
 // deployConfigs writes embedded config files to their system locations on startup.

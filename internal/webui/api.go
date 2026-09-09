@@ -87,6 +87,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"capabilities":           snap.Capabilities,
 		"dry_run_blocks":         snap.DryRunBlocks,
 		"automation":             snap.Automation,
+		"mode":                   snap.Mode,
 		"status":                 snap.OverallStatus(),
 	}
 

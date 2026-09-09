@@ -714,6 +714,12 @@ func deployDefaultConfig(path string) error {
 
 hostname: "SET_HOSTNAME_HERE"
 
+# enforce (default): every subsystem acts under its own switch.
+# observe: detection, correlation and alerting only. CSM changes no host
+# state, and a config that still enables a state-changing subsystem is
+# refused at startup by name. See docs/src/observe-mode.md.
+mode: "enforce"
+
 alerts:
   email:
     enabled: true

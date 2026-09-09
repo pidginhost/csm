@@ -60,6 +60,7 @@ func (f statusFakeProvider) AutomationStatus() health.AutomationStatus {
 	return f.automation
 }
 func (f statusFakeProvider) UpdateInfo() health.UpdateInfo { return f.update }
+func (f statusFakeProvider) Mode() string                  { return "enforce" }
 
 var _ health.Provider = statusFakeProvider{}
 

@@ -743,6 +743,9 @@ func printStatusHuman(s control.StatusResult) {
 	fmt.Printf("history count:    %d\n", s.HistoryCount)
 	fmt.Printf("dropped alerts:   %d\n", s.DroppedAlerts)
 	if s.Snapshot != nil {
+		if s.Snapshot.Mode != "" {
+			fmt.Printf("mode:             %s\n", s.Snapshot.Mode)
+		}
 		printAutomationStatusHuman(s.Snapshot.Automation)
 	}
 }

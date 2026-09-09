@@ -79,6 +79,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.OverallStatus = collapseDoctor(report.Checks)
 		return report
 	}
+	report.Checks = append(report.Checks, doctorModeCheck(cfg))
 	validationChecks, invalid := doctorConfigValidation(cfg)
 	report.Checks = append(report.Checks, validationChecks...)
 	if invalid {
@@ -231,6 +232,24 @@ func doctorIntegrityCheck(cfg *config.Config, verify func(*config.Config) error)
 		check.Fix = "fix the read error, then run `csm verify`"
 	}
 	return check
+}
+
+// doctorModeCheck reports the operator's posture. It never fails: an invalid
+// mode is rejected at config load, so by the time doctor runs the value is one
+// of the two supported postures.
+func doctorModeCheck(cfg *config.Config) DoctorCheck {
+	if cfg.ObserveMode() {
+		return DoctorCheck{
+			Name:    "operating mode",
+			Status:  "ok",
+			Message: config.ModeObserve + " (detection and alerting only, no host changes)",
+		}
+	}
+	return DoctorCheck{
+		Name:    "operating mode",
+		Status:  "ok",
+		Message: config.ModeEnforce + " (subsystems act under their own switches)",
+	}
 }
 
 func doctorConfigValidation(cfg *config.Config) ([]DoctorCheck, bool) {
