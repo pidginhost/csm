@@ -74,9 +74,9 @@ follow-up, not claims of current detection by this rule:
 
 | Deferred case | Examples to restore |
 | --- | --- |
-| Constructed parameter lists | Array lookup, concatenation, `implode(',', $args)` and `chr(100/(1+1))` as the first argument |
+| Constructed parameter lists | Concatenation and `chr(100/(1+1))` as the first argument; array lookups and short helper calls are covered |
 | Comments between arguments | Block comments with embedded commas, and line comments before the body source |
-| Constructed body expressions | String concatenation with request input, grouped concatenation, parenthesized decoders and `trim(base64_decode($payload))` |
+| Constructed body expressions | Grouped concatenation, parenthesized decoders and `trim(base64_decode($payload))`; a single literal concatenated onto request input is covered |
 | Interpolated bodies | A double-quoted body such as `"return {$_POST['code']};"` |
 | Literal executable bodies | `eval($x)` or string-capable `assert($x)`, with statements, strings or comments before them; both outer quote styles and escaped quotes |
 | Literal expression contexts | `return`, `or`, `do`, `case`, `include`, `include_once`, `require`, `require_once`, `clone`, `yield from`, comparisons, shifts and inequality before an execution sink |
