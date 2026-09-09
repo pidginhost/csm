@@ -231,11 +231,13 @@ recorded-stream evidence.
 The daemon has several bounded queues between the kernel and an alert: the
 fanotify analyzer queue, the alert channel, the spool and log watchers, the BPF
 ring buffers, the dropper tracker and the staged-package verification queue.
-Finding delivery, the analyzer, staged package verification and the spool
-scanner now report depth, drops and waiting/processing lag through status and
+Finding delivery, the analyzer, staged package verification, dropper processing
+and the spool scanner now report depth, drops and waiting/processing lag through status and
 doctor. Sustained pressure degrades health and produces bounded degradation
 and recovery findings through an independent delivery path. Kernel fanotify
-overflow records also reach health; their occupancy and lag are not measured yet. The remaining queues
+overflow records also reach health; their occupancy and lag are not measured
+yet. Dropper candidate and held-finding stages have separate bounds and health evidence,
+including exhausted probes and shutdown losses. The remaining queues
 and the inventory completeness gate are still open.
 
 A queue that silently sheds findings is the same failure as a table that

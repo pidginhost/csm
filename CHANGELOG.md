@@ -9,9 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Status and doctor now report overdue dropper probes, delayed findings and abandoned work.
+
 - Status and doctor now expose delayed or dropped package verification work. Repeated retries retain their original waiting time, and a stalled verifier remains visible while it holds a batch.
 
 - Status and doctor now report delayed and dropped work in finding delivery and the realtime file and mail scanners. Sustained overload degrades health and raises a bounded notification even when the normal findings channel is full, with a recovery event once pressure clears.
+
+### Security
+
+- Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
 

@@ -78,8 +78,9 @@ func (q *Tracker) Begin(now time.Time) Ticket {
 	return q.BeginAt(now, now)
 }
 
-// BeginAt retains an earlier waiting age while starting capacity accounting
-// at admission. Earlier delays must not backdate sustained saturation.
+// BeginAt sets the waiting-age origin independently of admission. Earlier
+// delays must not backdate saturation; a future origin defers lag until the
+// work is eligible to run.
 func (q *Tracker) BeginAt(queuedAt, now time.Time) Ticket {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -118,6 +119,41 @@ func (t Ticket) Requeue(now time.Time) {
 	q.pending[t.id] = w
 	q.waiting++
 	q.updateFull(now)
+}
+
+// RetainQueuedAt preserves earlier eligibility when observations coalesce.
+// A later observation must never postpone work that was already overdue.
+func (t Ticket) RetainQueuedAt(queuedAt time.Time) {
+	if t.tracker == nil {
+		return
+	}
+	q := t.tracker
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	w := q.pending[t.id]
+	if queuedAt.Before(w.queued) {
+		w.queued = queuedAt
+		q.pending[t.id] = w
+	}
+}
+
+// MergeRunning absorbs a distinct running ticket on the same tracker into
+// this waiting ticket. The caller retains only this ticket. Keeping the
+// older age and completing the running ticket atomically avoids inventing
+// an available waiting slot while coalescing a retry with new work.
+func (t Ticket) MergeRunning(running Ticket, now time.Time) {
+	if t.tracker == nil {
+		return
+	}
+	q := t.tracker
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	w := q.pending[t.id]
+	if earlier := q.pending[running.id].queued; earlier.Before(w.queued) {
+		w.queued = earlier
+	}
+	q.pending[t.id] = w
+	q.finish(running.id, now)
 }
 
 func (t Ticket) Finish(now time.Time) {

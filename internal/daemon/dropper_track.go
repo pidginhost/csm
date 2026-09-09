@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // dropperCandidate captures the fstat/read state of a file at close-write
@@ -49,6 +50,7 @@ type dropperCandidate struct {
 	// candidate while its event fd was open. The later probe uses this stable
 	// identity instead of inferring directory removal from two path stats.
 	Parent dropperParentIdentity
+	ticket queuehealth.Ticket
 }
 
 // dropperParentIdentity is deliberately compact because one is retained for
@@ -142,7 +144,7 @@ const (
 // provides cover.
 const dropperMaxTracked = 16384
 
-// Keep the retained head-byte budget at 16 MiB even with the larger tracker.
+// Keep each waiting or detached batch's head-byte budget at 16 MiB.
 // Candidate/map/path metadata is additional bounded memory and grows with the
 // entry cap; this constant only accounts for copied content. Representative
 // Twig and Smarty headers place all required markers inside this window.
@@ -204,6 +206,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 			merged.BirthKnown = true
 		}
 	}
+	merged.ticket = prev.ticket
 	return merged
 }
 
@@ -217,6 +220,10 @@ type dropperTracker struct {
 	entries    map[dropperCandidateKey]dropperCandidate
 	pending    []dropperGone
 	overflow   uint64
+	now        func() time.Time
+	healthOnce sync.Once
+	health     *queuehealth.Tracker
+	heldHealth *queuehealth.Tracker
 }
 
 func newDropperTracker(ttl time.Duration) *dropperTracker {
@@ -224,7 +231,20 @@ func newDropperTracker(ttl time.Duration) *dropperTracker {
 		ttl:        ttl,
 		maxTracked: dropperMaxTracked,
 		entries:    make(map[dropperCandidateKey]dropperCandidate),
+		now:        time.Now,
 	}
+}
+
+func (t *dropperTracker) initQueueHealth() {
+	t.healthOnce.Do(func() {
+		t.health = queuehealth.New(t.maxTracked, time.Minute)
+		t.heldHealth = queuehealth.New(dropperMaxTracked, time.Minute)
+	})
+}
+
+func (t *dropperTracker) queueStatuses(now time.Time) (queuehealth.Status, queuehealth.Status) {
+	t.initQueueHealth()
+	return t.health.Snapshot(now), t.heldHealth.Snapshot(now)
 }
 
 // Observe records a candidate. Re-observing the same file identity keeps the
@@ -236,20 +256,47 @@ func newDropperTracker(ttl time.Duration) *dropperTracker {
 // result is detection coverage loss and the Linux wiring must surface it as
 // a metric and operator-facing warning.
 func (t *dropperTracker) Observe(c dropperCandidate) bool {
+	t.initQueueHealth()
 	c = ownDropperCandidate(c)
 	key := candidateKey(c)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if prev, ok := t.entries[key]; ok {
 		t.entries[key] = mergeDropperCandidate(prev, c)
+		prev.ticket.RetainQueuedAt(c.Observed.Add(t.ttl))
 		return true
 	}
 	if len(t.entries) >= t.maxTracked {
 		t.overflow++
+		t.health.Lose(t.now(), 1)
 		return false
 	}
+	c.ticket = t.health.BeginAt(c.Observed.Add(t.ttl), t.now())
 	t.entries[key] = c
 	return true
+}
+
+// Retry returns a detached probe to the waiting set. A new observation may
+// already occupy its identity or the available slot, so this transfer must
+// share the admission lock with Observe.
+func (t *dropperTracker) Retry(c dropperCandidate) (queuehealth.Ticket, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := candidateKey(c)
+	now := t.now()
+	if waiting, ok := t.entries[key]; ok {
+		waiting.ticket.MergeRunning(c.ticket, now)
+		t.entries[key] = mergeDropperCandidate(waiting, c)
+		return waiting.ticket, true
+	}
+	if len(t.entries) >= t.maxTracked {
+		t.overflow++
+		c.ticket.Reject(now)
+		return queuehealth.Ticket{}, false
+	}
+	c.ticket.Requeue(now)
+	t.entries[key] = c
+	return c.ticket, true
 }
 
 // Refresh updates a previously admitted candidate without creating a new
@@ -266,6 +313,7 @@ func (t *dropperTracker) Refresh(c dropperCandidate) bool {
 	defer t.mu.Unlock()
 	if prev, ok := t.entries[key]; ok {
 		t.entries[key] = mergeDropperCandidate(prev, c)
+		prev.ticket.RetainQueuedAt(c.Observed.Add(t.ttl))
 		return true
 	}
 	if c.Inode == 0 {
@@ -282,11 +330,9 @@ func (t *dropperTracker) Refresh(c dropperCandidate) bool {
 			continue
 		}
 		merged := mergeDropperCandidate(prev, c)
+		prev.ticket.RetainQueuedAt(c.Observed.Add(t.ttl))
 		delete(t.entries, prevKey)
 		mergedKey := candidateKey(merged)
-		if existing, ok := t.entries[mergedKey]; ok {
-			merged = mergeDropperCandidate(existing, merged)
-		}
 		t.entries[mergedKey] = merged
 		return true
 	}
@@ -300,6 +346,7 @@ func (t *dropperTracker) Due(now time.Time) []dropperCandidate {
 	var due []dropperCandidate
 	for key, c := range t.entries {
 		if now.Sub(c.Observed) >= t.ttl {
+			c.ticket.Start(now)
 			due = append(due, c)
 			delete(t.entries, key)
 		}
@@ -317,6 +364,21 @@ func (t *dropperTracker) overflowDropped() uint64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.overflow
+}
+
+// discardPending runs after both the probe loop and analyzer workers join.
+// Analyzer work finishing during shutdown can still admit fresh candidates.
+func (t *dropperTracker) discardPending(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, c := range t.entries {
+		c.ticket.Reject(now)
+	}
+	clear(t.entries)
+	for _, g := range t.pending {
+		g.ticket.Reject(now)
+	}
+	t.pending = nil
 }
 
 // dropperFileState is the identity and content evidence captured when the
@@ -413,7 +475,7 @@ func dropperReplacedInPlace(c dropperCandidate, current dropperFileState) bool {
 func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if !p.Conclusive {
 		// Due removed this candidate from the tracker. The probe loop should
-		// reinsert it with Observe and handle a false capacity result.
+		// reinsert it with Retry and handle a false capacity result.
 		return dropperInconclusive
 	}
 	if p.QuarantineMatched {
@@ -560,6 +622,7 @@ type dropperGone struct {
 	Cand    dropperCandidate
 	Verdict dropperVerdict
 	held    time.Time
+	ticket  queuehealth.Ticket
 }
 
 // dropperFinding is one flush decision: either a single vanished file or a
@@ -576,9 +639,18 @@ func (t *dropperTracker) HoldGone(c dropperCandidate, v dropperVerdict, now time
 	if v == dropperBenign || v == dropperInconclusive {
 		return
 	}
+	t.initQueueHealth()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.pending = append(t.pending, dropperGone{Cand: ownDropperCandidate(c), Verdict: v, held: now})
+	if len(t.pending) >= dropperMaxTracked {
+		t.heldHealth.Lose(t.now(), 1)
+		return
+	}
+	c.ticket = queuehealth.Ticket{}
+	t.pending = append(t.pending, dropperGone{
+		Cand: ownDropperCandidate(c), Verdict: v, held: now,
+		ticket: t.heldHealth.BeginAt(now.Add(dropperGraceWindow), t.now()),
+	})
 }
 
 // FlushDue emits findings for docroot groups whose oldest held entry has
@@ -609,6 +681,7 @@ func (t *dropperTracker) FlushDue(now time.Time) []dropperFinding {
 	for _, g := range t.pending {
 		key := keyFor(g)
 		if now.Sub(oldest[key]) >= dropperGraceWindow {
+			g.ticket.Start(now)
 			groups[key] = append(groups[key], g)
 		} else {
 			keep = append(keep, g)

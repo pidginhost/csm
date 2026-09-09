@@ -17,11 +17,15 @@ func (fm *FileMonitor) initQueueHealth() {
 
 func (fm *FileMonitor) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	fm.initQueueHealth()
-	return map[string]queuehealth.Status{
+	statuses := map[string]queuehealth.Status{
 		"fanotify.analyzer":        fm.analyzerHealth.Snapshot(now),
 		"fanotify.kernel":          fm.kernelQueueHealth.Snapshot(now),
 		"fanotify.staged_packages": fm.stagedPackages().snapshot(now),
 	}
+	if fm.dropper != nil {
+		statuses["fanotify.dropper"], statuses["fanotify.dropper_findings"] = fm.dropper.tr.queueStatuses(now)
+	}
+	return statuses
 }
 
 func (sw *SpoolWatcher) initQueueHealth() {

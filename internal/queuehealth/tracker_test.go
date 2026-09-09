@@ -181,3 +181,50 @@ func TestTrackerAdmissionAgeDoesNotBackdateSaturation(t *testing.T) {
 	}
 	item.Finish(now.Add(31 * time.Second))
 }
+
+func TestTrackerMergeRetainsAgeAndOccupiedWaitingSlot(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(1, time.Minute)
+	active := q.Begin(now)
+	active.Start(now.Add(time.Second))
+	waiting := q.Begin(now.Add(10 * time.Second))
+	waiting.MergeRunning(active, now.Add(41*time.Second))
+	if got := q.Snapshot(now.Add(42 * time.Second)); got.Depth != 1 || got.InFlight != 0 || got.LagSeconds != 42 || got.Status != "degraded" || got.Reason != "queue_full" || got.DroppedTotal != 0 {
+		t.Fatalf("coalescing a retry reset age, capacity or accounting: %+v", got)
+	}
+	waiting.Start(now.Add(43 * time.Second))
+	waiting.Finish(now.Add(44 * time.Second))
+	if got := q.Snapshot(now.Add(45 * time.Second)); got.Status != "ok" || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("merged work did not finish exactly once: %+v", got)
+	}
+}
+
+func TestTrackerDeferredWorkMeasuresOnlyOverdueLag(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(2, time.Minute)
+	item := q.BeginAt(now.Add(3*time.Minute), now)
+	if got := q.Snapshot(now.Add(2 * time.Minute)); got.Status != "ok" || got.Depth != 1 || got.LagSeconds != 0 {
+		t.Fatalf("intentional delay reported backlog lag: %+v", got)
+	}
+	if got := q.Snapshot(now.Add(4 * time.Minute)); got.Status != "degraded" || got.Reason != "backlog_lag" || got.LagSeconds != 60 {
+		t.Fatalf("overdue work did not report lag after eligibility: %+v", got)
+	}
+	item.Start(now.Add(4*time.Minute + time.Second))
+	if got := q.Snapshot(now.Add(5*time.Minute + 2*time.Second)); got.Status != "degraded" || got.Reason != "processing_lag" || got.ProcessingSeconds != 61 {
+		t.Fatalf("intentional waiting delay extended the processing budget: %+v", got)
+	}
+	item.Finish(now.Add(5*time.Minute + 3*time.Second))
+}
+
+func TestTrackerRetainsEarlierEligibility(t *testing.T) {
+	now := time.Now()
+	q := New(4, time.Minute)
+	ticket := q.BeginAt(now.Add(time.Minute), now)
+	ticket.RetainQueuedAt(now.Add(-time.Minute))
+	ticket.RetainQueuedAt(now.Add(2 * time.Minute))
+	got := q.Snapshot(now)
+	if got.Depth != 1 || got.InFlight != 0 || got.LagSeconds != 60 || got.Reason != "backlog_lag" {
+		t.Fatalf("coalesced observation changed capacity or hid earlier eligibility: %+v", got)
+	}
+	ticket.Finish(now)
+}
