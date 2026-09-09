@@ -2,50 +2,158 @@ package checks
 
 import (
 	"sync"
+	"time"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
+// AttributionReport is the operator-facing view of correlation attribution.
+// Current is what the latest-state active set looks like right now;
+// Cumulative is the history since the daemon started. The two answer
+// different questions: a producer that lost attribution for weeks and one
+// that missed once look identical in a log line, and neither is visible in
+// a health endpoint without this.
+type AttributionReport struct {
+	// Current holds, per check, the qualifying rows in the latest-state
+	// active set that carry no hosting owner, as of its most recent merge.
+	// It clears when a later merge attributes them.
+	Current map[string]int
+	// Cumulative sums every unattributed row reported since start, by
+	// check, across active-set merges and per-batch derivations.
+	Cumulative map[string]int
+	// ActiveSetUpdates counts active-set merges since start.
+	ActiveSetUpdates int
+	// Since is when the first active set was recorded; zero before then.
+	Since time.Time
+}
+
 // unattributedReporter logs once per check name per process when
 // cross-account correlation could not attribute a qualifying finding to a
-// hosting account. Counts are per-call snapshots and are never summed; the
-// reporter only makes a producer that never attributes visible.
+// hosting account, and keeps the counts behind AttributionHealth. Per-call
+// counts are never summed into the active-set snapshot; only the cumulative
+// history adds them up.
 type unattributedReporter struct {
-	mu   sync.Mutex
-	seen map[string]struct{}
-	warn func(msg string, args ...any)
+	mu               sync.Mutex
+	seen             map[string]struct{}
+	current          map[string]int
+	cumulative       map[string]int
+	activeSetUpdates int
+	since            time.Time
+	warn             func(msg string, args ...any)
 }
 
 func newUnattributedReporter(warn func(string, ...any)) *unattributedReporter {
-	return &unattributedReporter{seen: make(map[string]struct{}), warn: warn}
+	return &unattributedReporter{
+		seen:       make(map[string]struct{}),
+		current:    make(map[string]int),
+		cumulative: make(map[string]int),
+		warn:       warn,
+	}
 }
 
-// Report warns for each eligible registered check in counts that has not
-// been reported by this reporter before. Non-positive counts and names that
-// are not eligible checks are ignored, so the seen set is bounded by the
-// registry.
-func (r *unattributedReporter) Report(counts map[string]int) {
+// eligibleCounts keeps the entries that describe a real attribution loss:
+// positive counts for checks that correlation would otherwise count.
+func eligibleCounts(counts map[string]int) map[string]int {
+	out := make(map[string]int, len(counts))
 	for check, n := range counts {
-		if n <= 0 || !securityEventEligible(check) {
-			continue
-		}
-		r.mu.Lock()
-		_, dup := r.seen[check]
-		if !dup {
-			r.seen[check] = struct{}{}
-		}
-		r.mu.Unlock()
-		if !dup {
-			r.warn("cross-account correlation could not attribute findings to an account", "check", check, "rows", n)
+		if n > 0 && securityEventEligible(check) {
+			out[check] = n
 		}
 	}
+	return out
+}
+
+// record adds counts to the cumulative history and warns for each check
+// not reported before. Caller holds no lock; the warning is issued outside
+// the mutex so a slow logger never blocks a merge.
+func (r *unattributedReporter) record(counts map[string]int) {
+	var fresh []struct {
+		check string
+		n     int
+	}
+	r.mu.Lock()
+	for check, n := range counts {
+		r.cumulative[check] += n
+		if _, dup := r.seen[check]; !dup {
+			r.seen[check] = struct{}{}
+			fresh = append(fresh, struct {
+				check string
+				n     int
+			}{check, n})
+		}
+	}
+	r.mu.Unlock()
+	for _, f := range fresh {
+		r.warn("cross-account correlation could not attribute findings to an account", "check", f.check, "rows", f.n)
+	}
+}
+
+// Report records a per-batch derivation: the rows count toward the
+// cumulative history and warn once per check, but the active-set snapshot
+// is untouched because a batch is not the persisted state.
+func (r *unattributedReporter) Report(counts map[string]int) {
+	r.record(eligibleCounts(counts))
+}
+
+// RecordActiveSet records the latest-state merge: it replaces the
+// active-set snapshot, so a merge whose rows all carry owners clears it,
+// and adds to the history like a batch report.
+func (r *unattributedReporter) RecordActiveSet(counts map[string]int) {
+	filtered := eligibleCounts(counts)
+	r.mu.Lock()
+	r.current = filtered
+	r.activeSetUpdates++
+	if r.since.IsZero() {
+		r.since = time.Now()
+	}
+	r.mu.Unlock()
+	r.record(filtered)
+}
+
+// Health returns a copy of the current state.
+func (r *unattributedReporter) Health() AttributionReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return AttributionReport{
+		Current:          copyCounts(r.current),
+		Cumulative:       copyCounts(r.cumulative),
+		ActiveSetUpdates: r.activeSetUpdates,
+		Since:            r.since,
+	}
+}
+
+func copyCounts(m map[string]int) map[string]int {
+	out := make(map[string]int, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 var defaultUnattributedReporter = newUnattributedReporter(csmlog.Warn)
 
-// ReportUnattributedCorrelation logs unattributed correlation rows through
-// the process-wide reporter. Callers invoke it after releasing any state
-// store lock; it never re-enters the store.
+// ReportUnattributedCorrelation records unattributed rows from a per-batch
+// derivation through the process-wide reporter. Callers invoke it after
+// releasing any state store lock; it never re-enters the store.
 func ReportUnattributedCorrelation(counts map[string]int) {
 	defaultUnattributedReporter.Report(counts)
+}
+
+// RecordUnattributedActiveSet records the unattributed rows of the
+// latest-state active set after a merge. Same locking contract as
+// ReportUnattributedCorrelation.
+func RecordUnattributedActiveSet(counts map[string]int) {
+	defaultUnattributedReporter.RecordActiveSet(counts)
+}
+
+// AttributionHealth reports the process-wide attribution state for the
+// health snapshot and doctor.
+func AttributionHealth() AttributionReport {
+	return defaultUnattributedReporter.Health()
+}
+
+// ResetAttributionHealthForTest replaces the process-wide reporter with a
+// fresh one. Test-only.
+func ResetAttributionHealthForTest() {
+	defaultUnattributedReporter = newUnattributedReporter(csmlog.Warn)
 }

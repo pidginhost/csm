@@ -698,7 +698,9 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 			return res.Derived
 		},
 	)
-	ReportUnattributedCorrelation(unattributed)
+	// The merged set is the persisted active set, so this is the snapshot
+	// the health endpoint reports; per-batch derivations only add history.
+	RecordUnattributedActiveSet(unattributed)
 }
 
 func latestPurgeWithVolatile(purgeChecks []string) []string {
