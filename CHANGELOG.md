@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
-- Alert dispatch leaves caller-owned findings unchanged, preventing timestamp races and stale event times when findings are reused.
 - Findings raised without a time (suspicious mail logins, sensitive file writes, mail AV degradation, YARA worker crashes) now carry the moment the daemon received them in history, incidents, alerts and the audit log, instead of the zero time that sorted before every real event and collided finding ids.
 - The operator's web server override in the configuration is applied before crash reporting starts. Crash reporting tags its events with the detected platform, and on a host with it enabled that detection ran first, so the override was silently ignored at every daemon start and log watchers followed the probe instead of the configuration.
 - The installer no longer writes the three sandbox directives that systemd 239 (EL8, CloudLinux 8) rejects at every start; it says which were left out. Newer systemd keeps the full unit.
