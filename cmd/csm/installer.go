@@ -1054,8 +1054,15 @@ func deploySystemdTimer() error {
 	exec.Command("systemctl", "disable", "csm.timer").Run()
 	os.Remove("/etc/systemd/system/csm.timer")
 
-	// Deploy daemon service unit (the only unit CSM ships now)
-	if err := writeSystemdServiceUnit(systemdServiceUnit("/opt/csm/csm")); err != nil {
+	// Deploy daemon service unit (the only unit CSM ships now). Directives
+	// this host's systemd rejects are left out rather than logged as
+	// "Unknown lvalue" and ignored at every start.
+	systemdVersion := detectSystemdVersion()
+	if dropped := unsupportedSystemdDirectives(systemdVersion); len(dropped) > 0 {
+		fmt.Fprintf(os.Stderr, "systemd %d does not support %s; those sandbox directives are omitted from the unit\n",
+			systemdVersion, strings.Join(dropped, ", "))
+	}
+	if err := writeSystemdServiceUnit(systemdServiceUnitFor("/opt/csm/csm", systemdVersion)); err != nil {
 		return err
 	}
 
