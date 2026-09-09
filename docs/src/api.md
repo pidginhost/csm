@@ -106,6 +106,8 @@ running while the dispatcher holds or processes its batch, including startup.
 Loss totals include the undelivered tail of a batch canceled during shutdown;
 scan warnings intentionally excluded from alerts do not count as lost work.
 Staged package verification reserves capacity for its whole running batch.
+Its full-queue timer starts when admission fills the queue and continues while
+the verifier retains those slots, including between retries.
 Files awaiting another attempt retain their original waiting age; retrying
 does not reset lag. Shutdown counts files still awaiting verification after
 the analyzer workers have stopped. Package metadata I/O cannot block health

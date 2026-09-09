@@ -153,7 +153,7 @@ type stagedPackageQueue struct {
 func newStagedPackageQueue(limit int) *stagedPackageQueue {
 	return &stagedPackageQueue{
 		limit: limit, packages: make(map[stagedPackageKey]stagedPackageInfo),
-		health: queuehealth.New(limit, time.Minute), now: time.Now,
+		health: queuehealth.NewSharedCapacity(limit, time.Minute), now: time.Now,
 	}
 }
 
@@ -215,7 +215,7 @@ func (q *stagedPackageQueue) push(f stagedPackageFile) bool {
 		q.health.Lose(q.now(), 1)
 		return false
 	}
-	f.ticket = q.health.Begin(f.queuedAt)
+	f.ticket = q.health.BeginAt(f.queuedAt, q.now())
 	q.files = append(q.files, f)
 	return true
 }

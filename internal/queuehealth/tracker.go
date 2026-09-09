@@ -43,19 +43,28 @@ type dropBucket struct {
 // starts before a send so a fast consumer cannot finish an unrecorded item.
 // Its retained work is bounded by the queue and the producer/worker counts.
 type Tracker struct {
-	mu        sync.Mutex
-	capacity  int
-	maxLag    time.Duration
-	next      uint64
-	pending   map[uint64]work
-	waiting   int
-	fullSince time.Time
-	dropped   uint64
-	drops     [60]dropBucket
+	mu             sync.Mutex
+	capacity       int
+	maxLag         time.Duration
+	sharedCapacity bool
+	next           uint64
+	pending        map[uint64]work
+	waiting        int
+	fullSince      time.Time
+	dropped        uint64
+	drops          [60]dropBucket
 }
 
 func New(capacity int, maxLag time.Duration) *Tracker {
 	return &Tracker{capacity: capacity, maxLag: maxLag, pending: make(map[uint64]work)}
+}
+
+// NewSharedCapacity measures queues whose running work still occupies
+// admission slots. Ordinary channels free those slots when a consumer reads.
+func NewSharedCapacity(capacity int, maxLag time.Duration) *Tracker {
+	q := New(capacity, maxLag)
+	q.sharedCapacity = true
+	return q
 }
 
 // Ticket follows one item from enqueue through processing. A zero ticket
@@ -66,10 +75,16 @@ type Ticket struct {
 }
 
 func (q *Tracker) Begin(now time.Time) Ticket {
+	return q.BeginAt(now, now)
+}
+
+// BeginAt retains an earlier waiting age while starting capacity accounting
+// at admission. Earlier delays must not backdate sustained saturation.
+func (q *Tracker) BeginAt(queuedAt, now time.Time) Ticket {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.next++
-	q.pending[q.next] = work{queued: now}
+	q.pending[q.next] = work{queued: queuedAt}
 	q.waiting++
 	q.updateFull(now)
 	return Ticket{tracker: q, id: q.next}
@@ -135,7 +150,11 @@ func (q *Tracker) finish(id uint64, now time.Time) {
 }
 
 func (q *Tracker) updateFull(now time.Time) {
-	if q.capacity > 0 && q.waiting >= q.capacity {
+	occupied := q.waiting
+	if q.sharedCapacity {
+		occupied = len(q.pending)
+	}
+	if q.capacity > 0 && occupied >= q.capacity {
 		if q.fullSince.IsZero() {
 			q.fullSince = now
 		}

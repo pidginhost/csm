@@ -61,6 +61,38 @@ func TestStagedPackageQueueHealthDetectsStalledBatch(t *testing.T) {
 	}
 }
 
+func TestStagedPackageQueueHealthRetriedBatchStaysFull(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := newStagedPackageQueue(1)
+	q.now = func() time.Time { return now }
+	if !q.push(stagedPackageFile{path: "pending", queuedAt: now}) {
+		t.Fatal("empty queue rejected file")
+	}
+	for _, second := range []int{5, 15, 25} {
+		files := q.take(now.Add(time.Duration(second) * time.Second))
+		q.requeue(files, now.Add(time.Duration(second+1)*time.Second))
+	}
+	if got := q.snapshot(now.Add(30 * time.Second)); got.Status != "degraded" || got.Reason != "queue_full" || got.Depth != 1 || got.InFlight != 0 {
+		t.Fatalf("retry reset pressure without releasing admission capacity: %+v", got)
+	}
+	q.take(now.Add(31 * time.Second))
+	q.requeue(nil, now.Add(32*time.Second))
+	if got := q.snapshot(now.Add(33 * time.Second)); got.Status != "ok" || got.Depth != 0 || got.InFlight != 0 {
+		t.Fatalf("released capacity did not clear pressure: %+v", got)
+	}
+}
+
+func TestStagedPackageQueueHealthStartsFullWindowAtAdmission(t *testing.T) {
+	now := time.Now()
+	q := newStagedPackageQueue(1)
+	if !q.push(stagedPackageFile{path: "delayed metadata", queuedAt: now.Add(-45 * time.Second)}) {
+		t.Fatal("empty queue rejected file")
+	}
+	if got := q.snapshot(now); got.Status != "ok" || got.Depth != 1 || got.LagSeconds != 45 {
+		t.Fatalf("new admission backdated saturation to the old event: %+v", got)
+	}
+}
+
 func TestStagedPackageQueueHealthKeepsRepeatedPathEventsDistinct(t *testing.T) {
 	now := time.Unix(1000, 0)
 	q := newStagedPackageQueue(3)

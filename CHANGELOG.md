@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Package verification saturation warnings now follow actual capacity use while work is running or being retried, without counting earlier metadata delays as time spent full.
+
 - Finding loss totals now include every unsent finding in a batch canceled during shutdown.
 
 ## [3.36.0] - 2026-09-09

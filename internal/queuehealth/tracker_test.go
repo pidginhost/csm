@@ -147,3 +147,37 @@ func TestTrackerRetryPreservesOriginalWaitingAge(t *testing.T) {
 	var synchronous Ticket
 	synchronous.Requeue(now)
 }
+
+func TestTrackerSharedCapacityIncludesRunningReservations(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := NewSharedCapacity(2, time.Minute)
+	first, second := q.Begin(now), q.Begin(now)
+	first.Start(now.Add(time.Second))
+	second.Start(now.Add(2 * time.Second))
+	if got := q.Snapshot(now.Add(30 * time.Second)); got.Status != "degraded" || got.Reason != "queue_full" || got.Depth != 0 || got.InFlight != 2 {
+		t.Fatalf("running work released reserved capacity: %+v", got)
+	}
+	first.Finish(now.Add(31 * time.Second))
+	if got := q.Snapshot(now.Add(32 * time.Second)); got.Status != "ok" || got.InFlight != 1 {
+		t.Fatalf("finished item did not release its reservation: %+v", got)
+	}
+	third := q.Begin(now.Add(33 * time.Second))
+	if got := q.Snapshot(now.Add(34 * time.Second)); got.Status != "ok" || got.Depth != 1 || got.InFlight != 1 {
+		t.Fatalf("old full timer survived a released slot: %+v", got)
+	}
+	second.Finish(now.Add(35 * time.Second))
+	third.Finish(now.Add(35 * time.Second))
+}
+
+func TestTrackerAdmissionAgeDoesNotBackdateSaturation(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := NewSharedCapacity(1, 2*time.Minute)
+	item := q.BeginAt(now.Add(-45*time.Second), now)
+	if got := q.Snapshot(now); got.Status != "ok" || got.Depth != 1 || got.LagSeconds != 45 {
+		t.Fatalf("existing work age backdated a new admission: %+v", got)
+	}
+	if got := q.Snapshot(now.Add(30 * time.Second)); got.Status != "degraded" || got.Reason != "queue_full" || got.LagSeconds != 75 {
+		t.Fatalf("actual saturation start did not drive the full timer: %+v", got)
+	}
+	item.Finish(now.Add(31 * time.Second))
+}
