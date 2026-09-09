@@ -12,9 +12,8 @@ func TestObserveModeRejectsIndependentHostActions(t *testing.T) {
 	for _, tc := range []struct {
 		key, settings string
 	}{
-		{"auto_response.disable_enforce_af_alg", ""},
-		{"auto_response.copy_fail_kill_process", "auto_response:\n  disable_enforce_af_alg: true\n  copy_fail_kill_process: true\n"},
-		{"email_av.fail_mode", "auto_response:\n  disable_enforce_af_alg: true\nemail_av:\n  enabled: true\n  fail_mode: tempfail\n"},
+		{"auto_response.copy_fail_kill_process", "auto_response:\n  copy_fail_kill_process: true\n"},
+		{"email_av.fail_mode", "email_av:\n  enabled: true\n  fail_mode: tempfail\n"},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
 			_, err := LoadBytes([]byte("hostname: test\nmode: observe\n" + tc.settings))
@@ -64,7 +63,7 @@ func TestModeNormalizationKeepsEquivalentReloadsSafe(t *testing.T) {
 	for _, modes := range [][2]string{{"", "mode: ' ENFORCE '\n"}, {"mode: observe\n", "mode: ' ObSeRvE '\n"}} {
 		configs := [2]*Config{}
 		for i, mode := range modes {
-			cfg, err := LoadBytes([]byte("hostname: test\nauto_response:\n  disable_enforce_af_alg: true\n" + mode))
+			cfg, err := LoadBytes([]byte("hostname: test\n" + mode))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +86,7 @@ func TestUnknownModeIsRejected(t *testing.T) {
 }
 
 func TestObserveModeAcceptsDetectionOnlyConfig(t *testing.T) {
-	cfg, err := LoadBytes([]byte("hostname: test\nmode: observe\nauto_response:\n  disable_enforce_af_alg: true\n"))
+	cfg, err := LoadBytes([]byte("hostname: test\nmode: observe\n"))
 	if err != nil {
 		t.Fatalf("LoadBytes: %v", err)
 	}
@@ -144,7 +143,7 @@ func TestObserveModeReportsEveryConflictAtOnce(t *testing.T) {
 // Manual virtual patching stays available: it only writes when an operator
 // runs `csm virtual-patch`, which is an explicit action, not daemon behaviour.
 func TestObserveModeAllowsManualVirtualPatch(t *testing.T) {
-	if _, err := LoadBytes([]byte("hostname: test\nmode: observe\nauto_response:\n  virtual_patch_exposed_files: manual\n  disable_enforce_af_alg: true\n")); err != nil {
+	if _, err := LoadBytes([]byte("hostname: test\nmode: observe\nauto_response:\n  virtual_patch_exposed_files: manual\n")); err != nil {
 		t.Fatalf("observe mode rejected manual virtual patching: %v", err)
 	}
 }
@@ -160,7 +159,7 @@ func TestEnforceModeLeavesEveryStateSwitchAlone(t *testing.T) {
 }
 
 func TestValidateReportsTheActiveMode(t *testing.T) {
-	cfg, err := LoadBytes([]byte("hostname: test\nmode: observe\nauto_response:\n  disable_enforce_af_alg: true\nalerts:\n  email:\n    enabled: true\n    to: [ops@example.com]\n"))
+	cfg, err := LoadBytes([]byte("hostname: test\nmode: observe\nalerts:\n  email:\n    enabled: true\n    to: [ops@example.com]\n"))
 	if err != nil {
 		t.Fatalf("LoadBytes: %v", err)
 	}

@@ -44,14 +44,13 @@ func observeConflicts(cfg *Config) []observeConflict {
 	}
 
 	add(cfg.AutoResponse.Enabled, "auto_response.enabled", "false")
-	add(!cfg.AutoResponse.DisableEnforceAFAlg, "auto_response.disable_enforce_af_alg", "true")
 	add(cfg.AutoResponse.CopyFailKillProcess, "auto_response.copy_fail_kill_process", "false")
 	add(cfg.Firewall != nil && cfg.Firewall.Enabled, "firewall.enabled", "false")
 	add(cfg.PHPShield.Enabled, "php_shield.enabled", "false")
 	add(cfg.BPFEnforcement.Enabled, "bpf_enforcement.enabled", "false")
 	add(cfg.EmailProtection.ForwardGuard.Enabled, "email_protection.forward_guard.enabled", "false")
 	add(cfg.EmailAV.QuarantineInfected, "email_av.quarantine_infected", "false")
-	add(cfg.EmailAV.FailMode == "tempfail", "email_av.fail_mode", "open")
+	add(cfg.EmailAV.Enabled && cfg.EmailAV.FailMode == "tempfail", "email_av.fail_mode", "open")
 	add(cfg.AutoResponse.PHPRelay.Freeze != nil && *cfg.AutoResponse.PHPRelay.Freeze,
 		"auto_response.php_relay.freeze", "false")
 	add(cfg.AutoResponse.MailAuthRecovery.RestartEnabled,

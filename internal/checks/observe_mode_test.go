@@ -79,3 +79,31 @@ func TestObserveModeWAFReportsWithoutUpdatingHost(t *testing.T) {
 		})
 	}
 }
+
+// The AF_ALG mitigation re-applies itself by unloading kernel modules, which
+// is a host change. Observe mode stops it at the call site rather than through
+// a config conflict: enforcement is a no-op until an operator opts in with
+// `csm harden --copy-fail`, so demanding every observe host also set
+// auto_response.disable_enforce_af_alg would make the posture two settings
+// instead of one, keyed on an inverted name.
+func TestObserveModeSkipsAFAlgEnforcement(t *testing.T) {
+	calls := 0
+	orig := enforceAFAlgBlockedFn
+	t.Cleanup(func() { enforceAFAlgBlockedFn = orig })
+	enforceAFAlgBlockedFn = func() (EnforceResult, error) {
+		calls++
+		return EnforceResult{Action: EnforceActionNoop}, nil
+	}
+
+	if findings := CheckAFAlgEnforcement(context.Background(), &config.Config{Mode: config.ModeObserve}, nil); findings != nil {
+		t.Fatalf("observe mode emitted enforcement findings: %+v", findings)
+	}
+	if calls != 0 {
+		t.Fatalf("observe mode ran AF_ALG enforcement %d times", calls)
+	}
+
+	CheckAFAlgEnforcement(context.Background(), &config.Config{Mode: config.ModeEnforce}, nil)
+	if calls != 1 {
+		t.Fatalf("enforce mode ran AF_ALG enforcement %d times, want 1", calls)
+	}
+}

@@ -188,6 +188,10 @@ func WriteAFAlgMarker() error {
 // periodic Check (Task 6) can call it without going through the export.
 func EnforceAFAlgBlocked() (EnforceResult, error) { return enforceAFAlgBlocked() }
 
+// enforceAFAlgBlockedFn is indirected so the observe-mode gate can be tested
+// without a kernel to unload modules from.
+var enforceAFAlgBlockedFn = enforceAFAlgBlocked
+
 // CheckAFAlgEnforcement is the periodic critical-tier check that enforces
 // the AF_ALG mitigation policy. When the operator has opted in (via
 // `csm harden --copy-fail`, which writes the marker file), this check
@@ -198,11 +202,11 @@ func EnforceAFAlgBlocked() (EnforceResult, error) { return enforceAFAlgBlocked()
 // ticks emit no findings. Warning is the lowest severity available in the
 // alert.Severity enum (Warning < High < Critical, no Info level).
 func CheckAFAlgEnforcement(_ context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
-	if cfg != nil && cfg.AutoResponse.DisableEnforceAFAlg {
+	if cfg != nil && (cfg.AutoResponse.DisableEnforceAFAlg || cfg.ObserveMode()) {
 		return nil
 	}
 
-	res, err := enforceAFAlgBlocked()
+	res, err := enforceAFAlgBlockedFn()
 	if err != nil {
 		return []alert.Finding{{
 			Severity: alert.Warning,

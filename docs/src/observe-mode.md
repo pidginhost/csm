@@ -9,8 +9,6 @@
 
 ```yaml
 mode: observe
-auto_response:
-  disable_enforce_af_alg: true
 ```
 
 Use observe mode to evaluate detection quality on a real host before granting
@@ -32,6 +30,8 @@ Observe mode skips host integration work that otherwise runs automatically:
   rules during periodic scans.
 - The Exim forward guard is reconciled, including removing an installed guard
   when its switch is disabled.
+- The AF_ALG kernel mitigation is re-applied on each critical tick when an
+  opted-in hardening marker is present.
 
 Existing host protections are left in place. Remove or change them explicitly
 before switching modes if that is the intended posture.
@@ -57,10 +57,9 @@ The keys checked are `auto_response.enabled`, `firewall.enabled`,
 `auto_response.php_relay.freeze`,
 `auto_response.mail_auth_recovery.restart_enabled`, and
 `auto_response.virtual_patch_exposed_files` set to `auto`. It also refuses
-`auto_response.copy_fail_kill_process: true`, `email_av.fail_mode: tempfail`,
-and `auto_response.disable_enforce_af_alg: false` (including an omitted key).
-Set the last key to `true` explicitly: periodic kernel mitigation enforcement
-can act independently of `auto_response.enabled` when a hardening marker exists.
+`auto_response.copy_fail_kill_process: true` and, when the antivirus scanner is
+enabled, `email_av.fail_mode: tempfail`, both of which act on a host
+independently of `auto_response.enabled`.
 
 CSM refuses rather than silently turning those switches off in memory, because
 the config re-signing path marshals the in-memory config back over `csm.yaml`:
