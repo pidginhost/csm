@@ -121,3 +121,19 @@ func FuzzIsPrivateOrLoopback(f *testing.F) {
 		_ = isPrivateOrLoopback(ip)
 	})
 }
+
+func FuzzMailPermissionLogText(f *testing.F) {
+	f.Add("Domain example.com has an outgoing mail hold")
+	f.Add("Sender user@example.net has an outgoing mail hold")
+	f.Fuzz(func(t *testing.T, text string) {
+		for _, prefix := range []string{
+			"2026-09-08 10:00:00 1abc23-000456-AB <= user@example.com H=mail.example.org [203.0.113.5] P=esmtp T=",
+			"2026-09-08 10:00:00 dovecot_login authenticator failed for ",
+			"2026-09-08 10:00:00 1abc23-000456-AB ** user@example.com R=dnslookup T=remote_smtp: ",
+		} {
+			if got := mailPermissionLogText(prefix + text); got != "" {
+				t.Fatalf("untrusted log data became permission text: %q", got)
+			}
+		}
+	})
+}

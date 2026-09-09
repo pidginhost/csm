@@ -133,74 +133,102 @@ Main-branch cloud integration is manual and is not a publication dependency.
 
 # Priority 1 -- protection that fails silently
 
-## Curated tables go stale without failing anything
+## Remaining narrowing tables need completeness guards
 
-**Status:** open, and the highest-leverage item on this list.
+**Status:** open. The first three tables of this class are guarded; the
+class is not retired.
 
-Three separate subsystems narrow their behaviour through a hand-maintained
-table. In each case the table was correct when written, fell behind as the
-project grew, and **nothing failed** -- no test, no lint, no alert. Two were
-found only by pointing a new corpus at the analyzer; the third by counting.
+Three hand-maintained tables narrowed behaviour and fell behind as the project
+grew without any test, lint or alert noticing: the taint analyzer's CMS path
+constants, the clean-corpus manifest, and the correlation security-event set.
+Each now has a completeness test that fails when the project grows past it:
+the supported CMS kinds are declared once in `internal/cms` and the taint
+constants, database adapters and corpus manifest are checked against that
+table; every registered check carries a correlation class with a stated
+reason or gap, and a new check without one fails the build; the response
+tables (manual, automatic and full-scan quarantine, attack-database mapping)
+are declared once each and every name they select must be a registered check.
+That last guard found three names no release ever emitted, two of them the
+only WAF entries the attack database had, so WAF blocks have never fed local
+reputation scoring. The manifest's accepted representation of missing
+evidence is an explicit `pending` entry with a reason; a pending entry is
+missing-evidence metadata, not non-WordPress coverage.
 
-| Table | Scope when written | Actual scope needed |
-| --- | --- | --- |
-| `localPathConstants` in `internal/phptaint/sources.go` | WordPress only | every supported CMS |
-| `scripts/clean-corpus/manifest.json` | WordPress only | every supported CMS |
-| `securityEventChecks` in `internal/checks/correlation.go` | 22 checks | 221 finding names exist |
+Tables of the same class remain unguarded:
 
-The taint table meant a stock Joomla or OpenCart install reported remote
-execution on its own template cache. The corpus meant no non-WordPress CMS had
-any false-positive gate at all. The third is measured in the next item.
+- `hostIntegrityChecks` and the four `compound*Checks` sets in
+  `internal/incident`, and the incident kind switch that classifies findings.
+  These select by check name from another package, so a membership guard
+  needs a dependency decision first: either `internal/incident` imports the
+  check registry, or the registry exports a name list the incident package's
+  tests can consume without importing checks.
+- Future inventories this roadmap creates deliberately: response tiers,
+  root-requiring operations, and the parser inventory. Each ships with the
+  same completeness guard, or it is not done.
 
-This is a *class* of defect, not three bugs, and it is exactly the failure mode
-this project can least afford: the tool keeps reporting healthy while covering
-less than it claims. Several items further down deliberately create new tables
-of this kind (response tiers, root-requiring operations, parser inventory).
-Each of them ships with the same completeness test, or it is not done.
+**Decision:** whether the emitted ModSecurity block names
+(`modsec_block_realtime`, `modsec_block_escalation`,
+`modsec_csm_block_escalation`, `waf_attack_blocked`) should map into the
+attack database is a reputation-scoring change, not a table fix: WAF blocks
+are high volume and the WAF-block score branch has never run on real data.
+Decide it against recorded block streams before mapping.
 
-**Decision:** each narrowing table gets a completeness test that fails when the
-project grows past it. Every check that can emit Critical is either present in
-`securityEventChecks` or listed in an explicit exclusion set with a stated
-reason; every supported CMS appears in the corpus manifest and the path-constant
-table. Adding a detector without updating the table must break CI, not degrade
-detection quietly.
-
-**Acceptance:** adding a new Critical-severity check to a fixture fails the
-completeness test until it is classified. The exclusion set is readable and
-each entry says why. No table in this class is left without such a test.
-
-**Size:** about half a day, and it retires the whole class.
+**Acceptance:** every table above has a test that fails when a name it
+selects is not a registered check or when a registered check that belongs in
+it is missing; the cross-package guard exists with its dependency direction
+recorded; no new selecting table lands without one.
 
 ## Cross-account correlation sees a tenth of the detectors
 
-**Status:** open. Measured, not estimated.
+**Status:** open; classification complete, calibration not started.
 
-`CorrelateFindings` raises a coordinated-attack finding when three or more
-accounts show Critical security events, but only for checks listed in
-`securityEventChecks`:
+Every registered check now carries a correlation class (security event,
+malware artifact, ignored with a reason, or derived), the coverage table in
+[the incidents documentation](docs/src/incidents.md#cross-account-correlation-of-findings)
+is generated from that classification and a test fails when it is stale, and
+eligible producers supply the owning account when available, so a database
+compromise replicated across attributed accounts can raise the cross-account
+signal.
 
-```
-finding names known to the runner : 221
-checks in securityEventChecks     :  22
-not eligible for correlation      : 209
-```
+What remains open:
 
-Not eligible: `backdoor_port_outbound`, `bad_asn_outbound`,
-`admin_cross_account_overlap`, `bulk_password_change`, and every database and
-non-WordPress CMS detector. A database-level compromise replicated across
-accounts -- a shape this project has repeatedly encountered -- cannot raise the
-cross-account signal today.
+- The aggregate is still Critical-only and count-based: several corroborating
+  High findings on one account never combine into anything.
+- Named identity gaps stay unattributed by design and reach only a
+  diagnostic count: the periodic socket checks (`backdoor_port`,
+  `backdoor_port_outbound`, `c2_connection`), the partially attributed
+  `bad_asn_outbound`, and the per-domain mail volume aggregate, which is keyed
+  by the attacker-controlled envelope sender. Two host-wide aggregates
+  (`admin_cross_account_overlap`, `bulk_password_change`) already summarise
+  several accounts and are excluded as inputs.
+- Mailbox and domain identities need cPanel's domain-owner table. Those
+  lookups stay unattributed on other panels; authenticated bare hosting users
+  and PHP relay users can still resolve through validated passwd homes.
+- The three-account threshold was set when a tenth of the detectors were
+  eligible. It has not been re-derived.
 
-The list is also Critical-only and count-based, so several corroborating
-Warnings on one account never combine into anything.
+**Acceptance:** re-derive the coordinated-attack threshold against recorded
+finding streams, including false-positive floods, unrelated long-lived
+findings, and the difference between per-batch and persisted active-state
+derivation, rather than assuming three accounts is still right at the full
+detector surface. Any change to the Critical-only limit comes with the same
+recorded-stream evidence.
 
-**Acceptance:** classify all 221 finding names as security events, explicitly
-ignored, or categorised, with the completeness test above holding the
-classification so a new finding type cannot be added without a policy. Derive
-the coverage table from that classification instead of maintaining one by
-hand. Re-derive the coordinated-attack threshold against recorded finding
-streams rather than assuming three accounts is still right at ten times the
-detector surface.
+## Correlation attribution has no health signal
+
+**Status:** open.
+
+Correlation logs once per check per process when eligible findings carry no
+owner, and counts them per call. Nothing exposes that state to an operator:
+the health endpoint and `csm doctor` cannot say which checks are losing
+attribution on this host, and a log line at first occurrence does not
+distinguish a one-off from a producer that has been unattributed for weeks.
+The existing queue-depth, drop and lag reporting does not cover this.
+
+**Acceptance:** health and doctor expose missing owner attribution by check
+name, distinguish the current snapshot's counts from cumulative events since
+start, and a test proves the signal clears when attribution recovers.
+
 
 ## Backlog and dropped work are reported as counters, not as failures
 
@@ -342,14 +370,23 @@ matches; the decision is applied consistently rather than rule by rule.
 **Status:** ongoing. The corpus is WordPress-only and pinned upstream
 packages only.
 
-After the three items above, add the pinned Joomla, Drupal and OpenCart
-sources (URL, SHA-256, exact file count and in-archive licence path are ready)
-and recalibrate the engine status budgets, which scale with corpus size and
-were set for a WordPress-only corpus: `phptaint partial_parse`, `jstaint
-oversize` and `jstaint parse_error`. Recalibration is deliberate and belongs in
-the same commit as the sources, with the measured numbers in the message.
-Non-WordPress CMS adapters ship without any false-positive gate until this
-lands. See [the corpus gate documentation](docs/src/clean-corpus.md).
+Source additions depend on resolving
+[taint laundering through value encoders](#taint-laundering-through-value-encoders),
+[local-path provenance through variables](#local-path-provenance-through-variables),
+and [content rules versus archive containers](#content-rules-versus-archive-containers).
+These precision defects must be fixed before the new sources join the gate.
+
+Add the pinned Joomla, Drupal and OpenCart sources (URL, SHA-256, exact file
+count and in-archive licence path are ready) and source Magento, whose pins
+are not ready yet, and recalibrate the engine status budgets, which scale
+with corpus size and were set for a WordPress-only corpus: `phptaint
+partial_parse`, `jstaint oversize` and `jstaint parse_error`. Recalibration is
+deliberate and belongs in the same commit as the sources, with the measured
+numbers in the message. Each of those CMSes is listed as `pending` in the
+manifest today; adding its source removes the pending entry in the same
+commit, and the manifest test refuses a supported CMS that is neither pinned
+nor pending. Non-WordPress CMS adapters ship without any false-positive gate
+until this lands. See [the corpus gate documentation](docs/src/clean-corpus.md).
 
 Then grow the corpus past stock upstream packages, because that is not what
 runs on a hosting server: WooCommerce with its usual extensions, page builders,

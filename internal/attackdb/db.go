@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,7 +58,6 @@ var checkToAttack = map[string]AttackType{
 	"webshell":                 AttackWebshell,
 	"new_webshell_file":        AttackWebshell,
 	"obfuscated_php":           AttackWebshell,
-	"php_dropper":              AttackWebshell,
 	"suspicious_php_content":   AttackWebshell,
 	"new_php_in_languages":     AttackWebshell,
 	"new_php_in_upgrade":       AttackWebshell,
@@ -97,9 +97,10 @@ var checkToAttack = map[string]AttackType{
 	"mail_per_account":     AttackSPAM,
 	"exim_frozen_realtime": AttackSPAM,
 
-	// WAF
-	"modsec_block": AttackWAFBlock,
-	"waf_block":    AttackWAFBlock,
+	// WAF: no emitted check maps here today. The two names this table once
+	// listed were never emitted by any release, so WAF blocks have never
+	// built local reputation through this database; mapping the real
+	// ModSecurity block names is a scoring decision recorded in the roadmap.
 
 	// cPanel/webmail login
 	"cpanel_login":           AttackCPanelLogin,
@@ -118,6 +119,24 @@ var checkToAttack = map[string]AttackType{
 	// NOTE: "local_threat_score" is intentionally excluded - it is a derived
 	// finding, not a raw attack. Recording it would create a feedback loop
 	// that inflates EventCount by +1 every 10-minute cycle.
+}
+
+// MappedChecks lists every check name the attack database records, sorted.
+// The slice is the caller's own copy.
+func MappedChecks() []string {
+	out := make([]string, 0, len(checkToAttack))
+	for name := range checkToAttack {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AttackTypeFor reports the attack type a check name records under, and
+// whether the name is mapped at all.
+func AttackTypeFor(check string) (AttackType, bool) {
+	kind, ok := checkToAttack[check]
+	return kind, ok
 }
 
 // Event is a single observed attack incident.

@@ -56,7 +56,9 @@ func TestPreparePinnedCorpus(t *testing.T) {
 				t.Fatal(err)
 			}
 			hash := sha256.Sum256(data)
-			m := Manifest{Version: 1, Sources: []Source{{ID: "app", Version: "1", URL: "https://example.org/app.zip", SHA256: hex.EncodeToString(hash[:]), License: "test", LicenseFile: "app/license.txt", Files: 2}}}
+			m := Manifest{Version: ManifestVersion,
+				Sources: []Source{{ID: "app", CMS: "wordpress", Version: "1", URL: "https://example.org/app.zip", SHA256: hex.EncodeToString(hash[:]), License: "test", LicenseFile: "app/license.txt", Files: 2}},
+				Pending: pendingExcept("wordpress")}
 			if mode == "checksum" {
 				m.Sources[0].SHA256 = strings.Repeat("0", 64)
 			}

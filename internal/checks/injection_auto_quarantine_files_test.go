@@ -149,7 +149,7 @@ func TestAutoQuarantineFilesMovesStandaloneWebshell(t *testing.T) {
 
 	got := AutoQuarantineFiles(cfg, []alert.Finding{
 		{
-			Check:    "php_dropper",
+			Check:    "obfuscated_php",
 			Severity: alert.Critical,
 			FilePath: src,
 			Message:  "PHP dropper found",

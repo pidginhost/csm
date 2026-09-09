@@ -120,6 +120,20 @@ var (
 // where M2 found zero malware findings (a clean install). Without
 // this, a half-migrated host with both env.php and stale local.xml
 // would scan the database twice with different credential sets.
+// scanMagentoInstall scans one discovered install (either configuration
+// layout) and stamps its findings with the owner resolved from the
+// configuration path. The display label stays as before; an install
+// outside every account root is not stamped.
+func scanMagentoInstall(ctx context.Context, path, account string, creds magentoCreds, store *state.Store) []alert.Finding {
+	creds.ctx = ctx
+	creds.queryFailed = new(bool)
+	findings := scanMagentoAll(store, account, creds)
+	if owner, ok := installOwner(path); ok {
+		findings = stampTenantIDIfEmpty(findings, owner)
+	}
+	return findings
+}
+
 func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
@@ -141,10 +155,8 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.S
 			markCheckIncomplete(ctx, "db_content_magento")
 			continue
 		}
-		creds.ctx = ctx
-		creds.queryFailed = new(bool)
 		seenAccounts[account] = true
-		findings = append(findings, scanMagentoAll(store, account, creds)...)
+		findings = append(findings, scanMagentoInstall(ctx, path, account, creds, store)...)
 	}
 
 	// M1 fallback for hosts where env.php is absent or unparseable.
@@ -162,9 +174,7 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.S
 			markCheckIncomplete(ctx, "db_content_magento")
 			continue
 		}
-		creds.ctx = ctx
-		creds.queryFailed = new(bool)
-		findings = append(findings, scanMagentoAll(store, account, creds)...)
+		findings = append(findings, scanMagentoInstall(ctx, path, account, creds, store)...)
 	}
 	return findings
 }

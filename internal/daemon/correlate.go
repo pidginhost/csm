@@ -7,6 +7,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // infraHostnames partitions the cfg.InfraIPs operator list into the
@@ -49,9 +50,13 @@ func containsString(haystack []string, s string) bool {
 // The scan runner may have already produced the same synthetic findings, so
 // this helper must be idempotent to avoid double-alerting the first batch.
 func expandWithCorrelation(findings []alert.Finding, now time.Time) []alert.Finding {
+	if len(findings) == 0 {
+		return findings
+	}
+	platform.Detect()
 	seen := make(map[string]struct{})
 	for i := range findings {
-		if !isCorrelationFinding(findings[i].Check) {
+		if !checks.IsDerivedCorrelationCheck(findings[i].Check) {
 			continue
 		}
 		if findings[i].Timestamp.IsZero() {
@@ -60,26 +65,18 @@ func expandWithCorrelation(findings []alert.Finding, now time.Time) []alert.Find
 		seen[findings[i].Key()] = struct{}{}
 	}
 
-	extra := checks.CorrelateFindings(findings)
-	for i := range extra {
-		if extra[i].Timestamp.IsZero() {
-			extra[i].Timestamp = now
+	res := checks.CorrelateFindings(findings)
+	for i := range res.Derived {
+		if res.Derived[i].Timestamp.IsZero() {
+			res.Derived[i].Timestamp = now
 		}
-		key := extra[i].Key()
+		key := res.Derived[i].Key()
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		findings = append(findings, extra[i])
+		findings = append(findings, res.Derived[i])
 	}
+	checks.ReportUnattributedCorrelation(res.Unattributed)
 	return findings
-}
-
-func isCorrelationFinding(check string) bool {
-	switch check {
-	case "coordinated_attack", "cross_account_malware":
-		return true
-	default:
-		return false
-	}
 }

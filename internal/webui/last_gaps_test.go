@@ -55,7 +55,7 @@ func TestHandleDashboard_CountsSeveritiesAndSkipsInternalChecks(t *testing.T) {
 
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "found", Timestamp: now.Add(-1 * time.Minute)},
-		{Severity: alert.Critical, Check: "php_dropper", Message: "dropper", Timestamp: now.Add(-2 * time.Minute)},
+		{Severity: alert.Critical, Check: "obfuscated_php", Message: "dropper", Timestamp: now.Add(-2 * time.Minute)},
 		{Severity: alert.High, Check: "hardening", Message: "hard", Timestamp: now.Add(-3 * time.Minute)},
 		{Severity: alert.Warning, Check: "waf_status", Message: "waf off", Timestamp: now.Add(-4 * time.Minute)},
 		// These should be counted by severity but skipped from the recent feed.

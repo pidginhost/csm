@@ -501,11 +501,9 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// TailWatch::Eximstats is the authoritative source for setting
 	// the hold. CSM records the hold so later retry-limit noise from
 	// the held domain is not promoted to a fresh spam outbreak.
-	if strings.Contains(line, "outgoing mail hold") {
-		sender := extractMailHoldSender(line)
-		if sender == "" {
-			sender = extractEximSender(line)
-		}
+	permissionText := mailPermissionLogText(line)
+	if strings.Contains(permissionText, "outgoing mail hold") {
+		sender := extractMailHoldSender(permissionText)
 		domain := extractDomainFromEmail(sender)
 		if domain == "" {
 			domain = sender // may already be a bare domain
@@ -531,6 +529,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Details:  truncateDaemon(line, 300),
 					Mailbox:  mailboxOnly(sender),
 					Domain:   domain,
+					TenantID: checks.MailOwner(domain),
 				})
 			}
 		}
@@ -547,8 +546,8 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// the domain. Otherwise report a deliverability event and leave the hold
 	// to cPanel, so an operator who clears a false-positive hold is not
 	// immediately re-held.
-	if strings.Contains(line, "max defers and failures per hour") {
-		domain := extractEximDomain(line)
+	if strings.Contains(permissionText, "max defers and failures per hour") {
+		domain := extractEximDomain(permissionText)
 		if recentOutgoingMailHold(domain) {
 			return findings
 		}
@@ -567,6 +566,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				Message:  message,
 				Details:  truncateDaemon(line, 300),
 				Domain:   domain,
+				TenantID: checks.MailOwner(domain),
 			})
 			if domain != "" {
 				RecordCompromisedDomain(domain)
@@ -600,6 +600,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				Details:  fmt.Sprintf("The email subject contains what appears to be SMTP credentials (host:port,user,password). This account is likely compromised by a bulk mail service.\nSubject: %s", truncateDaemon(subject, 100)),
 				Mailbox:  mailboxOnly(sender),
 				Domain:   extractDomainFromEmail(sender),
+				TenantID: mailAccountOwner(extractAuthUser(line)),
 			})
 		}
 		// Also detect common spam subject patterns
@@ -612,6 +613,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				Details:  truncateDaemon(line, 300),
 				Mailbox:  mailboxOnly(sender),
 				Domain:   extractDomainFromEmail(sender),
+				TenantID: mailAccountOwner(extractAuthUser(line)),
 			})
 		}
 	}
@@ -633,6 +635,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Details:  truncateDaemon(line, 300),
 					Mailbox:  mailboxOnly(sender),
 					Domain:   extractDomainFromEmail(sender),
+					TenantID: mailAccountOwner(extractAuthUser(line)),
 				})
 				break
 			}
@@ -1348,7 +1351,9 @@ func domainHasOutboundBlast(domain string, cfg *config.Config) bool {
 
 // checkEmailRate processes an outbound email for rate limiting.
 // Returns findings if thresholds are exceeded.
-func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
+func checkEmailRate(user string, cfg *config.Config) (findings []alert.Finding) {
+	// Registered before the unlock defer so owner I/O runs after it.
+	defer func() { stampMailAccountOwner(findings, user) }()
 	// Guard: skip if thresholds are zero (misconfigured or disabled)
 	if cfg.EmailProtection.RateWarnThreshold <= 0 || cfg.EmailProtection.RateCritThreshold <= 0 {
 		return nil
@@ -1383,9 +1388,7 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 		rw.alerted = ""
 	}
 
-	var findings []alert.Finding
-
-	mailbox, domain, tenant := splitMailAccount(user)
+	mailbox, domain, _ := splitMailAccount(user)
 	if count >= cfg.EmailProtection.RateCritThreshold {
 		if rw.alerted != "crit" {
 			rw.alerted = "crit"
@@ -1396,7 +1399,6 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 				Details:  fmt.Sprintf("User: %s\nMessages in window: %d\nWindow: %d minutes\nThreshold: %d", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateCritThreshold),
 				Mailbox:  mailbox,
 				Domain:   domain,
-				TenantID: tenant,
 			})
 		}
 	} else if count >= cfg.EmailProtection.RateWarnThreshold {
@@ -1409,7 +1411,6 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 				Details:  fmt.Sprintf("User: %s\nMessages in window: %d\nWindow: %d minutes\nThreshold: %d", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateWarnThreshold),
 				Mailbox:  mailbox,
 				Domain:   domain,
-				TenantID: tenant,
 			})
 		}
 	}

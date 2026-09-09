@@ -159,7 +159,8 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 			strings.Join(ips, ", "),
 		)
 
-		mailbox, domain, tenant := splitMailAccount(user)
+		mailbox, domain, _ := splitMailAccount(user)
+		tenant := mailAccountOwner(user)
 		findings = append(findings, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "email_cloud_relay_abuse",

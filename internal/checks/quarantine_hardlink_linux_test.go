@@ -149,7 +149,7 @@ func TestQuarantineCallersTreatRemainingLinksAsCompleted(t *testing.T) {
 		cfg.AutoResponse.QuarantineFiles = true
 
 		actions := AutoQuarantineFiles(cfg, []alert.Finding{{
-			Check: "php_dropper", Severity: alert.Critical, FilePath: src, Message: "linked dropper",
+			Check: "webshell", Severity: alert.Critical, FilePath: src, Message: "linked dropper",
 		}})
 		if len(actions) != 1 || !strings.Contains(actions[0].Details, "hard link") {
 			t.Fatalf("completed hard-link quarantine actions = %+v, want one warning action", actions)

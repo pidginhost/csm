@@ -985,11 +985,13 @@ func appendMailAccountTime(accounts map[string][]time.Time, account string, ts t
 //
 // ip and account MUST both be non-empty. Caller filters infra/private/loopback
 // IPs before invoking.
-func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
+func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Finding) {
 	if ip == "" || account == "" {
 		return nil
 	}
 	account = normalizeMailAuthAccount(account)
+	// Registered before tracker cleanup so resolution sees no held locks.
+	defer func() { stampMailAccountOwner(findings, account) }()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// Successes create per-IP entries too; keep the tracker bounded on every

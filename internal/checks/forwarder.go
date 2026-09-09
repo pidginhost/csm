@@ -377,6 +377,8 @@ func auditValiasFileWithStatus(path, domain string, localDomains map[string]bool
 					Check:    "email_pipe_forwarder",
 					Message:  fmt.Sprintf("Pipe forwarder detected: %s@%s -> %s%s", localPart, domain, d, newContext),
 					Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: %s\nFile: %s\nPipe forwarders execute arbitrary commands on incoming mail.", domain, localPart, d, path),
+					Domain:   domain,
+					TenantID: MailOwner(domain),
 				})
 				continue
 			}
@@ -387,6 +389,8 @@ func auditValiasFileWithStatus(path, domain string, localDomains map[string]bool
 					Check:    "email_suspicious_forwarder",
 					Message:  fmt.Sprintf("Mail blackhole: %s@%s -> /dev/null%s", localPart, domain, newContext),
 					Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: /dev/null\nFile: %s\nAll mail to this address is silently discarded.", domain, localPart, path),
+					Domain:   domain,
+					TenantID: MailOwner(domain),
 				})
 				continue
 			}
@@ -402,6 +406,8 @@ func auditValiasFileWithStatus(path, domain string, localDomains map[string]bool
 					Check:    "email_suspicious_forwarder",
 					Message:  msg,
 					Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: %s\nFile: %s", domain, localPart, d, path),
+					Domain:   domain,
+					TenantID: MailOwner(domain),
 				})
 			}
 		}

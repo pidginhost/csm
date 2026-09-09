@@ -829,8 +829,8 @@ func TestScanJobDoesNotCallAlertDispatch(t *testing.T) {
 func fakeQuarantineFile(qdir string) func(f alert.Finding) (checks.RemediationResult, bool) {
 	eligible := map[string]bool{
 		"webshell": true, "new_webshell_file": true, "obfuscated_php": true,
-		"php_dropper": true, "suspicious_php_content": true,
-		"new_php_in_languages": true, "new_php_in_upgrade": true,
+		"suspicious_php_content": true,
+		"new_php_in_languages":   true, "new_php_in_upgrade": true,
 		"phishing_page": true, "phishing_directory": true,
 	}
 	return func(f alert.Finding) (checks.RemediationResult, bool) {

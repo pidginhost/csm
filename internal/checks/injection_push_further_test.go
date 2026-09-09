@@ -795,7 +795,7 @@ func TestApplyFix_EmailPhishingNoSpool(t *testing.T) {
 func TestHasFix_PositiveAndNegative(t *testing.T) {
 	for _, c := range []string{
 		"world_writable_php", "group_writable_php", "webshell", "new_webshell_file",
-		"obfuscated_php", "php_dropper", "suspicious_php_content",
+		"obfuscated_php", "suspicious_php_content",
 		"new_php_in_languages", "new_php_in_upgrade", "phishing_page",
 		"phishing_directory", "backdoor_binary", "new_executable_in_config",
 		"htaccess_injection", "htaccess_handler_abuse", "email_phishing_content",
@@ -806,6 +806,9 @@ func TestHasFix_PositiveAndNegative(t *testing.T) {
 	}
 	if HasFix("made_up_check") {
 		t.Error("HasFix(made_up_check) should be false")
+	}
+	if HasFix("php_dropper") {
+		t.Error("HasFix(php_dropper) should be false: no release ever emitted it")
 	}
 }
 

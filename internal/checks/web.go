@@ -518,8 +518,14 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 					}
 				}
 				if len(extraneous) > 0 {
+					collapsed := wpCoreExtraneousFinding(user, wpPath, extraneous)
+					// No single file to name, so the install's owner carries
+					// the identity correlation needs.
+					if owner, ok := installOwner(wpConfig); ok {
+						collapsed.TenantID = owner
+					}
 					mu.Lock()
-					findings = append(findings, wpCoreExtraneousFinding(user, wpPath, extraneous))
+					findings = append(findings, collapsed)
 					mu.Unlock()
 				}
 			}

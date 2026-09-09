@@ -16,9 +16,9 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-// fileIndexScanCount tracks the number of CheckFileIndex invocations.
-// Every 6th scan forces a full directory rescan, bypassing the mtime cache
-// to catch writes that don't update parent directory mtime (e.g. hard links).
+// fileIndexScanCount schedules a full walk at startup and every sixth scan.
+// Failed or interrupted walks reset it so retries cannot trust cached mtimes
+// for directories that have become unreadable.
 var fileIndexScanCount int32
 
 // fileIndexShrinkSkips counts consecutive scans whose current index shrank far
@@ -225,7 +225,12 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	defer releaseFileIndexLiveScan()
 
 	scanNum := atomic.AddInt32(&fileIndexScanCount, 1)
-	forceFullScan := scanNum%6 == 0 // full rescan every 6th cycle
+	forceFullScan := scanNum == 1 || scanNum%6 == 0
+	defer func() {
+		if ctx.Err() != nil {
+			atomic.StoreInt32(&fileIndexScanCount, 0)
+		}
+	}()
 
 	indexDir := cfg.StatePath
 	currentPath := filepath.Join(indexDir, "fileindex.current")
@@ -239,25 +244,20 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	previousEntries := loadIndex(previousPath)
 	prevByDir := groupEntriesByUploadDir(previousEntries)
 
-	// Build current index
-	currentEntries := buildFileIndex(ctx, dirCache, prevByDir, forceFullScan)
+	// Track completeness locally as well as in the runner: direct calls must
+	// not replace the baseline with a partial walk either.
+	indexCtx, completion := withIncompleteCheckCollector(ctx)
+	currentEntries := buildFileIndex(indexCtx, dirCache, prevByDir, forceFullScan)
+	incomplete := completion.contains("file_index")
+	if incomplete {
+		atomic.StoreInt32(&fileIndexScanCount, 0)
+		markCheckIncomplete(ctx, "file_index")
+	}
 
 	// A cancelled scan produced a partial index. Do not write or promote it:
 	// the partial set or its mtimes would make the next scan compare against
 	// stale cache state instead of the last complete baseline.
 	if ctx.Err() != nil {
-		return nil
-	}
-
-	// Save updated dir cache
-	saveDirCache(indexDir, dirCache)
-
-	// Write current index (atomic)
-	writeIndex(currentPath, currentEntries)
-
-	// First run - save baseline
-	if _, err := osFS.Stat(previousPath); os.IsNotExist(err) {
-		copyFile(currentPath, previousPath)
 		return nil
 	}
 
@@ -271,6 +271,24 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		if !prevSet[e] {
 			newFiles = append(newFiles, e)
 		}
+	}
+
+	if incomplete {
+		// Publishing partial entries or mtimes would let the next cached
+		// walk retire findings for directories we still have not read.
+		return checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
+	}
+
+	// Save updated dir cache
+	saveDirCache(indexDir, dirCache)
+
+	// Write current index (atomic)
+	writeIndex(currentPath, currentEntries)
+
+	// First run - save baseline
+	if _, err := osFS.Stat(previousPath); os.IsNotExist(err) {
+		copyFile(currentPath, previousPath)
+		return nil
 	}
 
 	// A large shrink (mass deletion, a WP install removed, or a transient read
@@ -508,9 +526,9 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		return nil
 	}
 
-	homeDirs, err := GetScanHomeDirs(ctx)
+	homeDirs, err := fileIndexHomeDirs(ctx)
 	if err != nil {
-		return nil
+		markCheckIncomplete(ctx, "file_index")
 	}
 
 	var subtreeChanges *subtreeChangeTracker
@@ -540,7 +558,10 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 			filepath.Join(homeDir, "public_html", "wp-content", "upgrade"),
 			filepath.Join(homeDir, "public_html", "wp-content", "mu-plugins"),
 		}
-		subDirs, _ := osFS.ReadDir(homeDir)
+		subDirs, err := osFS.ReadDir(homeDir)
+		if err != nil && !os.IsNotExist(err) {
+			markCheckIncomplete(ctx, "file_index")
+		}
 		for _, sd := range subDirs {
 			if ctx.Err() != nil {
 				return entries
@@ -551,6 +572,8 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 				uploadsPath := filepath.Join(homeDir, sd.Name(), "wp-content", "uploads")
 				if info, err := osFS.Stat(uploadsPath); err == nil && info.IsDir() {
 					uploadDirs = append(uploadDirs, uploadsPath)
+				} else if err != nil && !os.IsNotExist(err) {
+					markCheckIncomplete(ctx, "file_index")
 				}
 				// Also track sensitive dirs for addon domains
 				for _, subDir := range []string{"languages", "upgrade", "mu-plugins"} {
@@ -560,6 +583,8 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 					sensitiveDir := filepath.Join(homeDir, sd.Name(), "wp-content", subDir)
 					if info, err := osFS.Stat(sensitiveDir); err == nil && info.IsDir() {
 						sensitiveWPDirs = append(sensitiveWPDirs, sensitiveDir)
+					} else if err != nil && !os.IsNotExist(err) {
+						markCheckIncomplete(ctx, "file_index")
 					}
 				}
 			}
@@ -602,6 +627,18 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 	return entries
 }
 
+func fileIndexHomeDirs(ctx context.Context) ([]os.DirEntry, error) {
+	if AccountFromContext(ctx) != "" {
+		return GetScanHomeDirs(ctx)
+	}
+	homes, err := readAccountHomes()
+	entries := make([]os.DirEntry, 0, len(homes))
+	for _, home := range homes {
+		entries = append(entries, rootedDirEntry{DirEntry: home.Entry, root: home.Root})
+	}
+	return entries, err
+}
+
 // scanDirForPHP recursively reads directories for PHP-executable files.
 // If directory mtime is unchanged, carries forward previous entries.
 func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, overlay phpHandlerOverlay, entries *[]string) {
@@ -623,6 +660,8 @@ func scanDirForPHPContextWithTracker(ctx context.Context, dir string, maxDepth i
 
 	if htaccess, err := osFS.ReadFile(filepath.Join(dir, ".htaccess")); err == nil {
 		overlay = overlay.mergeHtaccess(htaccess)
+	} else if !os.IsNotExist(err) {
+		markCheckIncomplete(ctx, "file_index")
 	}
 	if ctx.Err() != nil {
 		return
@@ -652,6 +691,9 @@ func scanDirForPHPContextWithTracker(ctx context.Context, dir string, maxDepth i
 
 	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			markCheckIncomplete(ctx, "file_index")
+		}
 		return
 	}
 
@@ -715,6 +757,9 @@ func scanDirForExecutablesContextWithTracker(ctx context.Context, dir string, ma
 
 	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			markCheckIncomplete(ctx, "file_index")
+		}
 		return
 	}
 
@@ -772,6 +817,9 @@ func scanDirForSuspiciousExtContextWithTracker(ctx context.Context, dir string, 
 
 	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			markCheckIncomplete(ctx, "file_index")
+		}
 		return
 	}
 

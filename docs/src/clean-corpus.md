@@ -8,6 +8,23 @@ on every run. Missing input, checksum mismatch, missing license, empty or
 incomplete inventory, unsafe archive entries, and read failures stop the job.
 No downloaded PHP or JavaScript is executed.
 
+Every source names the CMS it belongs to in a `cms` field, and the manifest
+lists each supported CMS that has no pinned source yet under `pending`, with
+the roadmap item that blocks it. The manifest is version 2; the validator
+refuses older versions, a source without a CMS, a supported CMS that is
+neither sourced nor pending, and one that is both, so a database scanner for
+a new CMS cannot ship without a corpus decision. A pending entry records
+absent evidence only: no scanner, admission rule, hit budget or result filter
+reads it, and files from that CMS are treated exactly as before on a server.
+When a source for a pending CMS lands, its pending entry is removed in the
+same change. The manifest, not this page, is the record of which CMS has a
+false-positive gate.
+
+Ordinary unit tests validate the manifest offline, including with
+`go test -trimpath`. Invalid metadata is rejected before cache, extraction or
+report files are created or changed. Command tests check the full archived manifest
+and every inventory record; these checks do not replace the detector gate.
+
 The initial corpus contains 10,178 files: WordPress 6.8.2 (GPL-2.0-or-later),
 WooCommerce 9.9.5 (GPL-3.0-or-later), and Elementor 3.29.2 (GPL-3.0-only).
 The archives retain their license notices, including notices for bundled

@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -216,58 +217,60 @@ var runnerFindingNames = map[string][]string{
 	"email_weak_password":   {"email_weak_password", "email_password_audit_incomplete"},
 	"exfiltration_paste":    {"exfiltration_paste_site"},
 	"fake_kernel_threads":   {"fake_kernel_thread"},
-	"file_index":            {"new_executable_in_config", "new_php_in_sensitive_dir", "new_php_in_sensitive_dir_clean", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
-	"filesystem":            {"backdoor_binary", "suid_binary", "suspicious_file"},
-	"firewall":              {"firewall", "firewall_ports", "firewall_ipv6_unmanaged"},
-	"ftp_logins":            {"ftp_bruteforce", "ftp_login", "ftp_login_after_bruteforce"},
-	"group_writable_php":    {"group_writable_php"},
-	"health":                {"csm_health"},
-	"htaccess":              append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
-	"exposed_files":         {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
-	"ip_reputation":         {"ip_reputation"},
-	"kernel_modules":        {"kernel_module"},
-	"local_threat_score":    {"local_threat_score"},
-	"mail_per_account":      {"mail_per_account"},
-	"mail_queue":            {"mail_queue", "mail_queue_unavailable"},
-	"modsec_audit":          {"waf_attack_blocked"},
-	"mysql_users":           {"mysql_superuser"},
-	"nulled_plugins":        {"nulled_plugin"},
-	"open_basedir":          {"open_basedir"},
-	"outbound_connections":  {"backdoor_port", "backdoor_port_outbound", "c2_connection"},
-	"outdated_plugins":      {"outdated_plugins"},
-	"vulnerable_plugins":    {"vulnerable_plugins"},
-	"vulnerable_timthumb":   {"vulnerable_timthumb"},
-	"perf_error_logs":       {"perf_error_logs"},
-	"perf_load":             {"perf_load"},
-	"perf_memory":           {"perf_memory"},
-	"perf_mysql_config":     {"perf_mysql_config"},
-	"perf_php_handler":      {"perf_php_handler"},
-	"perf_php_processes":    {"perf_php_processes"},
-	"perf_redis_config":     {"perf_redis_config"},
-	"perf_wp_config":        {"perf_wp_config"},
-	"perf_wp_cron":          {"perf_wp_cron"},
-	"perf_wp_transients":    {"perf_wp_transients"},
-	"phishing":              {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
-	"yara_deep":             {"yara_match_scheduled", "yara_scan_incomplete"},
-	"php_config_changes":    {"php_config_change", "php_config_scan_incomplete"},
-	"php_content":           {"obfuscated_php", "suspicious_php_content"},
-	"php_processes":         {"php_suspicious_execution"},
-	"rpm_integrity":         {"dpkg_integrity", "rpm_integrity"},
-	"shadow_changes":        {"bulk_password_change", "root_password_change", "shadow_change"},
-	"ssh_keys":              {"ssh_keys"},
-	"ssh_logins":            {"ssh_login_unknown_ip"},
-	"sshd_config":           {"sshd_config_change"},
-	"ssl_certs":             {"ssl_cert_issued"},
-	"suspicious_processes":  {"suspicious_process"},
-	"symlink_attacks":       {"symlink_attack"},
-	"uid0_accounts":         {"uid0_account"},
-	"user_outbound":         {"user_outbound_connection", "direct_smtp_egress", "bad_asn_outbound"},
-	"waf_status":            {"modsec_disabled_vhost", "waf_bypass", "waf_detection_only", "waf_rules", "waf_rules_stale", "waf_status"},
-	"webmail_logins":        {"webmail_bruteforce"},
-	"webshells":             {"webshell", "world_writable_php"},
-	"whm_access":            {"whm_account_action", "whm_password_change"},
-	"wp_bruteforce":         {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood", "http_asn_crawl"},
-	"wp_core":               {"wp_core_integrity"},
+	// new_php_in_languages and new_php_in_upgrade were emitted until a20c6f76;
+	// they stay here so a completed scan clears rows written by older versions.
+	"file_index":           {"new_executable_in_config", "new_php_in_languages", "new_php_in_sensitive_dir", "new_php_in_sensitive_dir_clean", "new_php_in_upgrade", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
+	"filesystem":           {"backdoor_binary", "suid_binary", "suspicious_file"},
+	"firewall":             {"firewall", "firewall_ports", "firewall_ipv6_unmanaged"},
+	"ftp_logins":           {"ftp_bruteforce", "ftp_login", "ftp_login_after_bruteforce"},
+	"group_writable_php":   {"group_writable_php"},
+	"health":               {"csm_health"},
+	"htaccess":             append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
+	"exposed_files":        {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
+	"ip_reputation":        {"ip_reputation"},
+	"kernel_modules":       {"kernel_module"},
+	"local_threat_score":   {"local_threat_score"},
+	"mail_per_account":     {"mail_per_account"},
+	"mail_queue":           {"mail_queue", "mail_queue_unavailable"},
+	"modsec_audit":         {"waf_attack_blocked"},
+	"mysql_users":          {"mysql_superuser"},
+	"nulled_plugins":       {"nulled_plugin"},
+	"open_basedir":         {"open_basedir"},
+	"outbound_connections": {"backdoor_port", "backdoor_port_outbound", "c2_connection"},
+	"outdated_plugins":     {"outdated_plugins"},
+	"vulnerable_plugins":   {"vulnerable_plugins"},
+	"vulnerable_timthumb":  {"vulnerable_timthumb"},
+	"perf_error_logs":      {"perf_error_logs"},
+	"perf_load":            {"perf_load"},
+	"perf_memory":          {"perf_memory"},
+	"perf_mysql_config":    {"perf_mysql_config"},
+	"perf_php_handler":     {"perf_php_handler"},
+	"perf_php_processes":   {"perf_php_processes"},
+	"perf_redis_config":    {"perf_redis_config"},
+	"perf_wp_config":       {"perf_wp_config"},
+	"perf_wp_cron":         {"perf_wp_cron"},
+	"perf_wp_transients":   {"perf_wp_transients"},
+	"phishing":             {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
+	"yara_deep":            {"yara_match_scheduled", "yara_scan_incomplete"},
+	"php_config_changes":   {"php_config_change", "php_config_scan_incomplete"},
+	"php_content":          {"obfuscated_php", "suspicious_php_content"},
+	"php_processes":        {"php_suspicious_execution"},
+	"rpm_integrity":        {"dpkg_integrity", "rpm_integrity"},
+	"shadow_changes":       {"bulk_password_change", "root_password_change", "shadow_change"},
+	"ssh_keys":             {"ssh_keys"},
+	"ssh_logins":           {"ssh_login_unknown_ip"},
+	"sshd_config":          {"sshd_config_change"},
+	"ssl_certs":            {"ssl_cert_issued"},
+	"suspicious_processes": {"suspicious_process"},
+	"symlink_attacks":      {"symlink_attack"},
+	"uid0_accounts":        {"uid0_account"},
+	"user_outbound":        {"user_outbound_connection", "direct_smtp_egress", "bad_asn_outbound"},
+	"waf_status":           {"modsec_disabled_vhost", "waf_bypass", "waf_detection_only", "waf_rules", "waf_rules_stale", "waf_status"},
+	"webmail_logins":       {"webmail_bruteforce"},
+	"webshells":            {"webshell", "world_writable_php"},
+	"whm_access":           {"whm_account_action", "whm_password_change"},
+	"wp_bruteforce":        {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood", "http_asn_crawl"},
+	"wp_core":              {"wp_core_integrity"},
 }
 
 const (
@@ -652,11 +655,6 @@ var latestVolatileCheckNames = []string{
 	"check_timeout",
 }
 
-var latestDerivedCheckNames = []string{
-	"coordinated_attack",
-	"cross_account_malware",
-}
-
 // StoreLatestScanFindings replaces the latest findings owned by a scan, then
 // rebuilds derived correlation findings from the merged current set. One-shot
 // auto-response actions stay in history and alerts, not the active findings
@@ -676,22 +674,31 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 	if len(purgeChecks) == 0 && len(findings) == 0 {
 		return
 	}
+	// Cold detection runs commands; correlation under latestMu must only
+	// read cached platform roots.
+	platform.Detect()
 	now := time.Now()
+	// The merge callback runs under the store's latest-findings lock, so it
+	// only captures the unattributed snapshot; reporting happens after the
+	// store call returns and must never re-enter the store.
+	var unattributed map[string]int
 	st.PurgeAndMergeFindingsDerivedWithGaps(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
 		gapPaths,
-		latestDerivedCheckNames,
+		DerivedCorrelationChecks(),
 		func(merged []alert.Finding) []alert.Finding {
-			derived := CorrelateFindings(merged)
-			for i := range derived {
-				if derived[i].Timestamp.IsZero() {
-					derived[i].Timestamp = now
+			res := CorrelateFindings(merged)
+			unattributed = res.Unattributed
+			for i := range res.Derived {
+				if res.Derived[i].Timestamp.IsZero() {
+					res.Derived[i].Timestamp = now
 				}
 			}
-			return derived
+			return res.Derived
 		},
 	)
+	ReportUnattributedCorrelation(unattributed)
 }
 
 func latestPurgeWithVolatile(purgeChecks []string) []string {
@@ -722,12 +729,7 @@ func isLatestVolatileFinding(check string) bool {
 }
 
 func isLatestDerivedFinding(check string) bool {
-	for _, name := range latestDerivedCheckNames {
-		if check == name {
-			return true
-		}
-	}
-	return false
+	return IsDerivedCorrelationCheck(check)
 }
 
 func checksForTier(tier Tier) []namedCheck {
@@ -1110,13 +1112,17 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	}
 
 	// Cross-account correlation
-	extra := CorrelateFindings(findings)
-	for i := range extra {
-		if extra[i].Timestamp.IsZero() {
-			extra[i].Timestamp = now
+	if len(findings) > 0 {
+		platform.Detect()
+	}
+	correlated := CorrelateFindings(findings)
+	for i := range correlated.Derived {
+		if correlated.Derived[i].Timestamp.IsZero() {
+			correlated.Derived[i].Timestamp = now
 		}
 	}
-	findings = append(findings, extra...)
+	findings = append(findings, correlated.Derived...)
+	ReportUnattributedCorrelation(correlated.Unattributed)
 
 	// Auto-response: skip when the caller requested a dry run
 	// (check/baseline commands).

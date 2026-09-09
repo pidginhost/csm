@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/processctx"
 )
 
-// DirectSMTPEgressInput is the input to the pure evaluator. The caller
+// DirectSMTPEgressInput is the input to the evaluator. The caller
 // (BPF connection consumer or legacy poller) builds it from the live
 // event and passes the platform-resolved MTA allowlist as MTA.
 //
@@ -36,8 +36,8 @@ type DirectSMTPEgressInput struct {
 
 // EvaluateDirectSMTPEgress returns a populated finding when the input
 // represents a non-MTA local process opening an outbound SMTP connection.
-// Pure function: no IO, no clock. Detector-disabled config returns
-// (zero, false) without inspecting the input.
+// Owner resolution uses the shared passwd cache. Detector-disabled config
+// returns (zero, false) without inspecting the input.
 func EvaluateDirectSMTPEgress(cfg *config.Config, in DirectSMTPEgressInput) (alert.Finding, bool) {
 	if cfg == nil || !cfg.Detection.DirectSMTPEgress.Enabled || directSMTPEgressBackend(cfg) == "none" {
 		return alert.Finding{}, false
@@ -102,9 +102,9 @@ func directSMTPEgressBackend(cfg *config.Config) string {
 
 func directSMTPTenant(in DirectSMTPEgressInput) string {
 	if in.Process != nil && in.Process.Account != "" {
-		return in.Process.Account
+		return HostingAccountForUser(in.Process.Account)
 	}
-	return in.User
+	return HostingAccountForUser(in.User)
 }
 
 func portInList(p uint16, list []int) bool {

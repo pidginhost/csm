@@ -145,12 +145,13 @@ func TestApplyFix_NewPhpInUpgradeDispatch(t *testing.T) {
 	}
 }
 
-// TestApplyFix_PhpDropperDispatch exercises the php_dropper path.
-func TestApplyFix_PhpDropperDispatch(t *testing.T) {
+// The php_dropper name was listed by response tables but never emitted by
+// any release; ApplyFix must report it as unknown rather than act on it.
+func TestApplyFix_PhantomDropperHasNoDispatch(t *testing.T) {
 	withSimulatedProcessSignal(t)
 	r := ApplyFix(context.Background(), "php_dropper", "dropper at /home/alice/public_html/d.php", "")
-	if r.Success {
-		t.Error("nonexistent file should not succeed")
+	if r.Success || r.Error != "no automated fix available for check type 'php_dropper'" {
+		t.Errorf("phantom name dispatched: %+v", r)
 	}
 }
 
@@ -510,13 +511,16 @@ func TestEvaluatePluginCache_InactivePluginSkipped(t *testing.T) {
 // --- FixDescription additional branches -------------------------------
 
 func TestFixDescription_NewPHPCases(t *testing.T) {
-	for _, ct := range []string{"new_webshell_file", "obfuscated_php", "php_dropper",
+	for _, ct := range []string{"new_webshell_file", "obfuscated_php",
 		"suspicious_php_content", "new_php_in_languages", "new_php_in_upgrade",
 		"phishing_page", "phishing_directory"} {
 		got := FixDescription(ct, "", "/home/alice/public_html/x.php")
 		if got == "" {
 			t.Errorf("%q should produce a description", ct)
 		}
+	}
+	if got := FixDescription("php_dropper", "", "/home/alice/public_html/x.php"); got != "" {
+		t.Errorf("never-emitted php_dropper produced a description: %q", got)
 	}
 }
 

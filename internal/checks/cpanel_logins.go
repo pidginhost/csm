@@ -108,6 +108,7 @@ func CheckCpanelLogins(ctx context.Context, cfg *config.Config, store *state.Sto
 				Check:    "cpanel_multi_ip_login",
 				Message:  fmt.Sprintf("Account '%s' logged in from %d distinct IPs (credential compromise likely)", account, len(ips)),
 				Details:  fmt.Sprintf("IPs: %s\nThreshold: %d IPs within %d minutes", strings.Join(ipList, ", "), threshold, multiIPWindowMin(cfg)),
+				TenantID: HostingAccountForUser(account),
 			})
 		}
 	}
@@ -175,6 +176,12 @@ func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.St
 		// Extract request URI (between first pair of quotes) to avoid
 		// matching "upload" in referer URLs like upload-ajax.html
 		requestURI := extractRequestURIChecks(line)
+		// Common log format: the authenticated cPanel user is the third
+		// field, "-" when the request was unauthenticated.
+		owner := ""
+		if len(fields) >= 3 && fields[2] != "-" {
+			owner = HostingAccountForUser(fields[2])
+		}
 		for _, action := range filemanWriteActions {
 			if strings.Contains(strings.ToLower(requestURI), strings.ToLower(action)) {
 				findings = append(findings, alert.Finding{
@@ -182,6 +189,7 @@ func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.St
 					Check:    "cpanel_file_upload",
 					Message:  fmt.Sprintf("cPanel File Manager write operation from non-infra IP: %s", ip),
 					Details:  truncateString(line, 300),
+					TenantID: owner,
 				})
 				break
 			}

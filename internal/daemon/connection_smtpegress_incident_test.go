@@ -61,6 +61,7 @@ func TestDirectSMTPEgressFindingFeedsIncidentCorrelator(t *testing.T) {
 }
 
 func TestDirectSMTPEgressEvaluatorFindingFeedsIncidentCorrelator(t *testing.T) {
+	withOwnerTable(t)
 	resetIncidentForTest()
 	installDirectSMTPRDNSCacheForTest(t, checks.NewRDNSCache(checks.RDNSCacheConfig{
 		TTL:     time.Minute,

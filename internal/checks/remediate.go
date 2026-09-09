@@ -13,6 +13,21 @@ import (
 	"syscall"
 )
 
+// quarantineMoveChecks are the findings whose manual fix, and whose
+// full-scan quarantine, is a plain move of the named file into quarantine.
+// The automatic responder's broader set lives in autoQuarantineChecks; the
+// full-scan set must stay equal to this one (pinned by test).
+var quarantineMoveChecks = map[string]bool{
+	"webshell":               true,
+	"new_webshell_file":      true,
+	"obfuscated_php":         true,
+	"suspicious_php_content": true,
+	"new_php_in_languages":   true,
+	"new_php_in_upgrade":     true,
+	"phishing_page":          true,
+	"phishing_directory":     true,
+}
+
 // eximMsgIDRegex validates Exim message ID format. Exim 4.96 and older use
 // 6-6-2 ids; Exim 4.97 and newer use 6-11-4 ids.
 var eximMsgIDRegex = regexp.MustCompile(`^[0-9A-Za-z]{6}-(?:[0-9A-Za-z]{6}-[0-9A-Za-z]{2}|[0-9A-Za-z]{11}-[0-9A-Za-z]{4})$`)
@@ -62,16 +77,17 @@ func FixDescription(checkType, message string, filePath ...string) string {
 		return ""
 	}
 
+	if quarantineMoveChecks[checkType] {
+		if path != "" {
+			return fmt.Sprintf("Quarantine %s to /opt/csm/quarantine/", path)
+		}
+		return ""
+	}
+
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
 		if path != "" {
 			return fmt.Sprintf("Set permissions to 644 on %s", path)
-		}
-	case "webshell", "new_webshell_file", "obfuscated_php", "php_dropper",
-		"suspicious_php_content", "new_php_in_languages", "new_php_in_upgrade",
-		"phishing_page", "phishing_directory":
-		if path != "" {
-			return fmt.Sprintf("Quarantine %s to /opt/csm/quarantine/", path)
 		}
 	case "backdoor_binary", "new_executable_in_config":
 		if path != "" {
@@ -97,21 +113,12 @@ func FixDescription(checkType, message string, filePath ...string) string {
 
 // HasFix returns true if the check type has a known automated fix.
 func HasFix(checkType string) bool {
-	if isHtaccessHardenedFinding(checkType) {
+	if isHtaccessHardenedFinding(checkType) || quarantineMoveChecks[checkType] {
 		return true
 	}
 	fixableChecks := map[string]bool{
 		"world_writable_php":       true,
 		"group_writable_php":       true,
-		"webshell":                 true,
-		"new_webshell_file":        true,
-		"obfuscated_php":           true,
-		"php_dropper":              true,
-		"suspicious_php_content":   true,
-		"new_php_in_languages":     true,
-		"new_php_in_upgrade":       true,
-		"phishing_page":            true,
-		"phishing_directory":       true,
 		"backdoor_binary":          true,
 		"new_executable_in_config": true,
 		"htaccess_injection":       true,
@@ -134,13 +141,13 @@ func ApplyFix(ctx context.Context, checkType, message, details string, filePath 
 		return CleanHtaccessFile(path)
 	}
 
+	if quarantineMoveChecks[checkType] {
+		return fixQuarantine(path)
+	}
+
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
 		return fixPermissions(path, checkType)
-	case "webshell", "new_webshell_file", "obfuscated_php", "php_dropper",
-		"suspicious_php_content", "new_php_in_languages", "new_php_in_upgrade",
-		"phishing_page", "phishing_directory":
-		return fixQuarantine(path)
 	case "backdoor_binary", "new_executable_in_config":
 		return fixKillAndQuarantine(ctx, path, details)
 	case "htaccess_injection", "htaccess_handler_abuse":

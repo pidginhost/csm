@@ -110,30 +110,42 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, store *state.St
 		if ctx.Err() != nil {
 			return findings
 		}
-		matched, err := looksLikeJoomlaConfig(ctx, path)
-		if err != nil {
-			markCheckIncomplete(ctx, "db_content_joomla")
-			continue
-		}
-		if !matched {
-			continue
-		}
-		account := extractUser(filepath.Dir(path))
-		creds, err := parseJConfig(ctx, path)
-		if err != nil || creds.dbName == "" || creds.dbUser == "" {
-			markCheckIncomplete(ctx, "db_content_joomla")
-			continue
-		}
-		creds.ctx = ctx
-		creds.queryFailed = new(bool)
-		prefix := creds.dbPrefix
-		if prefix == "" {
-			prefix = "jos_"
-		}
+		findings = append(findings, scanJoomlaInstall(ctx, path, store)...)
+	}
+	return findings
+}
 
-		findings = append(findings, scanJoomlaExtensions(account, creds, prefix)...)
-		findings = append(findings, scanJoomlaContent(account, creds, prefix)...)
-		findings = append(findings, scanJoomlaSuperUsers(store, account, creds, prefix)...)
+// scanJoomlaInstall scans one discovered install and stamps its findings
+// with the owner resolved from the configuration path. The display label
+// stays as before; an install outside every account root is not stamped.
+func scanJoomlaInstall(ctx context.Context, path string, store *state.Store) []alert.Finding {
+	matched, err := looksLikeJoomlaConfig(ctx, path)
+	if err != nil {
+		markCheckIncomplete(ctx, "db_content_joomla")
+		return nil
+	}
+	if !matched {
+		return nil
+	}
+	account := extractUser(filepath.Dir(path))
+	creds, err := parseJConfig(ctx, path)
+	if err != nil || creds.dbName == "" || creds.dbUser == "" {
+		markCheckIncomplete(ctx, "db_content_joomla")
+		return nil
+	}
+	creds.ctx = ctx
+	creds.queryFailed = new(bool)
+	prefix := creds.dbPrefix
+	if prefix == "" {
+		prefix = "jos_"
+	}
+
+	var findings []alert.Finding
+	findings = append(findings, scanJoomlaExtensions(account, creds, prefix)...)
+	findings = append(findings, scanJoomlaContent(account, creds, prefix)...)
+	findings = append(findings, scanJoomlaSuperUsers(store, account, creds, prefix)...)
+	if owner, ok := installOwner(path); ok {
+		findings = stampTenantIDIfEmpty(findings, owner)
 	}
 	return findings
 }

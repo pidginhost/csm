@@ -101,6 +101,12 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 		if ctx.Err() != nil {
 			return findings
 		}
+		// The spool basename is a hosting owner only when an account home
+		// of that name exists; service users keep the finding unattributed.
+		owner := ""
+		if accountHomeExists(user) {
+			owner = user
+		}
 		content := string(data)
 		for _, pattern := range MatchCrontabPatternsDeep(content, cfg) {
 			findings = append(findings, alert.Finding{
@@ -109,6 +115,7 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 				Message:  fmt.Sprintf("Suspicious pattern in crontab for user %s: %s", user, pattern),
 				Details:  fmt.Sprintf("File: %s\nContent:\n%s", path, truncate(content, 500)),
 				FilePath: path,
+				TenantID: owner,
 			})
 		}
 	}

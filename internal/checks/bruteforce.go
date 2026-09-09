@@ -663,8 +663,10 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 	if recentFails >= ftpFailThreshold {
 		msg := fmt.Sprintf("FTP login succeeded from brute-force source %s after %d failed attempts", ip, recentFails)
+		owner := ""
 		if account := parseFTPLoginAccount(line); account != "" {
 			msg = fmt.Sprintf("FTP login succeeded for account %s from brute-force source %s after %d failed attempts", account, ip, recentFails)
+			owner = ftpAccountOwner(account)
 		}
 		return alert.Finding{
 			Severity: alert.Critical,
@@ -672,6 +674,7 @@ func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 			SourceIP: ip,
 			Message:  msg,
 			Details:  truncate(line, 200),
+			TenantID: owner,
 		}
 	}
 	return alert.Finding{
