@@ -54,9 +54,17 @@ When a regex includes a literal listed in `patterns`, the same content can
 satisfy both entries. Use independent entries when a rule needs multiple pieces
 of evidence. The bundled HTTP tunnel rule requires both socket creation and a
 CONNECT request. The legacy PHP callback rule uses the same narrow signature in
-YAML and YARA-X: a direct function call with a quoted parameter list, a variable
-or `null` as its first argument, followed by a decoder or request lookup as its
-second argument. Quoted lists can contain commas, semicolons and escaped quotes.
+YAML and YARA-X: a direct function call with a quoted parameter list, a variable,
+`null`, a simple array lookup or a short helper call as its first argument.
+The second argument is a decoder or request lookup, optionally preceded by one
+concatenated literal. Quoted lists can contain commas, semicolons and escaped
+quotes. Array indices accept a single quoted key or an unquoted scalar. Helper
+arguments accept at most one literal among unquoted scalar operands, including
+`implode(',', $args)`. These bounded forms consume quoted operands whole and
+exclude comments, interpolation and nested expressions, so delimiters inside
+data cannot supply the body-source evidence. Double-quoted array keys, helper
+literals and body prefixes must escape dollar signs; unescaped dollars require
+interpolation analysis.
 Shared positive and benign fixtures check both engines. Generated socket and
 funchand wrappers and ordinary legacy callbacks stay silent under these rules.
 
@@ -74,10 +82,12 @@ follow-up, not claims of current detection by this rule:
 
 | Deferred case | Examples to restore |
 | --- | --- |
-| Constructed parameter lists | Concatenation and `chr(100/(1+1))` as the first argument; array lookups and short helper calls are covered |
+| Constructed parameter lists | Concatenation, nested array indices, helper calls with multiple quoted operands, and `chr(100/(1+1))` as the first argument; only the bounded simple forms above are covered |
+| Comments inside constructed parameters | Comments in array indices or helper arguments, especially those containing closing delimiters or body-source names |
+| Interpolated parameter operands | Double-quoted array keys or helper operands containing unescaped dollars, including interpolation with nested quoted keys |
 | Comments between arguments | Block comments with embedded commas, and line comments before the body source |
 | Constructed body expressions | Grouped concatenation, parenthesized decoders and `trim(base64_decode($payload))`; a single literal concatenated onto request input is covered |
-| Interpolated bodies | A double-quoted body such as `"return {$_POST['code']};"` |
+| Interpolated bodies | A double-quoted body such as `"return {$_POST['code']};"`, or a concatenated double-quoted prefix containing unescaped dollars |
 | Literal executable bodies | `eval($x)` or string-capable `assert($x)`, with statements, strings or comments before them; both outer quote styles and escaped quotes |
 | Literal expression contexts | `return`, `or`, `do`, `case`, `include`, `include_once`, `require`, `require_once`, `clone`, `yield from`, comparisons, shifts and inequality before an execution sink |
 | Literal lexical edges | Global `assert`, comment backslashes before `*` or `*/`, and quoted operands before a comparison |

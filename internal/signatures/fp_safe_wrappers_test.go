@@ -199,7 +199,7 @@ func TestFPSafe_YML_CreateFunction_ArgumentContext(t *testing.T) {
 }
 
 func safeCreateFunctionBenignSamples() map[string]string {
-	return map[string]string{
+	samples := map[string]string{
 		"generated wrapper":      safeCreateFunctionWrapper,
 		"framework callback":     `<?php $sorter = create_function('$a, $b', 'return strcmp($a["name"], $b["name"]);'); usort($items, $sorter);`,
 		"polyfill guard":         `<?php if (!function_exists('create_function')) { function create_function($args, $code) { return null; } }`,
@@ -232,7 +232,33 @@ func safeCreateFunctionBenignSamples() map[string]string {
 		"spaced method":          `<?php $object-> create_function('', $_POST['code']);`,
 		"spaced static method":   `<?php Factory:: create_function('', $_POST['code']);`,
 		"commented method":       `<?php $object-> /* factory */ create_function('', $_POST['code']);`,
+		"array key request text": `<?php $callback = create_function($args['], $_POST[code]'], 'return 1;');`,
+		"array key decoder text": `<?php $callback = create_function($args["], base64_decode("], 'return 1;');`,
+		"array index comment":    `<?php $callback = create_function($args[0 /* ], $_POST[code] */], 'return 1;');`,
+		"helper quoted default":  `<?php $callback = create_function(trim('$label = "), base64_decode("'), 'return $label;');`,
+		"helper request text":    `<?php $callback = create_function(trim('), $_POST[code]'), 'return 1;');`,
+		"helper comment":         `<?php $callback = create_function(implode(',', $args /* ), $_POST[code] */), 'return 1;');`,
+		"array line comment":     "<?php $callback = create_function($args[0 // ], $_POST[code]\n], 'return 1;');",
+		"helper line comment":    "<?php $callback = create_function(implode(',', $args # ), $_POST[code]\n), 'return 1;');",
+		"interpolated array key": `<?php $callback = create_function($args["{$ar["], $_POST[code]"]}"], 'return 1;');`,
+		"interpolated helper":    `<?php $callback = create_function(trim("{$ar["), $_POST[code]"]}"), 'return 1;');`,
+		"interpolated body":      `<?php $callback = create_function('', "{$ar[" . $_POST[code] . "]}");`,
+		"array separate call":    `<?php $callbacks = array(create_function($args[0], 'return 1;'), base64_decode($encoded));`,
+		"helper separate call":   `<?php $callbacks = array(create_function(implode(',', $args), 'return 1;'), base64_decode($encoded));`,
+		"long array key":         `<?php $callback = create_function($args['` + strings.Repeat("a", 65536) + `], $_POST[code]'], 'return 1;');`,
+		"long helper literal":    `<?php $callback = create_function(trim('` + strings.Repeat("a", 65536) + `), $_POST[code]'), 'return 1;');`,
 	}
+	for name, args := range map[string]string{
+		"array":  `$args[0]`,
+		"helper": `implode(',', $args)`,
+	} {
+		samples[name+" decoder callback"] = `<?php $callback = create_function(` + args + `, 'return base64_decode($value);');`
+		samples[name+" method"] = `<?php $object->create_function(` + args + `, $_POST['code']);`
+		samples[name+" static method"] = `<?php Factory::create_function(` + args + `, $_POST['code']);`
+	}
+	samples["concatenated method"] = `<?php $object->create_function('', '$x = 1; ' . $_POST['code']);`
+	samples["concatenated static method"] = `<?php Factory::create_function('', '$x = 1; ' . $_POST['code']);`
+	return samples
 }
 
 func TestFPSafe_YML_CreateFunction_BodyExpressions(t *testing.T) {
@@ -264,8 +290,24 @@ func safeCreateFunctionBodyExpressions() map[string]string {
 		"escaped default":     `create_function('$a = \'default\'', $_GET['code'])`,
 		"null parameters":     `create_function(null, $_POST['code'])`,
 		"array parameters":    `create_function($args[0], $_POST['code'])`,
+		"negative array key":  `create_function($args[-1], $_POST['code'])`,
+		"positive array key":  `create_function($args[+1], $_POST['code'])`,
+		"float array key":     `create_function($args[1.0], $_POST['code'])`,
+		"variable array key":  `create_function($args[$key], $_POST['code'])`,
+		"quoted array key":    `create_function($args['key'], $_POST['code'])`,
+		"spaced array key":    `create_function($args[ 'key' ], $_POST['code'])`,
+		"array key delimiter": `create_function($args["], base64_decode("], $_POST['code'])`,
 		"built parameters":    `create_function(implode(',', $args), $_POST['code'])`,
+		"helper variable":     `create_function(trim($args), $_POST['code'])`,
+		"helper signed index": `create_function(parameter_list(-1), $_POST['code'])`,
+		"trailing delimiter":  `create_function(implode($args, ','), $_POST['code'])`,
+		"trailing trim mask":  `create_function(trim($args, ' '), $_POST['code'])`,
+		"middle delimiter":    `create_function(parameter_list($label, ',', $args), $_POST['code'])`,
+		"helper default":      `create_function(trim('$label = "), base64_decode("'), $_POST['code'])`,
+		"escaped helper":      `create_function(trim("\$label = 'x'"), $_POST['code'])`,
 		"concatenated body":   `create_function('', '$x = 1; ' . $_POST['code'])`,
+		"escaped body prefix": `create_function('', "\$x = 1; " . $_POST['code'])`,
+		"prefixed decoder":    `create_function('', "return " . base64_decode($payload))`,
 		"global call":         `\create_function('', $_POST['code'])`,
 		"global decoder":      `create_function('', @\base64_decode($payload))`,
 		"eval body":           `create_function('', eval($payload))`,
