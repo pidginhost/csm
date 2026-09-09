@@ -172,3 +172,35 @@ func TestReleaseGithubRendersNotesThroughTheChangelogScript(t *testing.T) {
 		t.Fatalf("release-notes.sh is not executable (mode %v)", info.Mode().Perm())
 	}
 }
+
+// The integration job installs the freshly built .deb on a stock Ubuntu cloud
+// image. Those images ship with unmet dependencies of their own -- one broke
+// the v3.36.0 release pipeline with packagekit and multipath-tools absent
+// while packagekit-tools and ubuntu-server depended on them -- so the image is
+// repaired in its own command. Folding --fix-broken into the CSM install would
+// also repair a dependency defect in our own package, which is the failure
+// this job exists to catch.
+func TestIntegrationRepairsTheImageBeforeInstallingCSM(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", ".gitlab-ci.yml"))
+	if err != nil {
+		t.Fatalf("read .gitlab-ci.yml: %v", err)
+	}
+	integration := gitlabJobBlock(t, string(body), "integration")
+
+	repair := "apt-get update -qq && apt-get -y -qq --fix-broken install"
+	if !strings.Contains(integration, repair) {
+		t.Fatalf("integration must repair the Ubuntu image before installing; want a command containing %q", repair)
+	}
+	install := "apt-get install -y /tmp/csm.deb"
+	if !strings.Contains(integration, install) {
+		t.Fatalf("integration must install the built package; want %q", install)
+	}
+	for _, line := range strings.Split(integration, "\n") {
+		if strings.Contains(line, install) && strings.Contains(line, "fix-broken") {
+			t.Fatalf("the CSM install must not carry --fix-broken; a broken dependency in our own package has to fail the job: %s", strings.TrimSpace(line))
+		}
+	}
+	if strings.Index(integration, repair) > strings.Index(integration, install) {
+		t.Fatal("the image repair must run before the CSM install")
+	}
+}
