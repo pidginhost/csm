@@ -675,8 +675,21 @@ func formatDispatchErrors(errs []error) error {
 	return fmt.Errorf("alert dispatch errors: %s", strings.Join(msgs, "; "))
 }
 
+// FillTimestamps stamps now on every finding that carries no Timestamp.
+// Realtime producers build findings without one; a zero time sorts before
+// every real event in a SIEM and makes the audit finding id collide across
+// occurrences, so each sink boundary fills it in.
+func FillTimestamps(findings []Finding, now time.Time) {
+	for i := range findings {
+		if findings[i].Timestamp.IsZero() {
+			findings[i].Timestamp = now
+		}
+	}
+}
+
 // Dispatch sends alerts via all configured channels.
 func Dispatch(cfg *config.Config, findings []Finding) error {
+	FillTimestamps(findings, auditNow())
 	// Deduplicate
 	findings = Deduplicate(findings)
 
