@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -13,8 +14,8 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// cagefsCageMountSample reports how many live cages lack the PHP Shield event
-// mount, out of how many were sampled.
+// cagefsCageMountSample names the live cages that lack the PHP Shield event
+// mount, and reports how many cages were sampled.
 //
 // The cage skeleton is deliberately NOT the signal. Remounting a single user
 // creates the skeleton placeholder for every cage, so the directory turns up
@@ -70,16 +71,66 @@ func phpShieldCageFSDoctorChecks() []DoctorCheck {
 			Fix:     "re-run while sites are serving traffic",
 		}}
 	}
-	if missing > 0 {
+	if len(missing) > 0 {
 		return []DoctorCheck{{
-			Name:    name,
-			Status:  "fail",
-			Message: fmt.Sprintf("%d of %d sampled cages lack the event mount, so PHP Shield events are dropped there", missing, sampled),
-			Fix: "apply per account with `cagefsctl --remount <user>`, or all at once with " +
-				"`cagefsctl --remount-all` in a maintenance window; a remount kills processes inside the cages it rebuilds",
+			Name:   name,
+			Status: "fail",
+			Message: fmt.Sprintf("%d of %d sampled cages lack the event mount (%s), so PHP Shield events are dropped there",
+				len(missing), sampled, cageNameList(missing)),
+			Fix: cageRemountFix(missing),
 		}}
 	}
 	return []DoctorCheck{{Name: name, Status: "ok"}}
+}
+
+// cageNameCap bounds how many cages a report names; the count stays exact.
+const cageNameCap = 5
+
+// cageNameList renders the named cages, capped, with the remainder counted.
+func cageNameList(names []string) string {
+	if len(names) <= cageNameCap {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:cageNameCap], ", "), len(names)-cageNameCap)
+}
+
+// cageRemountFix spells out the per-account remount for the cages named,
+// and offers the host-wide remount when the list is long enough that a
+// per-account pass is impractical.
+func cageRemountFix(names []string) string {
+	var cmds []string
+	for _, n := range names {
+		if len(cmds) == cageNameCap {
+			break
+		}
+		cmds = append(cmds, "`cagefsctl --remount "+n+"`")
+	}
+	fix := "apply per account with " + strings.Join(cmds, ", ")
+	if len(names) > cageNameCap {
+		fix += ", or all at once with `cagefsctl --remount-all` in a maintenance window"
+	}
+	return fix + "; a remount kills processes inside the cages it rebuilds"
+}
+
+// cagefsAccountNameForUID resolves a uid to its account name. A var so tests
+// can supply names without passwd entries.
+var cagefsAccountNameForUID = accountNameForUID
+
+func accountNameForUID(uid uint64) (string, bool) {
+	u, err := user.LookupId(strconv.FormatUint(uid, 10))
+	if err != nil {
+		return "", false
+	}
+	return u.Username, true
+}
+
+// cageDisplayName names a cage by its account, or by uid when the account
+// has no passwd entry; an unreadable account is still a reported cage.
+func cageDisplayName(uid uint64) string {
+	if name, ok := cagefsAccountNameForUID(uid); ok && name != "" {
+		return name
+	}
+	return fmt.Sprintf("uid:%d", uid)
 }
 
 // procPath is /proc, overridden in tests.
@@ -159,14 +210,14 @@ func pathUnder(path, root string) bool {
 // A cage is a mount namespace of its own, so the only place the mount reliably
 // shows up is that process's /proc/<pid>/mounts. One process per uid is enough:
 // every process of a user shares the user's cage.
-func sampleCageShieldMounts() (missing, sampled int, err error) {
+func sampleCageShieldMounts() (missing []string, sampled int, err error) {
 	entries, err := os.ReadDir(procPath)
 	if err != nil {
-		return 0, 0, err
+		return nil, 0, err
 	}
 	rootNS, err := os.Readlink(filepath.Join(procPath, "1", "ns", "mnt"))
 	if err != nil {
-		return 0, 0, err
+		return nil, 0, err
 	}
 
 	panelRoots := platform.Detect().AccountHomeRoots()
@@ -211,9 +262,10 @@ func sampleCageShieldMounts() (missing, sampled int, err error) {
 		seen[ns] = struct{}{}
 		sampled++
 		if !mounted {
-			missing++
+			missing = append(missing, cageDisplayName(uid))
 		}
 	}
+	sort.Strings(missing)
 	return missing, sampled, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -44,16 +45,18 @@ func writeFakeProc(t *testing.T, cages []bool) string {
 
 func withFakeProc(t *testing.T, cages []bool) {
 	t.Helper()
-	oldProc, oldUID, oldHome := procPath, cagefsMinUID, cagefsAccountHomeForUID
+	oldProc, oldUID, oldHome, oldName := procPath, cagefsMinUID, cagefsAccountHomeForUID, cagefsAccountNameForUID
 	procPath = writeFakeProc(t, cages)
 	// The fixture's /proc entries are owned by whoever runs the test, which is
 	// root in CI and an ordinary user locally. Sample every uid, and treat it
 	// as a hosting account, so the test exercises the namespace logic rather
-	// than the host's uid numbering or passwd file.
+	// than the host's uid numbering or passwd file. Names resolve to nothing,
+	// so a missing cage is reported by uid regardless of who runs the test.
 	cagefsMinUID = 0
 	cagefsAccountHomeForUID = func(uint64) (string, bool) { return "/home/alice", true }
+	cagefsAccountNameForUID = func(uint64) (string, bool) { return "", false }
 	t.Cleanup(func() {
-		procPath, cagefsMinUID, cagefsAccountHomeForUID = oldProc, oldUID, oldHome
+		procPath, cagefsMinUID, cagefsAccountHomeForUID, cagefsAccountNameForUID = oldProc, oldUID, oldHome, oldName
 	})
 }
 
@@ -70,8 +73,8 @@ func TestSampleCageShieldMountsCountsOnlyHostingAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sampled != 0 || missing != 0 {
-		t.Fatalf("sampled = %d, missing = %d; service-account cages must not be counted", sampled, missing)
+	if sampled != 0 || len(missing) != 0 {
+		t.Fatalf("sampled = %d, missing = %v; service-account cages must not be counted", sampled, missing)
 	}
 }
 
@@ -86,8 +89,13 @@ func TestSampleCageShieldMountsCountsUnknownUIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sampled != 2 || missing != 2 {
-		t.Fatalf("sampled = %d, missing = %d; want 2 and 2 for uids with no passwd entry", sampled, missing)
+	if sampled != 2 || len(missing) != 2 {
+		t.Fatalf("sampled = %d, missing = %v; want 2 and 2 for uids with no passwd entry", sampled, missing)
+	}
+	for _, name := range missing {
+		if !strings.HasPrefix(name, "uid:") {
+			t.Errorf("cage without a passwd entry must be reported by uid, got %q", name)
+		}
 	}
 }
 
@@ -102,8 +110,8 @@ func TestSampleCageShieldMountsCountsAccountsOutsideThePrimaryHomeRoot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sampled != 2 || missing != 1 {
-		t.Fatalf("sampled = %d, missing = %d; want 2 and 1 for an account under /home2", sampled, missing)
+	if sampled != 2 || len(missing) != 1 {
+		t.Fatalf("sampled = %d, missing = %v; want 2 and 1 for an account under /home2", sampled, missing)
 	}
 }
 
@@ -141,8 +149,8 @@ func TestSampleCageShieldMountsCountsPerCageNotServerWide(t *testing.T) {
 	if sampled == 0 {
 		t.Fatal("sampled 0 cages, want the cage processes counted")
 	}
-	if missing == 0 {
-		t.Errorf("missing = 0 with 2 unmounted cages out of %d sampled", sampled)
+	if len(missing) != 2 {
+		t.Errorf("missing = %v with 2 unmounted cages out of %d sampled", missing, sampled)
 	}
 }
 
@@ -154,8 +162,8 @@ func TestSampleCageShieldMountsCleanWhenAllMounted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if missing != 0 {
-		t.Errorf("missing = %d of %d, want 0", missing, sampled)
+	if len(missing) != 0 {
+		t.Errorf("missing = %v of %d, want none", missing, sampled)
 	}
 }
 
