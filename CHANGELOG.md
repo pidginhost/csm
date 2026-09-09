@@ -85,6 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Corpus and test coverage
 
+- The release integration test repairs the Ubuntu cloud image's own unmet dependencies before installing the built package, so a stale base image no longer fails the job and blocks publishing.
 - Clean-corpus metadata tests now work with trimmed build paths and check that invalid manifests leave existing files untouched.
 - The list of supported content management systems is now declared once and tested against the taint analyzer's path knowledge and the database scanners. Tests reject incomplete or duplicate declarations; clean-corpus coverage remains separate.
 
