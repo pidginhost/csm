@@ -7,8 +7,11 @@ import "time"
 // single source of truth for /api/v1/status, csm status --json, csm doctor,
 // and the sd_notify readiness gate.
 type Snapshot struct {
-	Version              string          `json:"version"`
-	Hostname             string          `json:"hostname"`
+	Version  string `json:"version"`
+	Hostname string `json:"hostname"`
+	// Mode is the operator's posture: "enforce" or "observe". An observe
+	// host runs detection and alerting but changes no host state.
+	Mode                 string          `json:"mode,omitempty"`
 	StartedAt            time.Time       `json:"started_at"`
 	UptimeSec            int64           `json:"uptime_sec"`
 	LatestScan           time.Time       `json:"latest_scan,omitempty"`

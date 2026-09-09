@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
@@ -536,7 +537,15 @@ func restoreFirewallRollback(confirmFile, rollbackFile string, expectedMarker []
 	return removeFirewallRollbackFiles(confirmFile, rollbackFile, legacyRollbackFileFor(rollbackFile))
 }
 
-func applyFirewallRollbackFile(rollbackFile string) error {
+func applyFirewallRollbackFile(rollbackFile string) (resultErr error) {
+	rec := actionlog.Record{Op: "operate.manual_firewall", Action: "rollback", Target: rollbackFile, Command: []string{"nft", "-f", rollbackFile}, Result: actionlog.Failed}
+	defer func() {
+		if resultErr != nil {
+			rec.Error = resultErr.Error()
+		}
+		actionlog.Write(rec)
+	}()
+
 	if _, err := os.Stat(rollbackFile); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("rollback ruleset missing")
@@ -553,6 +562,7 @@ func applyFirewallRollbackFile(rollbackFile string) error {
 		}
 		return fmt.Errorf("restoring rollback ruleset: %w", err)
 	}
+	rec.Result = actionlog.Applied
 	// Kernel is back on the snapshot; state.json must follow, or the UI
 	// keeps describing the window's mutations as live.
 	return restoreFirewallStateSnapshot(rollbackFile)

@@ -5,8 +5,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mailfwd/adapter"
+	"github.com/pidginhost/csm/internal/mailfwd/policy"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
+
+type countingForwardGuard struct {
+	mutations int
+}
+
+func (g *countingForwardGuard) Apply(policy.Config, []string) error { g.mutations++; return nil }
+func (g *countingForwardGuard) Remove() error                       { g.mutations++; return nil }
+func (g *countingForwardGuard) RefreshBadIPs([]string) error        { g.mutations++; return nil }
+func (g *countingForwardGuard) Status() (adapter.Status, error)     { return adapter.Status{}, nil }
+
+func TestObserveModeLeavesExistingForwardGuardUntouched(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	panel := platform.PanelCPanel
+	platform.SetOverrides(platform.Overrides{Panel: &panel})
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	for _, mode := range []string{config.ModeObserve, config.ModeEnforce} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := &config.Config{Mode: mode}
+			config.SetActive(cfg)
+			r := (&Daemon{cfg: cfg}).forwardGuardReconciler()
+			g := &countingForwardGuard{}
+			r.Guard = g
+			if err := r.Reconcile(cfg.EmailProtection.ForwardGuard); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if mode == config.ModeEnforce {
+				want = 1
+			}
+			if g.mutations != want {
+				t.Fatalf("mutations = %d, want %d", g.mutations, want)
+			}
+		})
+	}
+}
 
 func TestForwardGuardBadIPsNilStore(t *testing.T) {
 	prev := store.Global()

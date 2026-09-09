@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -91,8 +92,10 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 			if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
 				csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
 			}
+			recordKillAction(&f, pid, exe, err)
 			continue
 		}
+		recordKillAction(&f, pid, exe, nil)
 
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Critical,
@@ -104,6 +107,38 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 	}
 
 	return actions
+}
+
+// recordKillAction writes the unified action record for one termination
+// attempt. A refusal is recorded as well as a kill: "the safety rules stopped
+// this" is the answer to a question an operator will ask about a process that
+// is still running.
+func recordKillAction(f *alert.Finding, pid, exe string, err error) {
+	rec := actionlog.Record{
+		Op:          "respond.kill_process",
+		Actor:       actionlog.DefaultActor(),
+		Target:      "pid " + pid,
+		ActorDetail: exe,
+		Reason:      "manual process termination",
+		FindingID:   "",
+		Result:      actionlog.Applied,
+	}
+	if f != nil {
+		rec.Reason = f.Check
+		rec.FindingID = alert.FindingID(*f)
+	}
+	switch {
+	case errors.Is(err, errProcessNotEligible):
+		rec.Result = actionlog.Refused
+		rec.Error = "process is not eligible for automatic termination"
+	case errors.Is(err, os.ErrProcessDone):
+		rec.Result = actionlog.Refused
+		rec.Error = "process had already exited"
+	case err != nil:
+		rec.Result = actionlog.Failed
+		rec.Error = err.Error()
+	}
+	actionlog.Write(rec)
 }
 
 // AutoQuarantineFiles moves malicious files to quarantine directory.
@@ -193,6 +228,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		var quarantineWarning string
 
 		meta := quarantineMetadata(path, info, f.Message)
+		meta.FindingID = alert.FindingID(f)
 		if err := quarantineTarget(path, qPath, info, meta); err != nil {
 			var completed bool
 			quarantineWarning, completed = completedQuarantineWarning(err)
@@ -689,6 +725,7 @@ func InlineQuarantineIdentified(f alert.Finding, path string, data []byte, scann
 	qPath := newQuarantinePath(quarantineDir, path)
 
 	meta := quarantineMetadata(path, info, "Inline quarantine: high-confidence realtime signature match")
+	meta.FindingID = alert.FindingID(f)
 	if err := quarantineTarget(path, qPath, info, meta); err != nil {
 		if warning, completed := completedQuarantineWarning(err); completed {
 			fmt.Fprintf(os.Stderr, "autoresponse: %s\n", warning)

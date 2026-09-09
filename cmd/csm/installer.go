@@ -714,6 +714,12 @@ func deployDefaultConfig(path string) error {
 
 hostname: "SET_HOSTNAME_HERE"
 
+# enforce (default): every subsystem acts under its own switch.
+# observe: detection, correlation and alerting only. CSM changes no host
+# state, and a config that still enables a state-changing subsystem is
+# refused at startup by name. See docs/src/observe-mode.md.
+mode: "enforce"
+
 alerts:
   email:
     enabled: true
@@ -1098,6 +1104,19 @@ func logrotateConfig() string {
     notifempty
     copytruncate
     maxsize 100M
+}
+
+# The action log rotates itself: the sink renames actions.jsonl to
+# actions.jsonl.1 at 10 MB under a lock the readers share. logrotate must not
+# touch the live file, but the rotated one is never written again, so archiving
+# it here is what gives the audit trail history beyond the sink's two files.
+/var/log/csm/actions.jsonl.1 {
+    daily
+    rotate 90
+    compress
+    missingok
+    notifempty
+    nocreate
 }
 
 /var/log/csm-php-shield/events.log {

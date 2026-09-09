@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -42,13 +44,25 @@ func reactToAFAlgEvent(cfg *config.Config, ev checks.AFAlgEvent) {
 	if err != nil || pid <= 1 {
 		return
 	}
+	refused := false
 	err = signalAFAlgProcess(context.Background(), pid, unix.SIGKILL, func() error {
 		_, valid, reason := afAlgKillTarget(ev)
 		if !valid {
+			refused = true
 			return fmt.Errorf("refusing to kill: %s", reason)
 		}
 		return nil
 	})
+	rec := actionlog.Record{Op: "respond.kill_process", Target: "pid " + strconv.Itoa(pid), Actor: actionlog.Daemon, ActorDetail: ev.Exe, Reason: "AF_ALG socket open", Result: actionlog.Applied}
+	if err != nil {
+		rec.Result = actionlog.Failed
+		rec.Error = err.Error()
+	}
+	if refused || errors.Is(err, os.ErrProcessDone) {
+		rec.Result = actionlog.Refused
+	}
+	actionlog.Write(rec)
+
 	if err != nil {
 		csmlog.Warn("af_alg react: kill failed",
 			"pid", pid, "exe", ev.Exe, "uid", ev.UID,

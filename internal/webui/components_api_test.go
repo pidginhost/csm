@@ -42,6 +42,7 @@ func (s *stubComponentsProvider) AutomationStatus() health.AutomationStatus {
 	return health.AutomationStatus{}
 }
 func (s *stubComponentsProvider) UpdateInfo() health.UpdateInfo { return health.UpdateInfo{} }
+func (s *stubComponentsProvider) Mode() string                  { return "enforce" }
 func (s *stubComponentsProvider) CorrelationAttribution() *health.CorrelationAttribution {
 	return nil
 }

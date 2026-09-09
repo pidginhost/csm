@@ -55,7 +55,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 	return AuditEvent{
 		V:         AuditSchemaVersion,
 		Timestamp: f.Timestamp.UTC(),
-		FindingID: makeFindingID(f),
+		FindingID: FindingID(f),
 		Severity:  f.Severity.String(),
 		Check:     f.Check,
 		Message:   f.Message,
@@ -69,7 +69,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 	}
 }
 
-// makeFindingID hashes the canonical fields of a Finding to a stable
+// FindingID hashes the canonical fields of a Finding to a stable
 // 16-hex-char ID. Two emits of the same finding (same timestamp + the
 // same other fields) produce the same ID, so downstream dedup works
 // across re-runs.
@@ -77,7 +77,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 // The hash inputs use a "|" separator so the byte-for-byte
 // concatenation cannot collide via field-boundary ambiguity (e.g. a
 // Check name that ends in the same chars another field starts with).
-func makeFindingID(f Finding) string {
+func FindingID(f Finding) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(f.Timestamp.UTC().Format(time.RFC3339Nano)))
 	_, _ = h.Write([]byte("|"))
