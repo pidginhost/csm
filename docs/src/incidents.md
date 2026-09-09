@@ -363,12 +363,23 @@ why account-aware producers should supply identity.
 
 Qualifying rows with no identity from any source do not count toward either
 aggregate. They are counted once per call and logged once per check name per
-process, using only that call's row count and no finding text. Repeated
-snapshots are not summed; ignored, derived, unknown and below-threshold
-security-event rows produce no diagnostic count, and there is no cumulative
-counter or health signal yet. A check with a declared attribution gap is
-still eligible: when its producer does supply an authoritative owner, that
-Critical counts.
+process, using only that call's row count and no finding text. Ignored,
+derived, unknown and below-threshold security-event rows produce no
+diagnostic count. A check with a declared attribution gap is still eligible:
+when its producer does supply an authoritative owner, that Critical counts.
+
+The health snapshot (`csm status --json`, `/api/v1/status`) carries a
+`correlation_attribution` block with two views: `current` is the per-check
+count of unattributed qualifying rows retained in the active set after its
+latest merge, including any eviction caused by the size limit, and clears
+when a later merge attributes them; `cumulative`
+sums every unattributed row since the daemon started, across active-set
+merges and per-batch derivations, so a producer that recovered stays visible
+as having failed. Counters are published together in merge order. The block
+is absent until the first merge. `csm doctor`
+reports the same state as `correlation attribution`: OK when `current` is
+empty, WARN naming the checks and their counts otherwise, with the history
+in both cases.
 
 The two per-batch derivations (scan runner, realtime dispatcher) see only
 their batch and produce alerts. The latest-state merge derives from the

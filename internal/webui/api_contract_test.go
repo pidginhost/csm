@@ -47,6 +47,12 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			Source:        "github",
 			CheckedAt:     now,
 		},
+		attribution: &health.CorrelationAttribution{
+			Current:          map[string]int{"db_rogue_admin": 2},
+			Cumulative:       map[string]int{"db_rogue_admin": 7},
+			ActiveSetUpdates: 3,
+			Since:            now,
+		},
 	})
 
 	rec := httptest.NewRecorder()
@@ -62,6 +68,11 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 		t.Fatalf("automation payload = %T, want object", raw["automation"])
 	}
 	assertJSONKeys(t, automation, jsonStructKeys(reflect.TypeOf(health.AutomationStatus{})))
+	attribution, ok := raw["correlation_attribution"].(map[string]any)
+	if !ok {
+		t.Fatalf("correlation_attribution payload = %T, want object", raw["correlation_attribution"])
+	}
+	assertJSONKeys(t, attribution, jsonStructKeys(reflect.TypeOf(health.CorrelationAttribution{})))
 }
 
 func TestAPICapabilitiesContract(t *testing.T) {

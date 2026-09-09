@@ -35,6 +35,11 @@ type Snapshot struct {
 	// rollback, and the last recorded automation action in one stable payload.
 	Automation AutomationStatus `json:"automation,omitempty"`
 
+	// CorrelationAttribution reports which checks feed cross-account
+	// correlation findings without a hosting owner. Nil until the daemon has
+	// merged an active set, and on daemons that predate the block.
+	CorrelationAttribution *CorrelationAttribution `json:"correlation_attribution,omitempty"`
+
 	// Update reports whether a newer CSM release is available upstream.
 	// Populated by internal/updatecheck. Zero value means the checker has
 	// not yet completed a poll (very early startup) or is disabled in
@@ -82,6 +87,21 @@ type AutomationAction struct {
 	Check     string    `json:"check"`
 	Message   string    `json:"message"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// CorrelationAttribution is the operator-facing view of cross-account
+// correlation attribution. Current is the per-check count of qualifying
+// findings in the latest-state active set that carry no hosting owner, as
+// of its most recent merge; it clears when a later merge attributes them.
+// Cumulative sums every unattributed row reported since the daemon started,
+// across active-set merges and per-batch derivations, so a producer that
+// recovered stays visible as having failed. Kept as its own type so
+// internal/health does not import internal/checks.
+type CorrelationAttribution struct {
+	Current          map[string]int `json:"current"`
+	Cumulative       map[string]int `json:"cumulative"`
+	ActiveSetUpdates int            `json:"active_set_updates"`
+	Since            time.Time      `json:"since"`
 }
 
 // UpdateInfo mirrors updatecheck.Info for the health snapshot. Kept
