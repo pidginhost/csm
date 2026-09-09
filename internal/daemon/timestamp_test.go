@@ -15,6 +15,9 @@ import (
 // dispatches a batch stamps them, so history, incidents and the audit log
 // never carry the zero time.
 func TestBatchPathsStampMissingTimestamps(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
 	previousActive := config.Active()
 	config.SetActive(nil)
 	t.Cleanup(func() { config.SetActive(previousActive) })
@@ -39,7 +42,7 @@ func TestBatchPathsStampMissingTimestamps(t *testing.T) {
 			t.Cleanup(func() { _ = st.Close() })
 			cfg := &config.Config{StatePath: t.TempDir()}
 			cfg.Alerts.MaxPerHour = 10
-			d := New(cfg, st, nil, "")
+			d := &Daemon{cfg: cfg, store: st}
 
 			before := time.Now().Add(-time.Second)
 			tc.run(d, alert.Finding{Severity: alert.High, Check: "email_suspicious_geo", Message: "login from elsewhere"})

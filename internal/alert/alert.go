@@ -687,11 +687,12 @@ func FillTimestamps(findings []Finding, now time.Time) {
 	}
 }
 
-// Dispatch sends alerts via all configured channels.
+// Dispatch sends alerts via all configured channels without modifying findings.
 func Dispatch(cfg *config.Config, findings []Finding) error {
-	FillTimestamps(findings, auditNow())
-	// Deduplicate
+	// Deduplicate owns a copy, so stamping cannot race with callers sharing
+	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
+	FillTimestamps(findings, auditNow())
 
 	// Audit log captures every (deduplicated) finding before
 	// FilterBlockedAlerts and the rate limiter, so SIEMs see the
