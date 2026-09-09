@@ -1,10 +1,15 @@
 package ci
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestRepoPublishProtectsYaraForgeMirror(t *testing.T) {
@@ -173,34 +178,123 @@ func TestReleaseGithubRendersNotesThroughTheChangelogScript(t *testing.T) {
 	}
 }
 
-// The integration job installs the freshly built .deb on a stock Ubuntu cloud
-// image. Those images ship with unmet dependencies of their own -- one broke
-// the v3.36.0 release pipeline with packagekit and multipath-tools absent
-// while packagekit-tools and ubuntu-server depended on them -- so the image is
-// repaired in its own command. Folding --fix-broken into the CSM install would
-// also repair a dependency defect in our own package, which is the failure
-// this job exists to catch.
+// Execute the YAML-decoded shell through both SSH quoting layers. Substring
+// checks also accept commented-out commands and cannot prove that an apt
+// failure stops the job or that repair and installation use separate sessions.
 func TestIntegrationRepairsTheImageBeforeInstallingCSM(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", ".gitlab-ci.yml"))
 	if err != nil {
 		t.Fatalf("read .gitlab-ci.yml: %v", err)
 	}
-	integration := gitlabJobBlock(t, string(body), "integration")
+	var config struct {
+		Integration struct {
+			Script []string `yaml:"script"`
+		} `yaml:"integration"`
+	}
+	if err := yaml.Unmarshal(body, &config); err != nil {
+		t.Fatalf("decode .gitlab-ci.yml: %v", err)
+	}
+	if len(config.Integration.Script) != 1 {
+		t.Fatal("expected one integration script block")
+	}
+	script := config.Integration.Script[0]
+	start := strings.Index(script, `scp "$DEB" phuser@"$UBUNTU_IP":/tmp/csm.deb`)
+	if start < 0 {
+		t.Fatal("Ubuntu package upload boundary not found")
+	}
+	end := strings.Index(script[start:], `if [ -n "$CPANEL_ID" ]; then`)
+	if end < 0 {
+		t.Fatal("cPanel package installation boundary not found")
+	}
+	// Keep the job's actual shell options so dropping errexit is observable.
+	options, _, _ := strings.Cut(script, "\n")
+	install := options + "\n" + script[start:start+end] + "\nprintf 'done\\n' >> \"$APT_TRACE\"\n"
 
-	repair := "apt-get update -qq && apt-get -y -qq --fix-broken install"
-	if !strings.Contains(integration, repair) {
-		t.Fatalf("integration must repair the Ubuntu image before installing; want a command containing %q", repair)
-	}
-	install := "apt-get install -y /tmp/csm.deb"
-	if !strings.Contains(integration, install) {
-		t.Fatalf("integration must install the built package; want %q", install)
-	}
-	for _, line := range strings.Split(integration, "\n") {
-		if strings.Contains(line, install) && strings.Contains(line, "fix-broken") {
-			t.Fatalf("the CSM install must not carry --fix-broken; a broken dependency in our own package has to fail the job: %s", strings.TrimSpace(line))
-		}
-	}
-	if strings.Index(integration, repair) > strings.Index(integration, install) {
-		t.Fatal("the image repair must run before the CSM install")
+	const commands = `#!/bin/bash
+set -eu
+case "${0##*/}" in
+  scp)
+    [[ $# == 2 && "$1" == "$DEB" && "$2" == "phuser@$UBUNTU_IP:/tmp/csm.deb" ]]
+    ;;
+  ssh)
+    [[ $# == 2 && "$1" == "phuser@$UBUNTU_IP" ]]
+    printf 'ssh\n' >> "$APT_TRACE"
+    exec /bin/sh -c "$2"
+    ;;
+  sudo)
+    [[ $# == 3 && "$1" == bash && "$2" == -c ]]
+    exec "$@"
+    ;;
+  apt-get)
+    case "$*" in
+      'update -qq') phase=update; argc=2 ;;
+      '-y -qq --fix-broken install') phase=repair; argc=4 ;;
+      'install -y /tmp/csm.deb') phase=install; argc=3 ;;
+      *) printf 'unexpected apt arguments: %s\n' "$*" >&2; exit 99 ;;
+    esac
+    [[ $# == "$argc" ]]
+    printf '%s\n' "$phase" >> "$APT_TRACE"
+    [[ "$phase" != "$FAIL_PHASE" ]] || exit 100
+    if [[ "$phase" == repair ]]; then
+      printf 'healthy' > "$IMAGE_STATE"
+    elif [[ "$phase" == install && "$(cat "$IMAGE_STATE")" != healthy ]]; then
+      exit 100
+    fi
+    ;;
+  *) exit 99 ;;
+esac
+`
+	const repaired = "ssh\nupdate\nrepair\nssh\ninstall\n"
+	for _, tc := range []struct {
+		name      string
+		image     string
+		failPhase string
+		wantTrace string
+		wantExit  int
+	}{
+		{"healthy_image", "healthy", "", repaired + "done\n", 0},
+		{"broken_image", "broken", "", repaired + "done\n", 0},
+		{"update_failure", "broken", "update", "ssh\nupdate\n", 100},
+		{"repair_failure", "broken", "repair", "ssh\nupdate\nrepair\n", 100},
+		{"package_dependency_failure", "healthy", "install", repaired, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, name := range []string{"scp", "ssh", "sudo", "apt-get"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(commands), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			state := filepath.Join(dir, "state")
+			if err := os.WriteFile(state, []byte(tc.image), 0600); err != nil {
+				t.Fatal(err)
+			}
+			trace := filepath.Join(dir, "trace")
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "-c", install)
+			cmd.Env = append(os.Environ(),
+				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"UBUNTU_IP=192.0.2.24", "DEB=/artifacts with spaces/csm.deb",
+				"IMAGE_STATE="+state, "APT_TRACE="+trace, "FAIL_PHASE="+tc.failPhase,
+			)
+			out, err := cmd.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatalf("Ubuntu package installation timed out: %s", out)
+			}
+			if err != nil && cmd.ProcessState == nil {
+				t.Fatalf("start shell: %v: %s", err, out)
+			}
+			if got := cmd.ProcessState.ExitCode(); got != tc.wantExit {
+				t.Errorf("installation exit = %d, want %d: %s", got, tc.wantExit, out)
+			}
+			got, err := os.ReadFile(trace)
+			if err != nil {
+				t.Fatalf("read apt trace: %v", err)
+			}
+			if string(got) != tc.wantTrace {
+				t.Errorf("command trace = %q, want %q", got, tc.wantTrace)
+			}
+		})
 	}
 }
