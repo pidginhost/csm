@@ -655,6 +655,11 @@ var latestVolatileCheckNames = []string{
 	"check_timeout",
 }
 
+// Keep merge completion and health publication in the same order. The
+// store lock alone cannot prevent an older caller publishing after a newer
+// merge once both have returned from the store.
+var latestScanMergeMu sync.Mutex
+
 // StoreLatestScanFindings replaces the latest findings owned by a scan, then
 // rebuilds derived correlation findings from the merged current set. One-shot
 // auto-response actions stay in history and alerts, not the active findings
@@ -678,10 +683,7 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 	// read cached platform roots.
 	platform.Detect()
 	now := time.Now()
-	// The merge callback runs under the store's latest-findings lock, so it
-	// only captures the unattributed snapshot; reporting happens after the
-	// store call returns and must never re-enter the store.
-	var unattributed map[string]int
+	latestScanMergeMu.Lock()
 	st.PurgeAndMergeFindingsDerivedWithGaps(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
@@ -689,7 +691,6 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 		DerivedCorrelationChecks(),
 		func(merged []alert.Finding) []alert.Finding {
 			res := CorrelateFindings(merged)
-			unattributed = res.Unattributed
 			for i := range res.Derived {
 				if res.Derived[i].Timestamp.IsZero() {
 					res.Derived[i].Timestamp = now
@@ -698,7 +699,13 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 			return res.Derived
 		},
 	)
-	ReportUnattributedCorrelation(unattributed)
+	// Adding derived findings can evict source rows at the active-set cap.
+	// Count the final set, not the intermediate input to derivation.
+	unattributed := CorrelateFindings(st.LatestFindings()).Unattributed
+	reporter := defaultUnattributedReporter
+	warnings := reporter.record(unattributed, true)
+	latestScanMergeMu.Unlock()
+	reporter.warnCounts(warnings)
 }
 
 func latestPurgeWithVolatile(purgeChecks []string) []string {

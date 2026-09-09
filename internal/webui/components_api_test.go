@@ -43,6 +43,9 @@ func (s *stubComponentsProvider) AutomationStatus() health.AutomationStatus {
 }
 func (s *stubComponentsProvider) UpdateInfo() health.UpdateInfo { return health.UpdateInfo{} }
 func (s *stubComponentsProvider) Mode() string                  { return "enforce" }
+func (s *stubComponentsProvider) CorrelationAttribution() *health.CorrelationAttribution {
+	return nil
+}
 
 // componentsTestServer wires a test Server with a stub provider and the
 // supplied watcher state. Findings seeded via the latest set so the

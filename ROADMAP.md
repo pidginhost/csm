@@ -206,6 +206,16 @@ What remains open:
   and PHP relay users can still resolve through validated passwd homes.
 - The three-account threshold was set when a tenth of the detectors were
   eligible. It has not been re-derived.
+- Attribution loss is now visible: the health snapshot and `csm doctor`
+  name the checks whose active-set findings carry no owner and keep a
+  cumulative count since start, so calibration work can see what it is
+  missing on a given host.
+
+Recorded streams now exist: `scripts/finding-stream` anonymizes a host's
+audit log into a joinable stream (see
+[recorded finding streams](docs/src/finding-streams.md)), and the first
+recordings from production hosts are kept locally, outside the repository.
+Calibration can start from them.
 
 **Acceptance:** re-derive the coordinated-attack threshold against recorded
 finding streams, including false-positive floods, unrelated long-lived
@@ -213,22 +223,6 @@ findings, and the difference between per-batch and persisted active-state
 derivation, rather than assuming three accounts is still right at the full
 detector surface. Any change to the Critical-only limit comes with the same
 recorded-stream evidence.
-
-## Correlation attribution has no health signal
-
-**Status:** open.
-
-Correlation logs once per check per process when eligible findings carry no
-owner, and counts them per call. Nothing exposes that state to an operator:
-the health endpoint and `csm doctor` cannot say which checks are losing
-attribution on this host, and a log line at first occurrence does not
-distinguish a one-off from a producer that has been unattributed for weeks.
-The existing queue-depth, drop and lag reporting does not cover this.
-
-**Acceptance:** health and doctor expose missing owner attribution by check
-name, distinguish the current snapshot's counts from cumulative events since
-start, and a test proves the signal clears when attribution recovers.
-
 
 ## Backlog and dropped work are reported as counters, not as failures
 

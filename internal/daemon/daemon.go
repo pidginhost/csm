@@ -1424,6 +1424,7 @@ func (d *Daemon) persistPendingFindingsOnShutdown(batch []alert.Finding) {
 	if len(batch) == 0 {
 		return
 	}
+	alert.FillTimestamps(batch, time.Now())
 	d.store.AppendHistory(batch)
 	if err := d.store.AppendPendingFindings(batch); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Could not park %d pending finding(s) for the next start: %v\n", ts(), len(batch), err)
@@ -1456,6 +1457,10 @@ func operatorAlertableFindings(findings []alert.Finding) []alert.Finding {
 }
 
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {
+	// Realtime producers may hand over findings without a Timestamp; stamp
+	// them once here so history, incidents, the latest set and every alert
+	// sink see the same time.
+	alert.FillTimestamps(findings, time.Now())
 	// Snapshot the live config once at the top of the batch. Every
 	// cfg.X read below picks up the last-reloaded value (ROADMAP
 	// item 7); taking one snapshot avoids the weirder case of a
@@ -2809,6 +2814,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 // sink sees the same single copy, and a failure in one sink does not skip the
 // sinks that follow it.
 func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
+	alert.FillTimestamps(findings, time.Now())
 	findings = alert.Deduplicate(findings)
 	if len(findings) == 0 {
 		return

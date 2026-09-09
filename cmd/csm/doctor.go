@@ -166,6 +166,8 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.Checks = append(report.Checks, DoctorCheck{Name: "bbolt store healthy", Status: "ok"})
 	}
 
+	report.Checks = append(report.Checks, correlationAttributionCheck(sr.Snapshot.CorrelationAttribution))
+
 	if automation := sr.Snapshot.Automation; automation.FirewallEnabled {
 		check := DoctorCheck{Name: "firewall managed", Status: "ok"}
 		if !automation.FirewallManaged {

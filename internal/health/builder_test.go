@@ -19,6 +19,7 @@ type fakeProvider struct {
 	dryRunBlocks         int
 	automation           AutomationStatus
 	mode                 string
+	attribution          *CorrelationAttribution
 }
 
 func (f *fakeProvider) Hostname() string                 { return f.hostname }
@@ -44,6 +45,9 @@ func (f *fakeProvider) AutomationStatus() AutomationStatus {
 }
 func (f *fakeProvider) UpdateInfo() UpdateInfo { return UpdateInfo{} }
 func (f *fakeProvider) Mode() string           { return f.mode }
+func (f *fakeProvider) CorrelationAttribution() *CorrelationAttribution {
+	return f.attribution
+}
 
 func TestBuild_PopulatesAllFields(t *testing.T) {
 	p := &fakeProvider{

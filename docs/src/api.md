@@ -43,6 +43,10 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  combining daemon faults with active high/critical incidents.
                                  `incidents_open_by_severity` breaks open and contained incidents
                                  down by `critical`, `high`, and `warning`.
+                                 `correlation_attribution` (present after the first active-set
+                                 merge) lists per check the findings correlation could not
+                                 attribute to an account: `current` for the active set now,
+                                 `cumulative` since daemon start.
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/challenge/stats     Challenge-routing activity for the UI: `pending`, `escalated`

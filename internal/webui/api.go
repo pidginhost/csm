@@ -106,6 +106,11 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	if !snap.Update.CheckedAt.IsZero() {
 		resp["update"] = snap.Update
 	}
+	// Present only after the daemon has merged an active set; absence means
+	// "not observed yet", not "clean".
+	if snap.CorrelationAttribution != nil {
+		resp["correlation_attribution"] = snap.CorrelationAttribution
+	}
 	writeJSON(w, resp)
 }
 

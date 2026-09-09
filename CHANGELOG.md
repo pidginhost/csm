@@ -10,13 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `csm selftest` scans adversarial samples and benign controls, reporting what the installed rules catch and miss without reading account data. The same bundle gates both rule sets in CI.
-
 - `csm actions` reads a new action log that records what CSM did to the host, not just what it found: the operation, who started it, the finding that caused it, the digest of a changed file before and after, and the command that reverses it. Quarantine, cleaning, process termination and firewall changes write to it today.
-
 - `csm privileges` prints every operation that needs root or a capability, what it writes, and the setting that stops it. The same table ships as a capability matrix in the docs, and tests keep it in step with the systemd sandbox.
-
 - `mode: observe` runs CSM as a detection-only sensor, disabling automatic host remediation and integration updates while keeping its own data and runtime sockets. A config that still enables a state-changing subsystem is refused at load, naming every conflicting key.
-
+- A finding-stream tool turns a host's audit log into an anonymized recording for correlation calibration: hosts, accounts, domains, mailboxes and addresses become salted pseudonyms, credential material is dropped, and a leak check refuses to write output that still carries a raw identity.
+- The health snapshot and `csm doctor` report which checks feed cross-account correlation findings without a hosting owner, separating what the active set shows now from the cumulative count since start, so a producer that lost attribution is visible to an operator instead of only in a log line at first occurrence.
 - `firewall.tcp_out_allow` permits outbound TCP to a destination IP or CIDR on a port range, which `tcp_out` cannot express; it is emitted after the `smtp_block` guard and warns when the destination is `0.0.0.0/0`.
 - A new firewall command clears one address's accumulated local threat score without changing blocks, allow lists, whitelists or event history. New findings start a fresh scoring record.
 - An optional cron entry for nightly automatic upgrades, shipped switched off. It is installed alongside the other sample configuration and does nothing until an operator copies it into place; the file explains how, and warns about switching development builds to the release channel.
@@ -25,10 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Detection self-tests now fail on incomplete rule loads, scan errors and empty input, and explicitly report unavailable engines. The obfuscated sample now uses a callable PHP function, and error details and newly closed gaps appear in the text report.
-
 - Correct the privilege inventory to describe actual kernel access, writes and disable controls, including operations with no config switch. Sandbox checks now reject empty or unrelated claims, and the service no longer grants write access to read-only mail policies.
 - Inventory exports now report output failures in every format, so a failed write no longer looks successful.
 - Doctor reports the running posture and warns when a configured mode change still needs a restart.
+- Findings raised without a time (suspicious mail logins, sensitive file writes, mail AV degradation, YARA worker crashes) now carry the moment the daemon received them in history, incidents, alerts and the audit log, instead of the zero time that sorted before every real event and collided finding ids.
 - The operator's web server override in the configuration is applied before crash reporting starts. Crash reporting tags its events with the detected platform, and on a host with it enabled that detection ran first, so the override was silently ignored at every daemon start and log watchers followed the probe instead of the configuration.
 - The installer no longer writes the three sandbox directives that systemd 239 (EL8, CloudLinux 8) rejects at every start; it says which were left out. Newer systemd keeps the full unit.
 - Doctor now names the CageFS cages that lack the PHP Shield event mount and gives the per-account remount command, instead of a count that pointed at every cage. An account it cannot resolve stays visible by uid, with a note to resolve the name first rather than an invalid command.
@@ -47,7 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The PHP relay guard now says why it is inactive and which setting turns it on, instead of reporting itself as unimplemented.
 - Empty guard files that plugins create and delete under upload directories are no longer reported as self-deleting droppers. One plugin produced hundreds of these alerts a day on a busy host, and they were enough to raise a false account-compromise incident.
 - Five of the six syscall groups the service unit meant to deny were silently discarded by systemd, so module loading, mounting and raw I/O were never blocked. The unit read as hardened while the hardening was absent.
-
 - A normal CSM restart no longer reports the YARA worker as crashed. The worker is stopped along with the daemon, and that orderly stop was raising a critical alert every time the service was restarted.
 - Clearing a local threat score now handles equivalent stored IP address spellings and concurrent requests correctly, including overlapping saves. Extra command arguments are rejected before any record is cleared.
 - The attack database no longer reads or writes state files, including event history used for statistics, when it has no configured directory. It previously resolved to a relative path and used whatever directory the process was started from.
@@ -56,7 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Action records now cover missed response and firewall paths, preserve recovery evidence after partial failures, and avoid duplicate block records. Evidence hashing no longer delays quarantine or follows symlinks, and broken log sinks cannot stop completed actions.
-
 - Observe mode now blocks independent kernel and mail actions, skips web and mail integration changes, and refuses startup with a pending firewall rollback.
 - Mail hold and governor alerts now require a local mail-server decision; a message subject or peer name can no longer forge one.
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.

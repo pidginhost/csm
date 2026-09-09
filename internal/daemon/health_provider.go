@@ -7,6 +7,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/health"
@@ -159,6 +160,22 @@ func (d *Daemon) BinaryHash() string {
 		return ""
 	}
 	return h
+}
+
+// CorrelationAttribution implements health.Provider. Nil until the first
+// active-set merge, so a fresh daemon does not claim a clean state it has
+// not yet observed.
+func (d *Daemon) CorrelationAttribution() *health.CorrelationAttribution {
+	h := checks.AttributionHealth()
+	if h.ActiveSetUpdates == 0 {
+		return nil
+	}
+	return &health.CorrelationAttribution{
+		Current:          h.Current,
+		Cumulative:       h.Cumulative,
+		ActiveSetUpdates: h.ActiveSetUpdates,
+		Since:            h.Since,
+	}
 }
 
 // DryRunBlocksCount implements health.Provider.

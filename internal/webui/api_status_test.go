@@ -21,6 +21,7 @@ type statusFakeProvider struct {
 	update               health.UpdateInfo
 	watchers             map[string]bool
 	storeHealthy         *bool
+	attribution          *health.CorrelationAttribution
 }
 
 func (statusFakeProvider) Hostname() string { return "h" }
@@ -61,6 +62,9 @@ func (f statusFakeProvider) AutomationStatus() health.AutomationStatus {
 }
 func (f statusFakeProvider) UpdateInfo() health.UpdateInfo { return f.update }
 func (f statusFakeProvider) Mode() string                  { return "enforce" }
+func (f statusFakeProvider) CorrelationAttribution() *health.CorrelationAttribution {
+	return f.attribution
+}
 
 var _ health.Provider = statusFakeProvider{}
 
