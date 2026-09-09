@@ -246,6 +246,28 @@ analyzer overflow does today; no new queue can be added without those metrics
 (same completeness rule as above). The budgets themselves belong to
 [resource and performance budgets](#resource-and-performance-budgets).
 
+## The firewall audit log is written to a path nothing reads
+
+**Status:** open. Confirmed in `internal/firewall/audit.go`.
+
+`AppendAudit` writes every firewall mutation to `<state>/audit.jsonl`.
+`ReadAuditLog`, which backs `csm firewall audit` and the web UI's audit view,
+reads `<state>/firewall/audit.jsonl`. The two paths have never agreed, so the
+reader returns an empty list on a host with a full audit file, and an operator
+asking "what has the firewall done" is told "nothing".
+
+An audit trail that reads empty is worse than an absent one: the empty answer
+looks like a clean history rather than a broken reader. Every entry now also
+reaches `internal/actionlog`, so the data is not lost, but the firewall's own
+view is still wrong.
+
+**Acceptance:** writer and reader resolve one path through a single helper; a
+test writes an entry and reads it back through the public reader; existing
+files at the historical path are still read so an upgrade does not appear to
+erase history.
+
+**Size:** hours, plus a decision on which path is canonical.
+
 ---
 
 # Priority 2 -- detection precision and response safety
@@ -268,8 +290,9 @@ at `max_blocks_per_hour` (default 50) and service restarts at
 verdict callback lets a panel downgrade a block; process signalling goes
 through pidfd; quarantine and virtual patching resolve paths with `openat2`
 and `RESOLVE_BENEATH`; the incident correlator has safety caps and a dry-run
-mode; firewall changes record a rollback point. See
-[auto-response](docs/src/auto-response.md).
+mode; firewall changes record a rollback point; `mode: observe` refuses to run
+any of it. See [auto-response](docs/src/auto-response.md) and
+[observe mode](docs/src/observe-mode.md).
 
 What does not exist: quarantine has no hourly cap at all, so one false
 positive rule on a realtime write path can quarantine every matching file on
@@ -303,7 +326,79 @@ circuit breaker; PID reuse, symlink swap, bind-mount ambiguity under CageFS
 and a file replaced between detection and action are each covered by a test
 that proves the action is refused.
 
+The "enough recorded metadata to reverse the action" half has a start:
+`internal/actionlog` records the operation, the finding that caused it, the
+exact argv, the file digest before and after, and the command that reverses it.
+It covers six operations, not the whole tier 3 and 4 set -- see
+[action log coverage](#action-log-covers-six-of-twenty-seven-host-changes).
+
 **Size:** 1 week for the table, caps and revalidation; rollback tests on top.
+
+## Action log covers six of twenty-seven host changes
+
+**Status:** open. The stream exists and its coverage is honest but small.
+
+`internal/actionlog` writes one JSONL record per action to
+`/var/log/csm/actions.jsonl`, keyed by the operation IDs from
+`internal/privops`, carrying actor, `finding_id` (the same identifier the SIEM
+audit log emits, so the two streams join), the exact argv when CSM ran a
+program, the target file's digest before and after, the result including
+refusals, and the command that reverses it. `csm actions` reads it. See
+[action log](docs/src/action-log.md).
+
+Six operations write to it: firewall blocks and unblocks, whole-ruleset
+changes, file quarantine, surgical file cleaning and process termination. The
+capability matrix has an "Action record" column and a test pins the audited set,
+so the coverage claim cannot drift -- but twenty-one host-changing operations
+are still absent, and for those the daemon log is the only record:
+
+- `respond.*` -- virtual patch, database cleanup, mail freeze and quarantine,
+  forward guard and its lookup refresh, WP-Cron fix, permission enforcement,
+  mail-auth restart, AF_ALG enforce/kill/marker, BPF egress denial, outgoing
+  mail hold, mail delivery gate.
+- `integrate.*` -- auditd rules, panel plugin, ModSecurity section, challenge
+  snippet, challenge port gate, WAF vendor rule refresh.
+
+The wiring pattern is settled: record at the operation chokepoint, not at the
+entry point, so a CLI-driven and an automatic call produce the same record.
+
+There is also no `action_id`. Each record names the command that reverses it,
+but nothing addresses a single past action, so `csm undo <action_id>` cannot
+exist yet. Adding the identifier is small; dispatching an undo to the right
+subsystem rollback is the work, and every subsystem already has one.
+
+**Acceptance:** every tier 2 to 4 action in the safety model writes a record
+before it returns, including the failure and refusal paths; the audited set in
+`internal/privops` equals that list and the pinning test proves it;
+`csm undo <action_id>` reverses a recorded action or explains why it cannot.
+
+**Size:** days for the remaining wiring; the undo command is a separate small
+item on top.
+
+## Response previews show intent, not the change
+
+**Status:** open. Dry-run says what would happen; it does not show what would
+change.
+
+`csm virtual-patch` previews which files it would deny, `db-clean --preview`
+lists what it would sanitize, and `auto_response.dry_run` records blocks it
+would apply. None of them shows the bytes. An operator deciding whether to let
+CSM write to an account's `.htaccess`, or to rewrite a customer's infected PHP
+file, has to trust a description of the edit.
+
+The evidence exists after the fact -- the action log records the digest before
+and after, and quarantine keeps a pre-clean backup -- so the missing half is
+the preview: render the same edit the action would make and print it as a
+unified diff without applying it. The three mutations worth covering are the
+virtual-patch deny block, the surgical PHP clean, and the `.htaccess` clean.
+
+**Acceptance:** each of those three actions can produce a diff of the exact
+change it would apply, with no write; the diff for an applied action matches
+what the action log's before and after digests describe; a preview that cannot
+be produced fails loudly rather than falling back to applying the change.
+
+**Size:** days. The cleaners already compute the new content; the work is
+returning it instead of writing it, and a shared renderer.
 
 ## Taint laundering through value encoders
 
@@ -398,27 +493,38 @@ recalibrated from the numbers, with the change recorded in the CHANGELOG.
 
 ## Attack replay corpus
 
-**Status:** open. Detection today is proven by per-detector unit fixtures; no
-end-to-end replay records what a release detects.
+**Status:** open; a small file-content bundle exists, the recorded-stream half
+does not.
 
-Build a versioned corpus of real hosting compromises, each sample carrying its
-expected findings, the expected incident the correlator should form, and
-whether automatic remediation is expected, optional or prohibited. Coverage
-must include web shells, PHP droppers, obfuscated malware, malicious WordPress
-plugins and themes, credential stealers, injected JavaScript, phishing kits,
-spam scripts, mail-account abuse, persistence mechanisms, cron abuse,
-suspicious binaries and archive-based payloads. Most of these already exist as
-scattered test fixtures; the work is collecting them under one manifest with
-expectations, and adding what is missing.
+`internal/selftest` holds nine samples -- six adversarial, three benign
+controls -- with a recorded verdict per rule set, and gates both `malware.yml`
+and `malware.yar` in CI. It fails in both directions: a sample that stops being
+detected is a regression, and a recorded gap that starts firing has to be
+cleared in the bundle, so no gap becomes permanent by inertia. `csm selftest`
+runs the same bundle on an installed host. Samples are base64-encoded at rest
+and decoded only in memory, which solves the antivirus problem the YARA
+fixtures hit.
 
-The corpus is stored so that endpoint antivirus on a developer machine cannot
-eat it (encoded at rest, decoded into a temporary directory by the runner), a
-problem the existing YARA fixtures already hit.
+That covers file content only, at detector level. Two things it does not do.
+
+**Breadth.** Nine samples is a smoke test, not a corpus. Coverage must reach
+web shells, PHP droppers, obfuscated malware, malicious WordPress plugins and
+themes, credential stealers, injected JavaScript, phishing kits, spam scripts,
+mail-account abuse, persistence mechanisms, cron abuse, suspicious binaries and
+archive-based payloads. Most already exist as scattered test fixtures; the work
+is collecting them under the existing manifest with expectations.
+
+**Recorded streams.** Detection that starts from an event rather than a file --
+authentication attempts, mail log lines, access-log patterns, spool activity --
+has no replay path at all, and neither does the correlator. Each sample needs
+the expected findings, the expected incident, and whether automatic remediation
+is expected, optional or prohibited.
 
 **Acceptance:** the replay runs at release acceptance; a detector change that
-loses a previously detected sample fails the run; the incident half of the
-corpus is the evidence harness that [Priority 4](#priority-4----correlation)
-needs, so both share one recorded-stream format.
+loses a previously detected sample fails the run, which the file-content half
+already does; the incident half of the corpus is the evidence harness that
+[Priority 4](#priority-4----correlation) needs, so both share one
+recorded-stream format.
 
 ## Detection quality metrics per release
 
@@ -448,7 +554,7 @@ repository.
 
 ## Privilege separation
 
-**Status:** open. The daemon is one root process.
+**Status:** open; the inventory stage is done. The daemon is one root process.
 
 Today the whole daemon -- detection, correlation, parsers, threat intelligence,
 web UI and API -- runs as root inside the systemd confinement described in
@@ -470,11 +576,23 @@ narrow Unix-socket RPC authenticated by peer credentials, with fixed verbs and
 arguments validated against the same path, user, process and firewall scopes
 the actions enforce today.
 
-Stage it: first an inventory of every root-requiring operation as a table with
-a completeness test; then the helper for firewall, signals and quarantine
-(the tier 3 and 4 actions from the safety model, which defines the action set
-and should land first); then descriptor passing for fanotify and BPF; then
-dropping capabilities in the main process. Each stage is shippable on its own.
+The inventory stage is complete: `internal/privops` lists every operation that
+needs privilege beyond reading CSM's own files, with what it writes, the config
+key that stops it and what an operator loses by withholding the privilege.
+`csm privileges` prints it, `docs/src/capability-matrix.md` ships it, and two
+gates in `internal/ci` compare it against the packaged systemd unit in both
+directions, so a writable-path grant that no operation claims fails the build.
+That table is the action set the helper has to cover.
+
+`mode: observe` is the interim posture for operators who will not grant a root
+daemon the ability to act: detection and alerting run, automatic remediation
+and integration deployment do not. It reduces what the root process *does*, not
+what it *could* do, so it is a stopgap for this item rather than a substitute.
+
+Remaining stages, each shippable on its own: the helper for firewall, signals
+and quarantine (the tier 3 and 4 actions from the safety model, which defines
+the action set and should land first); then descriptor passing for fanotify and
+BPF; then dropping capabilities in the main process.
 
 **Acceptance:** the main process holds no capability it does not use; tests
 prove an RPC request cannot escape the intended path, user, process or
@@ -676,6 +794,38 @@ shares the same channel question and should be taken together with this one.
 ---
 
 # Priority 5 -- known coverage gaps
+
+## Three obfuscation shapes are missed by both rule sets
+
+**Status:** open. Measured by the self-test bundle, recorded there as gaps.
+
+Neither `malware.yml` nor `malware.yar` fires on:
+
+- a request parameter passed to `assert` with the function name split across
+  string fragments;
+- `base64_decode` assembled from fragments and handed to `eval`;
+- a callable function name built with `chr()`, then invoked on request input
+  (`$s = chr(115)...; $s($_GET['cmd'])`).
+
+All three are the same idea -- keep the dangerous identifier out of the file as
+a literal -- and all three are common enough in real drops that a scanner that
+misses them is judged on it. A fourth shape, an unauthenticated uploader that
+writes to a caller-supplied path, is caught by the YARA rules and missed by the
+YAML ones, which is the known `.yml`/`.yar` parity gap.
+
+Detection may still reach these through the taint analyzer, PHP Shield or the
+behavioural checks; the gap is in the signature engines, which is where a
+scanner is usually evaluated.
+
+Writing rules for them is not a small change: identifier reconstruction rules
+are exactly the shape that produces false-positive floods, so any rule here has
+to clear the clean-corpus gate before it ships, and the realtime engine's
+regex limits constrain what can be expressed. Treat this as detector work with
+a corpus result attached, not as three rule edits.
+
+**Acceptance:** each shape is detected by at least one engine with no new
+finding on the clean corpus; the recorded gap in `internal/selftest` is cleared
+in the same commit, which the bundle's own gate enforces.
 
 ## Realtime coverage for files renamed into a watched tree
 
