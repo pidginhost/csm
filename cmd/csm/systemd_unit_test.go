@@ -66,7 +66,6 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"-/var/log/csm-php-shield",
 		"/etc/csm",
 		"/opt/csm/quarantine",
-		"/opt/csm/policies",
 		"/opt/csm/rules",
 		"-/opt/csm/deploy.sh",
 		"-/home",
@@ -107,6 +106,10 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 
 	for path := range rwPaths {
 		cleanPath := strings.TrimPrefix(path, "-")
+		// The daemon only loads policy files; package installation owns them.
+		if cleanPath == "/opt/csm/policies" || strings.HasPrefix(cleanPath, "/opt/csm/policies/") {
+			t.Errorf("ReadWritePaths must not make read-only mail policies writable: %s", path)
+		}
 		if cleanPath == "/root" || strings.HasPrefix(cleanPath, "/root/") {
 			t.Errorf("ReadWritePaths must not make root home writable: %s", path)
 		}

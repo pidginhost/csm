@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 )
 
@@ -774,7 +775,9 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 // Caller is responsible for gating on cfg.AutoResponse.CleanHtaccess
 // before invoking; this function will clean unconditionally if
 // detectors find anything.
-func CleanHtaccessFile(path string) RemediationResult {
+func CleanHtaccessFile(path string) (result RemediationResult) {
+	audit := newCleanAction(path)
+	defer func() { audit.finish(result.Error) }()
 	if filepath.Base(path) != ".htaccess" {
 		return RemediationResult{Error: "automated .htaccess remediation only applies to .htaccess files"}
 	}
@@ -792,11 +795,14 @@ func CleanHtaccessFile(path string) RemediationResult {
 		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
 	}
 	defer target.Close()
+	audit.rec.Result = actionlog.Failed
 	original, err := io.ReadAll(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
 	}
 
+	audit.capture(target, original)
+	audit.rec.Result = actionlog.Refused
 	_, ranges := AuditHtaccessContent(resolved, original)
 	if len(ranges) == 0 {
 		return RemediationResult{Error: "no malicious directives found to remove"}
@@ -811,11 +817,13 @@ func CleanHtaccessFile(path string) RemediationResult {
 
 	backupPath := newQuarantinePath(backupDir, resolved)
 	meta := quarantineMetadata(resolved, target.Info, fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)))
+	audit.rec.Result = actionlog.Failed
+	audit.rec.Reason = meta.Reason
 	if err := storeQuarantineBackup(backupPath, original, meta, 0640); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("writing durable backup: %v", err)}
 	}
 
-	if err := writeCleanedFileAtomic(target, cleaned); err != nil {
+	if err := audit.replace(target, cleaned, backupPath); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("atomic replace: %v", err)}
 	}
 

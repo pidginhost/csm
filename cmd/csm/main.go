@@ -74,6 +74,12 @@ func main() {
 
 	cmd := os.Args[1]
 
+	// Operator commands change host state too, so they record to the same
+	// stream. The daemon installs its own sink with the daemon actor.
+	if cmd != "daemon" {
+		installCLIActionLog()
+	}
+
 	switch cmd {
 	case "version":
 		fmt.Printf("csm %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
@@ -145,6 +151,12 @@ func main() {
 		runDoctor()
 	case "systemd-roots":
 		runSystemdRoots()
+	case "privileges":
+		runPrivileges()
+	case "actions":
+		runActions()
+	case "selftest":
+		runSelfTest()
 	case "verify-release":
 		runVerifyRelease()
 	case "backup":
@@ -210,6 +222,9 @@ Commands:
   enable        Enable optional features (--php-shield)
   disable       Disable optional features (--php-shield)
   systemd-roots Print a validated systemd drop-in for account write access
+  privileges    Print what CSM does that needs privilege, and the key that stops each one (--json, --markdown)
+  actions       Print what CSM did to this host (--since, --op, --limit, --json)
+  selftest      Scan a bundle of known samples and report what the installed rules catch (--json)
   doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   forensic-snapshot <account> --out <archive.tar.gz>  Evidence archive for incident handoff (triggers/admins/sessions/mtimes)
@@ -743,6 +758,9 @@ func printStatusHuman(s control.StatusResult) {
 	fmt.Printf("history count:    %d\n", s.HistoryCount)
 	fmt.Printf("dropped alerts:   %d\n", s.DroppedAlerts)
 	if s.Snapshot != nil {
+		if s.Snapshot.Mode != "" {
+			fmt.Printf("mode:             %s\n", s.Snapshot.Mode)
+		}
 		printAutomationStatusHuman(s.Snapshot.Automation)
 	}
 }

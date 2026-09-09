@@ -79,6 +79,8 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.OverallStatus = collapseDoctor(report.Checks)
 		return report
 	}
+	modeCheckIndex := len(report.Checks)
+	report.Checks = append(report.Checks, doctorModeCheck(cfg))
 	validationChecks, invalid := doctorConfigValidation(cfg)
 	report.Checks = append(report.Checks, validationChecks...)
 	if invalid {
@@ -132,6 +134,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 	}
 
 	report.Snapshot = sr.Snapshot
+	report.Checks[modeCheckIndex] = doctorLiveModeCheck(cfg, sr.Snapshot.Mode)
 	report.Checks = append(report.Checks, DoctorCheck{Name: "health snapshot available", Status: "ok"})
 	if len(sr.Snapshot.Watchers) == 0 {
 		report.Checks = append(report.Checks, DoctorCheck{
@@ -231,6 +234,43 @@ func doctorIntegrityCheck(cfg *config.Config, verify func(*config.Config) error)
 		check.Fix = "run `csm rehash` after a deliberate binary upgrade; otherwise treat it as tampering and reinstall from a trusted package"
 	default:
 		check.Fix = "fix the read error, then run `csm verify`"
+	}
+	return check
+}
+
+// Disk config is only the next-start posture. A SIGHUP can re-sign a mode
+// change while leaving the running daemon in its previous posture.
+func doctorModeCheck(cfg *config.Config) DoctorCheck {
+	mode := config.ModeEnforce
+	if cfg.ObserveMode() {
+		mode = config.ModeObserve
+	}
+	return DoctorCheck{
+		Name:    "configured mode",
+		Status:  "ok",
+		Message: mode + " (applies at daemon startup)",
+	}
+}
+
+func doctorLiveModeCheck(cfg *config.Config, running string) DoctorCheck {
+	configured := config.ModeEnforce
+	if cfg.ObserveMode() {
+		configured = config.ModeObserve
+	}
+	check := DoctorCheck{Name: "operating mode", Status: "ok", Message: running}
+	switch {
+	case running != config.ModeObserve && running != config.ModeEnforce:
+		check.Status = "warn"
+		check.Message = "daemon did not report a supported operating mode (configured: " + configured + ")"
+		check.Fix = "upgrade or restart csm.service, then check the running mode again"
+	case running != configured:
+		check.Status = "warn"
+		check.Message = "running " + running + "; configured " + configured + " (restart required)"
+		check.Fix = "systemctl restart csm.service"
+	case running == config.ModeObserve:
+		check.Message += " (no automatic remediation or integration changes)"
+	default:
+		check.Message += " (subsystems act under their own switches)"
 	}
 	return check
 }

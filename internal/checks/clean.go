@@ -15,6 +15,8 @@ import (
 	"unicode"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/actionlog"
 )
 
 // CleanResult describes the outcome of a cleaning attempt.
@@ -69,8 +71,10 @@ var cleanMaxFileSize int64 = 8 << 20
 // 2. Prepend injection - remove malicious code blocks at start of file (entropy-validated)
 // 3. Append injection - remove malicious code after closing ?> or end of PSR-12 file
 // 4. Inline eval injection - remove eval(base64_decode(...)) single-line injections
-func CleanInfectedFile(path string) CleanResult {
-	result := CleanResult{Path: path}
+func CleanInfectedFile(path string) (result CleanResult) {
+	result = CleanResult{Path: path}
+	audit := newCleanAction(path)
+	defer func() { audit.finish(result.Error) }()
 
 	target, err := openCleanTarget(path)
 	if err != nil {
@@ -84,12 +88,14 @@ func CleanInfectedFile(path string) CleanResult {
 		return result
 	}
 
+	audit.rec.Result = actionlog.Failed
 	data, err := io.ReadAll(target.File)
 	if err != nil {
 		result.Error = fmt.Sprintf("cannot read file: %v", err)
 		return result
 	}
 
+	audit.capture(target, data)
 	// Create backup before any modification
 	backupDir := filepath.Join(quarantineDir, "pre_clean")
 	backupPath := newQuarantinePath(backupDir, path)
@@ -137,11 +143,13 @@ func CleanInfectedFile(path string) CleanResult {
 
 	// If nothing was removed, file couldn't be cleaned
 	if len(removals) == 0 || len(content) == originalLen {
+		audit.rec.Result = actionlog.Refused
 		result.Error = "no known injection patterns found - file may need manual review"
 		return result
 	}
 
-	if err := writeCleanedFileAtomic(target, []byte(content)); err != nil {
+	audit.rec.Reason = strings.Join(removals, "; ")
+	if err := audit.replace(target, []byte(content), backupPath); err != nil {
 		result.Error = fmt.Sprintf("cannot write cleaned file: %v", err)
 		return result
 	}
@@ -152,14 +160,16 @@ func CleanInfectedFile(path string) CleanResult {
 }
 
 type cleanTarget struct {
-	Path       string
-	DirFD      int
-	Name       string
-	File       *os.File
-	Info       os.FileInfo
-	UID        int
-	GID        int
-	OwnerKnown bool
+	Path            string
+	DirFD           int
+	Name            string
+	File            *os.File
+	Info            os.FileInfo
+	UID             int
+	GID             int
+	replacementInfo os.FileInfo
+	installed       bool
+	OwnerKnown      bool
 }
 
 func (t *cleanTarget) Close() {
@@ -300,6 +310,10 @@ func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
 	if err := tmp.Sync(); err != nil {
 		return err
 	}
+	replacementInfo, statErr := tmp.Stat()
+	if statErr != nil {
+		return statErr
+	}
 	if err := closeCleanTemp(tmp); err != nil {
 		return err
 	}
@@ -312,6 +326,8 @@ func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
 		return err
 	}
 	removeTmp = false
+	target.installed = true
+	target.replacementInfo = replacementInfo
 	if err := syncCleanParent(target.DirFD); err != nil {
 		return fmt.Errorf("cleaned file installed but directory sync failed; recovery backup retained: %w", err)
 	}

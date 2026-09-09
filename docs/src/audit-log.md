@@ -37,7 +37,13 @@ re-runs.
 
 The `ts` field records when CSM raised the finding, including process
 monitoring, automatic actions, scanner health, and mail relay storage errors.
-It is independent of when a sink delivers the event.
+It is independent of when a sink delivers the event. A producer that builds
+a finding without a time gets the moment the daemon received it, so `ts` is
+never the zero time.
+
+Alert dispatch fills missing times on its own copy of the findings. Reusing
+an unstamped input for a later occurrence gets a fresh time and finding id;
+replaying a finding with an existing time preserves its time and id.
 
 ### Process context
 

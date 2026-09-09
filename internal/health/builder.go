@@ -22,6 +22,7 @@ type Provider interface {
 	DryRunBlocksCount() int
 	AutomationStatus() AutomationStatus
 	UpdateInfo() UpdateInfo
+	Mode() string
 	// CorrelationAttribution is nil until the first active-set merge.
 	CorrelationAttribution() *CorrelationAttribution
 }
@@ -57,6 +58,7 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 		DryRunBlocks:           p.DryRunBlocksCount(),
 		Automation:             p.AutomationStatus(),
 		Update:                 p.UpdateInfo(),
+		Mode:                   p.Mode(),
 		CorrelationAttribution: cloneCorrelationAttribution(p.CorrelationAttribution()),
 	}
 }

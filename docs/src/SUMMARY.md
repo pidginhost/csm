@@ -18,6 +18,9 @@
 - [Critical Checks](detection-critical.md)
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)
+- [Observe Mode](observe-mode.md)
+- [Capability Matrix](capability-matrix.md)
+- [Self-test](self-test.md)
 - [Incidents](incidents.md)
 - [Incident Response Runbook](incident-response-runbook.md)
 - [Direct SMTP Egress](direct-smtp-egress.md)
@@ -44,6 +47,7 @@
 - [API Reference](api.md)
 - [Metrics (Prometheus)](metrics.md)
 - [Audit Log (SIEM)](audit-log.md)
+- [Action Log](action-log.md)
 
 # Development
 

@@ -8,6 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -288,6 +289,23 @@ func isAutomationActionCheck(check string) bool {
 		return true
 	}
 	return strings.HasPrefix(check, "email_php_relay_action_")
+}
+
+// Mode implements health.Provider. It reports the operator's posture so
+// status, the API and doctor all show whether this host is allowed to change
+// its own state.
+func (d *Daemon) Mode() string {
+	cfg := config.Active()
+	if cfg == nil {
+		cfg = d.cfg
+	}
+	if cfg == nil {
+		return config.ModeEnforce
+	}
+	if cfg.ObserveMode() {
+		return config.ModeObserve
+	}
+	return config.ModeEnforce
 }
 
 // UpdateInfo implements health.Provider. Returns the latest cached

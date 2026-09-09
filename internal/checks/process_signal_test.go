@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/processhandle"
@@ -65,6 +66,7 @@ func withSimulatedProcessSignal(t *testing.T) *processSignalCalls {
 func TestAutoKillVerifiesCapturedProcess(t *testing.T) {
 	for _, reason := range []string{"eligible", "root transition", "stale", "missing executable", "canceled"} {
 		t.Run(reason, func(t *testing.T) {
+			sink := withActionSink(t)
 			calls := withSimulatedProcessSignal(t)
 			proc := &procMock{uid: "1001", exe: "/tmp/evil", uptime: 1000, startTick: 10000}
 			old := osFS
@@ -89,6 +91,9 @@ func TestAutoKillVerifiesCapturedProcess(t *testing.T) {
 			cfg := &config.Config{}
 			cfg.AutoResponse.Enabled, cfg.AutoResponse.KillProcesses = true, true
 			actions := AutoKillProcesses(ctx, cfg, []alert.Finding{{Check: "suspicious_process", PID: 4242, Severity: alert.Critical, Timestamp: when}})
+			if len(sink.records) != 1 || sink.records[0].Op != "respond.kill_process" {
+				t.Fatalf("kill records=%+v", sink.records)
+			}
 			want := 0
 			if reason == "eligible" {
 				want = 1
@@ -127,6 +132,7 @@ func TestKillAndQuarantineReportsSignalOutcome(t *testing.T) {
 			old := osFS
 			osFS = proc
 			t.Cleanup(func() { osFS = old })
+			sink := withActionSink(t)
 			calls := withSimulatedProcessSignal(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -158,6 +164,23 @@ func TestKillAndQuarantineReportsSignalOutcome(t *testing.T) {
 				}
 			}
 			result := fixKillAndQuarantine(ctx, path, "PID: 4242")
+			wantResult := actionlog.Refused
+			switch reason {
+			case "eligible", "cancel after signal":
+				wantResult = actionlog.Applied
+			case "unsupported", "send failed", "canceled":
+				wantResult = actionlog.Failed
+			}
+			if len(sink.records) == 0 || sink.records[0].Op != "respond.kill_process" || sink.records[0].Result != wantResult {
+				t.Fatalf("kill records=%+v", sink.records)
+			}
+			wantRecords := 2
+			if reason == "canceled" {
+				wantRecords = 1
+			}
+			if len(sink.records) != wantRecords {
+				t.Fatalf("records=%+v", sink.records)
+			}
 			if reason == "canceled" {
 				if result.Success || result.Error == "" {
 					t.Fatalf("canceled fix=%+v", result)

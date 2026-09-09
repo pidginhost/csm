@@ -41,6 +41,12 @@ func Validate(cfg *Config) []ValidationResult {
 		}
 	}
 
+	if cfg.ObserveMode() {
+		results = append(results, ValidationResult{"ok", "mode", "observe (CSM does not change host state on this host)"})
+	} else {
+		results = append(results, ValidationResult{"ok", "mode", ModeEnforce})
+	}
+
 	// --- Hostname ---
 	if cfg.Hostname == "" || cfg.Hostname == "SET_HOSTNAME_HERE" {
 		results = append(results, ValidationResult{"error", "hostname", "hostname is not set"})

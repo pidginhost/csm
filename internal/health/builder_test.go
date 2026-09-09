@@ -18,6 +18,7 @@ type fakeProvider struct {
 	historyCount         int
 	dryRunBlocks         int
 	automation           AutomationStatus
+	mode                 string
 	attribution          *CorrelationAttribution
 }
 
@@ -43,6 +44,7 @@ func (f *fakeProvider) AutomationStatus() AutomationStatus {
 	return f.automation
 }
 func (f *fakeProvider) UpdateInfo() UpdateInfo { return UpdateInfo{} }
+func (f *fakeProvider) Mode() string           { return f.mode }
 func (f *fakeProvider) CorrelationAttribution() *CorrelationAttribution {
 	return f.attribution
 }
@@ -97,5 +99,15 @@ func TestBuildIncludesBPFEnforcementActive(t *testing.T) {
 	snap := Build(p, "v1.2.3", []string{})
 	if !snap.BPFEnforcementActive {
 		t.Errorf("BPFEnforcementActive: want true")
+	}
+}
+
+// The posture an operator chose has to be visible where they already look:
+// status --json, the API status endpoint and doctor all read this snapshot.
+func TestBuildReportsOperatingMode(t *testing.T) {
+	p := &fakeProvider{mode: "observe"}
+	snap := Build(p, "v1.2.3", []string{})
+	if snap.Mode != "observe" {
+		t.Errorf("snapshot mode = %q, want observe", snap.Mode)
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/pidginhost/csm/internal/actionlog"
 )
 
 // quarantineMoveChecks are the findings whose manual fix, and whose
@@ -278,6 +280,7 @@ func fixKillAndQuarantine(ctx context.Context, path, details string) Remediation
 			}
 			return nil
 		})
+		recordKillAction(nil, pid, path, signalErr)
 		killed = signalErr == nil
 		if errors.Is(signalErr, errProcessNotEligible) || errors.Is(signalErr, os.ErrProcessDone) {
 			signalErr = nil
@@ -311,7 +314,9 @@ func fixKillAndQuarantine(ctx context.Context, path, details string) Remediation
 
 // fixHtaccess removes malicious directives from an .htaccess file while
 // preserving comments and known-safe directives (e.g., Wordfence, LiteSpeed).
-func fixHtaccess(path, message string) RemediationResult {
+func fixHtaccess(path, message string) (result RemediationResult) {
+	audit := newCleanAction(path)
+	defer func() { audit.finish(result.Error) }()
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path"}
 	}
@@ -330,11 +335,14 @@ func fixHtaccess(path, message string) RemediationResult {
 		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
 	}
 	defer target.Close()
+	audit.rec.Result = actionlog.Failed
 	data, err := io.ReadAll(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
 	}
 
+	audit.capture(target, data)
+	audit.rec.Result = actionlog.Refused
 	dangerous := []string{"auto_prepend_file", "auto_append_file", "eval(", "base64_decode",
 		"gzinflate", "str_rot13", "addhandler", "sethandler"}
 	safe := []string{
@@ -402,10 +410,12 @@ func fixHtaccess(path, message string) RemediationResult {
 
 	backupPath := newQuarantinePath(htaccessBackupDirRoot, path)
 	meta := quarantineMetadata(path, target.Info, "Pre-clean .htaccess backup")
+	audit.rec.Result = actionlog.Failed
+	audit.rec.Reason = meta.Reason
 	if err := storeQuarantineBackup(backupPath, data, meta, 0600); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot create durable backup: %v", err)}
 	}
-	if err := writeCleanedFileAtomic(target, []byte(strings.Join(cleaned, "\n"))); err != nil {
+	if err := audit.replace(target, []byte(strings.Join(cleaned, "\n")), backupPath); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("write failed; backup retained at %s: %v", backupPath, err)}
 	}
 	return RemediationResult{

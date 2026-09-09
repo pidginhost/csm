@@ -8,12 +8,20 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/quarantinefs"
 	"github.com/pidginhost/csm/internal/safepath"
-	"golang.org/x/sys/unix"
 )
 
-func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineMeta) error {
+// quarantineTarget moves a file or directory into quarantine and records the
+// action. It is the single point every quarantine passes through, which is why
+// the action record is taken here rather than at each caller.
+func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineMeta) (err error) {
+	before := actionlog.FromInfo(info)
+	existed := actionlog.Metadata(qPath).Exists
+	defer func() { recordQuarantineAction(path, qPath, metadata, before, existed, err) }()
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding quarantine metadata: %w", err)
@@ -21,10 +29,50 @@ func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineM
 	if err := quarantinefs.EnsureDir(filepath.Dir(qPath), 0700); err != nil {
 		return err
 	}
+
+	return quarantineTargetFn(path, qPath, info, data)
+}
+
+// quarantineTargetFn performs the move. It is indirected so the action record
+// can be tested against a failing move without a read-only filesystem.
+var quarantineTargetFn = func(path, qPath string, info os.FileInfo, data []byte) error {
 	if info.IsDir() {
 		return quarantineDirectory(path, qPath, info, data)
 	}
 	return quarantineFileTOCTOUSafe(path, qPath, info, data)
+}
+
+// recordQuarantineAction writes the unified action record for one quarantine.
+// The digest of the removed content is the evidence a reviewer needs: it
+// distinguishes "this exact file left the account" from "something was moved".
+func recordQuarantineAction(path, qPath string, metadata QuarantineMeta, before *actionlog.FileState, existed bool, err error) {
+	rec := actionlog.Record{
+		Op:        "respond.quarantine_file",
+		Actor:     actionlog.DefaultActor(),
+		Target:    path,
+		Reason:    metadata.Reason,
+		FindingID: metadata.FindingID,
+		Before:    before,
+		After:     actionlog.Metadata(path),
+		Result:    actionlog.Applied,
+	}
+	// Hash the retained copy only after capture, never a tenant-controlled
+	// source before the security action. Oversized copies remain unhashed.
+	if !existed {
+		retained := actionlog.Stat(qPath)
+		if retained.Exists {
+			rec.Before.Digest = retained.Digest
+			rec.RecoveryPath = qPath
+		}
+	}
+	if err != nil {
+		rec.Result = actionlog.Failed
+		rec.Error = err.Error()
+		if _, completed := completedQuarantineWarning(err); completed {
+			rec.Result = actionlog.Applied
+		}
+	}
+	actionlog.Write(rec)
 }
 
 var storeQuarantineBackup = func(path string, content []byte, metadata QuarantineMeta, mode os.FileMode) error {

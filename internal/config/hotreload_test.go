@@ -197,6 +197,7 @@ func TestHotReloadManifestMatchesConfiguredPolicy(t *testing.T) {
 
 	wantRestart := []string{
 		"hostname",
+		"mode",
 		"infra_ips",
 		"state_path",
 		"challenge",
