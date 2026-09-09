@@ -25,24 +25,28 @@ func runPrivileges() {
 		}
 	}
 
+	var err error
 	switch format {
 	case "json":
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(privops.Operations()); err != nil {
-			fmt.Fprintf(os.Stderr, "Cannot encode privileged-operation inventory: %v\n", err)
-			os.Exit(1)
-		}
+		err = enc.Encode(privops.Operations())
 	case "markdown":
-		fmt.Print(privops.Markdown())
+		_, err = fmt.Fprint(os.Stdout, privops.Markdown())
 	default:
-		printPrivilegesText(os.Stdout)
+		err = printPrivilegesText(os.Stdout)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot write privileged-operation inventory: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func printPrivilegesText(w io.Writer) {
+func printPrivilegesText(w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "OPERATION\tNEEDS\tTRIGGER\tWRITES\tTURN IT OFF")
+	if _, err := fmt.Fprintln(tw, "OPERATION\tNEEDS\tTRIGGER\tWRITES\tTURN IT OFF"); err != nil {
+		return err
+	}
 	for _, op := range privops.Operations() {
 		privs := make([]string, 0, len(op.Privileges))
 		for _, p := range op.Privileges {
@@ -55,14 +59,10 @@ func printPrivilegesText(w io.Writer) {
 		if op.Unsandboxed {
 			writes += " (unsandboxed)"
 		}
-		off := "-"
-		switch {
-		case op.DisableKey != "":
-			off = op.DisableKey + ": " + op.DisableValue
-		case op.Trigger == privops.Operator:
-			off = "do not run the command"
+		off := op.DisableInstruction()
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", op.ID, strings.Join(privs, ","), op.Trigger, writes, off); err != nil {
+			return err
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", op.ID, strings.Join(privs, ","), op.Trigger, writes, off)
 	}
-	_ = tw.Flush()
+	return tw.Flush()
 }

@@ -11,6 +11,8 @@ package privops
 
 import (
 	"fmt"
+	"path"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -33,13 +35,23 @@ const (
 	CapKill Privilege = "CAP_KILL"
 	// CapBPF covers loading and attaching BPF programs.
 	CapBPF Privilege = "CAP_BPF"
+	// CapPerfmon is required alongside CAP_BPF for tracing and LSM programs.
+	CapPerfmon Privilege = "CAP_PERFMON"
+	// CapSyslog permits reading a restricted kernel message buffer.
+	CapSyslog Privilege = "CAP_SYSLOG"
+	// CapAuditControl permits querying and loading kernel audit rules.
+	CapAuditControl Privilege = "CAP_AUDIT_CONTROL"
+	// CapSysModule permits loading or unloading kernel modules.
+	CapSysModule Privilege = "CAP_SYS_MODULE"
+	// CapLinuxImmutable permits changing the executable's immutable flag.
+	CapLinuxImmutable Privilege = "CAP_LINUX_IMMUTABLE"
 	// Unprivileged marks work CSM does inside its own directories.
 	Unprivileged Privilege = "none"
 )
 
 // KnownPrivileges lists every privilege an operation may declare.
 func KnownPrivileges() []Privilege {
-	return []Privilege{Root, CapDACReadSearch, CapSysAdmin, CapNetAdmin, CapKill, CapBPF, Unprivileged}
+	return []Privilege{Root, CapDACReadSearch, CapSysAdmin, CapNetAdmin, CapKill, CapBPF, CapPerfmon, CapSyslog, CapAuditControl, CapSysModule, CapLinuxImmutable, Unprivileged}
 }
 
 // Trigger says who starts an operation.
@@ -83,15 +95,17 @@ type Op struct {
 	// made by a tool it invokes. Filesystem paths start with "/"; anything
 	// else is a resource written as <kind>:<name>. Empty means read-only.
 	Writes []string
-	// Unsandboxed marks operations that run outside the daemon's systemd
-	// sandbox, in a transient unit forked by PID 1, because the tool they
-	// drive writes an unbounded set of paths.
+	// Unsandboxed marks operations outside the daemon's systemd sandbox:
+	// transient services or standalone CLI commands. Mixed operations must
+	// have separate rows for their in-daemon writes.
 	Unsandboxed bool
 	// DisableKey is the config key that stops the operation, and DisableValue
-	// the value to give it. Required for automatic operations that change
-	// host state.
+	// the YAML value to give it. An empty key makes no claim of a config switch.
 	DisableKey   string
 	DisableValue string
+	// DisableReason explains why an automatic operation cannot be stopped
+	// through config. It must not invent a switch that only stops some callers.
+	DisableReason string
 	// WithoutPrivilege says what an operator loses by withholding the
 	// privilege, so the matrix reads as a decision, not a demand.
 	WithoutPrivilege string
@@ -110,9 +124,10 @@ func (o Op) ChangesHost() bool {
 	return false
 }
 
-func csmOwned(path string) bool {
+func csmOwned(name string) bool {
+	name = path.Clean(name)
 	for _, prefix := range csmOwnedPrefixes {
-		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+		if name == prefix || strings.HasPrefix(name, prefix+"/") {
 			return true
 		}
 	}
@@ -122,6 +137,10 @@ func csmOwned(path string) bool {
 // Operations returns the inventory, ordered by subsystem then ID.
 func Operations() []Op {
 	ops := append([]Op(nil), operations...)
+	for i := range ops {
+		ops[i].Privileges = slices.Clone(ops[i].Privileges)
+		ops[i].Writes = slices.Clone(ops[i].Writes)
+	}
 	sort.Slice(ops, func(i, j int) bool {
 		if ops[i].Subsystem != ops[j].Subsystem {
 			return ops[i].Subsystem < ops[j].Subsystem
@@ -129,6 +148,20 @@ func Operations() []Op {
 		return ops[i].ID < ops[j].ID
 	})
 	return ops
+}
+
+// DisableInstruction is shared by terminal and documentation output.
+func (o Op) DisableInstruction() string {
+	if o.DisableKey != "" {
+		return o.DisableKey + ": " + o.DisableValue
+	}
+	if o.Trigger == Operator {
+		return "do not run the command"
+	}
+	if o.DisableReason != "" {
+		return "not configurable: " + o.DisableReason
+	}
+	return "not configurable"
 }
 
 // Markdown renders the inventory as the table shipped in the docs.
@@ -148,12 +181,9 @@ func Markdown() string {
 		if op.Unsandboxed {
 			writes += " (outside the systemd sandbox)"
 		}
-		off := "not configurable"
-		switch {
-		case op.DisableKey != "":
-			off = fmt.Sprintf("`%s: %s`", op.DisableKey, op.DisableValue)
-		case op.Trigger == Operator:
-			off = "do not run the command"
+		off := op.DisableInstruction()
+		if op.DisableKey != "" {
+			off = "`" + off + "`"
 		}
 		fmt.Fprintf(&b, "| `%s`<br>%s | %s | %s | %s | %s | %s |\n",
 			op.ID, op.Summary, strings.Join(privs, ", "), op.Trigger, writes, off, op.WithoutPrivilege)
