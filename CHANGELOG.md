@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Recovery scans now report queued directories, stalled work and failed attempts through status and doctor. Evicted, expired and unfinished shutdown work stays in the loss totals.
+- Recovery scans now report queued directories, stalled work and failed attempts through status and doctor. Evicted, expired and unfinished shutdown work stays in the loss totals; successful scans at the recovery cutoff remain successful.
 
 - File and mail notification queues now report pending work, stalled readers and unread shutdown losses through status and doctor. Work already being processed stays visible after leaving the kernel queue.
 

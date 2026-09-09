@@ -75,7 +75,7 @@ func (fm *FileMonitor) reconcileDrops() {
 	for dir, entry := range dirs {
 		complete := fm.reconcileDirectory(dir, cutoff)
 		// A refreshed drop cannot recover an older obligation outside this scan's window.
-		if complete && entry.firstDrop.After(cutoff) {
+		if complete && !entry.firstDrop.Before(cutoff) {
 			entry.ticket.Finish(time.Now())
 		} else {
 			entry.ticket.Reject(time.Now())

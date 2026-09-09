@@ -279,3 +279,58 @@ func TestReconcileQueueShutdownWaitsForRunningWork(t *testing.T) {
 		}
 	})
 }
+
+func TestReconcileQueueExactWindowMatchesScanCutoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fm := reconcileQueueTestMonitor()
+		for range 3 {
+			path := filepath.Join(t.TempDir(), "candidate.php")
+			if err := os.WriteFile(path, []byte("<?php return true;"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path, time.Now(), time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			fm.recordDroppedDir(path)
+		}
+		original := fileAnalyzer
+		defer func() { fileAnalyzer = original }()
+		calls := 0
+		fileAnalyzer = func(_ *FileMonitor, _ fileEvent) { calls++ }
+		time.Sleep(reconcileWindow)
+		fm.reconcileDrops()
+		got := requireReconcileQueue(t, fm)
+		if calls != 3 {
+			t.Fatalf("files at the cutoff were not scanned: calls=%d", calls)
+		}
+		if got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 || got.Status != "ok" {
+			t.Fatalf("complete recovery exactly at the accepted scan cutoff reported loss: %+v", got)
+		}
+	})
+}
+
+func TestReconcileQueuePanicKeepsCompletedDirectories(t *testing.T) {
+	fm := reconcileQueueTestMonitor()
+	for range 3 {
+		path := filepath.Join(t.TempDir(), "candidate.php")
+		if err := os.WriteFile(path, []byte("<?php return true;"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fm.recordDroppedDir(path)
+	}
+	original := fileAnalyzer
+	defer func() { fileAnalyzer = original }()
+	calls := 0
+	fileAnalyzer = func(_ *FileMonitor, _ fileEvent) {
+		calls++
+		if calls == 3 {
+			panic("last directory failed")
+		}
+	}
+	var caught any
+	func() { defer func() { caught = recover() }(); fm.reconcileDrops() }()
+	got := requireReconcileQueue(t, fm)
+	if caught != "last directory failed" || calls != 3 || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 1 {
+		t.Fatalf("later panic altered completed recovery: caught=%v calls=%d status=%+v", caught, calls, got)
+	}
+}

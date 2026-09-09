@@ -116,6 +116,8 @@ Eviction, work older than the recovery scan window, unreadable directories or
 candidate files, interrupted batches and unfinished shutdown work count as
 failed recovery tasks. An incomplete task may still have scanned some files;
 each directory task counts at most once.
+The recovery window includes its cutoff; work completed exactly at that
+boundary does not count as expired.
 Staged package verification reserves capacity for its whole running batch.
 Its full-queue timer starts when admission fills the queue and continues while
 the verifier retains those slots, including between retries.
