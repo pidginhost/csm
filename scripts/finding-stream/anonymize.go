@@ -119,11 +119,15 @@ func (a *Anonymizer) Domain(raw string) string {
 }
 
 // Email maps a mailbox, keeping the mapped domain so a mailbox and its
-// domain agree across fields.
+// domain agree across fields. A mailbox field holding a bare local part or
+// account name (no "@") is still a mailbox identity and maps like one.
 func (a *Anonymizer) Email(raw string) string {
-	at := strings.LastIndexByte(raw, '@')
-	if at <= 0 {
+	if raw == "" {
 		return raw
+	}
+	at := strings.LastIndexByte(raw, '@')
+	if at < 0 {
+		return a.remember("user-" + a.label("mailbox", raw))
 	}
 	return a.remember("user-"+a.label("mailbox", raw[:at])) + "@" + a.Domain(raw[at+1:])
 }
@@ -765,9 +769,12 @@ func containsLabel(text, name string) bool {
 
 // eventText joins every free-text and identity field of an event, raw, so
 // the leak check sees the same bytes the fields hold rather than their
-// JSON escapes.
+// JSON escapes. The check name and severity are a closed vocabulary the
+// scrubber never rewrites; an account that happens to be called "abuse"
+// must not make every "xmlrpc_abuse" row a leak. The finding id is a hash
+// and is scanned in case a producer ever puts a path in it.
 func eventText(e alert.AuditEvent) string {
-	parts := []string{e.Check, e.Severity, e.FindingID, e.Message, e.Details, e.FilePath, e.Hostname, e.TenantID, e.Domain, e.Mailbox}
+	parts := []string{e.FindingID, e.Message, e.Details, e.FilePath, e.Hostname, e.TenantID, e.Domain, e.Mailbox}
 	for p := e.Process; p != nil; p = p.Parent {
 		parts = append(parts, p.User, p.Account, p.Comm, p.Exe)
 		parts = append(parts, p.Cmdline...)
