@@ -15,10 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
-- Doctor keeps unresolved CageFS accounts visible by UID and asks operators to resolve their account names before remounting, instead of suggesting an invalid command.
 - The operator's web server override in the configuration is applied before crash reporting starts. Crash reporting tags its events with the detected platform, and on a host with it enabled that detection ran first, so the override was silently ignored at every daemon start and log watchers followed the probe instead of the configuration.
 - The installer no longer writes the three sandbox directives that systemd 239 (EL8, CloudLinux 8) rejects at every start; it says which were left out. Newer systemd keeps the full unit.
-- Doctor now names the CageFS cages that lack the PHP Shield event mount and gives the per-account remount command, instead of a count that pointed at every cage.
+- Doctor now names the CageFS cages that lack the PHP Shield event mount and gives the per-account remount command, instead of a count that pointed at every cage. An account it cannot resolve stays visible by uid, with a note to resolve the name first rather than an invalid command.
 - The correlation policy table in the incidents documentation is generated from the check registry and a test fails when it is stale. Regeneration preserves surrounding text and marker line endings; checks also work with trimmed build paths.
 - The manual, automatic and full-scan quarantine sets and the attack database mapping are declared once each and tested against the check registry, so a renamed or never-emitted check name cannot sit inert in a response table. Three never-emitted names are removed: one dropper name from every quarantine set, and the two WAF block names the attack database listed, which means WAF blocks have never contributed to local reputation scoring.
 - Cross-account correlation initializes host detection before updating active findings, so a slow platform probe does not block readers of the current state.
