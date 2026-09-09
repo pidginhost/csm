@@ -343,10 +343,11 @@ func (t *dropperTracker) Refresh(c dropperCandidate) bool {
 func (t *dropperTracker) Due(now time.Time) []dropperCandidate {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	started := t.now()
 	var due []dropperCandidate
 	for key, c := range t.entries {
 		if now.Sub(c.Observed) >= t.ttl {
-			c.ticket.Start(now)
+			c.ticket.Start(started)
 			due = append(due, c)
 			delete(t.entries, key)
 		}
@@ -659,6 +660,7 @@ func (t *dropperTracker) HoldGone(c dropperCandidate, v dropperVerdict, now time
 func (t *dropperTracker) FlushDue(now time.Time) []dropperFinding {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	started := t.now()
 
 	type groupKey struct {
 		docroot string
@@ -681,7 +683,7 @@ func (t *dropperTracker) FlushDue(now time.Time) []dropperFinding {
 	for _, g := range t.pending {
 		key := keyFor(g)
 		if now.Sub(oldest[key]) >= dropperGraceWindow {
-			g.ticket.Start(now)
+			g.ticket.Start(started)
 			groups[key] = append(groups[key], g)
 		} else {
 			keep = append(keep, g)

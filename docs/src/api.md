@@ -117,6 +117,8 @@ Dropper candidates and held findings each have 16,384 waiting slots. Their
 lag starts after the configured unlink TTL or the finding's 45-second grace
 period, respectively; intentional waiting does not count as overdue work.
 Detached probes and emission batches remain visible as running work.
+Processing time starts when each batch leaves its waiting queue, independently
+of the timestamp used to decide which work is eligible.
 Retries and refreshed observations retain earlier eligibility, and exhausted
 probes, capacity refusals and unfinished shutdown work count as losses.
 Kernel rows (`fanotify.kernel` and `spool.kernel`) currently count overflow

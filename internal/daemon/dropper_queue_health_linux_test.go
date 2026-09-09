@@ -147,6 +147,7 @@ func TestDropperQueueHealthMergesRetryWithNewObservation(t *testing.T) {
 func TestDropperQueueHealthShowsBlockedProbe(t *testing.T) {
 	now := time.Now()
 	e, _ := newTestEngine(time.Minute)
+	e.tr.now = func() time.Time { return now }
 	admitPHP(e, now.Add(-2*time.Minute), "/home/alice/public_html/probe.php")
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	prober := dropperQueueProbe(func(dropperCandidate) dropperProbe {
@@ -260,6 +261,7 @@ func TestDropperQueueHealthTracksPartlySuppressedEmission(t *testing.T) {
 		oldEmit(sev, check, msg, details, path)
 	}
 	flush := now.Add(dropperGraceWindow)
+	e.tr.now = func() time.Time { return flush }
 	go func() {
 		defer close(done)
 		e.probeStep(flush, &fakeProber{}, flush)
@@ -293,4 +295,51 @@ func TestDropperQueueHealthTracksPartlySuppressedEmission(t *testing.T) {
 			t.Fatalf("suppressed members changed remaining severity: %+v", f)
 		}
 	}
+}
+
+func TestDropperQueueHealthEmissionStartsAtActualTime(t *testing.T) {
+	base := time.Unix(1000, 0)
+	now := base
+	e, _ := newTestEngine(time.Minute)
+	e.tr.now = func() time.Time { return now }
+	c := freshDropperCandidate(base.Add(-2 * time.Minute))
+	if !e.tr.Observe(c) {
+		t.Fatal("initial candidate was refused")
+	}
+	held := freshDropperCandidate(base.Add(-2 * time.Minute))
+	held.Path = "/home/alice/public_html/already-held.php"
+	e.tr.HoldGone(held, dropperSuspect, base.Add(-dropperGraceWindow))
+	calls := 0
+	e.emit = func(_ alert.Severity, _, _, _, _ string) {
+		calls++
+		_, got := e.tr.queueStatuses(now)
+		if got.Depth != 0 || got.InFlight != 1 || got.ProcessingSeconds != 0 || got.Status != "ok" {
+			t.Errorf("new emitter inherited preceding probe delay: %+v", got)
+		}
+	}
+	prober := dropperQueueProbe(func(dropperCandidate) dropperProbe {
+		now = base.Add(61 * time.Second)
+		return dropperProbe{Conclusive: true, QuarantineMatched: true}
+	})
+	e.probeStep(base, prober, base)
+	if calls != 1 {
+		t.Fatalf("emitter called %d times, want 1", calls)
+	}
+}
+
+func TestDropperQueueHealthProbeStartsAtActualTime(t *testing.T) {
+	base := time.Unix(1000, 0)
+	now := base
+	tr := newDropperTracker(time.Minute)
+	tr.now = func() time.Time { return now }
+	if !tr.Observe(freshDropperCandidate(base.Add(-2 * time.Minute))) {
+		t.Fatal("initial candidate was refused")
+	}
+	now = base.Add(61 * time.Second)
+	due := tr.Due(base)
+	got, _ := tr.queueStatuses(now)
+	if len(due) != 1 || got.Depth != 0 || got.InFlight != 1 || got.ProcessingSeconds != 0 || got.Status != "ok" {
+		t.Fatalf("newly detached probe inherited delay before acquiring the admission lock: due=%d status=%+v", len(due), got)
+	}
+	due[0].ticket.Finish(now)
 }
