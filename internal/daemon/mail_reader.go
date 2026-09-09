@@ -10,6 +10,8 @@ import (
 
 func (d *Daemon) startMailLogReader(platformDefault string, handler LogLineHandler) {
 	d.MarkWatcher("maillog", false)
+	queue := maillog.NewQueue()
+	d.registerQueueSource("mail", queue)
 	ctx, cancel := context.WithCancel(context.Background())
 	d.wg.Add(2)
 	obs.Go("maillog-stop", func() {
@@ -25,7 +27,7 @@ func (d *Daemon) startMailLogReader(platformDefault string, handler LogLineHandl
 		defer cancel()
 		defer d.MarkWatcher("maillog", false)
 		maillog.Supervise(ctx, func() (maillog.Reader, error) {
-			return maillog.New(d.currentCfg().MailLogs, platformDefault)
+			return maillog.New(d.currentCfg().MailLogs, platformDefault, queue)
 		}, func(err error) {
 			if err != nil {
 				csmlog.Warn("mail log source unavailable; retrying", "err", err)

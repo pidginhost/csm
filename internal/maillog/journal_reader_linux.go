@@ -16,18 +16,19 @@ import (
 // tag; default builds get the stub from journal_reader_stub.go.
 type JournalReader struct {
 	units []string
+	queue *Queue
 }
 
 // NewJournalReader constructs a JournalReader matching the given systemd
 // unit names (e.g., "postfix", "dovecot", or full "*.service" names).
-func NewJournalReader(units []string) *JournalReader {
-	return &JournalReader{units: units}
+func NewJournalReader(units []string, queue *Queue) *JournalReader {
+	return &JournalReader{units: units, queue: queue}
 }
 
 func JournalSupported() bool { return true }
 
 func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
-	out := make(chan Line, 64)
+	out := r.queue.channel()
 
 	j, err := sdjournal.NewJournal()
 	if err != nil {
@@ -83,7 +84,14 @@ func journalUnitName(unit string) string {
 	return unit + ".service"
 }
 
-func (r *JournalReader) loop(ctx context.Context, j *sdjournal.Journal, out chan<- Line) {
+type journalEntries interface {
+	Next() (uint64, error)
+	GetEntry() (*sdjournal.JournalEntry, error)
+	Wait(time.Duration) int
+	Close() error
+}
+
+func (r *JournalReader) loop(ctx context.Context, j journalEntries, out chan<- Line) {
 	defer close(out)
 	defer func() { _ = j.Close() }()
 
@@ -107,13 +115,12 @@ func (r *JournalReader) loop(ctx context.Context, j *sdjournal.Journal, out chan
 		}
 		entry, err := j.GetEntry()
 		if err != nil {
+			r.queue.lose()
 			continue
 		}
 		unit := entry.Fields["_SYSTEMD_UNIT"]
 		msg := entry.Fields["MESSAGE"]
-		select {
-		case out <- Line{Source: "journal", Unit: unit, Message: msg}:
-		case <-ctx.Done():
+		if !r.queue.send(ctx, out, Line{Source: "journal", Unit: unit, Message: msg}) {
 			return
 		}
 	}

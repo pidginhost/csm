@@ -16,7 +16,7 @@ type JournalReader struct{}
 // NewJournalReader satisfies the same constructor signature as the
 // linux+journal build, so the factory and tests compile identically
 // on default builds.
-func NewJournalReader(_ []string) *JournalReader { return &JournalReader{} }
+func NewJournalReader(_ []string, _ *Queue) *JournalReader { return &JournalReader{} }
 
 func JournalSupported() bool { return false }
 

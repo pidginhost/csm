@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mail-log delivery now reports queued work, stalled consumers and lost records through status and doctor. Loss totals survive reader retries and changes between file and journal sources.
+
 - BPF kernel queues now report occupancy, stalled readers and lost events through status and doctor. Shutdown records the minimum known loss when kernel callbacks may still be finishing.
 
 - BPF event delivery now reports queue pressure, decoding failures and stalled consumers through status and doctor. Shutdown counts buffered events left unprocessed.

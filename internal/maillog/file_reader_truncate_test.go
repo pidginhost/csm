@@ -17,6 +17,7 @@ func expectMailLine(t *testing.T, out <-chan Line, want string) {
 		if !ok || got.Source != "file" || got.Message != want {
 			t.Fatalf("mail line = %+v (open=%v), want %q", got, ok, want)
 		}
+		got.Process(func(Line) bool { return true })
 	case <-time.After(6 * time.Second):
 		t.Fatalf("mail line %q was not delivered", want)
 	}
@@ -27,7 +28,7 @@ func TestFileReaderCopytruncate(t *testing.T) {
 	if err := os.WriteFile(path, []byte(strings.Repeat("old log\n", 1024)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out, err := r.Run(ctx)
@@ -72,7 +73,7 @@ func TestFileReaderRotationDrainsOriginal(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	out, err := NewFileReader(path).Run(ctx)
+	out, err := NewFileReader(path, NewQueue()).Run(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

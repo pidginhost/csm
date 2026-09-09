@@ -29,7 +29,8 @@ const defaultGoneGrace = 90 * time.Second
 //
 // On context cancel the reader closes the output channel and returns.
 type FileReader struct {
-	path string
+	path  string
+	queue *Queue
 
 	// onGone, when set, fires once when the source path has been missing
 	// continuously for goneGrace. A FileReader whose path vanishes mid-run
@@ -49,8 +50,8 @@ type FileReader struct {
 }
 
 // NewFileReader constructs a FileReader for the given path.
-func NewFileReader(path string) *FileReader {
-	return &FileReader{path: path, goneGrace: defaultGoneGrace, nowFn: time.Now}
+func NewFileReader(path string, queue *Queue) *FileReader {
+	return &FileReader{path: path, queue: queue, goneGrace: defaultGoneGrace, nowFn: time.Now}
 }
 
 // SetOnGone installs a callback invoked once when the source path has been
@@ -104,7 +105,7 @@ func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", r.path, err)
 	}
-	out := make(chan Line, 64)
+	out := r.queue.channel()
 	go r.loop(ctx, out, f, reader, ino)
 	return out, nil
 }
@@ -251,12 +252,11 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 					break
 				}
 				if truncated {
+					r.queue.lose()
 					fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line skipped at %d bytes\n", r.path, maxLogLineBytes)
 					continue
 				}
-				select {
-				case out <- Line{Source: "file", Message: line}:
-				case <-ctx.Done():
+				if !r.queue.send(ctx, out, Line{Source: "file", Message: line}) {
 					return
 				}
 			}

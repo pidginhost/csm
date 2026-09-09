@@ -246,6 +246,10 @@ failures and time without observed reader progress. Their final shutdown loss
 is marked as a lower bound because kernel detachment can leave callbacks
 finishing. The other kernel queue measurements remain open.
 
+The selected mail-log reader now reports delivery depth, stalled consumers
+and known lost records, retaining its counters across reader replacements
+and changes between file and journal sources. Other log readers remain open.
+
 A queue that silently sheds findings is the same failure as a table that
 silently narrows: healthy status, less protection.
 

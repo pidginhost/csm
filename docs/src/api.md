@@ -121,6 +121,13 @@ Processing time starts when each batch leaves its waiting queue, independently
 of the timestamp used to decide which work is eligible.
 Retries and refreshed observations retain earlier eligibility, and exhausted
 probes, capacity refusals and unfinished shutdown work count as losses.
+`mail.delivery` reports the selected mail-log reader's 64-slot delivery queue.
+Its running time includes parsing and delivery of resulting findings. Losses
+include oversized complete file records, unreadable journal entries, canceled
+admission, consumer failure and buffered records abandoned on shutdown.
+Counters survive reader replacement and changes between file and journal
+sources. They count records already read, not unread source history or partial
+file records that have not reached a newline.
 When their BPF backends are active, `bpf.af_alg.output`,
 `bpf.connection.output`, `bpf.execution.output` and
 `bpf.sensitive_files.output` report the 256-slot userspace delivery queues.
