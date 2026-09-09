@@ -155,6 +155,8 @@ func main() {
 		runPrivileges()
 	case "actions":
 		runActions()
+	case "selftest":
+		runSelfTest()
 	case "verify-release":
 		runVerifyRelease()
 	case "backup":
@@ -222,6 +224,7 @@ Commands:
   systemd-roots Print a validated systemd drop-in for account write access
   privileges    Print what CSM does that needs privilege, and the key that stops each one (--json, --markdown)
   actions       Print what CSM did to this host (--since, --op, --limit, --json)
+  selftest      Scan a bundle of known samples and report what the installed rules catch (--json)
   doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   forensic-snapshot <account> --out <archive.tar.gz>  Evidence archive for incident handoff (triggers/admins/sessions/mtimes)

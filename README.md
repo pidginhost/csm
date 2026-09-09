@@ -88,6 +88,7 @@ csm status [--json]          daemon health, findings, watchers, and rollout stat
 csm doctor [--json]          config, integrity, daemon, watcher, and store diagnostics
 csm privileges [--json]      what CSM does that needs privilege, and the key that stops each one
 csm actions [--since 24h]    what CSM did to this host, with before/after digests on file changes
+csm selftest                 scan known samples and report what the installed rules catch
 csm baseline                 establish known state after first start or an approved reset
 csm rehash                   re-sign binary, csm.yaml, and conf.d after an intentional change
 csm scan <user> [--full]     scan one account, uncapped with --full
