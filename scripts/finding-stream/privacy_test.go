@@ -102,10 +102,27 @@ func TestAnonymizerScrubsAddressesInFilenames(t *testing.T) {
 func TestVerifyIncludesPreservedMetadata(t *testing.T) {
 	a := NewAnonymizer(testSalt())
 	a.Learn([]alert.AuditEvent{{TenantID: "alice"}})
-	for _, e := range []alert.AuditEvent{{Check: "alice"}, {Severity: "alice"}, {FindingID: "alice"}} {
-		if got := a.Verify([]alert.AuditEvent{e}); len(got) == 0 {
-			t.Errorf("raw metadata escaped leak check: %+v", e)
-		}
+	if got := a.Verify([]alert.AuditEvent{{FindingID: "alice"}}); len(got) == 0 {
+		t.Error("raw finding id escaped leak check")
+	}
+}
+
+// Check names and severities are vocabulary, not identities: a hosting
+// account called "abuse" does not turn every xmlrpc_abuse row into a leak,
+// while the same word in free text is still replaced and still verified.
+func TestVerifyIgnoresAccountNamesInsideCheckNames(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	e := alert.AuditEvent{Check: "xmlrpc_abuse", Severity: "HIGH", TenantID: "abuse", Message: "XML-RPC abuse from 203.0.113.9 against abuse"}
+	a.Learn([]alert.AuditEvent{e})
+	got := a.Event(e)
+	if got.Check != "xmlrpc_abuse" || strings.Contains(got.Message, "abuse") {
+		t.Fatalf("check name rewritten or message kept the account: %+v", got)
+	}
+	if problems := a.Verify([]alert.AuditEvent{got}); len(problems) != 0 {
+		t.Fatalf("check name reported as a leak: %v", problems)
+	}
+	if problems := a.Verify([]alert.AuditEvent{e}); len(problems) == 0 {
+		t.Fatal("raw account in message not reported")
 	}
 }
 
@@ -293,7 +310,7 @@ func TestRunRefusalLeavesOutputUntouched(t *testing.T) {
 		t.Run(fmt.Sprint(existing), func(t *testing.T) {
 			dir := t.TempDir()
 			input, output := filepath.Join(dir, "input.jsonl"), filepath.Join(dir, "alice.example.com.gz")
-			raw, err := json.Marshal(alert.AuditEvent{Check: "alice", TenantID: "alice"})
+			raw, err := json.Marshal(alert.AuditEvent{FindingID: "alice", TenantID: "alice"})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -540,3 +540,24 @@ func TestAnonymizerScrubsTruncatedMailboxes(t *testing.T) {
 		t.Errorf("Verify missed the truncated mailbox: %s", raw)
 	}
 }
+
+// A mailbox field can hold a bare account or local part without "@" (a
+// spray finding keyed on the login name); it is still a mailbox identity.
+func TestAnonymizerMapsBareMailboxField(t *testing.T) {
+	e := alert.AuditEvent{V: 1, Check: "mail_account_spray", Message: "spray against alice.smith from 203.0.113.9", Mailbox: "alice.smith", TenantID: "alice.smith", Domain: "alice.smith"}
+	a := NewAnonymizer(testSalt())
+	a.Learn([]alert.AuditEvent{e})
+	got := a.Event(e)
+	if !strings.HasPrefix(got.Mailbox, "user-") || strings.Contains(got.Mailbox, "alice") {
+		t.Fatalf("mailbox = %q", got.Mailbox)
+	}
+	if got.Mailbox != a.Email("alice.smith@example.com")[:len(got.Mailbox)] {
+		t.Fatalf("bare mailbox %q does not share the local-part pseudonym of the full address %q", got.Mailbox, a.Email("alice.smith@example.com"))
+	}
+	if strings.Contains(eventText(got), "alice") {
+		t.Fatalf("account survived: %s", eventText(got))
+	}
+	if problems := a.Verify([]alert.AuditEvent{got}); len(problems) != 0 {
+		t.Fatalf("clean output reported leaks: %v", problems)
+	}
+}
