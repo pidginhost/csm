@@ -211,6 +211,12 @@ What remains open:
   cumulative count since start, so calibration work can see what it is
   missing on a given host.
 
+Recorded streams now exist: `scripts/finding-stream` anonymizes a host's
+audit log into a joinable stream (see
+[recorded finding streams](docs/src/finding-streams.md)), and the first
+recordings from production hosts are kept locally, outside the repository.
+Calibration can start from them.
+
 **Acceptance:** re-derive the coordinated-attack threshold against recorded
 finding streams, including false-positive floods, unrelated long-lived
 findings, and the difference between per-batch and persisted active-state
