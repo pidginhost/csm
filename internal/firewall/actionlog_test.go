@@ -1,15 +1,21 @@
 package firewall
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 )
 
-type recordingSink struct{ records []actionlog.Record }
+type recordingSink struct {
+	mu      sync.Mutex
+	records []actionlog.Record
+}
 
 func (r *recordingSink) Write(rec actionlog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.records = append(r.records, rec)
 	return nil
 }
@@ -65,28 +71,26 @@ func TestFirewallAuditAlsoRecordsAnAction(t *testing.T) {
 	}
 }
 
-// An unblock has to say how to put the address back, because that is the
-// question an operator asks when a block turns out to be wrong.
-func TestFirewallActionRecordsTheReverseCommand(t *testing.T) {
+func TestFirewallBlockDoesNotSuggestAnAllowlistAsUndo(t *testing.T) {
 	sink := withActionSink(t)
 	AppendAudit(t.TempDir(), "block", "198.51.100.4", "auto-block: mail brute force", SourceAutoResponse, 0)
 
 	if len(sink.records) != 1 {
 		t.Fatalf("records = %d, want 1", len(sink.records))
 	}
-	if got := sink.records[0].Undo; got != "csm firewall allow 198.51.100.4" {
-		t.Fatalf("undo = %q, want the unblock command", got)
+	if got := sink.records[0].Undo; got != "" {
+		t.Fatalf("undo = %q, cannot undo a block by creating a permanent allow", got)
 	}
 }
 
-func TestFirewallFlushRecordsTheRulesetOperation(t *testing.T) {
+func TestFirewallFlushRecordsTheManualOperation(t *testing.T) {
 	sink := withActionSink(t)
 	AppendAudit(t.TempDir(), "flush", "", "operator flush", "", 0)
 
 	if len(sink.records) != 1 {
 		t.Fatalf("records = %d, want 1", len(sink.records))
 	}
-	if got := sink.records[0].Op; got != "integrate.firewall_ruleset" {
-		t.Fatalf("op = %q, want integrate.firewall_ruleset", got)
+	if got := sink.records[0].Op; got != "operate.manual_firewall" {
+		t.Fatalf("op = %q, want operate.manual_firewall", got)
 	}
 }

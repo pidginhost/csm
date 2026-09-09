@@ -92,12 +92,16 @@ func actionLogFile() string {
 // first, so a --since window that spans a rotation is still complete.
 func readActionLog(path string, filter actionFilter) ([]actionlog.Record, error) {
 	var records []actionlog.Record
-	for _, candidate := range []string{path + ".1", path} {
-		batch, err := readActionFile(candidate, filter)
+	err := actionlog.Read(path, func(reader io.Reader) error {
+		batch, err := readActionFile(reader, filter)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		records = append(records, batch...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if filter.limit > 0 && len(records) > filter.limit {
 		records = records[len(records)-filter.limit:]
@@ -105,19 +109,9 @@ func readActionLog(path string, filter actionFilter) ([]actionlog.Record, error)
 	return records, nil
 }
 
-func readActionFile(path string, filter actionFilter) ([]actionlog.Record, error) {
-	// #nosec G304 -- path is derived from the operator-configured log directory.
-	fh, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = fh.Close() }()
-
+func readActionFile(reader io.Reader, filter actionFilter) ([]actionlog.Record, error) {
 	var out []actionlog.Record
-	sc := bufio.NewScanner(fh)
+	sc := bufio.NewScanner(reader)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		var rec actionlog.Record
@@ -167,6 +161,6 @@ func actionsFatal(format string, args ...any) {
 // writes, so `csm clean` and the firewall commands leave the same evidence an
 // automatic action does.
 func installCLIActionLog() {
-	actionlog.SetSink(actionlog.NewFileSink(actionLogFile, nil), hostnameLite())
+	actionlog.SetSink(actionlog.NewFileSink(actionLogFile, func(err error) { fmt.Fprintf(os.Stderr, "action log write failed: %v\n", err) }), hostnameLite())
 	actionlog.SetDefaultActor(actionlog.CLI)
 }

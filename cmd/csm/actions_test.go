@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/actionlog"
 )
 
@@ -126,5 +128,62 @@ func TestWriteActionsJSONEmitsOneRecordPerLine(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			t.Fatalf("line is not JSON: %v", err)
 		}
+	}
+}
+
+func TestReadActionLogHandlesLargeActionReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "actions.jsonl")
+	sink := actionlog.NewFileSink(func() string { return path }, nil)
+	if err := sink.Write(actionlog.Record{Op: "respond.clean_file", Reason: strings.Repeat("a", 5*1024*1024), Result: actionlog.Applied}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := readActionLog(path, actionFilter{limit: 50})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("large reason hides action history: records=%d error=%v", len(records), err)
+	}
+	if len(records[0].Reason) > 8192 || !strings.HasSuffix(records[0].Reason, "[truncated]") {
+		t.Fatalf("unbounded or silently truncated reason: length=%d", len(records[0].Reason))
+	}
+}
+
+func TestReadActionLogWaitsForRotationToFinish(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "actions.jsonl")
+	writeActionLines(t, path, actionlog.Record{Target: "before rotation"})
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		records []actionlog.Record
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		records, readErr := readActionLog(path, actionFilter{limit: 50})
+		done <- result{records, readErr}
+	}()
+	select {
+	case got := <-done:
+		t.Fatalf("reader crossed an unfinished rotation: records=%+v error=%v", got.records, got.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	writeActionLines(t, path, actionlog.Record{Target: "after rotation"})
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || len(got.records) != 2 || got.records[0].Target != "before rotation" || got.records[1].Target != "after rotation" {
+			t.Fatalf("incomplete rotation snapshot: records=%+v error=%v", got.records, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reader did not resume after rotation")
 	}
 }

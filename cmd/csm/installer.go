@@ -1106,16 +1106,6 @@ func logrotateConfig() string {
     maxsize 100M
 }
 
-/var/log/csm/actions.jsonl {
-    daily
-    rotate 90
-    compress
-    missingok
-    notifempty
-    copytruncate
-    maxsize 100M
-}
-
 /var/log/csm-php-shield/events.log {
     daily
     rotate 7

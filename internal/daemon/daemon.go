@@ -609,6 +609,10 @@ func (d *Daemon) Run() error {
 	// from real denies on the very first parsed line.
 	d.initModSecRegistry()
 
+	// Startup rollback can restore config and restart before reaching the
+	// watchers or integrity verification, so its sink must already be ready.
+	d.installActionLog()
+
 	// Wire the firewall tentative-apply manager. Recovery has to run
 	// before integrity.Verify because a pending rollback whose deadline
 	// passed while the daemon was down restores the previous csm.yaml
@@ -649,10 +653,6 @@ func (d *Daemon) Run() error {
 	// config.Active() to pick up the current snapshot so a SIGHUP
 	// reload is visible on the next call without restart.
 	publishActiveConfig(d.cfg, "startup")
-
-	// Every subsystem that changes host state records through this, so it is
-	// installed before the watchers and the check scheduler start.
-	d.installActionLog()
 
 	// Install the mail-brute account-key extractor selected by config.
 	// Validation in config.Load() already rejected invalid specs, so the

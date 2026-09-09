@@ -1,62 +1,91 @@
 package firewall
 
 import (
+	"errors"
 	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 )
 
-// recordFirewallAction mirrors a firewall audit entry onto the unified action
-// stream. The firewall keeps its own log because the web UI and the API read
-// it; this is what lets an operator see firewall changes next to quarantines,
-// process kills and mail freezes instead of one file per subsystem.
+// recordFirewallAction mirrors successful legacy entries. Paths with multiple
+// outcomes record at their public operation boundary instead.
 func recordFirewallAction(action, ip, reason, source string, duration time.Duration) {
+	recordFirewallResult(action, ip, reason, source, duration, actionlog.Applied, nil)
+}
+
+func firewallRecord(action, ip, reason, source string, duration time.Duration) actionlog.Record {
 	op, actor := firewallActionOp(action, source)
-	rec := actionlog.Record{
-		Op:     op,
-		Actor:  actor,
-		Target: ip,
-		Reason: reason,
-		Result: actionlog.Applied,
-	}
+	rec := actionlog.Record{Op: op, Action: action, Actor: actor, Target: ip, Reason: reason, Result: actionlog.Applied}
 	if duration > 0 {
 		rec.ActorDetail = "expires in " + duration.String()
 	}
-	if undo := firewallUndo(action, ip); undo != "" {
-		rec.Undo = undo
+	// A block/allow reversal needs the prior state. Creating an allow is not
+	// an undo: it also suppresses future automatic blocks for this address.
+	return rec
+}
+
+func recordFirewallResult(action, ip, reason, source string, duration time.Duration, result actionlog.Result, err error) {
+	rec := firewallRecord(action, ip, reason, source, duration)
+	rec.Result = result
+	if err != nil {
+		rec.Error = err.Error()
+		rec.Result = actionlog.Failed
+		if errors.Is(err, ErrIPProtected) {
+			rec.Result = actionlog.Refused
+		}
 	}
 	actionlog.Write(rec)
 }
 
-// firewallActionOp maps an audit entry onto a privileged operation from the
-// capability matrix, plus the actor that asked for it.
-func firewallActionOp(action, source string) (string, actionlog.Actor) {
-	switch source {
-	case SourceCLI:
-		return "operate.manual_firewall", actionlog.CLI
-	case SourceWebUI:
-		return "operate.manual_firewall", actionlog.WebUI
+func recordFirewallFailure(action, ip, reason, source string, duration time.Duration, err error) {
+	if err != nil {
+		recordFirewallResult(action, ip, reason, source, duration, actionlog.Failed, err)
 	}
-	// A whole-ruleset change is the firewall integration, not one decision
-	// about one address.
-	switch action {
-	case "flush", "apply", "restart":
-		return "integrate.firewall_ruleset", actionlog.Daemon
-	}
-	return "respond.block_ip", actionlog.Daemon
 }
 
-// firewallUndo names the command that reverses an entry, for the entries where
-// a single command does reverse it.
-func firewallUndo(action, ip string) string {
-	if ip == "" {
-		return ""
+func recordBlockOutcome(ip, reason string, duration time.Duration, outcome BlockOutcome, err error, manual bool) {
+	if !manual && outcome == BlockOutcomeNoop && err == nil {
+		return
+	}
+	rec := firewallRecord("block", ip, reason, InferProvenance("block", reason), duration)
+	rec.Op = "respond.block_ip"
+	if manual {
+		rec.Op = "operate.manual_firewall"
+	}
+	switch outcome {
+	case BlockOutcomeDryRun:
+		rec.Result = actionlog.DryRun
+	case BlockOutcomeAllowed, BlockOutcomeAllowlisted:
+		rec.Result = actionlog.Refused
+	}
+	if err != nil {
+		rec.Result = actionlog.Failed
+		rec.Error = err.Error()
+		if errors.Is(err, ErrIPProtected) {
+			rec.Result = actionlog.Refused
+		}
+	}
+	actionlog.Write(rec)
+}
+
+func firewallActionOp(action, source string) (string, actionlog.Actor) {
+	actor := actionlog.DefaultActor()
+	switch source {
+	case SourceCLI:
+		actor = actionlog.CLI
+	case SourceWebUI:
+		actor = actionlog.WebUI
 	}
 	switch action {
-	case "block", "tempban", "deny_subnet":
-		return "csm firewall allow " + ip
-	case "allow":
-		return "csm firewall deny " + ip
+	case "apply", "restart":
+		return "integrate.firewall_ruleset", actor
 	}
-	return ""
+	if source == SourceCLI || source == SourceWebUI || actor == actionlog.CLI {
+		return "operate.manual_firewall", actor
+	}
+	switch action {
+	case "flush", "unblock", "remove_allow", "allow_port", "remove_port_allow", "unblock_subnet":
+		return "operate.manual_firewall", actor
+	}
+	return "respond.block_ip", actor
 }

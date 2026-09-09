@@ -27,6 +27,14 @@ func AppendAudit(statePath, action, ip, reason, source string, duration time.Dur
 	if source == "" {
 		source = InferProvenance(action, reason)
 	}
+	recordFirewallAction(action, ip, reason, source, duration)
+	appendAudit(statePath, action, ip, reason, source, duration)
+}
+
+func appendAudit(statePath, action, ip, reason, source string, duration time.Duration) {
+	if source == "" {
+		source = InferProvenance(action, reason)
+	}
 	entry := AuditEntry{
 		Timestamp: time.Now(),
 		Action:    action,
@@ -34,7 +42,6 @@ func AppendAudit(statePath, action, ip, reason, source string, duration time.Dur
 		Reason:    reason,
 		Source:    source,
 	}
-	recordFirewallAction(action, ip, reason, source, duration)
 	if duration > 0 {
 		entry.Duration = duration.String()
 	}

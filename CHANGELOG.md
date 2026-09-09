@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Action records now cover missed response and firewall paths, preserve recovery evidence after partial failures, and avoid duplicate block records. Evidence hashing no longer delays quarantine or follows symlinks, and broken log sinks cannot stop completed actions.
+
 - Observe mode now blocks independent kernel and mail actions, skips web and mail integration changes, and refuses startup with a pending firewall rollback.
 - Mail hold and governor alerts now require a local mail-server decision; a message subject or peer name can no longer forge one.
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.

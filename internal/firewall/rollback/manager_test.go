@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -673,5 +674,46 @@ func TestRecoverOnStartupExpiredRevertFailureDoesNotClaimReverted(t *testing.T) 
 	// would revert+restart on every boot forever.
 	if _, ok := db.GetFirewallRollback(); ok {
 		t.Error("rollback record should be cleared once the config is restored")
+	}
+}
+
+type actionSink struct{ records []actionlog.Record }
+
+func (s *actionSink) Write(r actionlog.Record) error { s.records = append(s.records, r); return nil }
+
+func TestConfigRollbackRecordsBeforeRestartAndOnFailure(t *testing.T) {
+	for _, phase := range []string{"success", "write", "restart"} {
+		t.Run(phase, func(t *testing.T) {
+			m, _, path, _ := newTestManager(t)
+			sink := &actionSink{}
+			actionlog.SetSink(sink, "")
+			t.Cleanup(func() { actionlog.SetSink(nil, "") })
+			if _, err := m.Apply([]byte("hostname: previous\n"), []byte("hostname: next\n"), time.Minute, "cli"); err != nil {
+				t.Fatal(err)
+			}
+			m.restart = func(context.Context) error {
+				if len(sink.records) != 1 || sink.records[0].Result != actionlog.Applied {
+					t.Fatalf("record must precede restart: %+v", sink.records)
+				}
+				if phase == "restart" {
+					return errors.New("restart failed")
+				}
+				return nil
+			}
+			if phase == "write" {
+				m.configPath = filepath.Join(path, "invalid")
+			}
+			err := m.Revert(context.Background())
+			if (err != nil) != (phase != "success") {
+				t.Fatalf("error=%v phase=%s", err, phase)
+			}
+			want := actionlog.Applied
+			if phase == "write" {
+				want = actionlog.Failed
+			}
+			if len(sink.records) != 1 || sink.records[0].Op != "operate.manual_firewall" || sink.records[0].Result != want {
+				t.Fatalf("records=%+v", sink.records)
+			}
+		})
 	}
 }

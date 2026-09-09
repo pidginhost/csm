@@ -17,10 +17,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // SchemaVersion is bumped only on an incompatible change. Additive fields do
@@ -72,6 +78,8 @@ type Record struct {
 	Hostname  string    `json:"hostname,omitempty"`
 	// Op is the privileged-operation ID from internal/privops.
 	Op string `json:"op"`
+	// Action distinguishes changes within one operation, such as block and unblock.
+	Action string `json:"action,omitempty"`
 	// Actor and ActorDetail say who asked for it. ActorDetail carries the
 	// operator's source address for a web UI action, or the command name for
 	// a CLI action.
@@ -94,6 +102,8 @@ type Record struct {
 	Error  string     `json:"error,omitempty"`
 	// Undo is the command that reverses the action, when one exists.
 	Undo string `json:"undo,omitempty"`
+	// RecoveryPath identifies retained file content and its metadata sidecar.
+	RecoveryPath string `json:"recovery_path,omitempty"`
 }
 
 // Sink writes records. The daemon installs a file sink at startup; tests
@@ -135,12 +145,18 @@ func DefaultActor() Actor {
 	return byActor
 }
 
-// Write records one action. It never returns an error: an action that
-// happened must not be undone because its record could not be written, and a
-// sink failure is reported through the daemon log by the sink itself.
+// A stuck filesystem or a broken sink must not hold a response worker forever.
+// Bound both the wait and outstanding writes; normal writes complete before
+// returning, including in short-lived CLI processes.
+const writeTimeout = 250 * time.Millisecond
+
+var pendingWrites = make(chan struct{}, 64)
+
+// Write records one action without propagating sink errors or panics. Recording
+// is best effort: saturation or an unresponsive sink can cost an action record.
 func Write(r Record) {
 	mu.RLock()
-	s, h := sink, host
+	s, h, a := sink, host, byActor
 	mu.RUnlock()
 	if s == nil {
 		return
@@ -153,9 +169,40 @@ func Write(r Record) {
 		r.Hostname = h
 	}
 	if r.Actor == "" {
-		r.Actor = DefaultActor()
+		r.Actor = a
 	}
-	_ = s.Write(r)
+	// A timed-out write can outlive the caller's buffers.
+	r.Command = append([]string(nil), r.Command...)
+	if r.Before != nil {
+		before := *r.Before
+		r.Before = &before
+	}
+	if r.After != nil {
+		after := *r.After
+		r.After = &after
+	}
+	timer := time.NewTimer(writeTimeout)
+	defer timer.Stop()
+	select {
+	case pendingWrites <- struct{}{}:
+	case <-timer.C:
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			if v := recover(); v != nil {
+				log.Printf("action log sink panicked: %v", v)
+			}
+			<-pendingWrites
+			close(done)
+		}()
+		_ = s.Write(r)
+	}()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 // maxFileSize is the rotation threshold, matching the firewall and web UI
@@ -191,33 +238,153 @@ func (f *FileSink) logPath() string {
 func DefaultPath(logDir string) string { return filepath.Join(logDir, "actions.jsonl") }
 
 func (f *FileSink) Write(r Record) error {
-	data, err := json.Marshal(r)
+	err := f.write(r)
+	// Reporting outside the file lock lets a callback inspect or replace the
+	// sink without deadlocking a completed action.
 	if err != nil {
-		return err
+		f.report(err)
+	}
+	return err
+}
+
+func (f *FileSink) write(r Record) error {
+	// Cleaning explanations and command errors may contain attacker-controlled
+	// content. Keep individual lines readable by the bounded history reader.
+	r.Reason = boundedDetail(r.Reason)
+	r.Error = boundedDetail(r.Error)
+	data, marshalErr := json.Marshal(r)
+	if marshalErr != nil {
+		return marshalErr
 	}
 	data = append(data, '\n')
-
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	path := f.logPath()
-	if info, statErr := os.Stat(path); statErr == nil && info.Size() > maxFileSize {
-		_ = os.Rename(path, path+".1")
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return err
 	}
-	// #nosec G304 G302 -- G304: path is derived from the operator-configured
-	// log directory, not from attacker input. G302: 0640 matches the SIEM
-	// audit log next to it, so a log shipper running as a non-root group
-	// member can read this stream without running as root.
-	fh, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	// The daemon and CLI are separate writers. Lock a stable sidecar inode so
+	// rotation cannot move another writer's newly opened log out from under it.
+	lock, lockErr := openLogFile(path+".lock", os.O_RDWR|os.O_CREATE, 0640)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer func() { _ = lock.Close() }()
+	// #nosec G115 -- an open file descriptor fits in int on supported Unix hosts.
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() { _ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) }() // #nosec G115 -- open file descriptor.
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("action log is not a regular file: %s", path)
+		}
+		if info.Size() > maxFileSize {
+			if err := os.Rename(path, path+".1"); err != nil {
+				return err
+			}
+		}
+	}
+	fh, err := openLogFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
 	if err != nil {
-		f.report(err)
 		return err
 	}
-	defer func() { _ = fh.Close() }()
 	if _, err := fh.Write(data); err != nil {
-		f.report(err)
+		_ = fh.Close()
 		return err
 	}
-	return nil
+	return fh.Close()
+}
+
+func boundedDetail(value string) string {
+	const limit = 4096
+	if len(value) > limit {
+		return strings.Clone(value[:limit]) + " [truncated]"
+	}
+	return value
+}
+
+func openLogFile(path string, flags int, mode os.FileMode) (*os.File, error) {
+	// #nosec G304 G302 -- operator-configured log path; no symlinks or special
+	// files. 0640 allows the log shipper's group to read the stream.
+	f, err := os.OpenFile(path, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK, mode)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = fmt.Errorf("action log is not a regular file: %s", path)
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// Read visits fixed snapshots of the rotated and current logs, oldest first.
+// Both files are pinned before releasing the rotation lock, so a slow reader
+// neither loses a rotated file nor holds up action writers.
+func Read(path string, visit func(io.Reader) error) error {
+	for {
+		retry, err := readSnapshot(path, visit)
+		if !retry {
+			return err
+		}
+	}
+}
+
+func readSnapshot(path string, visit func(io.Reader) error) (bool, error) {
+	lock, err := openLogFile(path+".lock", os.O_RDONLY, 0)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if lock != nil {
+		defer func() { _ = lock.Close() }()
+		// #nosec G115 -- an open file descriptor fits in int on supported Unix hosts.
+		if err := unix.Flock(int(lock.Fd()), unix.LOCK_SH); err != nil {
+			return false, err
+		}
+	}
+	var files []*os.File
+	defer func() {
+		for _, f := range files {
+			_ = f.Close()
+		}
+	}()
+	var readers []io.Reader
+	for _, name := range []string{path + ".1", path} {
+		f, openErr := openLogFile(name, os.O_RDONLY, 0)
+		if os.IsNotExist(openErr) {
+			continue
+		}
+		if openErr != nil {
+			return false, openErr
+		}
+		files = append(files, f)
+		info, statErr := f.Stat()
+		if statErr != nil {
+			return false, statErr
+		}
+		readers = append(readers, io.NewSectionReader(f, 0, info.Size()))
+	}
+	if lock == nil {
+		// The first writer may have created its lock while we opened the
+		// files. Retry under that lock before exposing a mixed snapshot.
+		if _, err := os.Lstat(path + ".lock"); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	} else if err := unix.Flock(int(lock.Fd()), unix.LOCK_UN); err != nil { // #nosec G115 -- open file descriptor.
+		return false, err
+	}
+	for _, reader := range readers {
+		if err := visit(reader); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func (f *FileSink) report(err error) {
@@ -226,51 +393,89 @@ func (f *FileSink) report(err error) {
 	}
 }
 
-// Stat captures a file's state for the Before or After field. A missing file
-// is recorded as not existing rather than as an error: "the file was not
-// there" is exactly what a reviewer needs to see after a quarantine.
-func Stat(path string) *FileState {
+// Metadata captures identity without opening or hashing the target. It is safe
+// to use before a security action: evidence collection must not delay removal.
+func Metadata(path string) *FileState {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return &FileState{}
 	}
-	st := &FileState{
-		Exists: true,
-		Size:   info.Size(),
-		Mode:   info.Mode().Perm().String(),
+	return FromInfo(info)
+}
+
+// FromInfo describes metadata already pinned by the operation itself.
+func FromInfo(info os.FileInfo) *FileState {
+	if info == nil {
+		return &FileState{}
 	}
+	st := &FileState{Exists: true, Size: info.Size(), Mode: info.Mode().String()}
 	fillOwner(st, info)
-	if info.Mode().IsRegular() {
-		if digest, err := digestFile(path); err == nil {
-			st.Digest = digest
-		}
+	return st
+}
+
+// Stat hashes only a bounded regular file reached without following symlinks.
+// No digest is better than a digest of a different inode or a truncated prefix.
+func Stat(path string) *FileState {
+	st := Metadata(path)
+	if !st.Exists {
+		return st
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return st
+	}
+	dir, err := safepath.OpenDirNoFollow(filepath.Dir(absolute))
+	if err != nil {
+		return st
+	}
+	defer func() { _ = dir.Close() }()
+	f, err := dir.OpenFile(filepath.Base(absolute), os.O_RDONLY, 0)
+	if err != nil {
+		return st
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return st
+	}
+	st = FromInfo(info)
+	if !info.Mode().IsRegular() || info.Size() > maxDigestBytes {
+		return st
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, maxDigestBytes+1))
+	if err != nil || n != info.Size() || n > maxDigestBytes {
+		return st
+	}
+	after, err := f.Stat()
+	if err == nil && after.Size() == info.Size() && after.ModTime().Equal(info.ModTime()) {
+		st.Digest = hex.EncodeToString(h.Sum(nil))
 	}
 	return st
 }
 
-// maxDigestBytes bounds hashing so one enormous file cannot stall an action.
 const maxDigestBytes = 64 * 1024 * 1024
 
-func digestFile(path string) (string, error) {
-	// #nosec G304 -- path is the file the action is already operating on.
-	fh, err := os.Open(path)
-	if err != nil {
-		return "", err
+// ContentState captures the exact bytes read or written through a pinned file.
+func ContentState(info os.FileInfo, data []byte) *FileState {
+	st := FromInfo(info)
+	st.Size = int64(len(data))
+	if len(data) <= maxDigestBytes {
+		sum := sha256.Sum256(data)
+		st.Digest = hex.EncodeToString(sum[:])
 	}
-	defer func() { _ = fh.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(fh, maxDigestBytes)); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return st
 }
 
 // Describe renders a record as one operator-readable line, used by `csm
 // actions` and by the daemon log.
 func (r Record) Describe() string {
-	line := fmt.Sprintf("%s %s %s target=%s", r.Timestamp.UTC().Format(time.RFC3339), r.Op, r.Result, r.Target)
+	line := fmt.Sprintf("%s %s %s target=%q", r.Timestamp.UTC().Format(time.RFC3339), r.Op, r.Result, r.Target)
+	if r.Action != "" {
+		line += fmt.Sprintf(" action=%q", r.Action)
+	}
 	if r.Account != "" {
-		line += " account=" + r.Account
+		line += fmt.Sprintf(" account=%q", r.Account)
 	}
 	if len(r.Command) > 0 {
 		line += " command=" + fmt.Sprintf("%q", r.Command)
@@ -279,7 +484,7 @@ func (r Record) Describe() string {
 		line += fmt.Sprintf(" sha256 %s -> %s", shortDigest(r.Before), shortDigest(r.After))
 	}
 	if r.Error != "" {
-		line += " error=" + r.Error
+		line += fmt.Sprintf(" error=%q", r.Error)
 	}
 	return line
 }
@@ -291,6 +496,6 @@ func shortDigest(s *FileState) string {
 	case s.Digest == "":
 		return "unhashed"
 	default:
-		return s.Digest[:12]
+		return s.Digest[:min(12, len(s.Digest))]
 	}
 }

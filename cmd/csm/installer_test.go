@@ -1103,6 +1103,14 @@ func TestLogrotateConfigKeepsExistingLogs(t *testing.T) {
 	}
 }
 
+func TestLogrotateLeavesActionRotationToFileSink(t *testing.T) {
+	// External rotation bypasses the action log's shared lock; copytruncate
+	// also discards writes and invalidates the reader's pinned snapshot.
+	if _, ok := logrotateStanzaFor(logrotateConfig(), "/var/log/csm/actions.jsonl"); ok {
+		t.Fatal("external rotation competes with the action log's own rotation")
+	}
+}
+
 // logrotateStanzaFor returns the body of the stanza governing path.
 func logrotateStanzaFor(content, path string) (string, bool) {
 	for _, block := range strings.Split(content, "}") {

@@ -92,10 +92,10 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 			if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
 				csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
 			}
-			recordKillAction(f, pid, exe, err)
+			recordKillAction(&f, pid, exe, err)
 			continue
 		}
-		recordKillAction(f, pid, exe, nil)
+		recordKillAction(&f, pid, exe, nil)
 
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Critical,
@@ -113,15 +113,19 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 // attempt. A refusal is recorded as well as a kill: "the safety rules stopped
 // this" is the answer to a question an operator will ask about a process that
 // is still running.
-func recordKillAction(f alert.Finding, pid, exe string, err error) {
+func recordKillAction(f *alert.Finding, pid, exe string, err error) {
 	rec := actionlog.Record{
 		Op:          "respond.kill_process",
 		Actor:       actionlog.DefaultActor(),
 		Target:      "pid " + pid,
 		ActorDetail: exe,
-		Reason:      f.Check,
-		FindingID:   alert.FindingID(f),
+		Reason:      "manual process termination",
+		FindingID:   "",
 		Result:      actionlog.Applied,
+	}
+	if f != nil {
+		rec.Reason = f.Check
+		rec.FindingID = alert.FindingID(*f)
 	}
 	switch {
 	case errors.Is(err, errProcessNotEligible):

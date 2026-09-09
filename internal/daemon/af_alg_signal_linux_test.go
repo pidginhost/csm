@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/processhandle"
@@ -18,6 +19,7 @@ import (
 func TestAFAlgReactionVerifiesAfterAcquiringHandle(t *testing.T) {
 	for _, reason := range []string{"eligible", "root transition", "stale", "unsupported"} {
 		t.Run(reason, func(t *testing.T) {
+			sink := captureActionRecords(t)
 			fakeAFAlgProc(t, 4242, "/tmp/offender", 1000, 100)
 			status := filepath.Join(procRootDir, "4242", "status")
 			if err := os.WriteFile(status, []byte("Uid:\t1001\t1001\t1001\t1001\n"), 0600); err != nil {
@@ -53,6 +55,16 @@ func TestAFAlgReactionVerifiesAfterAcquiringHandle(t *testing.T) {
 			cfg := &config.Config{}
 			cfg.AutoResponse.CopyFailKillProcess = true
 			reactToAFAlgEvent(cfg, ev)
+			wantResult := actionlog.Refused
+			if reason == "eligible" {
+				wantResult = actionlog.Applied
+			}
+			if reason == "unsupported" {
+				wantResult = actionlog.Failed
+			}
+			if len(sink.records) != 1 || sink.records[0].Op != "respond.kill_process" || sink.records[0].Result != wantResult {
+				t.Fatalf("records=%+v", sink.records)
+			}
 			wantSignals, wantVerify := 0, 1
 			if reason == "eligible" {
 				wantSignals = 1
