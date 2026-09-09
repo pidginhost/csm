@@ -200,9 +200,7 @@ func (c *connectionBPF) Run(ctx context.Context) {
 					enricher.annotate(&finding, ev.DstIP.String(),
 						bpfVerdictReason(finding.Check, ev.DstPort), finding.Severity.String())
 				}
-				select {
-				case c.alertCh <- finding:
-				default:
+				if !alert.TryEnqueue(c.alertCh, finding) {
 					csmlog.Warn("connection bpf: alert channel full, dropping finding")
 				}
 			}

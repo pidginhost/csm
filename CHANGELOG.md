@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Status and doctor now report delayed and dropped work in finding delivery and the realtime file and mail scanners. Sustained overload degrades health and raises a bounded notification even when the normal findings channel is full, with a recovery event once pressure clears.
+
 ## [3.36.0] - 2026-09-09
 
 ### Highlights

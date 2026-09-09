@@ -111,6 +111,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	if snap.CorrelationAttribution != nil {
 		resp["correlation_attribution"] = snap.CorrelationAttribution
 	}
+	if len(snap.Queues) != 0 {
+		resp["queues"] = snap.Queues
+	}
 	writeJSON(w, resp)
 }
 
@@ -126,6 +129,12 @@ func operationalProblems(sigCount int, snap health.Snapshot) int {
 	}
 	if !snap.AllWatchersAttached() {
 		problems++
+	}
+	for _, q := range snap.Queues {
+		if q.Status == "degraded" {
+			problems++
+			break
+		}
 	}
 	return problems
 }

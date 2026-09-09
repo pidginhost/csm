@@ -248,10 +248,9 @@ func sensitivePathMatchesFileID(path string, want fileid) bool {
 }
 
 func (s *sensitiveFileBPF) emitFinding(f alert.Finding) bool {
-	select {
-	case s.alertCh <- f:
+	if alert.TryEnqueue(s.alertCh, f) {
 		return true
-	default:
+	} else {
 		csmlog.Warn("sensitive_file bpf: alert channel full, dropping finding")
 		return false
 	}

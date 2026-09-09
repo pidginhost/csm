@@ -4,9 +4,11 @@ package daemon
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // FileMonitor stub for non-Linux platforms.
@@ -19,3 +21,5 @@ func NewFileMonitor(_ *config.Config, _ chan<- alert.Finding) (*FileMonitor, err
 func (fm *FileMonitor) Run(_ <-chan struct{}) {}
 func (fm *FileMonitor) Stop()                 {}
 func (fm *FileMonitor) registerMetrics()      {}
+
+func (fm *FileMonitor) queueStatuses(_ time.Time) map[string]queuehealth.Status { return nil }

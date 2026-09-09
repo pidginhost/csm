@@ -117,9 +117,7 @@ func (a *afAlgBPF) handle(ev checks.AFAlgEvent) {
 			ev.UID, ev.Comm, ev.Exe, ev.PID,
 		),
 	}
-	select {
-	case a.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(a.alertCh, finding) {
 		csmlog.Warn("af_alg bpf: alert channel full; finding dropped", "uid", ev.UID, "exe", ev.Exe)
 	}
 	reactToAFAlgEvent(a.cfg, ev)

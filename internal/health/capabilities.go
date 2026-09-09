@@ -48,6 +48,7 @@ func Capabilities() []string {
 		"verified_bots.editor.v1",   // operator-managed verified-bot allowlist (rDNS + IP ranges) with web editor
 		"status.firewall_health.v1", // status snapshot reports firewall enabled/managed state + block counts
 		"mode.observe.v1",           // observe posture: detection and alerting without host changes
+		"status.queue_health.v1",
 	}
 	if firewall.Supported() {
 		caps = append(caps,

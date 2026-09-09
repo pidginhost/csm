@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
@@ -16,9 +17,29 @@ import (
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/processhandle"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/updatecheck"
 )
+
+// QueueStatuses reports protection work independently of alert delivery.
+func (d *Daemon) QueueStatuses() map[string]queuehealth.Status {
+	return d.queueStatuses(time.Now())
+}
+
+func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
+	out := make(map[string]queuehealth.Status)
+	if d.alertQueue != nil {
+		out["findings.ingest"] = d.alertQueue.Snapshot(now)
+	}
+	if fm := d.getFileMonitor(); fm != nil {
+		maps.Copy(out, fm.queueStatuses(now))
+	}
+	if sw := d.getSpoolWatcher(); sw != nil {
+		maps.Copy(out, sw.queueStatuses(now))
+	}
+	return out
+}
 
 // Hostname implements health.Provider.
 func (d *Daemon) Hostname() string {

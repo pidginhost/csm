@@ -41,9 +41,7 @@ func (p *connectionPoller) Run(ctx context.Context) {
 			findings := checks.CheckOutboundUserConnections(ctx, activeConnectionCfg(p.cfg), nil)
 			for _, f := range findings {
 				p.count.Add(1)
-				select {
-				case p.alertCh <- f:
-				default:
+				if !alert.TryEnqueue(p.alertCh, f) {
 					csmlog.Warn("connection legacy: alert channel full, dropping finding")
 				}
 			}

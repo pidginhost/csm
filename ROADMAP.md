@@ -231,10 +231,12 @@ recorded-stream evidence.
 The daemon has several bounded queues between the kernel and an alert: the
 fanotify analyzer queue, the alert channel, the spool and log watchers, the BPF
 ring buffers, the dropper tracker and the staged-package verification queue.
-Overflow on the analyzer queue raises a `fanotify_overflow` finding and a
-reconcile scan. Every other drop is a `Warn` line and an atomic counter that
-`csm status` prints as `dropped alerts`. A watcher that falls minutes behind
-is not reported at all, and neither is a queue that is permanently full.
+Finding delivery, the analyzer and the spool scanner now report depth, drops
+and waiting/processing lag through status and doctor. Sustained pressure
+degrades health and produces bounded degradation and recovery findings through
+an independent delivery path. Kernel fanotify overflow records also reach
+health; their occupancy and lag are not measured yet. The remaining queues
+and the inventory completeness gate are still open.
 
 A queue that silently sheds findings is the same failure as a table that
 silently narrows: healthy status, less protection.
@@ -245,28 +247,6 @@ is crossed; a sustained drop rate on any queue raises a finding the way the
 analyzer overflow does today; no new queue can be added without those metrics
 (same completeness rule as above). The budgets themselves belong to
 [resource and performance budgets](#resource-and-performance-budgets).
-
-## The firewall audit log is written to a path nothing reads
-
-**Status:** open. Confirmed in `internal/firewall/audit.go`.
-
-`AppendAudit` writes every firewall mutation to `<state>/audit.jsonl`.
-`ReadAuditLog`, which backs `csm firewall audit` and the web UI's audit view,
-reads `<state>/firewall/audit.jsonl`. The two paths have never agreed, so the
-reader returns an empty list on a host with a full audit file, and an operator
-asking "what has the firewall done" is told "nothing".
-
-An audit trail that reads empty is worse than an absent one: the empty answer
-looks like a clean history rather than a broken reader. Every entry now also
-reaches `internal/actionlog`, so the data is not lost, but the firewall's own
-view is still wrong.
-
-**Acceptance:** writer and reader resolve one path through a single helper; a
-test writes an entry and reads it back through the public reader; existing
-files at the historical path are still read so an upgrade does not appear to
-erase history.
-
-**Size:** hours, plus a decision on which path is canonical.
 
 ---
 

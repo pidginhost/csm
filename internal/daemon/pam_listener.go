@@ -258,9 +258,7 @@ func (p *PAMListener) processEvent(line string) {
 // loop, letting failure trackers grow without bound.
 func (p *PAMListener) emit(findings []alert.Finding) {
 	for _, f := range findings {
-		select {
-		case p.alertCh <- f:
-		case <-p.stopCh:
+		if !alert.Enqueue(p.alertCh, f, p.stopCh) {
 			// Shutting down and the dispatcher has stopped draining;
 			// drop the remaining findings rather than leak this
 			// goroutine. A nil stopCh (hand-constructed listener)

@@ -25,6 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/wpcheck"
 	"github.com/pidginhost/csm/internal/yara"
@@ -147,9 +148,12 @@ type FileMonitor struct {
 
 	// panicMu / lastPanicAt rate-limit the realtime_scanner_panic finding
 	// raised when an analyzer panics on one event (see analyzeFileSafe).
-	panicMu     sync.Mutex
-	lastPanicAt time.Time
-	analyzerCh  chan fileEvent
+	panicMu           sync.Mutex
+	lastPanicAt       time.Time
+	analyzerCh        chan fileEvent
+	queueHealthOnce   sync.Once
+	analyzerHealth    *queuehealth.Tracker
+	kernelQueueHealth *queuehealth.Tracker
 
 	// M7 - separate counters for dropped events and alerts
 	droppedEvents int64
@@ -350,6 +354,7 @@ func recordReadTruncation(fd int, maxBytes int, check string) {
 }
 
 type fileEvent struct {
+	queueTicket   queuehealth.Ticket
 	path          string
 	fd            int
 	pid           int32
@@ -696,6 +701,8 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 // lost, and nudge the reconcile pass to rescan directories that also saw
 // analyzer-queue drops during the same storm.
 func (fm *FileMonitor) handleQueueOverflow() {
+	fm.initQueueHealth()
+	fm.kernelQueueHealth.Lose(time.Now(), 1)
 	atomic.AddInt64(&fm.queueOverflows, 1)
 	if fanotifyKernelOverflowTotal != nil {
 		fanotifyKernelOverflowTotal.Inc()
@@ -778,9 +785,12 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	}
 
 	// Send to analyzer pool (with backpressure)
+	fm.initQueueHealth()
+	ticket := fm.analyzerHealth.Begin(time.Now())
 	select {
 	case fm.analyzerCh <- fileEvent{
-		path: path, fd: fd, pid: pid, mask: mask,
+		queueTicket: ticket,
+		path:        path, fd: fd, pid: pid, mask: mask,
 		dropperOnly: !contentInteresting, phpExecutable: phpExecutable,
 	}:
 	default:
@@ -788,6 +798,7 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 		// reconcile pass in overflowReporter can rescan it. Without this
 		// every file in a bulk burst past buffer capacity is invisible to
 		// detection forever.
+		ticket.Reject(time.Now())
 		n := atomic.AddInt64(&fm.droppedEvents, 1)
 		if fanotifyDroppedTotal != nil {
 			fanotifyDroppedTotal.Inc()
@@ -1056,6 +1067,8 @@ var fileAnalyzer = (*FileMonitor).analyzeFile
 // must not restart the daemon and reopen the detection gap for every other
 // write in flight. The caller still closes the event fd.
 func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
+	event.queueTicket.Start(time.Now())
+	defer func() { event.queueTicket.Finish(time.Now()) }()
 	defer func() {
 		if r := recover(); r != nil {
 			fm.reportScannerPanic(event.path, r)
@@ -2259,9 +2272,7 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 		Details:   details,
 		Timestamp: time.Now(),
 	}
-	select {
-	case fm.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
 }
@@ -2283,9 +2294,7 @@ func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message
 		Timestamp:   time.Now(),
 	}
 	checks.StampContentFingerprint(&finding)
-	select {
-	case fm.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
 }

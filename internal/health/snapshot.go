@@ -1,14 +1,19 @@
 package health
 
-import "time"
+import (
+	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
+)
 
 // Snapshot is the unified machine-readable health view assembled from the
 // running daemon (or, on a cold lookup, from on-disk state). It is the
 // single source of truth for /api/v1/status, csm status --json, csm doctor,
 // and the sd_notify readiness gate.
 type Snapshot struct {
-	Version  string `json:"version"`
-	Hostname string `json:"hostname"`
+	Queues   map[string]queuehealth.Status `json:"queues,omitempty"`
+	Version  string                        `json:"version"`
+	Hostname string                        `json:"hostname"`
 	// Mode is the operator's posture: "enforce" or "observe". An observe
 	// host runs detection and alerting but changes no host state.
 	Mode                 string          `json:"mode,omitempty"`
@@ -144,7 +149,8 @@ func (s Snapshot) AllWatchersAttached() bool {
 // OverallStatus collapses the snapshot into one of: "ok", "degraded", "down".
 //   - "down" if the snapshot was zero-valued (never assembled)
 //   - "degraded" if a watcher is detached, the store is unhealthy, an enabled
-//     firewall is unmanaged, or enabled termination has no safe kernel path
+//     firewall is unmanaged, enabled termination has no safe kernel path,
+//     or a protection queue is degraded
 //   - "ok" otherwise
 func (s Snapshot) OverallStatus() string {
 	if s.StartedAt.IsZero() && len(s.Watchers) == 0 {
@@ -153,6 +159,11 @@ func (s Snapshot) OverallStatus() string {
 	if !s.StoreHealthy || !s.AllWatchersAttached() || s.Automation.FirewallEnabled && !s.Automation.FirewallManaged ||
 		s.Automation.ProcessKillEnabled && !s.Automation.ProcessSignalSupported {
 		return "degraded"
+	}
+	for _, q := range s.Queues {
+		if q.Status == "degraded" {
+			return "degraded"
+		}
 	}
 	return "ok"
 }

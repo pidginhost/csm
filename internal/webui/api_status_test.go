@@ -10,9 +10,11 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type statusFakeProvider struct {
+	queues               map[string]queuehealth.Status
 	started              time.Time
 	bpfEnforcementActive bool
 	latestScan           time.Time
@@ -23,6 +25,8 @@ type statusFakeProvider struct {
 	storeHealthy         *bool
 	attribution          *health.CorrelationAttribution
 }
+
+func (f statusFakeProvider) QueueStatuses() map[string]queuehealth.Status { return f.queues }
 
 func (statusFakeProvider) Hostname() string { return "h" }
 func (f statusFakeProvider) StartedAt() time.Time {
@@ -192,6 +196,12 @@ func TestApiStatus_SecurityPostureWarnsOnDegradedSnapshot(t *testing.T) {
 			name: "unhealthy store",
 			provider: statusFakeProvider{
 				storeHealthy: boolPtr(false),
+			},
+		},
+		{
+			name: "stalled finding queue",
+			provider: statusFakeProvider{
+				queues: map[string]queuehealth.Status{"findings.ingest": {Status: "degraded", Reason: "processing_lag", InFlight: 1, ProcessingSeconds: 120}},
 			},
 		},
 	}

@@ -47,6 +47,9 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  merge) lists per check the findings correlation could not
                                  attribute to an account: `current` for the active set now,
                                  `cumulative` since daemon start.
+                                 `queues` reports named protection queues, including depth,
+                                 capacity, running work, recent and cumulative drops, and lag.
+                                 A degraded queue changes `status` and `security_posture`.
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/challenge/stats     Challenge-routing activity for the UI: `pending`, `escalated`
@@ -87,6 +90,36 @@ POST /api/v1/perf/fix-display-errors
 POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a perf_wp_cron finding (admin scope, CSRF)
 GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
+
+### Protection queue health
+
+`status.queue_health.v1` advertises the `queues` map on status responses.
+The same measurements appear under `snapshot.queues` in `csm status --json`
+and as named checks in `csm doctor`.
+
+`findings.ingest`, `fanotify.analyzer` and `spool.scanner` report waiting work,
+capacity, running work, cumulative losses, losses during the last minute,
+the oldest waiting item's age and the oldest running item's processing time.
+Waiting work includes producers blocked on admission. Ingest work remains
+running while the dispatcher holds or processes its batch, including startup.
+Kernel rows (`fanotify.kernel` and `spool.kernel`) currently count overflow
+records, not the unknown number of lost events; their zero depth, capacity
+and lag fields do not measure kernel occupancy.
+
+A queue becomes degraded after three losses in a minute, thirty seconds
+continuously full, or a minute waiting or processing. These are operational
+alert budgets, not measured throughput guarantees. Health is computed directly
+from the counters, independently of finding delivery. The daemon records and
+dispatches `protection_queue_degraded` at most once per queue every five
+minutes while pressure remains, then one `protection_queue_recovered` event.
+These are CSM health events and do not feed account-compromise correlation or
+automatic response. Recovery preserves cumulative loss evidence; restarting a
+spool watcher also preserves it. Restarting the daemon resets the counters.
+
+Inspect worker errors and CPU, memory and I/O pressure when a queue degrades.
+Reduce competing bulk work and confirm the queue drains and recent losses
+stop. This surface currently covers finding delivery, the file analyzer and
+the mail scanner; other bounded queues remain listed in the roadmap.
 
 ## GeoIP
 

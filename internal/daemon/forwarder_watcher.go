@@ -137,9 +137,7 @@ func (fw *ForwarderWatcher) handleFileChange(domain string) {
 	for _, f := range findings {
 		f.Timestamp = time.Now()
 		f.Details += "\n(detected in realtime via inotify)"
-		select {
-		case fw.alertCh <- f:
-		default:
+		if !alert.TryEnqueue(fw.alertCh, f) {
 			fmt.Fprintf(os.Stderr, "[%s] Warning: alert channel full, dropping forwarder finding for %s\n",
 				time.Now().Format("2006-01-02 15:04:05"), domain)
 		}

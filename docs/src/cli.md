@@ -59,6 +59,11 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 | `csm pam <install\|uninstall\|status>` | Install or remove the `pam_csm.so` PAM hook (`csm pam --help`). |
 | `csm report enroll` | Generate an abuse-reporting node key pair. |
 
+`csm doctor` also lists [protection queue health](api.md#protection-queue-health):
+waiting and running work, losses and lag. A sustained backlog or drop rate
+fails the named queue check and includes recovery guidance. The same evidence
+appears in `csm status --json` and the HTTP status response.
+
 ## Backup & restore
 
 | Command | Description |

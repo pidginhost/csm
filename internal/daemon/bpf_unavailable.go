@@ -34,10 +34,5 @@ func emitBPFUnavailableFinding(alertCh chan<- alert.Finding, feature, choice, fa
 		Details:   details,
 		Timestamp: time.Now(),
 	}
-	select {
-	case alertCh <- f:
-		return true
-	default:
-		return false
-	}
+	return alert.TryEnqueue(alertCh, f)
 }

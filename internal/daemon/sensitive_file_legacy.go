@@ -41,9 +41,7 @@ func (p *sensitiveFilePoller) Run(ctx context.Context) {
 		case <-t.C:
 			for _, f := range checks.CheckSensitiveFiles(ctx, p.cfg, p.store) {
 				p.count.Add(1)
-				select {
-				case p.alertCh <- f:
-				default:
+				if !alert.TryEnqueue(p.alertCh, f) {
 					csmlog.Warn("sensitive_file legacy: alert channel full, dropping finding")
 				}
 			}

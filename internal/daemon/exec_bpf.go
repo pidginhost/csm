@@ -95,9 +95,7 @@ func (e *execBPF) Run(ctx context.Context) {
 			}
 			for _, f := range checks.EvaluateExec(ev.UID, ev.PID, ev.Comm, ev.Filename, ev.ParentComm) {
 				attachProcessCtxToExecFinding(pcCache, &f, ev)
-				select {
-				case e.alertCh <- f:
-				default:
+				if !alert.TryEnqueue(e.alertCh, f) {
 					csmlog.Warn("exec bpf: alert channel full, dropping finding")
 				}
 			}

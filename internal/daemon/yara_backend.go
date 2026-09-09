@@ -231,10 +231,9 @@ func (d *Daemon) reportYaraCompileStatus(compileErr string) {
 // is accounted for by the daemon's general drop counter.
 func (d *Daemon) emitYaraFinding(sev alert.Severity, check, msg string) bool {
 	finding := alert.Finding{Severity: sev, Check: check, Message: msg, Timestamp: time.Now()}
-	select {
-	case d.alertCh <- finding:
+	if alert.TryEnqueue(d.alertCh, finding) {
 		return true
-	default:
+	} else {
 		atomic.AddInt64(&d.droppedAlerts, 1)
 		return false
 	}
@@ -289,10 +288,5 @@ func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor ti
 		Timestamp: now,
 		Message:   fmt.Sprintf("YARA-X worker crashed (exit=%d signal=%v after %s); supervisor restarted it, real-time scanning recovered.", exitCode, sig, ranFor.Round(time.Millisecond)),
 	}
-	select {
-	case d.alertCh <- finding:
-	default:
-		// Channel saturated; the daemon's general drop-counter path
-		// already tracks this.
-	}
+	alert.TryEnqueue(d.alertCh, finding)
 }

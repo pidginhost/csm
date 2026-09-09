@@ -37,9 +37,7 @@ func (p *execPoller) Run(ctx context.Context) {
 	emit := func(fs []alert.Finding) {
 		for _, f := range fs {
 			p.count.Add(1)
-			select {
-			case p.alertCh <- f:
-			default:
+			if !alert.TryEnqueue(p.alertCh, f) {
 				csmlog.Warn("exec legacy: alert channel full, dropping finding")
 			}
 		}

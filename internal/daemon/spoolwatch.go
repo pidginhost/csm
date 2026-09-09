@@ -23,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/metrics"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // spoolQueueOverflowTotal counts FAN_Q_OVERFLOW records on the spool watcher.
@@ -118,16 +119,20 @@ type SpoolWatcher struct {
 	// queue overflow means opens were let through without a scan verdict, so
 	// mail may have been delivered unscanned. overflowMu rate-limits the
 	// operator finding so a storm does not flood the alert channel.
-	queueOverflows int64 // atomic
-	overflowMu     sync.Mutex
-	lastOverflowAt time.Time
+	queueOverflows    int64 // atomic
+	overflowMu        sync.Mutex
+	lastOverflowAt    time.Time
+	queueHealthOnce   sync.Once
+	scannerHealth     *queuehealth.Tracker
+	kernelQueueHealth *queuehealth.Tracker
 }
 
 type spoolEvent struct {
-	path     string
-	fd       int // fanotify event fd (for permission response)
-	pid      int32
-	needResp bool // true if permission event requiring response
+	queueTicket queuehealth.Ticket
+	path        string
+	fd          int // fanotify event fd (for permission response)
+	pid         int32
+	needResp    bool // true if permission event requiring response
 }
 
 // NewSpoolWatcher creates a dedicated fanotify instance for Exim spool scanning.
@@ -362,6 +367,8 @@ func (sw *SpoolWatcher) parseEvents(buf []byte) {
 // them, so an overflow means some inbound messages were delivered without an
 // AV scan. Count it and emit a rate-limited Warning that says so.
 func (sw *SpoolWatcher) handleQueueOverflow() {
+	sw.initQueueHealth()
+	sw.kernelQueueHealth.Lose(time.Now(), 1)
 	atomic.AddInt64(&sw.queueOverflows, 1)
 	if spoolQueueOverflowTotal != nil {
 		spoolQueueOverflowTotal.Inc()
@@ -421,17 +428,20 @@ func (sw *SpoolWatcher) dispatchEvent(fd int32, pid int32) {
 	// This is intentional: backpressure on Exim's delivery runner
 	// is the correct behavior per the spec. Exim is designed to
 	// handle delivery delays; unscanned delivery is not acceptable.
+	sw.initQueueHealth()
 	evt := spoolEvent{
-		path:     path,
-		fd:       int(fd),
-		pid:      pid,
-		needResp: sw.permissionMode,
+		queueTicket: sw.scannerHealth.Begin(time.Now()),
+		path:        path,
+		fd:          int(fd),
+		pid:         pid,
+		needResp:    sw.permissionMode,
 	}
 	select {
 	case sw.scanCh <- evt:
 		// Worker will handle response and fd close
 	case <-sw.stopCh:
 		// Shutting down - allow and close
+		evt.queueTicket.Reject(time.Now())
 		if sw.permissionMode {
 			sw.writeResponse(fd, FAN_ALLOW)
 		}
@@ -485,6 +495,8 @@ var spoolEventHandler = (*SpoolWatcher).handleSpoolEvent
 // Re-raising would restart the daemon, and Exim would redeliver the same
 // message into the same panic.
 func (sw *SpoolWatcher) handleSpoolEventSafe(evt spoolEvent) {
+	evt.queueTicket.Start(time.Now())
+	defer func() { evt.queueTicket.Finish(time.Now()) }()
 	defer func() {
 		if r := recover(); r != nil {
 			sw.reportScannerPanic(evt.path, r)
@@ -684,15 +696,14 @@ func (sw *SpoolWatcher) closeFd() {
 }
 
 func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, message string) bool {
-	select {
-	case sw.alertCh <- alert.Finding{
+	if alert.TryEnqueue(sw.alertCh, alert.Finding{
 		Severity:  severity,
 		Check:     check,
 		Message:   message,
 		Timestamp: time.Now(),
-	}:
+	}) {
 		return true
-	default:
+	} else {
 		// Alert channel full - drop
 		return false
 	}

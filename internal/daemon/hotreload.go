@@ -260,9 +260,7 @@ func (d *Daemon) emitReloadFinding(sev alert.Severity, check, msg string) {
 		Message:   msg,
 		Timestamp: time.Now(),
 	}
-	select {
-	case d.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(d.alertCh, finding) {
 		atomic.AddInt64(&d.droppedAlerts, 1)
 	}
 }

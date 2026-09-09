@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -122,9 +123,7 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 			resolver.RegisterInfraHost(h)
 		}
 		resolver.SetFindingSink(func(host string) {
-			select {
-			case d.alertCh <- dynDNSUnresolvableFinding(host):
-			default:
+			if !alert.TryEnqueue(d.alertCh, dynDNSUnresolvableFinding(host)) {
 				atomic.AddInt64(&d.droppedAlerts, 1)
 				fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping dyndns guard finding: %s\n", ts(), host)
 			}

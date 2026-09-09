@@ -717,6 +717,8 @@ Attribution gaps:
 | `php_shield_webshell` | security event |  |  |
 | `php_suspicious_execution` | security event |  |  |
 | `php_taint_scan_incomplete` | ignored | self-health |  |
+| `protection_queue_degraded` | ignored | self-health |  |
+| `protection_queue_recovered` | ignored | self-health |  |
 | `realtime_scanner_panic` | ignored | self-health |  |
 | `reputation_quota_exhausted` | ignored | self-health |  |
 | `root_password_change` | ignored | host-scope |  |

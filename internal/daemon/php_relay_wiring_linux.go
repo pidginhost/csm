@@ -71,10 +71,7 @@ func startPHPRelayLinux(d *Daemon) {
 	bdb := store.Global()
 	persister := newMsgIndexPersister(bdb, 4096, 100*time.Millisecond)
 	persister.SetErrorCallback(func(f alert.Finding) {
-		select {
-		case d.alertCh <- f:
-		default:
-		}
+		alert.TryEnqueue(d.alertCh, f)
 	})
 	persister.SetMetrics(prMetrics)
 	persister.Start()
@@ -114,10 +111,7 @@ func startPHPRelayLinux(d *Daemon) {
 
 	// 9. Spool pipeline (Flow A) + autoFreezer (post-emit hook).
 	pipeline := newSpoolPipeline(eng, domains, pol, idx, ignores, func(f alert.Finding) {
-		select {
-		case d.alertCh <- f:
-		default:
-		}
+		alert.TryEnqueue(d.alertCh, f)
 	})
 	freezer := newAutoFreezer(psw, d.cfg, "/var/spool/exim/input", eximBinary,
 		runner, auditor, prMetrics, controller.DryRunFn())
@@ -170,10 +164,7 @@ func startPHPRelayLinux(d *Daemon) {
 	obs.Go("php-relay-history-scan", func() {
 		defer d.wg.Done()
 		ScanEximHistoryForPHPRelayAccountVolume(ctx, "/var/log/exim_mainlog", eng, time.Now(), func(f alert.Finding) {
-			select {
-			case d.alertCh <- f:
-			default:
-			}
+			alert.TryEnqueue(d.alertCh, f)
 		})
 	})
 
@@ -231,19 +222,15 @@ func runPHPRelayFlowE(
 	}
 }
 
-// emitPHPRelayFinding sends a finding through the daemon alert pipeline,
-// dropping silently if the channel buffer is full (matches the existing
-// startup-time alert pattern in daemon.go).
+// Nonblocking delivery keeps a full findings channel from stopping mail
+// supervision; the shared queue tracker retains any delivery loss.
 func emitPHPRelayFinding(d *Daemon, sev alert.Severity, check, msg string) {
-	select {
-	case d.alertCh <- alert.Finding{
+	alert.TryEnqueue(d.alertCh, alert.Finding{
 		Severity:  sev,
 		Check:     check,
 		Message:   msg,
 		Timestamp: time.Now(),
-	}:
-	default:
-	}
+	})
 }
 
 // stopChContext bridges the daemon's stopCh (chan struct{}) to a

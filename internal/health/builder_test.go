@@ -3,9 +3,12 @@ package health
 import (
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type fakeProvider struct {
+	queues               map[string]queuehealth.Status
 	hostname             string
 	started              time.Time
 	watchers             map[string]bool
@@ -21,6 +24,8 @@ type fakeProvider struct {
 	mode                 string
 	attribution          *CorrelationAttribution
 }
+
+func (f *fakeProvider) QueueStatuses() map[string]queuehealth.Status { return f.queues }
 
 func (f *fakeProvider) Hostname() string                 { return f.hostname }
 func (f *fakeProvider) StartedAt() time.Time             { return f.started }
