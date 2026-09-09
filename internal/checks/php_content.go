@@ -3065,18 +3065,25 @@ func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 // stub parser, it never accepts comments before the terminator. A completed
 // terminator can be recognized from a partial head; EOF alone is not proof.
 func PHPTerminatesImmediately(buf []byte) bool {
+	_, ok := PHPTerminatesImmediatelyAt(buf)
+	return ok
+}
+
+// PHPTerminatesImmediatelyAt is PHPTerminatesImmediately plus the offset just
+// past the terminator statement, so a caller can judge the unreachable tail.
+func PHPTerminatesImmediatelyAt(buf []byte) (int, bool) {
 	buf = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF})
 	i := skipPHPSpace(buf, 0)
 	const opener = "<?php"
 	if !bytes.HasPrefix(buf[i:], []byte(opener)) {
-		return false
+		return 0, false
 	}
 	i += len(opener)
 	// PHP needs whitespace after the opening tag. Without it the tag is
 	// literal text, the file never enters code mode here, and a later
 	// `<?php` block is what actually runs.
 	if i >= len(buf) || !isPHPOpenTagSpace(buf[i]) {
-		return false
+		return 0, false
 	}
 	i = skipPHPSpace(buf, i)
 	start := i
@@ -3084,9 +3091,56 @@ func PHPTerminatesImmediately(buf []byte) bool {
 		i++
 	}
 	if i == start || !isIdentStart(buf[start]) {
-		return false
+		return 0, false
 	}
-	return isPHPTerminatorStatement(buf, i, strings.ToLower(string(buf[start:i])), false)
+	word := strings.ToLower(string(buf[start:i]))
+	if !isPHPTerminatorStatement(buf, i, word, false) {
+		return 0, false
+	}
+	return phpTerminatorStatementEnd(buf, i, word), true
+}
+
+// phpTerminatorStatementEnd returns the offset where the file's unreachable
+// bytes begin. Past the validated terminator it also consumes any further
+// terminator statements and the closing tag, because a state file commonly
+// opens `exit('...'); __halt_compiler(); ?>` before its data.
+func phpTerminatorStatementEnd(buf []byte, i int, word string) int {
+	for {
+		i = skipPHPSpace(buf, i)
+		if i < len(buf) && buf[i] == '(' {
+			if next, ok := consumeEmptyPHPParens(buf, i); ok {
+				i = next
+			} else if next, ok := consumeLiteralPHPParens(buf, i); ok {
+				i = next
+			}
+		}
+		i = skipPHPSpace(buf, i)
+		if i < len(buf) && buf[i] == ';' {
+			i++
+		}
+		i = skipPHPSpace(buf, i)
+		if i+1 < len(buf) && buf[i] == '?' && buf[i+1] == '>' {
+			i += 2
+			// PHP swallows one newline directly after the closing tag.
+			if i < len(buf) && buf[i] == '\n' {
+				i++
+			} else if i+1 < len(buf) && buf[i] == '\r' && buf[i+1] == '\n' {
+				i += 2
+			}
+			return i
+		}
+		start := i
+		for i < len(buf) && isIdentCont(buf[i]) {
+			i++
+		}
+		if i == start || !isIdentStart(buf[start]) {
+			return start
+		}
+		next := strings.ToLower(string(buf[start:i]))
+		if next != "die" && next != "exit" && next != "__halt_compiler" {
+			return start
+		}
+	}
 }
 
 func isPHPSpace(c byte) bool {

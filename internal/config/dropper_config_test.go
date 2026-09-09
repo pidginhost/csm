@@ -15,28 +15,9 @@ func TestDropperDetectionDefaults(t *testing.T) {
 	if !cfg.Thresholds.DropperDetection {
 		t.Error("dropper_detection must default to true")
 	}
-	if cfg.Thresholds.DropperPHPUnencodedSource {
-		t.Error("PHP source encoding must not be assumed by default")
-	}
 	if cfg.Thresholds.DropperUnlinkTTLSec != DefaultDropperUnlinkTTLSec {
 		t.Errorf("dropper_unlink_ttl_sec = %d, want default %d",
 			cfg.Thresholds.DropperUnlinkTTLSec, DefaultDropperUnlinkTTLSec)
-	}
-}
-
-func TestDropperPHPSourceEncodingPolicy(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		input := "thresholds:\n  dropper_php_unencoded_source: false\n"
-		if enabled {
-			input = "thresholds:\n  dropper_php_unencoded_source: true\n"
-		}
-		cfg, err := LoadBytes([]byte(input))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.Thresholds.DropperPHPUnencodedSource != enabled {
-			t.Errorf("source encoding assertion = %v, want %v", cfg.Thresholds.DropperPHPUnencodedSource, enabled)
-		}
 	}
 }
 

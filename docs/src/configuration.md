@@ -177,7 +177,6 @@ thresholds:
   rolling_coverage: true               # tri-state; default on. Each cycle content-scans a slice of dormant files past the mtime cap so old planted files get covered over time. Set false to disable
   dropper_detection: true              # tri-state; default on. Real-time flag for a PHP/executable created under a web docroot and unlinked before the TTL probe. Set false to disable
   dropper_unlink_ttl_sec: 300          # seconds a fresh docroot PHP/executable is tracked before the self-delete probe (default: 300, range 30-3600)
-  dropper_php_unencoded_source: false # operator assertion: zend.multibyte=0 is enforced for all monitored PHP interpreters; enables PHP state-file filtering (see realtime detection)
 
   # HTTP request flood, User-Agent spoof, and distributed HTTP detection.
   # These detectors scan the same per-vhost access-log stream as the WP

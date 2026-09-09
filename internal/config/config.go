@@ -498,10 +498,6 @@ type Config struct {
 		// DropperUnlinkTTLSec is the tracking TTL in seconds for that
 		// detector. Default 300.
 		DropperUnlinkTTLSec int `yaml:"dropper_unlink_ttl_sec"`
-		// DropperPHPUnencodedSource is an operator assertion that source
-		// conversion is administratively disabled for every monitored PHP
-		// interpreter. It enables literal-terminator filtering; default false.
-		DropperPHPUnencodedSource bool `yaml:"dropper_php_unencoded_source"`
 
 		// HTTPASNCrawlWindowMin is the rolling window in minutes for the
 		// single-ASN distributed crawl detector. Default 60.

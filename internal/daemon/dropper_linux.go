@@ -190,7 +190,6 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		WritePending:  event.mask&FAN_CREATE != 0 && event.mask&FAN_CLOSE_WRITE == 0,
 		PHPExecutable: event.phpExecutable,
 	}
-	c.PHPUnencodedSource = fm.currentCfg().Thresholds.DropperPHPUnencodedSource
 	if birth, ok := statxBirthFromFD(event.fd); ok {
 		c.Birth = birth
 		c.BirthKnown = true

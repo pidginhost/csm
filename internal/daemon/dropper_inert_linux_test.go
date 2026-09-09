@@ -265,16 +265,15 @@ func TestDropperInertCloseWriteFamilies(t *testing.T) {
 	config.SetActive(nil)
 	t.Cleanup(func() { config.SetActive(previous) })
 	for _, tc := range []struct {
-		name      string
-		body      string
-		unencoded bool
-		inert     bool
+		name  string
+		body  string
+		inert bool
 	}{
-		{"empty guard", "", false, true},
-		{"WAF state without encoding policy", wordfenceWAFHead, false, false},
-		{"WAF state with encoding policy", wordfenceWAFHead + strings.Repeat("*", 21927), true, true},
-		{"code", "<?php echo 1;", true, false},
-		{"invalid opening tag", "<?php\vexit(); ?><?php echo 1;", true, false},
+		{"empty guard", "", true},
+		{"WAF state head", wordfenceWAFHead, true},
+		{"WAF state with data tail", wordfenceWAFHead + strings.Repeat("*", 21927), true},
+		{"code", "<?php echo 1;", false},
+		{"invalid opening tag", "<?php\vexit(); ?><?php echo 1;", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -288,7 +287,6 @@ func TestDropperInertCloseWriteFamilies(t *testing.T) {
 			}
 			defer func() { _ = f.Close() }()
 			fm := newDropperWiringTestMonitor(dir, time.Minute)
-			fm.cfg.Thresholds.DropperPHPUnencodedSource = tc.unencoded
 			c := fm.observeDropperCandidate(fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, "")
 			if c == nil || !c.BirthKnown || c.Created || c.WritePending {
 				t.Fatalf("test did not exercise birth-time admission on close-write: %+v", c)
@@ -308,34 +306,27 @@ func TestDropperInertCloseWriteFamilies(t *testing.T) {
 	}
 }
 
-func TestDropperInertPHPPolicyFollowsReloadAndSignaturesWin(t *testing.T) {
-	previous := config.Active()
-	t.Cleanup(func() { config.SetActive(previous) })
+func TestDropperInertPHPDataFileSignatureWins(t *testing.T) {
 	useRealtimeRules(t, realtimeHighRule)
 	dir := t.TempDir()
 	fm := newDropperWiringTestMonitor(dir, time.Minute)
-	for i, unencoded := range []bool{true, false, true} {
-		cfg := &config.Config{}
-		cfg.Thresholds.DropperPHPUnencodedSource = unencoded
-		config.SetActive(cfg)
-		path := filepath.Join(dir, fmt.Sprintf("state%d.php", i))
-		if err := os.WriteFile(path, []byte(wordfenceWAFHead+"EVIL_MARKER_A"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = f.Close() }()
-		event := fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}
-		c := fm.observeDropperCandidate(event, "")
-		if c == nil || c.PHPUnencodedSource != unencoded || dropperCandidateIsInert(*c) != unencoded {
-			t.Fatalf("live encoding policy was not used: %+v", c)
-		}
-		fm.analyzeFile(event)
-		due := fm.dropper.tr.Due(time.Now().Add(2 * time.Minute))
-		if len(due) != 1 || !due[0].ContentSuspicious || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
-			t.Fatalf("signature did not override the PHP exemption: %+v", due)
-		}
+	path := filepath.Join(dir, "state.php")
+	if err := os.WriteFile(path, []byte(wordfenceWAFHead+"EVIL_MARKER_A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	event := fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}
+	c := fm.observeDropperCandidate(event, "")
+	if c == nil || !dropperCandidateIsInert(*c) {
+		t.Fatalf("test must start from a snapshot the terminator gate exempts: %+v", c)
+	}
+	fm.analyzeFile(event)
+	due := fm.dropper.tr.Due(time.Now().Add(2 * time.Minute))
+	if len(due) != 1 || !due[0].ContentSuspicious || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
+		t.Fatalf("signature did not override the PHP exemption: %+v", due)
 	}
 }

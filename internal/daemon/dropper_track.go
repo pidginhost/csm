@@ -33,9 +33,6 @@ type dropperCandidate struct {
 	// PHPExecutable is set by the Linux analyzer when an inherited
 	// .htaccess handler makes a non-standard extension executable as PHP.
 	PHPExecutable bool
-	// PHPUnencodedSource snapshots the operator's encoding policy. Raw PHP
-	// terminators cannot prove inertness when source conversion is possible.
-	PHPUnencodedSource bool
 	// ContentSuspicious prevents FP heuristics from demoting a file whose
 	// realtime content/signature pass already found malicious structure.
 	ContentSuspicious bool
