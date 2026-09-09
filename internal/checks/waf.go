@@ -34,8 +34,9 @@ var wafRulesAssembleRetryDelay = 30 * time.Second
 // CheckWAFStatus verifies that ModSecurity is loaded, the engine is in
 // enforcement mode (not DetectionOnly), OWASP/Comodo rules are active,
 // and rules are up to date.
-func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckWAFStatus(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
+	manageHost := cfg == nil || !cfg.ObserveMode()
 
 	info := platform.Detect()
 
@@ -102,7 +103,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 		if staleAge > 0 {
 			// Attempt auto-update before alerting
 			updated := false
-			if info.IsCPanel() {
+			if info.IsCPanel() && manageHost {
 				updated = autoUpdateWAFRules()
 			}
 			if updated {
@@ -122,7 +123,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 
 	// --- Virtual patch deployment ---
 	// Only cPanel has the modsec user config dirs we write into.
-	if info.IsCPanel() {
+	if info.IsCPanel() && manageHost {
 		deployVirtualPatches()
 	}
 

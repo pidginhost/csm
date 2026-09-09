@@ -24,7 +24,7 @@ const forwardGuardRefreshInterval = 15 * time.Minute
 func (d *Daemon) forwardGuardReconciler() guard.Reconciler {
 	return guard.Reconciler{
 		Guard:  adapter.NewEximServiceAdapter(),
-		Active: platform.Detect().IsCPanel(),
+		Active: platform.Detect().IsCPanel() && !d.currentCfg().ObserveMode(),
 		BadIPs: d.forwardGuardBadIPs,
 	}
 }

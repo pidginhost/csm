@@ -177,6 +177,34 @@ func TestPrepareChallengeConfRefreshesStaleIntegrationSnippet(t *testing.T) {
 	}
 }
 
+func TestObserveModeLeavesChallengeIntegrationUntouched(t *testing.T) {
+	old := "# csm-managed-version: " + strconv.Itoa(webserver.TemplateVersion-1) + "\nRewriteMap csm_chal \"txt:/run/csm/challenge_ips.txt\"\n"
+	h, snippet, ensured, _ := challengeRefreshFixture(t, old)
+	legacy := "RewriteMap csm_challenge txt:/run/csm/challenge_ips.txt\n"
+	if err := os.WriteFile(challengeConfDest, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origSrc := challengeConfSrc
+	challengeConfSrc = filepath.Join(t.TempDir(), "template.conf")
+	t.Cleanup(func() { challengeConfSrc = origSrc })
+	if err := os.WriteFile(challengeConfSrc, []byte("RewriteMap csm_challenge txt:"+challenge.DefaultMapPath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := prepareChallengeConf(&config.Config{Mode: config.ModeObserve})
+	if err != nil || changed {
+		t.Errorf("observe startup changed=%v err=%v", changed, err)
+	}
+	for path, want := range map[string]string{snippet: old, challengeConfDest: legacy} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Errorf("observe startup modified %s: err=%v", path, err)
+		}
+	}
+	if h.validated != 0 || h.reloaded != 0 || len(*ensured) != 0 {
+		t.Fatalf("observe startup configtest/reload/runtime maps = %d/%d/%v", h.validated, h.reloaded, *ensured)
+	}
+}
+
 // An operator-edited snippet is never rewritten. While it still references a
 // runtime-directory map the daemon keeps that file present so the web server
 // keeps validating, exactly as it did before the maps moved.

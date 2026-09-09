@@ -10,8 +10,9 @@ configuration reload alone does not import those changes. See
 ## Operating mode
 
 `mode` declares what CSM may do to the host. `enforce` (default) leaves every
-subsystem under its own switch; `observe` runs detection and alerting and
-changes no host state. Full reference: [Observe mode](observe-mode.md).
+subsystem under its own switch; `observe` runs detection and alerting without
+automatic host remediation or integration updates. Full reference, including
+required switch settings: [Observe mode](observe-mode.md).
 
 ```yaml
 mode: enforce

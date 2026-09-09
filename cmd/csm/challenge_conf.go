@@ -89,6 +89,10 @@ func challengeMapPaths(data []byte) []string {
 // Reports whether a snippet was rewritten. Errors are joined so one failing
 // step never skips the fallback that keeps the webserver validating.
 func prepareChallengeConf(cfg *config.Config) (bool, error) {
+	if cfg != nil && cfg.ObserveMode() {
+		fmt.Fprintln(os.Stderr, "observe mode: skipping challenge integration refresh")
+		return false, nil
+	}
 	var errs []error
 	inst, err := newWebserverIntegration(cfg)
 	if err != nil {

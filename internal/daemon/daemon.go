@@ -539,6 +539,9 @@ func (d *Daemon) registerFirewallMetrics() {
 
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
+	if err := d.checkObserveStartupRecovery(); err != nil {
+		return err
+	}
 	d.startTime = time.Now()
 	defer alert.ClosePhpanelQueues()
 	if d.store != nil {
