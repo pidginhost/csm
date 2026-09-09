@@ -93,7 +93,7 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 		return nil, fmt.Errorf("attach connect6: %w", err)
 	}
 
-	reader, err := bpf.NewReader[ConnectionEvent](objs.Events, decodeConnectionEvent)
+	reader, err := bpf.NewReader[ConnectionEvent](objs.Events, objs.QueueStats, decodeConnectionEvent)
 	if err != nil {
 		_ = l4.Close()
 		_ = l6.Close()

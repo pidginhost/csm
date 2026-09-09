@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/pidginhost/csm/internal/queuehealth"
@@ -17,10 +16,9 @@ func queueDoctorChecks(queues map[string]queuehealth.Status) []DoctorCheck {
 	for _, name := range names {
 		q := queues[name]
 		check := DoctorCheck{
-			Name:   "queue: " + name,
-			Status: "ok",
-			Message: fmt.Sprintf("depth=%d/%d running=%d dropped=%d lag=%.0fs processing=%.0fs",
-				q.Depth, q.Capacity, q.InFlight, q.DroppedTotal, q.LagSeconds, q.ProcessingSeconds),
+			Name:    "queue: " + name,
+			Status:  "ok",
+			Message: q.Evidence(),
 		}
 		if q.Status == "degraded" {
 			check.Status = "fail"

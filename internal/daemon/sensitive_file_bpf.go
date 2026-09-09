@@ -64,7 +64,7 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 		return nil, fmt.Errorf("attach lsm/file_permission: %w", err)
 	}
 
-	reader, err := bpf.NewReader[SensitiveFileEvent](objs.Events, decodeSensitiveFileEvent)
+	reader, err := bpf.NewReader[SensitiveFileEvent](objs.Events, objs.QueueStats, decodeSensitiveFileEvent)
 	if err != nil {
 		_ = l.Close()
 		_ = objs.Close()

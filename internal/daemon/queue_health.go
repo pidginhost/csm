@@ -85,9 +85,7 @@ func (d *Daemon) reportQueueHealth(now time.Time, reporter *queuehealth.Reporter
 		findings = append(findings, alert.Finding{
 			Check: check, Severity: alert.Warning, Message: message,
 			DedupKey: event.Name, Timestamp: now,
-			Details: fmt.Sprintf("queue=%s reason=%s depth=%d/%d running=%d dropped=%d recent_drops=%d lag=%.0fs processing=%.0fs",
-				event.Name, s.Reason, s.Depth, s.Capacity, s.InFlight,
-				s.DroppedTotal, s.RecentDrops, s.LagSeconds, s.ProcessingSeconds),
+			Details: fmt.Sprintf("queue=%s reason=%s %s", event.Name, s.Reason, s.Evidence()),
 		})
 	}
 	// This loop owns delivery: the failing ingest channel cannot carry its

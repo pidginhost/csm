@@ -21,7 +21,7 @@ func TestKernelReaderDeliversEvents(t *testing.T) {
 			t.Error(closeErr)
 		}
 	}()
-	reader, err := NewReader(m, decodeTiny)
+	reader, err := NewReader(m, testKernelCounters(t), decodeTiny)
 	if err != nil {
 		t.Fatal(err)
 	}

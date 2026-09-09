@@ -149,3 +149,40 @@ func TestReaderQueueHealthRetainsBlockedConsumer(t *testing.T) {
 		t.Fatalf("completed delivery did not recover: %+v", got)
 	}
 }
+
+func TestReaderKeepsKernelAndDecodedLossSeparate(t *testing.T) {
+	rb := &queuedRingReader{
+		exhausted: make(chan struct{}), closed: make(chan struct{}),
+		records: []ringbuf.Record{{RawSample: []byte{1}}, {}, {RawSample: []byte{3}}},
+	}
+	ring := &measuredRing{}
+	q := newKernelQueue(ring, func() (kernelCounts, error) {
+		return kernelCounts{Lost: 4, Submitted: 5}, nil
+	})
+	r := &Reader[int]{
+		rb: rb, kernel: q, out: queuehealth.NewChannel[int](3, time.Minute),
+		decode: func(data []byte) (int, error) {
+			if len(data) == 0 {
+				return 0, errors.New("invalid record")
+			}
+			return int(data[0]), nil
+		},
+	}
+	stop := r.Start(context.Background())
+	t.Cleanup(stop)
+	select {
+	case <-rb.exhausted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader did not finish scripted input")
+	}
+	stop()
+	states := r.QueueStatuses(time.Now())
+	kernel, exists := states["kernel"]
+	output := states["output"]
+	if !exists || kernel.DroppedTotal != 6 || kernel.Depth != 0 || kernel.DepthUnavailable || kernel.Reason != "dropped_work" {
+		t.Fatalf("kernel losses must be four refused and two unread, not include the decoded rejection: %+v", states)
+	}
+	if output.DroppedTotal != 3 || output.Depth != 0 || output.InFlight != 0 || r.EventCount() != 2 {
+		t.Fatalf("userspace losses must be one invalid and two abandoned records: states=%+v delivered=%d", states, r.EventCount())
+	}
+}

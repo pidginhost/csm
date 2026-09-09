@@ -241,8 +241,10 @@ including exhausted probes and shutdown losses. The remaining queues
 and the inventory completeness gate are still open.
 
 BPF userspace delivery also reports pressure, decoding loss, running consumers
-and unconsumed shutdown output. BPF kernel ring occupancy and reservation
-failures remain open alongside the other kernel queue measurements.
+and unconsumed shutdown output. Kernel rings report byte occupancy, reservation
+failures and time without observed reader progress. Their final shutdown loss
+is marked as a lower bound because kernel detachment can leave callbacks
+finishing. The other kernel queue measurements remain open.
 
 A queue that silently sheds findings is the same failure as a table that
 silently narrows: healthy status, less protection.

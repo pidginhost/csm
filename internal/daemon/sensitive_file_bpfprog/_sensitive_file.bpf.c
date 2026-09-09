@@ -6,6 +6,7 @@
 
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
+#include "../bpf_headers/csm_ringbuf.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 
@@ -65,7 +66,7 @@ int BPF_PROG(csm_file_perm, struct file *file, int mask, int ret) {
         return 0;
     }
 
-    struct sensitive_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    struct sensitive_event *e = csm_ringbuf_reserve(&events, sizeof(*e));
     if (!e) {
         return 0;
     }
@@ -77,7 +78,7 @@ int BPF_PROG(csm_file_perm, struct file *file, int mask, int ret) {
     e->ino  = key.ino;
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
-    bpf_ringbuf_submit(e, 0);
+    csm_ringbuf_submit(e);
     return 0; // detection-only
 }
 

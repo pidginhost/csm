@@ -45,7 +45,7 @@ func startExecBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *config.C
 		return nil, fmt.Errorf("attach tracepoint: %w", err)
 	}
 
-	reader, err := bpf.NewReader[ExecEvent](objs.Events, decodeExecEvent)
+	reader, err := bpf.NewReader[ExecEvent](objs.Events, objs.QueueStats, decodeExecEvent)
 	if err != nil {
 		_ = tp.Close()
 		_ = objs.Close()

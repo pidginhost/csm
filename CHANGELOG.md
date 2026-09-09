@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- BPF kernel queues now report occupancy, stalled readers and lost events through status and doctor. Shutdown records the minimum known loss when kernel callbacks may still be finishing.
+
 - BPF event delivery now reports queue pressure, decoding failures and stalled consumers through status and doctor. Shutdown counts buffered events left unprocessed.
 
 - Status and doctor now report overdue dropper probes, delayed findings and abandoned work.

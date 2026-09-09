@@ -14,15 +14,20 @@ const (
 )
 
 // Status is the queue evidence carried by status, the API and doctor.
-// LagSeconds measures the oldest waiting item; ProcessingSeconds measures
+// LagSeconds measures the oldest waiting item unless LagBasis names another
+// measurement. ProcessingSeconds measures
 // the oldest running item, so an empty queue cannot conceal a stuck worker.
 type Status struct {
 	Status            string  `json:"status"`
 	Reason            string  `json:"reason,omitempty"`
 	Depth             int     `json:"depth"`
+	DepthUnit         string  `json:"depth_unit,omitempty"`
+	DepthUnavailable  bool    `json:"depth_unavailable,omitempty"`
+	LagBasis          string  `json:"lag_basis,omitempty"`
 	Capacity          int     `json:"capacity"`
 	InFlight          int     `json:"in_flight"`
 	DroppedTotal      uint64  `json:"dropped_total"`
+	DroppedLowerBound bool    `json:"dropped_lower_bound,omitempty"`
 	RecentDrops       uint64  `json:"recent_drops"`
 	LagSeconds        float64 `json:"lag_seconds"`
 	ProcessingSeconds float64 `json:"processing_seconds"`

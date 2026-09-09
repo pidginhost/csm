@@ -53,7 +53,7 @@ func tryStartBPFLSM(_ context.Context, alertCh chan<- alert.Finding, cfg *config
 		return nil, fmt.Errorf("attach lsm/socket_create: %w", err)
 	}
 
-	reader, err := bpf.NewReader[checks.AFAlgEvent](objs.Events, decodeAFAlgEvent)
+	reader, err := bpf.NewReader[checks.AFAlgEvent](objs.Events, objs.QueueStats, decodeAFAlgEvent)
 	if err != nil {
 		_ = l.Close()
 		_ = objs.Close()

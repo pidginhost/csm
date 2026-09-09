@@ -129,6 +129,22 @@ and buffered output left after the reader stops. A received event remains
 running until evaluation and delivery to the finding queue finish, including
 events intentionally filtered during evaluation. Kernel ring occupancy and
 reservation failures are separate from these userspace measurements.
+Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
+labels ring occupancy and capacity. `lag_basis: consumer_progress` means
+`lag_seconds` measures time without observed consumption while data remains,
+starting at the first sample that sees pending data. It is not an event age.
+One minute without progress degrades the row; recently observed reservation
+failures use the same loss threshold as userspace queues. Kernel loss counters
+are separate from decode failures and userspace admission loss.
+After a reader unmaps its ring, `depth_unavailable: true` and
+`lag_basis: unavailable` prevent zero fields from claiming an empty live ring.
+The last counter sample adds submitted records the reader never consumed.
+`dropped_lower_bound: true` marks this final shutdown total: kernel detachment
+can leave callbacks finishing after the sample. Doctor prints `dropped>=...`
+for that bound. Counter lookup failure degrades the row as
+`measurement_unavailable`; a failed final sample remains degraded.
+The required kernel suite fills the shipped connection program's ring with
+real non-root connect calls and checks reservation loss and retained output.
 Kernel rows (`fanotify.kernel` and `spool.kernel`) currently count overflow
 records, not the unknown number of lost events; their zero depth, capacity
 and lag fields do not measure kernel occupancy.

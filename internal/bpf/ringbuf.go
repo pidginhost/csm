@@ -35,6 +35,8 @@ type Reader[T any] struct {
 	rb        ringReader
 	decode    func([]byte) (T, error)
 	out       *queuehealth.Channel[T]
+	kernel    *kernelQueue
+	consumed  atomic.Uint64
 	errs      chan error
 	count     atomic.Uint64
 	dropped   atomic.Uint64
@@ -42,11 +44,14 @@ type Reader[T any] struct {
 	closeErr  error
 }
 
-// NewReader takes a ringbuf-typed BPF map and a decoder. The map must have
-// already been created and pinned (or kept alive) by the caller.
-func NewReader[T any](m *ebpf.Map, decode func([]byte) (T, error)) (*Reader[T], error) {
+// NewReader takes an event ring, its loss/submission counter map and a decoder.
+// The caller keeps both maps alive until the reader and consumer stop.
+func NewReader[T any](m, counters *ebpf.Map, decode func([]byte) (T, error)) (*Reader[T], error) {
 	if m == nil {
 		return nil, errors.New("nil ringbuf map")
+	}
+	if counters == nil {
+		return nil, errors.New("nil kernel queue counter map")
 	}
 	if decode == nil {
 		return nil, errors.New("nil decoder")
@@ -56,7 +61,12 @@ func NewReader[T any](m *ebpf.Map, decode func([]byte) (T, error)) (*Reader[T], 
 		return nil, fmt.Errorf("ringbuf.NewReader: %w", err)
 	}
 	return &Reader[T]{
-		rb:     rb,
+		rb: rb,
+		kernel: newKernelQueue(rb, func() (kernelCounts, error) {
+			var counts kernelCounts
+			err := counters.Lookup(uint32(0), &counts)
+			return counts, err
+		}),
 		decode: decode,
 		out:    queuehealth.NewChannel[T](256, time.Minute),
 		errs:   make(chan error, 1),
@@ -70,7 +80,11 @@ func (r *Reader[T]) Events() <-chan queuehealth.Work[T] { return r.out.Items() }
 // QueueStatuses includes decoder failures and abandoned output, in addition
 // to the full-consumer-queue losses counted by DroppedCount.
 func (r *Reader[T]) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return map[string]queuehealth.Status{"output": r.out.Snapshot(now)}
+	states := map[string]queuehealth.Status{"output": r.out.Snapshot(now)}
+	if r.kernel != nil {
+		states["kernel"] = r.kernel.snapshot(time.Now, r.consumed.Load)
+	}
+	return states
 }
 
 // Start returns a stop function that joins the producer before discarding
@@ -87,6 +101,9 @@ func (r *Reader[T]) Start(ctx context.Context) func() {
 		_ = r.Close()
 		<-done
 		r.out.DiscardPending()
+		if r.kernel != nil {
+			r.kernel.finish(time.Now, r.consumed.Load())
+		}
 	}
 }
 
@@ -156,6 +173,7 @@ func (r *Reader[T]) Run(ctx context.Context) {
 		}
 		retryDelay = 10 * time.Millisecond
 		errorReported = false
+		r.consumed.Add(1)
 		ev, err := r.decode(rec.RawSample)
 		if err != nil {
 			csmlog.Warn("bpf ringbuf decode error", "err", err, "len", len(rec.RawSample))
@@ -179,6 +197,12 @@ func (r *Reader[T]) Close() error { return r.closeReader() }
 
 // closeReader closes the underlying ringbuf reader exactly once.
 func (r *Reader[T]) closeReader() error {
-	r.closeOnce.Do(func() { r.closeErr = r.rb.Close() })
+	r.closeOnce.Do(func() {
+		if r.kernel != nil {
+			r.closeErr = r.kernel.closeRing(r.rb.Close)
+		} else {
+			r.closeErr = r.rb.Close()
+		}
+	})
 	return r.closeErr
 }
