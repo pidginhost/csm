@@ -15,12 +15,19 @@ func TestYaraRulesMatchTheBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading YARA rules: %v", err)
 	}
-	results := Run(Yara, func(content []byte, _ string) []string {
+	if scanner.RuleCount() == 0 {
+		t.Fatal("no YARA rules loaded; the gate would pass vacuously")
+	}
+	results := Run(Yara, func(content []byte, _ string) ([]string, error) {
+		matches, err := scanner.ScanBytesChecked(content)
+		if err != nil {
+			return nil, err
+		}
 		var names []string
-		for _, m := range scanner.ScanBytes(content) {
+		for _, m := range matches {
 			names = append(names, m.RuleName)
 		}
-		return names
+		return names, nil
 	})
 	assertBundle(t, Yara, results)
 }

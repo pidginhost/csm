@@ -18,6 +18,7 @@ const packagedRulesDir = "/opt/csm/rules"
 type engineRun struct {
 	Engine    selftest.Engine   `json:"engine"`
 	RuleCount int               `json:"rule_count"`
+	Skipped   string            `json:"skipped,omitempty"`
 	Summary   selftest.Summary  `json:"summary"`
 	Results   []selftest.Result `json:"results"`
 }
@@ -52,30 +53,29 @@ func runSelfTest() {
 		os.Exit(1)
 	}
 	for _, run := range runs {
-		if run.Summary.Failed() {
+		if run.Skipped == "" && run.Summary.Failed() {
 			os.Exit(1)
 		}
 	}
 }
 
 // selfTestRuns measures every rule set this build has. A build without YARA-X
-// reports only the real-time engine rather than reporting every YARA sample as
-// missed, which would read as a detection failure instead of an absent engine.
+// explicitly reports YARA-X as skipped so partial coverage stays visible.
 func selfTestRuns(rulesDir string) ([]engineRun, error) {
 	scanner := signatures.NewScanner(rulesDir)
 	if loadErr := scanner.LoadError(); loadErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: some rule files failed to load: %v\n", loadErr)
+		return nil, fmt.Errorf("loading realtime rules: %w", loadErr)
 	}
 	if scanner.RuleCount() == 0 {
 		return nil, fmt.Errorf("no signature rules loaded from %q; run `csm update-rules` or check signatures.rules_dir", rulesDir)
 	}
 
-	results := selftest.Run(selftest.Realtime, func(content []byte, ext string) []string {
+	results := selftest.Run(selftest.Realtime, func(content []byte, ext string) ([]string, error) {
 		var names []string
 		for _, m := range scanner.ScanContent(content, ext) {
 			names = append(names, m.RuleName)
 		}
-		return names
+		return names, nil
 	})
 	runs := []engineRun{{
 		Engine:    selftest.Realtime,
@@ -85,19 +85,28 @@ func selfTestRuns(rulesDir string) ([]engineRun, error) {
 	}}
 
 	if !yara.Available() {
-		return runs, nil
+		return append(runs, engineRun{
+			Engine:  selftest.Yara,
+			Skipped: "YARA-X is not compiled into this build; YARA coverage was not tested",
+		}), nil
 	}
 	yaraScanner, err := yara.NewScanner(rulesDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: YARA rules failed to load: %v\n", err)
-		return runs, nil
+		return nil, fmt.Errorf("loading YARA rules: %w", err)
 	}
-	yaraResults := selftest.Run(selftest.Yara, func(content []byte, _ string) []string {
+	if yaraScanner.RuleCount() == 0 {
+		return nil, fmt.Errorf("no YARA rules loaded from %q; run `csm update-rules` or check signatures.rules_dir", rulesDir)
+	}
+	yaraResults := selftest.Run(selftest.Yara, func(content []byte, _ string) ([]string, error) {
+		matches, err := yaraScanner.ScanBytesChecked(content)
+		if err != nil {
+			return nil, err
+		}
 		var names []string
-		for _, m := range yaraScanner.ScanBytes(content) {
+		for _, m := range matches {
 			names = append(names, m.RuleName)
 		}
-		return names
+		return names, nil
 	})
 	return append(runs, engineRun{
 		Engine:    selftest.Yara,
@@ -115,6 +124,12 @@ func writeSelfTest(w io.Writer, rulesDir string, runs []engineRun, asJSON bool) 
 	}
 
 	for _, run := range runs {
+		if run.Skipped != "" {
+			if _, err := fmt.Fprintf(w, "%s: SKIPPED - %s\n\n", run.Engine, run.Skipped); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := fmt.Fprintf(w, "%s rules (%d loaded from %s)\n", run.Engine, run.RuleCount, rulesDir); err != nil {
 			return err
 		}
@@ -127,10 +142,15 @@ func writeSelfTest(w io.Writer, rulesDir string, runs []engineRun, asJSON bool) 
 					return err
 				}
 			}
+			if r.Error != "" {
+				if _, err := fmt.Fprintf(w, "  %-26s   %s\n", "", r.Error); err != nil {
+					return err
+				}
+			}
 		}
 		s := run.Summary
-		if _, err := fmt.Fprintf(w, "  %d detected, %d clean, %d known gap(s), %d missed, %d false positive(s)\n\n",
-			s.Detected, s.Clean, s.KnownGaps, s.Missed, s.FalsePositives); err != nil {
+		if _, err := fmt.Fprintf(w, "  %d detected, %d clean, %d known gap(s), %d missed, %d false positive(s), %d closed gap(s), %d error(s)\n\n",
+			s.Detected, s.Clean, s.KnownGaps, s.Missed, s.FalsePositives, s.ClosedGaps, s.Errors); err != nil {
 			return err
 		}
 	}

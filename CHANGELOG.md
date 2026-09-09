@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `csm selftest` scans a bundle of samples with known verdicts, half of them benign controls, and reports what the installed rules catch and what they miss. It reads no account data, so detection can be judged without pointing a scanner at production. The same bundle gates both rule sets in CI.
+- `csm selftest` scans adversarial samples and benign controls, reporting what the installed rules catch and miss without reading account data. The same bundle gates both rule sets in CI.
 
 - `csm actions` reads a new action log that records what CSM did to the host, not just what it found: the operation, who started it, the finding that caused it, the digest of a changed file before and after, and the command that reverses it. Quarantine, cleaning, process termination and firewall changes write to it today.
 
@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
+
+- Detection self-tests now fail on incomplete rule loads, scan errors and empty input, and explicitly report unavailable engines. The obfuscated sample now uses a callable PHP function, and error details and newly closed gaps appear in the text report.
 
 - Correct the privilege inventory to describe actual kernel access, writes and disable controls, including operations with no config switch. Sandbox checks now reject empty or unrelated claims, and the service no longer grants write access to read-only mail policies.
 - Inventory exports now report output failures in every format, so a failed write no longer looks successful.

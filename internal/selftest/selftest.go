@@ -45,6 +45,9 @@ func (s Sample) Content() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sample %s: %w", s.Name, err)
 	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("sample %s: empty content", s.Name)
+	}
 	return data, nil
 }
 
@@ -61,8 +64,8 @@ type Result struct {
 }
 
 // ScanFunc is the detection under test: it returns the names of the rules that
-// fired on the content.
-type ScanFunc func(content []byte, ext string) []string
+// fired on the content, or an error if the scan could not complete.
+type ScanFunc func(content []byte, ext string) ([]string, error)
 
 // Engine names the rule set being measured, so a sample's recorded gap is
 // compared against the engine that has it.
@@ -101,7 +104,12 @@ func Run(engine Engine, scan ScanFunc) []Result {
 			results = append(results, result)
 			continue
 		}
-		result.Rules = scan(content, sample.Ext)
+		result.Rules, err = scan(content, sample.Ext)
+		if err != nil {
+			result.Error = err.Error()
+			results = append(results, result)
+			continue
+		}
 		result.Detected = len(result.Rules) > 0
 		result.Pass = result.Detected == (sample.Malicious && !result.KnownGap)
 		results = append(results, result)
@@ -120,11 +128,12 @@ type Summary struct {
 	Missed         int `json:"missed"`
 	FalsePositives int `json:"false_positives"`
 	ClosedGaps     int `json:"closed_gaps"`
+	Errors         int `json:"errors"`
 }
 
 // Failed reports whether the run found anything that needs attention.
 func (s Summary) Failed() bool {
-	return s.Missed > 0 || s.FalsePositives > 0 || s.ClosedGaps > 0
+	return s == (Summary{}) || s.Errors > 0 || s.Missed > 0 || s.FalsePositives > 0 || s.ClosedGaps > 0
 }
 
 // Summarize counts the results.
@@ -132,6 +141,8 @@ func Summarize(results []Result) Summary {
 	var out Summary
 	for _, r := range results {
 		switch {
+		case r.Error != "":
+			out.Errors++
 		case r.KnownGap && r.Detected:
 			out.ClosedGaps++
 		case r.KnownGap:

@@ -19,18 +19,29 @@ func TestRealtimeRulesMatchTheBundle(t *testing.T) {
 		t.Fatal("no rules loaded from configs/; the gate would pass vacuously")
 	}
 
-	results := Run(Realtime, func(content []byte, ext string) []string {
+	results := Run(Realtime, func(content []byte, ext string) ([]string, error) {
 		var names []string
 		for _, m := range scanner.ScanContent(content, ext) {
 			names = append(names, m.RuleName)
 		}
-		return names
+		return names, nil
 	})
 	assertBundle(t, Realtime, results)
 }
 
 func assertBundle(t *testing.T, engine Engine, results []Result) {
 	t.Helper()
+	var detections, controls int
+	for _, sample := range Samples() {
+		if !sample.Malicious {
+			controls++
+		} else if !sample.gap(engine) {
+			detections++
+		}
+	}
+	if detections == 0 || controls == 0 {
+		t.Fatalf("%s: bundle needs expected detections and benign controls, got %d and %d", engine, detections, controls)
+	}
 	if len(results) != len(Samples()) {
 		t.Fatalf("results = %d, want one per sample (%d)", len(results), len(Samples()))
 	}

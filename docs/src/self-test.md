@@ -10,8 +10,11 @@ csm selftest
 csm selftest --json
 ```
 
-Exit status is 0 when every sample matched what the bundle records for it, and
-1 when anything needs attention.
+Exit status is 0 when every sample matched what the bundle records for each
+available engine, and 1 when anything needs attention. Incomplete or empty rule
+loads, scan errors, invalid samples and an empty bundle fail the run. A build
+without YARA-X can pass its realtime checks, but explicitly reports that YARA
+coverage was not tested.
 
 ## What the bundle contains
 
@@ -23,6 +26,10 @@ Samples are stored base64-encoded and decoded only in memory. Endpoint
 antivirus deletes files that look like web shells, and a decoded copy on disk
 would make the bundle disappear from the machine it is meant to test.
 
+The split-assert sample represents legacy PHP string assertions, not PHP 8
+behaviour. The chr-built sample constructs a callable command-execution
+function; the test suite checks that it is callable without running its payload.
+
 ## Reading the output
 
 | Verdict | Meaning |
@@ -33,6 +40,11 @@ would make the bundle disappear from the machine it is meant to test.
 | `MISSED` | An adversarial sample that should have been caught and was not. A regression. |
 | `FALSE POSITIVE` | A benign control the rules fired on. |
 | `GAP CLOSED` | A recorded gap that now fires. Good news; the bundle needs updating. |
+| `ERROR` | The sample could not be decoded or scanned. The error is printed below it. |
+
+The summary counts missed samples, false positives, closed gaps and errors
+separately. A skipped engine has no sample results; JSON reports the reason in
+its `skipped` field.
 
 ## Known gaps are recorded, not hidden
 
@@ -52,8 +64,21 @@ CSM ships two rule sets, and the command reports each separately:
 
 - `realtime`, the YAML rules the real-time watchers use.
 - `yara`, the YARA-X rules used by scheduled and email scanning. Present only in
-  builds compiled with YARA-X; a build without it reports only the first engine
-  rather than reporting every sample as missed.
+  builds compiled with YARA-X; a build without it reports `SKIPPED` with a reason.
+  A compiled engine whose rules cannot load fails the command.
 
-The same bundle runs in CI against both rule sets, so a rule edit that loses a
-sample fails the pipeline instead of being discovered on a customer's server.
+The regular CI test job runs the realtime gate. The required `test:production`
+job runs `scripts/production-tests.sh portable`, which includes all packages
+with the `yara,journal,bpf` tags and the pinned YARA-X library, so it runs the
+YARA bundle gate too. Tagged builds and lint alone do not execute that test.
+
+To measure the bundle locally, install PHP CLI for the fixture validity check,
+then run:
+
+```bash
+go test -count=1 ./internal/selftest
+go test -count=1 -tags yara ./internal/selftest
+```
+
+The second command requires the pinned YARA-X library. The untagged command
+does not measure YARA detection.
