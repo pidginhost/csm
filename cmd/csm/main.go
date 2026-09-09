@@ -298,11 +298,23 @@ func prepareDaemonState(cfg *config.Config, legacyStateDir string) (bool, *state
 	return migrated, lock, nil
 }
 
+// initDaemonPlatform installs the operator's web_server: overrides and only
+// then initialises Sentry. The order is the point: Sentry tags its scope with
+// platform.Detect(), which caches the detection for the whole process, and a
+// detection cached before the overrides silently pins the probe's (possibly
+// wrong) webserver and log paths for every watcher. The error, if any, is
+// Sentry's; the overrides report their own failure.
+func initDaemonPlatform(cfg *config.Config, version, buildHash string) error {
+	daemon.InstallPlatformOverrides(cfg)
+	return obs.Init(cfg, version, buildHash)
+}
+
 func runDaemon() {
 	cfg := loadConfigLite()
 
-	// Initialize Sentry before any goroutines spawn. No-op if disabled.
-	if err := obs.Init(cfg, Version, BuildHash); err != nil {
+	// Platform overrides first, then Sentry, before any goroutines spawn.
+	// Sentry is a no-op if disabled; see initDaemonPlatform for the order.
+	if err := initDaemonPlatform(cfg, Version, BuildHash); err != nil {
 		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", err)
 	}
 
@@ -330,12 +342,6 @@ func runDaemon() {
 	if hasErrors {
 		fatal(1, "Daemon startup aborted due to config errors\n")
 	}
-
-	// The operator's web_server: overrides must be in force before anything
-	// detects the platform; the snippet refresh below is the first such
-	// call, and a detection cached without them would silently pin the
-	// probe's (possibly wrong) webserver and log paths for the whole run.
-	daemon.InstallPlatformOverrides(cfg)
 
 	// Binary-swap upgrades never re-run the installer, so a stale challenge
 	// snippet survives until it breaks webserver reloads host-wide.
