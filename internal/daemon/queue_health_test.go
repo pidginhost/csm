@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -140,5 +141,65 @@ func TestQueueHealthHeldOverflowAndShutdownAccounting(t *testing.T) {
 	_, total := d.store.ReadHistory(1, 0)
 	if total != alertHoldMaxBatch {
 		t.Fatalf("shutdown persisted %d findings, want %d", total, alertHoldMaxBatch)
+	}
+}
+
+func TestQueueHealthCanceledBatchesCountEveryAbandonedFinding(t *testing.T) {
+	findings := []alert.Finding{
+		{Check: "first", Severity: alert.Critical},
+		{Check: "second", Severity: alert.High},
+		{Check: "third", Severity: alert.Critical},
+	}
+	for _, producer := range []string{"scan", "pam", "mail", "auth_backend"} {
+		for _, accepted := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/accepted_%d", producer, accepted), func(t *testing.T) {
+				d := queueLifecycleDaemon(t, 0)
+				var consumed chan struct{}
+				if accepted == 0 {
+					close(d.stopCh)
+				} else {
+					consumed = make(chan struct{})
+					go func() {
+						defer close(consumed)
+						f := <-d.alertCh
+						alert.StartQueued(f)
+						alert.FinishQueued([]alert.Finding{f})
+						close(d.stopCh)
+					}()
+				}
+				batchSize := 3
+				switch producer {
+				case "scan":
+					batch := append([]alert.Finding{findings[0], {Check: "perf_wp_cron", Severity: alert.Warning}}, findings[1:]...)
+					d.enqueueScanAlertsWithin(batch, "canceled test scan", time.Hour)
+				case "pam":
+					p := &PAMListener{alertCh: d.alertCh, stopCh: d.stopCh}
+					p.emit(findings)
+				case "mail":
+					if d.dispatchMailLogLine(maillog.Line{}, func(string, *config.Config) []alert.Finding { return findings }) {
+						t.Fatal("canceled mail batch reported success")
+					}
+				case "auth_backend":
+					fixture := newHealthFixture(t, true, 0, time.Minute, 1)
+					fixture.healthy = false
+					d.authBackend = fixture.h
+					if d.emitAuthBackendFindings() {
+						t.Fatal("canceled auth backend batch reported success")
+					}
+					if fixture.restarts != 1 {
+						t.Fatalf("expected a degradation and a restart finding, restarts=%d", fixture.restarts)
+					}
+					batchSize = 2
+				}
+				if consumed != nil {
+					<-consumed
+				}
+				wantDropped := batchSize - accepted
+				got := d.alertQueue.Snapshot(time.Now())
+				if got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != uint64(wantDropped) || got.RecentDrops != uint64(wantDropped) {
+					t.Fatalf("canceled batch accounting = %+v; want no pending work and %d abandoned findings", got, wantDropped)
+				}
+			})
+		}
 	}
 }

@@ -102,6 +102,8 @@ capacity, running work, cumulative losses, losses during the last minute,
 the oldest waiting item's age and the oldest running item's processing time.
 Waiting work includes producers blocked on admission. Ingest work remains
 running while the dispatcher holds or processes its batch, including startup.
+Loss totals include the undelivered tail of a batch canceled during shutdown;
+scan warnings intentionally excluded from alerts do not count as lost work.
 Kernel rows (`fanotify.kernel` and `spool.kernel`) currently count overflow
 records, not the unknown number of lost events; their zero depth, capacity
 and lag fields do not measure kernel occupancy.

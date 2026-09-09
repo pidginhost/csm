@@ -943,13 +943,14 @@ func (d *Daemon) Run() error {
 			defer d.wg.Done()
 			cfg := d.currentCfg()
 			retro := ScanEximHistoryForCloudRelay(cfg, "", time.Now(), 24*time.Hour)
-			for _, f := range retro {
+			for i, f := range retro {
 				// Enqueue the finding FIRST; only after it is
 				// accepted by the dispatcher do we trigger the
 				// account-suspend side-effect. This prevents a
 				// silent mailbox suspension if the daemon begins
 				// shutting down between these two operations.
 				if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+					alert.RecordQueueLoss(d.alertCh, uint64(len(retro[i+1:])))
 					return
 				}
 				sender := extractSenderFromCloudRelayMessage(f.Message)
@@ -1639,17 +1640,18 @@ func (d *Daemon) enqueueScanAlertsWithin(findings []alert.Finding, label string,
 			continue
 		}
 		err := alert.EnqueueWithin(d.alertCh, f, d.stopCh, timeout)
-		if errors.Is(err, alert.ErrQueueStopped) {
-			return
+		if err == nil {
+			continue
 		}
+		remaining := countAlertableScanFindings(findings[i+1:])
+		// EnqueueWithin already counted the rejected send, including shutdown.
+		alert.RecordQueueLoss(d.alertCh, uint64(remaining)) // #nosec G115 -- countAlertableScanFindings returns a nonnegative count bounded by the slice length.
+		dropped := remaining + 1
+		atomic.AddInt64(&d.droppedAlerts, int64(dropped))
 		if errors.Is(err, alert.ErrQueueTimeout) {
-			dropped := countAlertableScanFindings(findings[i:])
-			// EnqueueWithin already counted the finding whose send timed out.
-			alert.RecordQueueLoss(d.alertCh, uint64(dropped-1)) // #nosec G115 -- the current alertable finding makes dropped at least one, bounded by len(findings).
-			atomic.AddInt64(&d.droppedAlerts, int64(dropped))
 			fmt.Fprintf(os.Stderr, "[%s] alert channel jammed for %s, dropping %d remaining %s findings (first: %s)\n", ts(), timeout, dropped, label, f.Check)
-			return
 		}
+		return
 	}
 }
 
@@ -2273,8 +2275,10 @@ func (d *Daemon) emitAuthBackendFindings() bool {
 	if d.authBackend == nil {
 		return true
 	}
-	for _, f := range d.authBackend.Observe() {
+	findings := d.authBackend.Observe()
+	for i, f := range findings {
 		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false
 		}
 	}
@@ -2306,8 +2310,9 @@ func (d *Daemon) handleMailLogSourceRestored() {
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) bool {
 	findings := handler(line.Message, d.currentCfg())
-	for _, f := range findings {
+	for i, f := range findings {
 		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false
 		}
 	}

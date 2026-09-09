@@ -257,8 +257,9 @@ func (p *PAMListener) processEvent(line string) {
 // across that send would wedge recordFailure, clearFailures, and the cleanup
 // loop, letting failure trackers grow without bound.
 func (p *PAMListener) emit(findings []alert.Finding) {
-	for _, f := range findings {
+	for i, f := range findings {
 		if !alert.Enqueue(p.alertCh, f, p.stopCh) {
+			alert.RecordQueueLoss(p.alertCh, uint64(len(findings[i+1:])))
 			// Shutting down and the dispatcher has stopped draining;
 			// drop the remaining findings rather than leak this
 			// goroutine. A nil stopCh (hand-constructed listener)
