@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.36.0] - 2026-09-09
+
+### Highlights
+
+- `mode: observe` turns CSM into a detection-only sensor. A config that still enables a state-changing subsystem is now refused at load, so check yours before upgrading.
+- A new action log and `csm actions` record what CSM did to the host, including the digest of a changed file before and after and the command that reverses it.
+- `csm privileges` and `csm selftest` report what CSM needs root for and what the installed rules actually catch and miss.
+- The self-deleting-dropper detector no longer floods on plugin scratch files. One account was producing over a thousand warnings in two days.
+- Findings that previously carried no time now carry one, so history, incidents and alerts sort correctly and finding ids stop colliding.
+- On systemd 239 (EL8, CloudLinux 8) the installer stops writing the directives that host rejects, and five syscall deny groups the unit always meant to apply now actually apply.
+- An upgrade health-checks the new daemon and rolls back when it fails. Nightly automatic upgrades ship switched off.
+- Cross-account correlation now has an explicit per-check policy and resolves the owning account, so an eligible finding is counted instead of quietly dropped.
+
 ### Added
 
 - `csm selftest` scans adversarial samples and benign controls, reporting what the installed rules catch and miss without reading account data. The same bundle gates both rule sets in CI.
@@ -21,47 +34,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
-- The self-deleting-dropper detector no longer floods on plugin scratch files: an empty guard file removed moments after it is written is no longer treated as unreadable content, and a PHP file whose first statement stops the interpreter is recognized as data. One account produced over a thousand warnings from two plugins in two days.
+
+#### Realtime detection and rules
+
+- The self-deleting-dropper detector no longer floods on plugin scratch files: an empty guard file that a plugin creates and deletes under an upload directory is no longer treated as unreadable content, and a PHP file whose first statement stops the interpreter is recognized as data. One plugin produced hundreds of these alerts a day on a busy host, enough to raise a false account-compromise incident.
 - Legacy callback checks no longer mistake quoted data, comments or interpolated strings for executable input. Simple array lookups, helper calls and prefixed dynamic bodies remain covered.
 - Realtime signatures no longer report socket wrappers, HTTP request fixtures or ordinary legacy callbacks as backdoors. Callback detection now ties suspicious input to the generated code instead of nearby documentation or unrelated calls. A routine plugin update raised two critical alerts on a clean site.
+- A staged WordPress core or plugin update is now checked against the official wordpress.org checksums instead of trusting the directory name: stock files stay silent, a file the official package does not ship gets its own warning even after WordPress has moved it into place, and a package with no checksum source raises one warning for the staging directory. Small updates no longer produce one warning per file because WordPress finished moving the old plugin out before real-time scanning looked for it.
+
+#### Correlation and incidents
+
+- The correlation policy table in the incidents documentation is generated from the check registry and a test fails when it is stale. Regeneration preserves surrounding text and marker line endings; checks also work with trimmed build paths.
+- Cross-account correlation initializes host detection before updating active findings, so a slow platform probe does not block readers of the current state.
+- Every check now carries an explicit cross-account correlation policy with a stated reason when it is excluded, and a test refuses a new check that has none. Two file-index finding names that older releases emitted are registered again so a completed scan can finally clear them from the active list.
+
+#### Findings and history
+
+- Findings raised without a time (suspicious mail logins, sensitive file writes, mail AV degradation, YARA worker crashes) now carry the moment the daemon received them in history, incidents, alerts and the audit log, instead of the zero time that sorted before every real event and collided finding ids.
+
+#### Firewall and blocking
+
+- Destination-scoped outbound rules now handle IPv4-mapped subnets correctly. Lockout warnings remain visible when an exception cannot cover the connection's address family or has invalid ports.
+- Clearing a local threat score now handles equivalent stored IP address spellings and concurrent requests correctly, including overlapping saves. Extra command arguments are rejected before any record is cleared.
+
+#### Reputation and address lookups
+
+- Address lookups retain available network details even when country data is missing or comes from the country-block store.
+- Looking up an address now reports the network and organisation it belongs to. That database was already being opened and its answer discarded.
+- The attack database no longer reads or writes state files, including event history used for statistics, when it has no configured directory. It previously resolved to a relative path and used whatever directory the process was started from.
+
+#### Upgrades and packaging
+
+- The installer no longer writes the three sandbox directives that systemd 239 (EL8, CloudLinux 8) rejects at every start; it says which were left out. Newer systemd keeps the full unit.
+- An upgrade now confirms the new daemon is actually working before keeping it. A daemon that stops or fails health diagnostics triggers rollback.
+- Upgrades now stop an unhealthy daemon before restoring the previous release, and reject invalid health-check wait settings. Failed nightly upgrades also notify root through cron mail.
+
+#### Service lifecycle
+
+- Service shutdown now lets the daemon stop its workers in order, closing a race that could still report an orderly restart as a worker crash.
+- A normal CSM restart no longer reports the YARA worker as crashed. The worker is stopped along with the daemon, and that orderly stop was raising a critical alert every time the service was restarted.
+
+#### Diagnostics and CLI
+
 - Detection self-tests now fail on incomplete rule loads, scan errors and empty input, and explicitly report unavailable engines. The obfuscated sample now uses a callable PHP function, and error details and newly closed gaps appear in the text report.
 - Correct the privilege inventory to describe actual kernel access, writes and disable controls, including operations with no config switch. Sandbox checks now reject empty or unrelated claims, and the service no longer grants write access to read-only mail policies.
 - Inventory exports now report output failures in every format, so a failed write no longer looks successful.
 - Doctor reports the running posture and warns when a configured mode change still needs a restart.
-- Findings raised without a time (suspicious mail logins, sensitive file writes, mail AV degradation, YARA worker crashes) now carry the moment the daemon received them in history, incidents, alerts and the audit log, instead of the zero time that sorted before every real event and collided finding ids.
-- The operator's web server override in the configuration is applied before crash reporting starts. Crash reporting tags its events with the detected platform, and on a host with it enabled that detection ran first, so the override was silently ignored at every daemon start and log watchers followed the probe instead of the configuration.
-- The installer no longer writes the three sandbox directives that systemd 239 (EL8, CloudLinux 8) rejects at every start; it says which were left out. Newer systemd keeps the full unit.
 - Doctor now names the CageFS cages that lack the PHP Shield event mount and gives the per-account remount command, instead of a count that pointed at every cage. An account it cannot resolve stays visible by uid, with a note to resolve the name first rather than an invalid command.
-- The correlation policy table in the incidents documentation is generated from the check registry and a test fails when it is stale. Regeneration preserves surrounding text and marker line endings; checks also work with trimmed build paths.
-- The manual, automatic and full-scan quarantine sets and the attack database mapping are declared once each and tested against the check registry, so a renamed or never-emitted check name cannot sit inert in a response table. Three never-emitted names are removed: one dropper name from every quarantine set, and the two WAF block names the attack database listed, which means WAF blocks have never contributed to local reputation scoring.
-- Cross-account correlation initializes host detection before updating active findings, so a slow platform probe does not block readers of the current state.
+- The PHP relay guard now says why it is inactive and which setting turns it on, instead of reporting itself as unimplemented.
+
+#### Corpus and test coverage
+
 - Clean-corpus metadata tests now work with trimmed build paths and check that invalid manifests leave existing files untouched.
 - The list of supported content management systems is now declared once and tested against the taint analyzer's path knowledge and the database scanners. Tests reject incomplete or duplicate declarations; clean-corpus coverage remains separate.
-- Every check now carries an explicit cross-account correlation policy with a stated reason when it is excluded, and a test refuses a new check that has none. Two file-index finding names that older releases emitted are registered again so a completed scan can finally clear them from the active list.
-- Destination-scoped outbound rules now handle IPv4-mapped subnets correctly. Lockout warnings remain visible when an exception cannot cover the connection's address family or has invalid ports.
-- An upgrade now confirms the new daemon is actually working before keeping it. A daemon that stops or fails health diagnostics triggers rollback.
-- Upgrades now stop an unhealthy daemon before restoring the previous release, and reject invalid health-check wait settings. Failed nightly upgrades also notify root through cron mail.
-- Address lookups retain available network details even when country data is missing or comes from the country-block store.
-- Service shutdown now lets the daemon stop its workers in order, closing a race that could still report an orderly restart as a worker crash.
-- Looking up an address now reports the network and organisation it belongs to. That database was already being opened and its answer discarded.
-- The PHP relay guard now says why it is inactive and which setting turns it on, instead of reporting itself as unimplemented.
-- Empty guard files that plugins create and delete under upload directories are no longer reported as self-deleting droppers. One plugin produced hundreds of these alerts a day on a busy host, and they were enough to raise a false account-compromise incident.
-- Five of the six syscall groups the service unit meant to deny were silently discarded by systemd, so module loading, mounting and raw I/O were never blocked. The unit read as hardened while the hardening was absent.
-- A normal CSM restart no longer reports the YARA worker as crashed. The worker is stopped along with the daemon, and that orderly stop was raising a critical alert every time the service was restarted.
-- Clearing a local threat score now handles equivalent stored IP address spellings and concurrent requests correctly, including overlapping saves. Extra command arguments are rejected before any record is cleared.
-- The attack database no longer reads or writes state files, including event history used for statistics, when it has no configured directory. It previously resolved to a relative path and used whatever directory the process was started from.
-- A staged WordPress core or plugin update is now checked against the official wordpress.org checksums instead of trusting the directory name: stock files stay silent, a file the official package does not ship gets its own warning even after WordPress has moved it into place, and a package with no checksum source raises one warning for the staging directory. Small updates no longer produce one warning per file because WordPress finished moving the old plugin out before real-time scanning looked for it.
 
 ### Security
 
-- Dropper filtering now preserves evidence of concurrent writes and executable-mode changes, and refuses to exempt a PHP file whose unreachable tail could be decoded back into source.
+- Self-deleting dropper detection now requires conclusive content evidence before suppressing a finding: it handles separate file-creation events, preserves evidence of concurrent writes and executable-mode changes, and refuses to exempt a PHP file whose unreachable tail could be decoded back into source. Content and signature findings keep priority over content filtering.
 - Scheduled and realtime scans now share a simpler check for directly supplied dynamic callback bodies. Ordinary callback assertions and factory methods no longer raise critical alerts; complex generated code needs further analysis.
 - Action records now cover missed response and firewall paths, preserve recovery evidence after partial failures, and avoid duplicate block records. Evidence hashing no longer delays quarantine or follows symlinks, and broken log sinks cannot stop completed actions.
 - Observe mode now blocks independent kernel and mail actions, skips web and mail integration changes, and refuses startup with a pending firewall rollback.
 - Mail hold and governor alerts now require a local mail-server decision; a message subject or peer name can no longer forge one.
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
 - Cross-account correlation now follows the explicit per-check policy, and database, mail, crontab, process and realtime findings carry the owning account, resolved from the panel's domain owner table, a passwd home directly under an account root, or the file path. Service users, envelope senders and display labels never become an owner; an eligible finding without one is reported rather than counted.
-- Self-deleting dropper detection now requires conclusive content evidence before suppressing findings and handles separate file-creation events correctly. Content and signature findings retain priority over blank-file filtering.
+- Five of the six syscall groups the service unit meant to deny were silently discarded by systemd, so module loading, mounting and raw I/O were never blocked. The unit read as hardened while the hardening was absent.
+- The operator's web server override in the configuration is applied before crash reporting starts. Crash reporting tags its events with the detected platform, and on a host with it enabled that detection ran first, so the override was silently ignored at every daemon start and log watchers followed the probe instead of the configuration.
+- The manual, automatic and full-scan quarantine sets and the attack database mapping are declared once each and tested against the check registry, so a renamed or never-emitted check name cannot sit inert in a response table. Three never-emitted names are removed: one dropper name from every quarantine set, and the two WAF block names the attack database listed, which means WAF blocks have never contributed to local reputation scoring.
 
 ## [3.35.0] - 2026-09-08
 
