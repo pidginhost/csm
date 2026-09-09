@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/cilium/ebpf/link"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	bpfprog "github.com/pidginhost/csm/internal/daemon/exec_bpfprog"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type execBPF struct {
@@ -62,14 +64,18 @@ func startExecBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *config.C
 func (e *execBPF) Mode() string       { return "bpf" }
 func (e *execBPF) EventCount() uint64 { return e.count.Load() }
 
+func (e *execBPF) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return e.reader.QueueStatuses(now)
+}
+
 func (e *execBPF) Run(ctx context.Context) {
+	stopReader := e.reader.Start(ctx)
 	defer func() {
-		_ = e.reader.Close()
 		_ = e.link.Close()
+		stopReader()
 		_ = e.objs.Close()
 	}()
 
-	go e.reader.Run(ctx)
 	errorsCh := e.reader.Errors()
 	eventsCh := e.reader.Events()
 	pcCache, pcEnr := ProcessCtx()
@@ -83,22 +89,24 @@ func (e *execBPF) Run(ctx context.Context) {
 				continue
 			}
 			emitBPFReaderError(e.alertCh, "execution", err)
-		case ev, ok := <-eventsCh:
+		case work, ok := <-eventsCh:
 			if !ok {
 				return
 			}
-			e.count.Add(1)
-			req := processctxRequestFromExec(ev)
-			populateProcessCtxFromExec(pcCache, ev, req.StartedAt)
-			if ev.PID != 0 {
-				pcEnr.Enqueue(req)
-			}
-			for _, f := range checks.EvaluateExec(ev.UID, ev.PID, ev.Comm, ev.Filename, ev.ParentComm) {
-				attachProcessCtxToExecFinding(pcCache, &f, ev)
-				if !alert.TryEnqueue(e.alertCh, f) {
-					csmlog.Warn("exec bpf: alert channel full, dropping finding")
+			work.Process(func(ev ExecEvent) {
+				e.count.Add(1)
+				req := processctxRequestFromExec(ev)
+				populateProcessCtxFromExec(pcCache, ev, req.StartedAt)
+				if ev.PID != 0 {
+					pcEnr.Enqueue(req)
 				}
-			}
+				for _, f := range checks.EvaluateExec(ev.UID, ev.PID, ev.Comm, ev.Filename, ev.ParentComm) {
+					attachProcessCtxToExecFinding(pcCache, &f, ev)
+					if !alert.TryEnqueue(e.alertCh, f) {
+						csmlog.Warn("exec bpf: alert channel full, dropping finding")
+					}
+				}
+			})
 		}
 	}
 }

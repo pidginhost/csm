@@ -65,9 +65,10 @@ func TestKernelReaderDeliversEvents(t *testing.T) {
 	for range 3 {
 		select {
 		case event, ok := <-reader.Events():
-			if !ok || event != (tinyEvent{A: 42, B: 7}) {
+			if !ok || event.Value != (tinyEvent{A: 42, B: 7}) {
 				t.Fatalf("event=%+v open=%v", event, ok)
 			}
+			event.Process(func(tinyEvent) {})
 		case <-time.After(5 * time.Second):
 			t.Fatal("kernel event was not delivered")
 		}

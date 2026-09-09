@@ -87,6 +87,8 @@ type Daemon struct {
 	blockDigest      *blockdigest.Collector
 	alertCh          chan alert.Finding
 	alertQueue       *queuehealth.Tracker
+	queueSourcesMu   sync.RWMutex
+	queueSources     map[string]queueSource
 	// alertHold, while open, keeps the dispatcher draining alertCh into its
 	// batch without dispatching, so realtime producers (which never block)
 	// lose nothing during the synchronous startup baseline. Closed by
@@ -1030,6 +1032,7 @@ func (d *Daemon) Run() error {
 				"backend", mon.Mode(),
 				"state", kstate.String(),
 			)
+			d.registerBackendQueues("bpf.af_alg", mon)
 			d.wg.Add(1)
 			obs.Go("af-alg-listener", func() {
 				defer d.wg.Done()
@@ -1045,6 +1048,7 @@ func (d *Daemon) Run() error {
 	d.startPHPRelay()
 
 	if mon := StartConnectionTracker(d.alertCh, d.cfg); mon != nil {
+		d.registerBackendQueues("bpf.connection", mon)
 		csmlog.Info("connection_tracker: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("connection-tracker", func() {
@@ -1057,6 +1061,7 @@ func (d *Daemon) Run() error {
 	}
 
 	if mon := StartExecMonitor(d.alertCh, d.cfg); mon != nil {
+		d.registerBackendQueues("bpf.execution", mon)
 		csmlog.Info("exec_monitor: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("exec-monitor", func() {
@@ -1069,6 +1074,7 @@ func (d *Daemon) Run() error {
 	}
 
 	if mon := StartSensitiveFileMonitor(d.alertCh, d.cfg, d.store); mon != nil {
+		d.registerBackendQueues("bpf.sensitive_files", mon)
 		csmlog.Info("sensitive_files: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("sensitive-files", func() {

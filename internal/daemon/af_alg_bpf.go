@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	bpfprog "github.com/pidginhost/csm/internal/daemon/af_alg_bpfprog"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type afAlgBPF struct {
@@ -71,14 +72,18 @@ func tryStartBPFLSM(_ context.Context, alertCh chan<- alert.Finding, cfg *config
 func (a *afAlgBPF) Mode() string       { return "bpf-lsm" }
 func (a *afAlgBPF) EventCount() uint64 { return a.count.Load() }
 
+func (a *afAlgBPF) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return a.reader.QueueStatuses(now)
+}
+
 func (a *afAlgBPF) Run(ctx context.Context) {
+	stopReader := a.reader.Start(ctx)
 	defer func() {
-		_ = a.reader.Close()
 		_ = a.link.Close()
+		stopReader()
 		_ = a.objs.Close()
 	}()
 
-	go a.reader.Run(ctx)
 	errorsCh := a.reader.Errors()
 	eventsCh := a.reader.Events()
 	for {
@@ -91,12 +96,14 @@ func (a *afAlgBPF) Run(ctx context.Context) {
 				continue
 			}
 			emitBPFReaderError(a.alertCh, "AF_ALG", err)
-		case ev, ok := <-eventsCh:
+		case work, ok := <-eventsCh:
 			if !ok {
 				return
 			}
-			a.count.Add(1)
-			a.handle(ev)
+			work.Process(func(ev checks.AFAlgEvent) {
+				a.count.Add(1)
+				a.handle(ev)
+			})
 		}
 	}
 }

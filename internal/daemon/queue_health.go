@@ -2,12 +2,46 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/bpf"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
+
+type queueSource interface {
+	QueueStatuses(time.Time) map[string]queuehealth.Status
+}
+
+func (d *Daemon) registerBackendQueues(prefix string, backend bpf.Backend) {
+	if source, ok := backend.(queueSource); ok {
+		d.registerQueueSource(prefix, source)
+	}
+}
+
+func (d *Daemon) registerQueueSource(prefix string, source queueSource) {
+	d.queueSourcesMu.Lock()
+	defer d.queueSourcesMu.Unlock()
+	if d.queueSources == nil {
+		d.queueSources = make(map[string]queueSource)
+	}
+	d.queueSources[prefix] = source
+}
+
+func (d *Daemon) registeredQueueStatuses(now time.Time) map[string]queuehealth.Status {
+	d.queueSourcesMu.RLock()
+	sources := maps.Clone(d.queueSources)
+	d.queueSourcesMu.RUnlock()
+	statuses := make(map[string]queuehealth.Status)
+	for prefix, source := range sources {
+		for name, status := range source.QueueStatuses(now) {
+			statuses[prefix+"."+name] = status
+		}
+	}
+	return statuses
+}
 
 func (d *Daemon) setFileMonitor(fm *FileMonitor) {
 	d.fileMonitorMu.Lock()

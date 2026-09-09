@@ -240,6 +240,10 @@ yet. Dropper candidate and held-finding stages have separate bounds and health e
 including exhausted probes and shutdown losses. The remaining queues
 and the inventory completeness gate are still open.
 
+BPF userspace delivery also reports pressure, decoding loss, running consumers
+and unconsumed shutdown output. BPF kernel ring occupancy and reservation
+failures remain open alongside the other kernel queue measurements.
+
 A queue that silently sheds findings is the same failure as a table that
 silently narrows: healthy status, less protection.
 

@@ -14,6 +14,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // ringReader is the subset of *ringbuf.Reader that Reader depends on. It exists
@@ -24,16 +25,16 @@ type ringReader interface {
 }
 
 // Reader wraps cilium/ebpf's ringbuf.Reader with a per-feature decoder
-// callback and a typed Go channel. Each BPF feature defines its own event
+// callback and a tracked Go channel. Each BPF feature defines its own event
 // struct (CSMConnEvent, CSMExecEvent, etc.) plus a decode func, then loops
-// over Events() in its Run goroutine.
+// over Events() in its Run goroutine, processing each work item through Process.
 //
 // The decoder runs on the reader goroutine; keep it allocation-light. Slow
 // userspace work (allocating findings, IO) belongs in the consumer.
 type Reader[T any] struct {
 	rb        ringReader
 	decode    func([]byte) (T, error)
-	out       chan T
+	out       *queuehealth.Channel[T]
 	errs      chan error
 	count     atomic.Uint64
 	dropped   atomic.Uint64
@@ -57,14 +58,37 @@ func NewReader[T any](m *ebpf.Map, decode func([]byte) (T, error)) (*Reader[T], 
 	return &Reader[T]{
 		rb:     rb,
 		decode: decode,
-		out:    make(chan T, 256),
+		out:    queuehealth.NewChannel[T](256, time.Minute),
 		errs:   make(chan error, 1),
 	}, nil
 }
 
 // Events returns the channel that delivers decoded events. Closed when Run
 // returns (either ctx.Done() or rb.Close()).
-func (r *Reader[T]) Events() <-chan T { return r.out }
+func (r *Reader[T]) Events() <-chan queuehealth.Work[T] { return r.out.Items() }
+
+// QueueStatuses includes decoder failures and abandoned output, in addition
+// to the full-consumer-queue losses counted by DroppedCount.
+func (r *Reader[T]) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return map[string]queuehealth.Status{"output": r.out.Snapshot(now)}
+}
+
+// Start returns a stop function that joins the producer before discarding
+// unconsumed output. The owner stops consuming and detaches kernel producers
+// before calling it, and keeps the BPF maps alive until it returns.
+// Call once, instead of Run, for a reader owned by a backend consumer.
+func (r *Reader[T]) Start(ctx context.Context) func() {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(ctx)
+	}()
+	return func() {
+		_ = r.Close()
+		<-done
+		r.out.DiscardPending()
+	}
+}
 
 // Errors reports one unexpected read error per outage. Run keeps retrying;
 // a successful read resets the outage gate so a later failure is reported.
@@ -81,7 +105,7 @@ func (r *Reader[T]) DroppedCount() uint64 { return r.dropped.Load() }
 // Decoder errors are logged at warn level (do not stall the loop on a single
 // malformed record).
 func (r *Reader[T]) Run(ctx context.Context) {
-	defer close(r.out)
+	defer r.out.Close()
 	if r.errs != nil {
 		defer close(r.errs)
 	}
@@ -135,12 +159,12 @@ func (r *Reader[T]) Run(ctx context.Context) {
 		ev, err := r.decode(rec.RawSample)
 		if err != nil {
 			csmlog.Warn("bpf ringbuf decode error", "err", err, "len", len(rec.RawSample))
+			r.out.Lose(1)
 			continue
 		}
-		select {
-		case r.out <- ev:
+		if r.out.TrySend(ev) {
 			r.count.Add(1)
-		default:
+		} else {
 			dropped := r.dropped.Add(1)
 			if shouldLogDroppedEvent(dropped) {
 				csmlog.Warn("bpf ringbuf consumer back-pressure dropped events", "dropped_total", dropped, "events_delivered", r.count.Load())

@@ -121,6 +121,14 @@ Processing time starts when each batch leaves its waiting queue, independently
 of the timestamp used to decide which work is eligible.
 Retries and refreshed observations retain earlier eligibility, and exhausted
 probes, capacity refusals and unfinished shutdown work count as losses.
+When their BPF backends are active, `bpf.af_alg.output`,
+`bpf.connection.output`, `bpf.execution.output` and
+`bpf.sensitive_files.output` report the 256-slot userspace delivery queues.
+Their losses include decoding failures, admission refusals, consumer panics
+and buffered output left after the reader stops. A received event remains
+running until evaluation and delivery to the finding queue finish, including
+events intentionally filtered during evaluation. Kernel ring occupancy and
+reservation failures are separate from these userspace measurements.
 Kernel rows (`fanotify.kernel` and `spool.kernel`) currently count overflow
 records, not the unknown number of lost events; their zero depth, capacity
 and lag fields do not measure kernel occupancy.

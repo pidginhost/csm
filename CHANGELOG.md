@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- BPF event delivery now reports queue pressure, decoding failures and stalled consumers through status and doctor. Shutdown counts buffered events left unprocessed.
+
 - Status and doctor now report overdue dropper probes, delayed findings and abandoned work.
 
 - Status and doctor now expose delayed or dropped package verification work. Repeated retries retain their original waiting time, and a stalled verifier remains visible while it holds a batch.

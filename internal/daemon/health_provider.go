@@ -28,7 +28,7 @@ func (d *Daemon) QueueStatuses() map[string]queuehealth.Status {
 }
 
 func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
-	out := make(map[string]queuehealth.Status)
+	out := d.registeredQueueStatuses(now)
 	if d.alertQueue != nil {
 		out["findings.ingest"] = d.alertQueue.Snapshot(now)
 	}
