@@ -41,14 +41,71 @@ rules:
 - `severity` - critical, high, or warning
 - `category` - webshell, backdoor, phishing, dropper, exploit
 - `file_types` - file extensions to match (or `["*"]` for all)
-- `patterns` - literal strings
-- `regexes` - regex patterns
+- `patterns` - case-insensitive literal strings
+- `regexes` - regex patterns, compiled case-insensitively
 - `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
 - `exclude_regexes` - regex patterns that suppress a match
-- `min_match` - minimum patterns that must match
-- `require_regex` - require at least one regex match in addition to `min_match`
+- `min_match` - minimum total number of matching literal and regex entries; each entry counts once
+- `require_regex` - require at least one regex among the matches counted toward `min_match`
 - `max_file_bytes` - skip this rule when the complete scanned file is larger than the byte limit; omitted or `0` is unbounded
 - `max_file_bytes_exempt_regexes` - high-confidence regexes that let the rule continue normal evaluation above `max_file_bytes`
+
+When a regex includes a literal listed in `patterns`, the same content can
+satisfy both entries. Use independent entries when a rule needs multiple pieces
+of evidence. The bundled HTTP tunnel rule requires both socket creation and a
+CONNECT request. The legacy PHP callback rule uses the same narrow signature in
+YAML and YARA-X: a direct function call with a quoted parameter list, a variable,
+`null`, a simple array lookup or a short helper call as its first argument.
+The second argument is a decoder or request lookup, optionally preceded by one
+concatenated literal. Quoted lists can contain commas, semicolons and escaped
+quotes. Array indices accept a single quoted key or an unquoted scalar. Helper
+arguments accept at most one literal among unquoted scalar operands, including
+`implode(',', $args)`. These bounded forms consume quoted operands whole and
+exclude comments, interpolation and nested expressions, so delimiters inside
+data cannot supply the body-source evidence. Double-quoted array keys, helper
+literals and body prefixes must escape dollar signs; unescaped dollars require
+interpolation analysis.
+Shared positive and benign fixtures check both engines. Generated socket and
+funchand wrappers and ordinary legacy callbacks stay silent under these rules.
+
+### Legacy callback parser follow-up
+
+The callback signature does not inspect quoted function bodies. Doing so needs
+PHP string decoding, tokenization and expression analysis: for example,
+`assert($x > 0)` is an ordinary boolean check, and `"eval($x)"` can be data.
+The rules scan source text, so they do not promise general PHP comment or string
+awareness, nor complete coverage of dynamically generated code.
+
+The following cases were covered by the expanded regex and are deliberately
+outside the narrowed signature. They remain acceptance cases for a parser
+follow-up, not claims of current detection by this rule:
+
+| Deferred case | Examples to restore |
+| --- | --- |
+| Constructed parameter lists | Concatenation, nested array indices, helper calls with multiple quoted operands, and `chr(100/(1+1))` as the first argument; only the bounded simple forms above are covered |
+| Comments inside constructed parameters | Comments in array indices or helper arguments, especially those containing closing delimiters or body-source names |
+| Interpolated parameter operands | Double-quoted array keys or helper operands containing unescaped dollars, including interpolation with nested quoted keys |
+| Comments between arguments | Block comments with embedded commas, and line comments before the body source |
+| Constructed body expressions | Grouped concatenation, parenthesized decoders and `trim(base64_decode($payload))`; a single literal concatenated onto request input is covered |
+| Interpolated bodies | A double-quoted body such as `"return {$_POST['code']};"`, or a concatenated double-quoted prefix containing unescaped dollars |
+| Literal executable bodies | `eval($x)` or string-capable `assert($x)`, with statements, strings or comments before them; both outer quote styles and escaped quotes |
+| Literal expression contexts | `return`, `or`, `do`, `case`, `include`, `include_once`, `require`, `require_once`, `clone`, `yield from`, comparisons, shifts and inequality before an execution sink |
+| Literal lexical edges | Global `assert`, comment backslashes before `*` or `*/`, and quoted operands before a comparison |
+| Outer call contexts | Calls immediately following a ternary colon, case-label colon or comparison operator |
+
+This work belongs in `internal/phptaint`, which already uses VKCOM/php-parser
+and records the second argument of `create_function` as a sink. Extend that
+analysis to decode and parse statically known callback bodies under its existing
+budgets, distinguish boolean assertions from string execution, and report
+unresolved dynamic bodies as analysis gaps. It currently feeds a separate
+scheduled check; it is not a post-filter for YAML or YARA. Realtime coverage
+would need explicit integration and latency tests, and standalone YARA would
+still have the narrower coverage.
+
+Acceptance requires restoring the deferred cases as positive parser fixtures,
+retaining the shared benign fixtures, checking both quote styles and comment
+forms, and passing the clean-corpus gate without new baseline entries. Do not
+expand another regex into a PHP tokenizer to recover these cases.
 
 ## YARA-X Rules (Optional)
 
@@ -99,7 +156,7 @@ the YARA one. Both gates require at least 5,000 non-empty files within the
 default scheduled scan size limit. Rule-load, traversal, and read failures fail
 the relevant run instead of counting as clean; YARA backend errors do too.
 
-The measured YARA baseline is empty. The YAML baseline records six rules that
+The measured YARA baseline is empty. The YAML baseline records rules that
 already fire on clean plugin and core code and are named in the realtime-rule
 porting backlog. Tighten a noisy rule rather than excluding paths or filenames.
 

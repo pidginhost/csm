@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
-
+- Legacy callback checks no longer mistake quoted data, comments or interpolated strings for executable input. Simple array lookups, helper calls and prefixed dynamic bodies remain covered.
+- Realtime signatures no longer report socket wrappers, HTTP request fixtures or ordinary legacy callbacks as backdoors. Callback detection now ties suspicious input to the generated code instead of nearby documentation or unrelated calls. A routine plugin update raised two critical alerts on a clean site.
 - Detection self-tests now fail on incomplete rule loads, scan errors and empty input, and explicitly report unavailable engines. The obfuscated sample now uses a callable PHP function, and error details and newly closed gaps appear in the text report.
 - Correct the privilege inventory to describe actual kernel access, writes and disable controls, including operations with no config switch. Sandbox checks now reject empty or unrelated claims, and the service no longer grants write access to read-only mail policies.
 - Inventory exports now report output failures in every format, so a failed write no longer looks successful.
@@ -52,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Scheduled and realtime scans now share a simpler check for directly supplied dynamic callback bodies. Ordinary callback assertions and factory methods no longer raise critical alerts; complex generated code needs further analysis.
 - Action records now cover missed response and firewall paths, preserve recovery evidence after partial failures, and avoid duplicate block records. Evidence hashing no longer delays quarantine or follows symlinks, and broken log sinks cannot stop completed actions.
 - Observe mode now blocks independent kernel and mail actions, skips web and mail integration changes, and refuses startup with a pending firewall rollback.
 - Mail hold and governor alerts now require a local mail-server decision; a message subject or peer name can no longer forge one.
