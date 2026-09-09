@@ -108,6 +108,14 @@ Loss totals include the undelivered tail of a batch canceled during shutdown;
 scan warnings intentionally excluded from alerts do not count as lost work.
 Recovered file and spool scanner panics count as lost scan work. The workers
 continue processing later events, but repeated failures still degrade health.
+`fanotify.reconcile` reports the recovery queue in directory tasks, with
+1,024 waiting slots. Repeated drops in a directory retain its original queue
+age. A detached scan batch remains running while new drops queue separately,
+including new work for a directory that is already being scanned.
+Eviction, work older than the recovery scan window, unreadable directories or
+candidate files, interrupted batches and unfinished shutdown work count as
+failed recovery tasks. An incomplete task may still have scanned some files;
+each directory task counts at most once.
 Staged package verification reserves capacity for its whole running batch.
 Its full-queue timer starts when admission fills the queue and continues while
 the verifier retains those slots, including between retries.
@@ -189,8 +197,9 @@ spool watcher also preserves it. Restarting the daemon resets the counters.
 Inspect worker errors and CPU, memory and I/O pressure when a queue degrades.
 Reduce competing bulk work and confirm the queue drains and recent losses
 stop. This surface currently covers finding delivery, file and spool kernel
-readers and scanners, staged package verification, dropper processing, BPF
-queues and mail-log delivery; other bounded queues remain in the roadmap.
+readers and scanners, recovery scans, staged package verification, dropper
+processing, BPF queues and mail-log delivery; other bounded queues remain in
+the roadmap.
 
 ## GeoIP
 

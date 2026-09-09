@@ -5,6 +5,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func TestReconcileDropsScansRecentWebshellInTrackedDir(t *testing.T) {
 	fm := &FileMonitor{
 		cfg:           &config.Config{},
 		alertCh:       ch,
-		reconcileDirs: make(map[string]time.Time),
+		reconcileDirs: make(map[string]reconcileDirectory),
 	}
 
 	// Simulate: handleEvent saw a drop for a path under this dir.
@@ -80,7 +81,7 @@ func TestReconcileDropsIgnoresStaleFiles(t *testing.T) {
 	fm := &FileMonitor{
 		cfg:           &config.Config{},
 		alertCh:       ch,
-		reconcileDirs: make(map[string]time.Time),
+		reconcileDirs: make(map[string]reconcileDirectory),
 	}
 	fm.recordDroppedDir(stalePath)
 	fm.reconcileDrops()
@@ -95,15 +96,19 @@ func TestReconcileDropsIgnoresStaleFiles(t *testing.T) {
 
 func TestRecordDroppedDirCapsMapSize(t *testing.T) {
 	fm := &FileMonitor{
-		reconcileDirs: make(map[string]time.Time),
+		fd:            -1,
+		reconcileDirs: make(map[string]reconcileDirectory),
 	}
-	// Flood well past the cap.
+	root := t.TempDir()
 	for i := 0; i < reconcileDirCap*3; i++ {
-		fm.recordDroppedDir(filepath.Join("/tmp", "b", "x"+time.Now().Format("150405.000000000"), "f.php"))
-		time.Sleep(50 * time.Microsecond)
+		fm.recordDroppedDir(filepath.Join(root, strconv.Itoa(i), "f.php"))
 	}
-	if len(fm.reconcileDirs) > reconcileDirCap {
-		t.Errorf("reconcileDirs size = %d, want <= %d", len(fm.reconcileDirs), reconcileDirCap)
+	if len(fm.reconcileDirs) != reconcileDirCap {
+		t.Fatalf("reconcileDirs size = %d, want %d", len(fm.reconcileDirs), reconcileDirCap)
+	}
+	got, exists := (&Daemon{fileMonitor: fm}).QueueStatuses()["fanotify.reconcile"]
+	if !exists || got.Depth != reconcileDirCap || got.Capacity != reconcileDirCap || got.DroppedTotal != 2*reconcileDirCap || got.Status != "degraded" {
+		t.Fatalf("discarded recovery directories are absent from health: exists=%v status=%+v", exists, got)
 	}
 }
 

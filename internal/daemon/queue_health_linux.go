@@ -11,6 +11,7 @@ import (
 func (fm *FileMonitor) initQueueHealth() {
 	fm.queueHealthOnce.Do(func() {
 		fm.analyzerHealth = queuehealth.New(cap(fm.analyzerCh), time.Minute)
+		fm.reconcileHealth = queuehealth.New(reconcileDirCap, time.Minute)
 		fm.kernelQueueHealth = queuehealth.New(0, time.Minute)
 		fm.kernelQueue = newNotificationQueue(fanotifyDescriptor(fm.fd), fm.kernelQueueHealth, queuehealth.New(1, time.Minute))
 	})
@@ -19,10 +20,13 @@ func (fm *FileMonitor) initQueueHealth() {
 func (fm *FileMonitor) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	fm.initQueueHealth()
 	kernel, reader := fm.kernelQueue.snapshot(time.Now)
+	reconcile := fm.reconcileHealth.Snapshot(now)
+	reconcile.DepthUnit = "directories"
 	statuses := map[string]queuehealth.Status{
 		"fanotify.analyzer":        fm.analyzerHealth.Snapshot(now),
 		"fanotify.kernel":          kernel,
 		"fanotify.reader":          reader,
+		"fanotify.reconcile":       reconcile,
 		"fanotify.staged_packages": fm.stagedPackages().snapshot(now),
 	}
 	if fm.dropper != nil {

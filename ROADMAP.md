@@ -254,6 +254,10 @@ The selected mail-log reader now reports delivery depth, stalled consumers
 and known lost records, retaining its counters across reader replacements
 and changes between file and journal sources. Other log readers remain open.
 
+Recovery scans also report waiting directories, running batches and failed
+work, including eviction, expiration and unfinished shutdown tasks. Repeated
+drops do not reset a directory's original waiting age.
+
 A queue that silently sheds findings is the same failure as a table that
 silently narrows: healthy status, less protection.
 

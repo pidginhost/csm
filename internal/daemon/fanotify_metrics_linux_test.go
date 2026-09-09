@@ -3,10 +3,10 @@
 package daemon
 
 import (
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -58,21 +58,20 @@ func TestFanotifyRegisterMetricsExposesExpectedNames(t *testing.T) {
 func TestFanotifyReconcileObservesHistogram(t *testing.T) {
 	ch := make(chan alert.Finding, 1)
 	fm := &FileMonitor{
-		cfg:           &config.Config{},
-		alertCh:       ch,
-		analyzerCh:    make(chan fileEvent, 4000),
-		reconcileDirs: map[string]time.Time{},
+		cfg:        &config.Config{},
+		alertCh:    ch,
+		analyzerCh: make(chan fileEvent, 4000),
 	}
 	fm.registerMetrics()
 
 	emptyDir := t.TempDir()
-	fm.reconcileDirs[emptyDir] = time.Now()
+	fm.recordDroppedDir(filepath.Join(emptyDir, "candidate.php"))
 
 	before := readHistogramCount(scrapeBody(t), "csm_fanotify_reconcile_latency_seconds")
 	fm.reconcileDrops()
 	after := readHistogramCount(scrapeBody(t), "csm_fanotify_reconcile_latency_seconds")
 
-	if after-before < 1 {
+	if after-before != 1 {
 		t.Errorf("csm_fanotify_reconcile_latency_seconds_count did not advance: before=%g after=%g", before, after)
 	}
 }

@@ -153,6 +153,7 @@ type FileMonitor struct {
 	analyzerCh        chan fileEvent
 	queueHealthOnce   sync.Once
 	analyzerHealth    *queuehealth.Tracker
+	reconcileHealth   *queuehealth.Tracker
 	kernelQueueHealth *queuehealth.Tracker
 	kernelQueue       *notificationQueue
 
@@ -211,7 +212,7 @@ type FileMonitor struct {
 	// reconcileWindow so bulk filesystem operations (unzip, backup restore)
 	// do not blind detection to actual threats landing in the storm.
 	reconcileMu   sync.Mutex
-	reconcileDirs map[string]time.Time
+	reconcileDirs map[string]reconcileDirectory
 
 	// reconcileSig is a buffered cap-1 channel that lets sendEvent's drop
 	// branch nudge overflowReporter to run reconcileDrops out of cycle
@@ -453,7 +454,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		analyzerCh:          make(chan fileEvent, analyzerChBufferSize),
 		pipeFds:             pipeFds,
 		stopCh:              make(chan struct{}),
-		reconcileDirs:       make(map[string]time.Time),
+		reconcileDirs:       make(map[string]reconcileDirectory),
 		reconcileSig:        make(chan struct{}, 1),
 		webRootPatterns:     webRootPatterns,
 		accountRootPatterns: checks.AccountHomePatterns(),
@@ -732,6 +733,7 @@ func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
 		close(fm.analyzerCh)
 		fm.wg.Wait()
+		fm.discardReconcilePending()
 		fm.stagedPackages().discardPending(time.Now())
 		if fm.dropper != nil {
 			fm.dropper.tr.discardPending(time.Now())
@@ -830,92 +832,6 @@ func normalizeFanotifyEventPath(path string) string {
 // logic stays testable from a cross-platform test file.
 func (fm *FileMonitor) maybeTriggerEagerReconcile(droppedSoFar int64) {
 	signalEagerReconcile(fm.reconcileSig, droppedSoFar, eagerReconcileDropThreshold)
-}
-
-// recordDroppedDir registers a directory whose file had its fanotify event
-// dropped, capped at reconcileDirCap entries (oldest evicted).
-func (fm *FileMonitor) recordDroppedDir(path string) {
-	dir := filepath.Dir(path)
-	fm.reconcileMu.Lock()
-	defer fm.reconcileMu.Unlock()
-	if fm.reconcileDirs == nil {
-		fm.reconcileDirs = make(map[string]time.Time)
-	}
-	fm.reconcileDirs[dir] = time.Now()
-	if len(fm.reconcileDirs) <= reconcileDirCap {
-		return
-	}
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for k, t := range fm.reconcileDirs {
-		if first || t.Before(oldestTime) {
-			oldestKey, oldestTime, first = k, t, false
-		}
-	}
-	delete(fm.reconcileDirs, oldestKey)
-}
-
-// reconcileDrops walks every directory with a recent dropped event and
-// analyses any interesting file modified within reconcileWindow. Converts
-// lost events into delayed events rather than invisible ones. Called from
-// overflowReporter after the minute-granularity overflow alert.
-func (fm *FileMonitor) reconcileDrops() {
-	fm.reconcileMu.Lock()
-	dirs := fm.reconcileDirs
-	fm.reconcileDirs = make(map[string]time.Time)
-	fm.reconcileMu.Unlock()
-
-	if len(dirs) == 0 {
-		return
-	}
-
-	if fanotifyReconcileDur != nil {
-		start := time.Now()
-		defer func() {
-			fanotifyReconcileDur.Observe(time.Since(start).Seconds())
-		}()
-	}
-
-	cutoff := time.Now().Add(-reconcileWindow)
-	for dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			if info.ModTime().Before(cutoff) {
-				continue
-			}
-			fullPath := filepath.Join(dir, e.Name())
-			if !fm.isInteresting(fullPath) {
-				continue
-			}
-			// Open+analyse+close wrapped so a panic in analyzeFile does not
-			// leak the fd; otherwise `defer f.Close()` in a loop body would
-			// defer until reconcileDrops returns, accumulating fds across
-			// every entry in every tracked dir.
-			func() {
-				// #nosec G304 -- fullPath is a directory entry under a dir
-				// the kernel already notified us about; reconcile owns
-				// reopening because the original fanotify fd is gone.
-				f, err := os.Open(fullPath)
-				if err != nil {
-					return
-				}
-				defer func() { _ = f.Close() }()
-				// #nosec G115 -- POSIX fd fits in int32 (rlimit caps fds at ~1024).
-				fm.analyzeFile(fileEvent{path: fullPath, fd: int(f.Fd())})
-			}()
-		}
-	}
 }
 
 // isInteresting is the fast filter - zero I/O, pure string matching.
