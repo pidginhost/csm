@@ -74,6 +74,12 @@ func main() {
 
 	cmd := os.Args[1]
 
+	// Operator commands change host state too, so they record to the same
+	// stream. The daemon installs its own sink with the daemon actor.
+	if cmd != "daemon" {
+		installCLIActionLog()
+	}
+
 	switch cmd {
 	case "version":
 		fmt.Printf("csm %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
@@ -147,6 +153,8 @@ func main() {
 		runSystemdRoots()
 	case "privileges":
 		runPrivileges()
+	case "actions":
+		runActions()
 	case "verify-release":
 		runVerifyRelease()
 	case "backup":
@@ -213,6 +221,7 @@ Commands:
   disable       Disable optional features (--php-shield)
   systemd-roots Print a validated systemd drop-in for account write access
   privileges    Print what CSM does that needs privilege, and the key that stops each one (--json, --markdown)
+  actions       Print what CSM did to this host (--since, --op, --limit, --json)
   doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   forensic-snapshot <account> --out <archive.tar.gz>  Evidence archive for incident handoff (triggers/admins/sessions/mtimes)

@@ -46,6 +46,7 @@
 - [API Reference](api.md)
 - [Metrics (Prometheus)](metrics.md)
 - [Audit Log (SIEM)](audit-log.md)
+- [Action Log](action-log.md)
 
 # Development
 

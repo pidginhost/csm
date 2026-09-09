@@ -106,6 +106,10 @@ type Op struct {
 	// DisableReason explains why an automatic operation cannot be stopped
 	// through config. It must not invent a switch that only stops some callers.
 	DisableReason string
+	// Audited reports whether the operation writes a record to the action
+	// log. False is not a claim that the operation is silent, only that it is
+	// not yet on that stream; the daemon log still carries it.
+	Audited bool
 	// WithoutPrivilege says what an operator loses by withholding the
 	// privilege, so the matrix reads as a decision, not a demand.
 	WithoutPrivilege string
@@ -167,8 +171,8 @@ func (o Op) DisableInstruction() string {
 // Markdown renders the inventory as the table shipped in the docs.
 func Markdown() string {
 	var b strings.Builder
-	b.WriteString("| Operation | Needs | Trigger | Writes | Turn it off | Without the privilege |\n")
-	b.WriteString("| --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("| Operation | Needs | Trigger | Writes | Turn it off | Action record | Without the privilege |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, op := range Operations() {
 		privs := make([]string, 0, len(op.Privileges))
 		for _, p := range op.Privileges {
@@ -185,8 +189,12 @@ func Markdown() string {
 		if op.DisableKey != "" {
 			off = "`" + off + "`"
 		}
-		fmt.Fprintf(&b, "| `%s`<br>%s | %s | %s | %s | %s | %s |\n",
-			op.ID, op.Summary, strings.Join(privs, ", "), op.Trigger, writes, off, op.WithoutPrivilege)
+		audited := "no"
+		if op.Audited {
+			audited = "yes"
+		}
+		fmt.Fprintf(&b, "| `%s`<br>%s | %s | %s | %s | %s | %s | %s |\n",
+			op.ID, op.Summary, strings.Join(privs, ", "), op.Trigger, writes, off, audited, op.WithoutPrivilege)
 	}
 	return b.String()
 }

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"unicode"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"golang.org/x/sys/unix"
 )
 
@@ -70,6 +71,39 @@ var cleanMaxFileSize int64 = 8 << 20
 // 3. Append injection - remove malicious code after closing ?> or end of PSR-12 file
 // 4. Inline eval injection - remove eval(base64_decode(...)) single-line injections
 func CleanInfectedFile(path string) CleanResult {
+	before := actionlog.Stat(path)
+	result := cleanInfectedFile(path)
+	recordCleanAction(path, before, result)
+	return result
+}
+
+// recordCleanAction writes the unified action record for one surgical clean.
+// Both digests are recorded: a reviewer comparing them can see the file
+// changed, and the pre-clean backup is what puts the old content back.
+func recordCleanAction(path string, before *actionlog.FileState, result CleanResult) {
+	rec := actionlog.Record{
+		Op:     "respond.clean_file",
+		Actor:  actionlog.DefaultActor(),
+		Target: path,
+		Reason: strings.Join(result.Removals, "; "),
+		Before: before,
+		After:  actionlog.Stat(path),
+		Result: actionlog.Applied,
+	}
+	switch {
+	case result.Cleaned:
+		rec.Undo = "csm restore " + result.BackupPath
+	case result.Error != "":
+		// Nothing was written, so the file is as it was. "Refused" says CSM
+		// looked and declined; "failed" would claim an attempt that damaged
+		// nothing but might have.
+		rec.Result = actionlog.Refused
+		rec.Error = result.Error
+	}
+	actionlog.Write(rec)
+}
+
+func cleanInfectedFile(path string) CleanResult {
 	result := CleanResult{Path: path}
 
 	target, err := openCleanTarget(path)

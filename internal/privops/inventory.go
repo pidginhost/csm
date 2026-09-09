@@ -276,6 +276,7 @@ var operations = []Op{
 	// --- Automatic response ---
 	{
 		ID:               "respond.quarantine_file",
+		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "move a confirmed malicious file out of an account tree into CSM's quarantine, preserving owner, permissions and mtime",
 		Privileges:       []Privilege{Root},
@@ -287,6 +288,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.clean_file",
+		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "strip injected code from a PHP or access file, keeping a pre-clean backup",
 		Privileges:       []Privilege{Root},
@@ -298,6 +300,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.kill_process",
+		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "signal a malicious process through a kernel process handle, never a recycled PID, never root",
 		Privileges:       []Privilege{CapKill, Root},
@@ -309,6 +312,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.block_ip",
+		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "add an attacker address or subnet to the firewall's deny sets",
 		Privileges:       []Privilege{CapNetAdmin, Root},
@@ -435,6 +439,7 @@ var operations = []Op{
 	// --- Host integration ---
 	{
 		ID:               "integrate.firewall_ruleset",
+		Audited:          true,
 		Subsystem:        "host integration",
 		Summary:          "build and load CSM's nftables table, including the operator's port policy and rate limits",
 		Privileges:       []Privilege{CapNetAdmin, Root},
@@ -553,6 +558,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "operate.manual_firewall",
+		Audited:          true,
 		Subsystem:        "operator commands",
 		Summary:          "block, allow, tempban or flush addresses on request, and roll a firewall apply back",
 		Privileges:       []Privilege{CapNetAdmin, Root},

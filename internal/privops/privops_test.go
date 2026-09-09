@@ -309,3 +309,43 @@ func yamlPathExists(t reflect.Type, path []string) bool {
 	}
 	return false
 }
+
+// The audited set is pinned so the column cannot drift optimistically: adding
+// an operation to it means wiring the action record and updating this list in
+// the same change.
+func TestAuditedOperationsArePinned(t *testing.T) {
+	var audited []string
+	for _, op := range Operations() {
+		if op.Audited {
+			audited = append(audited, op.ID)
+		}
+	}
+	want := []string{
+		"integrate.firewall_ruleset",
+		"operate.manual_firewall",
+		"respond.block_ip",
+		"respond.clean_file",
+		"respond.kill_process",
+		"respond.quarantine_file",
+	}
+	if !reflect.DeepEqual(audited, want) {
+		t.Errorf("audited operations = %v, want %v; wire the action record before claiming coverage", audited, want)
+	}
+}
+
+func TestMarkdownReportsAuditCoverage(t *testing.T) {
+	md := Markdown()
+	if !strings.Contains(md, "Action record") {
+		t.Fatal("rendered matrix has no audit-coverage column")
+	}
+	for _, op := range Operations() {
+		if !op.Audited {
+			continue
+		}
+		for _, line := range strings.Split(md, "\n") {
+			if strings.Contains(line, "`"+op.ID+"`") && !strings.Contains(line, "| yes |") {
+				t.Errorf("row for %q does not report its action record", op.ID)
+			}
+		}
+	}
+}

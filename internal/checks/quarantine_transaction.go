@@ -8,11 +8,15 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/quarantinefs"
 	"github.com/pidginhost/csm/internal/safepath"
 	"golang.org/x/sys/unix"
 )
 
+// quarantineTarget moves a file or directory into quarantine and records the
+// action. It is the single point every quarantine passes through, which is why
+// the action record is taken here rather than at each caller.
 func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineMeta) error {
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
@@ -21,10 +25,43 @@ func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineM
 	if err := quarantinefs.EnsureDir(filepath.Dir(qPath), 0700); err != nil {
 		return err
 	}
+
+	before := actionlog.Stat(path)
+	moveErr := quarantineTargetFn(path, qPath, info, data)
+	recordQuarantineAction(path, qPath, metadata, before, moveErr)
+	return moveErr
+}
+
+// quarantineTargetFn performs the move. It is indirected so the action record
+// can be tested against a failing move without a read-only filesystem.
+var quarantineTargetFn = func(path, qPath string, info os.FileInfo, data []byte) error {
 	if info.IsDir() {
 		return quarantineDirectory(path, qPath, info, data)
 	}
 	return quarantineFileTOCTOUSafe(path, qPath, info, data)
+}
+
+// recordQuarantineAction writes the unified action record for one quarantine.
+// The digest of the removed content is the evidence a reviewer needs: it
+// distinguishes "this exact file left the account" from "something was moved".
+func recordQuarantineAction(path, qPath string, metadata QuarantineMeta, before *actionlog.FileState, err error) {
+	rec := actionlog.Record{
+		Op:        "respond.quarantine_file",
+		Actor:     actionlog.DefaultActor(),
+		Target:    path,
+		Reason:    metadata.Reason,
+		FindingID: metadata.FindingID,
+		Before:    before,
+		After:     actionlog.Stat(path),
+		Result:    actionlog.Applied,
+		Undo:      "csm restore " + qPath,
+	}
+	if err != nil {
+		rec.Result = actionlog.Failed
+		rec.Error = err.Error()
+		rec.Undo = ""
+	}
+	actionlog.Write(rec)
 }
 
 var storeQuarantineBackup = func(path string, content []byte, metadata QuarantineMeta, mode os.FileMode) error {

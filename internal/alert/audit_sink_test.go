@@ -41,8 +41,8 @@ func TestMakeFindingIDDeterministic(t *testing.T) {
 		Message:   "y",
 		Timestamp: time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC),
 	}
-	id1 := makeFindingID(f)
-	id2 := makeFindingID(f)
+	id1 := FindingID(f)
+	id2 := FindingID(f)
 	if id1 != id2 {
 		t.Errorf("non-deterministic: %s vs %s", id1, id2)
 	}
@@ -56,7 +56,7 @@ func TestMakeFindingIDChangesWithEachField(t *testing.T) {
 		FilePath:  "/p",
 		Timestamp: time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC),
 	}
-	id := makeFindingID(base)
+	id := FindingID(base)
 
 	mutations := []struct {
 		name   string
@@ -71,7 +71,7 @@ func TestMakeFindingIDChangesWithEachField(t *testing.T) {
 	for _, m := range mutations {
 		f := base
 		m.mutate(&f)
-		got := makeFindingID(f)
+		got := FindingID(f)
 		if got == id {
 			t.Errorf("ID unchanged after mutating %s", m.name)
 		}
@@ -88,7 +88,7 @@ func TestMakeFindingIDIgnoresProcessContext(t *testing.T) {
 	}
 	withProcess := base
 	withProcess.Process = &processctx.ProcessContext{PID: 1234, UID: 1001, Comm: "ncat"}
-	if makeFindingID(base) != makeFindingID(withProcess) {
+	if FindingID(base) != FindingID(withProcess) {
 		t.Fatal("dynamic process context must not change stable audit finding ID")
 	}
 }
