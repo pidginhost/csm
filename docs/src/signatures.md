@@ -55,6 +55,11 @@ satisfy both entries. Use independent entries when a rule needs multiple pieces
 of evidence. The bundled HTTP tunnel rule requires both socket creation and a
 CONNECT request; the legacy PHP callback rule ties execution evidence to the
 body argument instead of matching function names in wrappers or documentation.
+The callback rule uses the same body predicate in YAML and YARA-X, including
+nonempty parameter lists, decoded bodies and request-controlled bodies. Shared
+positive and benign fixtures check both engines.
+Comments in parameter lists and strings or comments inside a literal callback
+body cannot supply execution evidence.
 
 ## YARA-X Rules (Optional)
 

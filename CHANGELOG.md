@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Scheduled scans now detect the same dynamically generated PHP backdoors as realtime scanning. Both engines distinguish executable code from comments and quoted text in legacy callbacks and generated library wrappers.
 - Realtime detection retains coverage of constructed tunnel requests and dynamically generated PHP code across normal formatting and quoted arguments.
 - Mail hold and governor alerts now require a local mail-server decision; a message subject or peer name can no longer forge one.
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
