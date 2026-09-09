@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
+- Two realtime signatures no longer report ordinary library code as a backdoor. A socket wrapper naming connect and create was read as an HTTP tunnel, and any file mentioning a removed PHP function was reported as arbitrary code execution; both now require the pattern that actually distinguishes the attack. A routine plugin update raised two critical alerts on a clean site.
 - The operator's web server override in the configuration is applied before crash reporting starts. Crash reporting tags its events with the detected platform, and on a host with it enabled that detection ran first, so the override was silently ignored at every daemon start and log watchers followed the probe instead of the configuration.
 - The installer no longer writes the three sandbox directives that systemd 239 (EL8, CloudLinux 8) rejects at every start; it says which were left out. Newer systemd keeps the full unit.
 - Doctor now names the CageFS cages that lack the PHP Shield event mount and gives the per-account remount command, instead of a count that pointed at every cage. An account it cannot resolve stays visible by uid, with a note to resolve the name first rather than an invalid command.

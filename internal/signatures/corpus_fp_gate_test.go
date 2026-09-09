@@ -36,8 +36,6 @@ var yamlCorpusBaseline = map[string]int{
 	"credential_logger": 1,
 	// The PHPMailer SMTP class shipped in WordPress core.
 	"mailer_exim_exploit": 1,
-	// The FTP sockets class shipped in WordPress core.
-	"network_http_tunnel": 1,
 	// A scanner plugin's engine and core comment handling.
 	"spam_comment_injector": 3,
 	// Minified plugin JavaScript naming a card field near a network call.
