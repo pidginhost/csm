@@ -2932,7 +2932,7 @@ const MaxInertPHPScanBytes = benignPHPStubMaxScan
 
 // IsBenignPHPStub reports whether the reachable code region of a PHP
 // file consists only of whitespace and comments, or terminates with a
-// no-argument die / exit / __halt_compiler before any other statement.
+// literal-argument die / exit, or __halt_compiler before any other statement.
 // Files matching either shape cannot execute attacker-controlled code
 // via a web request: PHP either runs to EOF emitting nothing, or hits
 // the terminator and stops with the remaining bytes unreachable.
@@ -3015,7 +3015,7 @@ func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 		return false
 	}
 	i += len(opener)
-	if i < len(buf) && !isPHPSpace(buf[i]) {
+	if i < len(buf) && !isPHPOpenTagSpace(buf[i]) {
 		return false
 	}
 	for i < len(buf) {
@@ -3057,13 +3057,13 @@ func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 	return complete
 }
 
-// PHPTerminatesImmediately reports whether the first statement of a PHP file
-// stops execution: exit, die, or __halt_compiler, with at most one literal
-// argument. Only the opening tag and whitespace may precede it. Comments are
-// deliberately not allowed here even though IsBenignPHPStubBytes accepts
-// them: a comment's tokens depend on the interpreter's source encoding, while
-// a terminator keyword ends execution whatever follows it. That makes this
-// safe on a partial head window, which is what the realtime path has.
+// PHPTerminatesImmediately recognizes a leading exit, die, or __halt_compiler
+// in unencoded PHP source, with at most one plain literal argument. Callers
+// must establish that PHP source conversion is disabled before using this
+// to suppress findings: conversion can remove even a raw terminator keyword.
+// Only the opening tag and whitespace may precede it. Unlike the broader
+// stub parser, it never accepts comments before the terminator. A completed
+// terminator can be recognized from a partial head; EOF alone is not proof.
 func PHPTerminatesImmediately(buf []byte) bool {
 	buf = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF})
 	i := skipPHPSpace(buf, 0)
@@ -3075,7 +3075,7 @@ func PHPTerminatesImmediately(buf []byte) bool {
 	// PHP needs whitespace after the opening tag. Without it the tag is
 	// literal text, the file never enters code mode here, and a later
 	// `<?php` block is what actually runs.
-	if i >= len(buf) || !isPHPSpace(buf[i]) {
+	if i >= len(buf) || !isPHPOpenTagSpace(buf[i]) {
 		return false
 	}
 	i = skipPHPSpace(buf, i)
@@ -3091,6 +3091,12 @@ func PHPTerminatesImmediately(buf []byte) bool {
 
 func isPHPSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
+}
+
+// PHP's long opening tag excludes the form feed and vertical tab accepted
+// by generic whitespace scanners. Accepting either would hide later PHP blocks.
+func isPHPOpenTagSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 func isIdentStart(c byte) bool {
@@ -3196,13 +3202,16 @@ func consumeLiteralPHPParens(buf []byte, i int) (int, bool) {
 // endOfPHPLiteralString returns the index just past the string literal that
 // starts at i. It fails on a string the buffer does not terminate and on a
 // double-quoted string carrying a variable, because PHP evaluates `$x` and
-// `{$x}` inside double quotes.
+// `{$x}` inside double quotes. Keep literals plain ASCII without escape or
+// encoding-shift bytes: the shared stub parser also runs without an encoding
+// policy, and source conversion can expose expressions inside such strings.
 func endOfPHPLiteralString(buf []byte, i int) (int, bool) {
 	quote := buf[i]
 	for j := i + 1; j < len(buf); j++ {
+		if buf[j] < ' ' || buf[j] > '~' || strings.ContainsRune("\\+=&~", rune(buf[j])) {
+			return j, false
+		}
 		switch buf[j] {
-		case '\\':
-			j++
 		case '$':
 			if quote == '"' {
 				return j, false

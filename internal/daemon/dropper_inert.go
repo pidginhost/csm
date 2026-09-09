@@ -15,10 +15,9 @@ func dropperCandidateIsInert(c dropperCandidate) bool {
 	if dropperContentIsInert(c.Head, c.Size) {
 		return true
 	}
-	// A file whose first statement halts the interpreter carries data, not
-	// code, however large the tail is. Plugins that keep state in .php files
-	// (WAF configs, attack logs) rewrite these constantly.
-	return checks.PHPTerminatesImmediately(c.Head)
+	// PHP may convert even a plain ASCII terminator before tokenization.
+	// Only use raw PHP syntax when the operator has ruled out conversion.
+	return c.PHPUnencodedSource && checks.PHPTerminatesImmediately(c.Head)
 }
 
 // dropperContentIsInert only exempts complete blank content. PHP can decode

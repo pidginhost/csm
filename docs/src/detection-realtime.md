@@ -53,18 +53,28 @@ directory, repeated after the normal alert cooldown if activity continues.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
-Complete blank files are excluded from dropper alerts after the writer closes,
-as are PHP files whose first statement stops the interpreter (`exit`, `die`, or
-`__halt_compiler`, with at most a literal argument): plugins keep state and WAF
-data in files of that shape and rewrite them constantly, and the bytes behind
-the terminator are never compiled. Comment-bearing PHP remains eligible because
-source-encoding conversion can change its tokens before execution. Executable
-scripts are not judged by PHP compilation rules. A metadata-only change while
-the file is being read -- the unlink that removes a scratch directory bumps the
-inode's ctime without touching a byte -- is retried rather than leaving the
-content permanently unknown. Separate creation and write events retain freshness
-and any previously observed code; content or signature findings always override
-blank-file filtering.
+Complete blank files are excluded from dropper alerts after a close-write
+observation. Metadata-only changes during the read, such as an unlink, are
+retried only while content metadata, executable mode and the retained bytes
+remain unchanged. An observed write stays inconclusive even if a subsequent
+read could catch a quiet interval.
+
+PHP state-file filtering is off by default. Set
+`thresholds.dropper_php_unencoded_source: true` only after administratively
+enforcing `zend.multibyte=0` for every PHP interpreter serving the monitored
+roots, including preventing account-level configuration from enabling it.
+This setting is an operator assertion, not an automatic configuration check.
+Leave it off when effective interpreter settings are unknown. PHP source
+conversion can change even a seemingly unconditional termination statement.
+
+With that assertion, PHP files beginning with `exit`, `die`, or
+`__halt_compiler` can be excluded. The parser accepts at most a plain literal
+argument and no preceding comments. This covers Wordfence WAF state files:
+`exit` stops execution and their following `__halt_compiler` prevents compilation
+of the data tail. Executable-mode files remain eligible because a shell can
+interpret them differently. Content or signature findings and previously
+observed code always override inert-content filtering. These gates work with
+close-write events alone; production admission uses filesystem birth times.
 
 **Features:**
 - Per-path alert deduplication (30s cooldown)

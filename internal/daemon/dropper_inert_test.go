@@ -1,9 +1,37 @@
 package daemon
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestDropperInertPHPRequiresSourceEncodingPolicy(t *testing.T) {
+	// Under BASE64 source decoding, padding the raw header's alphabet to a
+	// multiple of four lets a later encoded opening tag execute normally.
+	header := "<?php exit('Access denied'); __halt_compiler(); ?>"
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	digits := 0
+	for _, c := range header {
+		if strings.ContainsRune(alphabet, c) {
+			digits++
+		}
+	}
+	encoded := header + strings.Repeat("A", (4-digits%4)%4) + base64.StdEncoding.EncodeToString([]byte("<?php print(1234);"))
+	for _, body := range []string{
+		wordfenceWAFHead,
+		"<?php exit('=27 . print(1234) . =27');",
+		"<?php exit('+ACc- . print(1234) . +ACc-');",
+		encoded,
+	} {
+		c := inertTestCandidate()
+		c.Head, c.Size = []byte(body), int64(len(body))
+		if dropperCandidateIsInert(c) {
+			t.Errorf("PHP source was exempted without an encoding policy: %q", body)
+		}
+	}
+}
 
 // WordPress and its plugins scatter guard files through upload directories
 // and delete them again during imports. On a production host WP All Import
@@ -164,6 +192,7 @@ func TestDropperInertGatePHPBoundaries(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			c := inertTestCandidate()
+			c.PHPUnencodedSource = true
 			c.Head, c.Size = []byte(body), int64(len(body))
 			if dropperContentIsInert(c.Head, c.Size) {
 				t.Fatal("unproven content classified as inert")
@@ -211,6 +240,7 @@ func TestDropperInertGateRejectsSourceEncodingAmbiguity(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			c := inertTestCandidate()
+			c.PHPUnencodedSource = true
 			c.Head, c.Size = []byte(body), int64(len(body))
 			if dropperCandidateIsInert(c) {
 				t.Fatal("encoding-dependent content classified as inert")
@@ -253,6 +283,7 @@ const wordfenceWAFHead = "<?php exit('Access denied'); __halt_compiler(); ?>\n" 
 
 func TestDropperInertPHPDataFileIsNotADropper(t *testing.T) {
 	c := inertTestCandidate()
+	c.PHPUnencodedSource = true
 	c.Path = "/home/alice/public_html/wp-content/wflogs/config-synced.php"
 	c.Mode = 0o100600
 	c.Head = []byte(wordfenceWAFHead)
@@ -277,6 +308,7 @@ func TestDropperInertPHPDataFileGateRejectsEvaluatedArgument(t *testing.T) {
 	} {
 		t.Run(head, func(t *testing.T) {
 			c := inertTestCandidate()
+			c.PHPUnencodedSource = true
 			c.Path = "/home/alice/public_html/wp-content/wflogs/config-synced.php"
 			c.Mode = 0o100600
 			c.Head = []byte(head)
@@ -296,6 +328,7 @@ func TestDropperInertPHPDataFileGateRejectsEvaluatedArgument(t *testing.T) {
 // file shape proves nothing about it.
 func TestDropperInertPHPDataFileGateDoesNotCoverExecutables(t *testing.T) {
 	c := inertTestCandidate()
+	c.PHPUnencodedSource = true
 	c.Path = "/home/alice/public_html/cgi-bin/report"
 	c.Mode = 0o100755
 	c.Head = []byte(wordfenceWAFHead)

@@ -1312,3 +1312,47 @@ func TestPHPTerminatesImmediatelyRequiresRealOpeningTag(t *testing.T) {
 		t.Error("BOM and whitespace before a literal-argument terminator must be accepted")
 	}
 }
+
+func TestPHPTerminatesImmediatelyRejectsNonPHPTagSpace(t *testing.T) {
+	for _, space := range []string{"\v", "\f"} {
+		body := []byte("<?php" + space + "exit('no'); ?><?php echo 'EXECUTED';")
+		if PHPTerminatesImmediately(body) {
+			t.Errorf("literal text mistaken for a PHP opening tag: %q", body)
+		}
+		if IsBenignPHPStubBytesComplete(body, false) {
+			t.Errorf("literal text mistaken for a benign PHP stub: %q", body)
+		}
+	}
+}
+
+func TestPHPTerminatesImmediatelyArgumentBoundaries(t *testing.T) {
+	for _, body := range []string{
+		`<?php exit("${print('EXECUTED')}");`,
+		`<?php exit("{${print('EXECUTED')}}");`,
+		`<?php exit("\\${print('EXECUTED')}");`,
+		`<?php exit('a' . print('EXECUTED'));`,
+		`<?php exit(` + "`printf EXECUTED`" + `);`,
+		"<?php exit(<<<X\n${print('EXECUTED')}\nX\n);",
+		"<?php exit(<<<'X'\ndata\nX\n);",
+		`<?php exit('unterminated`,
+		`<?php exit('literal') . print('EXECUTED');`,
+		`<?php exit('literal')`,
+		`<?php __halt_compiler('literal');`,
+	} {
+		if PHPTerminatesImmediately([]byte(body)) {
+			t.Errorf("unproven terminator accepted: %q", body)
+		}
+	}
+}
+
+func TestIsBenignPHPStubRejectsEncodedLiteralArgument(t *testing.T) {
+	for _, body := range []string{
+		"<?php exit('=27 . print(1234) . =27');",
+		"<?php exit('+ACc- . print(1234) . +ACc-');",
+		"<?php exit('&ACc- . print(1234) . &ACc-');",
+	} {
+		if IsBenignPHPStubBytesComplete([]byte(body), false) {
+			t.Errorf("encoded executable argument accepted as a literal: %q", body)
+		}
+	}
+}
