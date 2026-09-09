@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `csm privileges` prints every operation that needs root or a capability, what it writes, and the setting that stops it. The same table ships as a capability matrix in the docs, and tests keep it in step with the systemd sandbox.
+
 - `mode: observe` runs CSM as a detection-only sensor, disabling automatic host remediation and integration updates while keeping its own data and runtime sockets. A config that still enables a state-changing subsystem is refused at load, naming every conflicting key.
 
 - `firewall.tcp_out_allow` permits outbound TCP to a destination IP or CIDR on a port range, which `tcp_out` cannot express; it is emitted after the `smtp_block` guard and warns when the destination is `0.0.0.0/0`.

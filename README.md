@@ -86,6 +86,7 @@ Review [Auto-response](docs/src/auto-response.md) before enabling actions on a p
 ```text
 csm status [--json]          daemon health, findings, watchers, and rollout state
 csm doctor [--json]          config, integrity, daemon, watcher, and store diagnostics
+csm privileges [--json]      what CSM does that needs privilege, and the key that stops each one
 csm baseline                 establish known state after first start or an approved reset
 csm rehash                   re-sign binary, csm.yaml, and conf.d after an intentional change
 csm scan <user> [--full]     scan one account, uncapped with --full

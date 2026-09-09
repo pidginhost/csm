@@ -19,6 +19,7 @@
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)
 - [Observe Mode](observe-mode.md)
+- [Capability Matrix](capability-matrix.md)
 - [Incidents](incidents.md)
 - [Incident Response Runbook](incident-response-runbook.md)
 - [Direct SMTP Egress](direct-smtp-egress.md)
