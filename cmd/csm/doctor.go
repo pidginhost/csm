@@ -266,7 +266,7 @@ func doctorLiveModeCheck(cfg *config.Config, running string) DoctorCheck {
 		check.Message = "running " + running + "; configured " + configured + " (restart required)"
 		check.Fix = "systemctl restart csm.service"
 	case running == config.ModeObserve:
-		check.Message += " (detection and alerting only, no host changes)"
+		check.Message += " (no automatic remediation or integration changes)"
 	default:
 		check.Message += " (subsystems act under their own switches)"
 	}

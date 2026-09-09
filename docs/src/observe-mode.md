@@ -83,10 +83,23 @@ same reason.
 Signature and GeoIP updates still run: they write only inside CSM's own
 directories.
 
+Two host writes remain, and the [capability matrix](capability-matrix.md) marks
+both as not configurable:
+
+- On a BPF build, capability discovery loads and briefly attaches probe programs
+  to find out what the kernel supports.
+- The Copy Fail check runs `kcarectl --patch-info` to see whether a livepatch
+  covers the host. kcarectl refreshes its own cache under `/var/cache/kcare` on
+  every run, including a read-only query.
+
+Neither changes the host's security configuration, and skipping them would cost
+the detection they exist for. They are listed here so "observe" is not read as a
+promise of zero writes.
+
 ## Confirming the posture
 
 ```bash
-csm doctor                 # "operating mode: observe (detection and alerting only, no host changes)"
+csm doctor                 # "operating mode: observe (no automatic remediation or integration changes)"
 csm status                 # mode: observe
 csm status --json          # .mode
 curl .../api/v1/status     # .mode

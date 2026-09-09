@@ -26,11 +26,11 @@ func TestDoctorReportsRunningModeBeforeRestart(t *testing.T) {
 					continue
 				}
 				if live == config.ModeObserve {
-					if check.Status != "ok" || !strings.Contains(check.Message, "no host changes") {
+					if check.Status != "ok" || !strings.Contains(check.Message, "no automatic remediation") {
 						t.Fatalf("live observe check = %+v", check)
 					}
 				} else {
-					if check.Status != "warn" || strings.Contains(check.Message, "no host changes") || check.Fix == "" {
+					if check.Status != "warn" || strings.Contains(check.Message, "no automatic remediation") || check.Fix == "" {
 						t.Fatalf("unconfirmed observe check = %+v", check)
 					}
 					if live != "" && !strings.Contains(check.Message, "running enforce") {
@@ -54,7 +54,7 @@ func TestDoctorModeCheckReportsObservePosture(t *testing.T) {
 	if !strings.Contains(check.Message, config.ModeObserve) {
 		t.Fatalf("message does not name the mode: %q", check.Message)
 	}
-	if check.Name != "configured mode" || strings.Contains(check.Message, "no host changes") {
+	if check.Name != "configured mode" || strings.Contains(check.Message, "no automatic remediation") {
 		t.Fatalf("offline check claims an active posture: %+v", check)
 	}
 }

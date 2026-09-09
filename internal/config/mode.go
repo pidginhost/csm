@@ -12,7 +12,9 @@ const (
 	ModeEnforce = "enforce"
 	// ModeObserve declares that CSM must not change host state on this
 	// host. Detection, correlation, alerting and the audit sinks all run;
-	// automatic host remediation and integration updates do not.
+	// automatic host remediation and integration updates do not. Two probes
+	// documented in the capability matrix still write: BPF capability
+	// discovery, and the kcarectl query that refreshes its own cache.
 	ModeObserve = "observe"
 )
 
