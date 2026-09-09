@@ -30,12 +30,14 @@ import (
 // supplied callback is invoked synchronously with the absolute path. The
 // callback must not block long; spawn worker goroutines if needed.
 type spoolWatcher struct {
-	root    string
-	onFile  func(path string)
-	fd      int
-	parentW int
-	mu      sync.Mutex
-	subDirs map[int]string // watch descriptor -> path
+	root            string
+	onFile          func(path string)
+	fd              int
+	parentW         int
+	mu              sync.Mutex
+	subDirs         map[int]string // watch descriptor -> path
+	queueHealthOnce sync.Once
+	kernelQueue     *notificationQueue
 
 	overflowCount uint64
 	onOverflow    func() // invoked from Run() the moment IN_Q_OVERFLOW arrives
@@ -90,7 +92,10 @@ func newSpoolWatcher(root string, onFile func(path string)) (*spoolWatcher, erro
 
 func (w *spoolWatcher) addSubdir(path string) error {
 	mask := uint32(unix.IN_CLOSE_WRITE | unix.IN_MOVED_TO)
-	wd, err := unix.InotifyAddWatch(w.fd, path, mask)
+	w.initQueueHealth()
+	wd, err := w.kernelQueue.useDescriptor(func() (int, error) {
+		return unix.InotifyAddWatch(w.fd, path, mask)
+	})
 	if err != nil {
 		return err
 	}
@@ -101,14 +106,13 @@ func (w *spoolWatcher) addSubdir(path string) error {
 }
 
 func (w *spoolWatcher) Close() error {
-	if w.fd != 0 {
-		return unix.Close(w.fd)
-	}
-	return nil
+	w.initQueueHealth()
+	return w.kernelQueue.close()
 }
 
 // Run drains inotify events until ctx is cancelled.
 func (w *spoolWatcher) Run(ctx context.Context) {
+	w.initQueueHealth()
 	defer func() { _ = w.Close() }()
 	buf := make([]byte, 16*1024)
 	for {
@@ -117,7 +121,7 @@ func (w *spoolWatcher) Run(ctx context.Context) {
 			return
 		default:
 		}
-		n, err := syscall.Read(w.fd, buf)
+		_, err := w.kernelQueue.read(buf, w.processEvents)
 		if err != nil {
 			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR) {
 				// Briefly yield via select so cancellation is responsive.
@@ -125,56 +129,59 @@ func (w *spoolWatcher) Run(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				default:
-					// Use a small ppoll-equivalent: read again after the kernel buffers.
-					var fdset unix.FdSet
-					// #nosec G115 -- w.fd%64 yields 0..63; conversion to uint is lossless.
-					fdset.Bits[w.fd/64] |= 1 << uint(w.fd%64)
-					ts := unix.Timespec{Sec: 0, Nsec: 100 * 1e6}
-					_, _ = unix.Pselect(w.fd+1, &fdset, nil, nil, &ts, nil)
+					_, _ = w.kernelQueue.useDescriptor(func() (int, error) {
+						// #nosec G115 -- Linux descriptors are nonnegative int32 values.
+						return unix.Poll([]unix.PollFd{{Fd: int32(w.fd), Events: unix.POLLIN}}, 100)
+					})
 					continue
 				}
 			}
 			// Treat other errors as fatal; supervisor will restart us.
 			return
 		}
-		offset := 0
-		for offset+unix.SizeofInotifyEvent <= n {
-			// #nosec G103 -- bounds-checked above; standard inotify decode pattern.
-			ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
-			nameBytes := buf[offset+unix.SizeofInotifyEvent : offset+unix.SizeofInotifyEvent+int(ev.Len)]
-			name := strings.TrimRight(string(nameBytes), "\x00")
-			offset += unix.SizeofInotifyEvent + int(ev.Len)
+	}
+}
 
-			if ev.Mask&unix.IN_Q_OVERFLOW != 0 {
-				w.overflowCount++
-				if w.metrics != nil {
-					w.metrics.InotifyOverflows.Inc()
-				}
-				if w.onOverflow != nil {
-					w.onOverflow()
-				}
-				continue
+func (w *spoolWatcher) processEvents(buf []byte) {
+	n := len(buf)
+	offset := 0
+	for offset+unix.SizeofInotifyEvent <= n {
+		// #nosec G103 -- bounds-checked above; standard inotify decode pattern.
+		ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
+		nameBytes := buf[offset+unix.SizeofInotifyEvent : offset+unix.SizeofInotifyEvent+int(ev.Len)]
+		name := strings.TrimRight(string(nameBytes), "\x00")
+		offset += unix.SizeofInotifyEvent + int(ev.Len)
+
+		if ev.Mask&unix.IN_Q_OVERFLOW != 0 {
+			w.kernelQueue.losses.Lose(time.Now(), 1)
+			w.overflowCount++
+			if w.metrics != nil {
+				w.metrics.InotifyOverflows.Inc()
 			}
-			if int(ev.Wd) == w.parentW {
-				if ev.Mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0 && name != "" {
-					full := filepath.Join(w.root, name)
-					if fi, err := os.Stat(full); err == nil && fi.IsDir() {
-						_ = w.addSubdir(full)
-					}
-				}
-				continue
+			if w.onOverflow != nil {
+				w.onOverflow()
 			}
-			w.mu.Lock()
-			dir, ok := w.subDirs[int(ev.Wd)]
-			w.mu.Unlock()
-			if !ok || name == "" {
-				continue
-			}
-			if !strings.HasSuffix(name, "-H") {
-				continue
-			}
-			w.onFile(filepath.Join(dir, name))
+			continue
 		}
+		if int(ev.Wd) == w.parentW {
+			if ev.Mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0 && name != "" {
+				full := filepath.Join(w.root, name)
+				if fi, err := os.Stat(full); err == nil && fi.IsDir() {
+					_ = w.addSubdir(full)
+				}
+			}
+			continue
+		}
+		w.mu.Lock()
+		dir, ok := w.subDirs[int(ev.Wd)]
+		w.mu.Unlock()
+		if !ok || name == "" {
+			continue
+		}
+		if !strings.HasSuffix(name, "-H") {
+			continue
+		}
+		w.onFile(filepath.Join(dir, name))
 	}
 }
 

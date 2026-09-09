@@ -258,6 +258,10 @@ Recovery scans also report waiting directories, running batches and failed
 work, including eviction, expiration and unfinished shutdown tasks. Repeated
 drops do not reset a directory's original waiting age.
 
+Forwarder and PHP relay inotify queues report pending bytes, consumer stalls,
+running callbacks and known losses. PHP relay replacements preserve loss
+evidence. Other bounded queues and the completeness gate remain open.
+
 A queue that silently sheds findings is the same failure as a table that
 silently narrows: healthy status, less protection.
 

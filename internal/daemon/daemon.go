@@ -2619,6 +2619,7 @@ func (d *Daemon) startForwarderWatcher() {
 		return
 	}
 	d.forwarderWatcher = fw
+	d.registerQueueSource("forwarder", fw)
 	d.wg.Add(1)
 	obs.Go("forwarder-watcher", func() {
 		defer d.wg.Done()

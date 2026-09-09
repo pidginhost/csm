@@ -41,15 +41,16 @@ func (fd fanotifyDescriptor) Close() error                  { return unix.Close(
 // close so health reads and permission responses cannot use a recycled fd.
 // Parsing runs outside that lock and keeps its own tracked batch.
 type notificationQueue struct {
-	mu          sync.Mutex
-	source      notificationSource
-	sampled     *queuehealth.Sampled
-	losses      *queuehealth.Tracker
-	batches     *queuehealth.Tracker
-	consumed    uint64
-	closed      bool
-	closeErr    error
-	unavailable bool
+	mu              sync.Mutex
+	source          notificationSource
+	sampled         *queuehealth.Sampled
+	losses          *queuehealth.Tracker
+	batches         *queuehealth.Tracker
+	consumed        uint64
+	closed          bool
+	closeErr        error
+	unavailable     bool
+	variableRecords bool
 }
 
 func newNotificationQueue(source notificationSource, losses, batches *queuehealth.Tracker) *notificationQueue {
@@ -97,7 +98,7 @@ func (q *notificationQueue) read(buf []byte, process func([]byte)) (int, error) 
 		return 0, unix.EBADF
 	}
 	n, err := q.source.Read(buf)
-	if err != nil || n < metadataSize {
+	if err != nil || n <= 0 {
 		q.mu.Unlock()
 		return n, err
 	}
@@ -117,6 +118,16 @@ func (q *notificationQueue) write(buf []byte) (int, error) {
 	return q.source.Write(buf)
 }
 
+// Watch changes and readiness polling share the same descriptor lifetime as reads.
+func (q *notificationQueue) useDescriptor(fn func() (int, error)) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return 0, unix.EBADF
+	}
+	return fn()
+}
+
 func (q *notificationQueue) close() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -129,7 +140,14 @@ func (q *notificationQueue) close() error {
 	} else {
 		q.unavailable = false
 		// Events can still arrive before close. Retain only the known minimum.
-		q.losses.Lose(time.Now(), uint64(pending))
+		if q.variableRecords {
+			// A byte count cannot identify the number of variable-length records.
+			if pending > 0 {
+				q.losses.Lose(time.Now(), 1)
+			}
+		} else {
+			q.losses.Lose(time.Now(), uint64(pending))
+		}
 	}
 	q.closeErr = q.source.Close()
 	q.closed = true

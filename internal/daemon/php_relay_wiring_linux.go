@@ -121,6 +121,7 @@ func startPHPRelayLinux(d *Daemon) {
 	// messages already on the spool when the daemon starts.
 	runStartupSpoolWalker("/var/spool/exim/input", pipeline)
 
+	var previousWatcher *spoolWatcher
 	watcherFn := func(ctx context.Context) {
 		w, err := newSpoolWatcher("/var/spool/exim/input", pipeline.OnFile)
 		if err != nil {
@@ -128,6 +129,11 @@ func startPHPRelayLinux(d *Daemon) {
 			emitPHPRelayFinding(d, alert.Critical, "email_php_relay_watcher_failed", err.Error())
 			return
 		}
+		if previousWatcher != nil {
+			w.inheritQueueHealth(previousWatcher)
+		}
+		previousWatcher = w
+		d.registerQueueSource("phprelay", w)
 		d.MarkWatcher("phprelay", true)
 		w.SetMetrics(prMetrics)
 		w.SetOverflowHandler(func() {

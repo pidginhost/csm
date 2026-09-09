@@ -186,6 +186,17 @@ event reads and permission responses cannot use a descriptor after close.
 The required kernel suite verifies pending records, stalls, drain recovery
 and unread shutdown loss using real fanotify events.
 
+`forwarder.kernel` and `phprelay.kernel` report inotify backlog in bytes,
+because records include variable-length filenames. Capacity is unknown and
+lag follows observed consumer progress. Overflow markers each prove at least
+one lost event. Closing with unread bytes adds one further known loss; the
+byte count does not reveal the number of discarded events. These totals use
+`dropped_lower_bound: true`.
+`forwarder.reader` and `phprelay.reader` track the running read batch, including
+synchronous callbacks. Failed callbacks count as interrupted batches. PHP
+relay replacements retain earlier losses with fresh occupancy measurements.
+Descriptor reads, watch changes, polling and close share one lifetime guard.
+
 A queue becomes degraded after three losses in a minute, thirty seconds
 continuously full, or a minute waiting or processing. These are operational
 alert budgets, not measured throughput guarantees. Health is computed directly
@@ -200,8 +211,8 @@ Inspect worker errors and CPU, memory and I/O pressure when a queue degrades.
 Reduce competing bulk work and confirm the queue drains and recent losses
 stop. This surface currently covers finding delivery, file and spool kernel
 readers and scanners, recovery scans, staged package verification, dropper
-processing, BPF queues and mail-log delivery; other bounded queues remain in
-the roadmap.
+processing, BPF queues, mail-log delivery and the forwarder and PHP relay
+notification queues; other bounded queues remain in the roadmap.
 
 ## GeoIP
 

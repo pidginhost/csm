@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -27,6 +28,8 @@ type ForwarderWatcher struct {
 	alertCh         chan<- alert.Finding
 	knownForwarders []string
 	inotifyFd       int
+	queueHealthOnce sync.Once
+	kernelQueue     *notificationQueue
 }
 
 // NewForwarderWatcher creates a watcher for the valiases directory.
@@ -51,6 +54,8 @@ func NewForwarderWatcher(alertCh chan<- alert.Finding, knownForwarders []string)
 
 // Run starts the watch loop. Blocks until stopCh is closed.
 func (fw *ForwarderWatcher) Run(stopCh <-chan struct{}) {
+	fw.initQueueHealth()
+	defer func() { _ = fw.kernelQueue.close() }()
 	buf := make([]byte, 4096)
 
 	// Use a polling approach since inotify fd + stopCh coordination
@@ -61,7 +66,6 @@ func (fw *ForwarderWatcher) Run(stopCh <-chan struct{}) {
 	for {
 		select {
 		case <-stopCh:
-			_ = unix.Close(fw.inotifyFd)
 			return
 		case <-ticker.C:
 			fw.readEvents(buf)
@@ -70,31 +74,38 @@ func (fw *ForwarderWatcher) Run(stopCh <-chan struct{}) {
 }
 
 func (fw *ForwarderWatcher) readEvents(buf []byte) {
+	fw.initQueueHealth()
 	for {
-		n, err := unix.Read(fw.inotifyFd, buf)
+		n, err := fw.kernelQueue.read(buf, fw.processEvents)
 		if err != nil || n <= 0 {
 			return // EAGAIN or error - no more events
 		}
+	}
+}
 
-		offset := 0
-		for offset < n {
-			if offset+unix.SizeofInotifyEvent > n {
-				break
-			}
-			// #nosec G103 -- inotify returns a packed binary stream;
-			// reinterpretation is required and bounded by the SizeofInotifyEvent check above.
-			event := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
-			nameLen := int(event.Len)
-			if nameLen > 0 && offset+unix.SizeofInotifyEvent+nameLen <= n {
-				nameBytes := buf[offset+unix.SizeofInotifyEvent : offset+unix.SizeofInotifyEvent+nameLen]
-				// Trim null bytes
-				name := strings.TrimRight(string(nameBytes), "\x00")
-				if name != "" && !strings.HasPrefix(name, ".") {
-					fw.handleFileChange(name)
-				}
-			}
-			offset += unix.SizeofInotifyEvent + nameLen
+func (fw *ForwarderWatcher) processEvents(buf []byte) {
+	n := len(buf)
+	offset := 0
+	for offset < n {
+		if offset+unix.SizeofInotifyEvent > n {
+			break
 		}
+		// #nosec G103 -- inotify returns a packed binary stream;
+		// reinterpretation is required and bounded by the SizeofInotifyEvent check above.
+		event := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
+		if event.Mask&unix.IN_Q_OVERFLOW != 0 {
+			fw.kernelQueue.losses.Lose(time.Now(), 1)
+		}
+		nameLen := int(event.Len)
+		if nameLen > 0 && offset+unix.SizeofInotifyEvent+nameLen <= n {
+			nameBytes := buf[offset+unix.SizeofInotifyEvent : offset+unix.SizeofInotifyEvent+nameLen]
+			// Trim null bytes
+			name := strings.TrimRight(string(nameBytes), "\x00")
+			if name != "" && !strings.HasPrefix(name, ".") {
+				fw.handleFileChange(name)
+			}
+		}
+		offset += unix.SizeofInotifyEvent + nameLen
 	}
 }
 

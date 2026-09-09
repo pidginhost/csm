@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Forwarder and PHP relay notification queues now report pending work, stalled readers and known losses through status and doctor. PHP relay restarts preserve earlier failures.
+
 - Recovery scans now report queued directories, stalled work and failed attempts through status and doctor. Evicted, expired and unfinished shutdown work stays in the loss totals; successful scans at the recovery cutoff remain successful.
 
 - File and mail notification queues now report pending work, stalled readers and unread shutdown losses through status and doctor. Work already being processed stays visible after leaving the kernel queue.
@@ -26,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Status and doctor now report delayed and dropped work in finding delivery and the realtime file and mail scanners. Sustained overload degrades health and raises a bounded notification even when the normal findings channel is full, with a recovery event once pressure clears.
 
 ### Security
+
+- PHP relay watcher shutdown no longer risks closing an unrelated reused descriptor. Busy hosts with many open files no longer lose the watcher to a polling panic.
 
 - Spool shutdown now prevents late scan responses from writing through a closed descriptor that the process has reused for an unrelated file.
 
