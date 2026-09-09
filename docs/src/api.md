@@ -197,6 +197,19 @@ synchronous callbacks. Failed callbacks count as interrupted batches. PHP
 relay replacements retain earlier losses with fresh occupancy measurements.
 Descriptor reads, watch changes, polling and close share one lifetime guard.
 
+`phprelay.index.persistence` reports the message attribution writer's 4,096
+waiting slots. Writes remain running from channel receipt through the pending
+batch and its database transaction. Batches contain at most 256 writes, also
+during an explicit flush. Each flush covers the backlog present when the
+writer accepts it; concurrent arrivals cannot extend that flush indefinitely.
+Refused submissions, encoding failures and writes in a failed transaction count
+as losses. Failed writes are settled before emitting their error finding, so a
+blocked reporter cannot hide the loss. A failed transaction counts each of its
+writes once and does not prevent subsequent batches from committing.
+Shutdown closes admission and drains accepted writes; later submissions count
+as refused work. The existing persistence dropped metric counts refused
+submissions, while queue health also includes writes that fail after admission.
+
 A queue becomes degraded after three losses in a minute, thirty seconds
 continuously full, or a minute waiting or processing. These are operational
 alert budgets, not measured throughput guarantees. Health is computed directly
@@ -211,8 +224,9 @@ Inspect worker errors and CPU, memory and I/O pressure when a queue degrades.
 Reduce competing bulk work and confirm the queue drains and recent losses
 stop. This surface currently covers finding delivery, file and spool kernel
 readers and scanners, recovery scans, staged package verification, dropper
-processing, BPF queues, mail-log delivery and the forwarder and PHP relay
-notification queues; other bounded queues remain in the roadmap.
+processing, BPF queues, mail-log delivery, forwarder and PHP relay notification
+queues, and PHP relay index persistence; other bounded queues remain in the
+roadmap.
 
 ## GeoIP
 

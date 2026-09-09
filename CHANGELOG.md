@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- PHP relay index persistence now reports queued writes, stalled batches and failed writes through status and doctor.
+
 - Forwarder and PHP relay notification queues now report pending work, stalled readers and known losses through status and doctor. PHP relay restarts preserve earlier failures.
 
 - Recovery scans now report queued directories, stalled work and failed attempts through status and doctor. Evicted, expired and unfinished shutdown work stays in the loss totals; successful scans at the recovery cutoff remain successful.
@@ -36,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
+
+- PHP relay shutdown now drains accepted index writes and refuses later submissions. Flushes use bounded transactions, preserving unrelated batches when a write fails.
 
 - Recovered file and mail scanner failures now count as lost work, so repeated panics degrade health even while workers continue scanning later events.
 

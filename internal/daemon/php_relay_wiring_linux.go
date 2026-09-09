@@ -74,6 +74,7 @@ func startPHPRelayLinux(d *Daemon) {
 		alert.TryEnqueue(d.alertCh, f)
 	})
 	persister.SetMetrics(prMetrics)
+	d.registerQueueSource("phprelay.index", persister)
 	persister.Start()
 	d.phpRelayShutdown = append(d.phpRelayShutdown, persister.Stop)
 	idx := newMsgIDIndex(persister, 200_000)
