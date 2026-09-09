@@ -23,15 +23,15 @@ func TestDropperInertReadRejectsConcurrentGrowth(t *testing.T) {
 	if err := unix.Fstat(fd, &before); err != nil {
 		t.Fatal(err)
 	}
-	head, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+	head, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
 		head := readFromFd(fd, maxBytes)
 		if _, err := f.WriteString("<?php echo 1;"); err != nil {
 			t.Fatal(err)
 		}
 		return head
 	})
-	if stable || len(head) != 0 {
-		t.Fatalf("empty prefix accepted after growth: stable=%v head=%q", stable, head)
+	if stable {
+		t.Fatalf("prefix of a growing file accepted as a stable snapshot: head=%q", head)
 	}
 }
 
@@ -125,5 +125,75 @@ func TestDropperInertRefreshDoesNotForgetCode(t *testing.T) {
 		if got := assessDropper(due[0], dropperProbe{Conclusive: true}); got != want {
 			t.Errorf("initially active=%v: verdict=%v, want %v", initiallyActive, got, want)
 		}
+	}
+}
+
+// The plugin temp-file false positive: WP All Import recreates a zero-byte
+// index.php guard in a scratch directory roughly once a second and removes
+// the whole directory again. The unlink bumps the inode's ctime, so when it
+// lands between the two stats that bracket the head read the snapshot looks
+// racy even though no byte was ever written. Marking such a candidate
+// "content may execute" is sticky, so the empty-guard gate could never fire
+// and every one of those files was reported.
+func TestDropperInertHeadSnapshotSurvivesMetadataOnlyChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.php")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	fd := int(f.Fd())
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		t.Fatal(err)
+	}
+
+	unlinked := false
+	head, size, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+		got := readFromFd(fd, maxBytes)
+		if !unlinked {
+			unlinked = true
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return got
+	})
+	if !unlinked {
+		t.Fatal("test did not exercise the metadata change")
+	}
+	if !stable || len(head) != 0 || size != 0 {
+		t.Fatalf("metadata-only change poisoned the content snapshot: stable=%v head=%q size=%d", stable, head, size)
+	}
+}
+
+// A file that keeps being rewritten must stay unstable however many times the
+// snapshot is retried.
+func TestDropperInertHeadSnapshotStaysUnstableWhileWritten(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "growing-*.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	fd := int(f.Fd())
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	_, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+		got := readFromFd(fd, maxBytes)
+		reads++
+		if _, err := f.WriteString("<?php echo 1;"); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	})
+	if stable {
+		t.Fatal("a file under active rewrite was accepted as a stable snapshot")
+	}
+	if reads < 2 {
+		t.Fatalf("snapshot was not retried: reads=%d", reads)
 	}
 }

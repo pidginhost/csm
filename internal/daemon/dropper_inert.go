@@ -1,6 +1,10 @@
 package daemon
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/pidginhost/csm/internal/checks"
+)
 
 func dropperCandidateIsInert(c dropperCandidate) bool {
 	// Executable files may be interpreted by a shell rather than PHP.
@@ -8,7 +12,13 @@ func dropperCandidateIsInert(c dropperCandidate) bool {
 	if c.Mode&0o111 != 0 {
 		return c.Size >= 0 && c.Size <= int64(len(c.Head)) && strings.Trim(string(c.Head), " \t\n") == ""
 	}
-	return dropperContentIsInert(c.Head, c.Size)
+	if dropperContentIsInert(c.Head, c.Size) {
+		return true
+	}
+	// A file whose first statement halts the interpreter carries data, not
+	// code, however large the tail is. Plugins that keep state in .php files
+	// (WAF configs, attack logs) rewrite these constantly.
+	return checks.PHPTerminatesImmediately(c.Head)
 }
 
 // dropperContentIsInert only exempts complete blank content. PHP can decode

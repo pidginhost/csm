@@ -53,11 +53,17 @@ directory, repeated after the normal alert cooldown if activity continues.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
-Complete blank files are excluded from dropper alerts after the writer closes.
-Comment-bearing PHP remains eligible because source-encoding conversion can
-change its tokens before execution. Executable scripts are not judged by PHP
-comment syntax. Separate creation and write events retain freshness and any
-previously observed code; content or signature findings always override
+Complete blank files are excluded from dropper alerts after the writer closes,
+as are PHP files whose first statement stops the interpreter (`exit`, `die`, or
+`__halt_compiler`, with at most a literal argument): plugins keep state and WAF
+data in files of that shape and rewrite them constantly, and the bytes behind
+the terminator are never compiled. Comment-bearing PHP remains eligible because
+source-encoding conversion can change its tokens before execution. Executable
+scripts are not judged by PHP compilation rules. A metadata-only change while
+the file is being read -- the unlink that removes a scratch directory bumps the
+inode's ctime without touching a byte -- is retried rather than leaving the
+content permanently unknown. Separate creation and write events retain freshness
+and any previously observed code; content or signature findings always override
 blank-file filtering.
 
 **Features:**

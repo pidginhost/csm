@@ -2982,9 +2982,10 @@ func IsBenignPHPStub(path string) bool {
 //     newline or "?>"), and balanced block comments ("/* ... */"). A "/*"
 //     without a matching "*/" inside the scanned window is rejected -- we
 //     cannot prove the rest of the file is comment.
-//   - Accept the no-argument forms of die, exit, and __halt_compiler as
-//     terminators. Once seen, the rest of the buffer is treated as
-//     unreachable.
+//   - Accept die, exit, and __halt_compiler as terminators. die and exit may
+//     carry a single literal argument (a non-interpolating string or a
+//     decimal integer); __halt_compiler takes none. Once seen, the rest of
+//     the buffer is treated as unreachable.
 //   - Reject any closing "?>" tag (would allow HTML escape and a later
 //     "<?php" re-entry that this gate does not analyse).
 //   - Reject any other identifier (return, if, system, eval, function,
@@ -2999,8 +3000,8 @@ func IsBenignPHPStubBytes(buf []byte) bool {
 
 // IsBenignPHPStubBytesComplete is like IsBenignPHPStubBytes, but complete
 // tells the parser whether buf contains the entire file. Comment-only stubs
-// require a complete buffer; no-argument terminators do not, because bytes
-// after them are unreachable to PHP.
+// require a complete buffer; terminators do not, because bytes after them are
+// unreachable to PHP.
 func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 	if len(buf) >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF {
 		buf = buf[3:]
@@ -3049,11 +3050,43 @@ func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 				i++
 			}
 			word := strings.ToLower(string(buf[start:i]))
-			return isNoArgPHPTerminator(buf, i, word, complete)
+			return isPHPTerminatorStatement(buf, i, word, complete)
 		}
 		return false
 	}
 	return complete
+}
+
+// PHPTerminatesImmediately reports whether the first statement of a PHP file
+// stops execution: exit, die, or __halt_compiler, with at most one literal
+// argument. Only the opening tag and whitespace may precede it. Comments are
+// deliberately not allowed here even though IsBenignPHPStubBytes accepts
+// them: a comment's tokens depend on the interpreter's source encoding, while
+// a terminator keyword ends execution whatever follows it. That makes this
+// safe on a partial head window, which is what the realtime path has.
+func PHPTerminatesImmediately(buf []byte) bool {
+	buf = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF})
+	i := skipPHPSpace(buf, 0)
+	const opener = "<?php"
+	if !bytes.HasPrefix(buf[i:], []byte(opener)) {
+		return false
+	}
+	i += len(opener)
+	// PHP needs whitespace after the opening tag. Without it the tag is
+	// literal text, the file never enters code mode here, and a later
+	// `<?php` block is what actually runs.
+	if i >= len(buf) || !isPHPSpace(buf[i]) {
+		return false
+	}
+	i = skipPHPSpace(buf, i)
+	start := i
+	for i < len(buf) && isIdentCont(buf[i]) {
+		i++
+	}
+	if i == start || !isIdentStart(buf[start]) {
+		return false
+	}
+	return isPHPTerminatorStatement(buf, i, strings.ToLower(string(buf[start:i])), false)
 }
 
 func isPHPSpace(c byte) bool {
@@ -3088,7 +3121,10 @@ func skipPHPLineComment(buf []byte, i int) int {
 	return i
 }
 
-func isNoArgPHPTerminator(buf []byte, i int, word string, complete bool) bool {
+// isPHPTerminatorStatement reports whether the identifier at word, which
+// starts the first statement of the buffer, ends execution. __halt_compiler
+// takes no argument; die and exit may print one literal before stopping.
+func isPHPTerminatorStatement(buf []byte, i int, word string, complete bool) bool {
 	if word != "die" && word != "exit" && word != "__halt_compiler" {
 		return false
 	}
@@ -3116,9 +3152,66 @@ func isNoArgPHPTerminator(buf []byte, i int, word string, complete bool) bool {
 	}
 	next, ok := consumeEmptyPHPParens(buf, i)
 	if !ok {
-		return false
+		if next, ok = consumeLiteralPHPParens(buf, i); !ok {
+			return false
+		}
 	}
 	return phpTerminatorStatementEnds(buf, next, complete)
+}
+
+// consumeLiteralPHPParens accepts `( <literal> )` where the literal is a
+// single-quoted string, a double-quoted string that interpolates nothing, or
+// a decimal integer. exit and die evaluate their argument before stopping, so
+// a literal is the only shape that proves no other code runs.
+func consumeLiteralPHPParens(buf []byte, i int) (int, bool) {
+	if i >= len(buf) || buf[i] != '(' {
+		return i, false
+	}
+	i = skipPHPSpace(buf, i+1)
+	if i >= len(buf) {
+		return i, false
+	}
+	if isPHPQuote(buf[i]) {
+		end, ok := endOfPHPLiteralString(buf, i)
+		if !ok {
+			return i, false
+		}
+		i = end
+	} else {
+		start := i
+		for i < len(buf) && buf[i] >= '0' && buf[i] <= '9' {
+			i++
+		}
+		if i == start {
+			return i, false
+		}
+	}
+	i = skipPHPSpace(buf, i)
+	if i >= len(buf) || buf[i] != ')' {
+		return i, false
+	}
+	return skipPHPSpace(buf, i+1), true
+}
+
+// endOfPHPLiteralString returns the index just past the string literal that
+// starts at i. It fails on a string the buffer does not terminate and on a
+// double-quoted string carrying a variable, because PHP evaluates `$x` and
+// `{$x}` inside double quotes.
+func endOfPHPLiteralString(buf []byte, i int) (int, bool) {
+	quote := buf[i]
+	for j := i + 1; j < len(buf); j++ {
+		switch buf[j] {
+		case '\\':
+			j++
+		case '$':
+			if quote == '"' {
+				return j, false
+			}
+		case quote:
+			return j + 1, true
+		}
+	}
+	return len(buf), false
 }
 
 func consumeEmptyPHPParens(buf []byte, i int) (int, bool) {

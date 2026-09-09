@@ -31,6 +31,11 @@ const dropperDigestMax = 8 << 20
 
 const dropperDigestChunk = 64 << 10
 
+// dropperHeadSnapshotAttempts bounds how many times the head read is retried
+// against a moved stat before the content is called unknown. Two attempts
+// settle a single metadata change; the third covers one landing in the retry.
+const dropperHeadSnapshotAttempts = 3
+
 const dropperPHPHandlerCacheMax = 4096
 
 const dropperPHPHandlerCacheTTL = 15 * time.Second
@@ -210,8 +215,12 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		c.Parent = parent
 	}
 	var stable bool
-	c.Head, stable = readDropperHead(event.fd, st, readFromFd)
+	var headSize int64
+	c.Head, headSize, stable = readDropperHead(event.fd, st, readFromFd)
 	c.ContentMayExecute = !stable
+	if stable {
+		c.Size = headSize
+	}
 	// Only known install/atomic staging shapes need a digest for cross-filesystem
 	// copy-delete matching. A separate CLOSE_WRITE refresh normally follows
 	// FAN_CREATE with the final bytes, so create-only snapshots keep identity
@@ -238,13 +247,34 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	return &c
 }
 
-func readDropperHead(fd int, before unix.Stat_t, read func(int, int) []byte) ([]byte, bool) {
-	head := read(fd, dropperTrackedHeadMax)
-	// Size from before the read cannot prove completeness if another writer
-	// changed the file in the meantime, even when the retained head is empty.
-	var after unix.Stat_t
-	stable := unix.Fstat(fd, &after) == nil && sameReadSnapshot(before, after)
-	return head, stable
+// readDropperHead snapshots the head bytes together with proof that nothing
+// changed the file while they were read. Size from before the read cannot
+// prove completeness if another writer changed the file in the meantime, even
+// when the retained head is empty.
+//
+// The stat pair also moves on a metadata-only change: unlink, chmod, and
+// rename all bump ctime without touching a byte. Plugin scratch files are
+// removed within seconds of being written, so that unlink lands inside the
+// stat window often enough to mark a zero-byte guard file "content unknown"
+// permanently. Retrying against the new stat settles those, while a file
+// under active rewrite keeps failing and stays unstable.
+// The returned size belongs to the same stat as the head, so a caller that
+// accepted a retried snapshot does not pair fresh bytes with a stale length.
+func readDropperHead(fd int, before unix.Stat_t, read func(int, int) []byte) ([]byte, int64, bool) {
+	var head []byte
+	current := before
+	for attempt := 0; attempt < dropperHeadSnapshotAttempts; attempt++ {
+		head = read(fd, dropperTrackedHeadMax)
+		var after unix.Stat_t
+		if unix.Fstat(fd, &after) != nil {
+			return head, before.Size, false
+		}
+		if sameReadSnapshot(current, after) {
+			return head, after.Size, true
+		}
+		current = after
+	}
+	return head, before.Size, false
 }
 
 // dropperProbeLoop probes overdue candidates for deletion and flushes findings.

@@ -241,3 +241,66 @@ func inertTestCandidate() dropperCandidate {
 		Head:     nil,
 	}
 }
+
+// wordfenceWAFHead is the opening of a Wordfence WAF state file, verbatim.
+// Everything after __halt_compiler() is data the PHP compiler never sees, so
+// a rewrite of one of these is not a dropper however often it happens. On a
+// production host they produced 138 self_deleting_dropper_realtime findings
+// in two days, six of them Critical.
+const wordfenceWAFHead = "<?php exit('Access denied'); __halt_compiler(); ?>\n" +
+	"******************************************************************\n" +
+	"This file is used by the Wordfence Web Application Firewall.\n"
+
+func TestDropperInertPHPDataFileIsNotADropper(t *testing.T) {
+	c := inertTestCandidate()
+	c.Path = "/home/alice/public_html/wp-content/wflogs/config-synced.php"
+	c.Mode = 0o100600
+	c.Head = []byte(wordfenceWAFHead)
+	c.Size = 21927 // the head is a truncated prefix of a much larger file
+
+	if !dropperCandidateIsInert(c) {
+		t.Fatal("a file whose compiled region only exits was treated as code")
+	}
+	e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+	if e.admit(c) {
+		t.Fatal("PHP data file admitted as a dropper candidate")
+	}
+}
+
+// The terminator argument has to be a literal. Anything PHP would evaluate
+// runs before the exit and keeps the file a candidate.
+func TestDropperInertPHPDataFileGateRejectsEvaluatedArgument(t *testing.T) {
+	for _, head := range []string{
+		"<?php exit(\"{$_GET['c']}\"); __halt_compiler(); ?>\npayload",
+		"<?php eval($_POST['c']); __halt_compiler(); ?>\npayload",
+		"<?php exit(shell_exec($_GET['c'])); ?>\npayload",
+	} {
+		t.Run(head, func(t *testing.T) {
+			c := inertTestCandidate()
+			c.Path = "/home/alice/public_html/wp-content/wflogs/config-synced.php"
+			c.Mode = 0o100600
+			c.Head = []byte(head)
+			c.Size = 21927
+			if dropperCandidateIsInert(c) {
+				t.Fatal("evaluated terminator argument classified as inert")
+			}
+			e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+			if !e.admit(c) {
+				t.Fatal("code-bearing candidate rejected")
+			}
+		})
+	}
+}
+
+// An executable-mode file is read by a shell, not by PHP, so the PHP data
+// file shape proves nothing about it.
+func TestDropperInertPHPDataFileGateDoesNotCoverExecutables(t *testing.T) {
+	c := inertTestCandidate()
+	c.Path = "/home/alice/public_html/cgi-bin/report"
+	c.Mode = 0o100755
+	c.Head = []byte(wordfenceWAFHead)
+	c.Size = 21927
+	if dropperCandidateIsInert(c) {
+		t.Fatal("executable script exempted using PHP compilation rules")
+	}
+}

@@ -1261,3 +1261,54 @@ func TestIsBenignPHPStubBytesRejectsEmpty(t *testing.T) {
 		t.Error("empty buffer must be rejected")
 	}
 }
+
+// A terminator that prints a constant string still terminates: PHP evaluates
+// the literal, writes it, and stops. Wordfence's WAF state files open with
+// exactly this shape and carry their data behind __halt_compiler(), which made
+// every rewrite of one look like code to the realtime inertness gate.
+func TestIsBenignPHPStubBytesAcceptsLiteralTerminatorArgument(t *testing.T) {
+	accepted := []string{
+		"<?php exit('Access denied'); __halt_compiler(); ?>\nbinary data follows",
+		"<?php die(\"Access denied\"); ?>",
+		"<?php exit(0);",
+		"<?php  die ( 'no' ) ;  // trailing comment",
+	}
+	for _, buf := range accepted {
+		if !IsBenignPHPStubBytesComplete([]byte(buf), false) {
+			t.Errorf("literal-argument terminator rejected: %q", buf)
+		}
+	}
+}
+
+// The argument must be a literal. A double-quoted string interpolates, and
+// PHP runs whatever the interpolation names before the process exits.
+func TestIsBenignPHPStubBytesRejectsExecutableTerminatorArgument(t *testing.T) {
+	rejected := []string{
+		"<?php exit(\"{$_GET['c']}\"); __halt_compiler();",
+		"<?php exit(\"$x\");",
+		"<?php die(shell_exec($_GET['c']));",
+		"<?php exit('a' . system('id'));",
+		"<?php exit($msg);",
+		"<?php exit(<<<'X'\nX\n);",
+		"<?php exit('unterminated",
+	}
+	for _, buf := range rejected {
+		if IsBenignPHPStubBytesComplete([]byte(buf), false) {
+			t.Errorf("terminator with an executable argument accepted: %q", buf)
+		}
+	}
+}
+
+// `<?phpexit();` is not an opening tag, so the file stays in text mode and a
+// later block is what runs. Nothing before it has terminated anything.
+func TestPHPTerminatesImmediatelyRequiresRealOpeningTag(t *testing.T) {
+	if PHPTerminatesImmediately([]byte("<?phpexit();\n<?php eval($_POST['c']);")) {
+		t.Error("run-together opening tag accepted as a terminator")
+	}
+	if PHPTerminatesImmediately([]byte("<?php // guard\nexit();")) {
+		t.Error("comment before the terminator accepted; its tokens depend on the source encoding")
+	}
+	if !PHPTerminatesImmediately([]byte("\xEF\xBB\xBF <?php\texit('bye'); ?>\ndata")) {
+		t.Error("BOM and whitespace before a literal-argument terminator must be accepted")
+	}
+}
