@@ -1103,6 +1103,25 @@ func TestLogrotateConfigKeepsExistingLogs(t *testing.T) {
 	}
 }
 
+// The action log is an audit trail, so history has to outlive the two files
+// the sink itself keeps. logrotate takes over at the file the sink has already
+// rotated away from and never writes to again, which keeps retention without
+// competing with the writer for the live file.
+func TestLogrotateRetainsRotatedActionLogs(t *testing.T) {
+	body, ok := logrotateStanzaFor(logrotateConfig(), "/var/log/csm/actions.jsonl.1")
+	if !ok {
+		t.Fatal("rotated action logs are discarded at 20 MB with no retention")
+	}
+	for _, directive := range []string{"compress", "missingok", "nocreate"} {
+		if !strings.Contains(body, directive) {
+			t.Errorf("stanza is missing %q: %s", directive, body)
+		}
+	}
+	if strings.Contains(body, "copytruncate") {
+		t.Error("copytruncate on the rotated file competes with the sink's own rotation")
+	}
+}
+
 func TestLogrotateLeavesActionRotationToFileSink(t *testing.T) {
 	// External rotation bypasses the action log's shared lock; copytruncate
 	// also discards writes and invalidates the reader's pinned snapshot.

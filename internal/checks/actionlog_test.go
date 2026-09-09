@@ -297,10 +297,16 @@ func TestQuarantineAuditCoversSetupAndCompletedWarnings(t *testing.T) {
 			if r.Result != want {
 				t.Fatalf("result=%s want=%s error=%v", r.Result, want, err)
 			}
-			if phase == "warning" || phase == "unlink" {
+			// A surviving hard link is only detected by the Linux
+			// transaction, so on other platforms the same quarantine
+			// completes without a warning to carry.
+			if (phase == "warning" && hardlinkWarningSupported) || phase == "unlink" {
 				if r.Error == "" || !strings.Contains(r.RecoveryPath, qPath) {
 					t.Fatalf("lost recovery: %+v", r)
 				}
+			}
+			if phase == "warning" && !hardlinkWarningSupported && r.Error != "" {
+				t.Fatalf("unexpected warning on a platform without hard-link detection: %+v", r)
 			}
 			if phase == "replacement" {
 				if got := actionlog.Stat(qPath).Digest; r.Before.Digest != got {

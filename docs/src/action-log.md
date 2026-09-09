@@ -92,7 +92,9 @@ Readers and writers coordinate rotation through `actions.jsonl.lock`.
 Readers pin both files before releasing the lock, so rotation cannot hide
 records and a slow reader does not hold up a writer.
 CSM handles this rotation itself; the installed logrotate configuration leaves
-the action log alone.
+the live file alone and archives `actions.jsonl.1`, which the sink never writes
+to again, for 90 days. Older history is compressed there and is not read by
+`csm actions`; ship the stream to a SIEM if you need it queryable.
 
 Recording is best effort. Sink errors or panics do not change an action's
 outcome. A write waits at most 250 ms, with at most 64 writes outstanding; a
