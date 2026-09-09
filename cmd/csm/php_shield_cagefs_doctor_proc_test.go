@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -93,9 +92,22 @@ func TestSampleCageShieldMountsCountsUnknownUIDs(t *testing.T) {
 		t.Fatalf("sampled = %d, missing = %v; want 2 and 2 for uids with no passwd entry", sampled, missing)
 	}
 	for _, name := range missing {
-		if !strings.HasPrefix(name, "uid:") {
-			t.Errorf("cage without a passwd entry must be reported by uid, got %q", name)
+		if want := "uid:" + strconv.Itoa(os.Geteuid()); name != want {
+			t.Errorf("cage without a passwd entry = %q, want %q", name, want)
 		}
+	}
+}
+
+func TestSampleCageShieldMountsNamesMissingAccount(t *testing.T) {
+	withFakeProc(t, []bool{true, false})
+	cagefsAccountNameForUID = func(uint64) (string, bool) { return "alice", true }
+
+	missing, sampled, err := sampleCageShieldMounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sampled != 2 || len(missing) != 1 || missing[0] != "alice" {
+		t.Fatalf("sampled = %d, missing = %v; want 2 and [alice]", sampled, missing)
 	}
 }
 
@@ -146,8 +158,8 @@ func TestSampleCageShieldMountsCountsPerCageNotServerWide(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sampled == 0 {
-		t.Fatal("sampled 0 cages, want the cage processes counted")
+	if sampled != 3 {
+		t.Fatalf("sampled %d cages, want 3", sampled)
 	}
 	if len(missing) != 2 {
 		t.Errorf("missing = %v with 2 unmounted cages out of %d sampled", missing, sampled)
@@ -162,8 +174,8 @@ func TestSampleCageShieldMountsCleanWhenAllMounted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(missing) != 0 {
-		t.Errorf("missing = %v of %d, want none", missing, sampled)
+	if sampled != 2 || len(missing) != 0 {
+		t.Errorf("missing = %v of %d, want none of 2 sampled cages", missing, sampled)
 	}
 }
 

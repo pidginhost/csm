@@ -61,3 +61,45 @@ func TestCageAccountNameFallsBackToUID(t *testing.T) {
 		t.Errorf("unknown uid = %q", got)
 	}
 }
+
+// UID labels identify unresolved cages, but cagefsctl requires an account
+// name. They must stay visible without becoming invalid remount commands.
+func TestPHPShieldCageFSDoctorRemountFixForUnknownUIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		missing []string
+		wantFix string
+	}{
+		{
+			name:    "unknown only",
+			missing: []string{"uid:1001"},
+			wantFix: "resolve account names for uid:1001, then use `cagefsctl --remount <user>`",
+		},
+		{
+			name:    "mixed",
+			missing: []string{"alice", "uid:1001"},
+			wantFix: "apply per account with `cagefsctl --remount alice`; resolve account names for uid:1001, then use `cagefsctl --remount <user>`",
+		},
+		{
+			name:    "cap includes unresolved cages",
+			missing: []string{"uid:1001", "uid:1002", "uid:1003", "uid:1004", "uid:1005", "alice"},
+			wantFix: "resolve account names for uid:1001, uid:1002, uid:1003, uid:1004, uid:1005, then use `cagefsctl --remount <user>`, or all at once with `cagefsctl --remount-all` in a maintenance window",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withCageFSDoctorPaths(t, phpShieldEventDir+"\n", false)
+			cagefsCageMountSample = func() ([]string, int, error) { return tc.missing, 12, nil }
+			checks := phpShieldCageFSDoctorChecks()
+			if len(checks) != 1 || checks[0].Status != "fail" {
+				t.Fatalf("checks = %+v, want one failure", checks)
+			}
+			if !strings.Contains(checks[0].Message, "uid:1001") {
+				t.Errorf("unresolved cage missing from report: %q", checks[0].Message)
+			}
+			want := tc.wantFix + "; a remount kills processes inside the cages it rebuilds"
+			if checks[0].Fix != want {
+				t.Errorf("fix = %q, want %q", checks[0].Fix, want)
+			}
+		})
+	}
+}

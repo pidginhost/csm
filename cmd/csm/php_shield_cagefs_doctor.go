@@ -98,14 +98,24 @@ func cageNameList(names []string) string {
 // and offers the host-wide remount when the list is long enough that a
 // per-account pass is impractical.
 func cageRemountFix(names []string) string {
-	var cmds []string
-	for _, n := range names {
-		if len(cmds) == cageNameCap {
-			break
+	var cmds, unresolved []string
+	for _, n := range names[:min(len(names), cageNameCap)] {
+		// A passwd name cannot contain ':', so this is the display-only
+		// fallback for a UID whose account lookup failed.
+		if strings.HasPrefix(n, "uid:") {
+			unresolved = append(unresolved, n)
+			continue
 		}
 		cmds = append(cmds, "`cagefsctl --remount "+n+"`")
 	}
-	fix := "apply per account with " + strings.Join(cmds, ", ")
+	var steps []string
+	if len(cmds) > 0 {
+		steps = append(steps, "apply per account with "+strings.Join(cmds, ", "))
+	}
+	if len(unresolved) > 0 {
+		steps = append(steps, "resolve account names for "+strings.Join(unresolved, ", ")+", then use `cagefsctl --remount <user>`")
+	}
+	fix := strings.Join(steps, "; ")
 	if len(names) > cageNameCap {
 		fix += ", or all at once with `cagefsctl --remount-all` in a maintenance window"
 	}
