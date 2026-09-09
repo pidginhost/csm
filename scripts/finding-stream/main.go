@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
@@ -59,6 +60,11 @@ func run(args []string, stdout io.Writer) error {
 		return err
 	}
 
+	for _, protected := range append([]string{*saltPath}, inputs...) {
+		if err := rejectOutputAlias(*outPath, protected); err != nil {
+			return err
+		}
+	}
 	var events []alert.AuditEvent
 	for _, in := range inputs {
 		batch, err := readEvents(in)
@@ -83,30 +89,76 @@ func run(args []string, stdout io.Writer) error {
 	if err := writeEvents(*outPath, out); err != nil {
 		return err
 	}
-	writeSummary(stdout, *outPath, out, a, salt)
+	writeSummary(stdout, out, a, salt)
+	return nil
+}
+
+func rejectOutputAlias(output, protected string) error {
+	outAbs, err := filepath.Abs(output)
+	if err != nil {
+		return err
+	}
+	protectedAbs, err := filepath.Abs(protected)
+	if err != nil {
+		return err
+	}
+	outInfo, outErr := os.Stat(output)
+	protectedInfo, protectedErr := os.Stat(protected)
+	if outAbs == protectedAbs || (outErr == nil && protectedErr == nil && os.SameFile(outInfo, protectedInfo)) {
+		return errors.New("output must not replace a salt or input file")
+	}
 	return nil
 }
 
 func loadOrCreateSalt(path string) ([]byte, error) {
-	if b, err := os.ReadFile(path); err == nil { // #nosec G304 -- operator-chosen salt path
-		if len(b) < 32 {
-			return nil, fmt.Errorf("salt file %s is shorter than 32 bytes", path)
-		}
-		return b, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	salt, err := readSalt(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		return salt, err
+	}
+	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	salt = make([]byte, 32)
+	if _, err = rand.Read(salt); err != nil {
 		return nil, err
 	}
-	salt := make([]byte, 32)
-	if _, err := rand.Read(salt); err != nil {
+	// Exclusive creation cannot truncate a salt created by another process
+	// between the read and the write, or follow a newly installed symlink.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- operator-chosen salt path
+	if errors.Is(err, os.ErrExist) {
+		return readSalt(path)
+	}
+	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, salt, 0o600); err != nil {
+	_, writeErr := f.Write(salt)
+	if err := errors.Join(writeErr, f.Close()); err != nil {
 		return nil, err
 	}
 	return salt, nil
+}
+
+func readSalt(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- operator-chosen salt path; symlinks refused
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("salt must be a regular file accessible only by its owner (mode 0600)")
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) < 32 {
+		return nil, errors.New("salt file is shorter than 32 bytes")
+	}
+	return b, nil
 }
 
 func readEvents(path string) ([]alert.AuditEvent, error) {
@@ -147,34 +199,38 @@ func readEvents(path string) ([]alert.AuditEvent, error) {
 }
 
 func writeEvents(path string, events []alert.AuditEvent) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304 -- operator-chosen output file
+	// Publish only a complete stream. A failed encode or gzip close must not
+	// destroy a previous recording or leave a partial output to be shared.
+	f, err := os.CreateTemp(dir, ".finding-stream-*")
 	if err != nil {
 		return err
 	}
-	zw := gzip.NewWriter(f)
+	defer os.Remove(f.Name())
+	err = encodeEvents(f, events)
+	if err = errors.Join(err, f.Close()); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+func encodeEvents(dst io.Writer, events []alert.AuditEvent) (err error) {
+	zw := gzip.NewWriter(dst)
 	w := bufio.NewWriter(zw)
+	defer func() { err = errors.Join(err, w.Flush(), zw.Close()) }()
 	enc := json.NewEncoder(w)
 	for i := range events {
 		if err := enc.Encode(&events[i]); err != nil {
-			_ = f.Close()
 			return err
 		}
 	}
-	if err := w.Flush(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := zw.Close(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
+	return nil
 }
 
-func writeSummary(w io.Writer, outPath string, events []alert.AuditEvent, a *Anonymizer, salt []byte) {
+func writeSummary(w io.Writer, events []alert.AuditEvent, a *Anonymizer, salt []byte) {
 	byCheck := map[string]int{}
 	for i := range events {
 		byCheck[events[i].Check]++
@@ -189,7 +245,7 @@ func writeSummary(w io.Writer, outPath string, events []alert.AuditEvent, a *Ano
 		}
 		return names[i] < names[j]
 	})
-	fmt.Fprintf(w, "output: %s\n", outPath)
+	fmt.Fprintln(w, "output: written")
 	fmt.Fprintf(w, "events: %d\n", len(events))
 	if len(events) > 0 {
 		first, last := events[0].Timestamp, events[0].Timestamp

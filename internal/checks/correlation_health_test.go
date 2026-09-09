@@ -1,11 +1,109 @@
 package checks
 
 import (
+	"fmt"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
+
+func TestAttributionHealthPublishesWholeUpdates(t *testing.T) {
+	r := newUnattributedReporter(func(string, ...any) {})
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for range 2000 {
+				r.RecordActiveSet(map[string]int{"webshell": 1})
+			}
+		})
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	defer func() { <-done }()
+	for {
+		h := r.Health()
+		if h.Cumulative["webshell"] != h.ActiveSetUpdates {
+			t.Fatalf("partially published update: %+v", h)
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+}
+
+func TestAttributionHealthCountsFinalCappedSet(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	prev := defaultUnattributedReporter
+	defaultUnattributedReporter = newUnattributedReporter(func(string, ...any) {})
+	t.Cleanup(func() { defaultUnattributedReporter = prev })
+	st := newTestStore(t)
+	now := time.Now()
+	rows := make([]alert.Finding, 0, 15000)
+	for i := range 14997 {
+		rows = append(rows, alert.Finding{Check: "db_rogue_admin", Severity: alert.Critical, TenantID: "alice", Message: fmt.Sprintf("row %d", i), Timestamp: now})
+	}
+	for _, account := range []string{"bob", "carol", ""} {
+		rows = append(rows, alert.Finding{Check: "webshell", Severity: alert.Warning, TenantID: account, Message: "artifact " + account, Timestamp: now})
+	}
+	rows[len(rows)-1].Timestamp = now.Add(-time.Hour)
+	StoreLatestScanFindings(st, []string{"db_rogue_admin", "webshell"}, rows)
+	latest := st.LatestFindings()
+	want := CorrelateFindings(latest).Unattributed
+	if len(latest) != 15000 || len(want) != 0 {
+		t.Fatalf("fixture did not evict the unattributed row: size=%d counts=%v", len(latest), want)
+	}
+	if got := AttributionHealth().Current; !reflect.DeepEqual(got, want) {
+		t.Fatalf("health counts rows evicted by derived findings: got %v, want %v", got, want)
+	}
+}
+
+func TestAttributionHealthConcurrentMergesMatchStore(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	prev := defaultUnattributedReporter
+	defaultUnattributedReporter = newUnattributedReporter(func(string, ...any) {})
+	t.Cleanup(func() { defaultUnattributedReporter = prev })
+	st := newTestStore(t)
+	for range 30 {
+		var wg sync.WaitGroup
+		for _, owner := range []string{"alice", ""} {
+			wg.Go(func() {
+				StoreLatestScanFindings(st, []string{"webshell"}, []alert.Finding{{Check: "webshell", Severity: alert.Critical, TenantID: owner, Message: "artifact"}})
+			})
+		}
+		wg.Wait()
+		if got, want := AttributionHealth().Current, CorrelateFindings(st.LatestFindings()).Unattributed; !reflect.DeepEqual(got, want) {
+			t.Fatalf("older merge overwrote health: got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestAttributionHealthLoggerCanMerge(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	st := newTestStore(t)
+	prev := defaultUnattributedReporter
+	defaultUnattributedReporter = newUnattributedReporter(func(string, ...any) {
+		StoreLatestScanFindings(st, []string{"webshell"}, nil)
+	})
+	t.Cleanup(func() { defaultUnattributedReporter = prev })
+	done := make(chan struct{})
+	go func() {
+		StoreLatestScanFindings(st, []string{"webshell"}, []alert.Finding{{Check: "webshell", Severity: alert.Critical}})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("logger could not re-enter merge")
+	}
+	if h := AttributionHealth(); len(h.Current) != 0 || h.ActiveSetUpdates != 2 || h.Cumulative["webshell"] != 1 {
+		t.Fatalf("logger merge lost: %+v", h)
+	}
+}
 
 // The active-set snapshot answers "which checks are losing attribution on
 // this host right now"; the cumulative count answers "how often has it

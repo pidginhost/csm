@@ -370,11 +370,13 @@ when its producer does supply an authoritative owner, that Critical counts.
 
 The health snapshot (`csm status --json`, `/api/v1/status`) carries a
 `correlation_attribution` block with two views: `current` is the per-check
-count of unattributed qualifying rows in the persisted active set as of its
-latest merge, and clears when a later merge attributes them; `cumulative`
+count of unattributed qualifying rows retained in the active set after its
+latest merge, including any eviction caused by the size limit, and clears
+when a later merge attributes them; `cumulative`
 sums every unattributed row since the daemon started, across active-set
 merges and per-batch derivations, so a producer that recovered stays visible
-as having failed. The block is absent until the first merge. `csm doctor`
+as having failed. Counters are published together in merge order. The block
+is absent until the first merge. `csm doctor`
 reports the same state as `correlation attribution`: OK when `current` is
 empty, WARN naming the checks and their counts otherwise, with the history
 in both cases.

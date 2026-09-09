@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The clean-corpus manifest now names the CMS of every pinned source and lists each supported CMS that has no pinned source yet with the reason, so a database scanner for a new CMS cannot ship without a corpus decision.
 
 ### Fixed
+- Correlation attribution health now publishes consistent counters in merge order and counts only findings retained in the final active set.
+- Finding-stream exports preserve previous recordings on failure and refuse output paths that would overwrite the salt or source logs.
 - The operator's web server override in the configuration is applied before crash reporting starts. Crash reporting tags its events with the detected platform, and on a host with it enabled that detection ran first, so the override was silently ignored at every daemon start and log watchers followed the probe instead of the configuration.
 - The installer no longer writes the three sandbox directives that systemd 239 (EL8, CloudLinux 8) rejects at every start; it says which were left out. Newer systemd keeps the full unit.
 - Doctor now names the CageFS cages that lack the PHP Shield event mount and gives the per-account remount command, instead of a count that pointed at every cage. An account it cannot resolve stays visible by uid, with a note to resolve the name first rather than an invalid command.
@@ -43,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Finding-stream exports remove more embedded identities and quoted credentials, strengthen leak checks, require private salt files, and keep identity-bearing paths out of summaries.
 - Mail hold and governor alerts now require a local mail-server decision; a message subject or peer name can no longer forge one.
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
 - Cross-account correlation now follows the explicit per-check policy, and database, mail, crontab, process and realtime findings carry the owning account, resolved from the panel's domain owner table, a passwd home directly under an account root, or the file path. Service users, envelope senders and display labels never become an owner; an eligible finding without one is reported rather than counted.

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"sort"
 	"strings"
@@ -22,23 +23,25 @@ import (
 // Everything else that calibration needs (timestamps, check names,
 // severities, path structure, plugin names, process names) is kept.
 type Anonymizer struct {
-	salt     []byte
-	accounts map[string]struct{}
-	hosts    map[string]string // lower-cased name or alias -> canonical hostname
-	domains  map[string]struct{}
-	emails   map[string]struct{}
-	counts   map[string]int
+	salt       []byte
+	accounts   map[string]struct{}
+	hosts      map[string]string // lower-cased name or alias -> canonical hostname
+	domains    map[string]struct{}
+	emails     map[string]struct{}
+	counts     map[string]int
+	pseudonyms map[string]struct{}
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
 func NewAnonymizer(salt []byte) *Anonymizer {
 	return &Anonymizer{
-		salt:     append([]byte(nil), salt...),
-		accounts: make(map[string]struct{}),
-		hosts:    make(map[string]string),
-		domains:  make(map[string]struct{}),
-		emails:   make(map[string]struct{}),
-		counts:   make(map[string]int),
+		salt:       append([]byte(nil), salt...),
+		accounts:   make(map[string]struct{}),
+		hosts:      make(map[string]string),
+		domains:    make(map[string]struct{}),
+		emails:     make(map[string]struct{}),
+		counts:     make(map[string]int),
+		pseudonyms: make(map[string]struct{}),
 	}
 }
 
@@ -54,12 +57,14 @@ var systemUsers = map[string]bool{
 // LiteSpeed vhost tokens (APVH_<ip>:443_<ip>:443_<account>_<domain>) glue
 // identities together with underscores. Boundaries are checked by hand.
 var (
-	emailRe     = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
-	ipv6Re      = regexp.MustCompile(`[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}`)
-	homePathRe  = regexp.MustCompile(`(/home\d*/)([^/\s"',;:]+)`)
-	accountRe   = regexp.MustCompile(`Account: ([A-Za-z0-9._-]+)`)
-	secretRe    = regexp.MustCompile(`(?i)(passw(?:or)?d|secret|token|api[_-]?key)\s*[:=]\s*\S+`)
-	pseudonymRe = regexp.MustCompile(`(?:acct|host|dom|user)-[0-9a-f]{6}`)
+	emailRe           = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
+	ipv6Re            = regexp.MustCompile(`[0-9A-Fa-f]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*`)
+	homePathRe        = regexp.MustCompile(`(/home\d*/)([^/\s"',;:]+)`)
+	accountRe         = regexp.MustCompile(`Account: ([A-Za-z0-9._-]+)`)
+	secretRe          = regexp.MustCompile(`(?is)(["']?(?:passw(?:or)?d|secret|token|api[_-]?key)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|\S+)`)
+	domainCandidateRe = regexp.MustCompile(`(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}`)
+	emittedNameRe     = regexp.MustCompile(`(?:acct|host|dom|user)-[0-9a-f]{6}(?:\.example)?`)
+	ipv4Re            = regexp.MustCompile(`(?:[0-9]+\.){3}[0-9]+`)
 )
 
 // fileExtensions keeps dotted file names out of the domain replacement.
@@ -88,7 +93,7 @@ func (a *Anonymizer) Account(raw string) string {
 	if systemUsers[raw] || raw == "" || strings.Trim(raw, "0123456789") == "" {
 		return raw
 	}
-	return "acct-" + a.label("account", raw)
+	return a.remember("acct-" + a.label("account", raw))
 }
 
 // Host maps a server hostname. A learned alias (the first label of a
@@ -100,7 +105,7 @@ func (a *Anonymizer) Host(raw string) string {
 	if canonical, ok := a.hosts[strings.ToLower(raw)]; ok {
 		raw = canonical
 	}
-	return "host-" + a.label("host", raw)
+	return a.remember("host-" + a.label("host", raw))
 }
 
 // Domain maps a domain name; the pseudonym is a reserved name that can
@@ -109,7 +114,7 @@ func (a *Anonymizer) Domain(raw string) string {
 	if raw == "" {
 		return raw
 	}
-	return "dom-" + a.label("domain", raw) + ".example"
+	return a.remember("dom-" + a.label("domain", raw) + ".example")
 }
 
 // Email maps a mailbox, keeping the mapped domain so a mailbox and its
@@ -119,7 +124,7 @@ func (a *Anonymizer) Email(raw string) string {
 	if at <= 0 {
 		return raw
 	}
-	return "user-" + a.label("mailbox", raw[:at]) + "@" + a.Domain(raw[at+1:])
+	return a.remember("user-"+a.label("mailbox", raw[:at])) + "@" + a.Domain(raw[at+1:])
 }
 
 // IPv4 maps an address into 198.18.0.0/15 (RFC 2544 benchmarking space,
@@ -129,7 +134,7 @@ func (a *Anonymizer) IPv4(raw string) string {
 	mac.Write([]byte("ipv4\x00" + raw))
 	sum := mac.Sum(nil)
 	n := binary.BigEndian.Uint32(sum[:4]) & 0x1ffff // 17 bits: 198.18.0.0/15
-	return fmt.Sprintf("198.%d.%d.%d", 18+(n>>16), (n>>8)&0xff, n&0xff)
+	return a.remember(fmt.Sprintf("198.%d.%d.%d", 18+(n>>16), (n>>8)&0xff, n&0xff))
 }
 
 // IPv6 maps an address into 2001:db8::/32 (RFC 3849 documentation prefix).
@@ -137,9 +142,9 @@ func (a *Anonymizer) IPv6(raw string) string {
 	mac := hmac.New(sha256.New, a.salt)
 	mac.Write([]byte("ipv6\x00" + strings.ToLower(raw)))
 	sum := mac.Sum(nil)
-	return fmt.Sprintf("2001:db8:%x:%x::%x:%x",
+	return a.remember(fmt.Sprintf("2001:db8:%x:%x::%x:%x",
 		binary.BigEndian.Uint16(sum[0:2]), binary.BigEndian.Uint16(sum[2:4]),
-		binary.BigEndian.Uint16(sum[4:6]), binary.BigEndian.Uint16(sum[6:8]))
+		binary.BigEndian.Uint16(sum[4:6]), binary.BigEndian.Uint16(sum[6:8])))
 }
 
 // Learn collects the identities the events carry in structured fields and
@@ -152,21 +157,23 @@ func (a *Anonymizer) Learn(events []alert.AuditEvent) {
 		a.learnHost(e.Hostname)
 		a.learnDomain(e.Domain)
 		a.learnEmail(e.Mailbox)
-		for _, text := range []string{e.Message, e.Details, e.FilePath} {
-			for _, m := range homePathRe.FindAllStringSubmatch(text, -1) {
-				a.learnAccount(m[2])
-			}
-			for _, m := range accountRe.FindAllStringSubmatch(text, -1) {
-				a.learnAccount(m[1])
-			}
-			for _, m := range emailRe.FindAllString(text, -1) {
-				a.learnEmail(m)
-			}
-		}
+		a.learnText(eventText(*e))
 		for p := e.Process; p != nil; p = p.Parent {
 			a.learnAccount(p.Account)
 			a.learnAccount(p.User)
 		}
+	}
+}
+
+func (a *Anonymizer) learnText(text string) {
+	for _, m := range homePathRe.FindAllStringSubmatch(text, -1) {
+		a.learnAccount(m[2])
+	}
+	for _, m := range accountRe.FindAllStringSubmatch(text, -1) {
+		a.learnAccount(m[1])
+	}
+	for _, m := range emailRe.FindAllString(text, -1) {
+		a.learnEmail(m)
 	}
 }
 
@@ -237,6 +244,7 @@ func (a *Anonymizer) process(p *processctx.ProcessContext) *processctx.ProcessCo
 	out := *p
 	out.User = a.Account(p.User)
 	out.Account = a.Account(p.Account)
+	out.Comm = a.Text(p.Comm)
 	out.Exe = a.Text(p.Exe)
 	if p.Cmdline != nil {
 		out.Cmdline = make([]string, len(p.Cmdline))
@@ -248,35 +256,65 @@ func (a *Anonymizer) process(p *processctx.ProcessContext) *processctx.ProcessCo
 	return &out
 }
 
-// Text scrubs free text in a fixed order: mail addresses, IPv6 addresses,
-// home paths, then every name-shaped token (IPv4 addresses, learned hosts,
-// learned and domain-shaped names, account labels), then secrets.
+// Text removes secrets before identity substitutions can obscure their
+// keys, then scrubs mail, IPv6, home paths and name-shaped tokens in order.
 func (a *Anonymizer) Text(s string) string {
 	if s == "" {
 		return s
 	}
+	s = secretRe.ReplaceAllString(s, "${1}[redacted]")
 	s = emailRe.ReplaceAllStringFunc(s, func(m string) string { a.counts["emails"]++; return a.Email(m) })
-	s = replaceBounded(s, ipv6Re, func(m string) (string, bool) {
-		if !looksLikeIPv6(m) {
-			return m, false
-		}
-		a.counts["ipv6"]++
-		return a.IPv6(m), true
-	})
+	s = a.scrubIPv6(s)
 	s = homePathRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := homePathRe.FindStringSubmatch(m)
 		a.counts["accounts"]++
 		return sub[1] + a.Account(sub[2])
 	})
 	s = scrubTokens(s, a.token)
-	s = secretRe.ReplaceAllString(s, "$1=[redacted]")
 	return s
+}
+
+// A field separator or a hex letter at the end of its key can be part of
+// the regex match. Try suffixes at group boundaries before rejecting it.
+func (a *Anonymizer) scrubIPv6(s string) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range ipv6Re.FindAllStringIndex(s, -1) {
+		end := loc[1]
+		for end > loc[0] && s[end-1] == '.' {
+			end--
+		}
+		for start := loc[0]; start < end; start++ {
+			if start != loc[0] && s[start-1] != ':' {
+				continue
+			}
+			if !bounded(s, start, end) {
+				continue
+			}
+			raw := s[start:end]
+			if !looksLikeIPv6(raw) {
+				continue
+			}
+			if !net.ParseIP(raw).IsLoopback() {
+				a.counts["ipv6"]++
+				b.WriteString(s[last:start])
+				b.WriteString(a.IPv6(raw))
+				last = end
+			}
+			break
+		}
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 // token rewrites one name-shaped token (letters, digits, dots, hyphens).
 func (a *Anonymizer) token(core string) string {
 	lower := strings.ToLower(core)
-	if isPseudonym(lower) {
+	if a.isPseudonym(lower) {
 		return core
 	}
 	if ip := parseIPv4(core); ip != nil {
@@ -290,15 +328,11 @@ func (a *Anonymizer) token(core string) string {
 		a.counts["hosts"]++
 		return a.Host(core)
 	}
-	if _, ok := a.domains[lower]; ok {
+	if _, ok := a.domains[lower]; ok || domainShaped(lower) {
 		a.counts["domains"]++
 		return a.Domain(core)
 	}
-	if domainShaped(lower) {
-		a.counts["domains"]++
-		return a.Domain(core)
-	}
-	return a.accountLabels(a.embedded(core))
+	return a.embedded(core)
 }
 
 // labelBounds returns the offsets at which a label of tok starts or ends:
@@ -315,12 +349,9 @@ func labelBounds(tok string) []int {
 	return append(bounds, len(tok))
 }
 
-// embedded replaces learned hosts, learned domains and addresses that sit
+// embedded replaces hosts, domains, accounts and addresses that sit
 // between label boundaries of a longer token, longest span first.
 func (a *Anonymizer) embedded(core string) string {
-	if !strings.ContainsAny(core, ".-") {
-		return core
-	}
 	lower := strings.ToLower(core)
 	bounds := labelBounds(lower)
 	var b strings.Builder
@@ -330,8 +361,11 @@ func (a *Anonymizer) embedded(core string) string {
 			continue
 		}
 		for j := len(bounds) - 1; j > i; j-- {
+			if bounds[i] == bounds[j] {
+				continue
+			}
 			sub := lower[bounds[i]:bounds[j]]
-			r, ok := a.embeddedName(sub, core[bounds[i]:bounds[j]], edge(lower, bounds[i]-1), edge(lower, bounds[j]))
+			r, ok := a.embeddedName(sub, core[bounds[i]:bounds[j]])
 			if !ok {
 				continue
 			}
@@ -348,73 +382,39 @@ func (a *Anonymizer) embedded(core string) string {
 	return b.String()
 }
 
-func edge(s string, i int) byte {
-	if i < 0 || i >= len(s) {
-		return 0
+func (a *Anonymizer) embeddedName(lower, raw string) (string, bool) {
+	if a.isPseudonym(lower) {
+		return raw, true
 	}
-	return s[i]
-}
-
-func (a *Anonymizer) embeddedName(lower, raw string, before, after byte) (string, bool) {
 	if _, ok := a.hosts[lower]; ok {
 		a.counts["hosts"]++
 		return a.Host(raw), true
 	}
-	if _, ok := a.domains[lower]; ok {
+	if _, ok := a.domains[lower]; ok || domainShaped(lower) {
 		a.counts["domains"]++
 		return a.Domain(raw), true
 	}
-	if before != '.' && after != '.' {
-		if ip := parseIPv4(lower); ip != nil && !ip.IsLoopback() && !isPseudonym(lower) {
-			a.counts["ipv4"]++
-			return a.IPv4(raw), true
-		}
+	if ip := parseIPv4(lower); ip != nil && !ip.IsLoopback() {
+		a.counts["ipv4"]++
+		return a.IPv4(raw), true
+	}
+	if _, ok := a.accounts[lower]; ok {
+		a.counts["accounts"]++
+		return a.Account(raw), true
 	}
 	return "", false
 }
 
-// accountLabels replaces the dot- or hyphen-separated labels of a token that
-// name a learned account, so "alice.bak" and "backup-alice" lose the name
-// while keeping their shape.
-func (a *Anonymizer) accountLabels(core string) string {
-	if len(a.accounts) == 0 {
-		return core
-	}
-	var b strings.Builder
-	last, changed := 0, false
-	for i := 0; i <= len(core); i++ {
-		if i < len(core) && core[i] != '.' && core[i] != '-' {
-			continue
-		}
-		lab := core[last:i]
-		if _, ok := a.accounts[strings.ToLower(lab)]; ok {
-			if !changed {
-				b.WriteString(core[:last])
-				changed = true
-			}
-			a.counts["accounts"]++
-			b.WriteString(a.Account(lab))
-		} else if changed {
-			b.WriteString(lab)
-		}
-		if changed && i < len(core) {
-			b.WriteByte(core[i])
-		}
-		last = i + 1
-	}
-	if !changed {
-		return core
-	}
-	return b.String()
+// Only values actually emitted under this salt are exempt from rewriting.
+// A raw name that merely starts with "host-" is still an identity.
+func (a *Anonymizer) remember(value string) string {
+	a.pseudonyms[value] = struct{}{}
+	return value
 }
 
-func isPseudonym(lower string) bool {
-	for _, p := range []string{"acct-", "host-", "dom-", "user-"} {
-		if strings.HasPrefix(lower, p) {
-			return true
-		}
-	}
-	return strings.HasPrefix(lower, "198.18.") || strings.HasPrefix(lower, "198.19.")
+func (a *Anonymizer) isPseudonym(value string) bool {
+	_, ok := a.pseudonyms[strings.ToLower(value)]
+	return ok
 }
 
 func parseIPv4(s string) net.IP {
@@ -543,11 +543,11 @@ func domainShaped(lower string) bool {
 // account, domain, mailbox or address and returns one problem per event. It
 // looks at every span between label boundaries of every token, so a name
 // glued to underscores, file extensions or hyphens is still found, while a
-// name inside a longer word ("me.ro" in "some.rock") is not.
+// name inside a longer label is not attributed to that learned identity.
 func (a *Anonymizer) Verify(events []alert.AuditEvent) []string {
 	var problems []string
 	for i := range events {
-		found := a.leaksIn(pseudonymRe.ReplaceAllString(eventText(events[i]), " "))
+		found := a.leaksIn(eventText(events[i]))
 		if len(found) > 0 {
 			sort.Strings(found)
 			problems = append(problems, fmt.Sprintf("event %d (%s): %s", i, events[i].Check, strings.Join(found, ", ")))
@@ -564,39 +564,67 @@ func (a *Anonymizer) leaksIn(text string) []string {
 			found["host "+name] = struct{}{}
 		}
 	}
-	scrubTokens(lowerText, func(core string) string {
-		bounds := labelBounds(core)
-		for i := 0; i < len(bounds)-1; i++ {
-			for j := i + 1; j < len(bounds); j++ {
-				sub := core[bounds[i]:bounds[j]]
-				if _, ok := a.accounts[sub]; ok {
-					found["account "+sub] = struct{}{}
-				}
-				if _, ok := a.hosts[sub]; ok {
-					found["host "+sub] = struct{}{}
-				}
-				if _, ok := a.domains[sub]; ok {
-					found["domain "+sub] = struct{}{}
-				}
-				if edge(core, bounds[i]-1) != '.' && edge(core, bounds[j]) != '.' {
-					if ip := parseIPv4(sub); ip != nil && !ip.IsLoopback() && !isPseudonym(sub) {
-						found["ipv4 "+sub] = struct{}{}
-					}
-				}
+	// This pass deliberately does not use Text, scrubTokens or labelBounds:
+	// a replacement bug must not also disable the final refusal check.
+	for _, candidate := range domainCandidateRe.FindAllString(lowerText, -1) {
+		for end := len(candidate); end > 0; end-- {
+			if end != len(candidate) && candidate[end] != '.' && candidate[end] != '-' {
+				continue
+			}
+			sub := candidate[:end]
+			if domainShaped(sub) && !a.isPseudonym(sub) {
+				found["domain "+sub] = struct{}{}
 			}
 		}
-		return core
+	}
+	masked := replaceBounded(lowerText, emittedNameRe, func(m string) (string, bool) {
+		return " ", a.isPseudonym(m)
 	})
+	for name := range a.accounts {
+		if containsLabel(masked, name) {
+			found["account "+name] = struct{}{}
+		}
+	}
+	for name := range a.hosts {
+		if containsLabel(masked, name) {
+			found["host "+name] = struct{}{}
+		}
+	}
+	for name := range a.domains {
+		if containsLabel(masked, name) {
+			found["domain "+name] = struct{}{}
+		}
+	}
+	for offset := 0; offset < len(lowerText); {
+		loc := ipv4Re.FindStringIndex(lowerText[offset:])
+		if loc == nil {
+			break
+		}
+		loc[0], loc[1] = loc[0]+offset, loc[1]+offset
+		// A filename's numeric suffix can begin an invalid overlapping
+		// candidate (client4.203.0.113.9). Do not skip the address behind it.
+		offset = loc[0] + 1
+		sub := lowerText[loc[0]:loc[1]]
+		if !bounded(lowerText, loc[0], loc[1]) {
+			continue
+		}
+		if a.isPseudonym(sub) {
+			// Do not reinterpret a generated address's suffix as another IP.
+			offset = loc[1]
+			continue
+		}
+		if ip := net.ParseIP(sub); ip != nil && !ip.IsLoopback() && !strings.HasPrefix(sub, "198.18.") && !strings.HasPrefix(sub, "198.19.") {
+			found["ipv4 "+sub] = struct{}{}
+		}
+	}
 	for _, m := range emailRe.FindAllString(text, -1) {
-		if !strings.HasPrefix(m, "user-") || !strings.HasSuffix(m, ".example") {
+		local, domain, _ := strings.Cut(m, "@")
+		if !a.isPseudonym(local) || !a.isPseudonym(domain) {
 			found["mailbox "+m] = struct{}{}
 		}
 	}
-	for _, loc := range ipv6Re.FindAllStringIndex(text, -1) {
-		m := text[loc[0]:loc[1]]
-		if bounded(text, loc[0], loc[1]) && looksLikeIPv6(m) && !strings.HasPrefix(strings.ToLower(m), "2001:db8:") {
-			found["ipv6 "+m] = struct{}{}
-		}
+	for _, raw := range unmaskedIPv6(text) {
+		found["ipv6 "+raw] = struct{}{}
 	}
 	out := make([]string, 0, len(found))
 	for f := range found {
@@ -605,11 +633,66 @@ func (a *Anonymizer) leaksIn(text string) []string {
 	return out
 }
 
+// Verify uses a bounded sliding scan and netip instead of the replacement
+// regex. The longest IPv6 spelling, including a dotted IPv4 tail, is 45 bytes.
+func unmaskedIPv6(text string) []string {
+	var found []string
+	documentation := netip.MustParsePrefix("2001:db8::/32")
+	for start := 0; start < len(text); start++ {
+		if start > 0 && isAlnum(text[start-1]) {
+			continue
+		}
+		limit := start
+		for limit < len(text) && limit-start < 45 {
+			if !isIPByte(text[limit]) {
+				break
+			}
+			limit++
+		}
+		for end := limit; end > start; end-- {
+			if end < len(text) && isAlnum(text[end]) {
+				continue
+			}
+			raw := text[start:end]
+			ip, err := netip.ParseAddr(raw)
+			if err != nil || !ip.Is6() {
+				continue
+			}
+			if !ip.IsLoopback() && !documentation.Contains(ip) {
+				found = append(found, raw)
+			}
+			start = end - 1
+			break
+		}
+	}
+	return found
+}
+
+func isIPByte(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == ':' || c == '.'
+}
+
+func containsLabel(text, name string) bool {
+	for offset := 0; offset < len(text); {
+		i := strings.Index(text[offset:], name)
+		if i < 0 {
+			return false
+		}
+		start := offset + i
+		end := start + len(name)
+		if bounded(text, start, end) {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
 // eventText joins every free-text and identity field of an event, raw, so
 // the leak check sees the same bytes the fields hold rather than their
 // JSON escapes.
 func eventText(e alert.AuditEvent) string {
-	parts := []string{e.Message, e.Details, e.FilePath, e.Hostname, e.TenantID, e.Domain, e.Mailbox}
+	parts := []string{e.Check, e.Severity, e.FindingID, e.Message, e.Details, e.FilePath, e.Hostname, e.TenantID, e.Domain, e.Mailbox}
 	for p := e.Process; p != nil; p = p.Parent {
 		parts = append(parts, p.User, p.Account, p.Comm, p.Exe)
 		parts = append(parts, p.Cmdline...)

@@ -63,26 +63,36 @@ func eligibleCounts(counts map[string]int) map[string]int {
 	return out
 }
 
-// record adds counts to the cumulative history and warns for each check
-// not reported before. Caller holds no lock; the warning is issued outside
-// the mutex so a slow logger never blocks a merge.
-func (r *unattributedReporter) record(counts map[string]int) {
-	var fresh []struct {
-		check string
-		n     int
-	}
+type unattributedWarning struct {
+	check string
+	n     int
+}
+
+// record publishes all counters together and returns pending warnings so
+// callers can release their merge locks before invoking the logger.
+func (r *unattributedReporter) record(counts map[string]int, activeSet bool) []unattributedWarning {
+	filtered := eligibleCounts(counts)
+	var fresh []unattributedWarning
 	r.mu.Lock()
-	for check, n := range counts {
+	defer r.mu.Unlock()
+	if activeSet {
+		r.current = filtered
+		r.activeSetUpdates++
+		if r.since.IsZero() {
+			r.since = time.Now()
+		}
+	}
+	for check, n := range filtered {
 		r.cumulative[check] += n
 		if _, dup := r.seen[check]; !dup {
 			r.seen[check] = struct{}{}
-			fresh = append(fresh, struct {
-				check string
-				n     int
-			}{check, n})
+			fresh = append(fresh, unattributedWarning{check, n})
 		}
 	}
-	r.mu.Unlock()
+	return fresh
+}
+
+func (r *unattributedReporter) warnCounts(fresh []unattributedWarning) {
 	for _, f := range fresh {
 		r.warn("cross-account correlation could not attribute findings to an account", "check", f.check, "rows", f.n)
 	}
@@ -92,22 +102,14 @@ func (r *unattributedReporter) record(counts map[string]int) {
 // cumulative history and warn once per check, but the active-set snapshot
 // is untouched because a batch is not the persisted state.
 func (r *unattributedReporter) Report(counts map[string]int) {
-	r.record(eligibleCounts(counts))
+	r.warnCounts(r.record(counts, false))
 }
 
 // RecordActiveSet records the latest-state merge: it replaces the
 // active-set snapshot, so a merge whose rows all carry owners clears it,
 // and adds to the history like a batch report.
 func (r *unattributedReporter) RecordActiveSet(counts map[string]int) {
-	filtered := eligibleCounts(counts)
-	r.mu.Lock()
-	r.current = filtered
-	r.activeSetUpdates++
-	if r.since.IsZero() {
-		r.since = time.Now()
-	}
-	r.mu.Unlock()
-	r.record(filtered)
+	r.warnCounts(r.record(counts, true))
 }
 
 // Health returns a copy of the current state.

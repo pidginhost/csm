@@ -230,7 +230,7 @@ func TestRunAnonymizesFilesEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	saltPath := filepath.Join(dir, "salt")
-	outPath := filepath.Join(dir, "out", "host.jsonl.gz")
+	outPath := filepath.Join(dir, "out", "alice.example.com.jsonl.gz")
 	var stdout bytes.Buffer
 	if err = run([]string{"anonymize", "--salt-file", saltPath, "--out", outPath, plain, gzPath}, &stdout); err != nil {
 		t.Fatalf("run: %v\n%s", err, stdout.String())
@@ -267,7 +267,7 @@ func TestRunAnonymizesFilesEndToEnd(t *testing.T) {
 			t.Errorf("summary lacks %q:\n%s", want, manifest)
 		}
 	}
-	if strings.Contains(manifest, "alice") {
+	if strings.Contains(manifest, "alice") || strings.Contains(manifest, "example.com") {
 		t.Errorf("summary leaks an identifier:\n%s", manifest)
 	}
 
@@ -335,19 +335,25 @@ func TestAnonymizerScrubsUnderscoreDelimitedIdentities(t *testing.T) {
 }
 
 func TestVerifyBoundariesIgnoreWordsContainingNames(t *testing.T) {
-	learned := alert.AuditEvent{V: 1, Check: "x", Hostname: "web7.example.com", TenantID: "test", Domain: "me.ro"}
+	learned := alert.AuditEvent{V: 1, Check: "x", Hostname: "web7.example.com", TenantID: "alice", Domain: "alice.example.com"}
 	a := NewAnonymizer(testSalt())
 	a.Learn([]alert.AuditEvent{learned})
-	clean := alert.AuditEvent{V: 1, Check: "x", Message: "web77 webshell latest some.rock contest 127.0.0.1", Hostname: a.Host("web7.example.com")}
+	clean := alert.AuditEvent{V: 1, Check: "x", Message: "web77 webshell malice 127.0.0.1", Hostname: a.Host("web7.example.com")}
 	if problems := a.Verify([]alert.AuditEvent{clean}); len(problems) != 0 {
 		t.Fatalf("words containing learned names reported as leaks: %v", problems)
+	}
+	// A domain-shaped word must be refused, without attributing a suffix
+	// inside one of its labels to a different learned domain or account.
+	words := strings.Join(a.Verify([]alert.AuditEvent{{Message: "malice.example.com"}}), "\n")
+	if !strings.Contains(words, "domain malice.example.com") || strings.Contains(words, "domain alice.example.com") || strings.Contains(words, "account alice") {
+		t.Fatalf("domain boundaries misclassified: %s", words)
 	}
 	if a.Host("web7") != a.Host("web7.example.com") {
 		t.Fatal("host alias maps to a different pseudonym than the full name")
 	}
-	dirty := alert.AuditEvent{V: 1, Check: "x", Message: "user test on www.me.ro via web7", Hostname: a.Host("web7.example.com")}
+	dirty := alert.AuditEvent{V: 1, Check: "x", Message: "user alice on www.alice.example.com via web7", Hostname: a.Host("web7.example.com")}
 	problems := strings.Join(a.Verify([]alert.AuditEvent{dirty}), "\n")
-	for _, want := range []string{"account test", "domain me.ro", "host web7"} {
+	for _, want := range []string{"account alice", "domain alice.example.com", "host web7"} {
 		if !strings.Contains(problems, want) {
 			t.Errorf("Verify missed %q: %s", want, problems)
 		}
@@ -379,11 +385,11 @@ func BenchmarkTextWithManyLearnedNames(b *testing.B) {
 }
 
 // Names survive inside file names and ranges: a domain log, a host log, an
-// address range. Version quads glued to more numbers are not addresses.
+// address range. Numeric suffixes must not hide an address in a rotated log.
 func TestAnonymizerScrubsNamesInsideLongerTokens(t *testing.T) {
 	e := alert.AuditEvent{
 		V: 1, Check: "modsec_low_confidence_burst",
-		Details:  "logs /var/log/apache2/domlogs/example.com-ssl_log and /var/log/cluster6.log and Example.COM.conf; range 203.0.113.9-198.51.100.7; agent Chrome/1.6.3.0.0",
+		Details:  "logs /var/log/apache2/domlogs/example.com-ssl_log and /var/log/cluster6.log and Example.COM.conf; range 203.0.113.9-198.51.100.7; agent Chrome/203.0.113.9.1",
 		Hostname: "cluster6.example.net", Domain: "example.com",
 	}
 	a := NewAnonymizer(testSalt())
@@ -395,7 +401,7 @@ func TestAnonymizerScrubsNamesInsideLongerTokens(t *testing.T) {
 		}
 	}
 	dom := a.Domain("example.com")
-	for _, want := range []string{"domlogs/" + dom + "-ssl_log", "/var/log/" + a.Host("cluster6.example.net") + ".log", dom + ".conf", a.IPv4("203.0.113.9") + "-" + a.IPv4("198.51.100.7"), "Chrome/1.6.3.0.0"} {
+	for _, want := range []string{"domlogs/" + dom + "-ssl_log", "/var/log/" + a.Host("cluster6.example.net") + ".log", dom + ".conf", a.IPv4("203.0.113.9") + "-" + a.IPv4("198.51.100.7"), "Chrome/" + a.IPv4("203.0.113.9") + ".1"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)
 		}
@@ -408,9 +414,6 @@ func TestAnonymizerScrubsNamesInsideLongerTokens(t *testing.T) {
 		if !strings.Contains(raw, want) {
 			t.Errorf("Verify missed %q: %s", want, raw)
 		}
-	}
-	if strings.Contains(raw, "6.3.0.0") {
-		t.Errorf("version quad reported as an address: %s", raw)
 	}
 }
 
