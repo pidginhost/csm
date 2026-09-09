@@ -124,3 +124,26 @@ func TestTrackerConcurrentProducersConsumersAndSnapshots(t *testing.T) {
 		t.Fatalf("concurrent accounting lost work: %+v", s)
 	}
 }
+
+func TestTrackerRetryPreservesOriginalWaitingAge(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(2, time.Minute)
+	item := q.Begin(now)
+	item.Start(now.Add(10 * time.Second))
+	item.Requeue(now.Add(20 * time.Second))
+	if got := q.Snapshot(now.Add(30 * time.Second)); got.Depth != 1 || got.InFlight != 0 || got.LagSeconds != 30 || got.ProcessingSeconds != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("retry changed admission age or lost accounting: %+v", got)
+	}
+	item.Start(now.Add(35 * time.Second))
+	item.Requeue(now.Add(45 * time.Second))
+	if got := q.Snapshot(now.Add(60 * time.Second)); got.Status != "degraded" || got.Reason != "backlog_lag" || got.LagSeconds != 60 {
+		t.Fatalf("retries hid a stalled work item: %+v", got)
+	}
+	item.Start(now.Add(61 * time.Second))
+	item.Finish(now.Add(62 * time.Second))
+	if got := q.Snapshot(now.Add(63 * time.Second)); got.Status != "ok" || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("completed retry did not recover: %+v", got)
+	}
+	var synchronous Ticket
+	synchronous.Requeue(now)
+}

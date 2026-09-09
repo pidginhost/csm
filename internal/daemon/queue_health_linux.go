@@ -18,8 +18,9 @@ func (fm *FileMonitor) initQueueHealth() {
 func (fm *FileMonitor) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	fm.initQueueHealth()
 	return map[string]queuehealth.Status{
-		"fanotify.analyzer": fm.analyzerHealth.Snapshot(now),
-		"fanotify.kernel":   fm.kernelQueueHealth.Snapshot(now),
+		"fanotify.analyzer":        fm.analyzerHealth.Snapshot(now),
+		"fanotify.kernel":          fm.kernelQueueHealth.Snapshot(now),
+		"fanotify.staged_packages": fm.stagedPackages().snapshot(now),
 	}
 }
 

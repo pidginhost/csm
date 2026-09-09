@@ -89,6 +89,22 @@ func (t Ticket) Start(now time.Time) {
 	q.updateFull(now)
 }
 
+// Requeue returns a running item to waiting without resetting its admission
+// time. Repeated attempts must not conceal a backlog that never completes.
+func (t Ticket) Requeue(now time.Time) {
+	if t.tracker == nil {
+		return
+	}
+	q := t.tracker
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	w := q.pending[t.id]
+	w.started = time.Time{}
+	q.pending[t.id] = w
+	q.waiting++
+	q.updateFull(now)
+}
+
 func (t Ticket) Finish(now time.Time) {
 	if t.tracker == nil {
 		return

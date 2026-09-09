@@ -97,13 +97,19 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 The same measurements appear under `snapshot.queues` in `csm status --json`
 and as named checks in `csm doctor`.
 
-`findings.ingest`, `fanotify.analyzer` and `spool.scanner` report waiting work,
-capacity, running work, cumulative losses, losses during the last minute,
-the oldest waiting item's age and the oldest running item's processing time.
+`findings.ingest`, `fanotify.analyzer`, `fanotify.staged_packages` and
+`spool.scanner` report waiting work, capacity, running work, cumulative losses,
+losses during the last minute, the oldest waiting item's age and the oldest
+running item's processing time.
 Waiting work includes producers blocked on admission. Ingest work remains
 running while the dispatcher holds or processes its batch, including startup.
 Loss totals include the undelivered tail of a batch canceled during shutdown;
 scan warnings intentionally excluded from alerts do not count as lost work.
+Staged package verification reserves capacity for its whole running batch.
+Files awaiting another attempt retain their original waiting age; retrying
+does not reset lag. Shutdown counts files still awaiting verification after
+the analyzer workers have stopped. Package metadata I/O cannot block health
+polling for this queue.
 Kernel rows (`fanotify.kernel` and `spool.kernel`) currently count overflow
 records, not the unknown number of lost events; their zero depth, capacity
 and lag fields do not measure kernel occupancy.
@@ -120,8 +126,9 @@ spool watcher also preserves it. Restarting the daemon resets the counters.
 
 Inspect worker errors and CPU, memory and I/O pressure when a queue degrades.
 Reduce competing bulk work and confirm the queue drains and recent losses
-stop. This surface currently covers finding delivery, the file analyzer and
-the mail scanner; other bounded queues remain listed in the roadmap.
+stop. This surface currently covers finding delivery, the file analyzer,
+staged package verification and the mail scanner; other bounded queues remain
+listed in the roadmap.
 
 ## GeoIP
 

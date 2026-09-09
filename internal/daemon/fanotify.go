@@ -736,6 +736,7 @@ func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
 		close(fm.analyzerCh)
 		fm.wg.Wait()
+		fm.stagedPackages().discardPending(time.Now())
 		// Mark pipe as closed before actually closing, so Stop() won't
 		// write to an already-closed fd (H2 fix).
 		atomic.StoreInt32(&fm.pipeClosed, 1)
