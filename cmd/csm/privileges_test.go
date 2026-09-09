@@ -86,3 +86,54 @@ func TestPrivilegesTextDisclosesMissingSwitches(t *testing.T) {
 		}
 	}
 }
+
+// The table is read in a terminal, so one operation that writes thirty paths
+// must not pad every other row to that width. The full list stays available
+// in --json.
+func TestPrivilegesTextKeepsRowsReadable(t *testing.T) {
+	var buf bytes.Buffer
+	if err := printPrivilegesText(&buf); err != nil {
+		t.Fatalf("print: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "Operations with no config switch") {
+			// The notes under the table carry sentences, not table columns.
+			continue
+		}
+		// The budget is the four clamped columns plus the longest config key,
+		// which is never truncated. Wide, but it fits a normal terminal and
+		// every row is the same width.
+		if width := len([]rune(line)); width > 165 {
+			t.Fatalf("row is %d characters wide, too wide to read in a terminal:\n%s", width, line)
+		}
+	}
+}
+
+func TestSummarizeWritesElidesLongListsAndCountsTheRest(t *testing.T) {
+	got := summarizeWrites([]string{"/etc/audit", "/var/cpanel", "/etc/nginx/conf.d", "/tmp", "/home"}, false)
+	if !strings.Contains(got, "+3 more") {
+		t.Fatalf("summary = %q, want the remaining count", got)
+	}
+	if !strings.Contains(got, "/etc/audit") {
+		t.Fatalf("summary = %q, want the first paths kept", got)
+	}
+	if got := summarizeWrites(nil, false); got != "-" {
+		t.Fatalf("read-only summary = %q, want -", got)
+	}
+	if got := summarizeWrites([]string{"exim:configuration"}, true); !strings.Contains(got, "unsandboxed") {
+		t.Fatalf("summary = %q, want the unsandboxed marker", got)
+	}
+}
+
+func TestClampCellMarksWhatItCut(t *testing.T) {
+	if got := clampCell("short", 10); got != "short" {
+		t.Fatalf("clamped a value that fits: %q", got)
+	}
+	got := clampCell("auto_response.virtual_patch_exposed_files: off", 20)
+	if len([]rune(got)) != 20 {
+		t.Fatalf("clamped to %d runes, want 20: %q", len([]rune(got)), got)
+	}
+	if !strings.HasSuffix(got, "\u2026") {
+		t.Fatalf("clamped value does not mark the cut: %q", got)
+	}
+}
