@@ -17,6 +17,38 @@ import (
 // `go test -fuzz=FuzzFoo -fuzztime=30s ./internal/checks/` during
 // investigation.
 
+func FuzzPHPTerminatesImmediately(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"<?php exit('Access denied'); __halt_compiler(); ?>",
+		"<?php\vexit(); ?><?php echo 1;",
+		`<?php exit("{${print('EXECUTED')}}");`,
+		`<?php exit('a' . print('EXECUTED'));`,
+		"<?php exit(<<<X\ndata\nX\n);",
+		"<?php // guard\nexit();",
+		"<?php __halt_compiler();",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, body string) {
+		if !PHPTerminatesImmediately([]byte(body)) {
+			return
+		}
+		if !IsBenignPHPStubBytesComplete([]byte(body), false) {
+			t.Fatal("immediate terminator rejected by the shared stub parser")
+		}
+		if !PHPTerminatesImmediately([]byte(body + "<?php echo 1;")) {
+			t.Fatal("an accepted partial terminator depended on the unseen suffix")
+		}
+		for _, space := range []string{"\v", "\f"} {
+			invalidTag := strings.Replace(body, "<?php", "<?php"+space, 1)
+			if PHPTerminatesImmediately([]byte(invalidTag)) {
+				t.Fatal("an invalid opening tag was accepted")
+			}
+		}
+	})
+}
+
 func FuzzArchiveEntrySignalsSiteBackup(f *testing.F) {
 	f.Add("mysite-2024-01-01/wp-config.php")
 	f.Add("site/sites/default/settings.php")

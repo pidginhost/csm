@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestDropperInertReadRejectsConcurrentGrowth(t *testing.T) {
@@ -23,15 +26,15 @@ func TestDropperInertReadRejectsConcurrentGrowth(t *testing.T) {
 	if err := unix.Fstat(fd, &before); err != nil {
 		t.Fatal(err)
 	}
-	head, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+	head, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
 		head := readFromFd(fd, maxBytes)
 		if _, err := f.WriteString("<?php echo 1;"); err != nil {
 			t.Fatal(err)
 		}
 		return head
 	})
-	if stable || len(head) != 0 {
-		t.Fatalf("empty prefix accepted after growth: stable=%v head=%q", stable, head)
+	if stable {
+		t.Fatalf("prefix of a growing file accepted as a stable snapshot: head=%q", head)
 	}
 }
 
@@ -125,5 +128,205 @@ func TestDropperInertRefreshDoesNotForgetCode(t *testing.T) {
 		if got := assessDropper(due[0], dropperProbe{Conclusive: true}); got != want {
 			t.Errorf("initially active=%v: verdict=%v, want %v", initiallyActive, got, want)
 		}
+	}
+}
+
+// The plugin temp-file false positive: WP All Import recreates a zero-byte
+// index.php guard in a scratch directory roughly once a second and removes
+// the whole directory again. The unlink bumps the inode's ctime, so when it
+// lands between the two stats that bracket the head read the snapshot looks
+// racy even though no byte was ever written. Marking such a candidate
+// "content may execute" is sticky, so the empty-guard gate could never fire
+// and every one of those files was reported.
+func TestDropperInertHeadSnapshotSurvivesMetadataOnlyChange(t *testing.T) {
+	for _, content := range []string{"", wordfenceWAFHead} {
+		for _, changes := range []int{1, 2} {
+			t.Run(fmt.Sprintf("bytes=%d/changes=%d", len(content), changes), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "index.php")
+				f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = f.Close() }()
+				if _, err := f.WriteString(content); err != nil {
+					t.Fatal(err)
+				}
+				fd := int(f.Fd())
+				var before unix.Stat_t
+				if err := unix.Fstat(fd, &before); err != nil {
+					t.Fatal(err)
+				}
+				reads := 0
+				head, size, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+					got := readFromFd(fd, maxBytes)
+					reads++
+					if reads < changes {
+						if err := os.Rename(path, path+".moved"); err != nil {
+							t.Fatal(err)
+						}
+						path += ".moved"
+					} else if reads == changes {
+						if err := os.Remove(path); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return got
+				})
+				if reads != changes+1 {
+					t.Fatalf("metadata changes were not retried: reads=%d", reads)
+				}
+				if !stable || string(head) != content || size != int64(len(content)) {
+					t.Fatalf("metadata change poisoned the snapshot: stable=%v head=%q size=%d", stable, head, size)
+				}
+			})
+		}
+	}
+}
+
+// A file that keeps being rewritten must stay unstable however many times the
+// snapshot is retried.
+func TestDropperInertHeadSnapshotStaysUnstableWhileWritten(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "growing-*.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	fd := int(f.Fd())
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	_, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+		got := readFromFd(fd, maxBytes)
+		reads++
+		if _, err := f.WriteString("<?php echo 1;"); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	})
+	if stable {
+		t.Fatal("a file under active rewrite was accepted as a stable snapshot")
+	}
+	if reads != 1 {
+		t.Fatalf("content changes must not be retried: reads=%d", reads)
+	}
+}
+
+func TestDropperInertHeadSnapshotRetainsWriteEvidence(t *testing.T) {
+	for _, change := range []string{"truncate", "same-size rewrite", "restored mtime", "chmod"} {
+		t.Run(change, func(t *testing.T) {
+			f, err := os.CreateTemp(t.TempDir(), "changing-*.php")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = f.Close() }()
+			body := []byte("<?php echo 1;")
+			if _, err = f.Write(body); err != nil {
+				t.Fatal(err)
+			}
+			fd := int(f.Fd())
+			var before unix.Stat_t
+			if err = unix.Fstat(fd, &before); err != nil {
+				t.Fatal(err)
+			}
+			reads := 0
+			_, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+				head := readFromFd(fd, maxBytes)
+				reads++
+				if reads == 1 {
+					switch change {
+					case "truncate":
+						err = f.Truncate(0)
+					case "same-size rewrite", "restored mtime":
+						_, err = f.WriteAt([]byte(strings.Repeat(" ", len(body))), 0)
+						if err == nil && change == "restored mtime" {
+							err = os.Chtimes(f.Name(), time.Unix(before.Atim.Sec, before.Atim.Nsec), time.Unix(before.Mtim.Sec, before.Mtim.Nsec))
+						}
+					case "chmod":
+						err = f.Chmod(0o755)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					// A quiet retry is only a pause in this writer's activity.
+				}
+				return head
+			})
+			if stable {
+				t.Fatal("a quiet retry erased evidence of a concurrent change")
+			}
+		})
+	}
+}
+
+func TestDropperInertCloseWriteFamilies(t *testing.T) {
+	previous := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(previous) })
+	for _, tc := range []struct {
+		name  string
+		body  string
+		inert bool
+	}{
+		{"empty guard", "", true},
+		{"WAF state head", wordfenceWAFHead, true},
+		{"WAF state with data tail", wordfenceWAFHead + strings.Repeat("*", 21927), true},
+		{"code", "<?php echo 1;", false},
+		{"invalid opening tag", "<?php\vexit(); ?><?php echo 1;", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "payload.php")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = f.Close() }()
+			fm := newDropperWiringTestMonitor(dir, time.Minute)
+			c := fm.observeDropperCandidate(fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, "")
+			if c == nil || !c.BirthKnown || c.Created || c.WritePending {
+				t.Fatalf("test did not exercise birth-time admission on close-write: %+v", c)
+			}
+			if c.ContentMayExecute || c.Size != int64(len(tc.body)) {
+				t.Fatalf("stable close-write snapshot lost: %+v", c)
+			}
+			due := fm.dropper.tr.Due(time.Now().Add(2 * time.Minute))
+			if tc.inert {
+				if len(due) != 0 {
+					t.Fatal("inert file admitted on close-write")
+				}
+			} else if len(due) != 1 || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
+				t.Fatalf("code-bearing deletion lost: %+v", due)
+			}
+		})
+	}
+}
+
+func TestDropperInertPHPDataFileSignatureWins(t *testing.T) {
+	useRealtimeRules(t, realtimeHighRule)
+	dir := t.TempDir()
+	fm := newDropperWiringTestMonitor(dir, time.Minute)
+	path := filepath.Join(dir, "state.php")
+	if err := os.WriteFile(path, []byte(wordfenceWAFHead+"EVIL_MARKER_A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	event := fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}
+	c := fm.observeDropperCandidate(event, "")
+	if c == nil || !dropperCandidateIsInert(*c) {
+		t.Fatalf("test must start from a snapshot the terminator gate exempts: %+v", c)
+	}
+	fm.analyzeFile(event)
+	due := fm.dropper.tr.Due(time.Now().Add(2 * time.Minute))
+	if len(due) != 1 || !due[0].ContentSuspicious || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
+		t.Fatalf("signature did not override the PHP exemption: %+v", due)
 	}
 }

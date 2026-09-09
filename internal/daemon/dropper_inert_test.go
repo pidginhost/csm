@@ -1,9 +1,37 @@
 package daemon
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestDropperInertPHPRejectsEncodingDecoys(t *testing.T) {
+	// Under BASE64 source decoding, padding the raw header's alphabet to a
+	// multiple of four lets a later encoded opening tag execute normally. The
+	// quoted-printable and UTF-7 decoys hide their shift bytes in the literal.
+	header := "<?php exit('Access denied'); __halt_compiler(); ?>"
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	digits := 0
+	for _, c := range header {
+		if strings.ContainsRune(alphabet, c) {
+			digits++
+		}
+	}
+	encoded := header + strings.Repeat("A", (4-digits%4)%4) + base64.StdEncoding.EncodeToString([]byte("<?php print(1234);"))
+	for _, body := range []string{
+		"<?php exit('=27 . print(1234) . =27');",
+		"<?php exit('+ACc- . print(1234) . +ACc-');",
+		encoded,
+	} {
+		c := inertTestCandidate()
+		c.Head, c.Size = []byte(body), int64(len(body))
+		if dropperCandidateIsInert(c) {
+			t.Errorf("encoding decoy exempted as an inert PHP data file: %q", body)
+		}
+	}
+}
 
 // WordPress and its plugins scatter guard files through upload directories
 // and delete them again during imports. On a production host WP All Import
@@ -239,5 +267,68 @@ func inertTestCandidate() dropperCandidate {
 		Size:     0,
 		PID:      4242,
 		Head:     nil,
+	}
+}
+
+// wordfenceWAFHead is the opening of a Wordfence WAF state file, verbatim.
+// Everything after __halt_compiler() is data the PHP compiler never sees, so
+// a rewrite of one of these is not a dropper however often it happens. On a
+// production host they produced 138 self_deleting_dropper_realtime findings
+// in two days, six of them Critical.
+const wordfenceWAFHead = "<?php exit('Access denied'); __halt_compiler(); ?>\n" +
+	"******************************************************************\n" +
+	"This file is used by the Wordfence Web Application Firewall.\n"
+
+func TestDropperInertPHPDataFileIsNotADropper(t *testing.T) {
+	c := inertTestCandidate()
+	c.Path = "/home/alice/public_html/wp-content/wflogs/config-synced.php"
+	c.Mode = 0o100600
+	c.Head = []byte(wordfenceWAFHead)
+	c.Size = 21927 // the head is a truncated prefix of a much larger file
+
+	if !dropperCandidateIsInert(c) {
+		t.Fatal("a file whose compiled region only exits was treated as code")
+	}
+	e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+	if e.admit(c) {
+		t.Fatal("PHP data file admitted as a dropper candidate")
+	}
+}
+
+// The terminator argument has to be a literal. Anything PHP would evaluate
+// runs before the exit and keeps the file a candidate.
+func TestDropperInertPHPDataFileGateRejectsEvaluatedArgument(t *testing.T) {
+	for _, head := range []string{
+		"<?php exit(\"{$_GET['c']}\"); __halt_compiler(); ?>\npayload",
+		"<?php eval($_POST['c']); __halt_compiler(); ?>\npayload",
+		"<?php exit(shell_exec($_GET['c'])); ?>\npayload",
+	} {
+		t.Run(head, func(t *testing.T) {
+			c := inertTestCandidate()
+			c.Path = "/home/alice/public_html/wp-content/wflogs/config-synced.php"
+			c.Mode = 0o100600
+			c.Head = []byte(head)
+			c.Size = 21927
+			if dropperCandidateIsInert(c) {
+				t.Fatal("evaluated terminator argument classified as inert")
+			}
+			e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+			if !e.admit(c) {
+				t.Fatal("code-bearing candidate rejected")
+			}
+		})
+	}
+}
+
+// An executable-mode file is read by a shell, not by PHP, so the PHP data
+// file shape proves nothing about it.
+func TestDropperInertPHPDataFileGateDoesNotCoverExecutables(t *testing.T) {
+	c := inertTestCandidate()
+	c.Path = "/home/alice/public_html/cgi-bin/report"
+	c.Mode = 0o100755
+	c.Head = []byte(wordfenceWAFHead)
+	c.Size = 21927
+	if dropperCandidateIsInert(c) {
+		t.Fatal("executable script exempted using PHP compilation rules")
 	}
 }

@@ -53,12 +53,24 @@ directory, repeated after the normal alert cooldown if activity continues.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
-Complete blank files are excluded from dropper alerts after the writer closes.
-Comment-bearing PHP remains eligible because source-encoding conversion can
-change its tokens before execution. Executable scripts are not judged by PHP
-comment syntax. Separate creation and write events retain freshness and any
-previously observed code; content or signature findings always override
-blank-file filtering.
+Complete blank files are excluded from dropper alerts after a close-write
+observation. Metadata-only changes during the read, such as an unlink, are
+retried only while content metadata, executable mode and the retained bytes
+remain unchanged. An observed write stays inconclusive even if a subsequent
+read could catch a quiet interval.
+
+PHP files are also excluded when their first statement stops the interpreter
+(`exit`, `die`, or `__halt_compiler`, with at most a plain literal argument and
+no preceding comment). Plugins keep state and firewall data in files of that
+shape and rewrite them constantly, and the bytes behind the terminator are
+never compiled. The exemption is refused when those trailing bytes are made
+only of transport-encoding alphabet: an operator who turns on PHP source
+conversion can have a file decoded before it is tokenized, which would make an
+encoded tail the program and this header padding. Comment-bearing PHP remains
+eligible for the same reason -- a comment's tokens depend on the interpreter's
+source encoding. Executable-mode files are not judged by PHP compilation rules,
+because a shell may read them instead. Content or signature findings and
+previously observed code always override inert-content filtering.
 
 **Features:**
 - Per-path alert deduplication (30s cooldown)

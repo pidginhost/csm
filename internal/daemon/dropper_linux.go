@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -30,6 +31,11 @@ import (
 const dropperDigestMax = 8 << 20
 
 const dropperDigestChunk = 64 << 10
+
+// dropperHeadSnapshotAttempts bounds how many times the head read is retried
+// against a moved stat before the content is called unknown. Two attempts
+// settle a single metadata change; the third covers one landing in the retry.
+const dropperHeadSnapshotAttempts = 3
 
 const dropperPHPHandlerCacheMax = 4096
 
@@ -210,7 +216,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		c.Parent = parent
 	}
 	var stable bool
-	c.Head, stable = readDropperHead(event.fd, st, readFromFd)
+	c.Head, c.Size, stable = readDropperHead(event.fd, st, readFromFd)
 	c.ContentMayExecute = !stable
 	// Only known install/atomic staging shapes need a digest for cross-filesystem
 	// copy-delete matching. A separate CLOSE_WRITE refresh normally follows
@@ -238,13 +244,41 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	return &c
 }
 
-func readDropperHead(fd int, before unix.Stat_t, read func(int, int) []byte) ([]byte, bool) {
-	head := read(fd, dropperTrackedHeadMax)
-	// Size from before the read cannot prove completeness if another writer
-	// changed the file in the meantime, even when the retained head is empty.
-	var after unix.Stat_t
-	stable := unix.Fstat(fd, &after) == nil && sameReadSnapshot(before, after)
-	return head, stable
+// readDropperHead snapshots the head bytes together with proof that nothing
+// changed the file while they were read. Size from before the read cannot
+// prove completeness if another writer changed the file in the meantime, even
+// when the retained head is empty.
+//
+// The stat pair also moves on a metadata-only change: unlink and rename
+// bump ctime without touching a byte. Plugin scratch files are
+// removed within seconds of being written, so that unlink lands inside the
+// stat window often enough to mark a zero-byte guard file "content unknown"
+// permanently. Only ctime changes can be retried: a quiet interval after a
+// write cannot erase evidence of that write, and a mode change invalidates
+// the caller's decision about which interpreter may execute the file.
+// Size is from the stat immediately before the returned head was read. It
+// proves completeness only when stable is true.
+func readDropperHead(fd int, before unix.Stat_t, read func(int, int) []byte) ([]byte, int64, bool) {
+	var head []byte
+	current := before
+	for attempt := 0; attempt < dropperHeadSnapshotAttempts; attempt++ {
+		previousHead := head
+		head = read(fd, dropperTrackedHeadMax)
+		var after unix.Stat_t
+		if unix.Fstat(fd, &after) != nil {
+			return head, current.Size, false
+		}
+		if current.Dev != after.Dev || current.Ino != after.Ino ||
+			current.Size != after.Size || current.Mtim != after.Mtim || current.Mode != after.Mode ||
+			(attempt > 0 && !bytes.Equal(previousHead, head)) {
+			return head, current.Size, false
+		}
+		if sameReadSnapshot(current, after) {
+			return head, after.Size, true
+		}
+		current = after
+	}
+	return head, current.Size, false
 }
 
 // dropperProbeLoop probes overdue candidates for deletion and flushes findings.

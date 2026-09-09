@@ -1261,3 +1261,98 @@ func TestIsBenignPHPStubBytesRejectsEmpty(t *testing.T) {
 		t.Error("empty buffer must be rejected")
 	}
 }
+
+// A terminator that prints a constant string still terminates: PHP evaluates
+// the literal, writes it, and stops. Wordfence's WAF state files open with
+// exactly this shape and carry their data behind __halt_compiler(), which made
+// every rewrite of one look like code to the realtime inertness gate.
+func TestIsBenignPHPStubBytesAcceptsLiteralTerminatorArgument(t *testing.T) {
+	accepted := []string{
+		"<?php exit('Access denied'); __halt_compiler(); ?>\nbinary data follows",
+		"<?php die(\"Access denied\"); ?>",
+		"<?php exit(0);",
+		"<?php  die ( 'no' ) ;  // trailing comment",
+	}
+	for _, buf := range accepted {
+		if !IsBenignPHPStubBytesComplete([]byte(buf), false) {
+			t.Errorf("literal-argument terminator rejected: %q", buf)
+		}
+	}
+}
+
+// The argument must be a literal. A double-quoted string interpolates, and
+// PHP runs whatever the interpolation names before the process exits.
+func TestIsBenignPHPStubBytesRejectsExecutableTerminatorArgument(t *testing.T) {
+	rejected := []string{
+		"<?php exit(\"{$_GET['c']}\"); __halt_compiler();",
+		"<?php exit(\"$x\");",
+		"<?php die(shell_exec($_GET['c']));",
+		"<?php exit('a' . system('id'));",
+		"<?php exit($msg);",
+		"<?php exit(<<<'X'\nX\n);",
+		"<?php exit('unterminated",
+	}
+	for _, buf := range rejected {
+		if IsBenignPHPStubBytesComplete([]byte(buf), false) {
+			t.Errorf("terminator with an executable argument accepted: %q", buf)
+		}
+	}
+}
+
+// `<?phpexit();` is not an opening tag, so the file stays in text mode and a
+// later block is what runs. Nothing before it has terminated anything.
+func TestPHPTerminatesImmediatelyRequiresRealOpeningTag(t *testing.T) {
+	if PHPTerminatesImmediately([]byte("<?phpexit();\n<?php eval($_POST['c']);")) {
+		t.Error("run-together opening tag accepted as a terminator")
+	}
+	if PHPTerminatesImmediately([]byte("<?php // guard\nexit();")) {
+		t.Error("comment before the terminator accepted; its tokens depend on the source encoding")
+	}
+	if !PHPTerminatesImmediately([]byte("\xEF\xBB\xBF <?php\texit('bye'); ?>\ndata")) {
+		t.Error("BOM and whitespace before a literal-argument terminator must be accepted")
+	}
+}
+
+func TestPHPTerminatesImmediatelyRejectsNonPHPTagSpace(t *testing.T) {
+	for _, space := range []string{"\v", "\f"} {
+		body := []byte("<?php" + space + "exit('no'); ?><?php echo 'EXECUTED';")
+		if PHPTerminatesImmediately(body) {
+			t.Errorf("literal text mistaken for a PHP opening tag: %q", body)
+		}
+		if IsBenignPHPStubBytesComplete(body, false) {
+			t.Errorf("literal text mistaken for a benign PHP stub: %q", body)
+		}
+	}
+}
+
+func TestPHPTerminatesImmediatelyArgumentBoundaries(t *testing.T) {
+	for _, body := range []string{
+		`<?php exit("${print('EXECUTED')}");`,
+		`<?php exit("{${print('EXECUTED')}}");`,
+		`<?php exit("\\${print('EXECUTED')}");`,
+		`<?php exit('a' . print('EXECUTED'));`,
+		`<?php exit(` + "`printf EXECUTED`" + `);`,
+		"<?php exit(<<<X\n${print('EXECUTED')}\nX\n);",
+		"<?php exit(<<<'X'\ndata\nX\n);",
+		`<?php exit('unterminated`,
+		`<?php exit('literal') . print('EXECUTED');`,
+		`<?php exit('literal')`,
+		`<?php __halt_compiler('literal');`,
+	} {
+		if PHPTerminatesImmediately([]byte(body)) {
+			t.Errorf("unproven terminator accepted: %q", body)
+		}
+	}
+}
+
+func TestIsBenignPHPStubRejectsEncodedLiteralArgument(t *testing.T) {
+	for _, body := range []string{
+		"<?php exit('=27 . print(1234) . =27');",
+		"<?php exit('+ACc- . print(1234) . +ACc-');",
+		"<?php exit('&ACc- . print(1234) . &ACc-');",
+	} {
+		if IsBenignPHPStubBytesComplete([]byte(body), false) {
+			t.Errorf("encoded executable argument accepted as a literal: %q", body)
+		}
+	}
+}
