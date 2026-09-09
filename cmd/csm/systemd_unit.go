@@ -1,6 +1,100 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
+)
+
+// systemdDirectiveSince lists the sandbox directives that older systemd
+// rejects with "Unknown lvalue" at every start, keyed by the release that
+// introduced each. EL8 and CloudLinux 8 ship 239.
+var systemdDirectiveSince = []struct {
+	name  string
+	since int
+}{
+	{"ProtectHostname", 242},
+	{"ProtectKernelLogs", 244},
+	{"ProtectClock", 245},
+}
+
+// unsupportedSystemdDirectives returns the directives a systemd of the given
+// version does not know, oldest first. Version 0 means unknown and keeps
+// every directive: a warning is cheaper than a missing protection.
+func unsupportedSystemdDirectives(version int) []string {
+	if version <= 0 {
+		return nil
+	}
+	var out []string
+	for _, d := range systemdDirectiveSince {
+		if version < d.since {
+			out = append(out, d.name)
+		}
+	}
+	return out
+}
+
+// parseSystemdVersion reads the major version from `systemctl --version`
+// output ("systemd 239 (239-82.el8_10.19)"). Anything unparseable is 0.
+func parseSystemdVersion(out string) int {
+	line, _, _ := strings.Cut(out, "\n")
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != "systemd" {
+		return 0
+	}
+	v, err := strconv.Atoi(fields[1])
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
+}
+
+// detectSystemdVersion asks the running systemd for its version; 0 when it
+// cannot be determined, which keeps the full unit.
+func detectSystemdVersion() int {
+	out, err := exec.Command("systemctl", "--version").Output()
+	if err != nil {
+		return 0
+	}
+	return parseSystemdVersion(string(out))
+}
+
+// systemdServiceUnitFor renders the unit for a host running the given
+// systemd version, leaving out the directives that version rejects together
+// with the comment lines that explain them. The packaged unit stays the full
+// one; only the installer's generated copy is trimmed.
+func systemdServiceUnitFor(binaryPath string, systemdVersion int) string {
+	full := systemdServiceUnit(binaryPath)
+	drop := unsupportedSystemdDirectives(systemdVersion)
+	if len(drop) == 0 {
+		return full
+	}
+	var out []string
+	var pendingComments []string
+	for _, line := range strings.Split(full, "\n") {
+		if strings.HasPrefix(line, "#") {
+			pendingComments = append(pendingComments, line)
+			continue
+		}
+		dropped := false
+		for _, name := range drop {
+			if strings.HasPrefix(line, name+"=") {
+				dropped = true
+				break
+			}
+		}
+		if dropped {
+			pendingComments = nil
+			continue
+		}
+		out = append(out, pendingComments...)
+		pendingComments = nil
+		out = append(out, line)
+	}
+	out = append(out, pendingComments...)
+	return strings.Join(out, "\n")
+}
 
 func systemdServiceUnit(binaryPath string) string {
 	return fmt.Sprintf(`[Unit]

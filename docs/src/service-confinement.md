@@ -23,6 +23,14 @@ grants only their parent directory, followed by `systemctl daemon-reload` and
 `systemctl restart csm.service`. Atomic replacement requires a directory grant.
 See [custom account roots](custom-account-roots.md) for account grants.
 
+The installer generates the unit for the systemd it finds. systemd 239 (EL8,
+CloudLinux 8) does not know `ProtectHostname`, `ProtectKernelLogs` or
+`ProtectClock`; it would log "Unknown lvalue" for each at every start and
+ignore them, so the installer leaves them out there and prints which ones it
+omitted. Newer systemd receives the full unit, identical to the packaged one.
+A binary-swap upgrade keeps the existing unit; run `csm install` to regenerate
+it.
+
 The daemon cannot write arbitrary files directly under `/etc`, SSH configuration,
 account databases, or systemd unit files. The AF_ALG seccomp drop-in is installed
 by the operator's `csm harden` CLI, outside the daemon. Periodic AF_ALG module
