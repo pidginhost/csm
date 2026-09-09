@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- BPF queue health no longer reports a permanent measurement failure when a reader consumes an event during shutdown.
+
 - Dropper queue health now times probes and finding delivery from their actual start, so earlier delays do not trigger a false stalled-worker warning.
 
 - Package verification saturation warnings now follow actual capacity use while work is running or being retried, without counting earlier metadata delays as time spent full.

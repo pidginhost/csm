@@ -139,6 +139,8 @@ are separate from decode failures and userspace admission loss.
 After a reader unmaps its ring, `depth_unavailable: true` and
 `lag_basis: unavailable` prevent zero fields from claiming an empty live ring.
 The last counter sample adds submitted records the reader never consumed.
+Submission accounting precedes publication, so a fast reader cannot consume
+an event before it has been counted.
 `dropped_lower_bound: true` marks this final shutdown total: kernel detachment
 can leave callbacks finishing after the sample. Doctor prints `dropped>=...`
 for that bound. Counter lookup failure degrades the row as

@@ -37,8 +37,9 @@ static __always_inline void *csm_ringbuf_reserve(void *ring, __u64 size) {
 }
 
 static __always_inline void csm_ringbuf_submit(void *event) {
-    bpf_ringbuf_submit(event, 0);
+    /* The consumer may run immediately after publication. */
     csm_count_ring_event(1);
+    bpf_ringbuf_submit(event, 0);
 }
 
 #endif
