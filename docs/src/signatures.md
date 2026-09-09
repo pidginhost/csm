@@ -41,14 +41,20 @@ rules:
 - `severity` - critical, high, or warning
 - `category` - webshell, backdoor, phishing, dropper, exploit
 - `file_types` - file extensions to match (or `["*"]` for all)
-- `patterns` - literal strings
-- `regexes` - regex patterns
+- `patterns` - case-insensitive literal strings
+- `regexes` - regex patterns, compiled case-insensitively
 - `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
 - `exclude_regexes` - regex patterns that suppress a match
-- `min_match` - minimum patterns that must match
-- `require_regex` - require at least one regex match in addition to `min_match`
+- `min_match` - minimum total number of matching literal and regex entries; each entry counts once
+- `require_regex` - require at least one regex among the matches counted toward `min_match`
 - `max_file_bytes` - skip this rule when the complete scanned file is larger than the byte limit; omitted or `0` is unbounded
 - `max_file_bytes_exempt_regexes` - high-confidence regexes that let the rule continue normal evaluation above `max_file_bytes`
+
+When a regex includes a literal listed in `patterns`, the same content can
+satisfy both entries. Use independent entries when a rule needs multiple pieces
+of evidence. The bundled HTTP tunnel rule requires both socket creation and a
+CONNECT request; the legacy PHP callback rule ties execution evidence to the
+body argument instead of matching function names in wrappers or documentation.
 
 ## YARA-X Rules (Optional)
 
@@ -99,7 +105,7 @@ the YARA one. Both gates require at least 5,000 non-empty files within the
 default scheduled scan size limit. Rule-load, traversal, and read failures fail
 the relevant run instead of counting as clean; YARA backend errors do too.
 
-The measured YARA baseline is empty. The YAML baseline records six rules that
+The measured YARA baseline is empty. The YAML baseline records rules that
 already fire on clean plugin and core code and are named in the realtime-rule
 porting backlog. Tighten a noisy rule rather than excluding paths or filenames.
 
