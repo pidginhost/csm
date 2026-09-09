@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Scheduled scans now detect the same dynamically generated PHP backdoors as realtime scanning. Both engines distinguish executable code from comments and quoted text in legacy callbacks and generated library wrappers.
+- Scheduled and realtime scans now share a simpler check for directly supplied dynamic callback bodies. Ordinary callback assertions and factory methods no longer raise critical alerts; complex generated code needs further analysis.
 - Mail hold and governor alerts now require a local mail-server decision; a message subject or peer name can no longer forge one.
 - Failed directory reads no longer clear file-index findings, including findings left by older releases. Incomplete scans retain their previous baseline, and retries and startup scans recheck directories even when cached timestamps still match.
 - Cross-account correlation now follows the explicit per-check policy, and database, mail, crontab, process and realtime findings carry the owning account, resolved from the panel's domain owner table, a passwd home directly under an account root, or the file path. Service users, envelope senders and display labels never become an owner; an eligible finding without one is reported rather than counted.

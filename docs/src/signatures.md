@@ -53,13 +53,49 @@ rules:
 When a regex includes a literal listed in `patterns`, the same content can
 satisfy both entries. Use independent entries when a rule needs multiple pieces
 of evidence. The bundled HTTP tunnel rule requires both socket creation and a
-CONNECT request; the legacy PHP callback rule ties execution evidence to the
-body argument instead of matching function names in wrappers or documentation.
-The callback rule uses the same body predicate in YAML and YARA-X, including
-nonempty parameter lists, decoded bodies and request-controlled bodies. Shared
-positive and benign fixtures check both engines.
-Comments in parameter lists and strings or comments inside a literal callback
-body cannot supply execution evidence.
+CONNECT request. The legacy PHP callback rule uses the same narrow signature in
+YAML and YARA-X: a direct function call with a quoted parameter list, a variable
+or `null` as its first argument, followed by a decoder or request lookup as its
+second argument. Quoted lists can contain commas, semicolons and escaped quotes.
+Shared positive and benign fixtures check both engines. Generated socket and
+funchand wrappers and ordinary legacy callbacks stay silent under these rules.
+
+### Legacy callback parser follow-up
+
+The callback signature does not inspect quoted function bodies. Doing so needs
+PHP string decoding, tokenization and expression analysis: for example,
+`assert($x > 0)` is an ordinary boolean check, and `"eval($x)"` can be data.
+The rules scan source text, so they do not promise general PHP comment or string
+awareness, nor complete coverage of dynamically generated code.
+
+The following cases were covered by the expanded regex and are deliberately
+outside the narrowed signature. They remain acceptance cases for a parser
+follow-up, not claims of current detection by this rule:
+
+| Deferred case | Examples to restore |
+| --- | --- |
+| Constructed parameter lists | Array lookup, concatenation, `implode(',', $args)` and `chr(100/(1+1))` as the first argument |
+| Comments between arguments | Block comments with embedded commas, and line comments before the body source |
+| Constructed body expressions | String concatenation with request input, grouped concatenation, parenthesized decoders and `trim(base64_decode($payload))` |
+| Interpolated bodies | A double-quoted body such as `"return {$_POST['code']};"` |
+| Literal executable bodies | `eval($x)` or string-capable `assert($x)`, with statements, strings or comments before them; both outer quote styles and escaped quotes |
+| Literal expression contexts | `return`, `or`, `do`, `case`, `include`, `include_once`, `require`, `require_once`, `clone`, `yield from`, comparisons, shifts and inequality before an execution sink |
+| Literal lexical edges | Global `assert`, comment backslashes before `*` or `*/`, and quoted operands before a comparison |
+| Outer call contexts | Calls immediately following a ternary colon, case-label colon or comparison operator |
+
+This work belongs in `internal/phptaint`, which already uses VKCOM/php-parser
+and records the second argument of `create_function` as a sink. Extend that
+analysis to decode and parse statically known callback bodies under its existing
+budgets, distinguish boolean assertions from string execution, and report
+unresolved dynamic bodies as analysis gaps. It currently feeds a separate
+scheduled check; it is not a post-filter for YAML or YARA. Realtime coverage
+would need explicit integration and latency tests, and standalone YARA would
+still have the narrower coverage.
+
+Acceptance requires restoring the deferred cases as positive parser fixtures,
+retaining the shared benign fixtures, checking both quote styles and comment
+forms, and passing the clean-corpus gate without new baseline entries. Do not
+expand another regex into a PHP tokenizer to recover these cases.
 
 ## YARA-X Rules (Optional)
 
