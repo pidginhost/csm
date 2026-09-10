@@ -24,6 +24,7 @@ type checkDispatchBatch struct {
 	tasks    map[*checkDispatch]struct{}
 	parallel int
 	progress time.Time
+	observer *CheckDispatchProgress
 }
 
 // All mutable task and batch fields are guarded by the monitor mutex.
@@ -67,7 +68,7 @@ func (t *checkDispatch) admit() {
 	now := time.Now()
 	t.started = now
 	t.deadline = now.Add(checkDispatchControlBudget)
-	t.batch.progress = now
+	t.batch.progressed(now)
 }
 
 func (t *checkDispatch) executing(ctx context.Context) {
@@ -79,7 +80,7 @@ func (t *checkDispatch) executing(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t.deadline = deadline
-	t.batch.progress = time.Now()
+	t.batch.progressed(time.Now())
 }
 
 func (t *checkDispatch) returned() {
@@ -91,7 +92,7 @@ func (t *checkDispatch) returned() {
 	defer m.mu.Unlock()
 	now := time.Now()
 	t.deadline = now.Add(checkDispatchControlBudget)
-	t.batch.progress = now
+	t.batch.progressed(now)
 }
 
 func (t *checkDispatch) withdraw(ctx context.Context) {
@@ -123,9 +124,12 @@ func (t *checkDispatch) wrap(fn func()) func() {
 				t.failLocked(now)
 			}
 			delete(t.batch.tasks, t)
-			t.batch.progress = now
+			t.batch.progressed(now)
 			if len(t.batch.tasks) == 0 {
 				delete(m.batches, t.batch)
+				if t.batch.observer != nil {
+					delete(t.batch.observer.batches, t.batch)
+				}
 			}
 		}()
 		fn()

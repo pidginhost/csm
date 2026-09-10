@@ -958,6 +958,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
 	dispatches := checkDispatches.begin(len(enabledChecks), cap(sem))
+	checkDispatches.observe(scanCtx, dispatches)
 
 	for i, nc := range enabledChecks {
 		wg.Add(1)

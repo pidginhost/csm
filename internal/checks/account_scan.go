@@ -189,6 +189,7 @@ func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *sta
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallel)
 	dispatches := checkDispatches.begin(len(checks), parallel)
+	checkDispatches.observe(ctx, dispatches)
 
 	for i, nc := range checks {
 		wg.Add(1)

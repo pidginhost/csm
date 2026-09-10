@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Full-scan jobs now report waiting work, stalled admission or persistence, and lost jobs through status and doctor. Working scans use check progress and deadlines so a long scan alone does not trigger a stall warning.
+
 - Scan health now includes checks waiting for a worker and stalled setup or result handling. Long-running checks keep their own deadlines without making a busy scan look stalled.
 
 - Host and account scans now report overdue checks and lost results through status and doctor. A timed-out scan keeps unfinished checks visible until they return.
@@ -68,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
+
+- Full scans left queued by a daemon restart now report interruption instead of waiting forever. A terminated scan worker refuses new jobs and accounts for abandoned requests.
 
 - Abuse reports already acknowledged by a collector no longer count as lost if database cleanup fails and the queue later overflows.
 

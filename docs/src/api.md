@@ -227,6 +227,21 @@ as does a parent deadline before a check can start. Explicit cancellation
 withdraws queued demand without loss. Execution failures belong to
 `checks.executions`; dispatch tracks the surrounding scheduling operation.
 Reading status never takes a scan, context or database lock.
+`scans.jobs` reports eight waiting full-scan jobs and one worker. Work remains
+visible through enumeration, scanning, remediation, persistence and cleanup.
+Its `consumer_progress` lag follows that worker and its own check batches:
+healthy check deadlines allow long scans to proceed, while an overdue child
+cannot be hidden by another child's progress. Enumeration, result handling,
+individual file actions and database operations each have a one-minute progress
+budget. Thirty seconds at full waiting capacity also degrades health.
+`scans.admission` separately reports callers waiting for admission and writing
+their initial job record, with a one-minute lag budget and unavailable capacity.
+Status reads only memory; operator polling does not advance the worker's clock.
+Queue refusal, failed job operations and abandoned work count once per job.
+Configured finding-history truncation, explicit cancellation and successful
+shutdown draining do not count as loss. A terminated worker refuses new jobs.
+At startup, both queued and running records from the previous process become
+errors with reason `daemon_restarted`; their lost requests count in job health.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.
