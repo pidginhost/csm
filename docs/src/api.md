@@ -236,6 +236,18 @@ Refused admission, sink errors and panics count as lost records, once per record
 Changing or disabling the sink preserves outstanding work and cumulative loss.
 Health reads do not wait for the sink. Normal writes still complete before the
 caller returns; saturated or stalled recording keeps the existing caller budget.
+`events.deliveries` aggregates live event-stream subscribers in one row without
+client identities. Capacity sums their buffers (64 findings per daemon stream);
+depth counts waiting deliveries and in-flight work includes encoding, writing
+and flushing. One full subscriber can degrade this row even while others drain.
+The common one-minute lag, 30-second fullness and recent-loss thresholds apply.
+Overflow, encoding errors and failed streams count as losses; a failed stream
+also counts its abandoned buffered events. Normal request cancellation and
+server shutdown withdraw pending demand without adding losses. Cumulative loss
+survives subscriber removal, and an outstanding write remains visible until it
+returns. Closing the bus preserves buffered work for consumers still draining it.
+HTTP writes retain their three-second deadline; successful delivery here means
+the write and flush returned, not that the remote application acknowledged it.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,

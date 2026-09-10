@@ -11,8 +11,10 @@ package broadcast
 
 import (
 	"sync"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // defaultMaxSubscribers caps concurrent subscribers so a flood of event-stream
@@ -23,10 +25,11 @@ const defaultMaxSubscribers = 256
 // Bus fans out published findings to every subscriber.
 type Bus struct {
 	mu          sync.RWMutex
-	subscribers map[chan alert.Finding]struct{}
+	subscribers map[*Subscription]struct{}
 	buffer      int
 	maxSubs     int
 	closed      bool
+	stats       *queuehealth.Tracker
 }
 
 // NewBus constructs a Bus with the given per-subscriber buffer.
@@ -36,9 +39,10 @@ func NewBus(buffer int) *Bus {
 		buffer = 16
 	}
 	return &Bus{
-		subscribers: make(map[chan alert.Finding]struct{}),
+		subscribers: make(map[*Subscription]struct{}),
 		buffer:      buffer,
 		maxSubs:     defaultMaxSubscribers,
+		stats:       queuehealth.New(0, time.Minute),
 	}
 }
 
@@ -58,48 +62,56 @@ func (b *Bus) SetMaxSubscribers(n int) {
 // endpoint, reachable with a low-trust read token) cannot open unbounded
 // long-lived streams. Use this for externally-driven subscriptions; Subscribe
 // remains for trusted in-process consumers.
-func (b *Bus) TrySubscribe() (<-chan alert.Finding, bool) {
+func (b *Bus) TrySubscribe() (*Subscription, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ch := make(chan alert.Finding, b.buffer)
-	if b.closed {
-		close(ch)
-		return ch, true
-	}
-	if len(b.subscribers) >= b.maxSubs {
+	if !b.closed && len(b.subscribers) >= b.maxSubs {
 		return nil, false
 	}
-	b.subscribers[ch] = struct{}{}
-	return ch, true
+	return b.subscribe(), true
 }
 
-// Subscribe returns a new buffered channel that receives every published
-// finding from this point forward. Caller must Unsubscribe when done to
-// release resources.
-func (b *Bus) Subscribe() <-chan alert.Finding {
+// Subscribe is for trusted in-process consumers. Every received delivery must
+// be processed once, and the consumer must Unsubscribe when it stops reading.
+func (b *Bus) Subscribe() *Subscription {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ch := make(chan alert.Finding, b.buffer)
+	return b.subscribe()
+}
+
+func (b *Bus) subscribe() *Subscription {
+	sub := &Subscription{events: make(chan Delivery, b.buffer), stats: queuehealth.New(b.buffer, time.Minute)}
 	if b.closed {
-		close(ch)
-		return ch
+		close(sub.events)
+	} else {
+		b.subscribers[sub] = struct{}{}
 	}
-	b.subscribers[ch] = struct{}{}
-	return ch
+	return sub
 }
 
-// Unsubscribe removes the channel from the bus and closes it. Safe to
-// call with a channel that was never subscribed (noop). The closed
-// channel signals the consumer to exit its read loop.
-func (b *Bus) Unsubscribe(ch <-chan alert.Finding) {
+// Unsubscribe withdraws demand for unread events, for example when a browser
+// tab closes. A delivery already received remains the consumer's responsibility.
+func (b *Bus) Unsubscribe(sub *Subscription) {
+	b.unsubscribe(sub, false)
+}
+
+// Abort removes a failed consumer and counts its unread deliveries as lost.
+func (b *Bus) Abort(sub *Subscription) {
+	b.unsubscribe(sub, true)
+}
+
+func (b *Bus) unsubscribe(sub *Subscription, failed bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for sub := range b.subscribers {
-		if (<-chan alert.Finding)(sub) == ch {
-			delete(b.subscribers, sub)
-			close(sub)
-			return
-		}
+	if _, ok := b.subscribers[sub]; !ok {
+		return
+	}
+	delete(b.subscribers, sub)
+	if !b.closed {
+		close(sub.events)
+	}
+	for delivery := range sub.events {
+		delivery.finish(failed)
 	}
 }
 
@@ -111,11 +123,13 @@ func (b *Bus) Publish(f alert.Finding) {
 	if b.closed {
 		return
 	}
-	for ch := range b.subscribers {
+	for sub := range b.subscribers {
+		now := time.Now()
+		delivery := Delivery{finding: f, total: b.stats.Begin(now), local: sub.stats.Begin(now)}
 		select {
-		case ch <- f:
+		case sub.events <- delivery:
 		default:
-			// Slow subscriber; drop rather than block.
+			delivery.finish(true)
 		}
 	}
 }
@@ -129,8 +143,9 @@ func (b *Bus) Close() {
 		return
 	}
 	b.closed = true
-	for ch := range b.subscribers {
-		close(ch)
-		delete(b.subscribers, ch)
+	// Consumers may still drain buffered deliveries after close. Retain their
+	// capacity and ownership until they unsubscribe.
+	for sub := range b.subscribers {
+		close(sub.events)
 	}
 }

@@ -590,8 +590,7 @@ func (d *Daemon) Run() error {
 
 	// Initialize the findings broadcast bus so passive observers (SSE, etc.)
 	// can subscribe before any findings are dispatched.
-	d.findingBus = broadcast.NewBus(64)
-	alert.FindingBus = d.findingBus
+	d.installFindingBus()
 
 	// Install config-supplied platform overrides BEFORE the first Detect()
 	// call so every check sees the merged view. The daemon command installs
