@@ -861,16 +861,17 @@ func readBlockState(statePath string) (*blockState, error) {
 }
 
 func saveBlockState(statePath string, s *blockState) {
-	_ = writeBlockState(statePath, s)
+	if err := writeBlockState(statePath, s); err != nil {
+		logBlockStateFailure(statePath, err)
+	}
 }
 
 func writeBlockState(statePath string, s *blockState) error {
-	path := filepath.Join(statePath, blockStateFile)
-	if err := atomicio.AtomicWriteJSON(path, 0o600, s); err != nil {
-		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
-		return err
-	}
-	return nil
+	return atomicio.AtomicWriteJSON(filepath.Join(statePath, blockStateFile), 0o600, s)
+}
+
+func logBlockStateFailure(statePath string, err error) {
+	fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", filepath.Join(statePath, blockStateFile), err)
 }
 
 // subnetEscalationCIDR returns the canonical CIDR used by the
@@ -1061,6 +1062,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		work.progress()
 		if err := writeBlockState(statePath, state); err != nil {
 			work.observe(err)
+			logBlockStateFailure(statePath, err)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("clearing auto-block state: %w", err))
 		}
 	}

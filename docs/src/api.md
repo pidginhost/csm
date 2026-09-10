@@ -251,8 +251,9 @@ advancing batches do not degrade solely because their total duration exceeds a
 minute. One minute without progress degrades the active row and any waiting
 callers. A free state slot with no admission for one minute also reports lag.
 Returned direct-block or flush errors and abnormal exits count once per call;
-protected-address refusals do not. Known errors remain visible during later
-cleanup, and the common loss threshold and recovery policy apply. These rows
+protected-address refusals do not. Flush write failures are recorded before
+diagnostic output. Known errors remain visible during later cleanup, and the
+common loss threshold and recovery policy apply. These rows
 count state-lock callers, independently of persisted per-IP retry records.
 Health snapshots use memory only and cannot wait for the state lock or I/O.
 
