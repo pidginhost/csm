@@ -12,7 +12,8 @@ const queueCapacity = 64
 // Queue retains delivery health across reader replacements and source changes.
 // The supervisor finishes the old reader before starting its replacement.
 type Queue struct {
-	health *queuehealth.Tracker
+	health  *queuehealth.Tracker
+	journal journalSourceQueue
 }
 
 func NewQueue() *Queue {
@@ -20,13 +21,27 @@ func NewQueue() *Queue {
 }
 
 func (q *Queue) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return map[string]queuehealth.Status{"delivery": q.health.Snapshot(now)}
+	rows := map[string]queuehealth.Status{"delivery": q.health.Snapshot(now)}
+	if journal, seen := q.journal.snapshot(now); seen {
+		rows["journal_source"] = journal
+	}
+	return rows
 }
 
 func (q *Queue) channel() chan Line { return make(chan Line, queueCapacity) }
 
 func (q *Queue) send(ctx context.Context, out chan<- Line, line Line) bool {
 	line.ticket = q.health.Begin(time.Now())
+	return q.sendTracked(ctx, out, line)
+}
+
+func (q *Queue) sendJournal(ctx context.Context, out chan<- Line, line Line) bool {
+	line.ticket = q.health.Begin(time.Now())
+	q.journal.releaseEntry()
+	return q.sendTracked(ctx, out, line)
+}
+
+func (q *Queue) sendTracked(ctx context.Context, out chan<- Line, line Line) bool {
 	select {
 	case out <- line:
 		return true

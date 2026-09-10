@@ -142,6 +142,25 @@ admission, consumer failure and buffered records abandoned on shutdown.
 Counters survive reader replacement and changes between file and journal
 sources. They count records already read, not unread source history or partial
 file records that have not reached a newline.
+
+`mail.journal_source` reports the journal reader after its first successful
+attachment. The cursor exposes no exact unread-record count or queue capacity,
+so `depth_unavailable` and `capacity_unavailable` are always set. A selected
+entry remains in flight until delivery acquires it; known unreadable or abandoned
+selected entries count once in `mail.delivery`. The two stages must not be added
+together.
+
+Journal progress follows cursor advancement, entry reads, bounded idle waits,
+output admission and close. One minute without operation progress reports
+`processing_lag`, including a stuck cursor with no known selected entry. Cursor,
+entry, wait and close failures report `source_io`; known abnormal exits remain
+visible through actual cleanup. An unknown cursor outcome or unread shutdown
+sets `dropped_lower_bound` without inventing a record count. Successful reads
+restore current health; historical uncertainty survives reader replacement.
+Successful attachment of a file source clears the retired journal's current
+error. Failed attachment leaves it visible. Health reads memory only and does
+not call the journal or change its tail positioning, retry or delivery policy.
+
 When their BPF backends are active, `bpf.af_alg.output`,
 `bpf.connection.output`, `bpf.execution.output` and
 `bpf.sensitive_files.output` report the 256-slot userspace delivery queues.

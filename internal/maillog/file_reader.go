@@ -105,6 +105,9 @@ func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", r.path, err)
 	}
+	// A usable replacement retires the old source's current failure while
+	// retaining its historical uncertainty and delivery loss evidence.
+	r.queue.journal.outcome(false, false)
 	out := r.queue.channel()
 	go r.loop(ctx, out, f, reader, ino)
 	return out, nil

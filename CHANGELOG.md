@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Journal mail sources now report stalled reads and source failures through status and doctor. Unmeasurable backlog stays explicit, and switching to a working file source clears retired journal errors.
+
 - Health now reports deferred cleanup after firewall flushes, stalled cleanup and failed retries. Unreadable state is marked unknown until recovery establishes which work survived.
 
 - Health now reports pending automatic blocks, active candidates and retry failures. Counts distinguish confirmed losses from retries still available on disk.
