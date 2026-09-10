@@ -28,6 +28,7 @@ func newCheckExecutionMonitor() *checkExecutionMonitor {
 
 type checkExecution struct {
 	monitor   *checkExecutionMonitor
+	dispatch  *checkDispatch
 	queued    time.Time
 	started   time.Time // guarded by monitor.mu
 	deadline  time.Time
@@ -55,6 +56,8 @@ func (m *checkExecutionMonitor) execute(ctx context.Context, component string, f
 	// Both runners construct a bounded per-check context before dispatch.
 	deadline, _ := ctx.Deadline()
 	execution := m.begin(deadline)
+	execution.dispatch = checkDispatchFrom(ctx)
+	execution.dispatch.executing(ctx)
 	go execution.run(component, fn)
 	return execution
 }
@@ -63,10 +66,15 @@ func (e *checkExecution) fail() {
 	e.failOnce.Do(func() { e.monitor.losses.Lose(time.Now(), 1) })
 }
 
-func (e *checkExecution) received() { e.callerSettled = true }
+func (e *checkExecution) received() {
+	if !e.callerSettled {
+		e.dispatch.returned()
+		e.callerSettled = true
+	}
+}
 
 func (e *checkExecution) withdraw(err error) {
-	e.callerSettled = true
+	e.received()
 	if errors.Is(err, context.DeadlineExceeded) {
 		e.fail()
 	}
@@ -75,6 +83,7 @@ func (e *checkExecution) withdraw(err error) {
 func (e *checkExecution) finishCaller() {
 	if !e.callerSettled {
 		e.fail()
+		e.dispatch.returned()
 	}
 	e.release()
 }

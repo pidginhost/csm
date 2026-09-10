@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Scan health now includes checks waiting for a worker and stalled setup or result handling. Long-running checks keep their own deadlines without making a busy scan look stalled.
+
 - Host and account scans now report overdue checks and lost results through status and doctor. A timed-out scan keeps unfinished checks visible until they return.
 
 - Email password audits now report waiting callers, occupied verification slots and stalled work through status and doctor. Canceled scans keep unfinished verification visible until it returns.

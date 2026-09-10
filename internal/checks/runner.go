@@ -957,24 +957,29 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
+	dispatches := checkDispatches.begin(len(enabledChecks), cap(sem))
 
-	for _, nc := range enabledChecks {
+	for i, nc := range enabledChecks {
 		wg.Add(1)
 		c := nc
+		task := dispatches[i]
 		// Check functions run against user filesystem content (unparsed PHP,
 		// crafted archives, foreign encodings), so contain both a panic in the
 		// runner and one inside the check execution. The inner recovery reports
 		// check_panic immediately with a stack trace.
-		obs.SafeGo("check-runner", func() {
+		obs.SafeGo("check-runner", task.wrap(func() {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
 			case <-scanCtx.Done():
+				task.withdraw(scanCtx)
 				return
 			}
 			defer func() { <-sem }()
+			task.admit()
 
 			if scanCtx.Err() != nil {
+				task.withdraw(scanCtx)
 				return
 			}
 
@@ -993,7 +998,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 
 			// Run with cancellable context so timed-out checks stop
 			budget := timeoutFor(c.name)
-			ctx, cancel := context.WithTimeout(scanCtx, budget)
+			ctx, cancel := context.WithTimeout(withCheckDispatch(scanCtx, task), budget)
 			start := time.Now()
 			execution := executeCheckAsync(ctx, "check-exec", func() []alert.Finding {
 				return c.fn(ctx, cfg, store)
@@ -1092,7 +1097,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				})
 				mu.Unlock()
 			}
-		})
+		}))
 	}
 
 	wg.Wait()

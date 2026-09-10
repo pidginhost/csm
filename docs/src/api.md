@@ -216,6 +216,17 @@ This aggregate sets `capacity_unavailable`: separate scans have their own wrappe
 limits, and timed-out functions can outlive those slots. It does not measure
 checks awaiting dispatch, scan-job persistence or later automatic actions.
 Status reads memory without waiting for a check or accessing the state database.
+`checks.dispatch` reports pending checks and occupied runner wrappers across host
+and account scan batches. Concurrent batches have no fixed global waiting limit,
+so capacity is unavailable. Lag uses `consumer_progress` within each batch:
+pending work degrades after one minute without progress when that batch has a
+free worker slot. A busy pool may keep working within each check's own deadline.
+Setup and result handling have a separate one-minute budget; they cannot borrow
+a heavy check's longer deadline. A wrapper panic or abnormal exit counts a loss,
+as does a parent deadline before a check can start. Explicit cancellation
+withdraws queued demand without loss. Execution failures belong to
+`checks.executions`; dispatch tracks the surrounding scheduling operation.
+Reading status never takes a scan, context or database lock.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.

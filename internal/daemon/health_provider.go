@@ -33,6 +33,7 @@ func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	out["actionlog.writes"] = actionlog.QueueStatus(now)
 	out["phpanel.spool"] = alert.PhpanelQueueStatus(now)
 	out["checks.executions"] = checks.CheckExecutionQueueStatus(now)
+	out["checks.dispatch"] = checks.CheckDispatchQueueStatus(now)
 	for name, status := range rdnsCache().QueueStatuses(now) {
 		out["smtp_rdns."+name] = status
 	}
