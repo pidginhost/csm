@@ -36,6 +36,17 @@ func fileIndexQueueFixture(t *testing.T) (*config.Config, *mockOS) {
 		}
 		return &fakeFileInfoMtime{name: filepath.Base(name), dir: true, mode: 0755, mtime: time.Unix(100, 0)}, nil
 	}
+	contentPath := filepath.Join(t.TempDir(), "content.php")
+	if err := os.WriteFile(contentPath, []byte("<?php echo 'ready';"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	open := fs.open
+	fs.open = func(name string) (*os.File, error) {
+		if name == "/home/alice/public_html/wp-content/uploads/c99.php" {
+			return os.Open(contentPath)
+		}
+		return open(name)
+	}
 	withMockOS(t, fs)
 	return cfg, fs
 }
