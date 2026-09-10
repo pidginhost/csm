@@ -125,7 +125,7 @@ func runCmdCombinedContextReal(parent context.Context, name string, args ...stri
 	out, err := exec.CommandContext(ctx, resolveSystemCommand(name), args...).CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
-		return nil, nil
+		return nil, context.DeadlineExceeded
 	}
 	if parent.Err() != nil {
 		return nil, parent.Err()
