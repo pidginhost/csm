@@ -19,6 +19,8 @@ func (s Status) Evidence() string {
 	depth := pending + "/" + capacity
 	lag := fmt.Sprintf("lag=%.0fs", s.LagSeconds)
 	switch s.LagBasis {
+	case "observed_age":
+		lag = fmt.Sprintf("observed_lag=%.0fs", s.LagSeconds)
 	case "consumer_progress":
 		lag = fmt.Sprintf("consumer_stall=%.0fs", s.LagSeconds)
 	case "unavailable":

@@ -18,3 +18,10 @@ func TestEvidenceLabelsUnavailableCapacity(t *testing.T) {
 		}
 	}
 }
+
+func TestEvidenceLabelsObservedQueueAge(t *testing.T) {
+	got := (Status{LagBasis: "observed_age", LagSeconds: 121}).Evidence()
+	if !strings.Contains(got, "observed_lag=121s") {
+		t.Fatalf("observation age presented as persisted age: %q", got)
+	}
+}

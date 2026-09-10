@@ -210,6 +210,22 @@ persists every accepted report before closing the spool; a failed write does
 not discard unrelated waiting reports. Captured hooks refuse later reports.
 This row measures the memory queue, not reports already retained on disk for
 retry; normal shutdown does not count those durable reports as lost.
+`abuse_reporting.spool` measures durable reports per destination, with the
+configured spool capacity. Reports already being sent remain in flight through
+the database acknowledgment. Failed admission and discarded records count as
+losses; a delivery retry, failed acknowledgment or normal shutdown retains the
+report and does not count it as lost. If concurrent admission evicts a record
+already being sent, that record counts as lost only when its send fails.
+`lag_basis: observed_age` means waiting age starts when this process first sees
+the record. Existing records start at spool open; retries keep that age. Doctor
+labels this as `observed_lag`, since time spent waiting before restart is unknown.
+Waiting or running work degrades after two minutes, allowing for the normal
+one-minute delivery interval. The common full-queue and recent-loss thresholds
+also apply. `spool_io` names failed admission, read or acknowledgment operations;
+`delivery_failed` names a failed or panicking sender. These states clear when
+the affected operation recovers. Health reads remain independent of database
+writes and outbound requests. Reopening with a smaller cap preserves existing
+records until the next admission applies the configured overflow policy.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,

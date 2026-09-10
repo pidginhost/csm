@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/reporting"
 )
 
@@ -77,7 +78,7 @@ func (d *Daemon) startAbuseReporting() func() {
 	d.abuseReportStop = stopCh
 	d.abuseReportDone = doneCh
 	consumer := newAbuseReportConsumer(stopCh, abuseReportQueueSize(max), abuseReportDrainEvery, spooler.Enqueue, spooler.DrainOnce)
-	d.registerQueueSource("abuse_reporting", consumer)
+	d.registerQueueSource("abuse_reporting", abuseReportQueues{ingress: consumer, spool: spool})
 	alert.SetReportHook(func(f alert.Finding) {
 		if r, ok := gate.Consider(f); ok {
 			consumer.enqueue(r)
@@ -93,6 +94,19 @@ func (d *Daemon) startAbuseReporting() func() {
 		}()
 		consumer.run()
 	}
+}
+
+type abuseReportQueues struct {
+	ingress *abuseReportConsumer
+	spool   *reporting.Spool
+}
+
+func (q abuseReportQueues) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	statuses := q.ingress.QueueStatuses(now)
+	for name, status := range q.spool.QueueStatuses(now) {
+		statuses[name] = status
+	}
+	return statuses
 }
 
 func (d *Daemon) stopAbuseReporting() {

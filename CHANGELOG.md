@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Abuse reporting now exposes its durable backlog and delivery failures through status and doctor. Retried reports retain their waiting age without counting as lost.
+
 - Abuse reporting now reports memory backlog, stalled persistence and lost reports through status and doctor.
 
 - Bot verification now reports backlog, stalled work and lost requests through status and doctor. DNS and cache failures remain visible without changing bot classification.

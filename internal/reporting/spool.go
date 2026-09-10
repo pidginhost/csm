@@ -19,10 +19,12 @@ type spoolItem struct {
 // Spool is a durable, bounded outbound queue for reports, backed by bbolt so a
 // down collector or a daemon restart does not drop confirmed-abuse reports.
 type Spool struct {
-	db     *bolt.DB
-	bucket []byte
-	max    int
-	drain  sync.Mutex
+	db       *bolt.DB
+	bucket   []byte
+	max      int
+	drain    sync.Mutex
+	mutation sync.Mutex
+	health   spoolHealth
 }
 
 // NewSpool opens (or creates) a spool at path with a per-node entry cap.
@@ -31,10 +33,18 @@ func NewSpool(path, bucket string, max int) (*Spool, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Spool{db: db, bucket: []byte(bucket), max: max}
+	s := &Spool{db: db, bucket: []byte(bucket), max: max, health: newSpoolHealth(max)}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, e := tx.CreateBucketIfNotExists(s.bucket)
-		return e
+		b, err := tx.CreateBucketIfNotExists(s.bucket)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		c := b.Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			s.health.pending[string(k)] = &spoolWork{ticket: s.health.stats.Begin(now)}
+		}
+		return nil
 	}); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -43,7 +53,11 @@ func NewSpool(path, bucket string, max int) (*Spool, error) {
 }
 
 // Close releases the underlying database.
-func (s *Spool) Close() error { return s.db.Close() }
+func (s *Spool) Close() error {
+	s.mutation.Lock()
+	defer s.mutation.Unlock()
+	return s.db.Close()
+}
 
 // Enqueue appends a report body destined for target. When the queue exceeds its
 // cap, the oldest entries are dropped (FIFO) and the dropped count is returned
@@ -54,13 +68,18 @@ func (s *Spool) Enqueue(target string, body []byte) (dropped int, err error) {
 	if err != nil {
 		return 0, err
 	}
+	s.mutation.Lock()
+	defer s.mutation.Unlock()
+	ticket := s.health.stats.Begin(time.Now())
+	ticket.Start(time.Now())
+	var key [8]byte
+	var evicted []string
 	err = s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(s.bucket)
 		seq, seqErr := b.NextSequence()
 		if seqErr != nil {
 			return seqErr
 		}
-		var key [8]byte
 		binary.BigEndian.PutUint64(key[:], seq)
 		if e := b.Put(key[:], enc); e != nil {
 			return e
@@ -79,15 +98,21 @@ func (s *Spool) Enqueue(target string, body []byte) (dropped int, err error) {
 			if k == nil {
 				break
 			}
+			evicted = append(evicted, string(k))
 			if e := b.Delete(k); e != nil {
 				return e
 			}
 			count--
-			dropped++
 		}
 		return nil
 	})
-	return dropped, err
+	s.health.enqueueFailed.Store(err != nil)
+	if err != nil {
+		ticket.Reject(time.Now())
+		return 0, err
+	}
+	s.applyEnqueue(string(key[:]), ticket, evicted)
+	return len(evicted), nil
 }
 
 // Len returns the number of queued items.
@@ -109,34 +134,66 @@ func (s *Spool) Drain(send func(target string, body []byte) error) (delivered in
 	defer s.drain.Unlock()
 
 	for {
-		var (
-			key  []byte
-			item spoolItem
-			has  bool
-		)
-		if e := s.db.View(func(tx *bolt.Tx) error {
-			c := tx.Bucket(s.bucket).Cursor()
-			k, v := c.First()
-			if k == nil {
-				return nil
-			}
-			key = append([]byte(nil), k...)
-			has = true
-			return json.Unmarshal(v, &item)
-		}); e != nil {
-			return delivered, e
+		key, item, work, err := s.next()
+		if err != nil {
+			return delivered, err
 		}
-		if !has {
+		if work == nil {
 			return delivered, nil
 		}
-		if e := send(item.Target, item.Body); e != nil {
-			return delivered, e // keep this item; retry later
-		}
-		if e := s.db.Update(func(tx *bolt.Tx) error {
-			return tx.Bucket(s.bucket).Delete(key)
-		}); e != nil {
-			return delivered, e
+		if err := s.deliver(key, item, work, send); err != nil {
+			return delivered, err
 		}
 		delivered++
 	}
+}
+
+func (s *Spool) next() (key []byte, item spoolItem, work *spoolWork, err error) {
+	s.mutation.Lock()
+	defer s.mutation.Unlock()
+	err = s.db.View(func(tx *bolt.Tx) error {
+		k, v := tx.Bucket(s.bucket).Cursor().First()
+		if k == nil {
+			return nil
+		}
+		key = append([]byte(nil), k...)
+		return json.Unmarshal(v, &item)
+	})
+	s.health.readFailed.Store(err != nil)
+	if err != nil {
+		return nil, item, nil, err
+	}
+	if key == nil {
+		s.health.sendFailed.Store(false)
+		s.health.removeFailed.Store(false)
+		return nil, item, nil, nil
+	}
+	work = s.health.pending[string(key)]
+	work.ticket.Start(time.Now())
+	s.health.active = work
+	return key, item, work, nil
+}
+
+func (s *Spool) deliver(key []byte, item spoolItem, work *spoolWork, send func(string, []byte) error) error {
+	sent, removed := false, false
+	defer func() { s.finishDelivery(work, sent, removed) }()
+	if err := send(item.Target, item.Body); err != nil {
+		return err
+	}
+	sent = true
+	s.health.sendFailed.Store(false)
+	s.mutation.Lock()
+	defer s.mutation.Unlock()
+	if !work.evicted {
+		err := s.db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket(s.bucket).Delete(key)
+		})
+		s.health.removeFailed.Store(err != nil)
+		if err != nil {
+			return err
+		}
+		delete(s.health.pending, string(key))
+	}
+	removed = true
+	return nil
 }

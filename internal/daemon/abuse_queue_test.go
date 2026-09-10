@@ -46,6 +46,10 @@ func TestAbuseQueuePublishedBeforeWorkerStarts(t *testing.T) {
 	if !exists || got.Capacity != 10000 || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 || got.Status != "ok" {
 		t.Fatalf("abuse report queue is missing before publication: exists=%v status=%+v", exists, got)
 	}
+	got, exists = d.QueueStatuses()["abuse_reporting.spool"]
+	if !exists || got.Capacity != 10000 || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 || got.Status != "ok" || got.LagBasis != "observed_age" {
+		t.Fatalf("durable abuse queue is missing before publication: exists=%v status=%+v", exists, got)
+	}
 }
 
 func TestAbuseQueueShutdownPersistsEveryAcceptedReport(t *testing.T) {
