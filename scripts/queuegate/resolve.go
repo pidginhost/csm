@@ -7,7 +7,6 @@ import (
 	"go/token"
 	"go/types"
 	"path"
-	"slices"
 	"strings"
 )
 
@@ -45,10 +44,11 @@ func (s *sourceIndex) definitions(file *sourceFile, expr ast.Expr) []sourceSymbo
 		}
 		dir := strings.TrimPrefix(importPath, modulePath+"/")
 		var definitions []sourceSymbol
+		seen := make(map[string]bool)
 		for _, imported := range s.files {
-			if path.Dir(imported.path) == dir {
-				definitions = s.symbols[imported.pkg+":"+expr.Sel.Name]
-				break
+			if path.Dir(imported.path) == dir && !seen[imported.pkg] {
+				seen[imported.pkg] = true
+				definitions = append(definitions, s.symbols[imported.pkg+":"+expr.Sel.Name]...)
 			}
 		}
 		return definitions
@@ -100,90 +100,6 @@ func (s *sourceIndex) channelType(file *sourceFile, expr ast.Expr, seen map[ast.
 		channel = kind
 	}
 	return channel, nil
-}
-
-func (s *sourceIndex) capacity(file *sourceFile, expr ast.Expr, seen map[ast.Node]bool) (string, error) {
-	switch expr := expr.(type) {
-	case *ast.Ident:
-		if expr.Name == "iota" && expr.Obj == nil && len(s.symbols[file.pkg+":iota"]) == 0 {
-			return "", fmt.Errorf("unsupported iota capacity constant")
-		}
-	case *ast.CallExpr:
-		args := make([]string, 0, len(expr.Args))
-		for _, arg := range expr.Args {
-			value, err := s.capacity(file, arg, seen)
-			if err != nil {
-				return "", err
-			}
-			args = append(args, value)
-		}
-		suffix := ""
-		if expr.Ellipsis.IsValid() {
-			suffix = "..."
-		}
-		return s.format(expr.Fun) + "(" + strings.Join(args, ", ") + suffix + ")", nil
-	case *ast.ParenExpr:
-		inner, err := s.capacity(file, expr.X, seen)
-		return "(" + inner + ")", err
-	case *ast.BinaryExpr:
-		left, err := s.capacity(file, expr.X, seen)
-		if err != nil {
-			return "", err
-		}
-		right, err := s.capacity(file, expr.Y, seen)
-		return "(" + left + " " + expr.Op.String() + " " + right + ")", err
-	case *ast.UnaryExpr:
-		inner, err := s.capacity(file, expr.X, seen)
-		return expr.Op.String() + inner, err
-	}
-	definitions := s.definitions(file, expr)
-	var values []string
-	for _, definition := range definitions {
-		if definition.kind != token.CONST {
-			continue
-		}
-		if definition.value == nil || seen[definition.value] {
-			return "", fmt.Errorf("unresolved capacity constant %s", s.format(expr))
-		}
-		seen[definition.value] = true
-		value, err := s.capacity(definition.file, definition.value, seen)
-		delete(seen, definition.value)
-		if err != nil {
-			return "", err
-		}
-		values = append(values, value)
-	}
-	if len(values) == 0 {
-		return s.format(expr), nil
-	}
-	slices.Sort(values)
-	return strings.Join(slices.Compact(values), " | "), nil
-}
-
-func (s *sourceIndex) capacityDefaults(file *sourceFile, decl ast.Decl, capacity ast.Expr) ([]string, error) {
-	name := s.format(capacity)
-	var values []string
-	var resolveErr error
-	ast.Inspect(decl, func(node ast.Node) bool {
-		assignment, ok := node.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		for i, lhs := range assignment.Lhs {
-			if s.format(lhs) != name || i >= len(assignment.Rhs) {
-				continue
-			}
-			value, err := s.capacity(file, assignment.Rhs[i], make(map[ast.Node]bool))
-			if err != nil {
-				resolveErr = err
-				continue
-			}
-			values = append(values, name+" "+assignment.Tok.String()+" "+value)
-		}
-		return true
-	})
-	slices.Sort(values)
-	return slices.Compact(values), resolveErr
 }
 
 func (s *sourceIndex) externalType(file *sourceFile, expr ast.Expr) (types.Type, error) {

@@ -109,18 +109,23 @@ go run ./scripts/queuegate -scan > queue-allocations.json
 It scans repository Go source across all build constraints, excluding test files,
 `testdata`, hidden directories and vendored dependencies. It records raw channel
 allocations and imported `queuehealth.NewChannel` calls, including renamed and
-dot imports. Named channel aliases resolve across repository files; imported
-named types use the Go toolchain's source importer. Unresolved types, reflective
-allocation and indirect references to the accounted constructor fail explicitly.
+dot imports. Named channel aliases resolve across every package variant in a
+repository import directory; an alias that is a channel in only some variants fails
+explicitly. Imported named types use the Go toolchain's source importer.
+Unresolved types, reflective allocation and indirect references to the accounted constructor fail explicitly.
 Supporting a new constructor or generic constraint requires scanner tests and
 an ownership review first.
 
 Allocation identities use the file, enclosing function, assignment target,
 constructor kind and ordinal. The descriptor includes the allocation expression,
-expanded repository constants and assignments to the capacity in the enclosing
-function. Expression grouping and build-variant values are retained. Implicit
-constant declarations and `iota` capacities need explicit scanner support.
-Runtime capacities stay symbolic; this is not whole-program data-flow analysis.
+expanded repository constants and assignments or local `var` initializers for
+the capacity and its local inputs in the enclosing function. Expression grouping
+and build-variant values are retained, including array lengths, literal indices and slice bounds.
+Implicit constant declarations, `iota`, closures and named composite literals
+in capacity expressions need explicit scanner support and are rejected. Runtime
+collection lengths stay symbolic; only explicit construction and slice bounds
+enter the local capacity-input graph. The scanner does not infer arbitrary
+function bodies or type layouts and is not whole-program data-flow analysis.
 
 A version 1 manifest contains `allocations` and `owners`. Each allocation copies
 its scanner descriptor and adds a reviewed `class`, `rationale`, and `queue`

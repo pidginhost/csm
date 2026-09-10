@@ -97,6 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Queue inventory checks now catch capacity changes hidden in local declarations and nested expressions, and reject ambiguous build variants.
+
 - Cleanup loss counts now include newly blocked IPs after recovery from unreadable state. Old cleanup records retain their uncertain history without hiding new failures.
 
 - Queue health treats decisions withdrawn by the current blocking policy as expected refusals. Retry accounting keeps different kinds of evidence separate when recovering from a failed save.
