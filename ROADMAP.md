@@ -135,8 +135,8 @@ Main-branch cloud integration is manual and is not a publication dependency.
 
 ## Remaining narrowing tables need completeness guards
 
-**Status:** open. The first three tables of this class are guarded; the
-class is not retired.
+**Status:** open. Existing incident classification tables are now guarded
+alongside the earlier inventories; future inventories need the same guard.
 
 Three hand-maintained tables narrowed behaviour and fell behind as the project
 grew without any test, lint or alert noticing: the taint analyzer's CMS path
@@ -154,17 +154,21 @@ reputation scoring. The manifest's accepted representation of missing
 evidence is an explicit `pending` entry with a reason; a pending entry is
 missing-evidence metadata, not non-WordPress coverage.
 
-Tables of the same class remain unguarded:
+`hostIntegrityChecks`, all five `compound*Checks` sets, the incident kind
+selectors and identity exclusions now have a checked-in membership contract
+for every registered check, plus classification-precedence tests. The guard
+rejects both unregistered names and missing eligible members. It found four
+names that were never registered and a missing host classification for
+binary/config tampering, which previously had no incident key.
 
-- `hostIntegrityChecks` and the four `compound*Checks` sets in
-  `internal/incident`, and the incident kind switch that classifies findings.
-  These select by check name from another package, so a membership guard
-  needs a dependency decision first: either `internal/incident` imports the
-  check registry, or the registry exports a name list the incident package's
-  tests can consume without importing checks.
-- Future inventories this roadmap creates deliberately: response tiers,
-  root-requiring operations, and the parser inventory. Each ships with the
-  same completeness guard, or it is not done.
+The tests use the external `incident_test` package to import the registry;
+production dependencies stay unchanged. A production `incident -> checks`
+import would cycle through `checks -> control -> incident`.
+
+Future inventories this roadmap creates deliberately -- response tiers,
+root-requiring operations, and the parser inventory -- must ship with the
+same completeness guard. New incident sets and registered checks require an
+explicit decision in the incident policy fixture.
 
 **Decision:** whether the emitted ModSecurity block names
 (`modsec_block_realtime`, `modsec_block_escalation`,

@@ -290,7 +290,7 @@ func TestCorrelator_CompoundSurvivesTimelineCap(t *testing.T) {
 // is idempotent for the no-upgrade case.
 func TestMaybeReclassifyKind_KeepsKindWhenNoChange(t *testing.T) {
 	inc := &Incident{Kind: KindMailboxTakeover}
-	maybeReclassifyKind(inc, alert.Finding{Check: "smtp_brute_failure_then_success", Mailbox: "alice@example.com"})
+	maybeReclassifyKind(inc, alert.Finding{Mailbox: "alice@example.com"})
 	if inc.Kind != KindMailboxTakeover {
 		t.Errorf("Kind drifted to %q, want unchanged", inc.Kind)
 	}

@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Binary and configuration tamper findings now retain their host identity when joining incidents, even without account or IP attribution. Classification checks catch missing detector mappings before release.
+
 - PHP relay watcher shutdown no longer risks closing an unrelated reused descriptor. Busy hosts with many open files no longer lose the watcher to a polling panic.
 
 - Spool shutdown now prevents late scan responses from writing through a closed descriptor that the process has reused for an unrelated file.

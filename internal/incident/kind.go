@@ -173,11 +173,9 @@ func isInboundWebAttackCheck(check string) bool {
 // blast radius.
 var hostIntegrityChecks = map[string]bool{
 	"bulk_password_change":       true,
-	"sensitive_file_write":       true,
 	"sensitive_file_modified":    true,
 	"fake_kernel_thread":         true,
-	"auditd_disabled":            true,
-	"modsec_disabled":            true,
+	"integrity":                  true,
 	"shadow_change":              true,
 	"sshd_config_change":         true,
 	"root_password_change":       true,
@@ -205,8 +203,7 @@ func isMailboxTakeoverCheck(check string) bool {
 		"email_spam_outbreak",
 		"email_suspicious_geo",
 		"mail_account_compromised",
-		"mail_per_account",
-		"smtp_brute_failure_then_success":
+		"mail_per_account":
 		return true
 	default:
 		return false
