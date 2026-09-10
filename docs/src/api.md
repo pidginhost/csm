@@ -390,8 +390,31 @@ The common loss threshold and recovery policy apply to confirmed losses.
 These measurements preserve the existing write, retention and shutdown policy;
 they do not add retries or promise storage durability beyond the writer's result.
 Memory-only databases have no persistence backlog. Health reads queue memory,
-independently of database state locks and I/O. Changed-record persistence is a
-separate pending owner and is not yet included in this row.
+independently of database state locks and I/O.
+
+`attackdb.records` reports distinct IP records awaiting a saved update or deletion.
+Repeated changes to one IP coalesce before the snapshot; a mutation during an
+active write remains separate pending work. A successful deletion can also
+satisfy a repeated deletion. Loaded records needing normalization and expired
+records needing removal enter the same queue. Retained scoring records are not
+counted as pending persistence. There is no fixed capacity.
+
+Waiting age starts at the first pending change. The active snapshot stays in
+flight through writes, error logging and retry bookkeeping. Processing age uses
+`lag_basis: operation_progress` and resets at each returned store write or delete,
+or at the complete flat-file write result. One minute without progress or with
+waiting work degrades health. Returned failures report `retry_failed` while the
+retry remains queued, preserving its original age without counting it as lost.
+Successful retries clear that condition. A failed shutdown flush retains the
+in-memory retry; the stopped background saver does not schedule another attempt.
+
+An interrupted operation counts confirmed abandoned demand only when no pending
+update or deletion survives. Unreturned write outcomes report
+`persistence_uncertain` for one minute and retain `dropped_lower_bound` afterward.
+Known losses remain counted through recovery. Health reads queue metadata only,
+without waiting for database state or storage locks. These measurements preserve
+the existing persistence, retry and shutdown behavior; they do not make retained
+in-memory retry state durable across process exit.
 
 `incident.persist.waiting` reports immutable incident snapshots waiting for the
 ordered writer, with no fixed waiting capacity. `incident.persist.active` reports

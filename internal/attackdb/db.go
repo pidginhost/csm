@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/netutil"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // AttackType categorises observed attacks for grouping and scoring.
@@ -181,19 +182,24 @@ type IPRecord struct {
 
 // DB is the in-memory attack database backed by JSON files.
 type DB struct {
-	flushMu         sync.Mutex
-	mu              sync.RWMutex
-	records         map[string]*IPRecord
-	deletedIPs      map[string]struct{}
-	dirtyIPs        map[string]struct{}
-	pendingEvents   []Event
-	eventHealthOnce sync.Once
-	eventQueue      *eventQueue
-	openEvents      func(string) (io.WriteCloser, error)
-	dbPath          string
-	dirty           bool
-	stopCh          chan struct{}
-	wg              sync.WaitGroup
+	flushMu          sync.Mutex
+	mu               sync.RWMutex
+	records          map[string]*IPRecord
+	deletedIPs       map[string]struct{}
+	dirtyIPs         map[string]struct{}
+	pendingEvents    []Event
+	eventHealthOnce  sync.Once
+	eventQueue       *eventQueue
+	openEvents       func(string) (io.WriteCloser, error)
+	recordHealthOnce sync.Once
+	recordQueue      *recordQueue
+	saveRecord       func(*store.DB, store.IPRecord) error
+	deleteRecord     func(*store.DB, string) error
+	writeRecords     func(string, []byte) error
+	dbPath           string
+	dirty            bool
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
 }
 
 // markDirtyLocked records that ip's record changed and must be persisted on the
@@ -205,6 +211,7 @@ func (db *DB) markDirtyLocked(ip string) {
 	}
 	db.dirtyIPs[ip] = struct{}{}
 	db.dirty = true
+	db.queueRecordLocked(ip)
 }
 
 func (db *DB) markDeletedLocked(ip string) {
@@ -214,6 +221,7 @@ func (db *DB) markDeletedLocked(ip string) {
 	db.deletedIPs[ip] = struct{}{}
 	delete(db.dirtyIPs, ip)
 	db.dirty = true
+	db.queueRecordLocked(ip)
 }
 
 var (

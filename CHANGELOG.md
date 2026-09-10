@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Queue health now reports pending attack record updates and deletions, including failed retries and interrupted writes. Repeated changes to one IP share pending work, while changes arriving during a write remain visible.
+
 - Attack event persistence now reports backlog, stalled writes and confirmed losses through status and doctor. Partial writes and uncertain completion remain visible after shutdown.
 
 - Queue inventory tooling detects unclassified channel allocations and records the regressions each reviewed owner must pass.

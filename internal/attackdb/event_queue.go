@@ -143,8 +143,7 @@ func (b *eventBatch) finish() {
 	q.mu.Unlock()
 }
 
-// QueueStatuses never acquires database state or filesystem locks.
-func (db *DB) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+func (db *DB) eventQueueStatus(now time.Time) queuehealth.Status {
 	q := db.eventHealth()
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -169,7 +168,7 @@ func (db *DB) QueueStatuses(now time.Time) map[string]queuehealth.Status {
 	case !q.uncertainAt.IsZero() && now.Sub(q.uncertainAt) < time.Minute:
 		row.Status, row.Reason = "degraded", "persistence_uncertain"
 	}
-	return map[string]queuehealth.Status{"events": row}
+	return row
 }
 
 // The encoder escapes embedded newlines. Only a complete JSONL delimiter
