@@ -108,6 +108,12 @@ the union of those regressions and its existing requirements to
 `production-results/<mode>/queue-required.json`, then requires actual passing
 events for every selected requirement.
 
+The portable baseline in `scripts/production-required.json` also requires the
+shared accounting, health reporting, doctor and gate regressions. Keep recovery
+and concurrency regressions with their owner when they test an owner-specific
+boundary; keep shared contracts in the baseline. A passing full suite alone
+does not protect an omitted requirement against a later skip.
+
 The allocation scanner is available for ownership reviews:
 
 ```bash
