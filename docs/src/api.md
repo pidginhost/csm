@@ -252,6 +252,17 @@ so capacity is unavailable. Timeouts, errors and abandoned work count once per
 engine scan; later failures cannot count the same scan twice. Detections and
 unavailable engines are normal outcomes, and mail verdict behavior is unchanged.
 Status reads only memory, and watcher restarts reuse the same engine health.
+`php_taint.requests` follows callers waiting for the worker lock, active requests
+and pipe operations that outlive their callers. Waiting, setup, reply handling
+and cleanup each have a one-minute lag budget. Active worker communication uses
+its configured timeout or the shorter caller deadline; a buffered reply cannot
+borrow a long worker timeout. The request stays in flight through reply decoding
+and cleanup, and until any outstanding pipe operation finishes. Capacity is
+unavailable because callers have no fixed global waiting limit. Worker failures,
+timeouts, breaker refusals and abnormal exits count once per request; known
+failures are recorded before cleanup. Oversize input, caller cancellation and
+refusal after an intentional stop do not add losses. Status reads memory without
+the worker lock, and shutdown retains the supervisor's health evidence.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.

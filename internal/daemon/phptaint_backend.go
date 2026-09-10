@@ -28,6 +28,7 @@ func (d *Daemon) initPHPTaintAnalyzer() error {
 		return err
 	}
 	d.phpTaintSup = sup
+	d.registerQueueSource("php_taint", sup)
 	checks.SetPHPTaintAnalyzer(sup)
 	return nil
 }
