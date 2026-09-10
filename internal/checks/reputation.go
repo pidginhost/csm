@@ -243,18 +243,11 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		category string
 		err      error
 	}
-	if len(pendingQueries) > 0 {
-		if sdb != nil {
-			reserved := sdb.ReserveAbuseQuerySlots(utcDay, len(pendingQueries), maxDailyAbuseQueries)
-			if reserved < len(pendingQueries) {
-				for _, q := range pendingQueries[reserved:] {
-					if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
-						appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
-					}
-				}
-				pendingQueries = pendingQueries[:reserved]
-			}
-		}
+	var refusedQueries []pendingQuery
+	if len(pendingQueries) > 0 && sdb != nil {
+		reserved := sdb.ReserveAbuseQuerySlots(utcDay, len(pendingQueries), maxDailyAbuseQueries)
+		refusedQueries = pendingQueries[reserved:]
+		pendingQueries = pendingQueries[:reserved]
 	}
 
 	batch := &reputationQueryBatch{}
@@ -267,6 +260,14 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 			work.finish(false)
 		}
 	}()
+
+	// Reserved work already exists while the refused tail is scored. Publish
+	// it first so a stalled or abandoned fallback cannot hide those queries.
+	for _, q := range refusedQueries {
+		if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
+			appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
+		}
+	}
 
 	results := make(map[string]queryResult, len(pendingQueries))
 	quotaErrorObserved := false

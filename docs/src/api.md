@@ -243,7 +243,9 @@ Actual commands remain in flight until they return. Health reads memory only and
 retains loss evidence after recovery. Shared-refresh waiters remain owned by
 `checks.executions`; they do not create another set of site jobs. Optional domain
 lookup fallback and plugin metadata enrichment keep their existing behavior.
-`checks.reputation_queries` follows reserved reputation lookups through HTTP,
+`checks.reputation_queries` publishes accepted lookups immediately after quota
+reservation, including while refused lookups receive fallback scoring. It follows
+the accepted work through HTTP,
 response cleanup, buffered results, supplemental scoring and cache or quota-backoff
 storage. Each scan has at most five requests; concurrent scans have no fixed
 combined capacity. HTTP uses the client's timeout, while cleanup, local result

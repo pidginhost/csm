@@ -469,3 +469,89 @@ func TestReputationQueueFlatFileFailuresKeepFindings(t *testing.T) {
 		})
 	}
 }
+
+func TestReputationQueueOwnsReservationsBeforeFallback(t *testing.T) {
+	for _, abnormal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("abnormal=%v", abnormal), func(t *testing.T) {
+			cfg, db := reputationQueueFixture(t, 5)
+			withLowDailyCap(t, 2)
+			cfg.Reputation.Upstream.Enabled = true
+			cfg.Reputation.Upstream.URL = "https://fallback.example.test"
+			cfg.Reputation.Upstream.TimeoutSec = 60
+			entered, release := make(chan struct{}), make(chan struct{})
+			finish := sync.OnceFunc(func() { close(release) })
+			defer finish()
+			var once sync.Once
+			var abuseCalls atomic.Int32
+			withReputationQueueTransport(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				abuseCalls.Add(1)
+				return reputationQueueResponse(r, 200, io.NopCloser(strings.NewReader(`{"data":{"abuseConfidenceScore":80}}`))), nil
+			}))
+			withDefaultHTTPTransport(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				once.Do(func() {
+					close(entered)
+					<-release
+					if abnormal {
+						runtime.Goexit()
+					}
+				})
+				_, _ = fmt.Fprintf(w, `{"ip":%q,"score":80}`, r.URL.Query().Get("ip"))
+			}))
+			done := make(chan struct{})
+			var findings []alert.Finding
+			go func() { defer close(done); findings = CheckIPReputation(context.Background(), cfg, nil) }()
+			joined := false
+			defer func() {
+				finish()
+				if !joined {
+					select {
+					case <-done:
+					case <-time.After(3 * time.Second):
+						t.Error("reputation check did not exit")
+					}
+				}
+			}()
+			select {
+			case <-entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("reserved-tail fallback did not start")
+			}
+			if db.AbuseQueryCount(time.Now().UTC().Format("2006-01-02")) != 2 || abuseCalls.Load() != 0 {
+				t.Fatal("fixture did not hold two committed reservations before HTTP dispatch")
+			}
+			q := reputationQueue(t, time.Now())
+			if q.Depth != 2 || q.InFlight != 0 || q.DroppedTotal != 0 {
+				t.Errorf("two reserved queries absent while fallback runs: %+v", q)
+			}
+			finish()
+			select {
+			case <-done:
+				joined = true
+			case <-time.After(3 * time.Second):
+				t.Fatal("reputation check did not finish")
+			}
+			q = reputationQueue(t, time.Now())
+			if abnormal {
+				if q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 2 || abuseCalls.Load() != 0 || len(db.AllReputation()) != 0 {
+					t.Errorf("reserved work abandoned before publication was not settled: calls=%d queue=%+v", abuseCalls.Load(), q)
+				}
+			} else {
+				var reputation, quota int
+				for _, f := range findings {
+					if f.Check == "ip_reputation" {
+						reputation++
+					}
+					if f.Check == "reputation_quota_exhausted" {
+						quota++
+					}
+				}
+				if reputation != 5 || quota != 1 || len(findings) != 6 || abuseCalls.Load() != 2 || len(db.AllReputation()) != 2 {
+					t.Fatal("release changed exact reputation, quota, cache or HTTP outcomes")
+				}
+				if q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 0 {
+					t.Errorf("successful reserved work did not settle: %+v", q)
+				}
+			}
+		})
+	}
+}
