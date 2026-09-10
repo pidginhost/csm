@@ -122,7 +122,8 @@ expanded repository constants and assignments or local `var` initializers for
 the capacity and its local inputs in the enclosing function. Expression grouping
 and build-variant values are retained, including array lengths, literal indices and slice bounds.
 Implicit constant declarations, `iota`, closures and named composite literals
-in capacity expressions need explicit scanner support and are rejected. Runtime
+in capacity expressions need explicit scanner support and are rejected, including
+when nested inside field selections. Runtime
 collection lengths stay symbolic; only explicit construction and slice bounds
 enter the local capacity-input graph. The scanner does not infer arbitrary
 function bodies or type layouts and is not whole-program data-flow analysis.

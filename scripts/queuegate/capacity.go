@@ -17,7 +17,15 @@ func (s *sourceIndex) capacity(file *sourceFile, expr ast.Expr, seen map[ast.Nod
 		if expr.Name == "iota" && expr.Obj == nil && len(s.symbols[file.pkg+":iota"]) == 0 {
 			return "", fmt.Errorf("unsupported iota capacity constant")
 		}
-	case *ast.BasicLit, *ast.SelectorExpr:
+	case *ast.BasicLit:
+	case *ast.SelectorExpr:
+		base, err := s.capacity(file, expr.X, seen)
+		if err != nil {
+			return "", err
+		}
+		if len(s.definitions(file, expr)) == 0 {
+			return base + "." + expr.Sel.Name, nil
+		}
 	case *ast.CallExpr:
 		function, err := s.capacity(file, expr.Fun, seen)
 		if err != nil {

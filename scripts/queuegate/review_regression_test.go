@@ -85,3 +85,16 @@ func TestScanRejectsEmptyMakeInCapacity(t *testing.T) {
 		t.Fatalf("malformed nested make was not rejected: %v", err)
 	}
 }
+
+func TestScanRejectsUnsupportedCapacityInsideSelector(t *testing.T) {
+	for _, expression := range []string{
+		`(limits{Max: bound}).Max`,
+		`(func() limits { return limits{Max: bound} }()).Max`,
+	} {
+		source := `package example; type limits struct{Max int}; const bound=4; func start(){ _=make(chan int,` + expression + `) }`
+		_, err := scanSources(queueFixture(map[string]string{"internal/example/source.go": source}))
+		if err == nil || !strings.Contains(err.Error(), "unsupported capacity") {
+			t.Fatalf("selector hid unsupported capacity %s: %v", expression, err)
+		}
+	}
+}
