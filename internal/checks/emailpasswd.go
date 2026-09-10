@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha1" // #nosec G505 -- SHA1 is the digest format required by the Have I Been Pwned range API (https://haveibeenpwned.com/API/v3#PwnedPasswords). We send the first 5 chars of the digest and compare remaining chars against the returned list — HIBP does not offer a stronger-hash endpoint.
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -319,40 +320,55 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 	var wg sync.WaitGroup
 
 	sem := make(chan struct{}, 5)
+	batch := emailMailboxAudits.begin(len(allEntries), cap(sem))
+	defer batch.abandon(ctx)
 mailboxes:
-	for _, entry := range allEntries {
+	for i, entry := range allEntries {
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
 			break mailboxes
 		}
+		work := batch.tasks[i]
+		work.admit()
 		wg.Go(func() {
 			defer func() { <-sem }()
-			if ctx.Err() != nil {
-				return
-			}
-			fullMailbox := entry.mailbox + "@" + entry.domain
-			storeKey := fmt.Sprintf("email:pwaudit:%s:%s", entry.account, fullMailbox)
-			// Older versions also cached failed verifications as clean.
-			fp := "v2:" + hashFingerprint(entry.hash)
-			if db.GetMetaString(storeKey) == fp {
-				return
-			}
+			work.run(ctx, checkTimeout, func() {
+				if ctx.Err() != nil {
+					return
+				}
+				fullMailbox := entry.mailbox + "@" + entry.domain
+				storeKey := fmt.Sprintf("email:pwaudit:%s:%s", entry.account, fullMailbox)
+				// Older versions also cached failed verifications as clean.
+				fp := "v2:" + hashFingerprint(entry.hash)
+				if db.GetMetaString(storeKey) == fp {
+					return
+				}
 
-			finding, err := auditEmailPassword(ctx, entry)
-			mu.Lock()
-			if err != nil {
-				incomplete++
-			} else if finding != nil {
-				findings = append(findings, *finding)
-			}
-			mu.Unlock()
-			if err != nil || ctx.Err() != nil {
-				return
-			}
-			_ = db.SetMetaString(storeKey, fp)
+				finding, err := auditEmailPassword(ctx, entry)
+				work.progress()
+				if err != nil && !errors.Is(err, context.Canceled) &&
+					!errors.Is(err, errEmailHashUnsupported) && !errors.Is(err, errEmailHashInvalid) &&
+					!errors.Is(err, errEmailHashCost) && !errors.Is(err, errEmailCandidate) {
+					work.fail()
+				}
+				mu.Lock()
+				if err != nil {
+					incomplete++
+				} else if finding != nil {
+					findings = append(findings, *finding)
+				}
+				mu.Unlock()
+				if err != nil || ctx.Err() != nil {
+					return
+				}
+				if err := db.SetMetaString(storeKey, fp); err != nil {
+					work.fail()
+				}
+			})
 		})
 	}
+	batch.abandon(ctx)
 	wg.Wait()
 	if incomplete > 0 || ctx.Err() != nil {
 		markCheckIncomplete(ctx, "email_weak_password")

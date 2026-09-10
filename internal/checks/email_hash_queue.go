@@ -12,6 +12,7 @@ import (
 )
 
 var emailHashes = newEmailHashPool(3)
+var emailMailboxAudits = newScanBatchMonitor()
 
 type emailHashPool struct {
 	slots   chan struct{}
@@ -138,5 +139,7 @@ func (p *emailHashPool) QueueStatuses(now time.Time) map[string]queuehealth.Stat
 
 // EmailPasswordQueueStatuses reads admission and KDF ownership from memory.
 func EmailPasswordQueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return emailHashes.QueueStatuses(now)
+	rows := emailHashes.QueueStatuses(now)
+	rows["mailboxes"] = emailMailboxAudits.snapshot(now)
+	return rows
 }

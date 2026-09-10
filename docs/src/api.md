@@ -191,6 +191,16 @@ successful empty responses are normal negative results. Cache hits perform no
 queued work. The bounded result cache is retained data, not waiting lookups.
 Status can initialize the empty cache but never performs DNS or waits for its
 cache lock. Synchronous lookups without a deadline use no slots or queue row.
+`email_password.mailboxes` reports waiting mailboxes and the five concurrent
+audits per scan, retaining each audit through finding collection and cache writes.
+Concurrent scans have no fixed combined waiting capacity. A busy pool uses each
+audit's five-minute budget or shorter scan deadline; an idle slot with no dispatch
+progress for one minute reports backlog lag. Admission and post-audit work have
+their own one-minute budgets. Cancellation removes waiting demand without adding
+losses, while actual audits remain visible until they return. Expired work, failed
+verification, cache write failures and abnormal exits count once per mailbox.
+Unsupported, malformed and over-budget hashes remain normal incomplete-audit
+outcomes. Health retains loss counts after the batch drains and reads only memory.
 `email_password.hashes` reports the three shared password-verification slots.
 Each slot remains occupied until its KDF and caller have both finished, including
 after scan cancellation. `email_password.waiting` reports callers awaiting a

@@ -5,6 +5,10 @@ import "testing"
 func TestDaemonReportsEmailPasswordQueues(t *testing.T) {
 	d := &Daemon{}
 	rows := d.QueueStatuses()
+	mailboxes, ok := rows["email_password.mailboxes"]
+	if !ok || !mailboxes.CapacityUnavailable || mailboxes.Depth != 0 || mailboxes.InFlight != 0 || mailboxes.DroppedTotal != 0 || mailboxes.Status != "ok" {
+		t.Fatalf("idle mailbox audit queue = %+v present=%v", mailboxes, ok)
+	}
 	hashes, ok := rows["email_password.hashes"]
 	if !ok || hashes.Capacity != 3 || hashes.Depth != 0 || hashes.InFlight != 0 || hashes.DroppedTotal != 0 || hashes.Status != "ok" {
 		t.Fatalf("idle password hash queue = %+v present=%v", hashes, ok)

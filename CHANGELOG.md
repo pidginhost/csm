@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mailbox password audits now report waiting work, stalled audits and failed completion through status and doctor. Canceled audits stay visible while they finish, and failed cache writes retain the confirmed findings.
+
 - PHP analysis now reports waiting requests, stalled worker communication and failed work through status and doctor. Cancellation keeps unfinished communication visible, and timeout evidence remains available during cleanup.
 
 - Email antivirus scans now report stalled engines, delayed results and failed work through status and doctor. Timed-out engines stay visible until they finish.
