@@ -266,6 +266,11 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	routed := make(map[string]bool)
 
 	for _, f := range findings {
+		// Challenge timeouts can hard-block too, so gated authentication
+		// checks must honor the same opt-in as direct firewall responses.
+		if cpanelWebmailFailureChecks[f.Check] && !cfg.AutoResponse.BlockCpanelLogins {
+			continue
+		}
 		if isHardBlockCheck(f.Check) {
 			continue
 		}

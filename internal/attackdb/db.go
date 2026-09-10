@@ -3,6 +3,7 @@ package attackdb
 import (
 	"bufio"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"sort"
@@ -125,8 +126,6 @@ var checkToAttack = map[string]AttackType{
 	"cpanel_file_upload_realtime": AttackAuthSuccess,
 	"cpanel_multi_ip_login":       AttackCPanelLogin,
 
-	// File upload
-
 	// Reputation - known malicious IPs from threat database
 	"ip_reputation": AttackReputation,
 	// NOTE: "local_threat_score" is intentionally excluded - it is a derived
@@ -171,6 +170,7 @@ type IPRecord struct {
 	EventCount            int                `json:"event_count"`
 	AttackCounts          map[AttackType]int `json:"attack_counts"`
 	Accounts              map[string]int     `json:"accounts"`
+	AuthSuccessAccounts   map[string]int     `json:"auth_success_accounts,omitempty"`
 	ThreatScore           int                `json:"threat_score"`
 	AutoBlocked           bool               `json:"auto_blocked"`
 	BruteForceWindowStart time.Time          `json:"brute_force_window_start,omitempty"`
@@ -335,16 +335,7 @@ func NewForTest(records map[string]*IPRecord) *DB {
 		stopCh:     make(chan struct{}),
 	}
 	for k, v := range records {
-		cp := *v
-		cp.AttackCounts = make(map[AttackType]int, len(v.AttackCounts))
-		for ak, av := range v.AttackCounts {
-			cp.AttackCounts[ak] = av
-		}
-		cp.Accounts = make(map[string]int, len(v.Accounts))
-		for ak, av := range v.Accounts {
-			cp.Accounts[ak] = av
-		}
-		db.records[k] = &cp
+		db.records[k] = cloneIPRecord(v)
 	}
 	return db
 }
@@ -398,6 +389,12 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	}
 	if account != "" {
 		rec.Accounts[account]++
+		if attackType == AttackAuthSuccess {
+			if rec.AuthSuccessAccounts == nil {
+				rec.AuthSuccessAccounts = make(map[string]int)
+			}
+			rec.AuthSuccessAccounts[account]++
+		}
 	}
 	rec.ThreatScore = computeScoreAt(rec, now)
 	db.pendingEvents = append(db.pendingEvents, event)
@@ -426,17 +423,7 @@ func (db *DB) LookupIP(ip string) *IPRecord {
 	if !ok {
 		return nil
 	}
-	// Return a copy to avoid races
-	cp := *rec
-	cp.AttackCounts = make(map[AttackType]int, len(rec.AttackCounts))
-	for k, v := range rec.AttackCounts {
-		cp.AttackCounts[k] = v
-	}
-	cp.Accounts = make(map[string]int, len(rec.Accounts))
-	for k, v := range rec.Accounts {
-		cp.Accounts[k] = v
-	}
-	return &cp
+	return cloneIPRecord(rec)
 }
 
 // TopAttackers returns the top N IPs by threat score.
@@ -446,16 +433,7 @@ func (db *DB) TopAttackers(n int) []*IPRecord {
 
 	all := make([]*IPRecord, 0, len(db.records))
 	for _, rec := range db.records {
-		cp := *rec
-		cp.AttackCounts = make(map[AttackType]int, len(rec.AttackCounts))
-		for k, v := range rec.AttackCounts {
-			cp.AttackCounts[k] = v
-		}
-		cp.Accounts = make(map[string]int, len(rec.Accounts))
-		for k, v := range rec.Accounts {
-			cp.Accounts[k] = v
-		}
-		all = append(all, &cp)
+		all = append(all, cloneIPRecord(rec))
 	}
 
 	// Sort by threat score descending, then event count
@@ -675,16 +653,7 @@ func (db *DB) AllRecords() []*IPRecord {
 	defer db.mu.RUnlock()
 	result := make([]*IPRecord, 0, len(db.records))
 	for _, rec := range db.records {
-		cp := *rec
-		cp.AttackCounts = make(map[AttackType]int, len(rec.AttackCounts))
-		for k, v := range rec.AttackCounts {
-			cp.AttackCounts[k] = v
-		}
-		cp.Accounts = make(map[string]int, len(rec.Accounts))
-		for k, v := range rec.Accounts {
-			cp.Accounts[k] = v
-		}
-		result = append(result, &cp)
+		result = append(result, cloneIPRecord(rec))
 	}
 	return result
 }
@@ -701,4 +670,19 @@ func (db *DB) FormatTopLine() string {
 		}
 	}
 	return fmt.Sprintf("%d IPs tracked, %d auto-blocked", total, blocked)
+}
+
+// Snapshots must detach all count maps from concurrent recording.
+func cloneIPRecord(rec *IPRecord) *IPRecord {
+	cp := *rec
+	cp.AttackCounts = maps.Clone(rec.AttackCounts)
+	cp.Accounts = maps.Clone(rec.Accounts)
+	if cp.AttackCounts == nil {
+		cp.AttackCounts = make(map[AttackType]int)
+	}
+	if cp.Accounts == nil {
+		cp.Accounts = make(map[string]int)
+	}
+	cp.AuthSuccessAccounts = maps.Clone(rec.AuthSuccessAccounts)
+	return &cp
 }

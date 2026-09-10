@@ -27,8 +27,8 @@ var _checkNames = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) |
 function typeBadges(counts){
     if(!counts)return '-';
     var html='';
-    var order=['brute_force','webshell','phishing','c2','waf_block','spam','cpanel_login','file_upload','recon','other'];
-    var colors={brute_force:'blue',webshell:'red',phishing:'orange',c2:'purple',waf_block:'cyan',spam:'yellow',cpanel_login:'teal',file_upload:'pink',recon:'lime',other:'secondary'};
+    var order=['brute_force','webshell','phishing','c2','waf_block','spam','cpanel_login','file_upload','auth_success','recon','other'];
+    var colors={brute_force:'blue',webshell:'red',phishing:'orange',c2:'purple',waf_block:'cyan',spam:'yellow',cpanel_login:'teal',file_upload:'pink',auth_success:'secondary',recon:'lime',other:'secondary'};
     for(var i=0;i<order.length;i++){
         var t=order[i];
         if(counts[t]&&counts[t]>0){

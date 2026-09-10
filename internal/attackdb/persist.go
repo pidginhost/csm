@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"time"
@@ -40,6 +41,7 @@ func (db *DB) load() {
 				BruteForceSustainedAt: sr.BruteForceSustainedAt,
 				AttackCounts:          make(map[AttackType]int),
 				Accounts:              make(map[string]int),
+				AuthSuccessAccounts:   maps.Clone(sr.AuthSuccessAccounts),
 			}
 			for k, v := range sr.AttackCounts {
 				rec.AttackCounts[AttackType(k)] = v
@@ -257,6 +259,7 @@ func toStoreIPRecord(rec *IPRecord) store.IPRecord {
 		BruteForceSustainedAt: rec.BruteForceSustainedAt,
 		AttackCounts:          make(map[string]int, len(rec.AttackCounts)),
 		Accounts:              make(map[string]int, len(rec.Accounts)),
+		AuthSuccessAccounts:   maps.Clone(rec.AuthSuccessAccounts),
 	}
 	for k, v := range rec.AttackCounts {
 		sr.AttackCounts[string(k)] = v

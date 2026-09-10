@@ -32,6 +32,7 @@ type IPRecord struct {
 	EventCount            int            `json:"event_count"`
 	AttackCounts          map[string]int `json:"attack_counts,omitempty"`
 	Accounts              map[string]int `json:"accounts,omitempty"`
+	AuthSuccessAccounts   map[string]int `json:"auth_success_accounts,omitempty"`
 	ThreatScore           int            `json:"threat_score"`
 	AutoBlocked           bool           `json:"auto_blocked,omitempty"`
 	BruteForceWindowStart time.Time      `json:"brute_force_window_start,omitempty"`

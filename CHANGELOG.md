@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Authenticated activity no longer raises threat scores through event volume or account counts, and remains visible in threat history and the dashboard. Retained audit incidents and outdated queued decisions no longer trigger blocks, and webmail challenges respect the login-blocking setting.
 - Successfully logging in, or using cPanel File Manager, no longer gets a customer's own address firewall-blocked. These events are reported only after authentication has already succeeded, so on shared hosting they fired on ordinary use of core features; one file upload was enough to block the account owner for 24 hours and to keep re-blocking them afterwards.
 - Those same events no longer count towards an address's threat score, and are no longer raised as Critical or High. They remain recorded, which is where their value is -- alongside other findings on the same account. Failed and repeated-attempt checks are unchanged and still block.
 

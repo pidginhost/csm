@@ -766,6 +766,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"spam":                           "Spam",
 			"cpanel_login":                   "cPanel Login",
 			"file_upload":                    "File Upload",
+			"auth_success":                   "Authenticated Activity",
 			"recon":                          "Reconnaissance",
 			"c2":                             "C2 Communication",
 			"other":                          "Other",

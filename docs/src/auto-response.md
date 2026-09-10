@@ -230,6 +230,21 @@ When `auto_response.block_ips: true` and the firewall is enabled, qualifying fin
 | `email_compromised_account` | Email account compromise indicator |
 | `email_cloud_relay_abuse` | Cloud relay abuse |
 
+Successful cPanel, FTP, webmail and PAM login audit events and authenticated
+File Manager writes do not trigger direct blocks or challenges. Incidents
+containing only these audit events cannot request a block, even when they
+retain a higher severity from an older version. Independent attack evidence
+can still justify a response.
+
+`block_cpanel_logins` gates cPanel multi-IP logins, API authentication failures,
+webmail brute force and realtime FTP authentication failures. This includes
+webmail challenge routing, since an unanswered challenge can become a block.
+
+Queued block candidates are checked against the current check policy and
+login-blocking setting before retrying. Legacy queue entries without a check
+identity are discarded on upgrade; new eligible findings can queue them again.
+Existing firewall blocks and permanent evidence are not removed by this change.
+
 Distributed HTTP flood rollups do not trigger a direct IP block because
 they describe one targeted vhost, not one source IP. The per-IP findings
 that feed the rollup still drive normal block decisions.
