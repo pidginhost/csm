@@ -148,6 +148,15 @@ and buffered output left after the reader stops. A received event remains
 running until evaluation and delivery to the finding queue finish, including
 events intentionally filtered during evaluation. Kernel ring occupancy and
 reservation failures are separate from these userspace measurements.
+`bpf.connection.verdict` reports the advisory annotation pool's 256 waiting
+slots and up to four running callbacks. Repeated findings for a pending
+destination, reason and severity share one request and retain its original age.
+Capacity refusal, callback failure and abandoned shutdown work count as lost
+annotations, separately from lost findings. Callback errors release the pending
+key and allow a later finding to retry; a successful retry preserves earlier
+loss totals. Shutdown closes admission, waits for running callbacks and counts
+the queued requests left behind. Cached answers remain available without new
+work. Findings continue immediately when an annotation is unavailable.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,

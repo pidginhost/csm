@@ -33,6 +33,7 @@ type connectionBPF struct {
 	cfg          *config.Config
 	count        atomic.Uint64
 	uidRefresher *UIDRefresher // Phase 4: nil when enforcement is off
+	enricher     *verdictEnricher
 }
 
 // startConnectionBPF loads the BPF objects, attaches connect4 + connect6 to
@@ -108,6 +109,14 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 		reader:  reader,
 		alertCh: alertCh,
 		cfg:     cfg,
+		enricher: newVerdictEnricher(verdictEnricherOpts{
+			Ask: func(ctx context.Context, req verdict.Request) (verdict.Response, error) {
+				return askBPFVerdict(ctx, activeConnectionCfg(cfg), req)
+			},
+			Workers: 4,
+			Queue:   256,
+			TTL:     time.Minute,
+		}),
 	}
 
 	// Phase 4: start the periodic safe-UID refresher only when
@@ -141,7 +150,11 @@ func (c *connectionBPF) Mode() string       { return "bpf" }
 func (c *connectionBPF) EventCount() uint64 { return c.count.Load() }
 
 func (c *connectionBPF) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return c.reader.QueueStatuses(now)
+	states := c.reader.QueueStatuses(now)
+	for name, state := range c.enricher.QueueStatuses(now) {
+		states[name] = state
+	}
+	return states
 }
 
 func (c *connectionBPF) Run(ctx context.Context) {
@@ -162,14 +175,7 @@ func (c *connectionBPF) Run(ctx context.Context) {
 	// Verdict enrichment runs beside this loop, never inside it: the callback
 	// is a network round trip and this goroutine is the only reader of a
 	// 256-slot delivery queue.
-	enricher := newVerdictEnricher(verdictEnricherOpts{
-		Ask: func(ctx context.Context, req verdict.Request) (verdict.Response, error) {
-			return askBPFVerdict(ctx, activeConnectionCfg(c.cfg), req)
-		},
-		Workers: 4,
-		Queue:   256,
-		TTL:     time.Minute,
-	})
+	enricher := c.enricher
 	// The loop also returns when the events channel closes, which does not
 	// cancel ctx; without a context of our own the wait below would never
 	// return.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
@@ -35,7 +36,8 @@ type verdictKey struct {
 }
 
 type verdictJob struct {
-	key verdictKey
+	key    verdictKey
+	ticket queuehealth.Ticket
 }
 
 // verdictEnricher annotates findings with the operator's verdict without ever
@@ -48,16 +50,20 @@ type verdictJob struct {
 // dispatched immediately either way; what a cache miss loses is the annotation
 // on that first event, not the event.
 type verdictEnricher struct {
-	ask      verdictAskFunc
-	ttl      time.Duration
-	jobs     chan verdictJob
-	workers  int
-	cacheCap int
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	cache    map[verdictKey]verdictEntry
-	inFlight map[verdictKey]bool
-	dropped  atomic.Int64
+	ask        verdictAskFunc
+	ttl        time.Duration
+	jobs       chan verdictJob
+	workers    int
+	cacheCap   int
+	wg         sync.WaitGroup
+	mu         sync.Mutex
+	cache      map[verdictKey]verdictEntry
+	inFlight   map[verdictKey]bool
+	dropped    atomic.Int64
+	queueStats *queuehealth.Tracker
+	ctx        context.Context
+	stopped    bool
+	stopOnce   sync.Once
 }
 
 func newVerdictEnricher(opts verdictEnricherOpts) *verdictEnricher {
@@ -74,17 +80,21 @@ func newVerdictEnricher(opts verdictEnricherOpts) *verdictEnricher {
 		opts.TTL = time.Minute
 	}
 	return &verdictEnricher{
-		ask:      opts.Ask,
-		ttl:      opts.TTL,
-		jobs:     make(chan verdictJob, opts.Queue),
-		workers:  opts.Workers,
-		cacheCap: opts.Queue,
-		cache:    make(map[verdictKey]verdictEntry),
-		inFlight: make(map[verdictKey]bool),
+		ask:        opts.Ask,
+		ttl:        opts.TTL,
+		jobs:       make(chan verdictJob, opts.Queue),
+		workers:    opts.Workers,
+		cacheCap:   opts.Queue,
+		cache:      make(map[verdictKey]verdictEntry),
+		inFlight:   make(map[verdictKey]bool),
+		queueStats: queuehealth.New(opts.Queue, time.Minute),
 	}
 }
 
 func (e *verdictEnricher) start(ctx context.Context) {
+	e.mu.Lock()
+	e.ctx = ctx
+	e.mu.Unlock()
 	for i := 0; i < e.workers; i++ {
 		e.wg.Add(1)
 		go func() {
@@ -94,7 +104,26 @@ func (e *verdictEnricher) start(ctx context.Context) {
 	}
 }
 
-func (e *verdictEnricher) wait() { e.wg.Wait() }
+func (e *verdictEnricher) wait() {
+	e.stopOnce.Do(func() {
+		e.mu.Lock()
+		e.stopped = true
+		close(e.jobs)
+		e.mu.Unlock()
+		e.wg.Wait()
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for job := range e.jobs {
+			delete(e.inFlight, job.key)
+			job.ticket.Reject(time.Now())
+			e.dropped.Add(1)
+		}
+	})
+}
+
+func (e *verdictEnricher) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return map[string]queuehealth.Status{"verdict": e.queueStats.Snapshot(now)}
+}
 
 func (e *verdictEnricher) droppedEnrichments() int64 { return e.dropped.Load() }
 
@@ -113,26 +142,28 @@ func (e *verdictEnricher) annotate(f *alert.Finding, ip, reason, severity string
 	if ok && !fresh {
 		delete(e.cache, key)
 	}
-	queued := e.inFlight[key]
-	if !fresh && !queued {
-		e.inFlight[key] = true
-	}
-	e.mu.Unlock()
-
 	if fresh {
+		e.mu.Unlock()
 		applyVerdictEntry(f, entry)
 		return true
 	}
-	if queued {
+	defer e.mu.Unlock()
+	if e.stopped || (e.ctx != nil && e.ctx.Err() != nil) {
+		e.queueStats.Lose(time.Now(), 1)
+		e.dropped.Add(1)
 		return false
 	}
+	if e.inFlight[key] {
+		return false
+	}
+	ticket := e.queueStats.Begin(time.Now())
+	e.inFlight[key] = true
 	select {
-	case e.jobs <- verdictJob{key: key}:
+	case e.jobs <- verdictJob{key: key, ticket: ticket}:
 	default:
 		// Saturated: the annotation is what we give up, never the finding.
-		e.mu.Lock()
 		delete(e.inFlight, key)
-		e.mu.Unlock()
+		ticket.Reject(time.Now())
 		e.dropped.Add(1)
 	}
 	return false
@@ -140,6 +171,9 @@ func (e *verdictEnricher) annotate(f *alert.Finding, ip, reason, severity string
 
 func (e *verdictEnricher) work(ctx context.Context) {
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -147,32 +181,49 @@ func (e *verdictEnricher) work(ctx context.Context) {
 			if !ok {
 				return
 			}
-			resp, err := e.ask(ctx, verdict.Request{
-				IP:       job.key.ip,
-				Reason:   job.key.reason,
-				Severity: job.key.severity,
-				Source:   "bpf_enforcement",
-			})
-			e.mu.Lock()
-			delete(e.inFlight, job.key)
-			if err == nil {
-				// A failure is not an answer: leaving it uncached lets the next
-				// event retry instead of inheriting a permanent blank.
-				now := time.Now()
-				e.pruneCacheLocked(now)
-				e.cache[job.key] = verdictEntry{
-					tenantID: resp.TenantID,
-					verdict:  resp.Verdict,
-					note:     resp.Note,
-					at:       now,
-				}
-			}
-			e.mu.Unlock()
-			if err != nil {
+			if err := e.processJob(ctx, job); err != nil {
 				csmlog.Warn("bpf enforcement verdict callback failed", "err", err, "dst", job.key.ip)
 			}
 		}
 	}
+}
+
+func (e *verdictEnricher) processJob(ctx context.Context, job verdictJob) error {
+	job.ticket.Start(time.Now())
+	completed := false
+	defer func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		delete(e.inFlight, job.key)
+		if completed {
+			job.ticket.Finish(time.Now())
+		} else {
+			job.ticket.Reject(time.Now())
+			e.dropped.Add(1)
+		}
+	}()
+	resp, err := e.ask(ctx, verdict.Request{
+		IP:       job.key.ip,
+		Reason:   job.key.reason,
+		Severity: job.key.severity,
+		Source:   "bpf_enforcement",
+	})
+	if err != nil {
+		// A failure is not an answer: the next event must be able to retry.
+		return err
+	}
+	e.mu.Lock()
+	now := time.Now()
+	e.pruneCacheLocked(now)
+	e.cache[job.key] = verdictEntry{
+		tenantID: resp.TenantID,
+		verdict:  resp.Verdict,
+		note:     resp.Note,
+		at:       now,
+	}
+	e.mu.Unlock()
+	completed = true
+	return nil
 }
 
 func (e *verdictEnricher) pruneCacheLocked(now time.Time) {

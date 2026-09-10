@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- BPF verdict annotation now reports queued callbacks, stalled work and losses through status and doctor. Callback failures remain visible while findings continue without waiting for annotations.
+
 - PHP relay index persistence now reports queued writes, stalled batches and failed writes through status and doctor.
 
 - Forwarder and PHP relay notification queues now report pending work, stalled readers and known losses through status and doctor. PHP relay restarts preserve earlier failures.
@@ -38,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
+
+- Verdict annotation shutdown now refuses new work and accounts for abandoned callbacks. Failed callbacks release their pending state so later findings can retry.
 
 - PHP relay shutdown now drains accepted index writes and refuses later submissions. Flushes use bounded transactions, preserving unrelated batches when a write fails.
 
