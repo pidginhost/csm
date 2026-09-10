@@ -130,7 +130,9 @@ func TestPerformCentralActionBlockRecordsEvidenceAndOutcome(t *testing.T) {
 		log.SetFlags(prevFlags)
 	})
 
-	d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: "203.0.113.71"})
+	if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: "203.0.113.71"}); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(blocker.calls) != 1 || blocker.calls[0].ip != "203.0.113.71" {
 		t.Fatalf("engine calls = %+v, want one central block", blocker.calls)

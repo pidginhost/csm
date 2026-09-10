@@ -180,6 +180,16 @@ read failure count as one loss. Refusals at capacity and read failures count as
 losses; missing process files are expected churn. Synchronous reads without a
 deadline consume no slots. The initial process-directory check and the cached
 boot-time read are synchronous and are not measured by this row.
+`central.actions` reports 1,024 waiting central-intelligence actions and one
+running action. Backlog remains visible while the signed feed refreshes;
+processing time includes the action handler and its evidence delivery.
+Overflow, action failure and abandoned shutdown work count as losses. A
+protected-address refusal or absent firewall engine completes the queue task
+without claiming that a block happened. Challenge tasks measure delivery to
+the challenge list; they do not measure its later file or firewall writes.
+Shutdown cancels feed refreshes, waits for an already-running action and
+discards the remaining queue. Captured dispatch hooks refuse later work and
+preserve its loss count after shutdown. Logging does not reset loss totals.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,
