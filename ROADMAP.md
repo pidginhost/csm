@@ -47,12 +47,15 @@ operational reliability, usability. **Prefer proving and improving the
 detectors that exist over adding new ones.** A new detector without a clean
 corpus result, an attack corpus sample and a correlation policy is not done.
 
-Two rules already followed in practice are now stated here so they are not
+Three rules already followed in practice are now stated here so they are not
 optional:
 
 - Every production false positive that is fixed gets a regression test that
   reproduces it before the fix.
 - Every correlation or response bug found in production gets a replay fixture.
+- Every new selecting table ships with a completeness guard. New registered
+  checks and incident sets need an explicit classification decision in the
+  [incident policy contract](docs/src/incidents.md#kinds).
 
 **Stable cross-references.** Older commits, CHANGELOG entries, and a few code
 comments reference `ROADMAP item N` by the number that item had when the commit
@@ -133,54 +136,15 @@ Main-branch cloud integration is manual and is not a publication dependency.
 
 # Priority 1 -- protection that fails silently
 
-## Remaining narrowing tables need completeness guards
+## WAF block scoring needs recorded-stream evidence
 
-**Status:** open. Existing incident classification tables are now guarded
-alongside the earlier inventories; future inventories need the same guard.
+**Status:** open decision.
 
-Three hand-maintained tables narrowed behaviour and fell behind as the project
-grew without any test, lint or alert noticing: the taint analyzer's CMS path
-constants, the clean-corpus manifest, and the correlation security-event set.
-Each now has a completeness test that fails when the project grows past it:
-the supported CMS kinds are declared once in `internal/cms` and the taint
-constants, database adapters and corpus manifest are checked against that
-table; every registered check carries a correlation class with a stated
-reason or gap, and a new check without one fails the build; the response
-tables (manual, automatic and full-scan quarantine, attack-database mapping)
-are declared once each and every name they select must be a registered check.
-That last guard found three names no release ever emitted, two of them the
-only WAF entries the attack database had, so WAF blocks have never fed local
-reputation scoring. The manifest's accepted representation of missing
-evidence is an explicit `pending` entry with a reason; a pending entry is
-missing-evidence metadata, not non-WordPress coverage.
-
-`hostIntegrityChecks`, all five `compound*Checks` sets, the incident kind
-selectors and identity exclusions now have a checked-in membership contract
-for every registered check, plus classification-precedence tests. The guard
-rejects both unregistered names and missing eligible members. It found four
-names that were never registered and a missing host classification for
-binary/config tampering, which previously had no incident key.
-
-The tests use the external `incident_test` package to import the registry;
-production dependencies stay unchanged. A production `incident -> checks`
-import would cycle through `checks -> control -> incident`.
-
-Future inventories this roadmap creates deliberately -- response tiers,
-root-requiring operations, and the parser inventory -- must ship with the
-same completeness guard. New incident sets and registered checks require an
-explicit decision in the incident policy fixture.
-
-**Decision:** whether the emitted ModSecurity block names
-(`modsec_block_realtime`, `modsec_block_escalation`,
-`modsec_csm_block_escalation`, `waf_attack_blocked`) should map into the
-attack database is a reputation-scoring change, not a table fix: WAF blocks
-are high volume and the WAF-block score branch has never run on real data.
-Decide it against recorded block streams before mapping.
-
-**Acceptance:** every table above has a test that fails when a name it
-selects is not a registered check or when a registered check that belongs in
-it is missing; the cross-package guard exists with its dependency direction
-recorded; no new selecting table lands without one.
+Whether the emitted ModSecurity block names (`modsec_block_realtime`,
+`modsec_block_escalation`, `modsec_csm_block_escalation`, `waf_attack_blocked`)
+should map into the attack database is a reputation-scoring change, not a table
+fix. WAF blocks are high volume and the WAF-block score branch has never run
+on real data. Decide it against recorded block streams before mapping.
 
 ## Cross-account correlation sees a tenth of the detectors
 
@@ -227,32 +191,6 @@ findings, and the difference between per-batch and persisted active-state
 derivation, rather than assuming three accounts is still right at the full
 detector surface. Any change to the Critical-only limit comes with the same
 recorded-stream evidence.
-
-## Backlog and dropped work are reported as counters, not as failures
-
-**Status:** implemented. Production and kernel tests enforce the reviewed
-inventory; full release acceptance still requires the documented runner capabilities.
-
-Queue owners report waiting and active work, progress lag and confirmed losses
-through the health snapshot and `csm doctor`. Sustained pressure produces bounded
-degradation and recovery findings through an independent delivery path. Unknown
-kernel capacity or unreadable durable state is explicit, and uncertain shutdown
-losses remain lower bounds. Completed work, deliberate cancellation and retained
-retries are distinguished from failed work.
-
-The reviewed inventory in `scripts/queue-inventory.json` covers channel handoffs,
-shared worker slots, durable backlogs, coalesced pending writes and kernel
-buffers. Production and kernel runners validate allocation and capacity changes,
-then require passing publication and lifecycle regressions for each owner.
-Missing or skipped required evidence fails the gate. New non-channel queues
-still require an explicit ownership review: syntax scanning cannot discover
-arbitrary pending work in maps, dependencies or durable storage.
-
-See [Queue inventory](docs/src/production-tests.md#required-queue-inventory)
-for the gate, evidence format and scanner limits, and
-[health status](docs/src/api.md#protection-queue-health) for reported units and budgets.
-The resource limits themselves belong to
-[resource and performance budgets](#resource-and-performance-budgets).
 
 ---
 
@@ -665,7 +603,7 @@ tampered artifact is refused on the path operators actually use.
 `csm doctor` now reports any deploy script on the host that still carries a path
 able to install an unverified release. This came from a hand-maintained copy
 that silently kept a superseded, weaker verification path -- the same
-stale-copy failure mode as the tables in Priority 1, on the supply chain.
+stale-copy failure mode that completeness guards prevent.
 
 **Remaining:** the check emits nothing when every script is current, unlike the
 other checks which report `[OK]`. Make it report the clean result so an operator
@@ -987,9 +925,9 @@ volume and high filesystem event rates, run per release and recorded in the
 detection-quality report; every queue bounded with a stated cap (the staged
 package verification queue and the dropper tracker are the pattern); a named
 degraded mode -- deferred deep work, reconcile scans, refused new jobs --
-instead of falling behind quietly, with its lag and deferred work exposed as
-described in
-[Priority 1](#backlog-and-dropped-work-are-reported-as-counters-not-as-failures).
+instead of falling behind quietly, using the implemented
+[queue health reporting](docs/src/api.md#protection-queue-health) and
+[required ownership inventory](docs/src/production-tests.md#required-queue-inventory).
 
 ## Web UI module split
 
