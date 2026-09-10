@@ -73,7 +73,10 @@ func TestStopIncidentBackgroundLoopsFlushesPendingIncidentPersists(t *testing.T)
 
 	var persisted []incident.Incident
 	c := incident.NewCorrelator(incident.CorrelatorConfig{
-		Persist: func(inc incident.Incident) { persisted = append(persisted, inc) },
+		Persist: func(inc incident.Incident) error {
+			persisted = append(persisted, inc)
+			return nil
+		},
 	})
 	incidentCorrelator = c
 
@@ -86,7 +89,15 @@ func TestStopIncidentBackgroundLoopsFlushesPendingIncidentPersists(t *testing.T)
 		t.Fatalf("before shutdown flush: want 1 write, got %d", got)
 	}
 
+	if q := (&Daemon{}).QueueStatuses()["incident.persist.deferred"]; q.Depth != 1 {
+		t.Fatalf("pending shutdown bookkeeping missing: %+v", q)
+	}
 	StopIncidentBackgroundLoops()
+	for name, q := range c.QueueStatuses(time.Now()) {
+		if q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 0 {
+			t.Errorf("%s not drained by shutdown: %+v", name, q)
+		}
+	}
 	if got := len(persisted); got != 2 {
 		t.Fatalf("after shutdown flush: want 2 writes, got %d", got)
 	}
@@ -541,6 +552,10 @@ func TestIncidentCorrelatorLogsPersistFailure(t *testing.T) {
 		t.Fatal("finding did not create an incident")
 	}
 
+	q := (&Daemon{}).QueueStatuses()["incident.persist.active"]
+	if q.DroppedTotal != 1 || q.RecentDrops != 1 || q.InFlight != 0 {
+		t.Fatalf("real closed-store failure missing from health: %+v", q)
+	}
 	out := finishLog()
 	if !strings.Contains(out, "WARN: incident persist failed") {
 		t.Fatalf("persist failure was not logged: %q", out)

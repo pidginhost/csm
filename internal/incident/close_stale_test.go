@@ -269,7 +269,10 @@ func TestCloseStaleHonorsDryRun(t *testing.T) {
 func TestCloseStalePersistsClosedReason(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(snap Incident) { persisted = append(persisted, snap) },
+		Persist: func(snap Incident) error {
+			persisted = append(persisted, snap)
+			return nil
+		},
 	})
 	old := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return old }

@@ -75,7 +75,7 @@ func (c *Correlator) BulkSetStatus(filter BulkStatusFilter) (BulkStatusResult, e
 		return BulkStatusResult{}, fmt.Errorf("incident: bulk status requires a source status")
 	}
 
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	result := BulkStatusResult{Items: make([]BulkStatusItem, 0, filter.Limit)}
 
 	c.mu.Lock()
@@ -124,9 +124,7 @@ func (c *Correlator) BulkSetStatus(filter BulkStatusFilter) (BulkStatusResult, e
 	}
 	c.mu.Unlock()
 
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return result, nil
 }
 

@@ -14,7 +14,10 @@ import (
 func TestSprayTripPromotesExistingPerIPIncident(t *testing.T) {
 	c := newSprayCorrelator(t, true, false)
 	var persisted []Incident
-	c.cfg.Persist = func(inc Incident) { persisted = append(persisted, inc) }
+	c.cfg.Persist = func(inc Incident) error {
+		persisted = append(persisted, inc)
+		return nil
+	}
 	now := time.Unix(1_700_000_000, 0)
 	const ip = "192.0.2.9"
 

@@ -243,6 +243,21 @@ Actual commands remain in flight until they return. Health reads memory only and
 retains loss evidence after recovery. Shared-refresh waiters remain owned by
 `checks.executions`; they do not create another set of site jobs. Optional domain
 lookup fallback and plugin metadata enrichment keep their existing behavior.
+`incident.persist.waiting` reports immutable incident snapshots waiting for the
+ordered writer, with no fixed waiting capacity. `incident.persist.active` reports
+the single occupied writer. A writer or free-slot admission stalled for one minute
+reports lag. Failed writes and abnormal callback exits count once; abandoned bulk
+snapshots count as waiting losses and release their ordering slots for later writes.
+Callbacks remain owned through cleanup and error logging. Store failures retain
+in-memory transitions and the existing warning log.
+`incident.persist.deferred` reports coalesced bookkeeping waiting for a later
+mutation or explicit flush, including shutdown. Its oldest age uses
+`lag_basis: deferred_checkpoint`; age alone does not degrade health because there
+is no periodic flush deadline. Full snapshots supersede earlier bookkeeping;
+restoration and retention discard the affected markers. Memory-only correlators
+have no persistence work. All three rows read memory independently of state locks
+and database I/O. The common loss threshold and recovery policy apply to writes.
+
 `checks.file_index.waiting` reports live scans waiting for the shared baseline
 slot, with no fixed waiting capacity. Each wait keeps its shorter parent deadline
 or the file-index check budget; a free slot with no admission for one minute also

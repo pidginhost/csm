@@ -58,6 +58,9 @@ func (s registrationQueueSource) QueueStatuses(now time.Time) map[string]queuehe
 }
 
 func TestQueueSourcesDoNotHoldRegistryLockDuringSnapshot(t *testing.T) {
+	previous := incidentCorrelator
+	incidentCorrelator = nil
+	t.Cleanup(func() { incidentCorrelator = previous })
 	resetProcessCtxForTest()
 	t.Cleanup(resetProcessCtxForTest)
 	d := &Daemon{}
@@ -76,6 +79,9 @@ func TestQueueSourcesDoNotHoldRegistryLockDuringSnapshot(t *testing.T) {
 }
 
 func TestQueueSourcesRegistrationAndPollingAreConcurrent(t *testing.T) {
+	previous := incidentCorrelator
+	incidentCorrelator = nil
+	t.Cleanup(func() { incidentCorrelator = previous })
 	resetProcessCtxForTest()
 	t.Cleanup(resetProcessCtxForTest)
 	d := &Daemon{}

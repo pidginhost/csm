@@ -30,6 +30,11 @@ func (d *Daemon) QueueStatuses() map[string]queuehealth.Status {
 
 func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	out := d.registeredQueueStatuses(now)
+	if incidentCorrelator != nil {
+		for name, status := range incidentCorrelator.QueueStatuses(now) {
+			out["incident."+name] = status
+		}
+	}
 	out["actionlog.writes"] = actionlog.QueueStatus(now)
 	out["phpanel.spool"] = alert.PhpanelQueueStatus(now)
 	out["checks.executions"] = checks.CheckExecutionQueueStatus(now)

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Incident persistence now reports queued writes, stalled writers and failures through status and doctor. Deferred bookkeeping remains visible until a later update or shutdown flush.
+
 - File-index scans now report waiting callers, stalled scans and failed work through status and doctor. Audit scans remain independent, and successful late baseline writes do not count as lost work.
 
 - Reputation checks now report waiting queries, stalled result handling and failed work through status and doctor. Reserved lookups stay visible while fallback scoring runs; cache failures retain the findings, and normal quota limits remain separate from queue failures.
@@ -82,6 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
+
+- An interrupted bulk incident write no longer leaves later writes blocked. Abandoned writes are counted while later incident updates can continue.
 
 - File scan health now counts failed content and executable metadata reads. Existing findings remain available, and files disappearing during metadata enumeration do not count as lost work.
 
