@@ -228,6 +228,21 @@ also apply. `spool_io` names failed admission, read or acknowledgment operations
 the affected operation recovers. Health reads remain independent of database
 writes and outbound requests. Reopening with a smaller cap preserves existing
 records until the next admission applies the configured overflow policy.
+`phpanel.spool` measures the durable panel webhook queue, capped at 100,000
+records per state directory. In-flight work includes writes waiting to commit
+and deliveries awaiting database acknowledgment. Retried findings keep their
+original waiting age; a failed attempt is not a lost finding while its record
+remains durable. An overflowed record counts as lost only when no send was
+acknowledged during this process; an active send settles that count when it
+finishes. Malformed findings count once when removed from delivery;
+their bounded diagnostic archive is retained history, not pending work.
+Waiting age uses the persisted enqueue timestamp after restart. Missing,
+damaged or future timestamps are timed from queue open. A minute of waiting
+or processing degrades the row; delivery and database errors remain visible
+until the affected operation succeeds. Health reads use memory only, so a
+stalled database or collector cannot block status. Disabling delivery preserves
+the durable backlog and cumulative loss; enabling it resumes the stored work.
+Stopped queue instances refuse late admissions.
 `actionlog.writes` measures the 64 process-wide action-log write slots. A sink
 write running past the caller's 250ms wait budget degrades the row and stays in
 flight until the sink and any panic reporting finish. A caller deadline after

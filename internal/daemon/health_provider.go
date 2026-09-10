@@ -31,6 +31,7 @@ func (d *Daemon) QueueStatuses() map[string]queuehealth.Status {
 func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	out := d.registeredQueueStatuses(now)
 	out["actionlog.writes"] = actionlog.QueueStatus(now)
+	out["phpanel.spool"] = alert.PhpanelQueueStatus(now)
 	if enr := processCtxPublished.Load(); enr != nil {
 		for name, state := range enr.QueueStatuses(now) {
 			out["processctx."+name] = state

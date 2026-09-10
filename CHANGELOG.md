@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Panel webhooks now report durable backlog, stalled delivery and lost findings through status and doctor. Retries and clean shutdown preserve queued findings; stopped queues refuse late submissions.
+
 - Live event streams now report backlog, stalled delivery and lost events through status and doctor. Closing a browser tab does not count as a delivery failure.
 
 - Action logging now reports occupied write slots, stalled writers and lost records through status and doctor. A timed-out caller does not hide a write still running.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -54,6 +55,9 @@ type phpanelQueue struct {
 	retryDelay time.Duration
 	closed     bool
 	mu         sync.Mutex
+	mutation   sync.Mutex
+	limit      int
+	health     phpanelQueueHealth
 }
 
 var phpanelQueues = struct {
@@ -70,7 +74,7 @@ func enqueuePhpanelFindings(cfg *config.Config, findings []Finding) error {
 	for _, finding := range findings {
 		queued = append(queued, queuedPhpanelFinding{Finding: finding, Timestamp: time.Now().UTC()})
 	}
-	dropped, err := queue.enqueueBatch(queued, phpanelQueueLimit)
+	dropped, err := queue.enqueueBatch(queued)
 	if err != nil {
 		return fmt.Errorf("queueing phpanel webhook: %w", err)
 	}
@@ -148,21 +152,55 @@ func phpanelQueueForMode(cfg *config.Config, updateExisting bool) (*phpanelQueue
 	if err != nil {
 		return nil, fmt.Errorf("opening phpanel webhook queue: %w", err)
 	}
-	queue := &phpanelQueue{db: db, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		if _, createErr := tx.CreateBucketIfNotExists(phpanelQueueBucket); createErr != nil {
-			return createErr
-		}
-		_, createErr := tx.CreateBucketIfNotExists(phpanelQuarantineBucket)
-		return createErr
-	}); err != nil {
+	queue, err := newPhpanelQueue(db, phpanelQueueLimit)
+	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("creating phpanel webhook queue: %w", err)
 	}
 	queue.updateConfig(cfg)
 	phpanelQueues.byState[statePath] = queue
+	phpanelHealth.Lock()
+	phpanelHealth.active[queue] = struct{}{}
+	phpanelHealth.Unlock()
 	obs.Go("phpanel-webhook-queue", queue.run)
 	return queue, nil
+}
+
+func newPhpanelQueue(db *bolt.DB, limit int) (*phpanelQueue, error) {
+	q := &phpanelQueue{
+		db: db, limit: limit,
+		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
+		health: phpanelQueueHealth{
+			// Two normal drain intervals without completion warrant attention.
+			stats: queuehealth.NewSharedCapacity(limit, time.Minute), pending: make(map[string]*phpanelWork),
+		},
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		if _, err := tx.CreateBucketIfNotExists(phpanelQueueBucket); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(phpanelQuarantineBucket)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	if err := db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(phpanelQueueBucket).ForEach(func(key, payload []byte) error {
+			var item queuedPhpanelFinding
+			queuedAt := now
+			if err := json.Unmarshal(payload, &item); err == nil && !item.Timestamp.IsZero() && item.Timestamp.Before(now) {
+				queuedAt = item.Timestamp
+			}
+			// Damaged or future timestamps supply no reliable elapsed age.
+			// The record still enters normal delivery/quarantine processing.
+			q.health.pending[string(key)] = &phpanelWork{ticket: q.health.stats.BeginAt(queuedAt, now)}
+			return nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+	return q, nil
 }
 
 func (q *phpanelQueue) updateConfig(cfg *config.Config) {
@@ -180,22 +218,45 @@ func (q *phpanelQueue) updateConfig(cfg *config.Config) {
 	q.retryMu.Unlock()
 }
 
-func (q *phpanelQueue) enqueueBatch(items []queuedPhpanelFinding, limit int) (int, error) {
+func (q *phpanelQueue) enqueueBatch(items []queuedPhpanelFinding) (int, error) {
 	if len(items) == 0 {
 		return 0, nil
 	}
-	if limit <= 0 {
-		return 0, fmt.Errorf("phpanel queue limit must be positive")
+	now := time.Now()
+	work := make([]*phpanelWork, len(items))
+	for i, item := range items {
+		queuedAt := item.Timestamp
+		if queuedAt.IsZero() || queuedAt.After(now) {
+			queuedAt = now
+		}
+		work[i] = &phpanelWork{ticket: q.health.stats.BeginAt(queuedAt, now)}
+		work[i].ticket.Start(now)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			for _, entry := range work {
+				q.discardWork(entry, time.Now())
+			}
+		}
+	}()
 	bodies := make([][]byte, 0, len(items))
 	for _, item := range items {
 		body, err := json.Marshal(item)
 		if err != nil {
+			q.health.enqueueFailed.Store(true)
 			return 0, err
 		}
 		bodies = append(bodies, body)
 	}
-	dropped := 0
+	q.mutation.Lock()
+	defer q.mutation.Unlock()
+	select {
+	case <-q.stop:
+		return 0, fmt.Errorf("phpanel webhook queue is stopped")
+	default:
+	}
+	var added, evicted []string
 	err := q.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(phpanelQueueBucket)
 		count := queuedFindingCount(bucket) + len(bodies)
@@ -209,22 +270,40 @@ func (q *phpanelQueue) enqueueBatch(items []queuedPhpanelFinding, limit int) (in
 			if err := bucket.Put(key[:], body); err != nil {
 				return err
 			}
+			added = append(added, string(key[:]))
 		}
-		for count > limit {
-			trimCursor := bucket.Cursor()
-			oldest, _ := trimCursor.First()
-			if oldest == nil {
-				break
-			}
+		for count > q.limit {
+			oldest, _ := bucket.Cursor().First()
+			evictedKey := string(oldest)
 			if err := bucket.Delete(oldest); err != nil {
 				return err
 			}
+			evicted = append(evicted, evictedKey)
 			count--
-			dropped++
 		}
 		return nil
 	})
-	return dropped, err
+	if err != nil {
+		q.health.enqueueFailed.Store(true)
+		return 0, err
+	}
+	now = time.Now()
+	for i, key := range added {
+		work[i].ticket.Requeue(now)
+		q.health.pending[key] = work[i]
+	}
+	for _, key := range evicted {
+		entry := q.health.pending[key]
+		delete(q.health.pending, key)
+		if entry == q.health.active {
+			entry.evicted = true
+		} else {
+			q.discardWork(entry, now)
+		}
+	}
+	q.health.enqueueFailed.Store(false)
+	committed = true
+	return len(evicted), nil
 }
 
 // queuedFindingCount returns the number of live entries without walking every
@@ -270,26 +349,12 @@ func (q *phpanelQueue) drainQueued() {
 	}
 	q.retryMu.Unlock()
 	for {
-		// Stop draining promptly on shutdown. Undelivered findings are durable
-		// and resume on the next start, so a healthy collector with a large
-		// backlog must not keep close() blocked delivering the whole queue.
 		select {
 		case <-q.stop:
 			return
 		default:
 		}
-		var key []byte
-		var payload []byte
-		err := q.db.View(func(tx *bolt.Tx) error {
-			cursor := tx.Bucket(phpanelQueueBucket).Cursor()
-			firstKey, value := cursor.First()
-			if firstKey == nil {
-				return nil
-			}
-			key = append([]byte(nil), firstKey...)
-			payload = append([]byte(nil), value...)
-			return nil
-		})
+		key, payload, work, err := q.takeDelivery()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "alert: reading phpanel webhook queue: %v\n", err)
 			alertDispatchFailures.Inc()
@@ -298,35 +363,87 @@ func (q *phpanelQueue) drainQueued() {
 		if key == nil {
 			return
 		}
-		var item queuedPhpanelFinding
-		if err := json.Unmarshal(payload, &item); err != nil {
-			if quarantineErr := q.quarantineMalformed(key, payload, err); quarantineErr != nil {
-				fmt.Fprintf(os.Stderr, "alert: quarantining malformed phpanel webhook: %v\n", quarantineErr)
-				alertDispatchFailures.Inc()
-				return
-			}
-			fmt.Fprintf(os.Stderr, "alert: quarantined malformed phpanel webhook: %v\n", err)
-			alertDispatchFailures.Inc()
-			continue
-		}
-		q.cfgMu.RLock()
-		delivery := q.cfg
-		q.cfgMu.RUnlock()
-		if err := sendQueuedPhpanelWebhookFinding(delivery, item); err != nil {
-			fmt.Fprintf(os.Stderr, "alert: phpanel webhook delivery failed: %v\n", err)
-			alertDispatchFailures.Inc()
-			q.recordRetryFailure()
+		if !q.deliverQueued(key, payload, work) {
 			return
 		}
-		if err := q.db.Update(func(tx *bolt.Tx) error {
-			return tx.Bucket(phpanelQueueBucket).Delete(key)
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "alert: deleting delivered phpanel webhook: %v\n", err)
-			alertDispatchFailures.Inc()
-			return
-		}
-		q.clearRetryFailure()
 	}
+}
+
+func (q *phpanelQueue) takeDelivery() ([]byte, []byte, *phpanelWork, error) {
+	q.mutation.Lock()
+	defer q.mutation.Unlock()
+	var key, payload []byte
+	err := q.db.View(func(tx *bolt.Tx) error {
+		firstKey, value := tx.Bucket(phpanelQueueBucket).Cursor().First()
+		if firstKey != nil {
+			key = append([]byte(nil), firstKey...)
+			payload = append([]byte(nil), value...)
+		}
+		return nil
+	})
+	q.health.readFailed.Store(err != nil)
+	if err != nil || key == nil {
+		return key, payload, nil, err
+	}
+	work := q.health.pending[string(key)]
+	work.ticket.Start(time.Now())
+	q.health.active = work
+	return key, payload, work, nil
+}
+
+func (q *phpanelQueue) deliverQueued(key, payload []byte, work *phpanelWork) bool {
+	sent, removed := false, false
+	attempted := false
+	defer func() {
+		if attempted && !sent {
+			q.health.sendFailed.Store(true)
+		}
+		q.finishDelivery(work, sent, removed)
+	}()
+	var item queuedPhpanelFinding
+	if err := json.Unmarshal(payload, &item); err != nil {
+		if quarantineErr := q.quarantineMalformed(key, payload, err); quarantineErr != nil {
+			fmt.Fprintf(os.Stderr, "alert: quarantining malformed phpanel webhook: %v\n", quarantineErr)
+			alertDispatchFailures.Inc()
+			return false
+		}
+		fmt.Fprintf(os.Stderr, "alert: quarantined malformed phpanel webhook: %v\n", err)
+		alertDispatchFailures.Inc()
+		return true
+	}
+	q.cfgMu.RLock()
+	delivery := q.cfg
+	q.cfgMu.RUnlock()
+	attempted = true
+	if err := sendQueuedPhpanelWebhookFinding(delivery, item); err != nil {
+		fmt.Fprintf(os.Stderr, "alert: phpanel webhook delivery failed: %v\n", err)
+		alertDispatchFailures.Inc()
+		q.recordRetryFailure()
+		return false
+	}
+	sent = true
+	q.health.sendFailed.Store(false)
+	var err error
+	removed, err = q.removeDelivered(key)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "alert: deleting delivered phpanel webhook: %v\n", err)
+		alertDispatchFailures.Inc()
+		return false
+	}
+	q.clearRetryFailure()
+	return true
+}
+
+func (q *phpanelQueue) removeDelivered(key []byte) (bool, error) {
+	q.mutation.Lock()
+	defer q.mutation.Unlock()
+	err := q.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(phpanelQueueBucket).Delete(key) })
+	q.health.removeFailed.Store(err != nil)
+	if err != nil {
+		return false, err
+	}
+	delete(q.health.pending, string(key))
+	return true, nil
 }
 
 func (q *phpanelQueue) quarantineMalformed(key, payload []byte, decodeErr error) error {
@@ -337,15 +454,18 @@ func (q *phpanelQueue) quarantineMalformedWithLimit(key, payload []byte, decodeE
 	if limit <= 0 {
 		return fmt.Errorf("phpanel quarantine limit must be positive")
 	}
-	record, err := json.Marshal(quarantinedPhpanelFinding{
+	record, marshalErr := json.Marshal(quarantinedPhpanelFinding{
 		Payload:       payload,
 		Error:         decodeErr.Error(),
 		QuarantinedAt: time.Now().UTC(),
 	})
-	if err != nil {
-		return err
+	if marshalErr != nil {
+		return marshalErr
 	}
-	return q.db.Update(func(tx *bolt.Tx) error {
+	q.mutation.Lock()
+	defer q.mutation.Unlock()
+	removed := false
+	updateErr := q.db.Update(func(tx *bolt.Tx) error {
 		active := tx.Bucket(phpanelQueueBucket)
 		current := active.Get(key)
 		if current == nil {
@@ -374,8 +494,20 @@ func (q *phpanelQueue) quarantineMalformedWithLimit(key, payload []byte, decodeE
 		if err := active.Delete(key); err != nil {
 			return err
 		}
+		removed = true
 		return nil
 	})
+	q.health.removeFailed.Store(updateErr != nil)
+	if updateErr == nil && removed {
+		work := q.health.pending[string(key)]
+		delete(q.health.pending, string(key))
+		if work == q.health.active {
+			work.evicted = true
+		} else {
+			q.discardWork(work, time.Now())
+		}
+	}
+	return updateErr
 }
 
 func (q *phpanelQueue) recordRetryFailure() {
@@ -410,7 +542,17 @@ func (q *phpanelQueue) close() {
 	q.mu.Unlock()
 	<-q.done
 	q.drain.Lock()
+	q.mutation.Lock()
+	phpanelHealth.Lock()
+	delete(phpanelHealth.active, q)
+	phpanelHealth.Unlock()
+	for _, work := range q.health.pending {
+		// These findings remain durable for a later start.
+		work.ticket.Finish(time.Now())
+	}
+	clear(q.health.pending)
 	_ = q.db.Close()
+	q.mutation.Unlock()
 	q.drain.Unlock()
 }
 
