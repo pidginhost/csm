@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bot verification now reports backlog, stalled work and lost requests through status and doctor. DNS and cache failures remain visible without changing bot classification.
+
 - Central threat-intelligence actions now report backlog, stalled work and failures through status and doctor. Shutdown accounts for abandoned actions and refuses late submissions.
 
 - Process file reads now report occupied slots, stalled work and lost results through status and doctor. Timed-out reads remain visible until the underlying operation returns.
@@ -46,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
+
+- Bot verification shutdown now accounts for abandoned requests and refuses later submissions. Queued requests retain their original address when a caller reuses its input buffer.
 
 - Process context workers now count discarded requests at shutdown and cannot restart after stopping. Active reads finish before shutdown returns.
 

@@ -190,6 +190,15 @@ the challenge list; they do not measure its later file or firewall writes.
 Shutdown cancels feed refreshes, waits for an already-running action and
 discards the remaining queue. Captured dispatch hooks refuse later work and
 preserve its loss count after shutdown. Logging does not reset loss totals.
+`bot_verification.requests` reports 256 waiting bot-identity requests and one
+running verification. Duplicate requests share their original waiting age.
+Running time includes DNS lookups and the cache write. Queue overflow, DNS
+timeouts or transient failures, failed cache writes and abandoned shutdown
+requests count as losses. Missing PTR records, unknown bot identities and
+definitive positive or negative answers remain expected outcomes; queue health
+does not turn a resolver failure into a spoof finding. Shutdown cancels DNS,
+waits for any active cache write and discards waiting work. Late submissions
+are refused, pending keys are released and loss totals remain available.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,
