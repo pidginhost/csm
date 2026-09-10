@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/checks"
@@ -29,6 +30,7 @@ func (d *Daemon) QueueStatuses() map[string]queuehealth.Status {
 
 func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	out := d.registeredQueueStatuses(now)
+	out["actionlog.writes"] = actionlog.QueueStatus(now)
 	if enr := processCtxPublished.Load(); enr != nil {
 		for name, state := range enr.QueueStatuses(now) {
 			out["processctx."+name] = state

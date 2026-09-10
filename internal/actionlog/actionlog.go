@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,8 +149,6 @@ func DefaultActor() Actor {
 // returning, including in short-lived CLI processes.
 const writeTimeout = 250 * time.Millisecond
 
-var pendingWrites = make(chan struct{}, 64)
-
 // Write records one action without propagating sink errors or panics. Recording
 // is best effort: saturation or an unresponsive sink can cost an action record.
 func Write(r Record) {
@@ -181,28 +178,7 @@ func Write(r Record) {
 		after := *r.After
 		r.After = &after
 	}
-	timer := time.NewTimer(writeTimeout)
-	defer timer.Stop()
-	select {
-	case pendingWrites <- struct{}{}:
-	case <-timer.C:
-		return
-	}
-	done := make(chan struct{})
-	go func() {
-		defer func() {
-			if v := recover(); v != nil {
-				log.Printf("action log sink panicked: %v", v)
-			}
-			<-pendingWrites
-			close(done)
-		}()
-		_ = s.Write(r)
-	}()
-	select {
-	case <-done:
-	case <-timer.C:
-	}
+	actionWrites.write(s, r)
 }
 
 // maxFileSize is the rotation threshold, matching the firewall and web UI

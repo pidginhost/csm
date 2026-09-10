@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Action logging now reports occupied write slots, stalled writers and lost records through status and doctor. A timed-out caller does not hide a write still running.
+
 - Abuse reporting now exposes its durable backlog and delivery failures through status and doctor. Retried reports retain their waiting age without counting as lost.
 
 - Abuse reporting now reports memory backlog, stalled persistence and lost reports through status and doctor.

@@ -70,7 +70,7 @@ func TestQueueSourcesDoNotHoldRegistryLockDuringSnapshot(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("snapshot held the registry lock while calling a source")
 	}
-	if got := d.QueueStatuses(); len(got) != 2 || got["late.output"].Capacity != 4 {
+	if got := d.QueueStatuses(); len(got) != 3 || got["late.output"].Capacity != 4 || got["first.output"].Capacity != 4 || got["actionlog.writes"].Capacity != 64 {
 		t.Fatalf("late registration was lost: %+v", got)
 	}
 }
@@ -90,7 +90,7 @@ func TestQueueSourcesRegistrationAndPollingAreConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if got := d.QueueStatuses(); len(got) != 1 || got["backend.output"].Capacity != 4 {
+	if got := d.QueueStatuses(); len(got) != 2 || got["backend.output"].Capacity != 4 || got["actionlog.writes"].Capacity != 64 {
 		t.Fatalf("concurrent publication lost or duplicated a source: %+v", got)
 	}
 }

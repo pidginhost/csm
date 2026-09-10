@@ -226,6 +226,14 @@ also apply. `spool_io` names failed admission, read or acknowledgment operations
 the affected operation recovers. Health reads remain independent of database
 writes and outbound requests. Reopening with a smaller cap preserves existing
 records until the next admission applies the configured overflow policy.
+`actionlog.writes` measures the 64 process-wide action-log write slots. A sink
+write running past the caller's 250ms wait budget degrades the row and stays in
+flight until the sink and any panic reporting finish. A caller deadline after
+admission does not count as loss, since the sink may still record the action.
+Refused admission, sink errors and panics count as lost records, once per record.
+Changing or disabling the sink preserves outstanding work and cumulative loss.
+Health reads do not wait for the sink. Normal writes still complete before the
+caller returns; saturated or stalled recording keeps the existing caller budget.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,
