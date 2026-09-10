@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Process file reads now report occupied slots, stalled work and lost results through status and doctor. Timed-out reads remain visible until the underlying operation returns.
+
 - Process context enrichment now reports backlog, stalled work and lost requests through status and doctor. Process disappearance and stale identities remain expected outcomes.
 
 - BPF verdict annotation now reports queued callbacks, stalled work and losses through status and doctor. Callback failures remain visible while findings continue without waiting for annotations.

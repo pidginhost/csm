@@ -78,3 +78,17 @@ func TestProcessContextQueueStopRetainsEvidenceWithoutInitializing(t *testing.T)
 		t.Fatalf("repeated daemon shutdown changed prior loss: %+v", got)
 	}
 }
+
+func TestProcessContextQueueIncludesProcReadHealth(t *testing.T) {
+	resetProcessCtxForTest()
+	t.Cleanup(resetProcessCtxForTest)
+	d := &Daemon{}
+	if _, exists := d.QueueStatuses()["processctx.proc_reads"]; exists {
+		t.Fatal("uninitialized process-context pool reported active proc reads")
+	}
+	ProcessCtx()
+	got, exists := d.QueueStatuses()["processctx.proc_reads"]
+	if !exists || got.Capacity != 64 {
+		t.Fatalf("shared proc read capacity is missing from daemon health: exists=%v status=%+v", exists, got)
+	}
+}

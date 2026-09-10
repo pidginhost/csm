@@ -2,6 +2,7 @@ package processctx
 
 import (
 	"errors"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -178,7 +179,13 @@ func (e *Enricher) Enqueue(req EnrichRequest) bool {
 }
 
 func (e *Enricher) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return map[string]queuehealth.Status{"enrichment": e.queueStats.Snapshot(now)}
+	out := map[string]queuehealth.Status{"enrichment": e.queueStats.Snapshot(now)}
+	if reader, ok := e.reader.(interface {
+		QueueStatuses(time.Time) map[string]queuehealth.Status
+	}); ok {
+		maps.Copy(out, reader.QueueStatuses(now))
+	}
+	return out
 }
 
 // SetLatencyObserver installs an optional callback used by metrics.

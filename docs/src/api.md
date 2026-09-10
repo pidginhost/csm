@@ -170,6 +170,16 @@ The daemon stops the pool after BPF producers have joined, lets running reads
 finish and counts buffered requests discarded at shutdown. Final loss evidence
 remains available. This row measures enrichment requests, not each individual
 deadline-based file read inside a request.
+`processctx.proc_reads` reports the 64 shared slots for deadline-limited process
+file and symlink reads, including process-start captures on the BPF path.
+Waiting and running reads share this capacity. A slot remains occupied until
+both the underlying read and its caller have finished; an undelivered result
+still occupies its slot. A timeout counts the lost result immediately and keeps
+a blocked syscall visible as running work until it returns. Timeout and a later
+read failure count as one loss. Refusals at capacity and read failures count as
+losses; missing process files are expected churn. Synchronous reads without a
+deadline consume no slots. The initial process-directory check and the cached
+boot-time read are synchronous and are not measured by this row.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,
@@ -246,9 +256,9 @@ Inspect worker errors and CPU, memory and I/O pressure when a queue degrades.
 Reduce competing bulk work and confirm the queue drains and recent losses
 stop. This surface currently covers finding delivery, file and spool kernel
 readers and scanners, recovery scans, staged package verification, dropper
-processing, BPF queues, process context enrichment, mail-log delivery, forwarder
-and PHP relay notification queues, and PHP relay index persistence; other
-bounded queues remain in the roadmap.
+processing, BPF queues, process context enrichment and deadline reads, mail-log
+delivery, forwarder and PHP relay notification queues, and PHP relay index
+persistence; other bounded queues remain in the roadmap.
 
 ## GeoIP
 

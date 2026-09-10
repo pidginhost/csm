@@ -150,80 +150,13 @@ func readFileWithDeadline(path string, d time.Duration) ([]byte, bool) {
 // their slot (correctly counting against the ceiling).
 const procReadConcurrency = 64
 
-var procReadSem = make(chan struct{}, procReadConcurrency)
-
-func acquireProcReadSlot() bool {
-	select {
-	case procReadSem <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-func releaseProcReadSlot() { <-procReadSem }
-
 func runBytesWithDeadline(d time.Duration, fn func() ([]byte, error)) ([]byte, bool) {
-	if d <= 0 {
-		data, err := fn()
-		return data, err == nil
-	}
-	if !acquireProcReadSlot() {
-		return nil, false
-	}
-	type result struct {
-		data []byte
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		defer releaseProcReadSlot()
-		data, err := fn()
-		ch <- result{data: data, err: err}
-	}()
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case res := <-ch:
-		if res.err != nil {
-			return nil, false
-		}
-		return res.data, true
-	case <-timer.C:
-		return nil, false
-	}
+	return runProcReadWithDeadline(procReads, d, fn)
 }
 
 // readlinkWithDeadline runs Readlink in a goroutine and gives up after d.
 func readlinkWithDeadline(path string, d time.Duration) (string, bool) {
-	if d <= 0 {
-		target, err := os.Readlink(path)
-		return target, err == nil
-	}
-	if !acquireProcReadSlot() {
-		return "", false
-	}
-	type result struct {
-		target string
-		err    error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		defer releaseProcReadSlot()
-		t, err := os.Readlink(path)
-		ch <- result{t, err}
-	}()
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case res := <-ch:
-		if res.err != nil {
-			return "", false
-		}
-		return res.target, true
-	case <-timer.C:
-		return "", false
-	}
+	return runProcReadWithDeadline(procReads, d, func() (string, error) { return os.Readlink(path) })
 }
 
 func parseStatusName(s string) string {
