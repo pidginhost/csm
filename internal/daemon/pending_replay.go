@@ -3,6 +3,8 @@ package daemon
 import (
 	"fmt"
 	"os"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 // replayPendingFindings runs the batch parked by the previous shutdown
@@ -13,14 +15,11 @@ func (d *Daemon) replayPendingFindings() {
 	if d.store == nil {
 		return
 	}
-	pending, err := d.store.TakePendingFindings()
+	err := d.store.ReplayPendingFindings(func(pending []alert.Finding) {
+		fmt.Fprintf(os.Stderr, "[%s] Replaying %d finding(s) left queued by the previous shutdown\n", ts(), len(pending))
+		d.dispatchBatch(pending)
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Cannot replay pending findings: %v\n", ts(), err)
-		return
 	}
-	if len(pending) == 0 {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "[%s] Replaying %d finding(s) left queued by the previous shutdown\n", ts(), len(pending))
-	d.dispatchBatch(pending)
 }

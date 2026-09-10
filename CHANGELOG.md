@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Findings parked at shutdown now report stored backlog, stalled persistence or replay, and confirmed losses through status and doctor. Failed writes distinguish retained work from uncertain outcomes.
+
 - Queue health now reports pending attack record updates and deletions, including failed retries and interrupted writes. Repeated changes to one IP share pending work, while changes arriving during a write remain visible.
 
 - Attack event persistence now reports backlog, stalled writes and confirmed losses through status and doctor. Partial writes and uncertain completion remain visible after shutdown.

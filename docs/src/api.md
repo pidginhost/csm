@@ -416,6 +416,39 @@ without waiting for database state or storage locks. These measurements preserve
 the existing persistence, retry and shutdown behavior; they do not make retained
 in-memory retry state durable across process exit.
 
+`state.pending` reports findings parked for the next startup, bounded to the
+newest 10,000 findings. The store observes existing parked work when opened.
+Depth is the last confirmed file contents; in-flight findings include incoming
+appends and cleared batches still in replay. The bound applies to the stored
+batch, not concurrent callers or an already detached replay. Overflow and new
+findings that fail to reach storage count as losses. Duplicate occurrences
+remain separate findings.
+
+Waiting age starts at admission or startup observation, independently of the
+finding timestamp. Surviving findings keep their age through later appends;
+evicted findings no longer determine it. Waiting uses `lag_basis:
+deferred_checkpoint`: a parked or full batch awaiting restart does not itself
+report a stall. `state.pending_operations` measures callers waiting for the
+state lock and active persistence or replay, in operations with no fixed bound.
+One minute waiting or without operation progress reports lag. Actual read,
+write and clear results advance progress; replay stays active through dispatch.
+
+Read, write and clear errors report `state_io`. Failed mutations are read back:
+a returned error after replacement does not imply the new findings were lost.
+Unreadable outcomes set `depth_unavailable` and `dropped_lower_bound`. A later
+read restores measured depth, while lifetime losses remain lower bounds. Known
+encoding failures and overflow are counted even when other outcomes are unknown.
+Indistinguishable retained payloads keep the earlier age after a failed write.
+An interrupted write or clear marks disk state unknown before releasing the
+state lock. Interrupted replay retains measured disk depth but cannot claim an
+exact loss for a partially dispatched batch; uncertainty reports
+`persistence_uncertain` for one minute. Confirmed losses use the common warning
+threshold and remain in lifetime totals after recovery.
+
+The file format, append order, returned errors and clear-before-replay policy
+are unchanged. These observations add no retry or extra replay. Health snapshots
+read metadata only and do not wait for state locks, files or dispatch callbacks.
+
 `incident.persist.waiting` reports immutable incident snapshots waiting for the
 ordered writer, with no fixed waiting capacity. `incident.persist.active` reports
 the single occupied writer. A writer or free-slot admission stalled for one minute
