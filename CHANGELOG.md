@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reverse DNS lookups now report occupied slots, stalled resolvers and lost results through status and doctor. Timed-out lookups remain visible until their resolver finishes.
+
 - Panel webhooks now report durable backlog, stalled delivery and lost findings through status and doctor. Retries and clean shutdown preserve queued findings; stopped queues refuse late submissions.
 
 - Live event streams now report backlog, stalled delivery and lost events through status and doctor. Closing a browser tab does not count as a delivery failure.

@@ -182,6 +182,15 @@ read failure count as one loss. Refusals at capacity and read failures count as
 losses; missing process files are expected churn. Synchronous reads without a
 deadline consume no slots. The initial process-directory check and the cached
 boot-time read are synchronous and are not measured by this row.
+`smtp_rdns.resolves` reports the 64 reverse-DNS lookup slots used by direct SMTP
+egress detection. A slot remains occupied until its resolver and caller finish.
+The one-second caller deadline also bounds healthy processing age; timing out
+counts a lost result once while keeping a resolver still running visible.
+Capacity refusals and resolver failures count as losses, while NXDOMAIN and
+successful empty responses are normal negative results. Cache hits perform no
+queued work. The bounded result cache is retained data, not waiting lookups.
+Status can initialize the empty cache but never performs DNS or waits for its
+cache lock. Synchronous lookups without a deadline use no slots or queue row.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.
