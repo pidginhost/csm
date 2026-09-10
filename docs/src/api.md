@@ -309,6 +309,8 @@ active operation progress reports `processing_lag`. Failed cleanup whose retry
 survives reports `retry_failed`; an old tracker block can retain a retry even
 when saving its cleanup marker failed. Completed cleanup stays acknowledged
 across failed saves, while a newly blocked IP creates fresh cleanup demand.
+Recovery first establishes the known block baseline. Cleanup of a later block
+has an exact outcome even when older cleanup history remains uncertain.
 
 Cleanup state and snapshot failures report `state_io`. An unreadable tracker
 sets `depth_unavailable` and `dropped_lower_bound`; speculative waiting records

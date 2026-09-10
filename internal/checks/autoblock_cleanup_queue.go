@@ -22,6 +22,7 @@ type autoBlockCleanupRecord struct {
 	at                                     time.Time
 	inFlight, completed, failed, lossKnown bool
 	blocks                                 map[autoBlockCleanupBlock]bool
+	blocksKnown                            bool
 }
 
 type autoBlockCleanupBlock struct {
@@ -84,15 +85,18 @@ func (w *autoBlockStateWork) admitCleanup(ip string) {
 	c := w.queue.cleanup
 	r := c.record(ip, !c.historyUnknown)
 	blocks := c.blockSources[ip]
-	for version := range blocks {
-		if !r.blocks[version] {
-			r.completed = false
-			break
+	if c.depthKnown && r.blocksKnown {
+		for version := range blocks {
+			if !r.blocks[version] {
+				r.completed, r.lossKnown = false, true
+				break
+			}
 		}
 	}
 	// Each snapshot owns its immutable source set. Retain only the latest
 	// cleanup's generations, rather than accumulating every earlier block.
 	r.blocks = blocks
+	r.blocksKnown = c.depthKnown
 	w.cleanupCycle.entries[ip] = r
 	w.queue.mu.Unlock()
 }
@@ -130,6 +134,13 @@ func (w *autoBlockStateWork) observeCleanupState(state *blockState, settle bool)
 	c.sources = sources
 	c.blockSources = blocks
 	c.depthKnown = true
+	for ip, r := range c.records {
+		if !r.blocksKnown {
+			// First rediscovery establishes a baseline, not fresh demand.
+			// Keep it until the next cleanup can distinguish newer blocks.
+			r.blocks, r.blocksKnown = blocks[ip], true
+		}
+	}
 	w.settleCleanupRecords(settle)
 }
 
