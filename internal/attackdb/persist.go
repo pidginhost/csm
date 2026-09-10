@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -272,7 +273,8 @@ func toStoreIPRecord(rec *IPRecord) store.IPRecord {
 
 // appendEvents writes events to the bbolt store (if available) or appends
 // to the JSONL file, rotating if needed.
-func (db *DB) appendEvents(events []Event) {
+func (db *DB) appendEvents(events []Event, batch *eventBatch) {
+	defer batch.finish()
 	if sdb := store.Global(); sdb != nil {
 		for i, ev := range events {
 			ts := ev.Timestamp
@@ -289,7 +291,10 @@ func (db *DB) appendEvents(events []Event) {
 				Message:    ev.Message,
 			}
 			if err := sdb.RecordAttackEvent(se, i); err != nil {
+				batch.advance(0, 1)
 				fmt.Fprintf(os.Stderr, "attackdb: store event: %v\n", err)
+			} else {
+				batch.advance(1, 0)
 			}
 		}
 		return
@@ -299,6 +304,7 @@ func (db *DB) appendEvents(events []Event) {
 	// an empty dbPath yields a relative path, which would read and write
 	// state in whatever directory the process was started from.
 	if db.dbPath == "" {
+		batch.discardRemaining()
 		return
 	}
 
@@ -310,20 +316,37 @@ func (db *DB) appendEvents(events []Event) {
 		rotateEventsFile(path)
 	}
 
-	// #nosec G304 -- filepath.Join under operator-configured db.dbPath.
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	open := db.openEvents
+	if open == nil {
+		open = openEventsFile
+	}
+	f, err := open(path)
 	if err != nil {
+		batch.discardRemaining()
 		fmt.Fprintf(os.Stderr, "attackdb: error opening %s: %v\n", path, err)
 		return
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		returned := false
+		defer func() {
+			if !returned {
+				batch.uncertainOutcome()
+			}
+		}()
+		err := f.Close()
+		returned = true
+		if err != nil {
+			batch.uncertainOutcome()
+		}
+	}()
 
-	w := bufio.NewWriter(f)
+	w := bufio.NewWriter(eventWriter{writer: f, batch: batch})
 	enc := json.NewEncoder(w)
 	for _, ev := range events {
 		_ = enc.Encode(ev)
 	}
 	_ = w.Flush()
+	batch.discardRemaining()
 }
 
 // rotateEventsFile keeps the newest half of the file.
@@ -414,4 +437,9 @@ func (db *DB) QueryEvents(ip string, limit int) []Event {
 		all[i], all[j] = all[j], all[i]
 	}
 	return all
+}
+
+func openEventsFile(path string) (io.WriteCloser, error) {
+	// #nosec G304 -- path is eventsFile under the operator-configured db.dbPath.
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 }

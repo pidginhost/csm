@@ -3,6 +3,7 @@ package attackdb
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"os"
@@ -180,16 +181,19 @@ type IPRecord struct {
 
 // DB is the in-memory attack database backed by JSON files.
 type DB struct {
-	flushMu       sync.Mutex
-	mu            sync.RWMutex
-	records       map[string]*IPRecord
-	deletedIPs    map[string]struct{}
-	dirtyIPs      map[string]struct{}
-	pendingEvents []Event
-	dbPath        string
-	dirty         bool
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
+	flushMu         sync.Mutex
+	mu              sync.RWMutex
+	records         map[string]*IPRecord
+	deletedIPs      map[string]struct{}
+	dirtyIPs        map[string]struct{}
+	pendingEvents   []Event
+	eventHealthOnce sync.Once
+	eventQueue      *eventQueue
+	openEvents      func(string) (io.WriteCloser, error)
+	dbPath          string
+	dirty           bool
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
 }
 
 // markDirtyLocked records that ip's record changed and must be persisted on the
@@ -289,7 +293,7 @@ func (db *DB) SeedFromPermanentBlocklist(statePath string) int {
 		}
 		db.records[ip].ThreatScore = ComputeScore(db.records[ip])
 
-		db.pendingEvents = append(db.pendingEvents, Event{
+		db.queueEventLocked(Event{
 			Timestamp:  now,
 			IP:         ip,
 			AttackType: AttackOther,
@@ -397,7 +401,7 @@ func (db *DB) RecordFinding(f alert.Finding) {
 		}
 	}
 	rec.ThreatScore = computeScoreAt(rec, now)
-	db.pendingEvents = append(db.pendingEvents, event)
+	db.queueEventLocked(event)
 	delete(db.deletedIPs, ip)
 	db.markDirtyLocked(ip)
 	db.mu.Unlock()
@@ -454,13 +458,14 @@ func (db *DB) Flush() error {
 
 	db.mu.Lock()
 	events := db.pendingEvents
+	eventBatch := db.eventHealth().detach()
 	db.pendingEvents = nil
 	dirty := db.dirty
 	db.dirty = false
 	db.mu.Unlock()
 
 	if len(events) > 0 {
-		db.appendEvents(events)
+		db.appendEvents(events, eventBatch)
 	}
 	if dirty {
 		db.saveRecords()

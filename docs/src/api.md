@@ -373,6 +373,24 @@ snapshot marks lifetime losses as a lower bound without inventing a missing coun
 Health reads memory only. These measurements preserve the existing flush policy,
 returned errors and cleanup retry behavior.
 
+`attackdb.events` reports events awaiting persistence, including historical imports.
+The buffer has no fixed capacity. Waiting age starts at admission, independently
+of an event's timestamp. A detached batch remains in flight through writes, close
+and error logging; newly arriving events stay in the waiting count. Processing
+age uses `lag_basis: operation_progress` and resets when a write returns, so a
+progressing batch does not appear stalled solely because of its total duration.
+Waiting age or absent write progress of one minute degrades health.
+Completed JSONL records accepted by the file writer and successful database
+writes count as persisted. Buffered data alone does not. Confirmed unwritten
+events count as losses; close errors or abnormal I/O exits preserve uncertainty
+with `dropped_lower_bound` and report `persistence_uncertain` for one minute.
+The common loss threshold and recovery policy apply to confirmed losses.
+These measurements preserve the existing write, retention and shutdown policy;
+they do not add retries or promise storage durability beyond the writer's result.
+Memory-only databases have no persistence backlog. Health reads queue memory,
+independently of database state locks and I/O. Changed-record persistence is a
+separate pending owner and is not yet included in this row.
+
 `incident.persist.waiting` reports immutable incident snapshots waiting for the
 ordered writer, with no fixed waiting capacity. `incident.persist.active` reports
 the single occupied writer. A writer or free-slot admission stalled for one minute
