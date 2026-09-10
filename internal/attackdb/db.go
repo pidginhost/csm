@@ -27,6 +27,10 @@ const (
 	AttackSPAM        AttackType = "spam"
 	AttackCPanelLogin AttackType = "cpanel_login"
 	AttackFileUpload  AttackType = "file_upload"
+
+	// AttackAuthSuccess marks an event that followed a SUCCESSFUL
+	// authentication. Recorded for correlation; carries no score.
+	AttackAuthSuccess AttackType = "auth_success"
 	AttackReputation  AttackType = "reputation"
 	AttackOther       AttackType = "other"
 )
@@ -103,16 +107,25 @@ var checkToAttack = map[string]AttackType{
 	// ModSecurity block names is a scoring decision recorded in the roadmap.
 
 	// cPanel/webmail login
-	"cpanel_login":           AttackCPanelLogin,
-	"cpanel_login_realtime":  AttackCPanelLogin,
-	"cpanel_multi_ip_login":  AttackCPanelLogin,
-	"webmail_login_realtime": AttackCPanelLogin,
-	"ftp_login":              AttackCPanelLogin,
-	"ftp_login_realtime":     AttackCPanelLogin,
-	"pam_login":              AttackCPanelLogin,
+	// Successful, post-authentication events. They are RECORDED, because they
+	// are evidence when correlated with other findings on the same account,
+	// but they carry no attack weight: scoring them made an account owner an
+	// attacker for using cPanel, FTP or File Manager normally. One successful
+	// File Manager upload alone added 20 points that never decayed, and the
+	// resulting score fed the reputation path that kept re-blocking the owner.
+	//
+	// cpanel_multi_ip_login stays a real attack type: several addresses inside
+	// a window is correlation evidence rather than one successful login.
+	"cpanel_login":                AttackAuthSuccess,
+	"cpanel_login_realtime":       AttackAuthSuccess,
+	"webmail_login_realtime":      AttackAuthSuccess,
+	"ftp_login":                   AttackAuthSuccess,
+	"ftp_login_realtime":          AttackAuthSuccess,
+	"pam_login":                   AttackAuthSuccess,
+	"cpanel_file_upload_realtime": AttackAuthSuccess,
+	"cpanel_multi_ip_login":       AttackCPanelLogin,
 
 	// File upload
-	"cpanel_file_upload_realtime": AttackFileUpload,
 
 	// Reputation - known malicious IPs from threat database
 	"ip_reputation": AttackReputation,
