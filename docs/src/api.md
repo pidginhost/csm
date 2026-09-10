@@ -301,8 +301,10 @@ fixed combined capacity. Command lag uses the two-minute command budget or a
 shorter parent deadline. Result and cache work use one minute without progress.
 A full finite batch stays healthy within those budgets; a free worker with no
 dispatch progress for one minute reports backlog lag. Returned operational
-failures and abandoned work count once per installation. Recognized integrity
-results, including deliberately filtered output, complete without a queue loss.
+failures and abandoned work count once per installation. A command killed by a
+signal counts as failed work while retaining any partial integrity findings.
+Recognized integrity results from a completed command, including deliberately
+filtered output, complete without a queue loss.
 Cancellation withdraws unfinished demand without loss, while deadline withdrawal
 counts unfinished installations. Commands ignoring cancellation remain in flight
 until they return. A deadline during caching cannot undo completed verification,

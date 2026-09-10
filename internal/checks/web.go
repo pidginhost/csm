@@ -3,8 +3,10 @@ package checks
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -501,6 +503,11 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 						return
 					}
 
+					// Partial integrity output cannot complete a command killed by a signal.
+					var commandExit *exec.ExitError
+					if errors.As(err, &commandExit) && commandExit.ExitCode() < 0 {
+						work.fail()
+					}
 					if out == nil {
 						work.fail()
 						return

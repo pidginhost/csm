@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- WordPress core checks now report waiting installations, stalled workers and failed work through status and doctor. Active commands and result handling remain visible after cancellation, and concurrent scans retain separate ownership.
+- WordPress core checks now report waiting installations, stalled workers and failed work through status and doctor, including interrupted commands that return partial findings. Active commands and result handling remain visible after cancellation, and concurrent scans retain separate ownership.
 
 - Block digests now report buffered blocks, stalled preparation or delivery, and confirmed losses through status and doctor. Normal batching and disabled default destinations stay healthy; interrupted deliveries remain explicit.
 
