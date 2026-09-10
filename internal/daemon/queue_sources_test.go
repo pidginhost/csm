@@ -58,6 +58,8 @@ func (s registrationQueueSource) QueueStatuses(now time.Time) map[string]queuehe
 }
 
 func TestQueueSourcesDoNotHoldRegistryLockDuringSnapshot(t *testing.T) {
+	resetProcessCtxForTest()
+	t.Cleanup(resetProcessCtxForTest)
 	d := &Daemon{}
 	q := queuehealth.New(4, time.Minute)
 	d.registerQueueSource("first", registrationQueueSource{d, q})
@@ -74,6 +76,8 @@ func TestQueueSourcesDoNotHoldRegistryLockDuringSnapshot(t *testing.T) {
 }
 
 func TestQueueSourcesRegistrationAndPollingAreConcurrent(t *testing.T) {
+	resetProcessCtxForTest()
+	t.Cleanup(resetProcessCtxForTest)
 	d := &Daemon{}
 	q := queuehealth.New(4, time.Minute)
 	var wg sync.WaitGroup

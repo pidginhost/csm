@@ -157,6 +157,19 @@ key and allow a later finding to retry; a successful retry preserves earlier
 loss totals. Shutdown closes admission, waits for running callbacks and counts
 the queued requests left behind. Cached answers remain available without new
 work. Findings continue immediately when an annotation is unavailable.
+`processctx.enrichment` reports 1,024 waiting requests and up to two running
+process-context workers. It appears only after a BPF consumer initializes the
+shared pool; reading health does not start workers. Overflow replaces the oldest
+queued request and preserves the waiting age of the remaining requests.
+Running time includes the process read, latency observer, account resolution and
+cache write. Read errors and interrupted processing count as lost enrichment;
+vanished processes and stale or unverified identities are completed filtering.
+The queue dropped metric counts refused, evicted and abandoned requests;
+queue health also includes failures after a worker receives the request.
+The daemon stops the pool after BPF producers have joined, lets running reads
+finish and counts buffered requests discarded at shutdown. Final loss evidence
+remains available. This row measures enrichment requests, not each individual
+deadline-based file read inside a request.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,
@@ -233,9 +246,9 @@ Inspect worker errors and CPU, memory and I/O pressure when a queue degrades.
 Reduce competing bulk work and confirm the queue drains and recent losses
 stop. This surface currently covers finding delivery, file and spool kernel
 readers and scanners, recovery scans, staged package verification, dropper
-processing, BPF queues, mail-log delivery, forwarder and PHP relay notification
-queues, and PHP relay index persistence; other bounded queues remain in the
-roadmap.
+processing, BPF queues, process context enrichment, mail-log delivery, forwarder
+and PHP relay notification queues, and PHP relay index persistence; other
+bounded queues remain in the roadmap.
 
 ## GeoIP
 

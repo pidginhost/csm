@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // procReader is the slice of ProcReader the Enricher needs. Allows fakes.
@@ -21,6 +23,11 @@ type EnrichRequest struct {
 	UIDKnown  bool
 	Comm      string
 	StartedAt time.Time
+}
+
+type enrichWork struct {
+	req    EnrichRequest
+	ticket queuehealth.Ticket
 }
 
 // IdentityResolver maps a process UID to username/account metadata. It must be
@@ -67,12 +74,14 @@ type Enricher struct {
 	resolver IdentityResolver
 	cfg      EnricherConfig
 
-	queue    chan EnrichRequest
-	wg       sync.WaitGroup
-	stopCh   chan struct{}
-	started  atomic.Bool
-	stopped  atomic.Bool
-	stopOnce sync.Once
+	queue      chan enrichWork
+	queueStats *queuehealth.Tracker
+	admission  sync.Mutex
+	wg         sync.WaitGroup
+	stopCh     chan struct{}
+	started    bool
+	stopped    bool
+	stopOnce   sync.Once
 
 	enqueued atomic.Uint64
 	drops    atomic.Uint64
@@ -84,7 +93,7 @@ type Enricher struct {
 	observeLatency func(float64)
 }
 
-// NewEnricher returns a stopped Enricher. Call Start to launch workers.
+// NewEnricher prepares a pool; Start launches its workers.
 func NewEnricher(cache *Cache, reader procReader, cfg EnricherConfig) *Enricher {
 	if cfg.Workers <= 0 {
 		cfg.Workers = 2
@@ -97,74 +106,79 @@ func NewEnricher(cache *Cache, reader procReader, cfg EnricherConfig) *Enricher 
 		resolver = noopResolver{}
 	}
 	return &Enricher{
-		cache:    cache,
-		reader:   reader,
-		resolver: resolver,
-		cfg:      cfg,
-		queue:    make(chan EnrichRequest, cfg.QueueCap),
-		stopCh:   make(chan struct{}),
+		cache:      cache,
+		reader:     reader,
+		resolver:   resolver,
+		cfg:        cfg,
+		queue:      make(chan enrichWork, cfg.QueueCap),
+		queueStats: queuehealth.New(cfg.QueueCap, time.Minute),
+		stopCh:     make(chan struct{}),
 	}
 }
 
 // Start launches the worker goroutines. Idempotent.
 func (e *Enricher) Start() {
-	if e.started.Swap(true) {
+	e.admission.Lock()
+	defer e.admission.Unlock()
+	if e.started || e.stopped {
 		return
 	}
+	e.started = true
+	e.wg.Add(e.cfg.Workers)
 	for i := 0; i < e.cfg.Workers; i++ {
-		e.wg.Add(1)
 		go e.worker()
 	}
 }
 
 // Stop signals workers and waits for them to exit. Safe to call multiple times.
 //
-// Queued requests are not drained: any EnrichRequest still in the channel
-// when stopCh closes is dropped on the floor. Stats.Enqueued therefore stays
-// ahead of Stats.Reads + Stats.Errors after shutdown by the queue depth.
-// Acceptable on daemon shutdown because no caller is waiting for completion;
-// operators reading the metrics post-restart should expect this delta.
+// The pool cannot restart. Running reads finish; buffered requests are discarded
+// and counted after workers relinquish ownership.
 func (e *Enricher) Stop() {
 	e.stopOnce.Do(func() {
-		e.stopped.Store(true)
+		e.admission.Lock()
+		e.stopped = true
 		close(e.stopCh)
+		close(e.queue)
+		e.admission.Unlock()
 		e.wg.Wait()
+		for work := range e.queue {
+			work.ticket.Reject(time.Now())
+			e.drops.Add(1)
+		}
 	})
 }
 
-// Enqueue adds a request to the work queue. Returns false only when the
-// enricher is stopped. If the queue is full, the oldest pending request is
+// Enqueue adds a request to the work queue. Returns false for an invalid PID
+// or a stopped enricher. If the queue is full, the oldest pending request is
 // dropped and the new one is queued.
 func (e *Enricher) Enqueue(req EnrichRequest) bool {
-	if req.PID <= 0 || e.stopped.Load() {
+	e.admission.Lock()
+	defer e.admission.Unlock()
+	if req.PID <= 0 || e.stopped {
+		e.queueStats.Lose(time.Now(), 1)
 		e.drops.Add(1)
 		return false
 	}
+	work := enrichWork{req: req, ticket: e.queueStats.Begin(time.Now())}
 	select {
-	case e.queue <- req:
-		e.enqueued.Add(1)
-		return true
-	case <-e.stopCh:
-		e.drops.Add(1)
-		return false
+	case e.queue <- work:
 	default:
 		select {
-		case <-e.queue:
+		case oldest := <-e.queue:
+			oldest.ticket.Reject(time.Now())
 			e.drops.Add(1)
 		default:
 		}
-		select {
-		case e.queue <- req:
-			e.enqueued.Add(1)
-			return true
-		case <-e.stopCh:
-			e.drops.Add(1)
-			return false
-		default:
-			e.drops.Add(1)
-			return false
-		}
+		// Other producers and close are excluded; consumers can only free slots.
+		e.queue <- work
 	}
+	e.enqueued.Add(1)
+	return true
+}
+
+func (e *Enricher) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return map[string]queuehealth.Status{"enrichment": e.queueStats.Snapshot(now)}
 }
 
 // SetLatencyObserver installs an optional callback used by metrics.
@@ -251,24 +265,48 @@ func (e *Enricher) worker() {
 		select {
 		case <-e.stopCh:
 			return
-		case req := <-e.queue:
-			start := time.Now()
-			e.reads.Add(1)
-			entry, err := e.reader.Read(req.PID)
-			e.observe(time.Since(start).Seconds())
-			if err != nil {
-				if errors.Is(err, ErrProcessGone) {
-					continue
-				}
-				e.errors.Add(1)
-				continue
+		default:
+		}
+		select {
+		case <-e.stopCh:
+			return
+		case work, ok := <-e.queue:
+			if !ok {
+				return
 			}
-			if !e.shouldCache(req, entry) {
-				e.stale.Add(1)
-				continue
-			}
-			e.enrichIdentity(&entry)
-			e.cache.Put(entry)
+			e.process(work)
 		}
 	}
+}
+
+func (e *Enricher) process(work enrichWork) {
+	start := time.Now()
+	work.ticket.Start(start)
+	completed := false
+	defer func() {
+		if completed {
+			work.ticket.Finish(time.Now())
+		} else {
+			work.ticket.Reject(time.Now())
+		}
+	}()
+	e.reads.Add(1)
+	entry, err := e.reader.Read(work.req.PID)
+	e.observe(time.Since(start).Seconds())
+	if err != nil {
+		if errors.Is(err, ErrProcessGone) {
+			completed = true
+		} else {
+			e.errors.Add(1)
+		}
+		return
+	}
+	if !e.shouldCache(work.req, entry) {
+		e.stale.Add(1)
+		completed = true
+		return
+	}
+	e.enrichIdentity(&entry)
+	e.cache.Put(entry)
+	completed = true
 }

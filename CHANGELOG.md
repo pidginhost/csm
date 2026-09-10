@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Process context enrichment now reports backlog, stalled work and lost requests through status and doctor. Process disappearance and stale identities remain expected outcomes.
+
 - BPF verdict annotation now reports queued callbacks, stalled work and losses through status and doctor. Callback failures remain visible while findings continue without waiting for annotations.
 
 - PHP relay index persistence now reports queued writes, stalled batches and failed writes through status and doctor.
@@ -40,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
+
+- Process context workers now count discarded requests at shutdown and cannot restart after stopping. Active reads finish before shutdown returns.
 
 - Verdict annotation shutdown now refuses new work and accounts for abandoned callbacks. Failed callbacks release their pending state so later findings can retry.
 

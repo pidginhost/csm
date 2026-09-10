@@ -1228,6 +1228,7 @@ func (d *Daemon) Run() error {
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 
 	d.wg.Wait()
+	stopProcessCtx()
 	csmlog.Info("workers drained", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.

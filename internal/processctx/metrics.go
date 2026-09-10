@@ -28,7 +28,7 @@ func RegisterMetrics(reg *metrics.Registry, cache *Cache, enr *Enricher) {
 	)
 	reg.RegisterCounterFunc(
 		"csm_process_context_enrich_queue_drops_total",
-		"Process-context enrichment requests dropped because queue was full.",
+		"Process-context enrichment requests refused, evicted or abandoned at shutdown.",
 		func() float64 { return float64(enr.Stats().Drops) },
 	)
 	reg.RegisterCounterFunc(
