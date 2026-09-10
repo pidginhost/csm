@@ -139,6 +139,15 @@ func mailboxQueue(t *testing.T, now time.Time) queuehealth.Status {
 }
 
 func TestMailboxQueueRetainsActualAuditsAfterCancellation(t *testing.T) {
+	testMailboxQueueWithdrawal(t, false)
+}
+
+func TestMailboxQueueDeadlineCountsUnfinishedAudits(t *testing.T) {
+	testMailboxQueueWithdrawal(t, true)
+}
+
+func testMailboxQueueWithdrawal(t *testing.T, deadline bool) {
+	t.Helper()
 	previousMonitor := emailMailboxAudits
 	emailMailboxAudits = newScanBatchMonitor()
 	defer func() { emailMailboxAudits = previousMonitor }()
@@ -159,6 +168,10 @@ func TestMailboxQueueRetainsActualAuditsAfterCancellation(t *testing.T) {
 	hibpClient = &http.Client{Transport: mailboxQueueTransport{entered, release}}
 	defer func() { hibpClient = previous }()
 	ctx, cancel := context.WithCancel(context.Background())
+	if deadline {
+		cancel()
+		ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	}
 	defer cancel()
 	done := make(chan []alert.Finding, 1)
 	go func() { done <- CheckEmailPasswords(ctx, &config.Config{}, nil) }()
@@ -181,16 +194,27 @@ func TestMailboxQueueRetainsActualAuditsAfterCancellation(t *testing.T) {
 			t.Fatal("five audits did not reach the held transport")
 		}
 	}
-	q := mailboxQueue(t, time.Now().Add(61*time.Second))
+	now := time.Now().Add(61 * time.Second)
+	if deadline {
+		now = time.Now()
+	}
+	q := mailboxQueue(t, now)
 	if q.Depth != 3 || q.InFlight != 5 || q.Status != "ok" || !q.CapacityUnavailable || q.DroppedTotal != 0 {
 		t.Fatalf("busy audit pool lost work or reported ordinary saturation as a stall: %+v", q)
 	}
-	cancel()
+	var waitingLosses, totalLosses uint64
+	wantStatus := "ok"
+	if deadline {
+		<-ctx.Done()
+		waitingLosses, totalLosses, wantStatus = 3, 8, "degraded"
+	} else {
+		cancel()
+	}
 	until := time.Now().Add(time.Second)
 	for {
 		q = mailboxQueue(t, time.Now().Add(6*time.Minute))
 		if q.Depth == 0 {
-			if q.InFlight != 5 || q.DroppedTotal != 0 || q.Reason != "processing_lag" {
+			if q.InFlight != 5 || q.DroppedTotal != waitingLosses || q.Reason != "processing_lag" {
 				t.Fatalf("cancellation hid live audits: %+v", q)
 			}
 			break
@@ -214,8 +238,11 @@ func TestMailboxQueueRetainsActualAuditsAfterCancellation(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("released audit did not return")
 	}
-	if q := mailboxQueue(t, time.Now()); q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 0 || q.Status != "ok" {
+	if q := mailboxQueue(t, time.Now()); q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != totalLosses || q.Status != wantStatus {
 		t.Fatalf("drained audit queue: %+v", q)
+	}
+	if q := mailboxQueue(t, time.Now().Add(time.Minute)); q.Status != "ok" || q.DroppedTotal != totalLosses || q.RecentDrops != 0 {
+		t.Fatalf("audit recovery lost evidence: %+v", q)
 	}
 	if !db.GetEmailPWLastRefresh().IsZero() || db.GetMetaString("email:pwaudit:alice:mailbox@example.test") != "" {
 		t.Fatal("canceled audits recorded successful completion")

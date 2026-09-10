@@ -201,6 +201,9 @@ losses, while actual audits remain visible until they return. Expired work, fail
 verification, cache write failures and abnormal exits count once per mailbox.
 Unsupported, malformed and over-budget hashes remain normal incomplete-audit
 outcomes. Health retains loss counts after the batch drains and reads only memory.
+Deadline losses are recorded where an audit actually stops unfinished. A deadline
+arriving after a successful cache write does not turn that mailbox into a loss,
+and context evaluation during drain never holds the health lock.
 `email_password.hashes` reports the three shared password-verification slots.
 Each slot remains occupied until its KDF and caller have both finished, including
 after scan cancellation. `email_password.waiting` reports callers awaiting a

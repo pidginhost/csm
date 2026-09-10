@@ -89,6 +89,12 @@ func (t *scanBatchTask) fail() {
 	m.mu.Unlock()
 }
 
+func (t *scanBatchTask) withdraw(err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.fail()
+	}
+}
+
 func (t *scanBatchTask) finish() {
 	m := t.batch.monitor
 	m.mu.Lock()
@@ -100,10 +106,12 @@ func (t *scanBatchTask) finish() {
 	}
 }
 
+// The callback reports failures and deadline withdrawal where work is
+// abandoned. A later deadline cannot undo a successfully completed callback.
 func (t *scanBatchTask) run(ctx context.Context, budget time.Duration, fn func()) {
 	completed := false
 	defer func() {
-		if !completed || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if !completed {
 			t.fail()
 		}
 		t.finish()
@@ -116,6 +124,7 @@ func (t *scanBatchTask) run(ctx context.Context, budget time.Duration, fn func()
 // abandon runs after dispatch has stopped. Running workers retain their own
 // tasks, including when a caller has canceled but an operation ignores it.
 func (b *scanBatch) abandon(ctx context.Context) {
+	err := ctx.Err()
 	m := b.monitor
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -123,7 +132,7 @@ func (b *scanBatch) abandon(ctx context.Context) {
 		if !task.started.IsZero() {
 			continue
 		}
-		if !errors.Is(ctx.Err(), context.Canceled) {
+		if !errors.Is(err, context.Canceled) {
 			task.failLocked()
 		}
 		delete(b.pending, task)

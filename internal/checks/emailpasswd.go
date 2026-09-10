@@ -334,7 +334,8 @@ mailboxes:
 		wg.Go(func() {
 			defer func() { <-sem }()
 			work.run(ctx, checkTimeout, func() {
-				if ctx.Err() != nil {
+				if err := ctx.Err(); err != nil {
+					work.withdraw(err)
 					return
 				}
 				fullMailbox := entry.mailbox + "@" + entry.domain
@@ -359,7 +360,11 @@ mailboxes:
 					findings = append(findings, *finding)
 				}
 				mu.Unlock()
-				if err != nil || ctx.Err() != nil {
+				if err != nil {
+					return
+				}
+				if err := ctx.Err(); err != nil {
+					work.withdraw(err)
 					return
 				}
 				if err := db.SetMetaString(storeKey, fp); err != nil {
