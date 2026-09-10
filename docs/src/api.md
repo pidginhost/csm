@@ -243,6 +243,19 @@ Actual commands remain in flight until they return. Health reads memory only and
 retains loss evidence after recovery. Shared-refresh waiters remain owned by
 `checks.executions`; they do not create another set of site jobs. Optional domain
 lookup fallback and plugin metadata enrichment keep their existing behavior.
+`auto_block.waiting` reports scan, direct-block and firewall-flush calls waiting
+for shared state, with no fixed waiting capacity. `auto_block.active` reports the
+single state owner through firewall operations, state writes and cleanup.
+`lag_basis: operation_progress` times the current operation within a batch;
+advancing batches do not degrade solely because their total duration exceeds a
+minute. One minute without progress degrades the active row and any waiting
+callers. A free state slot with no admission for one minute also reports lag.
+Returned direct-block or flush errors and abnormal exits count once per call;
+protected-address refusals do not. Known errors remain visible during later
+cleanup, and the common loss threshold and recovery policy apply. These rows
+count state-lock callers, independently of persisted per-IP retry records.
+Health snapshots use memory only and cannot wait for the state lock or I/O.
+
 `incident.persist.waiting` reports immutable incident snapshots waiting for the
 ordered writer, with no fixed waiting capacity. `incident.persist.active` reports
 the single occupied writer. A writer or free-slot admission stalled for one minute

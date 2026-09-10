@@ -30,6 +30,9 @@ func (d *Daemon) QueueStatuses() map[string]queuehealth.Status {
 
 func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	out := d.registeredQueueStatuses(now)
+	for name, status := range checks.AutoBlockQueueStatuses(now) {
+		out["auto_block."+name] = status
+	}
 	if incidentCorrelator != nil {
 		for name, status := range incidentCorrelator.QueueStatuses(now) {
 			out["incident."+name] = status

@@ -198,8 +198,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return nil
 	}
-	blockStateMu.Lock()
-	defer blockStateMu.Unlock()
+	work := autoBlockQueues.acquire()
+	defer work.finish()
 
 	// Snapshot the wired firewall engine ONCE per call. A concurrent
 	// SetIPBlocker (SIGHUP re-wire, test cleanup) can swap the global
@@ -215,6 +215,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	var liveBlocked firewall.LiveBlockedSnapshot
 	var useLiveBlocked bool
 	if blocker != nil {
+		work.progress()
 		liveBlocked, useLiveBlocked = liveBlockedSnapshot(blocker)
 	}
 
@@ -226,6 +227,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	var actions []alert.Finding
 
 	// Load block state
+	work.progress()
 	state := loadBlockState(cfg.StatePath)
 
 	// Prune IPs that the firewall engine no longer has blocked.
@@ -236,6 +238,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// the kernel expires entries before state.json is rewritten.
 	var stillBlocked []blockedIP
 	for _, b := range state.IPs {
+		work.progress()
 		if blocker != nil {
 			if !blockedLiveOrCached(blocker, liveBlocked, useLiveBlocked, b.IP) {
 				// Engine expired this block - clean up our state
@@ -251,7 +254,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// before making new subnet decisions this cycle. Never in dry-run:
 	// dry-run promises a read-only firewall and pruning is a kernel mutation.
 	if blocker != nil && isAutoResponseActive(cfg) {
-		PruneExemptAutoSubnets(cfg, blocker)
+		pruneExemptAutoSubnets(cfg, blocker, work.progress)
 	}
 
 	// Check rate limit
@@ -338,6 +341,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Independent of the per-IP rate limit, because a single subnet block
 	// replaces what would otherwise be hundreds of per-IP blocks.
 	for _, f := range findings {
+		work.progress()
 		if f.Check != "smtp_subnet_spray" && f.Check != "mail_subnet_spray" {
 			continue
 		}
@@ -395,6 +399,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 
 	for _, f := range findings {
+		work.progress()
 		isBlockable := alwaysBlock[f.Check]
 		if !isBlockable && cfg.AutoResponse.BlockCpanelLogins && cpanelWebmailChecks[f.Check] {
 			isBlockable = true
@@ -451,10 +456,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if sb, ok := blocker.(subnetBlocker); ok {
 		tempban := parseExpiryWithDefault(cfg.AutoResponse.HTTPASNCrawlTempban, config.DefaultHTTPASNCrawlTempban)
 		for _, f := range findings {
+			work.progress()
 			if f.Check != "http_asn_crawl" || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
 				continue
 			}
 			for _, cidr := range f.CIDRs {
+				work.progress()
 				if isSubnetAlreadyBlocked(blocker, cidr) || cidrIntersectsInfra(cfg, cidr) {
 					continue
 				}
@@ -509,6 +516,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		return false
 	}
 	for ip, cand := range ipsToBlock {
+		work.progress()
 		if state.BlocksThisHour >= maxPerHour {
 			requeue(cand)
 			rateLimited = true
@@ -530,7 +538,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			Reason:       cand.Reason,
 			TTL:          expiry,
 			Source:       BlockSourceScan,
-		})
+		}, work.progress)
 		if err != nil {
 			// Protected IPs (the server's own interface or infra_ips) are
 			// intentionally never blocked -- an expected no-op, not a failure.
@@ -610,6 +618,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 		}
 		for cidr, count := range subnetCounts {
+			work.progress()
 			if count >= threshold && !subnetBlocked[cidr] {
 				if sb, ok := blocker.(subnetBlocker); ok {
 					if isSubnetAlreadyBlocked(blocker, cidr) {
@@ -651,7 +660,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 
 	// Save state (expired IPs were already pruned at the top of this function)
+	work.progress()
 	saveBlockState(cfg.StatePath, state)
+	work.complete()
 
 	return actions
 }
@@ -972,10 +983,11 @@ type AutoBlockFlushResult struct {
 // firewall was flushed but bookkeeping cleanup was only partial. SnapshotErr
 // is advisory because the tracker-side union still covers tracked auto-blocks.
 func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushResult, error) {
-	blockStateMu.Lock()
-	defer blockStateMu.Unlock()
+	work := autoBlockQueues.acquire()
+	defer work.finish()
 
 	var result AutoBlockFlushResult
+	work.progress()
 	engineState, snapshotErr := firewall.LoadState(statePath)
 	result.SnapshotErr = snapshotErr
 	var ips []string
@@ -986,12 +998,16 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 			ips = append(ips, b.IP)
 		}
 	}
+	work.progress()
 	if err := flush(); err != nil {
+		work.observe(err)
+		work.complete()
 		return result, fmt.Errorf("flushing blocked IPs: %w", err)
 	}
 	result.Flushed = true
 
 	var cleanupErr error
+	work.progress()
 	state, err := readBlockState(statePath)
 	seenCapacity := len(ips)
 	if state != nil {
@@ -1009,6 +1025,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		addCleanupIP(ip)
 	}
 	if err != nil {
+		work.observe(err)
 		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("reading auto-block state: %w", err))
 	} else {
 		for _, b := range state.IPs {
@@ -1023,8 +1040,10 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 	tdb := GetThreatDB()
 	failed := make([]string, 0)
 	for _, ip := range cleanupIPs {
+		work.progress()
 		if sdb != nil {
 			if _, err := sdb.RemoveAutoBlock(ip); err != nil {
+				work.observe(err)
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("removing auto-block store row for %s: %w", ip, err))
 				failed = append(failed, ip)
 			}
@@ -1039,10 +1058,13 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		// firewall state is empty, or a retry has no way to identify the
 		// stale row that can recreate the block after restart.
 		state.CleanupPending = failed
+		work.progress()
 		if err := writeBlockState(statePath, state); err != nil {
+			work.observe(err)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("clearing auto-block state: %w", err))
 		}
 	}
+	work.complete()
 	return result, cleanupErr
 }
 
@@ -1174,12 +1196,18 @@ func shouldSkipAutoSubnet(cfg *config.Config, cidr string, logged map[string]str
 // are left untouched. If b does not implement subnetManager, returns 0.
 // UnblockSubnet errors are logged and the entry is not counted as pruned.
 func PruneExemptAutoSubnets(cfg *config.Config, b IPBlocker) int {
+	return pruneExemptAutoSubnets(cfg, b, func() {})
+}
+
+func pruneExemptAutoSubnets(cfg *config.Config, b IPBlocker, progress func()) int {
 	sm, ok := b.(subnetManager)
 	if !ok {
 		return 0
 	}
 	pruned := 0
+	progress()
 	for _, entry := range sm.BlockedSubnets() {
+		progress()
 		if entry.Source != firewall.SourceAutoResponse {
 			continue
 		}

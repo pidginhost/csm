@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Blocked automatic responses and firewall flushes now appear in health checks while they wait for shared state. The active operation remains visible through cleanup.
+
 - Incident persistence now reports queued writes, stalled writers and failures through status and doctor. Deferred bookkeeping remains visible until a later update or shutdown flush.
 
 - File-index scans now report waiting callers, stalled scans and failed work through status and doctor. Audit scans remain independent, and successful late baseline writes do not count as lost work.
