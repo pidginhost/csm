@@ -2499,6 +2499,7 @@ func (d *Daemon) startSpoolWatcher() {
 	// Create orchestrator with both engines
 	scanners := []emailav.Scanner{clamScanner, yaraScanner}
 	orch := emailav.NewOrchestrator(scanners, d.cfg.EmailAV.ScanTimeoutDuration())
+	d.registerQueueSource("email_av", orch)
 
 	// Create quarantine
 	quar := emailav.NewQuarantine("/opt/csm/quarantine/email")

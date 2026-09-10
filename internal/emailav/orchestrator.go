@@ -15,6 +15,7 @@ import (
 type Orchestrator struct {
 	scanners    []Scanner
 	scanTimeout time.Duration
+	health      *scanQueue
 }
 
 // NewOrchestrator creates an orchestrator with the given scanners and per-scan timeout.
@@ -22,6 +23,7 @@ func NewOrchestrator(scanners []Scanner, scanTimeout time.Duration) *Orchestrato
 	return &Orchestrator{
 		scanners:    scanners,
 		scanTimeout: scanTimeout,
+		health:      newScanQueue(),
 	}
 }
 
@@ -68,36 +70,20 @@ func (o *Orchestrator) ScanParts(messageID string, parts []emime.ExtractedPart, 
 // scanPart scans a single part with all available engines concurrently.
 // Returns findings and lists of engine names that timed out or errored.
 func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([]Finding, []string, []string) {
-	type scanResult struct {
-		engine   string
-		verdict  Verdict
-		err      error
-		timedOut bool
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), o.scanTimeout)
 	defer cancel()
 
-	results := make(chan scanResult, len(scanners))
+	results := make(chan engineScanResult, len(scanners))
 	var wg sync.WaitGroup
+	work := make([]*scanWork, 0, len(scanners))
+	defer func() {
+		for _, w := range work {
+			w.finishDelivery(false)
+		}
+	}()
 
 	for _, s := range scanners {
-		wg.Add(1)
-		scanner := s
-		obs.SafeGo("emailav-scan", func() {
-			defer wg.Done()
-			done := make(chan scanResult, 1)
-			obs.SafeGo("emailav-engine", func() {
-				v, err := scanner.Scan(part.TempPath)
-				done <- scanResult{engine: scanner.Name(), verdict: v, err: err}
-			})
-			select {
-			case r := <-done:
-				results <- r
-			case <-ctx.Done():
-				results <- scanResult{engine: scanner.Name(), err: fmt.Errorf("scan timeout"), timedOut: true}
-			}
-		})
+		work = append(work, o.startScan(ctx, s, part.TempPath, results, &wg))
 	}
 
 	// Close results channel when all scans complete
@@ -110,6 +96,7 @@ func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([
 	var timedOut []string
 	var errored []string
 	for r := range results {
+		r.work.received()
 		if r.err != nil {
 			fmt.Fprintf(os.Stderr, "[emailav] %s scan error on %s: %v\n", r.engine, part.Filename, r.err)
 			if r.timedOut {
@@ -117,6 +104,7 @@ func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([
 			} else {
 				errored = append(errored, r.engine)
 			}
+			r.work.finishDelivery(true)
 			continue // fail-open
 		}
 		if r.verdict.Infected {
@@ -131,7 +119,50 @@ func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([
 			}
 			findings = append(findings, f)
 		}
+		r.work.finishDelivery(true)
 	}
 
 	return findings, timedOut, errored
+}
+
+type engineScanResult struct {
+	engine   string
+	verdict  Verdict
+	err      error
+	timedOut bool
+	work     *scanWork
+}
+
+func (o *Orchestrator) startScan(ctx context.Context, scanner Scanner, path string, results chan<- engineScanResult, wg *sync.WaitGroup) *scanWork {
+	deadline, _ := ctx.Deadline()
+	w := o.health.begin(deadline)
+	wg.Add(1)
+	obs.SafeGo("emailav-scan", func() {
+		defer wg.Done()
+		published := false
+		defer func() {
+			if !published {
+				w.finishDelivery(false)
+			}
+		}()
+		done := make(chan engineScanResult, 1)
+		obs.SafeGo("emailav-engine", func() {
+			success := false
+			defer func() { w.finishEngine(success) }()
+			w.start()
+			v, err := scanner.Scan(path)
+			done <- engineScanResult{engine: scanner.Name(), verdict: v, err: err, work: w}
+			success = err == nil
+		})
+		var r engineScanResult
+		select {
+		case r = <-done:
+		case <-ctx.Done():
+			r = engineScanResult{engine: scanner.Name(), err: fmt.Errorf("scan timeout"), timedOut: true, work: w}
+		}
+		w.publish(r.err != nil)
+		results <- r
+		published = true
+	})
+	return w
 }

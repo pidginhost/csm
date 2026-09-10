@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	emime "github.com/pidginhost/csm/internal/mime"
@@ -155,21 +156,27 @@ func TestOrchestratorBothUnavailable(t *testing.T) {
 }
 
 func TestOrchestratorTimeout(t *testing.T) {
-	o := NewOrchestrator(
-		[]Scanner{
-			&mockScanner{name: "clamav", available: true, delay: 5 * time.Second},
-			&mockScanner{name: "yara-x", available: true, verdict: Verdict{Infected: false}},
-		},
-		100*time.Millisecond, // very short timeout
-	)
+	synctest.Test(t, func(t *testing.T) {
+		o := NewOrchestrator(
+			[]Scanner{
+				&mockScanner{name: "clamav", available: true, delay: 5 * time.Second},
+				&mockScanner{name: "yara-x", available: true, verdict: Verdict{Infected: false}},
+			},
+			100*time.Millisecond, // very short timeout
+		)
 
-	parts := []emime.ExtractedPart{makeTempPart(t, "content")}
-	result := o.ScanParts("test-msg-id", parts, false)
+		parts := []emime.ExtractedPart{makeTempPart(t, "content")}
+		result := o.ScanParts("test-msg-id", parts, false)
 
-	// fail-open: timed-out engine should not block result
-	if result.Infected {
-		t.Error("fail-open: should not be infected on timeout")
-	}
+		if result.Infected || len(result.Findings) != 0 || len(result.ErroredEngines) != 0 || len(result.TimedOutEngines) != 1 || result.TimedOutEngines[0] != "clamav" {
+			t.Fatalf("fail-open timeout result: %+v", result)
+		}
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		if s := emailQueue(t, o); s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 1 {
+			t.Fatalf("late clean completion changed timeout accounting: %+v", s)
+		}
+	})
 }
 
 func TestOrchestratorScanError(t *testing.T) {

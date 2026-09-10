@@ -242,6 +242,16 @@ Configured finding-history truncation, explicit cancellation and successful
 shutdown draining do not count as loss. A terminated worker refuses new jobs.
 At startup, both queued and running records from the previous process become
 errors with reason `daemon_restarted`; their lost requests count in job health.
+`email_av.scans` reports antivirus engine work through execution and both result
+handoffs. Timed-out engines remain in flight until they return; buffered results
+remain queued until the message scan consumes them. Execution lag uses the
+original per-part deadline, while result waiting and processing each have a
+one-minute budget. Moving a result between buffers preserves its waiting age.
+Concurrent messages and engines outliving timeouts have no fixed global limit,
+so capacity is unavailable. Timeouts, errors and abandoned work count once per
+engine scan; later failures cannot count the same scan twice. Detections and
+unavailable engines are normal outcomes, and mail verdict behavior is unchanged.
+Status reads only memory, and watcher restarts reuse the same engine health.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.

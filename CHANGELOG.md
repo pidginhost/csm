@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Email antivirus scans now report stalled engines, delayed results and failed work through status and doctor. Timed-out engines stay visible until they finish.
+
 - Full-scan jobs now report waiting work, stalled admission or persistence, and lost jobs through status and doctor. Working scans use check progress and deadlines so a long scan alone does not trigger a stall warning.
 
 - Scan health now includes checks waiting for a worker and stalled setup or result handling. Long-running checks keep their own deadlines without making a busy scan look stalled.
