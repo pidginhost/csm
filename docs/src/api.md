@@ -205,6 +205,17 @@ input and already canceled callers start no queued work. These rows contain no
 password, hash, mailbox or account data, and status never runs a verification.
 The outer mailbox scan's discovery, network enrichment and persistence are
 separate work from these hash slots.
+`checks.executions` reports dispatched check functions across host and account
+scans. An execution remains present until both its function and caller finish,
+including while its result awaits consumption or its function outlives a timeout.
+Lag is evaluated against each call's original deadline, including a shorter parent
+deadline; a delayed function start does not reset it. Timeouts, panics and
+abandoned results count once per execution. Explicit cancellation withdraws
+demand without counting a loss, but a later function failure still counts.
+This aggregate sets `capacity_unavailable`: separate scans have their own wrapper
+limits, and timed-out functions can outlive those slots. It does not measure
+checks awaiting dispatch, scan-job persistence or later automatic actions.
+Status reads memory without waiting for a check or accessing the state database.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.

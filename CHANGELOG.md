@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Host and account scans now report overdue checks and lost results through status and doctor. A timed-out scan keeps unfinished checks visible until they return.
+
 - Email password audits now report waiting callers, occupied verification slots and stalled work through status and doctor. Canceled scans keep unfinished verification visible until it returns.
 
 - Reverse DNS lookups now report occupied slots, stalled resolvers and lost results through status and doctor. Timed-out lookups remain visible until their resolver finishes.

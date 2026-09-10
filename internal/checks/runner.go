@@ -995,12 +995,14 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 			budget := timeoutFor(c.name)
 			ctx, cancel := context.WithTimeout(scanCtx, budget)
 			start := time.Now()
-			done := executeCheckAsync("check-exec", func() []alert.Finding {
+			execution := executeCheckAsync(ctx, "check-exec", func() []alert.Finding {
 				return c.fn(ctx, cfg, store)
 			})
+			defer execution.finishCaller()
 
 			select {
-			case outcome := <-done:
+			case outcome := <-execution.done:
+				execution.received()
 				if outcome.panicErr != "" {
 					cancel()
 					if throttleReserved {
@@ -1020,6 +1022,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				}
 				results := outcome.findings
 				if ctx.Err() != nil {
+					execution.withdraw(ctx.Err())
 					cancel()
 					if throttleReserved {
 						store.ReleaseThrottle(c.name)
@@ -1067,6 +1070,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				}
 				mu.Unlock()
 			case <-ctx.Done():
+				execution.withdraw(ctx.Err())
 				cancel()
 				if throttleReserved {
 					store.ReleaseThrottle(c.name)

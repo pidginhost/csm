@@ -232,12 +232,14 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	done := executeCheckAsync("account-scan-exec", func() []alert.Finding {
+	execution := executeCheckAsync(cctx, "account-scan-exec", func() []alert.Finding {
 		return c.fn(cctx, cfg, store)
 	})
+	defer execution.finishCaller()
 
 	select {
-	case outcome := <-done:
+	case outcome := <-execution.done:
+		execution.received()
 		if outcome.panicErr != "" {
 			return []alert.Finding{{
 				Severity:  alert.High,
@@ -249,6 +251,7 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 		}
 		return outcome.findings
 	case <-cctx.Done():
+		execution.withdraw(cctx.Err())
 		if ctx.Err() != nil {
 			return nil
 		}
