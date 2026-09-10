@@ -32,7 +32,6 @@ var (
 	errEmailHashCost        = errors.New("password hash exceeds audit cost limits")
 	errEmailPasswordVerify  = errors.New("password verification failed")
 	errEmailCandidate       = errors.New("password candidate exceeds audit limits")
-	emailHashSlots          = make(chan struct{}, 3)
 )
 
 type emailPasswordVerifier struct {
@@ -40,46 +39,7 @@ type emailPasswordVerifier struct {
 }
 
 func (v *emailPasswordVerifier) matches(ctx context.Context, candidate string) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	if len(candidate) > maxEmailCandidateBytes || strings.ContainsRune(candidate, 0) {
-		return false, errEmailCandidate
-	}
-	select {
-	case emailHashSlots <- struct{}{}:
-	case <-ctx.Done():
-		return false, ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		<-emailHashSlots
-		return false, err
-	}
-	type result struct {
-		match bool
-		err   error
-	}
-	done := make(chan result, 1)
-	// KDFs cannot be interrupted. Keep their slot until they finish, even
-	// when the caller cancels, so successive scans cannot pile up workers.
-	go func() {
-		defer func() { <-emailHashSlots }()
-		match, err := v.match(candidate)
-		if err != nil {
-			// Decoder/KDF errors may embed secret input.
-			err = errEmailPasswordVerify
-		}
-		done <- result{match, err}
-	}()
-	select {
-	case got := <-done:
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		return got.match, got.err
-	case <-ctx.Done():
-		return false, ctx.Err()
-	}
+	return emailHashes.matches(ctx, v.match, candidate)
 }
 
 func (v *emailPasswordVerifier) firstMatch(ctx context.Context, candidates []string) (string, error) {

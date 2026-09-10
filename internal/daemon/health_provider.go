@@ -35,6 +35,9 @@ func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	for name, status := range rdnsCache().QueueStatuses(now) {
 		out["smtp_rdns."+name] = status
 	}
+	for name, status := range checks.EmailPasswordQueueStatuses(now) {
+		out["email_password."+name] = status
+	}
 	if enr := processCtxPublished.Load(); enr != nil {
 		for name, state := range enr.QueueStatuses(now) {
 			out["processctx."+name] = state

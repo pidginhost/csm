@@ -191,6 +191,20 @@ successful empty responses are normal negative results. Cache hits perform no
 queued work. The bounded result cache is retained data, not waiting lookups.
 Status can initialize the empty cache but never performs DNS or waits for its
 cache lock. Synchronous lookups without a deadline use no slots or queue row.
+`email_password.hashes` reports the three shared password-verification slots.
+Each slot remains occupied until its KDF and caller have both finished, including
+after scan cancellation. `email_password.waiting` reports callers awaiting a
+slot; it sets `capacity_unavailable` because concurrent scans have no fixed
+global waiting limit. Both rows use the password audit's five-minute check budget
+for lag. The occupied pool also reports sustained full capacity. A deadline while
+waiting counts one admission loss; a deadline after admission counts one lost
+verification result. A later KDF error or abnormal exit cannot count it twice.
+Explicit cancellation withdraws demand without loss; actual verification errors
+still count. Successful matches and nonmatches are normal results. Rejected
+input and already canceled callers start no queued work. These rows contain no
+password, hash, mailbox or account data, and status never runs a verification.
+The outer mailbox scan's discovery, network enrichment and persistence are
+separate work from these hash slots.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.
