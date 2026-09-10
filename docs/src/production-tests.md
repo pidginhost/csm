@@ -97,3 +97,64 @@ The journal reader starts after existing matching records and also follows
 services with no prior records. Package integrity rechecks preserve a reported
 mismatch for the original finding even if that file is now absent or no longer
 executable; current file mode is not evidence that the modification was repaired.
+
+## Queue inventory tooling
+
+The allocation scanner is available for ownership reviews:
+
+```bash
+go run ./scripts/queuegate -scan > queue-allocations.json
+```
+
+It scans repository Go source across all build constraints, excluding test files,
+`testdata`, hidden directories and vendored dependencies. It records raw channel
+allocations and imported `queuehealth.NewChannel` calls, including renamed and
+dot imports. Named channel aliases resolve across repository files; imported
+named types use the Go toolchain's source importer. Unresolved types, reflective
+allocation and indirect references to the accounted constructor fail explicitly.
+Supporting a new constructor or generic constraint requires scanner tests and
+an ownership review first.
+
+Allocation identities use the file, enclosing function, assignment target,
+constructor kind and ordinal. The descriptor includes the allocation expression,
+expanded repository constants and assignments to the capacity in the enclosing
+function. Expression grouping and build-variant values are retained. Implicit
+constant declarations and `iota` capacities need explicit scanner support.
+Runtime capacities stay symbolic; this is not whole-program data-flow analysis.
+
+A version 1 manifest contains `allocations` and `owners`. Each allocation copies
+its scanner descriptor and adds a reviewed `class`, `rationale`, and `queue`
+owner where applicable. Classes are `work`, `lifecycle`, `maintenance`, and
+`constructor`. A semaphore or completion signal can order data stored elsewhere;
+trace that data before deciding whether it belongs to a work owner. Every work
+allocation must reference an owner. Changes, omissions and stale descriptors
+fail validation.
+
+Each owner records health `rows`, reviewed `bounds`, and separate `publication`
+and `lifecycle` evidence lists. An evidence entry names a package, a top-level
+Go test and its required `portable` or `kernel` mode. Owners without a channel
+allocation need source `anchors`: a path, symbol and canonical shape. Supported
+anchors include struct fields, types, variable or constant declarations, and
+function signatures. Missing or changed anchors fail validation.
+
+For a reviewed manifest, generate requirements for the existing test verifier:
+
+```bash
+go run ./scripts/queuegate -manifest path/to/reviewed-inventory.json \
+  -mode portable -base-required scripts/production-required.json \
+  -required-out queue-required.json
+```
+
+Use the resulting file as `scripts/testgate -required` with the selected test
+inventory and actual Go JSON test events. It combines existing required tests
+with the owner's evidence for that mode. A missing, skipped or failed required
+test is not accepted. A passing scanner or a test name in JSON alone does not
+prove health publication or lifecycle coverage; the named tests need substantive
+assertions and execution evidence. The reviewed repository inventory and its
+production-runner wiring are still pending.
+
+The scanner cannot discover arbitrary queues held in maps, heaps, durable
+storage, kernel buffers or dependencies. Those need explicit owner entries and
+source anchors, plus tests that drive real admission, progress, loss and cleanup.
+Adding a new non-channel owner remains a code-review responsibility. No syntax
+inventory substitutes for reviewing the behavior of its required tests.
