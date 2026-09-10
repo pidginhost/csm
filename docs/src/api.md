@@ -64,6 +64,8 @@ GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `
 GET  /api/v1/components          Watcher/component matrix with attachment, event, and upstream freshness state.
 GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.
                                  Read-scope token sufficient. One JSON event per `data:` line.
+                                 Writes and flushes have a three-second deadline. A failed
+                                 write or flush closes the stream and frees its subscriber slot.
 GET  /api/v1/health              Daemon health (fanotify, watchers, engines)
 GET  /api/v1/findings            Current active findings
 GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info

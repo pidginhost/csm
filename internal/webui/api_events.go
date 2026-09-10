@@ -27,8 +27,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
@@ -64,8 +63,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		if _, err := fmt.Fprintf(w, format, args...); err != nil {
 			return err
 		}
-		flusher.Flush()
-		return nil
+		return rc.Flush()
 	}
 
 	// Initial flush establishes the connection and proxies see the headers

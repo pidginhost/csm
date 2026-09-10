@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Event streams now close when a flush fails, releasing their subscriber slot so clients can reconnect.
+
 - Abuse reporter shutdown now closes admission before persisting its remaining reports, so late submissions cannot be silently stranded. Persistence failures remain visible while unrelated reports continue to be saved.
 
 - Bot verification shutdown now accounts for abandoned requests and refuses later submissions. Queued requests retain their original address when a caller reuses its input buffer.
