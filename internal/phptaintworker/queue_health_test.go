@@ -413,3 +413,37 @@ func TestWorkerQueueRPCExitCountsOnce(t *testing.T) {
 	}
 	waitWorkerQueueIdle(t, s, 1)
 }
+
+func TestWorkerQueueRecoveredAnalyzerPanicCountsLoss(t *testing.T) {
+	s, err := NewSupervisor(helperChild(t, "ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Stop() }()
+	for range 3 {
+		rep := s.Analyze(context.Background(), []byte("<?php $x = curl_exec($c); eval($x); }"))
+		if rep.Status != phptaint.StatusPanic || len(rep.Results) != 0 || rep.Reason != "panic: recovered panic during analysis" {
+			t.Fatalf("recovered analyzer panic report changed: status=%s results=%d", rep.Status, len(rep.Results))
+		}
+	}
+	// Existing recovery and breaker policy must remain intact.
+	rep := s.Analyze(context.Background(), []byte("<?php $x = curl_exec($c); eval($x);"))
+	if rep.Status != phptaint.StatusAnalyzed || rep.TotalResults != 1 || len(rep.Results) != 1 || s.SpawnCount() != 1 {
+		t.Fatalf("successful recovery changed: status=%s results=%d spawns=%d", rep.Status, len(rep.Results), s.SpawnCount())
+	}
+	s.mu.Lock()
+	consecutive := s.consecutive
+	s.mu.Unlock()
+	if consecutive != 0 {
+		t.Fatalf("recovered panic changed breaker state: failures=%d", consecutive)
+	}
+	waitWorkerQueueIdle(t, s, 3)
+	q := workerQueue(t, s, time.Now())
+	if q.Status != "degraded" || q.Reason != "dropped_work" || q.DroppedTotal != 3 || q.RecentDrops != 3 {
+		t.Fatalf("three actual failed analyses are missing from request health: %+v", q)
+	}
+	q = workerQueue(t, s, time.Now().Add(time.Minute))
+	if q.Status != "ok" || q.DroppedTotal != 3 || q.RecentDrops != 0 || q.Depth != 0 || q.InFlight != 0 {
+		t.Fatalf("recovered analyzer loss evidence was not retained: %+v", q)
+	}
+}

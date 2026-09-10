@@ -75,6 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recovered PHP analyzer failures now appear in queue health even when worker communication succeeds. Existing scan results and worker recovery behavior are unchanged.
+
 - Full scans left queued by a daemon restart now report interruption instead of waiting forever. A terminated scan worker refuses new jobs and accounts for abandoned requests.
 
 - Abuse reports already acknowledged by a collector no longer count as lost if database cleanup fails and the queue later overflows.

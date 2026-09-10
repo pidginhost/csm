@@ -263,6 +263,8 @@ timeouts, breaker refusals and abnormal exits count once per request; known
 failures are recorded before cleanup. Oversize input, caller cancellation and
 refusal after an intentional stop do not add losses. Status reads memory without
 the worker lock, and shutdown retains the supervisor's health evidence.
+Recovered analyzer panics also count as failed work when delivered in a valid
+worker reply. The report and worker reuse policy remain unchanged.
 `central.actions` reports 1,024 waiting central-intelligence actions and one
 running action. Backlog remains visible while the signed feed refreshes;
 processing time includes the action handler and its evidence delivery.

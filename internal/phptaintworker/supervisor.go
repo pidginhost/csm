@@ -206,6 +206,9 @@ func (s *Supervisor) analyzeLocked(ctx context.Context, src []byte, work *reques
 		return gap(phptaint.StatusWorkerFailure, err.Error())
 	}
 	s.consecutive = 0
+	if report.Status == phptaint.StatusPanic {
+		work.fail()
+	}
 	return report
 }
 
