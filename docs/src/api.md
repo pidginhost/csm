@@ -294,6 +294,21 @@ Actual commands remain in flight until they return. Health reads memory only and
 retains loss evidence after recovery. Shared-refresh waiters remain owned by
 `checks.executions`; they do not create another set of site jobs. Optional domain
 lookup fallback and plugin metadata enrichment keep their existing behavior.
+`checks.wordpress_core` reports installations waiting for the five checksum
+workers per scan, retaining each through its command, integrity findings and
+verified-file caching. The unit is `installations`; concurrent scans have no
+fixed combined capacity. Command lag uses the two-minute command budget or a
+shorter parent deadline. Result and cache work use one minute without progress.
+A full finite batch stays healthy within those budgets; a free worker with no
+dispatch progress for one minute reports backlog lag. Returned operational
+failures and abandoned work count once per installation. Recognized integrity
+results, including deliberately filtered output, complete without a queue loss.
+Cancellation withdraws unfinished demand without loss, while deadline withdrawal
+counts unfinished installations. Commands ignoring cancellation remain in flight
+until they return. A deadline during caching cannot undo completed verification,
+and an ordinary cache read failure does not turn a verified site into lost work.
+Health reads only metadata, including while result or cache locks are occupied,
+and retains confirmed losses after recovery. Discovery is separate check work.
 `auto_block.waiting` reports scan, direct-block, firewall-flush and startup
 observation calls waiting for shared state, with no fixed waiting capacity.
 `auto_block.active` reports the single state owner through firewall operations,

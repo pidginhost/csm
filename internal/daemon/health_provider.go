@@ -42,6 +42,7 @@ func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	out["phpanel.spool"] = alert.PhpanelQueueStatus(now)
 	out["checks.executions"] = checks.CheckExecutionQueueStatus(now)
 	out["checks.plugin_inventory"] = checks.PluginInventoryQueueStatus(now)
+	out["checks.wordpress_core"] = checks.WPCoreQueueStatus(now)
 	out["checks.reputation_queries"] = checks.ReputationQueueStatus(now)
 	for name, status := range checks.FileIndexQueueStatuses(now) {
 		out["checks.file_index."+name] = status
