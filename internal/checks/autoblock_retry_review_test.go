@@ -6,6 +6,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
+
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
@@ -19,9 +21,9 @@ func TestAutoBlockRetryDirectCompletionIsPreserved(t *testing.T) {
 			setAutoBlockNow(t, now)
 			const ip = "192.0.2.110"
 			if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{
-				{IP: ip, Reason: "eligible retry", QueuedAt: now.Add(-time.Minute)},
-				{IP: ip, Reason: "already expired before direct decision", QueuedAt: now.Add(-3 * time.Hour)},
-				{IP: "192.0.2.111", Reason: "unrelated retry", QueuedAt: now.Add(-time.Minute)},
+				{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: ip, Reason: "eligible retry", QueuedAt: now.Add(-time.Minute)},
+				{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: ip, Reason: "already expired before direct decision", QueuedAt: now.Add(-3 * time.Hour)},
+				{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.111", Reason: "unrelated retry", QueuedAt: now.Add(-time.Minute)},
 			}}); err != nil {
 				t.Fatal(err)
 			}
@@ -82,7 +84,7 @@ func (e *retryClassificationError) Is(error) bool {
 func TestAutoBlockRetryErrorClassificationCannotBlockHealth(t *testing.T) {
 	classification := &retryClassificationError{entered: make(chan struct{}), release: make(chan struct{})}
 	cfg := autoBlockQueueFixture(t, func() error { return classification })
-	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "192.0.2.112", Reason: "retry", QueuedAt: time.Now()}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.112", Reason: "retry", QueuedAt: time.Now()}}}); err != nil {
 		t.Fatal(err)
 	}
 	var once sync.Once
@@ -138,7 +140,7 @@ func TestAutoBlockRetryDirectAttemptKeepsOriginalEligibility(t *testing.T) {
 		cfg := autoBlockQueueFixture(t, func() error { calls++; time.Sleep(2 * time.Second); return nil })
 		now := time.Now()
 		const ip = "192.0.2.113"
-		if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: ip, Reason: "eligible at attempt", QueuedAt: now.Add(-maxPendingAge + time.Second)}}}); err != nil {
+		if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: ip, Reason: "eligible at attempt", QueuedAt: now.Add(-maxPendingAge + time.Second)}}}); err != nil {
 			t.Fatal(err)
 		}
 		result, err := ApplyBlock(cfg, ApplyBlockRequest{IP: ip, Reason: "direct decision", TTL: time.Hour, Source: BlockSourceCentral})

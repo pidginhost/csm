@@ -1482,6 +1482,11 @@ const establishedMailSourceMarker = "(established multi-mailbox source)"
 
 func incidentEventAutoBlockExcluded(ev IncidentEvent) bool {
 	switch strings.ToLower(strings.TrimSpace(ev.Check)) {
+	case "cpanel_file_upload", "cpanel_file_upload_realtime",
+		"cpanel_login", "cpanel_login_realtime", "ftp_login", "ftp_login_realtime",
+		"webmail_login_realtime", "pam_login":
+		// Retained incidents can still carry the old severity of audit events.
+		return true
 	case "ftp_login_after_bruteforce",
 		"mail_bruteforce_suspected",
 		"modsec_classifier_gap",

@@ -89,6 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Queue health treats decisions withdrawn by the current blocking policy as expected refusals. Retry accounting keeps different kinds of evidence separate when recovering from a failed save.
+
+- Authenticated activity no longer raises threat scores through event volume or account counts, and remains visible in threat history and the dashboard. Retained audit incidents and outdated queued decisions no longer trigger blocks, and webmail challenges respect the login-blocking setting.
+- Successfully logging in, or using cPanel File Manager, no longer gets a customer's own address firewall-blocked. These events are reported only after authentication has already succeeded, so on shared hosting they fired on ordinary use of core features; one file upload was enough to block the account owner for 24 hours and to keep re-blocking them afterwards.
+- Those same events no longer count towards an address's threat score, and are no longer raised as Critical or High. They remain recorded, which is where their value is -- alongside other findings on the same account. Failed and repeated-attempt checks are unchanged and still block.
+
 - Failed firewall cleanup writes now appear in health checks even when diagnostic output is blocked. The failure remains counted once after cleanup finishes.
 
 - An interrupted bulk incident write no longer leaves later writes blocked. Abandoned writes are counted while later incident updates can continue.

@@ -50,8 +50,8 @@ func TestAutoBlockRetryStartupObservationIsReadOnly(t *testing.T) {
 	cfg := autoBlockQueueFixture(t, func() error { t.Error("read-only observation called firewall"); return nil })
 	now := time.Now().Truncate(time.Second)
 	seed := &blockState{Pending: []pendingIP{
-		{IP: "192.0.2.70", Reason: "existing", QueuedAt: now.Add(-30 * time.Minute)},
-		{IP: "192.0.2.71", Reason: "legacy"},
+		{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.70", Reason: "existing", QueuedAt: now.Add(-30 * time.Minute)},
+		{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.71", Reason: "legacy"},
 	}}
 	if err := writeBlockState(cfg.StatePath, seed); err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestAutoBlockRetryLoadedAndAcceptedWorkStayVisible(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	if err := writeBlockState(cfg.StatePath, &blockState{
 		IPs:     []blockedIP{{IP: "192.0.2.72"}},
-		Pending: []pendingIP{{IP: "192.0.2.73", Reason: "pending", QueuedAt: now.Add(-time.Minute)}},
+		Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.73", Reason: "pending", QueuedAt: now.Add(-time.Minute)}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestAutoBlockRetryQuotaAgeAndExpiry(t *testing.T) {
 	now := time.Date(2026, 9, 10, 12, 30, 0, 0, time.UTC)
 	setAutoBlockNow(t, now)
 	queued := now.Add(-30 * time.Minute)
-	if err := writeBlockState(cfg.StatePath, &blockState{HourKey: now.Format("2006-01-02T15"), BlocksThisHour: 1, Pending: []pendingIP{{IP: "192.0.2.76", Reason: "old", QueuedAt: queued}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{HourKey: now.Format("2006-01-02T15"), BlocksThisHour: 1, Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.76", Reason: "old", QueuedAt: queued}}}); err != nil {
 		t.Fatal(err)
 	}
 	finding := retryFinding("192.0.2.76")
@@ -214,7 +214,7 @@ func TestAutoBlockRetryOverflowCountsConfirmedLoss(t *testing.T) {
 			for i := 0; i <= maxPendingBlocks; i++ {
 				ip := fmt.Sprintf("2001:db8::%x", i)
 				if restored {
-					state.Pending = append(state.Pending, pendingIP{IP: ip, Reason: "restored", QueuedAt: now})
+					state.Pending = append(state.Pending, pendingIP{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: ip, Reason: "restored", QueuedAt: now})
 				} else {
 					findings = append(findings, retryFinding(ip))
 				}
@@ -259,7 +259,7 @@ func TestAutoBlockRetryFailedWriteKeepsOldAndLosesFresh(t *testing.T) {
 	cfg := autoBlockQueueFixture(t, func() error { return nil })
 	SetIPBlocker(nil)
 	now := time.Now().Truncate(time.Second)
-	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "192.0.2.78", Reason: "stale", QueuedAt: now.Add(-3 * time.Hour)}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.78", Reason: "stale", QueuedAt: now.Add(-3 * time.Hour)}}}); err != nil {
 		t.Fatal(err)
 	}
 	restoreWrite := failRetryWrite(t, cfg.StatePath)
@@ -287,7 +287,7 @@ func TestAutoBlockRetryAcknowledgedBlockCannotBecomeLoss(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	setAutoBlockNow(t, now)
 	queued := now.Add(-time.Minute)
-	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "192.0.2.80", Reason: "retry", QueuedAt: queued}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.80", Reason: "retry", QueuedAt: queued}}}); err != nil {
 		t.Fatal(err)
 	}
 	restoreWrite := failRetryWrite(t, cfg.StatePath)
@@ -305,22 +305,22 @@ func TestAutoBlockRetryAcknowledgedBlockCannotBecomeLoss(t *testing.T) {
 	}
 }
 
-func TestAutoBlockRetryLegacyStampUsesActualQueueTime(t *testing.T) {
+func TestAutoBlockRetryUnstampedEvidenceUsesActualQueueTime(t *testing.T) {
 	cfg := autoBlockQueueFixture(t, func() error { return nil })
 	cfg.AutoResponse.MaxBlocksPerHour = 1
 	now := time.Date(2026, 9, 10, 12, 30, 0, 0, time.UTC)
 	setAutoBlockNow(t, now)
-	if err := writeBlockState(cfg.StatePath, &blockState{HourKey: now.Format("2006-01-02T15"), BlocksThisHour: 1, Pending: []pendingIP{{IP: "192.0.2.81", Reason: "legacy"}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{HourKey: now.Format("2006-01-02T15"), BlocksThisHour: 1, Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.81", Reason: "legacy"}}}); err != nil {
 		t.Fatal(err)
 	}
 	AutoBlockIPs(cfg, nil)
 	pending, _ := retryQueueRows(t, now.Add(10*time.Second))
 	if pending.Depth != 1 || pending.LagSeconds != 10 {
-		t.Fatalf("legacy record did not adopt actual first queue timestamp: %+v", pending)
+		t.Fatalf("unstamped record did not adopt actual first queue timestamp: %+v", pending)
 	}
 	state, err := readBlockState(cfg.StatePath)
 	if err != nil || len(state.Pending) != 1 || !state.Pending[0].QueuedAt.Equal(now) {
-		t.Fatalf("legacy wire timestamp changed: state=%+v err=%v", state, err)
+		t.Fatalf("first queue timestamp changed: state=%+v err=%v", state, err)
 	}
 }
 
@@ -328,7 +328,7 @@ func TestAutoBlockRetryPostRenameErrorUsesActualRecords(t *testing.T) {
 	cfg := autoBlockQueueFixture(t, func() error { return nil })
 	SetIPBlocker(nil)
 	now := time.Now().Truncate(time.Second)
-	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "192.0.2.82", Reason: "stale", QueuedAt: now.Add(-3 * time.Hour)}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.82", Reason: "stale", QueuedAt: now.Add(-3 * time.Hour)}}}); err != nil {
 		t.Fatal(err)
 	}
 	previous := persistAutoBlockState
@@ -373,7 +373,7 @@ func TestAutoBlockRetryUnknownWriteNeverInventsLoss(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	setAutoBlockNow(t, now)
 	queued := now.Add(-time.Minute)
-	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "192.0.2.84", Reason: "known retry", QueuedAt: queued}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.84", Reason: "known retry", QueuedAt: queued}}}); err != nil {
 		t.Fatal(err)
 	}
 	restoreWrite := failRetryWrite(t, cfg.StatePath)
@@ -410,8 +410,8 @@ func TestAutoBlockRetryDuplicateRecordsCoalesceWithoutLoss(t *testing.T) {
 	cfg.AutoResponse.MaxBlocksPerHour = 1
 	now := time.Now().Truncate(time.Second)
 	state := &blockState{HourKey: autoBlockNow().Format("2006-01-02T15"), BlocksThisHour: 1, Pending: []pendingIP{
-		{IP: "192.0.2.86", Reason: "first", QueuedAt: now.Add(-time.Minute)},
-		{IP: "192.0.2.86", Reason: "last", QueuedAt: now.Add(-30 * time.Second)},
+		{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.86", Reason: "first", QueuedAt: now.Add(-time.Minute)},
+		{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.86", Reason: "last", QueuedAt: now.Add(-30 * time.Second)},
 	}}
 	if err := writeBlockState(cfg.StatePath, state); err != nil {
 		t.Fatal(err)
@@ -449,7 +449,7 @@ func TestAutoBlockRetryExpectedOutcomesAreNotLosses(t *testing.T) {
 	for _, outcome := range []firewall.BlockOutcome{firewall.BlockOutcomeDryRun, firewall.BlockOutcomeAllowed, firewall.BlockOutcomeAllowlisted, firewall.BlockOutcomeNoop} {
 		t.Run(string(outcome), func(t *testing.T) {
 			cfg := autoBlockQueueFixture(t, func() error { return nil })
-			if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "192.0.2.92", Reason: "retry", QueuedAt: time.Now()}}}); err != nil {
+			if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.92", Reason: "retry", QueuedAt: time.Now()}}}); err != nil {
 				t.Fatal(err)
 			}
 			SetIPBlocker(retryOutcomeBlocker{outcome: outcome})
@@ -462,7 +462,7 @@ func TestAutoBlockRetryExpectedOutcomesAreNotLosses(t *testing.T) {
 	}
 	t.Run("protected", func(t *testing.T) {
 		cfg := autoBlockQueueFixture(t, func() error { return firewall.ErrIPProtected })
-		if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "192.0.2.94", Reason: "retry", QueuedAt: time.Now()}}}); err != nil {
+		if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.94", Reason: "retry", QueuedAt: time.Now()}}}); err != nil {
 			t.Fatal(err)
 		}
 		AutoBlockIPs(cfg, []alert.Finding{retryFinding("192.0.2.95")})
@@ -475,7 +475,7 @@ func TestAutoBlockRetryExpectedOutcomesAreNotLosses(t *testing.T) {
 
 func TestAutoBlockRetryConfirmedDropsDegradeAndRecover(t *testing.T) {
 	cfg := autoBlockQueueFixture(t, func() error { t.Error("invalid retry reached firewall"); return nil })
-	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "invalid-one"}, {IP: "invalid-two"}, {IP: "invalid-three"}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "invalid-one"}, {Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "invalid-two"}, {Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "invalid-three"}}}); err != nil {
 		t.Fatal(err)
 	}
 	captureStderr(t, func() { AutoBlockIPs(cfg, nil) })
@@ -506,7 +506,7 @@ func TestAutoBlockRetryUnreadableStateReportsUnknownDepth(t *testing.T) {
 	if err != nil || string(data) != "{invalid state" {
 		t.Fatalf("failed read rewrote state: %v", err)
 	}
-	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: "192.0.2.96", Reason: "restored", QueuedAt: time.Now()}}}); err != nil {
+	if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: "192.0.2.96", Reason: "restored", QueuedAt: time.Now()}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := InitAutoBlockQueueHealth(cfg.StatePath); err != nil {
@@ -524,7 +524,7 @@ func TestAutoBlockRetryLongBatchKeepsOperationProgress(t *testing.T) {
 		cfg := autoBlockQueueFixture(t, func() error { calls++; time.Sleep(30 * time.Second); return nil })
 		seed := &blockState{}
 		for i := 0; i < 5; i++ {
-			seed.Pending = append(seed.Pending, pendingIP{IP: fmt.Sprintf("192.0.2.%d", 100+i), Reason: "queued", QueuedAt: time.Now().Add(-time.Minute)})
+			seed.Pending = append(seed.Pending, pendingIP{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: fmt.Sprintf("192.0.2.%d", 100+i), Reason: "queued", QueuedAt: time.Now().Add(-time.Minute)})
 		}
 		if err := writeBlockState(cfg.StatePath, seed); err != nil {
 			t.Fatal(err)

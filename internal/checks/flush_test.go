@@ -52,7 +52,7 @@ func TestFlushAutoBlockStateClearsTrackerAndThreatRows(t *testing.T) {
 			{IP: "203.0.113.20", Reason: "r", ExpiresAt: time.Now().Add(time.Hour)},
 			{IP: "203.0.113.21", Reason: "r", ExpiresAt: time.Now().Add(time.Hour)},
 		},
-		Pending: []pendingIP{{IP: "203.0.113.22", Reason: "queued", QueuedAt: time.Now()}},
+		Pending: []pendingIP{{IP: "203.0.113.22", Check: "wp_login_bruteforce", Reason: "queued", QueuedAt: time.Now()}},
 	})
 	tdb := GetThreatDB()
 	tdb.AddTemporary("203.0.113.20", "r", time.Hour)

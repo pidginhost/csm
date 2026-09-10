@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
@@ -91,12 +92,18 @@ func (w *autoBlockStateWork) loadState(path string) *blockState {
 	return state
 }
 
-func pendingRecordKey(p pendingIP) string {
-	return p.IP + "\x00" + p.QueuedAt.UTC().Format(time.RFC3339Nano)
+type autoBlockPendingKey struct {
+	ip, check string
+	queuedAt  time.Time
+	severity  alert.Severity
+}
+
+func pendingRecordKey(p pendingIP) autoBlockPendingKey {
+	return autoBlockPendingKey{ip: p.IP, check: p.Check, queuedAt: p.QueuedAt.UTC(), severity: p.Severity}
 }
 
 func (r *autoBlockRetryQueue) reconcile(actual, proposed []pendingIP, now time.Time) {
-	pool := make(map[string][]*autoBlockPendingRecord, len(r.disk)+len(proposed))
+	pool := make(map[autoBlockPendingKey][]*autoBlockPendingRecord, len(r.disk)+len(proposed))
 	for _, version := range [][]pendingIP{r.disk, proposed} {
 		for _, p := range version {
 			if p.queueRecord != nil {

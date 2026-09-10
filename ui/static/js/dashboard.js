@@ -657,6 +657,7 @@
         spam:         '#f59f00',
         cpanel_login: '#f76707',
         file_upload:  '#0ca678',
+        auth_success: '#6b7a8d',
         reputation:   '#e8590c',
         other:        '#6b7a8d'
     };
@@ -671,6 +672,7 @@
         spam:         'Spam',
         cpanel_login: 'cPanel Login',
         file_upload:  'File Upload',
+        auth_success: 'Authenticated Activity',
         reputation:   'Known Malicious IP',
         other:        'Other'
     };

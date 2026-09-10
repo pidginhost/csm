@@ -13,7 +13,7 @@ const (
 // ComputeScore returns a 0-100 local threat score from an IPRecord.
 //
 // Scoring logic:
-//   - Volume: min(event_count * 2, 30)
+//   - Volume: min(attack event count * 2, 30); authenticated activity excluded
 //   - Attack type bonuses (non-cumulative per type)
 //   - Multi-account targeting: +10
 //   - Auto-blocked floor: 50
@@ -25,8 +25,10 @@ func ComputeScore(r *IPRecord) int {
 func computeScoreAt(r *IPRecord, now time.Time) int {
 	score := 0
 
-	// Volume component - caps at 30
-	vol := r.EventCount * 2
+	// Audit events stay in the record and history, but cannot increase the
+	// volume score or turn successful access into multi-account targeting.
+	attackEvents := max(0, r.EventCount-r.AttackCounts[AttackAuthSuccess])
+	vol := attackEvents * 2
 	if vol > 30 {
 		vol = 30
 	}
@@ -58,8 +60,15 @@ func computeScoreAt(r *IPRecord, now time.Time) int {
 		score += 20
 	}
 
-	// Multi-account targeting
-	if len(r.Accounts) > 1 {
+	// Count accounts with attack evidence, including accounts that also
+	// have successful activity from this address.
+	targetedAccounts := 0
+	for account, count := range r.Accounts {
+		if count > r.AuthSuccessAccounts[account] {
+			targetedAccounts++
+		}
+	}
+	if targetedAccounts > 1 && attackEvents > 0 {
 		score += 10
 	}
 

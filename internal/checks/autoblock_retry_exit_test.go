@@ -28,7 +28,7 @@ func TestAutoBlockRetryAbnormalOwnership(t *testing.T) {
 					const ip = "192.0.2.91"
 					var findings []alert.Finding
 					if origin == "restored" {
-						if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{IP: ip, Reason: "retry", QueuedAt: time.Now()}}}); err != nil {
+						if err := writeBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{{Check: "wp_login_bruteforce", Severity: alert.Critical, IP: ip, Reason: "retry", QueuedAt: time.Now()}}}); err != nil {
 							t.Fatal(err)
 						}
 					} else {

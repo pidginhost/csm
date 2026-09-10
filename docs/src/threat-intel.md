@@ -5,9 +5,23 @@ CSM tracks, scores, and correlates attacks using a local attack database enriche
 ## Attack Database
 
 - Per-IP event tracking (brute force, webshell upload, phishing, C2, WAF block)
-- Threat score calculation with temporal decay (older attacks weighted less)
+- Local scoring from attack volume, types and targeted accounts
 - Auto-block on reputation threshold
 - Top attackers leaderboard
+
+Successful cPanel, FTP, webmail and PAM login audit events, and authenticated
+File Manager writes, remain in event history and account counts as
+`auth_success` (Authenticated Activity). They add no event-volume or
+multi-account score. Multi-IP login and authentication-failure signals keep
+their existing scoring.
+
+`file_upload` remains readable for historical records; no current check
+produces it. Existing scores recorded under older classifications are not
+rewritten because aggregated login counts cannot distinguish ordinary logins
+from multi-IP alerts. For a confirmed false positive, follow
+[Clearing a stale local threat score](firewall.md#clearing-a-stale-local-threat-score).
+That operation preserves historical events and does not remove firewall or
+permanent-blocklist entries; review those separately.
 
 ## IP Intelligence
 

@@ -267,9 +267,11 @@ current cycle, with no fixed capacity. Candidate and record counts describe
 different stages and must not be added together. A candidate remains visible
 through its firewall callback, subsequent bookkeeping and durable requeue.
 
-Pending age uses its original queue timestamp, or first observation for a legacy
-record until its first requeue assigns a timestamp. A refreshed reason does not
-reset that age. Normal quota waits stay healthy within the existing two-hour
+Pending age uses its original queue timestamp, or first observation when that
+timestamp is absent. An eligible record receives a timestamp on its first requeue;
+records without check identity are withdrawn under the current block policy.
+Refreshing the reason, check or severity does not reset the original queue age.
+Normal quota waits stay healthy within the existing two-hour
 retry lifetime; older waiting records report `backlog_lag`. Active record and
 candidate work use one minute without operation progress, so advancing batches
 can run longer without a false warning. These measurements add no retry scheduler
@@ -277,8 +279,11 @@ and do not change the hourly quota, expiry or overflow policy.
 
 An unsuccessful attempt whose retry survives reports `retry_failed` without a
 loss. Successful blocks, dry runs and expected refusals remain completed even
-if later bookkeeping fails. Confirmed removal of expired, invalid or overflowed
-records counts as pending loss; a fresh candidate that neither completes nor
+if later bookkeeping fails. Withdrawal under the current check policy or
+login-blocking setting is an expected refusal and adds no loss. Persisted record
+identities include check and severity, so a refused record cannot acknowledge a
+different eligible retry after a failed write. Confirmed removal of expired,
+invalid or overflowed records counts as pending loss; a fresh candidate that neither completes nor
 survives on disk counts as candidate loss. Existing duplicate coalescence adds no
 loss while a retry survives. The common loss threshold and recovery policy apply.
 
