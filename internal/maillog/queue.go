@@ -14,6 +14,7 @@ const queueCapacity = 64
 type Queue struct {
 	health  *queuehealth.Tracker
 	journal journalSourceQueue
+	file    fileSourceQueue
 }
 
 func NewQueue() *Queue {
@@ -24,6 +25,9 @@ func (q *Queue) QueueStatuses(now time.Time) map[string]queuehealth.Status {
 	rows := map[string]queuehealth.Status{"delivery": q.health.Snapshot(now)}
 	if journal, seen := q.journal.snapshot(now); seen {
 		rows["journal_source"] = journal
+	}
+	if file, seen := q.file.snapshot(now); seen {
+		rows["file_source"] = file
 	}
 	return rows
 }
@@ -38,6 +42,12 @@ func (q *Queue) send(ctx context.Context, out chan<- Line, line Line) bool {
 func (q *Queue) sendJournal(ctx context.Context, out chan<- Line, line Line) bool {
 	line.ticket = q.health.Begin(time.Now())
 	q.journal.releaseEntry()
+	return q.sendTracked(ctx, out, line)
+}
+
+func (q *Queue) sendFile(ctx context.Context, out chan<- Line, line Line, source *fileSourceGeneration) bool {
+	line.ticket = q.health.Begin(time.Now())
+	q.file.complete(source)
 	return q.sendTracked(ctx, out, line)
 }
 

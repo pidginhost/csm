@@ -101,7 +101,7 @@ func (r *FileReader) recordRestored() {
 // error only when the path can't be opened at all; runtime errors during
 // polling are best-effort logged via stderr but do not stop the reader.
 func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
-	f, reader, ino, err := r.open()
+	input, err := r.open()
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", r.path, err)
 	}
@@ -109,7 +109,7 @@ func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
 	// retaining its historical uncertainty and delivery loss evidence.
 	r.queue.journal.outcome(false, false)
 	out := r.queue.channel()
-	go r.loop(ctx, out, f, reader, ino)
+	go r.loop(ctx, out, input)
 	return out, nil
 }
 
@@ -118,6 +118,7 @@ func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
 type pendingLogLine struct {
 	data      strings.Builder
 	truncated bool
+	onRead    func(int, int, error)
 }
 
 func (p *pendingLogLine) reset() {
@@ -131,6 +132,9 @@ func (p *pendingLogLine) read(ctx context.Context, r *bufio.Reader, maxBytes int
 			return "", false, err
 		}
 		chunk, err := r.ReadSlice('\n')
+		if p.onRead != nil {
+			p.onRead(len(chunk), r.Buffered(), err)
+		}
 		if len(chunk) > 0 {
 			switch {
 			case p.truncated:
@@ -156,37 +160,61 @@ func (p *pendingLogLine) read(ctx context.Context, r *bufio.Reader, maxBytes int
 	}
 }
 
-func (r *FileReader) open() (*os.File, *bufio.Reader, uint64, error) {
+func (r *FileReader) open() (*mailFileInput, error) {
 	return r.openAt(0, io.SeekEnd)
 }
 
-func (r *FileReader) openRotated() (*os.File, *bufio.Reader, uint64, error) {
+func (r *FileReader) openRotated() (*mailFileInput, error) {
 	return r.openAt(0, io.SeekStart)
 }
 
-func (r *FileReader) openAt(offset int64, whence int) (*os.File, *bufio.Reader, uint64, error) {
+func (r *FileReader) openAt(offset int64, whence int) (*mailFileInput, error) {
 	f, err := os.Open(r.path) // #nosec G304 -- operator-supplied log path
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, err
 	}
-	if _, seekErr := f.Seek(offset, whence); seekErr != nil {
+	position, seekErr := f.Seek(offset, whence)
+	if seekErr != nil {
 		_ = f.Close()
-		return nil, nil, 0, seekErr
+		return nil, seekErr
 	}
 	st, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
-		return nil, nil, 0, err
+		return nil, err
 	}
-	return f, bufio.NewReader(f), inode(st), nil
+	return &mailFileInput{file: f, reader: bufio.NewReader(f), ino: inode(st), offset: position, size: st.Size()}, nil
 }
 
-func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, reader *bufio.Reader, lastIno uint64) {
+func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileInput) {
 	defer close(out)
+	f, reader, lastIno := input.file, input.reader, input.ino
+	source := r.queue.file.attach(input, true)
+	sampleCtx, stopSample := context.WithCancel(ctx)
+	sampleDone := make(chan struct{})
+	go r.queue.file.sampleLoop(sampleCtx, sampleDone)
+	normal := false
 	defer func() {
-		if f != nil {
-			_ = f.Close()
+		defer r.queue.file.finish()
+		defer func() { r.queue.discardFile(source, bufferedMailRecords(reader)) }()
+		stopSample()
+		if !normal {
+			r.queue.file.outcome(fileExitFault, true)
 		}
+		r.queue.file.operation()
+		// The sampler still owns its descriptor until the last Stat returns.
+		// Closing first can turn normal shutdown into a false source failure.
+		<-sampleDone
+		closed := false
+		defer func() {
+			if !closed {
+				r.queue.file.outcome(fileExitFault, true)
+			}
+		}()
+		if err := f.Close(); err != nil {
+			r.queue.file.outcome(fileCloseFault, true)
+		}
+		closed = true
 	}()
 
 	poll := time.NewTicker(2 * time.Second)
@@ -197,12 +225,17 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 	// without waiting for the next idle period.
 	rotate := time.NewTicker(time.Minute)
 	defer rotate.Stop()
-	var pending pendingLogLine
+	pending := pendingLogLine{onRead: func(n, buffered int, err error) { r.queue.file.consume(source, n, buffered, err) }}
 
 	rewindOnTruncate := func() {
-		if reset, err := rewindTruncatedFile(f, reader); err != nil {
+		buffered := bufferedMailRecords(reader)
+		reset, err := rewindTruncatedFile(f, reader)
+		r.queue.file.outcome(fileCursorFault, err != nil)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "maillog file_reader %s rewind: %v\n", r.path, err)
 		} else if reset {
+			r.queue.discardFile(source, buffered)
+			source = r.queue.file.attach(&mailFileInput{file: f}, false)
 			pending.reset()
 		}
 	}
@@ -218,19 +251,21 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 		}
 		r.recordStat(false, nil)
 		if inode(st) == lastIno {
+			r.queue.file.outcome(fileOpenFault, false)
 			rewindOnTruncate()
 			r.recordRestored()
 			return
 		}
-		nf, nr, ino, err := r.openRotated()
+		next, err := r.openRotated()
 		if err != nil {
+			r.queue.file.outcome(fileOpenFault, true)
 			fmt.Fprintf(os.Stderr, "maillog file_reader %s reopen: %v\n", r.path, err)
 			return
 		}
 		_ = f.Close()
-		f = nf
-		reader = nr
-		lastIno = ino
+		r.queue.discardFile(source, bufferedMailRecords(reader))
+		f, reader, lastIno = next.file, next.reader, next.ino
+		source = r.queue.file.attach(next, true)
 		pending.reset()
 		r.recordRestored()
 	}
@@ -238,15 +273,19 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 	for {
 		select {
 		case <-ctx.Done():
+			normal = true
 			return
 		case <-poll.C:
+			r.queue.file.operation()
 			rewindOnTruncate()
 			for {
 				line, truncated, err := pending.read(ctx, reader, maxLogLineBytes)
 				if err != nil {
 					if ctx.Err() != nil {
+						normal = true
 						return
 					}
+					r.queue.file.outcome(fileReadFault, !errors.Is(err, io.EOF))
 					// Tight rotation detection: every time the reader
 					// hits EOF or any I/O error we re-stat the path so a
 					// post-rotate log is picked up by the next poll tick
@@ -254,22 +293,28 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 					reopenOnRotate()
 					break
 				}
+				r.queue.file.outcome(fileReadFault, false)
 				if truncated {
 					r.queue.lose()
+					r.queue.file.complete(source)
 					fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line skipped at %d bytes\n", r.path, maxLogLineBytes)
 					continue
 				}
-				if !r.queue.send(ctx, out, Line{Source: "file", Message: line}) {
+				if !r.queue.sendFile(ctx, out, Line{Source: "file", Message: line}, source) {
+					normal = true
 					return
 				}
 			}
+			r.queue.file.idle()
 		case <-rotate.C:
+			r.queue.file.operation()
 			reopenOnRotate()
+			r.queue.file.idle()
 		}
 	}
 }
 
-func rewindTruncatedFile(f *os.File, reader *bufio.Reader) (bool, error) {
+func rewindTruncatedFile(f mailLogFile, reader *bufio.Reader) (bool, error) {
 	st, err := f.Stat()
 	if err != nil {
 		return false, err

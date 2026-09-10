@@ -72,6 +72,7 @@ func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
 		}
 	}
 
+	r.queue.file.replaced()
 	go r.loop(ctx, j, out)
 	return out, nil
 }

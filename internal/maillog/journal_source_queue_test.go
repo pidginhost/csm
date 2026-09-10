@@ -24,6 +24,50 @@ type sourceQueueJournal struct {
 	close func() error
 }
 
+func TestFileSourceFailureRetiresAfterJournalAttaches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mail.log")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	q := NewQueue()
+	r := NewFileReader(path, q)
+	input, err := r.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := input.file
+	input.file = sourceFileProbe{mailLogFile: base, close: func() error {
+		if closeErr := base.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+		return errors.New("synthetic file close failure")
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out := q.channel()
+	r.loop(ctx, out, input)
+	if row := fileSourceRow(t, q); row.Reason != "source_io" {
+		t.Fatalf("file close failure missing: %+v", row)
+	}
+	if missing, attachErr := NewFileReader(path+".missing", q).Run(ctx); attachErr == nil || missing != nil {
+		t.Fatal("missing replacement unexpectedly attached")
+	}
+	if row := fileSourceRow(t, q); row.Reason != "source_io" {
+		t.Fatalf("failed attachment erased old failure: %+v", row)
+	}
+	journalOut, err := NewJournalReader([]string{"csm-queue-regression.service"}, q).Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range journalOut {
+		line.reject()
+		t.Error("canceled journal emitted an entry")
+	}
+	if row := fileSourceRow(t, q); row.Status != "ok" || row.Depth != 0 || !row.DroppedLowerBound {
+		t.Fatalf("working journal retained retired file failure: %+v", row)
+	}
+}
+
 func TestJournalSourceFailureClearsOnlyAfterReplacementAttaches(t *testing.T) {
 	for _, phase := range []string{"wait", "close"} {
 		t.Run(phase, func(t *testing.T) {

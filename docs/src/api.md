@@ -140,8 +140,40 @@ Its running time includes parsing and delivery of resulting findings. Losses
 include oversized complete file records, unreadable journal entries, canceled
 admission, consumer failure and buffered records abandoned on shutdown.
 Counters survive reader replacement and changes between file and journal
-sources. They count records already read, not unread source history or partial
-file records that have not reached a newline.
+sources. They count records already read, including complete records abandoned
+in file read-ahead, not unread source history or partial file records that have
+not reached a newline.
+
+`mail.file_source` reports sampled untransferred bytes after the first file
+attachment, with `depth_unit: bytes` and `capacity_unavailable: true`. This
+includes disk backlog, buffered read-ahead and raw partial-line bytes, even when
+the reader retains only a bounded prefix of an oversized line. Transfer to
+`mail.delivery` removes the source bytes before output admission can block.
+These byte and record measurements are separate stages and must not be added.
+
+A reader-owned sampler checks the current descriptor every two seconds, so
+appends remain visible while delivery is blocked. Health reads memory only.
+`lag_basis: consumer_progress` measures time without consumption while unread
+work remains. Sampling or new arrivals do not reset this clock. A partial line
+at EOF waits for more input and does not report a stalled consumer. Reader and
+sampler operations also report `processing_lag` after one minute without
+progress, including blocked reads, metadata calls and cleanup.
+
+File I/O failures report `source_io`. A successful read cannot clear a failed
+cursor check; each operation must recover. Failed metadata sampling makes depth
+unavailable until a successful sample. Rotation and observed truncation retire
+the old generation, and late samples cannot overwrite its replacement. The
+initial attachment still starts at EOF; replacements start at the beginning.
+Copytruncate detection retains its existing limit: truncation followed by growth
+past the old descriptor offset between checks may be indistinguishable from an
+append.
+
+Complete records already held in read-ahead count once in delivery loss when
+discarded. Unread disk data and unterminated fragments have no measured record
+count; generation changes, source failures and shutdown preserve
+`dropped_lower_bound` in the source row. A working file or journal replacement
+clears the retired source's current error while retaining that history. Source
+path disappearance still follows the watcher's existing grace period.
 
 `mail.journal_source` reports the journal reader after its first successful
 attachment. The cursor exposes no exact unread-record count or queue capacity,
