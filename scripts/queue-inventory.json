@@ -3397,6 +3397,11 @@
           "package": "github.com/pidginhost/csm/internal/daemon",
           "name": "TestPHPRelayQueueCountsOverflowMarkers",
           "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPRelayStartupPublishesQueueOwners",
+          "mode": "portable"
         }
       ],
       "lifecycle": [
@@ -3443,6 +3448,11 @@
         {
           "package": "github.com/pidginhost/csm/internal/daemon",
           "name": "TestInotifyReplacementRetainsFailedWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPRelayStartupFailureKeepsPersistenceHealth",
           "mode": "portable"
         }
       ],
@@ -3723,6 +3733,11 @@
           "package": "github.com/pidginhost/csm/internal/daemon",
           "name": "TestMsgIndexQueueRetainsWaitingAndRunningWork",
           "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPRelayStartupPublishesQueueOwners",
+          "mode": "portable"
         }
       ],
       "lifecycle": [
@@ -3779,6 +3794,11 @@
         {
           "package": "github.com/pidginhost/csm/internal/daemon",
           "name": "TestMsgIndexPersisterRejectsWritesAfterStop",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPRelayStartupFailureKeepsPersistenceHealth",
           "mode": "portable"
         }
       ]

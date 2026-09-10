@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Production checks now enforce the reviewed queue inventory and reject missing or skipped health regressions, including shared reporting and recovery checks.
 
+- Production checks now verify PHP relay queue health during startup, shutdown and watcher attachment failures.
+
 - File mail sources now report unread bytes and stalled reads, including buffered and partial lines. Source changes retain known lost records and make uncertain backlog explicit.
 
 - Journal mail sources now report stalled reads and source failures through status and doctor. Unmeasurable backlog stays explicit, and switching to a working file source clears retired journal errors.

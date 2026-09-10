@@ -114,6 +114,12 @@ and concurrency regressions with their owner when they test an owner-specific
 boundary; keep shared contracts in the baseline. A passing full suite alone
 does not protect an omitted requirement against a later skip.
 
+PHP relay publication requirements start the Linux wiring with temporary
+filesystem paths and a real state store. They check live registration,
+persistence, shutdown evidence and failed watcher attachment. They must also
+reject removal of either production registration; manually registering a
+provider in a test only proves that provider's behavior.
+
 The allocation scanner is available for ownership reviews:
 
 ```bash
