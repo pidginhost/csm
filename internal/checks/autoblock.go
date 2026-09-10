@@ -170,7 +170,9 @@ type pendingIP struct {
 	// requeue cycles so age accumulates instead of resetting. Zero on
 	// entries written by older builds (treated as fresh once, then
 	// stamped on the first requeue).
-	QueuedAt time.Time `json:"queued_at,omitempty"`
+	QueuedAt       time.Time `json:"queued_at,omitempty"`
+	queueRecord    *autoBlockPendingRecord
+	queueCandidate *autoBlockCandidate
 }
 
 type blockState struct {
@@ -228,7 +230,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 	// Load block state
 	work.progress()
-	state := loadBlockState(cfg.StatePath)
+	state := work.loadState(cfg.StatePath)
 
 	// Prune IPs that the firewall engine no longer has blocked.
 	// The engine handles expiry natively via nftables timeouts -
@@ -320,6 +322,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// cycles). Stale entries are dropped by name so the audit trail shows
 	// exactly which attackers aged out instead of being blocked.
 	for _, p := range state.Pending {
+		work.beginPending(p)
 		ip := normalizeBlockIP(p.IP)
 		if ip == "" {
 			fmt.Fprintf(os.Stderr, "auto-block: dropping invalid pending IP %q\n", p.IP)
@@ -332,7 +335,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 		if !isAlreadyBlocked(state, p.IP) {
+			p.queueCandidate = work.candidate(p, ipsToBlock[p.IP].queueCandidate)
 			ipsToBlock[p.IP] = p
+		} else {
+			work.completePending(p)
 		}
 	}
 	state.Pending = nil
@@ -438,7 +444,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			existing.Reason = f.Message
 			ipsToBlock[ip] = existing
 		} else {
-			ipsToBlock[ip] = pendingIP{IP: ip, Reason: f.Message}
+			p := pendingIP{IP: ip, Reason: f.Message}
+			p.queueCandidate = work.candidate(p, nil)
+			ipsToBlock[ip] = p
 		}
 	}
 
@@ -508,15 +516,17 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			p.QueuedAt = autoBlockNow()
 		}
 		if len(state.Pending) < maxPendingBlocks {
-			state.Pending = append(state.Pending, p)
+			state.Pending = append(state.Pending, work.requeueCandidate(p))
 			return true
 		}
+		work.rejectCandidate(p.queueCandidate)
 		fmt.Fprintf(os.Stderr, "auto-block: pending queue full, dropping %s\n", p.IP)
 		droppedPending++
 		return false
 	}
 	for ip, cand := range ipsToBlock {
 		work.progress()
+		work.startCandidate(cand.queueCandidate)
 		if state.BlocksThisHour >= maxPerHour {
 			requeue(cand)
 			rateLimited = true
@@ -526,6 +536,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// Block via firewall engine (nftables)
 		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(cand.Reason, 100))
 		if blocker == nil {
+			work.candidateOutcome(cand.queueCandidate, ErrNoIPBlocker)
 			observeBlockOutcome(firewall.BlockOutcomeNoop, ErrNoIPBlocker, BlockSourceScan)
 			if requeue(cand) {
 				engineUnavailableRequeued++
@@ -538,7 +549,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			Reason:       cand.Reason,
 			TTL:          expiry,
 			Source:       BlockSourceScan,
-		}, work.progress)
+		}, work.progress, func(err error) { work.candidateOutcome(cand.queueCandidate, err) })
 		if err != nil {
 			// Protected IPs (the server's own interface or infra_ips) are
 			// intentionally never blocked -- an expected no-op, not a failure.
@@ -552,17 +563,21 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 				} else {
 					fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v (retry dropped)\n", ip, err)
 				}
+			} else {
+				work.finishCandidate(cand.queueCandidate)
 			}
 			continue
 		}
 		actions = append(actions, res.Findings...)
 		if res.Outcome != firewall.BlockOutcomeLive {
+			work.finishCandidate(cand.queueCandidate)
 			continue
 		}
 		if blocker.IsBlocked(ip) {
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, expiry)
 		}
 		state.BlocksThisHour++
+		work.finishCandidate(cand.queueCandidate)
 	}
 	if engineUnavailableRequeued > 0 {
 		fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, requeued %d IPs\n", engineUnavailableRequeued)
@@ -661,7 +676,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 	// Save state (expired IPs were already pruned at the top of this function)
 	work.progress()
-	saveBlockState(cfg.StatePath, state)
+	work.saveState(cfg.StatePath, state)
 	work.complete()
 
 	return actions
@@ -1009,7 +1024,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 
 	var cleanupErr error
 	work.progress()
-	state, err := readBlockState(statePath)
+	state, err := work.readState(statePath)
 	seenCapacity := len(ips)
 	if state != nil {
 		seenCapacity += len(state.IPs) + len(state.CleanupPending)
@@ -1060,7 +1075,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		// stale row that can recreate the block after restart.
 		state.CleanupPending = failed
 		work.progress()
-		if err := writeBlockState(statePath, state); err != nil {
+		if err := work.writeState(statePath, state); err != nil {
 			work.observe(err)
 			logBlockStateFailure(statePath, err)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("clearing auto-block state: %w", err))

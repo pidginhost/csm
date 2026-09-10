@@ -1,6 +1,13 @@
 package daemon
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+)
 
 func TestDaemonReportsAutoBlockAdmissionQueues(t *testing.T) {
 	rows := (&Daemon{}).QueueStatuses()
@@ -16,5 +23,42 @@ func TestDaemonReportsAutoBlockAdmissionQueues(t *testing.T) {
 		} else if !q.CapacityUnavailable {
 			t.Fatalf("invented fixed waiting capacity: %+v", q)
 		}
+	}
+}
+
+func TestDaemonReportsAutoBlockRetryQueues(t *testing.T) {
+	rows := (&Daemon{}).QueueStatuses()
+	pending, exists := rows["auto_block.pending"]
+	if !exists || pending.Capacity != 1000 || pending.CapacityUnavailable {
+		t.Fatalf("durable retry capacity missing: found=%v status=%+v", exists, pending)
+	}
+	candidates, exists := rows["auto_block.candidates"]
+	if !exists || !candidates.CapacityUnavailable {
+		t.Fatalf("in-cycle candidate queue missing: found=%v status=%+v", exists, candidates)
+	}
+}
+
+func TestAutoBlockRetryStartupIncludesDisabledFirewall(t *testing.T) {
+	dir := t.TempDir()
+	cleanupDir := t.TempDir()
+	t.Cleanup(func() {
+		if err := checks.InitAutoBlockQueueHealth(cleanupDir); err != nil {
+			t.Error(err)
+		}
+	})
+	path := filepath.Join(dir, "blocked_ips.json")
+	data := []byte(`{"pending":[{"ip":"192.0.2.90","reason":"restored retry"}]}`)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{cfg: &config.Config{StatePath: dir}}
+	d.startFirewallUsing(firewallStartupOps{})
+	row := d.QueueStatuses()["auto_block.pending"]
+	if row.Depth != 1 || row.DepthUnavailable || row.InFlight != 0 || row.Status != "ok" {
+		t.Fatalf("disabled firewall concealed existing retry: %+v", row)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(data) != string(after) {
+		t.Fatalf("startup mutated retry state: %v", err)
 	}
 }

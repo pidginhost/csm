@@ -65,13 +65,14 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	}
 	work := autoBlockQueues.acquire()
 	defer work.finish()
-	state := loadBlockState(cfg.StatePath)
-	res, err := applyBlockLocked(cfg, blocker, state, req, work.progress)
+	state := work.loadState(cfg.StatePath)
+	attemptAt := autoBlockNow()
+	res, err := applyBlockLocked(cfg, blocker, state, req, work.progress, func(err error) { work.directOutcome(req.IP, attemptAt, err) })
 	if !errors.Is(err, firewall.ErrIPProtected) {
 		work.observe(err)
 	}
 	work.progress()
-	saveBlockState(cfg.StatePath, state)
+	work.saveState(cfg.StatePath, state)
 	work.complete()
 	return res, err
 }
@@ -81,9 +82,10 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 // and saving state. It writes no stderr lines for live blocks - callers
 // keep their own operational logging - and emits findings instead of
 // dispatching them.
-func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest, progress func()) (ApplyBlockResult, error) {
+func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest, progress func(), observe func(error)) (ApplyBlockResult, error) {
 	progress()
 	outcome, err := callBlockIP(blocker, req.IP, req.EngineReason, req.TTL)
+	observe(err)
 	observeBlockOutcome(outcome, err, req.Source)
 	res := ApplyBlockResult{Outcome: outcome}
 	if err != nil {

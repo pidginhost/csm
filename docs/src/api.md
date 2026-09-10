@@ -243,19 +243,52 @@ Actual commands remain in flight until they return. Health reads memory only and
 retains loss evidence after recovery. Shared-refresh waiters remain owned by
 `checks.executions`; they do not create another set of site jobs. Optional domain
 lookup fallback and plugin metadata enrichment keep their existing behavior.
-`auto_block.waiting` reports scan, direct-block and firewall-flush calls waiting
-for shared state, with no fixed waiting capacity. `auto_block.active` reports the
-single state owner through firewall operations, state writes and cleanup.
+`auto_block.waiting` reports scan, direct-block, firewall-flush and startup
+observation calls waiting for shared state, with no fixed waiting capacity.
+`auto_block.active` reports the single state owner through firewall operations,
+state writes and cleanup.
 `lag_basis: operation_progress` times the current operation within a batch;
 advancing batches do not degrade solely because their total duration exceeds a
 minute. One minute without progress degrades the active row and any waiting
 callers. A free state slot with no admission for one minute also reports lag.
-Returned direct-block or flush errors and abnormal exits count once per call;
-protected-address refusals do not. Flush write failures are recorded before
-diagnostic output. Known errors remain visible during later cleanup, and the
-common loss threshold and recovery policy apply. These rows
-count state-lock callers, independently of persisted per-IP retry records.
+Returned direct-block or flush errors, failed state reads and writes, and abnormal
+exits count once per call; protected-address refusals do not. Known write failures
+are recorded before readback and diagnostic output. Known errors remain visible
+during later cleanup, and the common loss threshold and recovery policy apply.
+These rows count state-lock callers, independently of persisted per-IP retry records.
 Health snapshots use memory only and cannot wait for the state lock or I/O.
+
+`auto_block.pending` reports durable retry records, including records loaded at
+startup when automatic blocking is disabled. Its capacity is the retry admission
+limit of 1,000 records. Records selected for a cycle remain in flight until their
+state-file outcome is known; newly requeued records also remain in flight until
+persistence finishes. `auto_block.candidates` reports distinct IPs admitted to the
+current cycle, with no fixed capacity. Candidate and record counts describe
+different stages and must not be added together. A candidate remains visible
+through its firewall callback, subsequent bookkeeping and durable requeue.
+
+Pending age uses its original queue timestamp, or first observation for a legacy
+record until its first requeue assigns a timestamp. A refreshed reason does not
+reset that age. Normal quota waits stay healthy within the existing two-hour
+retry lifetime; older waiting records report `backlog_lag`. Active record and
+candidate work use one minute without operation progress, so advancing batches
+can run longer without a false warning. These measurements add no retry scheduler
+and do not change the hourly quota, expiry or overflow policy.
+
+An unsuccessful attempt whose retry survives reports `retry_failed` without a
+loss. Successful blocks, dry runs and expected refusals remain completed even
+if later bookkeeping fails. Confirmed removal of expired, invalid or overflowed
+records counts as pending loss; a fresh candidate that neither completes nor
+survives on disk counts as candidate loss. Existing duplicate coalescence adds no
+loss while a retry survives. The common loss threshold and recovery policy apply.
+
+State read or write failures report `state_io`. Failed writes are read back
+because an error after rename can leave the new state in place. If that read also
+fails, `depth_unavailable` and `dropped_lower_bound` expose the uncertainty. A later
+successful read restores measured depth; lifetime loss totals remain lower bounds
+when earlier outcomes could not be established. New work with known outcomes
+still contributes exact losses. Completed candidate history is released after
+settlement, and health snapshots never read files or wait for firewall callbacks.
 
 `incident.persist.waiting` reports immutable incident snapshots waiting for the
 ordered writer, with no fixed waiting capacity. `incident.persist.active` reports

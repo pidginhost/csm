@@ -13,6 +13,7 @@ type autoBlockQueueMonitor struct {
 	mu                      sync.Mutex
 	waiting                 map[*autoBlockStateWork]struct{}
 	active                  *autoBlockStateWork
+	retries                 *autoBlockRetryQueue
 	idleSince               time.Time
 	waitingLoss, activeLoss *queuehealth.Tracker
 }
@@ -21,10 +22,11 @@ type autoBlockStateWork struct {
 	queue             *autoBlockQueueMonitor
 	at                time.Time
 	failed, completed bool
+	retryCycle        *autoBlockRetryCycle
 }
 
 func newAutoBlockQueue() *autoBlockQueueMonitor {
-	return &autoBlockQueueMonitor{waiting: make(map[*autoBlockStateWork]struct{}), waitingLoss: queuehealth.New(0, time.Minute), activeLoss: queuehealth.New(1, time.Minute)}
+	return &autoBlockQueueMonitor{retries: newAutoBlockRetryQueue(), waiting: make(map[*autoBlockStateWork]struct{}), waitingLoss: queuehealth.New(0, time.Minute), activeLoss: queuehealth.New(1, time.Minute)}
 }
 
 func (q *autoBlockQueueMonitor) acquire() *autoBlockStateWork {
@@ -79,6 +81,7 @@ func (w *autoBlockStateWork) finish() {
 	if !w.completed {
 		w.failLocked()
 	}
+	w.finishRetriesLocked()
 	q.active = nil
 	q.idleSince = time.Now()
 	// Release the real slot with its owner. A successor must not publish over
@@ -112,5 +115,6 @@ func AutoBlockQueueStatuses(now time.Time) map[string]queuehealth.Status {
 			waiting.Status, waiting.Reason = "degraded", "backlog_lag"
 		}
 	}
-	return map[string]queuehealth.Status{"waiting": waiting, "active": active}
+	pending, candidates := q.retries.statuses(now, q.active)
+	return map[string]queuehealth.Status{"waiting": waiting, "active": active, "pending": pending, "candidates": candidates}
 }

@@ -69,7 +69,12 @@ func waitAutoBlockQueue(t *testing.T, waiting, active int) map[string]queuehealt
 func assertAutoBlockQueueDrained(t *testing.T, losses uint64) {
 	t.Helper()
 	rows := AutoBlockQueueStatuses(time.Now())
-	for name, row := range rows {
+	// These are state-call owners; retry records have independent loss policy.
+	for _, name := range []string{"waiting", "active"} {
+		row, exists := rows[name]
+		if !exists {
+			t.Fatalf("state-call queue missing: %s", name)
+		}
 		want := uint64(0)
 		if name == "active" {
 			want = losses
