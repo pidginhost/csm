@@ -216,8 +216,9 @@ retry; normal shutdown does not count those durable reports as lost.
 configured spool capacity. Reports already being sent remain in flight through
 the database acknowledgment. Failed admission and discarded records count as
 losses; a delivery retry, failed acknowledgment or normal shutdown retains the
-report and does not count it as lost. If concurrent admission evicts a record
-already being sent, that record counts as lost only when its send fails.
+report and does not count it as lost. An evicted record counts as lost only if
+no send was acknowledged during this process. An active send settles that count
+when it finishes; a failed retry cannot undo a prior acknowledgment.
 `lag_basis: observed_age` means waiting age starts when this process first sees
 the record. Existing records start at spool open; retries keep that age. Doctor
 labels this as `observed_lag`, since time spent waiting before restart is unknown.

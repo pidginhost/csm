@@ -8,8 +8,9 @@ import (
 )
 
 type spoolWork struct {
-	ticket  queuehealth.Ticket
-	evicted bool
+	ticket    queuehealth.Ticket
+	evicted   bool
+	delivered bool
 }
 
 type spoolHealth struct {
@@ -58,7 +59,7 @@ func (s *Spool) applyEnqueue(key string, ticket queuehealth.Ticket, evicted []st
 		if work == s.health.active {
 			work.evicted = true
 		} else {
-			work.ticket.Reject(now)
+			work.discard(now)
 		}
 	}
 }
@@ -70,13 +71,24 @@ func (s *Spool) finishDelivery(work *spoolWork, sent, removed bool) {
 		s.health.sendFailed.Store(true)
 	}
 	now := time.Now()
+	// Database removal can fail after receipt. Later eviction or a failed
+	// retry must not turn that earlier acknowledgement into a lost report.
+	work.delivered = work.delivered || sent
 	switch {
-	case removed || (sent && work.evicted):
+	case removed:
 		work.ticket.Finish(now)
 	case work.evicted:
-		work.ticket.Reject(now)
+		work.discard(now)
 	default:
 		work.ticket.Requeue(now)
 	}
 	s.health.active = nil
+}
+
+func (w *spoolWork) discard(now time.Time) {
+	if w.delivered {
+		w.ticket.Finish(now)
+	} else {
+		w.ticket.Reject(now)
+	}
 }
