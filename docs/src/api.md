@@ -435,6 +435,8 @@ write and clear results advance progress; replay stays active through dispatch.
 
 Read, write and clear errors report `state_io`. Failed mutations are read back:
 a returned error after replacement does not imply the new findings were lost.
+Readback compares the recovered JSON payload, including its normal repair of
+invalid UTF-8, so repaired log text does not invent uncertainty or hide overflow.
 Unreadable outcomes set `depth_unavailable` and `dropped_lower_bound`. A later
 read restores measured depth, while lifetime losses remain lower bounds. Known
 encoding failures and overflow are counted even when other outcomes are unknown.
