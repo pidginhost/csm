@@ -1037,6 +1037,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		return result, fmt.Errorf("flushing blocked IPs: %w", err)
 	}
 	result.Flushed = true
+	work.beginCleanup(statePath, ips, snapshotErr)
 
 	var cleanupErr error
 	work.progress()
@@ -1051,6 +1052,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		if !seen[ip] {
 			seen[ip] = true
 			cleanupIPs = append(cleanupIPs, ip)
+			work.admitCleanup(ip)
 		}
 	}
 	for _, ip := range ips {
@@ -1072,9 +1074,12 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 	tdb := GetThreatDB()
 	failed := make([]string, 0)
 	for _, ip := range cleanupIPs {
-		work.progress()
+		work.startCleanup(ip)
+		cleanupFailed := false
 		if sdb != nil {
 			if _, err := sdb.RemoveAutoBlock(ip); err != nil {
+				cleanupFailed = true
+				work.cleanupOutcome(ip, true)
 				work.observe(err)
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("removing auto-block store row for %s: %w", ip, err))
 				failed = append(failed, ip)
@@ -1083,6 +1088,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		if tdb != nil {
 			tdb.RemoveTemporary(ip)
 		}
+		work.cleanupOutcome(ip, cleanupFailed)
 	}
 	if state != nil {
 		state.IPs = nil

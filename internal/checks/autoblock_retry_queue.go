@@ -61,10 +61,15 @@ func InitAutoBlockQueueHealth(statePath string) error {
 
 func (w *autoBlockStateWork) readState(path string) (*blockState, error) {
 	w.progress()
-	state, err := readBlockState(path)
 	q := w.queue
 	q.mu.Lock()
+	w.readingState = true
+	q.cleanup.setPath(path)
+	q.mu.Unlock()
+	state, err := readBlockState(path)
+	q.mu.Lock()
 	defer q.mu.Unlock()
+	w.readingState = false
 	r := q.retries
 	if r.path != path {
 		r.path = path
@@ -73,12 +78,15 @@ func (w *autoBlockStateWork) readState(path string) (*blockState, error) {
 		r.readFailed, r.writeFailed = false, false
 	}
 	w.retryCycle = &autoBlockRetryCycle{}
+	q.cleanup.readFailed = err != nil
 	r.readFailed = err != nil
 	if err != nil {
 		w.failLocked()
 		r.forgetUncertain()
+		w.forgetCleanupState()
 	} else {
 		r.reconcile(state.Pending, nil, time.Now())
+		w.observeCleanupState(state, false)
 	}
 	return state, err
 }
@@ -302,9 +310,11 @@ func (w *autoBlockStateWork) writeState(path string, state *blockState) error {
 	err := persistAutoBlockState(path, state)
 	q.mu.Lock()
 	q.retries.writeFailed = err != nil
+	q.cleanup.writeFailed = err != nil
 	if err != nil {
 		w.failLocked()
 		q.retries.depthKnown = false
+		q.cleanup.depthKnown = false
 	}
 	q.mu.Unlock()
 	// Rename may have succeeded before directory fsync returned an error.
@@ -320,14 +330,22 @@ func (w *autoBlockStateWork) writeState(path string, state *blockState) error {
 	if readErr != nil {
 		q.retries.readFailed = true
 		q.retries.forgetUncertain()
+		q.cleanup.readFailed = true
+		w.forgetCleanupState()
 	} else {
 		q.retries.reconcile(actual.Pending, state.Pending, time.Now())
+		w.observeCleanupState(actual, true)
 		q.retries.readFailed = false
+		q.cleanup.readFailed = false
 		if err == nil {
 			q.retries.historyUnknown = false
+			q.cleanup.historyUnknown = false
 		}
 	}
 	w.retryCycle.settled = true
+	if w.cleanupCycle != nil && readErr == nil {
+		w.cleanupCycle.settled = true
+	}
 	return err
 }
 
@@ -338,6 +356,10 @@ func (w *autoBlockStateWork) saveState(path string, state *blockState) {
 }
 
 func (w *autoBlockStateWork) finishRetriesLocked() {
+	if w.readingState {
+		w.queue.retries.readFailed = true
+		w.queue.retries.forgetUncertain()
+	}
 	if w.retryCycle == nil {
 		return
 	}

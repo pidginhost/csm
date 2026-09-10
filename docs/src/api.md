@@ -295,6 +295,31 @@ when earlier outcomes could not be established. New work with known outcomes
 still contributes exact losses. Completed candidate history is released after
 settlement, and health snapshots never read files or wait for firewall callbacks.
 
+`auto_block.cleanup` reports distinct IPs awaiting bookkeeping cleanup after a
+successful firewall flush. It observes saved cleanup retries at startup and admits
+the flushed engine entries before reading the tracker. Cleanup also includes
+tracked blocks, with duplicate IPs counted once. Work remains in flight through
+store removal, threat-record cleanup and the final state-file outcome. This row
+has no fixed capacity and is independent of the block-candidate stages.
+
+Cleanup waiting age starts at first observation with `lag_basis:
+deferred_checkpoint`. Age alone does not degrade health: cleanup retries run on
+the next explicit flush, without a background retry deadline. One minute without
+active operation progress reports `processing_lag`. Failed cleanup whose retry
+survives reports `retry_failed`; an old tracker block can retain a retry even
+when saving its cleanup marker failed. Completed cleanup stays acknowledged
+across failed saves, while a newly blocked IP creates fresh cleanup demand.
+
+Cleanup state and snapshot failures report `state_io`. An unreadable tracker
+sets `depth_unavailable` and `dropped_lower_bound`; speculative waiting records
+are not reported as measured depth. The last bounded batch retains its identity
+for later read recovery. A subsequent unreadable flush replaces that history
+with its own batch. A readable state restores measured depth and counts confirmed
+unfinished work that no longer has a retry source. An incomplete pre-flush engine
+snapshot marks lifetime losses as a lower bound without inventing a missing count.
+Health reads memory only. These measurements preserve the existing flush policy,
+returned errors and cleanup retry behavior.
+
 `incident.persist.waiting` reports immutable incident snapshots waiting for the
 ordered writer, with no fixed waiting capacity. `incident.persist.active` reports
 the single occupied writer. A writer or free-slot admission stalled for one minute

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Health now reports deferred cleanup after firewall flushes, stalled cleanup and failed retries. Unreadable state is marked unknown until recovery establishes which work survived.
+
 - Health now reports pending automatic blocks, active candidates and retry failures. Counts distinguish confirmed losses from retries still available on disk.
 
 - Blocked automatic responses and firewall flushes now appear in health checks while they wait for shared state. The active operation remains visible through cleanup.

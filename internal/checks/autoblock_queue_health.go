@@ -14,6 +14,7 @@ type autoBlockQueueMonitor struct {
 	waiting                 map[*autoBlockStateWork]struct{}
 	active                  *autoBlockStateWork
 	retries                 *autoBlockRetryQueue
+	cleanup                 *autoBlockCleanupQueue
 	idleSince               time.Time
 	waitingLoss, activeLoss *queuehealth.Tracker
 }
@@ -22,11 +23,13 @@ type autoBlockStateWork struct {
 	queue             *autoBlockQueueMonitor
 	at                time.Time
 	failed, completed bool
+	readingState      bool
 	retryCycle        *autoBlockRetryCycle
+	cleanupCycle      *autoBlockCleanupCycle
 }
 
 func newAutoBlockQueue() *autoBlockQueueMonitor {
-	return &autoBlockQueueMonitor{retries: newAutoBlockRetryQueue(), waiting: make(map[*autoBlockStateWork]struct{}), waitingLoss: queuehealth.New(0, time.Minute), activeLoss: queuehealth.New(1, time.Minute)}
+	return &autoBlockQueueMonitor{cleanup: newAutoBlockCleanupQueue(), retries: newAutoBlockRetryQueue(), waiting: make(map[*autoBlockStateWork]struct{}), waitingLoss: queuehealth.New(0, time.Minute), activeLoss: queuehealth.New(1, time.Minute)}
 }
 
 func (q *autoBlockQueueMonitor) acquire() *autoBlockStateWork {
@@ -82,6 +85,7 @@ func (w *autoBlockStateWork) finish() {
 		w.failLocked()
 	}
 	w.finishRetriesLocked()
+	w.finishCleanupLocked()
 	q.active = nil
 	q.idleSince = time.Now()
 	// Release the real slot with its owner. A successor must not publish over
@@ -116,5 +120,5 @@ func AutoBlockQueueStatuses(now time.Time) map[string]queuehealth.Status {
 		}
 	}
 	pending, candidates := q.retries.statuses(now, q.active)
-	return map[string]queuehealth.Status{"waiting": waiting, "active": active, "pending": pending, "candidates": candidates}
+	return map[string]queuehealth.Status{"waiting": waiting, "active": active, "pending": pending, "candidates": candidates, "cleanup": q.cleanup.status(now, q.active)}
 }
