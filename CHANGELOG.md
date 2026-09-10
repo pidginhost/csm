@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reputation checks now report waiting queries, stalled result handling and failed work through status and doctor. Cache failures retain the findings, and normal quota limits remain separate from queue failures.
+
 - WordPress plugin inventory now reports waiting sites, stalled workers and failed completion through status and doctor. Canceled commands stay visible until they return, and shared refreshes count each site once.
 
 - Mailbox password audits now report waiting work, stalled audits and failed completion through status and doctor. Canceled audits stay visible while they finish, and failed cache writes retain the confirmed findings.

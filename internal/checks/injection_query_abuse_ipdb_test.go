@@ -15,7 +15,7 @@ func TestQueryAbuseIPDBRateLimitedReturnsSpecificError(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	_ = url
-	_, _, err := queryAbuseIPDB(abuseIPDBClient, "203.0.113.1", "key")
+	_, _, err := queryAbuseIPDB(abuseIPDBClient, "203.0.113.1", "key", nil)
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Errorf("expected 429-specific error, got %v", err)
 	}
@@ -26,7 +26,7 @@ func TestQueryAbuseIPDBAPIErrorInBodyReturnsError(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, `{"errors":[{"detail":"Invalid API key","status":401}]}`)
 	})
-	_, _, err := queryAbuseIPDB(abuseIPDBClient, "203.0.113.1", "bad-key")
+	_, _, err := queryAbuseIPDB(abuseIPDBClient, "203.0.113.1", "bad-key", nil)
 	if err == nil || !strings.Contains(err.Error(), "Invalid API key") {
 		t.Errorf("expected API error propagated, got %v", err)
 	}
@@ -36,7 +36,7 @@ func TestQueryAbuseIPDBAppendsISPAndReportCountToCategory(t *testing.T) {
 	withTestAbuseIPDB(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, `{"data":{"abuseConfidenceScore":42,"usageType":"Data Center","isp":"Evil Hosting","totalReports":17}}`)
 	})
-	score, cat, err := queryAbuseIPDB(abuseIPDBClient, "203.0.113.1", "k")
+	score, cat, err := queryAbuseIPDB(abuseIPDBClient, "203.0.113.1", "k", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestQueryAbuseIPDBTransportErrorReturnsError(t *testing.T) {
 		abuseIPDBClient = origClient
 	})
 
-	_, _, err := queryAbuseIPDB(abuseIPDBClient, "203.0.113.1", "k")
+	_, _, err := queryAbuseIPDB(abuseIPDBClient, "203.0.113.1", "k", nil)
 	if err == nil {
 		t.Error("expected transport error when endpoint is unreachable")
 	}
@@ -74,7 +74,7 @@ func TestQueryAbuseIPDBInvalidURLReturnsError(t *testing.T) {
 	abuseIPDBEndpoint = "http://\x7f bad host/"
 	t.Cleanup(func() { abuseIPDBEndpoint = origURL })
 
-	_, _, err := queryAbuseIPDB(&http.Client{}, "203.0.113.1", "k")
+	_, _, err := queryAbuseIPDB(&http.Client{}, "203.0.113.1", "k", nil)
 	if err == nil {
 		t.Error("expected NewRequest error on malformed URL")
 	}

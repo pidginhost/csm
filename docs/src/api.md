@@ -243,6 +243,20 @@ Actual commands remain in flight until they return. Health reads memory only and
 retains loss evidence after recovery. Shared-refresh waiters remain owned by
 `checks.executions`; they do not create another set of site jobs. Optional domain
 lookup fallback and plugin metadata enrichment keep their existing behavior.
+`checks.reputation_queries` follows reserved reputation lookups through HTTP,
+response cleanup, buffered results, supplemental scoring and cache or quota-backoff
+storage. Each scan has at most five requests; concurrent scans have no fixed
+combined capacity. HTTP uses the client's timeout, while cleanup, local result
+handling and persistence have separate one-minute budgets. Supplemental scoring
+uses the combined timeout of its enabled sources or the shorter parent deadline.
+Buffered results follow their own active consumer's deadline; another scan cannot
+hide their delay. Query failures, failed storage and abnormal exits count once per
+result. Quota responses and refusal before dispatch remain expected outcomes with
+the existing quota health warning. Parent cancellation does not cancel the existing
+HTTP requests; they remain visible until response handling and storage finish.
+Successful late results add no loss. Health reads memory only and retains losses
+after recovery. Local feed matches, cache hits and serial pre-query discovery do
+not create query jobs. A failed cache write retains the findings already produced.
 `checks.dispatch` reports pending checks and occupied runner wrappers across host
 and account scan batches. Concurrent batches have no fixed global waiting limit,
 so capacity is unavailable. Lag uses `consumer_progress` within each batch:

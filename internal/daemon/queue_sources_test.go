@@ -70,7 +70,7 @@ func TestQueueSourcesDoNotHoldRegistryLockDuringSnapshot(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("snapshot held the registry lock while calling a source")
 	}
-	if got := d.QueueStatuses(); len(got) != 11 || got["late.output"].Capacity != 4 || got["first.output"].Capacity != 4 || got["actionlog.writes"].Capacity != 64 || got["phpanel.spool"].Status != "ok" || got["smtp_rdns.resolves"].Capacity != 64 || got["email_password.hashes"].Capacity != 3 || !got["email_password.waiting"].CapacityUnavailable || !got["email_password.mailboxes"].CapacityUnavailable || !got["checks.executions"].CapacityUnavailable || !got["checks.dispatch"].CapacityUnavailable || !got["checks.plugin_inventory"].CapacityUnavailable {
+	if got := d.QueueStatuses(); len(got) != 12 || got["late.output"].Capacity != 4 || got["first.output"].Capacity != 4 || got["actionlog.writes"].Capacity != 64 || got["phpanel.spool"].Status != "ok" || got["smtp_rdns.resolves"].Capacity != 64 || got["email_password.hashes"].Capacity != 3 || !got["email_password.waiting"].CapacityUnavailable || !got["email_password.mailboxes"].CapacityUnavailable || !got["checks.executions"].CapacityUnavailable || !got["checks.dispatch"].CapacityUnavailable || !got["checks.plugin_inventory"].CapacityUnavailable || !got["checks.reputation_queries"].CapacityUnavailable {
 		t.Fatalf("late registration was lost: %+v", got)
 	}
 }
@@ -90,7 +90,7 @@ func TestQueueSourcesRegistrationAndPollingAreConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if got := d.QueueStatuses(); len(got) != 10 || got["backend.output"].Capacity != 4 || got["actionlog.writes"].Capacity != 64 || got["phpanel.spool"].Status != "ok" || got["smtp_rdns.resolves"].Capacity != 64 || got["email_password.hashes"].Capacity != 3 || !got["email_password.waiting"].CapacityUnavailable || !got["email_password.mailboxes"].CapacityUnavailable || !got["checks.executions"].CapacityUnavailable || !got["checks.dispatch"].CapacityUnavailable || !got["checks.plugin_inventory"].CapacityUnavailable {
+	if got := d.QueueStatuses(); len(got) != 11 || got["backend.output"].Capacity != 4 || got["actionlog.writes"].Capacity != 64 || got["phpanel.spool"].Status != "ok" || got["smtp_rdns.resolves"].Capacity != 64 || got["email_password.hashes"].Capacity != 3 || !got["email_password.waiting"].CapacityUnavailable || !got["email_password.mailboxes"].CapacityUnavailable || !got["checks.executions"].CapacityUnavailable || !got["checks.dispatch"].CapacityUnavailable || !got["checks.plugin_inventory"].CapacityUnavailable || !got["checks.reputation_queries"].CapacityUnavailable {
 		t.Fatalf("concurrent publication lost or duplicated a source: %+v", got)
 	}
 }
