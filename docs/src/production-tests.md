@@ -98,7 +98,15 @@ services with no prior records. Package integrity rechecks preserve a reported
 mismatch for the original finding even if that file is now absent or no longer
 executable; current file mode is not evidence that the modification was repaired.
 
-## Queue inventory tooling
+## Required Queue inventory
+
+Both runner modes validate `scripts/queue-inventory.json` before test selection
+and execution. Its reviewed owners cover channel handoffs, durable work,
+coalesced pending work and kernel buffers. Each owner records its health rows,
+bounds and required publication and lifecycle regressions. The runner writes
+the union of those regressions and its existing requirements to
+`production-results/<mode>/queue-required.json`, then requires actual passing
+events for every selected requirement.
 
 The allocation scanner is available for ownership reviews:
 
@@ -147,7 +155,7 @@ function signatures. Missing or changed anchors fail validation.
 For a reviewed manifest, generate requirements for the existing test verifier:
 
 ```bash
-go run ./scripts/queuegate -manifest path/to/reviewed-inventory.json \
+go run ./scripts/queuegate -manifest scripts/queue-inventory.json \
   -mode portable -base-required scripts/production-required.json \
   -required-out queue-required.json
 ```
@@ -157,8 +165,9 @@ inventory and actual Go JSON test events. It combines existing required tests
 with the owner's evidence for that mode. A missing, skipped or failed required
 test is not accepted. A passing scanner or a test name in JSON alone does not
 prove health publication or lifecycle coverage; the named tests need substantive
-assertions and execution evidence. The reviewed repository inventory and its
-production-runner wiring are still pending.
+assertions and execution evidence. Runner regression tests exercise both modes
+with real test events, including changed capacities, unclassified allocations,
+missing tests and skipped required evidence.
 
 The scanner cannot discover arbitrary queues held in maps, heaps, durable
 storage, kernel buffers or dependencies. Those need explicit owner entries and

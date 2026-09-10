@@ -1,0 +1,4027 @@
+{
+  "version": 1,
+  "allocations": [
+    {
+      "id": "internal/actionlog/write_queue.go::*writePool.write::done::channel::1",
+      "path": "internal/actionlog/write_queue.go",
+      "owner": "*writePool.write",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Completes the admitted write; the shared slot owns the record until the sink returns.",
+      "queue": "actionlog"
+    },
+    {
+      "id": "internal/actionlog/write_queue.go::newWritePool::slots::channel::1",
+      "path": "internal/actionlog/write_queue.go",
+      "owner": "newWritePool",
+      "target": "slots",
+      "kind": "channel",
+      "source": "make(chan struct{}, capacity)",
+      "capacity": "capacity",
+      "class": "work",
+      "rationale": "Bounds concurrent action-log writes, including writes whose callers have timed out.",
+      "queue": "actionlog"
+    },
+    {
+      "id": "internal/alert/phpanel_queue.go::newPhpanelQueue::done::channel::1",
+      "path": "internal/alert/phpanel_queue.go",
+      "owner": "newPhpanelQueue",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins delivery of findings retained in the durable panel spool.",
+      "queue": "phpanel"
+    },
+    {
+      "id": "internal/alert/phpanel_queue.go::newPhpanelQueue::stop::channel::1",
+      "path": "internal/alert/phpanel_queue.go",
+      "owner": "newPhpanelQueue",
+      "target": "stop",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins delivery of findings retained in the durable panel spool.",
+      "queue": "phpanel"
+    },
+    {
+      "id": "internal/alert/phpanel_queue.go::newPhpanelQueue::wake::channel::1",
+      "path": "internal/alert/phpanel_queue.go",
+      "owner": "newPhpanelQueue",
+      "target": "wake",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "maintenance",
+      "rationale": "Coalesces delivery wakes; the spool retains each finding independently of this signal.",
+      "queue": "phpanel"
+    },
+    {
+      "id": "internal/alert/webhook.go::closeWebhookResponseBody::done::channel::1",
+      "path": "internal/alert/webhook.go",
+      "owner": "closeWebhookResponseBody",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Completes bounded HTTP response-body draining after the webhook attempt; carries no finding."
+    },
+    {
+      "id": "internal/attackdb/db.go::Init::stopCh::channel::1",
+      "path": "internal/attackdb/db.go",
+      "owner": "Init",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops the periodic persistence worker. The signal carries no record; attackdb.events and attackdb.records own the actual buffered events and coalesced pending writes through shutdown.",
+      "queue": "attackdb.events"
+    },
+    {
+      "id": "internal/attackdb/db.go::NewForTest::stopCh::channel::1",
+      "path": "internal/attackdb/db.go",
+      "owner": "NewForTest",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops the periodic persistence worker. The signal carries no record; attackdb.events and attackdb.records own the actual buffered events and coalesced pending writes through shutdown.",
+      "queue": "attackdb.events"
+    },
+    {
+      "id": "internal/bpf/ringbuf.go::*Reader[T].Run::done::channel::1",
+      "path": "internal/bpf/ringbuf.go",
+      "owner": "*Reader[T].Run",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Coordinates reader cancellation or reports reader errors; event records belong to the accounted output channel.",
+      "queue": "bpf.delivery"
+    },
+    {
+      "id": "internal/bpf/ringbuf.go::*Reader[T].Start::done::channel::1",
+      "path": "internal/bpf/ringbuf.go",
+      "owner": "*Reader[T].Start",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Coordinates reader cancellation or reports reader errors; event records belong to the accounted output channel.",
+      "queue": "bpf.delivery"
+    },
+    {
+      "id": "internal/bpf/ringbuf.go::NewReader::errs::channel::1",
+      "path": "internal/bpf/ringbuf.go",
+      "owner": "NewReader",
+      "target": "errs",
+      "kind": "channel",
+      "source": "make(chan error, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Coordinates reader cancellation or reports reader errors; event records belong to the accounted output channel.",
+      "queue": "bpf.delivery"
+    },
+    {
+      "id": "internal/bpf/ringbuf.go::NewReader::out::accounted_channel::1",
+      "path": "internal/bpf/ringbuf.go",
+      "owner": "NewReader",
+      "target": "out",
+      "kind": "accounted_channel",
+      "source": "queuehealth.NewChannel[T](256, time.Minute)",
+      "capacity": "256",
+      "class": "work",
+      "rationale": "Owns decoded BPF events from admission through consumer completion.",
+      "queue": "bpf.delivery"
+    },
+    {
+      "id": "internal/broadcast/broadcast.go::*Bus.subscribe::events::channel::1",
+      "path": "internal/broadcast/broadcast.go",
+      "owner": "*Bus.subscribe",
+      "target": "events",
+      "kind": "channel",
+      "source": "make(chan Delivery, b.buffer)",
+      "capacity": "b.buffer",
+      "class": "work",
+      "rationale": "Each subscriber owns its buffered findings and an outstanding HTTP delivery.",
+      "queue": "events"
+    },
+    {
+      "id": "internal/checks/account_scan.go::runAccountChecksBounded::sem::channel::1",
+      "path": "internal/checks/account_scan.go",
+      "owner": "runAccountChecksBounded",
+      "target": "sem",
+      "kind": "channel",
+      "source": "make(chan struct{}, parallel)",
+      "capacity": "parallel",
+      "class": "work",
+      "rationale": "Bounds concurrent runner wrappers; the dispatch owner tracks pending checks before slot admission.",
+      "queue": "checks.dispatch"
+    },
+    {
+      "id": "internal/checks/check_execution_health.go::*checkExecutionMonitor.begin::done::channel::1",
+      "path": "internal/checks/check_execution_health.go",
+      "owner": "*checkExecutionMonitor.begin",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan checkExecutionOutcome, 1)",
+      "capacity": "1",
+      "class": "work",
+      "rationale": "Transfers the check result after execution, retaining ownership when the calling scan times out.",
+      "queue": "checks.executions"
+    },
+    {
+      "id": "internal/checks/email_hash_queue.go::*emailHashPool.matches::done::channel::1",
+      "path": "internal/checks/email_hash_queue.go",
+      "owner": "*emailHashPool.matches",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan emailHashResult, 1)",
+      "capacity": "1",
+      "class": "work",
+      "rationale": "The shared verification slots and result handoff retain work after caller cancellation.",
+      "queue": "email_password.hashes"
+    },
+    {
+      "id": "internal/checks/email_hash_queue.go::newEmailHashPool::slots::channel::1",
+      "path": "internal/checks/email_hash_queue.go",
+      "owner": "newEmailHashPool",
+      "target": "slots",
+      "kind": "channel",
+      "source": "make(chan struct{}, capacity)",
+      "capacity": "capacity",
+      "class": "work",
+      "rationale": "The shared verification slots and result handoff retain work after caller cancellation.",
+      "queue": "email_password.hashes"
+    },
+    {
+      "id": "internal/checks/emailpasswd.go::CheckEmailPasswords::sem::channel::1",
+      "path": "internal/checks/emailpasswd.go",
+      "owner": "CheckEmailPasswords",
+      "target": "sem",
+      "kind": "channel",
+      "source": "make(chan struct{}, 5)",
+      "capacity": "5",
+      "class": "work",
+      "rationale": "Bounds mailbox audits; pending mailbox demand and running audits have one shared owner.",
+      "queue": "email_password.mailboxes"
+    },
+    {
+      "id": "internal/checks/fileindex.go::package::fileIndexLiveScanGate::channel::1",
+      "path": "internal/checks/fileindex.go",
+      "owner": "package",
+      "target": "fileIndexLiveScanGate",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "work",
+      "rationale": "Serializes live file-index scans while waiting callers remain visible outside the slot.",
+      "queue": "checks.file_index"
+    },
+    {
+      "id": "internal/checks/plugincheck.go::ensurePluginCacheFresh::done::channel::1",
+      "path": "internal/checks/plugincheck.go",
+      "owner": "ensurePluginCacheFresh",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins an already owned shared refresh; waiting checks do not enqueue duplicate site work.",
+      "queue": "checks.plugin_inventory"
+    },
+    {
+      "id": "internal/checks/plugincheck.go::refreshPluginCache::jobs::channel::1",
+      "path": "internal/checks/plugincheck.go",
+      "owner": "refreshPluginCache",
+      "target": "jobs",
+      "kind": "channel",
+      "source": "make(chan int, len(wpConfigs))",
+      "capacity": "len(wpConfigs)",
+      "class": "work",
+      "rationale": "Transfers selected sites to the inventory workers.",
+      "queue": "checks.plugin_inventory"
+    },
+    {
+      "id": "internal/checks/rdns_cache.go::*RDNSCache.runWithDeadline::ch::channel::1",
+      "path": "internal/checks/rdns_cache.go",
+      "owner": "*RDNSCache.runWithDeadline",
+      "target": "ch",
+      "kind": "channel",
+      "source": "make(chan rdnsResult, 1)",
+      "capacity": "1",
+      "class": "work",
+      "rationale": "Bounds asynchronous resolver work and transfers results while resolver ownership outlives caller timeout.",
+      "queue": "smtp_rdns"
+    },
+    {
+      "id": "internal/checks/rdns_cache.go::NewRDNSCache::sem::channel::1",
+      "path": "internal/checks/rdns_cache.go",
+      "owner": "NewRDNSCache",
+      "target": "sem",
+      "kind": "channel",
+      "source": "make(chan struct{}, maxConcurrent)",
+      "capacity": "maxConcurrent",
+      "defaults": [
+        "maxConcurrent := cfg.MaxConcurrent",
+        "maxConcurrent = 64"
+      ],
+      "class": "work",
+      "rationale": "Bounds asynchronous resolver work and transfers results while resolver ownership outlives caller timeout.",
+      "queue": "smtp_rdns"
+    },
+    {
+      "id": "internal/checks/reputation.go::CheckIPReputation::jobs::channel::1",
+      "path": "internal/checks/reputation.go",
+      "owner": "CheckIPReputation",
+      "target": "jobs",
+      "kind": "channel",
+      "source": "make(chan int, len(pendingQueries))",
+      "capacity": "len(pendingQueries)",
+      "class": "work",
+      "rationale": "Transfers quota-admitted queries to workers and retains work through scoring and result handling.",
+      "queue": "checks.reputation_queries"
+    },
+    {
+      "id": "internal/checks/runner.go::runParallelWithContext::sem::channel::1",
+      "path": "internal/checks/runner.go",
+      "owner": "runParallelWithContext",
+      "target": "sem",
+      "kind": "channel",
+      "source": "make(chan struct{}, 5)",
+      "capacity": "5",
+      "class": "work",
+      "rationale": "Bounds concurrent runner wrappers; the dispatch owner tracks pending checks before slot admission.",
+      "queue": "checks.dispatch"
+    },
+    {
+      "id": "internal/checks/web.go::CheckWPCore::jobs::channel::1",
+      "path": "internal/checks/web.go",
+      "owner": "CheckWPCore",
+      "target": "jobs",
+      "kind": "channel",
+      "source": "make(chan int, len(wpConfigs))",
+      "capacity": "len(wpConfigs)",
+      "class": "work",
+      "queue": "checks.wordpress_core",
+      "rationale": "Transfers selected installation occurrences to checksum workers; ownership includes command execution, partial results and cache work."
+    },
+    {
+      "id": "internal/daemon/abuse_report_queue.go::*abuseReportConsumer.run::canceled::channel::1",
+      "path": "internal/daemon/abuse_report_queue.go",
+      "owner": "*abuseReportConsumer.run",
+      "target": "canceled",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Coordinates ingress cancellation and durable delivery shutdown; admitted reports remain owned during cleanup.",
+      "queue": "abuse_reporting"
+    },
+    {
+      "id": "internal/daemon/abuse_report_queue.go::newAbuseReportConsumer::queue::accounted_channel::1",
+      "path": "internal/daemon/abuse_report_queue.go",
+      "owner": "newAbuseReportConsumer",
+      "target": "queue",
+      "kind": "accounted_channel",
+      "source": "queuehealth.NewChannel[reporting.Report](capacity, time.Minute)",
+      "capacity": "capacity",
+      "class": "work",
+      "rationale": "Transfers accepted reports to the durable spool writer.",
+      "queue": "abuse_reporting"
+    },
+    {
+      "id": "internal/daemon/abuse_reporting.go::*Daemon.startAbuseReporting::doneCh::channel::1",
+      "path": "internal/daemon/abuse_reporting.go",
+      "owner": "*Daemon.startAbuseReporting",
+      "target": "doneCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Coordinates ingress cancellation and durable delivery shutdown; admitted reports remain owned during cleanup.",
+      "queue": "abuse_reporting"
+    },
+    {
+      "id": "internal/daemon/abuse_reporting.go::*Daemon.startAbuseReporting::stopCh::channel::1",
+      "path": "internal/daemon/abuse_reporting.go",
+      "owner": "*Daemon.startAbuseReporting",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Coordinates ingress cancellation and durable delivery shutdown; admitted reports remain owned during cleanup.",
+      "queue": "abuse_reporting"
+    },
+    {
+      "id": "internal/daemon/bpf_enforcement_uid_refresh.go::NewUIDRefresher::stop::channel::1",
+      "path": "internal/daemon/bpf_enforcement_uid_refresh.go",
+      "owner": "NewUIDRefresher",
+      "target": "stop",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops periodic UID-map refresh; refresh inputs are current account state rather than queued event records."
+    },
+    {
+      "id": "internal/daemon/central_action_queue.go::*centralActionConsumer.run::canceled::channel::1",
+      "path": "internal/daemon/central_action_queue.go",
+      "owner": "*centralActionConsumer.run",
+      "target": "canceled",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Cancels the action loop while the queue owner settles admitted actions.",
+      "queue": "central.actions"
+    },
+    {
+      "id": "internal/daemon/central_action_queue.go::newCentralActionConsumer::queue::accounted_channel::1",
+      "path": "internal/daemon/central_action_queue.go",
+      "owner": "newCentralActionConsumer",
+      "target": "queue",
+      "kind": "accounted_channel",
+      "source": "queuehealth.NewChannel[centralQueuedAction](capacity, time.Minute)",
+      "capacity": "capacity",
+      "class": "work",
+      "rationale": "Transfers central-intelligence actions through dispatch and completion.",
+      "queue": "central.actions"
+    },
+    {
+      "id": "internal/daemon/daemon.go::*Daemon.Run::sigCh::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "*Daemon.Run",
+      "target": "sigCh",
+      "kind": "channel",
+      "source": "make(chan os.Signal, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Carries process shutdown signals, not protection findings or queued scans."
+    },
+    {
+      "id": "internal/daemon/daemon.go::*Daemon.holdAlertDispatch::d.alertHold::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "*Daemon.holdAlertDispatch",
+      "target": "d.alertHold",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Single-flight hold latch; the finding owner retains held batch records outside this signal.",
+      "queue": "findings.ingest"
+    },
+    {
+      "id": "internal/daemon/daemon.go::New::alertCh::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "New",
+      "target": "alertCh",
+      "kind": "channel",
+      "source": "make(chan alert.Finding, 500)",
+      "capacity": "500",
+      "class": "work",
+      "rationale": "Transfers findings to dispatch, retaining held and running batches until settled.",
+      "queue": "findings.ingest"
+    },
+    {
+      "id": "internal/daemon/daemon.go::New::stopCh::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "New",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins daemon and supervised watcher lifetimes; protection data stays with each watcher owner."
+    },
+    {
+      "id": "internal/daemon/daemon.go::superviseWatcherRun::done::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "superviseWatcherRun",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins daemon and supervised watcher lifetimes; protection data stays with each watcher owner."
+    },
+    {
+      "id": "internal/daemon/daemon.go::superviseWatcherRun::helperDone::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "superviseWatcherRun",
+      "target": "helperDone",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins daemon and supervised watcher lifetimes; protection data stays with each watcher owner."
+    },
+    {
+      "id": "internal/daemon/fanotify.go::NewFileMonitor::analyzerCh::channel::1",
+      "path": "internal/daemon/fanotify.go",
+      "owner": "NewFileMonitor",
+      "target": "analyzerCh",
+      "kind": "channel",
+      "source": "make(chan fileEvent, analyzerChBufferSize)",
+      "capacity": "16384",
+      "class": "work",
+      "rationale": "Transfers file events to realtime analyzers.",
+      "queue": "fanotify.analyzer"
+    },
+    {
+      "id": "internal/daemon/fanotify.go::NewFileMonitor::reconcileSig::channel::1",
+      "path": "internal/daemon/fanotify.go",
+      "owner": "NewFileMonitor",
+      "target": "reconcileSig",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "maintenance",
+      "rationale": "Coalesces recovery wakes; queued directory tasks stay in the recovery map independently of the signal.",
+      "queue": "fanotify.reconcile"
+    },
+    {
+      "id": "internal/daemon/fanotify.go::NewFileMonitor::stopCh::channel::1",
+      "path": "internal/daemon/fanotify.go",
+      "owner": "NewFileMonitor",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops the file monitor; its separate queue owners account for remaining protection work.",
+      "queue": "fanotify.analyzer"
+    },
+    {
+      "id": "internal/daemon/handlers_accesslog.go::package::accessLogEagerEvictTrip::channel::1",
+      "path": "internal/daemon/handlers_accesslog.go",
+      "owner": "package",
+      "target": "accessLogEagerEvictTrip",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "maintenance",
+      "rationale": "Coalesces rate-window eviction wakes also driven by a ticker; the signal carries no request record."
+    },
+    {
+      "id": "internal/daemon/incident_singleton.go::startIncidentAutoCloseLoop::stop::channel::1",
+      "path": "internal/daemon/incident_singleton.go",
+      "owner": "startIncidentAutoCloseLoop",
+      "target": "stop",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins periodic incident closure and retention; persisted incidents are retained state rather than a handoff buffer."
+    },
+    {
+      "id": "internal/daemon/incident_singleton.go::startIncidentAutoCloseLoop::stopped::channel::1",
+      "path": "internal/daemon/incident_singleton.go",
+      "owner": "startIncidentAutoCloseLoop",
+      "target": "stopped",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins periodic incident closure and retention; persisted incidents are retained state rather than a handoff buffer."
+    },
+    {
+      "id": "internal/daemon/incident_singleton.go::startIncidentRetentionLoop::stop::channel::1",
+      "path": "internal/daemon/incident_singleton.go",
+      "owner": "startIncidentRetentionLoop",
+      "target": "stop",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins periodic incident closure and retention; persisted incidents are retained state rather than a handoff buffer."
+    },
+    {
+      "id": "internal/daemon/incident_singleton.go::startIncidentRetentionLoop::stopped::channel::1",
+      "path": "internal/daemon/incident_singleton.go",
+      "owner": "startIncidentRetentionLoop",
+      "target": "stopped",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins periodic incident closure and retention; persisted incidents are retained state rather than a handoff buffer."
+    },
+    {
+      "id": "internal/daemon/php_relay_msgindex_bbolt.go::*msgIndexPersister.Flush::done::channel::1",
+      "path": "internal/daemon/php_relay_msgindex_bbolt.go",
+      "owner": "*msgIndexPersister.Flush",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Flush barriers, cancellation and joins order already admitted persistence operations; they carry no additional message record.",
+      "queue": "phprelay.index"
+    },
+    {
+      "id": "internal/daemon/php_relay_msgindex_bbolt.go::newMsgIndexPersister::doneCh::channel::1",
+      "path": "internal/daemon/php_relay_msgindex_bbolt.go",
+      "owner": "newMsgIndexPersister",
+      "target": "doneCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Flush barriers, cancellation and joins order already admitted persistence operations; they carry no additional message record.",
+      "queue": "phprelay.index"
+    },
+    {
+      "id": "internal/daemon/php_relay_msgindex_bbolt.go::newMsgIndexPersister::flushReqCh::channel::1",
+      "path": "internal/daemon/php_relay_msgindex_bbolt.go",
+      "owner": "newMsgIndexPersister",
+      "target": "flushReqCh",
+      "kind": "channel",
+      "source": "make(chan chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Flush barriers, cancellation and joins order already admitted persistence operations; they carry no additional message record.",
+      "queue": "phprelay.index"
+    },
+    {
+      "id": "internal/daemon/php_relay_msgindex_bbolt.go::newMsgIndexPersister::queue::channel::1",
+      "path": "internal/daemon/php_relay_msgindex_bbolt.go",
+      "owner": "newMsgIndexPersister",
+      "target": "queue",
+      "kind": "channel",
+      "source": "make(chan persistOp, queueSize)",
+      "capacity": "queueSize",
+      "defaults": [
+        "queueSize = 4096"
+      ],
+      "class": "work",
+      "rationale": "Transfers message attribution operations to bounded persistence batches.",
+      "queue": "phprelay.index"
+    },
+    {
+      "id": "internal/daemon/php_relay_msgindex_bbolt.go::newMsgIndexPersister::stopCh::channel::1",
+      "path": "internal/daemon/php_relay_msgindex_bbolt.go",
+      "owner": "newMsgIndexPersister",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Flush barriers, cancellation and joins order already admitted persistence operations; they carry no additional message record.",
+      "queue": "phprelay.index"
+    },
+    {
+      "id": "internal/daemon/pprof.go::*Daemon.startPprofListener::done::channel::1",
+      "path": "internal/daemon/pprof.go",
+      "owner": "*Daemon.startPprofListener",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins diagnostic HTTP server shutdown; carries no protection work."
+    },
+    {
+      "id": "internal/daemon/scanjob.go::NewScanJobManager::stopCh::channel::1",
+      "path": "internal/daemon/scanjob.go",
+      "owner": "NewScanJobManager",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins the full-scan worker while admitted jobs retain their owner.",
+      "queue": "scans"
+    },
+    {
+      "id": "internal/daemon/scanjob.go::NewScanJobManager::workCh::channel::1",
+      "path": "internal/daemon/scanjob.go",
+      "owner": "NewScanJobManager",
+      "target": "workCh",
+      "kind": "channel",
+      "source": "make(chan scanJobRequest, scanJobQueueDepth)",
+      "capacity": "8",
+      "class": "work",
+      "rationale": "Transfers admitted full-scan jobs to the single worker.",
+      "queue": "scans"
+    },
+    {
+      "id": "internal/daemon/scanjob.go::NewScanJobManager::workerDone::channel::1",
+      "path": "internal/daemon/scanjob.go",
+      "owner": "NewScanJobManager",
+      "target": "workerDone",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops or joins the full-scan worker while admitted jobs retain their owner.",
+      "queue": "scans"
+    },
+    {
+      "id": "internal/daemon/spoolwatch.go::NewSpoolWatcher::scanCh::channel::1",
+      "path": "internal/daemon/spoolwatch.go",
+      "owner": "NewSpoolWatcher",
+      "target": "scanCh",
+      "kind": "channel",
+      "source": "make(chan spoolEvent, 256)",
+      "capacity": "256",
+      "class": "work",
+      "rationale": "Transfers spool events to mail scanners.",
+      "queue": "spool.scanner"
+    },
+    {
+      "id": "internal/daemon/spoolwatch.go::NewSpoolWatcher::stopCh::channel::1",
+      "path": "internal/daemon/spoolwatch.go",
+      "owner": "NewSpoolWatcher",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops the spool watcher while scanner and notification owners settle their own work.",
+      "queue": "spool.scanner"
+    },
+    {
+      "id": "internal/daemon/verdict_enricher.go::newVerdictEnricher::jobs::channel::1",
+      "path": "internal/daemon/verdict_enricher.go",
+      "owner": "newVerdictEnricher",
+      "target": "jobs",
+      "kind": "channel",
+      "source": "make(chan verdictJob, opts.Queue)",
+      "capacity": "opts.Queue",
+      "defaults": [
+        "opts.Queue = 64"
+      ],
+      "class": "work",
+      "rationale": "Transfers advisory verdict requests to workers, preserving findings independently of callback success.",
+      "queue": "bpf.verdict"
+    },
+    {
+      "id": "internal/daemon/yara_backend.go::retryStartWithStopContext::retryDone::channel::1",
+      "path": "internal/daemon/yara_backend.go",
+      "owner": "retryStartWithStopContext",
+      "target": "retryDone",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins a backend startup attempt during cancellation; no event records have been admitted to this signal."
+    },
+    {
+      "id": "internal/emailav/orchestrator.go::*Orchestrator.scanPart::results::channel::1",
+      "path": "internal/emailav/orchestrator.go",
+      "owner": "*Orchestrator.scanPart",
+      "target": "results",
+      "kind": "channel",
+      "source": "make(chan engineScanResult, len(scanners))",
+      "capacity": "len(scanners)",
+      "class": "work",
+      "rationale": "Transfers per-engine and aggregate scan results, retaining late engine work after caller timeout.",
+      "queue": "email_av"
+    },
+    {
+      "id": "internal/emailav/orchestrator.go::*Orchestrator.startScan::done::channel::1",
+      "path": "internal/emailav/orchestrator.go",
+      "owner": "*Orchestrator.startScan",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan engineScanResult, 1)",
+      "capacity": "1",
+      "class": "work",
+      "rationale": "Transfers per-engine and aggregate scan results, retaining late engine work after caller timeout.",
+      "queue": "email_av"
+    },
+    {
+      "id": "internal/firewall/dyndns.go::*DynDNSResolver.Run::done::channel::1",
+      "path": "internal/firewall/dyndns.go",
+      "owner": "*DynDNSResolver.Run",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins periodic DNS refresh during cancellation; the resolver walks current configured hosts without a queued event handoff."
+    },
+    {
+      "id": "internal/incident/persist_queue.go::*Correlator.queuePersistLocked::done::channel::1",
+      "path": "internal/incident/persist_queue.go",
+      "owner": "*Correlator.queuePersistLocked",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Orders immutable incident snapshots held outside the completion signal; the persistence owner tracks waiting and active snapshots.",
+      "queue": "incident.persist"
+    },
+    {
+      "id": "internal/incident/persist_queue.go::newPersistQueue::tail::channel::1",
+      "path": "internal/incident/persist_queue.go",
+      "owner": "newPersistQueue",
+      "target": "tail",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Orders immutable incident snapshots held outside the completion signal; the persistence owner tracks waiting and active snapshots.",
+      "queue": "incident.persist"
+    },
+    {
+      "id": "internal/maillog/file_reader.go::*FileReader.loop::sampleDone::channel::1",
+      "path": "internal/maillog/file_reader.go",
+      "owner": "*FileReader.loop",
+      "target": "sampleDone",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins the source metadata sampler before descriptor close; source bytes remain owned during cleanup.",
+      "queue": "mail.file_source"
+    },
+    {
+      "id": "internal/maillog/queue.go::*Queue.channel::expression::channel::1",
+      "path": "internal/maillog/queue.go",
+      "owner": "*Queue.channel",
+      "target": "expression",
+      "kind": "channel",
+      "source": "make(chan Line, queueCapacity)",
+      "capacity": "64",
+      "class": "work",
+      "rationale": "Transfers bounded mail-log records from the selected reader to its consumer.",
+      "queue": "mail.delivery"
+    },
+    {
+      "id": "internal/maillog/supervisor.go::consumeReader::gone::channel::1",
+      "path": "internal/maillog/supervisor.go",
+      "owner": "consumeReader",
+      "target": "gone",
+      "kind": "channel",
+      "source": "make(chan error, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Reports reader completion to the supervisor; line records remain in the selected delivery owner.",
+      "queue": "mail.delivery"
+    },
+    {
+      "id": "internal/phptaintworker/supervisor.go::*Supervisor.ensureChildLocked::done::channel::1",
+      "path": "internal/phptaintworker/supervisor.go",
+      "owner": "*Supervisor.ensureChildLocked",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins child reaping; the request owner retains outstanding worker communication through cleanup.",
+      "queue": "php_taint"
+    },
+    {
+      "id": "internal/phptaintworker/supervisor.go::*Supervisor.roundTripLocked::done::channel::1",
+      "path": "internal/phptaintworker/supervisor.go",
+      "owner": "*Supervisor.roundTripLocked",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan result, 1)",
+      "capacity": "1",
+      "class": "work",
+      "rationale": "Transfers a worker response while request ownership survives cancellation and child cleanup.",
+      "queue": "php_taint"
+    },
+    {
+      "id": "internal/processctx/enricher.go::NewEnricher::queue::channel::1",
+      "path": "internal/processctx/enricher.go",
+      "owner": "NewEnricher",
+      "target": "queue",
+      "kind": "channel",
+      "source": "make(chan enrichWork, cfg.QueueCap)",
+      "capacity": "cfg.QueueCap",
+      "defaults": [
+        "cfg.QueueCap = 1024"
+      ],
+      "class": "work",
+      "rationale": "Transfers bounded enrichment requests to process workers.",
+      "queue": "processctx.enrichment"
+    },
+    {
+      "id": "internal/processctx/enricher.go::NewEnricher::stopCh::channel::1",
+      "path": "internal/processctx/enricher.go",
+      "owner": "NewEnricher",
+      "target": "stopCh",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Stops enrichment workers while their owner settles pending and running requests.",
+      "queue": "processctx.enrichment"
+    },
+    {
+      "id": "internal/processctx/proc_read_queue.go::newProcReadPool::slots::channel::1",
+      "path": "internal/processctx/proc_read_queue.go",
+      "owner": "newProcReadPool",
+      "target": "slots",
+      "kind": "channel",
+      "source": "make(chan struct{}, capacity)",
+      "capacity": "capacity",
+      "class": "work",
+      "rationale": "Bounds process reads and transfers their results, retaining actual I/O after caller timeout.",
+      "queue": "processctx.proc_reads"
+    },
+    {
+      "id": "internal/processctx/proc_read_queue.go::runProcReadWithDeadline::out::channel::1",
+      "path": "internal/processctx/proc_read_queue.go",
+      "owner": "runProcReadWithDeadline",
+      "target": "out",
+      "kind": "channel",
+      "source": "make(chan procReadResult[T], 1)",
+      "capacity": "1",
+      "class": "work",
+      "rationale": "Bounds process reads and transfers their results, retaining actual I/O after caller timeout.",
+      "queue": "processctx.proc_reads"
+    },
+    {
+      "id": "internal/queuehealth/channel.go::NewChannel::items::channel::1",
+      "path": "internal/queuehealth/channel.go",
+      "owner": "NewChannel",
+      "target": "items",
+      "kind": "channel",
+      "source": "make(chan Work[T], capacity)",
+      "capacity": "capacity",
+      "class": "constructor",
+      "rationale": "Generic accounted-channel storage; each production NewChannel call is separately inventoried and owned."
+    },
+    {
+      "id": "internal/threatintel/botverify.go::*AsyncBotVerifier.Run::bridge::channel::1",
+      "path": "internal/threatintel/botverify.go",
+      "owner": "*AsyncBotVerifier.Run",
+      "target": "bridge",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins the cancellation bridge; verification jobs remain owned by the request channel.",
+      "queue": "bot_verification"
+    },
+    {
+      "id": "internal/threatintel/botverify.go::NewAsyncBotVerifier::ch::channel::1",
+      "path": "internal/threatintel/botverify.go",
+      "owner": "NewAsyncBotVerifier",
+      "target": "ch",
+      "kind": "channel",
+      "source": "make(chan verifyJob, 256)",
+      "capacity": "256",
+      "class": "work",
+      "rationale": "Transfers bounded bot verification requests through DNS and cache completion.",
+      "queue": "bot_verification"
+    },
+    {
+      "id": "internal/webui/server.go::New::pruneDone::channel::1",
+      "path": "internal/webui/server.go",
+      "owner": "New",
+      "target": "pruneDone",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins session-pruning maintenance; session records are retained authentication state rather than queued findings."
+    },
+    {
+      "id": "internal/yaraworker/supervisor.go::*Supervisor.Start::s.done::channel::1",
+      "path": "internal/yaraworker/supervisor.go",
+      "owner": "*Supervisor.Start",
+      "target": "s.done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Joins child-process reaping; request work remains with the calling scan owner."
+    }
+  ],
+  "owners": [
+    {
+      "id": "abuse_reporting",
+      "rows": [
+        "abuse_reporting.ingress",
+        "abuse_reporting.spool"
+      ],
+      "bounds": "Memory admission is min(10000, configured spool capacity). Durable capacity is the configured per-node entry cap; destination copies are separate records and retries retain ownership until acknowledgment.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAbuseQueuePublishedBeforeWorkerStarts",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAbuseQueuePublishedBeforeWorkerStarts",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAbuseQueueShutdownPersistsEveryAcceptedReport",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAbuseQueueRetainsReportsDuringDeliveryAndCancelsOnStop",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAbuseQueuePersistenceFailureContinuesShutdownDrain",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAbuseQueuePanicAccountsForUnpersistedReports",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAbuseQueueConcurrentShutdownConservesReports",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthOverflowAndFIFO",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthRetryPreservesAgeAndReportsFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthBlockedSenderAndConcurrentEviction",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthReopenObservesExistingWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthClosedDatabaseKeepsCommittedWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthCorruptHeadIsVisibleAndRetained",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthRetainsReportAfterSenderPanic",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthFailedAcknowledgmentKeepsDurableCopy",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthDoesNotWaitForDatabaseWriter",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthConcurrentAdmissionsSettleExactlyOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolHealthAcknowledgedOverflowIsNotLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/reporting",
+          "name": "TestSpoolerEnqueueReturnsPersistenceFailure",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/reporting/spool.go",
+          "symbol": "Spool.db",
+          "shape": "*bolt.DB"
+        },
+        {
+          "path": "internal/reporting/spool.go",
+          "symbol": "Spool.max",
+          "shape": "int"
+        },
+        {
+          "path": "internal/reporting/reporter_spool.go",
+          "symbol": "Spooler.spool",
+          "shape": "*Spool"
+        }
+      ]
+    },
+    {
+      "id": "actionlog",
+      "rows": [
+        "actionlog.writes"
+      ],
+      "bounds": "64 shared write slots. Admission and sink completion share capacity; a caller timeout does not release an unfinished sink write.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestActionLogQueuePublishedBeforeAnyWrite",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/actionlog",
+          "name": "TestWriteQueueRetainsSlowWriterAndCountsRefusedRecords",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/actionlog",
+          "name": "TestWriteQueueSinkFailureCountsOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/actionlog",
+          "name": "TestWriteQueueConcurrentFailuresConserveRecords",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/actionlog",
+          "name": "TestWriteOwnsRecordAfterCallerDeadline",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/actionlog",
+          "name": "TestWriteQueueReportsLossBeforeBlockedPanicLog",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "attackdb.events",
+      "rows": [
+        "attackdb.events"
+      ],
+      "bounds": "Pending events have no fixed bound. The 30-second writer and shutdown flush retain detached ownership through physical newline writes, cleanup and logging; partial or interrupted writes retain lower-bound losses.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsActualAttackEventQueue",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueAdmissionUsesArrivalTime",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueuePersistenceOutcomes",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueSeedAndShutdown",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueMemoryOnlyHasNoPersistenceWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueuePartialWriteAndCloseOwnership",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueAppendPanicReleasesOwnership",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueWriterProgressResetsStall",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueEncodingFailureCountsOnlyMissingEvent",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueAbandonedTailIsKnownLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueKnownLossVisibleBeforeCleanup",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueBlockedFlushKeepsNewArrivals",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueBufferedWriteFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueBufferInterruptRetainsUnsubmittedCurrent",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackEventQueueShortWriteBeforeInterrupt",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/attackdb/db.go",
+          "symbol": "DB.pendingEvents",
+          "shape": "[]Event"
+        },
+        {
+          "path": "internal/attackdb/event_queue.go",
+          "symbol": "eventQueue.waiting",
+          "shape": "int"
+        },
+        {
+          "path": "internal/attackdb/event_queue.go",
+          "symbol": "eventQueue.active",
+          "shape": "*eventBatch"
+        }
+      ]
+    },
+    {
+      "id": "attackdb.records",
+      "rows": [
+        "attackdb.records"
+      ],
+      "bounds": "Distinct dirty or deleted IPs have no fixed bound. Coalesced current intent and detached writes stay owned through I/O and retry reconciliation; failed writes retained in memory are not durable across process exit.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsActualAttackRecordQueue",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueCoalescesCurrentIntent",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueRetriesWithoutInventingLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueMemoryOnlyHasNoPersistenceWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueConcurrentMutationKeepsNewWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueDeleteCoalescesDuringCommit",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueWriteProgressResetsStall",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueNormalizationAndPruning",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueFailureVisibleDuringBatch",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueInterruptedWriteRetiresActualDemand",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueFailedShutdownRetainsRetry",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueInterruptedDeleteRetainsUncertainty",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/attackdb",
+          "name": "TestAttackRecordQueueInterruptionVisibleBeforeStateCleanup",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/attackdb/db.go",
+          "symbol": "DB.dirtyIPs",
+          "shape": "map[string]struct{}"
+        },
+        {
+          "path": "internal/attackdb/db.go",
+          "symbol": "DB.deletedIPs",
+          "shape": "map[string]struct{}"
+        },
+        {
+          "path": "internal/attackdb/record_queue.go",
+          "symbol": "recordQueue.waiting",
+          "shape": "map[string]recordDemand"
+        },
+        {
+          "path": "internal/attackdb/record_queue.go",
+          "symbol": "recordQueue.active",
+          "shape": "*recordBatch"
+        }
+      ]
+    },
+    {
+      "id": "auto_block.admission",
+      "rows": [
+        "auto_block.waiting",
+        "auto_block.active"
+      ],
+      "bounds": "One shared block-state owner, with no fixed cap on waiting callers. Progress follows individual firewall, state and cleanup operations without taking their locks during health reads.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsAutoBlockAdmissionQueues",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueAllStateCallersAreVisible",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueRetainsAbnormalCleanupAndReleasesWaiters",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueExplicitFailuresAndProtectedRefusal",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueTracksFlushError",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueLongBatchKeepsProgress",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueBypassesDisabledAndMissingEngine",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueLongPruneKeepsProgress",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueCountsFailureBeforeBlockedCleanup",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueFlushWriteErrorBeforeBlockedLog",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockQueueWaitingEngineCapture",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/checks/autoblock_queue_health.go",
+          "symbol": "autoBlockQueueMonitor.waiting",
+          "shape": "map[*autoBlockStateWork]struct{}"
+        },
+        {
+          "path": "internal/checks/autoblock_queue_health.go",
+          "symbol": "autoBlockQueueMonitor.active",
+          "shape": "*autoBlockStateWork"
+        }
+      ]
+    },
+    {
+      "id": "auto_block.cleanup",
+      "rows": [
+        "auto_block.cleanup"
+      ],
+      "bounds": "Distinct IPs retained for deferred bookkeeping after a flush have no fixed cap. Actual cleanup remains in flight until state outcomes settle; unknown reads expose unavailable depth and lower-bound loss.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAutoBlockRetryStartupIncludesDisabledFirewall",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockCleanupAcknowledgmentSurvivesOnlyItsBlock",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockCleanupAdmissionPrecedesTrackerRead",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockCleanupStoreFailureVisibleBeforeThreatLock",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockCleanupStartupObservesDistinctDeferredRecords",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockCleanupWriteOutcomeControlsRetention",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockCleanupTimesOperationProgress",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/checks/autoblock.go",
+          "symbol": "blockState.CleanupPending",
+          "shape": "[]string"
+        },
+        {
+          "path": "internal/checks/autoblock_cleanup_queue.go",
+          "symbol": "autoBlockCleanupQueue.records",
+          "shape": "map[string]*autoBlockCleanupRecord"
+        }
+      ]
+    },
+    {
+      "id": "auto_block.retry",
+      "rows": [
+        "auto_block.pending",
+        "auto_block.candidates"
+      ],
+      "bounds": "1000 durable pending retries; admitted candidates have no fixed aggregate cap. Current-policy refusals complete without loss; record outcomes are settled against durable state, retaining uncertainty after unreadable writes.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsAutoBlockRetryQueues",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestAutoBlockRetryStartupIncludesDisabledFirewall",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryStartupObservationIsReadOnly",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryLoadedAndAcceptedWorkStayVisible",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryQuotaAgeAndExpiry",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryFailureSurvivesUntilRecovery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryOverflowCountsConfirmedLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryFailedWriteKeepsOldAndLosesFresh",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryAcknowledgedBlockCannotBecomeLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryUnstampedEvidenceUsesActualQueueTime",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryPostRenameErrorUsesActualRecords",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryUnknownWriteNeverInventsLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryDuplicateRecordsCoalesceWithoutLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryExpectedOutcomesAreNotLosses",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryConfirmedDropsDegradeAndRecover",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryUnreadableStateReportsUnknownDepth",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestAutoBlockRetryLongBatchKeepsOperationProgress",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/checks/autoblock.go",
+          "symbol": "blockState.Pending",
+          "shape": "[]pendingIP"
+        },
+        {
+          "path": "internal/checks/autoblock_retry_queue.go",
+          "symbol": "autoBlockRetryQueue.records",
+          "shape": "[]*autoBlockPendingRecord"
+        },
+        {
+          "path": "internal/checks/autoblock_retry_queue.go",
+          "symbol": "autoBlockRetryQueue.candidates",
+          "shape": "map[*autoBlockCandidate]struct{}"
+        },
+        {
+          "path": "internal/checks/autoblock.go",
+          "symbol": "maxPendingBlocks",
+          "shape": "1000"
+        }
+      ]
+    },
+    {
+      "id": "block_digest",
+      "rows": [
+        "block_digest.records",
+        "block_digest.email",
+        "block_digest.webhook"
+      ],
+      "bounds": "5000 waiting records with drop-oldest overflow. Configured interval is intentional waiting. Detached preparation and each configured notification remain owned independently, including live delivery and late admissions after the ticker stops.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsActualBlockDigestQueue",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestBlockDigestDisabledDestinationIsNotLost",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestBlockDigestDefaultPolicySelectsEachDestination",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestBlockDigestAbandonUsesLiveDestinationPolicy",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/blockdigest",
+          "name": "TestBlockDigestQueueOverflowAndExpectedCadence",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/blockdigest",
+          "name": "TestBlockDigestQueueFailedSinkRemainsOwnedThroughLogging",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/blockdigest",
+          "name": "TestBlockDigestQueueGatingAndShutdown",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/blockdigest",
+          "name": "TestBlockDigestQueueInterruptedDelivery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/blockdigest",
+          "name": "TestBlockDigestQueueOwnsPreparation",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/blockdigest",
+          "name": "TestBlockDigestQueueSnapshotAvoidsCollectorLock",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/blockdigest",
+          "name": "TestBlockDigestQueueCountsFailedHeartbeatDeliveries",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/blockdigest/blockdigest.go",
+          "symbol": "Collector.records",
+          "shape": "[]Record"
+        },
+        {
+          "path": "internal/blockdigest/queue.go",
+          "symbol": "digestQueues.batches",
+          "shape": "map[*digestBatch]struct{}"
+        },
+        {
+          "path": "internal/blockdigest/queue.go",
+          "symbol": "digestQueues.sinks",
+          "shape": "map[string]*digestSinkQueue"
+        },
+        {
+          "path": "internal/blockdigest/blockdigest.go",
+          "symbol": "maxBuffered",
+          "shape": "5000"
+        }
+      ]
+    },
+    {
+      "id": "bot_verification",
+      "rows": [
+        "bot_verification.requests"
+      ],
+      "bounds": "256 waiting verifications and one active worker. DNS and cache writes retain ownership; duplicates share the original age and expected negative answers are not losses.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestBotVerificationQueuePublishedAtStartup",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/threatintel",
+          "name": "TestBotQueueMeasuresOverflowAndCoalescedAge",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/threatintel",
+          "name": "TestBotQueueShutdownRetainsRunningCacheWrite",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/threatintel",
+          "name": "TestBotQueueDistinguishesFailuresFromVerificationResults",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/threatintel",
+          "name": "TestBotQueuePanicSettlesOwnedAndAbandonedRequests",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/threatintel",
+          "name": "TestBotQueueRejectsAfterWorkerReturns",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/threatintel",
+          "name": "TestBotQueueOwnsAdmittedIP",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/threatintel",
+          "name": "TestBotQueueConcurrentShutdownConservesRequests",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "bpf.delivery",
+      "rows": [
+        "bpf.af_alg.output",
+        "bpf.connection.output",
+        "bpf.execution.output",
+        "bpf.sensitive_files.output"
+      ],
+      "bounds": "256 decoded events per active backend. A received event stays in flight through evaluation and finding admission. Kernel rings are separate stages.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestQueueSourcesBackendRegistration",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestQueueSourcesAppearInDaemonHealth",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestKernelReaderDeliversEvents",
+          "mode": "kernel"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestReaderQueueHealthCountsConsumerAndDecoderLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestReaderStopCountsUnconsumedOutput",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestReaderQueueHealthRetainsBlockedConsumer",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestReaderKeepsKernelAndDecodedLossSeparate",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/bpf/ringbuf.go",
+          "symbol": "Reader.out",
+          "shape": "*queuehealth.Channel[T]"
+        }
+      ]
+    },
+    {
+      "id": "bpf.kernel",
+      "rows": [
+        "bpf.af_alg.kernel",
+        "bpf.connection.kernel",
+        "bpf.execution.kernel",
+        "bpf.sensitive_files.kernel"
+      ],
+      "bounds": "Each active ring reports its loaded map capacity and occupancy in bytes, separately from decoded output. Reservation losses and unconsumed shutdown submissions are retained; final loss can be a lower bound.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestBPFProgramsCarryKernelLossCounters",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestKernelConnectionQueueLoss",
+          "mode": "kernel"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestKernelQueueSeparatesReservationLossAndReaderProgress",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestKernelQueueShutdownCountsOnlyUnreadSubmittedEvents",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestKernelQueueCounterFailureDoesNotClaimHealth",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestKernelQueueSnapshotCannotReadDuringUnmap",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestKernelQueueFinalCounterSnapshotIsALowerBound",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestKernelQueueRejectsIncoherentOccupancySamples",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/bpf",
+          "name": "TestKernelQueueDoesNotBackdateFreshMeasurement",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/bpf/ringbuf.go",
+          "symbol": "Reader.kernel",
+          "shape": "*kernelQueue"
+        },
+        {
+          "path": "internal/bpf/kernel_queue.go",
+          "symbol": "kernelQueue.ring",
+          "shape": "ringMeasurement"
+        }
+      ]
+    },
+    {
+      "id": "bpf.verdict",
+      "rows": [
+        "bpf.connection.verdict"
+      ],
+      "bounds": "256 waiting annotations and four callbacks. Duplicates share pending identity and age; failed annotation does not discard its finding.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestKernelConnectionVerdictQueuePublishedBeforeRun",
+          "mode": "kernel"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestVerdictQueueRefusesWorkAfterShutdown",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestVerdictQueueRetainsWaitingAndRunningAnnotations",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestVerdictQueueCallbackFailuresRemainVisibleAfterRetry",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestVerdictQueueShutdownAccountsForRunningAndWaitingWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestVerdictQueuePanicReleasesTheRunningKey",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestVerdictQueueConcurrentAdmissionAndShutdown",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "central.actions",
+      "rows": [
+        "central.actions"
+      ],
+      "bounds": "1024 waiting actions and one active handler. Feed refresh cannot hide admitted actions; shutdown accounts for queued and active work.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestCentralQueuePublishedBeforeLoopStarts",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestCentralQueuePublishedBeforeLoopStarts",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestCentralQueueRetainsBacklogDuringRefresh",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestCentralQueueShutdownRejectsCapturedProducers",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestCentralQueuePanicSettlesOwnedAndAbandonedWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestCentralQueueConcurrentShutdownConservesActions",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestCentralQueueActionErrorsRemainVisible",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestCentralQueueStopCancelsRefreshAndDiscardsBacklog",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "checks.dispatch",
+      "rows": [
+        "checks.dispatch"
+      ],
+      "bounds": "Each host or account batch has its configured runner limit. Concurrent batches have no fixed global capacity; waiting checks and occupied wrappers retain separate execution deadlines.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonPublishesCheckDispatchQueue",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthSnapshotDoesNotWaitForContext",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthPendingAndControlPhases",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthUsesExecutionDeadlineThenControlBudget",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthDoesNotHideFreeWorkerSlots",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthCountsAbnormalWrappers",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthDeadlineBeforeExecutionCountsLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthLateDeadlineDoesNotUndoCompletedWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthTracksBothRunners",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthConcurrentBatchesCancelQueuedDemand",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthRunnerDeadlinePartitionsLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchHealthProgressDoesNotHideOverduePeer",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchProgressRealRunners",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckDispatchProgressKeepsOwnedDeadlines",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "checks.executions",
+      "rows": [
+        "checks.executions"
+      ],
+      "bounds": "Aggregate capacity is unavailable: timed-out check functions can outlive runner slots. Function and caller must both settle before ownership ends.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonPublishesCheckExecutionQueue",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthRetainsTimedOutFunction",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthRetainsBufferedResult",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthUsesEachCallsDeadline",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthStartDoesNotResetDeadline",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthCancellationAndPanicCountOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthCountsAbandonedCaller",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthCountsAbnormalFunctionExit",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthConcurrentCallersRetainFunctions",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestCheckExecutionHealthTracksBothRunnersAfterTimeout",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "checks.file_index",
+      "rows": [
+        "checks.file_index.waiting",
+        "checks.file_index.active"
+      ],
+      "bounds": "One live baseline scan slot. Waiting callers have no fixed cap; actual filesystem work, result handling and persistence retain ownership through cancellation.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsFileIndexQueues",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueWaitingAndActiveBudgets",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueWaiterWithdrawal",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueCanceledWalkRetainsActualOwner",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueFailuresCountOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueLateBaselineCommitIsSuccessful",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueAbnormalWalkReleasesGate",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueRepeatedFailuresDegradeAndRecover",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueCleanupHasItsOwnBudget",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueAuditBypassesOccupiedLiveSlot",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueAdmissionBudgetStartsWhenSlotFrees",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueUnreadableContentLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueExecutableMetadataFailureLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestFileIndexQueueContentOutcomeBeforeCommit",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "checks.plugin_inventory",
+      "rows": [
+        "checks.plugin_inventory"
+      ],
+      "bounds": "Five site inventory workers per refresh and a finite discovered-site batch. Concurrent refreshes have no fixed aggregate cap. Shared-refresh waiters belong to check executions.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsPluginInventoryQueue",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestPluginQueueSaturatedBatchDrains",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestPluginQueueFailuresCountOnceAndRecover",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestPluginQueueCanceledWorkersRemainOwned",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestPluginQueueDeadlineCountsUnfinishedSites",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestPluginQueueStoreAndCleanupFailureCountOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestPluginQueueSharedRefreshOwnedByCheckExecutions",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "checks.reputation_queries",
+      "rows": [
+        "checks.reputation_queries"
+      ],
+      "bounds": "At most five admitted queries per scan. Concurrent scans have no fixed aggregate cap; quota-admitted work stays owned through response cleanup and result persistence.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsReputationQueryQueue",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueQueriesAndBufferedResults",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueFailureVisibleDuringBodyCleanup",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueCacheFailureKeepsFindings",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueQuotaResponseAndRefusalAreExpected",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueBufferedResultsRespectActiveConsumerBudget",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueDistinctFailuresCountOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueQuotaBackoffFailureCountsLostResults",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueAbnormalWorkersReleaseLostResults",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueFlatFileFailuresKeepFindings",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestReputationQueueOwnsReservationsBeforeFallback",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "checks.wordpress_core",
+      "rows": [
+        "checks.wordpress_core"
+      ],
+      "bounds": "Five checksum workers per discovered-installation batch. Concurrent scans have no fixed combined capacity. Each installation remains owned through the bounded command, integrity result collection and verified-file caching; actual timeout and interrupted-command failures count once.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsWPCoreQueue",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestWPCoreQueueConcurrentBatchesRemainIndependent",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestWPCoreQueueDistinguishesFailuresFromIntegrityResults",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestWPCoreQueueWorkerExitAccountsForAbandonedSites",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestWPCoreQueueWithdrawalRetainsActiveCommands",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestWPCoreQueueOwnsPostCommandCacheWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestWPCoreQueueSnapshotAvoidsResultAndFileLocks",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestWPCoreQueueInterruptedCommandRetainsPartialResults",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestWPCoreRealCommandTimeoutMustNotVerifyFiles",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestRunCmdCombinedContextPreservesNativeOutcomes",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestRunCmdCombinedContextPreservesParentDeadline",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestVerifyWPCoreRealTimeoutDoesNotResolveFinding",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/checks/web.go",
+          "symbol": "wpChecksumWorkers",
+          "shape": "5"
+        },
+        {
+          "path": "internal/checks/helpers.go",
+          "symbol": "cmdTimeout",
+          "shape": "2 * time.Minute"
+        }
+      ]
+    },
+    {
+      "id": "email_av",
+      "rows": [
+        "email_av.scans"
+      ],
+      "bounds": "Per-message engine batches have finite result buffers, but concurrent messages and engines outliving timeouts have no fixed aggregate cap. Both result handoffs retain work.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueuePublication",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueuePublication",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueueRetainsTimedOutEngines",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueueErrorsAndRecoveredExits",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueueConcurrentCallsAndUnavailableEngines",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueueBufferedResultsAndConsumerStall",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueuePerEngineResultWaitKeepsItsAge",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueueLateDispatchKeepsOriginalDeadline",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/emailav",
+          "name": "TestEmailQueueAbandonedConsumerRetainsEngine",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "email_password.hashes",
+      "rows": [
+        "email_password.hashes",
+        "email_password.waiting"
+      ],
+      "bounds": "Three shared hash-verification slots, retained until KDF and caller finish. Waiting callers have no fixed global cap and use the audit deadline.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsEmailPasswordQueues",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestEmailHashQueuesRetainCanceledWorkers",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestEmailHashQueuesLateCompletionCountsOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestEmailHashQueuesRetainBufferedResult",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestEmailHashQueuesConcurrentFailuresAreSafe",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestEmailHashQueuesIgnoreRejectedInput",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestEmailHashQueuesUseAuditLagBudget",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "email_password.mailboxes",
+      "rows": [
+        "email_password.mailboxes"
+      ],
+      "bounds": "Five active mailbox audits per scan; concurrent scans have no fixed aggregate capacity. Ownership includes result collection and cache writes.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsEmailPasswordQueues",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestMailboxQueueInputLimitsAreNotWorkerLosses",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestMailboxQueueCacheWriteFailuresRetainFindings",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestMailboxQueueRetainsActualAuditsAfterCancellation",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestMailboxQueueDeadlineCountsUnfinishedAudits",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "events",
+      "rows": [
+        "events.deliveries"
+      ],
+      "bounds": "Aggregate of live subscriber capacities; daemon streams use 64 findings each. Running writes remain owned through encoding and flush.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestFindingBusPublishesQueueHealth",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/broadcast",
+          "name": "TestBusPublishesQueuePressure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/broadcast",
+          "name": "TestBusOneFullSubscriberDegradesAggregate",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/broadcast",
+          "name": "TestBusUnsubscribePreservesOwnedDelivery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/broadcast",
+          "name": "TestBusDeliveryPanicCountsOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/broadcast",
+          "name": "TestBusChurnRetainsLossWithoutRetiredSubscribers",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/broadcast",
+          "name": "TestBusConcurrentCloseAbortAndOwnedDelivery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/webui",
+          "name": "TestAPIEventsStopsAfterFailedFlush",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/webui",
+          "name": "TestAPIEventsCountsFailedDeliveryAndPending",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/webui",
+          "name": "TestAPIEventsCancellationWithdrawsPendingDemand",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/webui",
+          "name": "TestAPIEventsEncodingFailureKeepsStreamUsable",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "fanotify.analyzer",
+      "rows": [
+        "fanotify.analyzer"
+      ],
+      "bounds": "Analyzer channel capacity is selected at monitor construction. Waiting producers and active analyzers retain event ownership through finding delivery and failure.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestFanotifyQueueHealthTracksOverflowAndScannerFailure",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestFanotifyQueueHealthTracksOverflowAndScannerFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestFanotifyAlertLossReachesSharedQueueHealth",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestQueueStatusesConcurrentMonitorPublication",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "fanotify.dropper",
+      "rows": [
+        "fanotify.dropper",
+        "fanotify.dropper_findings"
+      ],
+      "bounds": "16384 candidate slots and 16384 held findings. Lag starts after eligibility; detached probes and emission batches remain running. Retry, refusal and shutdown outcomes preserve loss history.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthShowsBlockedProbe",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthAccountsForHeldFindingLifecycle",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthCountsExhaustedProbes",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperRejectedRetryReleasesAttemptState",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthRefreshPreservesRetryLimit",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperHeldFindingsStayBounded",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthMergesRetryWithNewObservation",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthShowsBlockedProbe",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthAccountsForHeldFindingLifecycle",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthShutdownIncludesLateObservations",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthTracksPartlySuppressedEmission",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthEmissionStartsAtActualTime",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDropperQueueHealthProbeStartsAtActualTime",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/dropper_track.go",
+          "symbol": "dropperTracker.entries",
+          "shape": "map[dropperCandidateKey]dropperCandidate"
+        },
+        {
+          "path": "internal/daemon/dropper_track.go",
+          "symbol": "dropperTracker.pending",
+          "shape": "[]dropperGone"
+        },
+        {
+          "path": "internal/daemon/dropper_track.go",
+          "symbol": "dropperMaxTracked",
+          "shape": "16384"
+        }
+      ]
+    },
+    {
+      "id": "fanotify.reconcile",
+      "rows": [
+        "fanotify.reconcile"
+      ],
+      "bounds": "1024 waiting directory tasks. Coalescence preserves age; detached scans stay running while new work queues independently, including the same directory.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueRetainsDetachedWorkAndNewAdmission",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueCoalescingPreservesWaitingAge",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueCountsExpiredWorkAfterRefresh",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueRetainsDetachedWorkAndNewAdmission",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueCountsUnreadDirectories",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueCountsPartialDirectoryOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueuePanicRejectsUnfinishedBatch",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueShutdownDiscardsWaitingWorkOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueShutdownWaitsForRunningWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueueExactWindowMatchesScanCutoff",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestReconcileQueuePanicKeepsCompletedDirectories",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/fanotify.go",
+          "symbol": "FileMonitor.reconcileDirs",
+          "shape": "map[string]reconcileDirectory"
+        },
+        {
+          "path": "internal/daemon/fanotify.go",
+          "symbol": "reconcileDirCap",
+          "shape": "1024"
+        }
+      ]
+    },
+    {
+      "id": "fanotify.staged_packages",
+      "rows": [
+        "fanotify.staged_packages"
+      ],
+      "bounds": "20000 staged-file slots are shared by waiting and detached verification batches. Retries preserve queue age and reserved capacity; shutdown waits for analyzer admissions.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthAppearsInMonitorStatus",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthTracksRetryAndCapacity",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthDetectsStalledBatch",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthRetriedBatchStaysFull",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthStartsFullWindowAtAdmission",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthKeepsRepeatedPathEventsDistinct",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthReportsAbandonedShutdownWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthDatesLossAtRejection",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthAppearsInMonitorStatus",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageVerifierHealthSurvivesRetryAndStall",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageShutdownCountsLateAnalyzerAdmissions",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestStagedPackageQueueHealthDoesNotWaitForPackageMetadata",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/fanotify.go",
+          "symbol": "FileMonitor.wpPending",
+          "shape": "*stagedPackageQueue"
+        },
+        {
+          "path": "internal/daemon/fanotify_wp_package.go",
+          "symbol": "stagedPackageQueue.files",
+          "shape": "[]stagedPackageFile"
+        },
+        {
+          "path": "internal/daemon/fanotify_wp_package.go",
+          "symbol": "stagedPackageQueue.draining",
+          "shape": "[]stagedPackageFile"
+        },
+        {
+          "path": "internal/daemon/fanotify_wp_package.go",
+          "symbol": "stagedPackageQueue.limit",
+          "shape": "int"
+        },
+        {
+          "path": "internal/daemon/fanotify_wp_package.go",
+          "symbol": "stagedPackageQueueMax",
+          "shape": "20000"
+        }
+      ]
+    },
+    {
+      "id": "findings.ingest",
+      "rows": [
+        "findings.ingest"
+      ],
+      "bounds": "Finding channel capacity is selected at daemon construction. Blocked producers, held batches and active dispatch remain owned outside the channel; intentional scan-warning filtering is not loss.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestQueueHealthNotificationBypassesFullFindingChannel",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestQueueHealthNotificationBypassesFullFindingChannel",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestQueueHealthReleasesDuplicatesAndPreviouslySentFindings",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestQueueHealthHeldOverflowAndShutdownAccounting",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestQueueHealthCanceledBatchesCountEveryAbandonedFinding",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "incident.persist",
+      "rows": [
+        "incident.persist.waiting",
+        "incident.persist.active",
+        "incident.persist.deferred"
+      ],
+      "bounds": "One ordered incident writer. Immutable waiting snapshots and coalesced deferred bookkeeping have no fixed global cap; completion signals only order snapshots owned outside their channels.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsIncidentPersistenceQueues",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/incident",
+          "name": "TestIncidentPersistBulkExitReleasesLaterWriters",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/incident",
+          "name": "TestIncidentPersistQueueOrderedWriters",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/incident",
+          "name": "TestIncidentPersistQueueDeferredBookkeeping",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/incident",
+          "name": "TestIncidentPersistQueueFailuresAndNoStore",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/incident",
+          "name": "TestIncidentPersistQueueSupersedesOnlyEarlierBookkeeping",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/incident",
+          "name": "TestIncidentPersistQueueMemoryOnlyHasNoDeferredWrites",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/incident",
+          "name": "TestIncidentPersistQueueRestoreDiscardsReplacedBookkeeping",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/incident",
+          "name": "TestIncidentPersistQueueProgressDuringLongBatch",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/incident/correlator.go",
+          "symbol": "Correlator.persistence",
+          "shape": "*persistQueue"
+        },
+        {
+          "path": "internal/incident/persist_queue.go",
+          "symbol": "persistQueue.waiting",
+          "shape": "map[*queuedPersist]struct{}"
+        },
+        {
+          "path": "internal/incident/persist_queue.go",
+          "symbol": "persistQueue.active",
+          "shape": "*queuedPersist"
+        },
+        {
+          "path": "internal/incident/persist_queue.go",
+          "symbol": "persistQueue.deferred",
+          "shape": "map[string]time.Time"
+        }
+      ]
+    },
+    {
+      "id": "mail.delivery",
+      "rows": [
+        "mail.delivery"
+      ],
+      "bounds": "64 records per selected reader. In-flight ownership includes parsing and finding delivery; replacements retain known record loss. Unread source history belongs to the separate source rows.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMailReaderReportsStalledDeliveryAndRecovery",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestMailQueueAccountsForCanceledReaderAndConsumer",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestMailQueueAccountsForConsumerPanicAndPendingLines",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestMailQueueRetainsLossAcrossReaderReplacement",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestMailQueueAccountsForCancellationDuringAttachment",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestMailQueueCountsOversizedRecordOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestJournalQueueCountsUnreadableEntriesAndDelivery",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "mail.file_source",
+      "rows": [
+        "mail.file_source"
+      ],
+      "bounds": "Untransferred file bytes have no fixed queue capacity. Descriptor sampling includes disk, read-ahead and raw partial bytes; generation changes retain uncertain loss history.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonPublishesActualFileSourceBytes",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourceMeasuresReadAheadAndBlockedAppends",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourcePartialRecordWaitsForInput",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourceCursorFailureSurvivesSuccessfulRead",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourceMetadataFailureMakesDepthUnknown",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourceLateSampleCannotRestoreOldGeneration",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourceJoinsSamplerBeforeClosingDescriptor",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourceOwnsKnownReadAheadThroughActualClose",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourceRecoversWhenOriginalReturnsAfterFailedRotation",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/maillog/queue.go",
+          "symbol": "Queue.file",
+          "shape": "fileSourceQueue"
+        },
+        {
+          "path": "internal/maillog/file_source_queue.go",
+          "symbol": "fileSourceQueue.current",
+          "shape": "*fileSourceGeneration"
+        }
+      ]
+    },
+    {
+      "id": "mail.journal_source",
+      "rows": [
+        "mail.journal_source"
+      ],
+      "bounds": "Journal cursors expose neither exact unread count nor capacity. Cursor, selected entry, wait, delivery and cleanup own progress while historical uncertainty remains explicit.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonPublishesActualJournalSourceUncertainty",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestFileSourceFailureRetiresAfterJournalAttaches",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestJournalSourceFailureClearsOnlyAfterReplacementAttaches",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestJournalSourceBlockedDeliveryCancellationCountsOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestJournalSourceOwnsAbnormalExitThroughClose",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestJournalSourceTracksCursorEntryAndCleanup",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/maillog",
+          "name": "TestJournalSourceReadFailureRecoveryPreservesUncertainty",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/maillog/queue.go",
+          "symbol": "Queue.journal",
+          "shape": "journalSourceQueue"
+        }
+      ]
+    },
+    {
+      "id": "notifications.fanotify",
+      "rows": [
+        "fanotify.kernel",
+        "fanotify.reader"
+      ],
+      "bounds": "Kernel pending-record count has unknown group capacity. The reader owns detached batches through dispatch; shutdown record losses are lower bounds.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationKernelQueuesExposePendingRecords",
+          "mode": "kernel"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationQueueRetainsRunningBatchThroughClose",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationQueueRejectsFailedMeasurements",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationQueueNeverUsesClosedDescriptor",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationQueueCountsPanickingReaderBatch",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationReplacementRetainsWorkWithoutOldDepth",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationSnapshotTimesCompletedMeasurement",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/fanotify.go",
+          "symbol": "FileMonitor.kernelQueue",
+          "shape": "*notificationQueue"
+        },
+        {
+          "path": "internal/daemon/notification_queue_linux.go",
+          "symbol": "notificationQueue.source",
+          "shape": "notificationSource"
+        }
+      ]
+    },
+    {
+      "id": "notifications.forwarder",
+      "rows": [
+        "forwarder.kernel",
+        "forwarder.reader"
+      ],
+      "bounds": "Inotify reports pending bytes, with unknown capacity and lower-bound losses. Read batches remain owned through callbacks and descriptor cleanup.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestForwarderQueueRegisteredAtStartup",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyQueuesReportVariableLengthBacklog",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestForwarderQueueRegisteredAtStartup",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestForwarderQueueCountsOverflowMarkers",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyCloseCannotCloseRecycledDescriptor",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyWatcherWaitSupportsHighDescriptor",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyCloseCountsUnreadWorkAsLowerBound",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyQueueRetainsBlockedCallbackThroughClose",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPRelayQueueCountsOverflowMarkers",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyReplacementRetainsFailedWork",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/forwarder_watcher.go",
+          "symbol": "ForwarderWatcher.kernelQueue",
+          "shape": "*notificationQueue"
+        },
+        {
+          "path": "internal/daemon/notification_queue_linux.go",
+          "symbol": "notificationQueue.source",
+          "shape": "notificationSource"
+        }
+      ]
+    },
+    {
+      "id": "notifications.phprelay",
+      "rows": [
+        "phprelay.kernel",
+        "phprelay.reader"
+      ],
+      "bounds": "Inotify reports pending bytes, with unknown capacity and lower-bound losses. Read batches remain owned through callbacks and descriptor cleanup.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPRelayQueueCountsOverflowMarkers",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyQueuesReportVariableLengthBacklog",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestForwarderQueueRegisteredAtStartup",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestForwarderQueueCountsOverflowMarkers",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyCloseCannotCloseRecycledDescriptor",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyWatcherWaitSupportsHighDescriptor",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyCloseCountsUnreadWorkAsLowerBound",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyQueueRetainsBlockedCallbackThroughClose",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPRelayQueueCountsOverflowMarkers",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestInotifyReplacementRetainsFailedWork",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/php_relay_spool.go",
+          "symbol": "spoolWatcher.kernelQueue",
+          "shape": "*notificationQueue"
+        },
+        {
+          "path": "internal/daemon/notification_queue_linux.go",
+          "symbol": "notificationQueue.source",
+          "shape": "notificationSource"
+        }
+      ]
+    },
+    {
+      "id": "notifications.spool",
+      "rows": [
+        "spool.kernel",
+        "spool.reader"
+      ],
+      "bounds": "Kernel pending-record count has unknown group capacity. The reader owns detached batches through dispatch; shutdown record losses are lower bounds.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationKernelQueuesExposePendingRecords",
+          "mode": "kernel"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationQueueRetainsRunningBatchThroughClose",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationQueueRejectsFailedMeasurements",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationQueueNeverUsesClosedDescriptor",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationQueueCountsPanickingReaderBatch",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationReplacementRetainsWorkWithoutOldDepth",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestNotificationSnapshotTimesCompletedMeasurement",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/spoolwatch.go",
+          "symbol": "SpoolWatcher.kernelQueue",
+          "shape": "*notificationQueue"
+        },
+        {
+          "path": "internal/daemon/notification_queue_linux.go",
+          "symbol": "notificationQueue.source",
+          "shape": "notificationSource"
+        }
+      ]
+    },
+    {
+      "id": "php_taint",
+      "rows": [
+        "php_taint.requests"
+      ],
+      "bounds": "One worker RPC at a time; lock waiters have no fixed global cap. Requests retain pipe operations after caller timeout and remain owned through decoding and child cleanup.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueuePublication",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueuePublication",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueWaitingCallersCancelWithoutLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueRetainsRPCBeyondCallerCancellation",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueTimeoutLossSurvivesLateReply",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueKnownFailureDuringCleanup",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueSpawnFailuresAndBreakerRefusals",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueRejectedInputHasNoLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueHonorsLongConfiguredRPC",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueBufferedReplyHasIndependentBudget",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueRPCExitCountsOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/phptaintworker",
+          "name": "TestWorkerQueueRecoveredAnalyzerPanicCountsLoss",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "phpanel",
+      "rows": [
+        "phpanel.spool"
+      ],
+      "bounds": "100000 durable findings per state directory. Pending writes and deliveries awaiting acknowledgment retain ownership; retries preserve enqueue age.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsPhpanelQueueDuringBlockedSend",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthRefusesAdmissionAfterStop",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthRetainsDurableWaitingAge",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthCountsUncommittedBatchFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthKeepsFailedRetryPending",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthSurvivesBlockedDelivery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthOverflowAndFullCapacity",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthActiveEvictionWaitsForDelivery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthRespondsWhileDatabaseWriteWaits",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthDatabaseFailureKeepsCommittedBacklog",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthAcknowledgedOverflowIsNotLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthAbnormalSendRetainsDurableWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthConcurrentAdmissionAndClose",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthReloadsBacklogWithoutResettingLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthArchiveCountsMalformedFindingOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/alert",
+          "name": "TestPhpanelQueueHealthMalformedRecordDoesNotInventDeliveryFailure",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/alert/phpanel_queue.go",
+          "symbol": "phpanelQueue.db",
+          "shape": "*bolt.DB"
+        },
+        {
+          "path": "internal/alert/phpanel_queue.go",
+          "symbol": "phpanelQueue.limit",
+          "shape": "int"
+        },
+        {
+          "path": "internal/alert/phpanel_queue.go",
+          "symbol": "phpanelQueueLimit",
+          "shape": "100000"
+        }
+      ]
+    },
+    {
+      "id": "phprelay.index",
+      "rows": [
+        "phprelay.index.persistence"
+      ],
+      "bounds": "4096 waiting attribution writes. Each transaction has at most 256 operations, including explicit flush. Flush barriers order existing writes; concurrent arrivals cannot extend a flush indefinitely.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueRetainsWaitingAndRunningWork",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueRetainsWaitingAndRunningWork",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueStopCommitsAcceptedBacklog",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueStopIsIdempotent",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueFlushWaitsForShutdown",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueFailedBatchSettlesBeforeReporting",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueEncodingFailurePreservesOtherWrites",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueConcurrentAdmissionFlushAndStop",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueFlushBoundsTransactionsAndAdmission",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestMsgIndexQueueReportPanicSettlesOwnedBatch",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "processctx.enrichment",
+      "rows": [
+        "processctx.enrichment"
+      ],
+      "bounds": "1024 waiting requests and two process workers. Oldest queued requests may be replaced; active work includes reads, observation, account resolution and cache writes.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestProcessContextQueuePublishesSafelyDuringHealthReads",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestEnricherQueueEvictsOldestAndRetainsWaitingAge",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestEnricherQueueShutdownCountsBufferedRequests",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestEnricherQueueDistinguishesExpectedStalenessFromFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestEnricherQueueTracksTheWholeProcessingPath",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestEnricherQueuePanicSettlesOnlyOwnedRequest",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestEnricherQueueConcurrentProducersAndStopConserveRequests",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestEnricherQueueStoppedPoolCannotRestartBufferedWork",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "processctx.proc_reads",
+      "rows": [
+        "processctx.proc_reads"
+      ],
+      "bounds": "64 shared deadline-limited process-read slots. Underlying I/O and caller must both finish before release; synchronous reads consume no slot.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestProcessContextQueueIncludesProcReadHealth",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestProcReadQueueRetainsTimedOutSyscalls",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestProcReadQueueDistinguishesDisappearanceFromReadFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestProcReadQueueCountsLateFailureOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestProcReadQueueSynchronousReadsDoNotConsumeSlots",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestProcReadQueueRetainsUndeliveredResults",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestProcReadQueuePanicCountsOnlyItsOwnedRead",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestProcReadQueueConcurrentDeadlinesConserveResults",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/processctx",
+          "name": "TestProcReadQueueFileAndLinkHelpersPublishTheirFailures",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "scans",
+      "rows": [
+        "scans.jobs",
+        "scans.admission"
+      ],
+      "bounds": "Eight waiting full-scan jobs and one worker. Admission callers have no fixed global cap. Ownership includes job persistence, check batches, remediation and cleanup.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthPublished",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthPublished",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthCapacityAndCancellation",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthStalledPersistence",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthAdmissionWaitsOutsideLock",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthInterruptedPersistedJobs",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthWorkerExit",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthFollowsChildProgress",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthStopDrainsWithoutLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthRemediationProgress",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthRejectedDemandIsNotProgress",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestScanJobQueueHealthCountsFailedJobOnce",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "smtp_rdns",
+      "rows": [
+        "smtp_rdns.resolves"
+      ],
+      "bounds": "64 shared deadline-limited resolver slots, retained until resolver and caller finish. Cache hits and synchronous lookup mode add no queued work.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsRDNSLookupSlotsWithoutResolving",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsRDNSAfterCallerTimeout",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestRDNSQueueHealthRetainsTimedOutResolver",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestRDNSQueueHealthSeparatesNegativeResultsFromFailure",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestRDNSQueueHealthConcurrentSaturation",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestRDNSQueueHealthIgnoresCacheLock",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestRDNSQueueHealthSynchronousModeHasNoSlots",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/checks",
+          "name": "TestRDNSQueueHealthAbnormalResolverCountsOnce",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "spool.scanner",
+      "rows": [
+        "spool.scanner"
+      ],
+      "bounds": "Scanner channel capacity is selected at spool watcher construction. Running scans and known losses survive watcher replacement.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestSpoolQueueHealthAccountsForPanicAndCanceledAdmission",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestSpoolQueueHealthAccountsForPanicAndCanceledAdmission",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestSpoolQueueHealthSurvivesWatcherReplacement",
+          "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "state.pending",
+      "rows": [
+        "state.pending",
+        "state.pending_operations"
+      ],
+      "bounds": "The durable shutdown file retains the newest 10000 findings. Concurrent appends and detached replay have no fixed aggregate bound. Parked age is intentional; operations remain owned through readback, clear, replay and interruption settlement.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonReportsActualParkedAndReplayedFindings",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPendingQueueRealLogRoundTrip",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueCountsActualOverflowAndTake",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueFailedAppendPreservesOldFindings",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueHealthDoesNotWaitForStoreLock",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueTakePreservesEmptySliceResult",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueWriteReadback",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueBlockedWriteAndConcurrentAppend",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueReplayOwnsDetachedBatch",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueOverflowRetainsSurvivorAge",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueEncodingFailureHasKnownLoss",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueClearErrorReadsActualOutcome",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueInterruptedWriteKeepsKnownOverflow",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueReadFailureVisibleBeforeFormatting",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueInterruptedIOSettlesBeforeStateUnlock",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueCorruptStartupAndRecovery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/state",
+          "name": "TestPendingQueueSerializedIdentity",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/state/state.go",
+          "symbol": "Store.pendingQueue",
+          "shape": "*pendingQueue"
+        },
+        {
+          "path": "internal/state/pending_queue.go",
+          "symbol": "pendingQueue.disk",
+          "shape": "pendingImage"
+        },
+        {
+          "path": "internal/state/pending_queue.go",
+          "symbol": "pendingQueue.calls",
+          "shape": "map[*pendingCall]struct{}"
+        },
+        {
+          "path": "internal/state/pending_findings.go",
+          "symbol": "pendingFindingsMax",
+          "shape": "10000"
+        }
+      ]
+    }
+  ]
+}

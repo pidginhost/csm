@@ -95,10 +95,15 @@ func TestVerifyWPCoreRealTimeoutDoesNotResolveFinding(t *testing.T) {
 			t.Errorf("re-check path = %q, want %q", path, dir)
 		}
 		calls++
-		started := time.Now()
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("re-check command has no deadline")
+		}
+		// Dispatch delay consumes the caller's existing deadline budget.
+		time.Sleep(100 * time.Millisecond)
 		out, err := runCmdCombinedContextReal(ctx, "sleep", strconv.Itoa(int(wpVerifyTimeout/time.Second)+5))
-		if elapsed := time.Since(started); elapsed < wpVerifyTimeout || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			t.Errorf("did not reach the re-check deadline: elapsed=%s parent=%v", elapsed, ctx.Err())
+		if time.Now().Before(deadline) || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Errorf("did not reach the re-check deadline: parent=%v", ctx.Err())
 		}
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("actual re-check timeout returned %v", err)

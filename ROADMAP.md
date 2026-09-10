@@ -230,50 +230,28 @@ recorded-stream evidence.
 
 ## Backlog and dropped work are reported as counters, not as failures
 
-**Status:** open. Partly instrumented.
+**Status:** implemented. Production and kernel tests enforce the reviewed
+inventory; full release acceptance still requires the documented runner capabilities.
 
-The daemon has several bounded queues between the kernel and an alert: the
-fanotify analyzer queue, the alert channel, the spool and log watchers, the BPF
-ring buffers, the dropper tracker and the staged-package verification queue.
-Finding delivery, the analyzer, staged package verification, dropper processing
-and the spool scanner now report depth, drops and waiting/processing lag through status and
-doctor. Sustained pressure degrades health and produces bounded degradation
-and recovery findings through an independent delivery path. Dropper candidate
-and held-finding stages have separate bounds and health evidence,
-including exhausted probes and shutdown losses. The remaining queues
-and the inventory completeness gate are still open.
+Queue owners report waiting and active work, progress lag and confirmed losses
+through the health snapshot and `csm doctor`. Sustained pressure produces bounded
+degradation and recovery findings through an independent delivery path. Unknown
+kernel capacity or unreadable durable state is explicit, and uncertain shutdown
+losses remain lower bounds. Completed work, deliberate cancellation and retained
+retries are distinguished from failed work.
 
-BPF userspace delivery also reports pressure, decoding loss, running consumers
-and unconsumed shutdown output. Kernel rings report byte occupancy, reservation
-failures and time without observed reader progress. Their final shutdown loss
-is marked as a lower bound because kernel detachment can leave callbacks
-finishing.
+The reviewed inventory in `scripts/queue-inventory.json` covers channel handoffs,
+shared worker slots, durable backlogs, coalesced pending writes and kernel
+buffers. Production and kernel runners validate allocation and capacity changes,
+then require passing publication and lifecycle regressions for each owner.
+Missing or skipped required evidence fails the gate. New non-channel queues
+still require an explicit ownership review: syntax scanning cannot discover
+arbitrary pending work in maps, dependencies or durable storage.
 
-File and spool notification queues report pending records and stalled readers,
-with separate running-batch health after each kernel read. Overflow and unread
-shutdown counts are lower bounds; the unexposed kernel group capacity is
-explicitly unknown. Other kernel queue measurements remain open.
-
-The selected mail-log reader now reports delivery depth, stalled consumers
-and known lost records, retaining its counters across reader replacements
-and changes between file and journal sources. Other log readers remain open.
-
-Recovery scans also report waiting directories, running batches and failed
-work, including eviction, expiration and unfinished shutdown tasks. Repeated
-drops do not reset a directory's original waiting age.
-
-Forwarder and PHP relay inotify queues report pending bytes, consumer stalls,
-running callbacks and known losses. PHP relay replacements preserve loss
-evidence. Other bounded queues and the completeness gate remain open.
-
-A queue that silently sheds findings is the same failure as a table that
-silently narrows: healthy status, less protection.
-
-**Acceptance:** every bounded queue reports depth, drops and lag through the
-health snapshot and `csm doctor`, with a named degraded state when a threshold
-is crossed; a sustained drop rate on any queue raises a finding the way the
-analyzer overflow does today; no new queue can be added without those metrics
-(same completeness rule as above). The budgets themselves belong to
+See [Queue inventory](docs/src/production-tests.md#required-queue-inventory)
+for the gate, evidence format and scanner limits, and
+[health status](docs/src/api.md#protection-queue-health) for reported units and budgets.
+The resource limits themselves belong to
 [resource and performance budgets](#resource-and-performance-budgets).
 
 ---

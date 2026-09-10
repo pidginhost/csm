@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Attack event persistence now reports backlog, stalled writes and confirmed losses through status and doctor. Partial writes and uncertain completion remain visible after shutdown.
 
-- Queue inventory tooling detects unclassified channel allocations and records the regressions each reviewed owner must pass.
+- Production checks now enforce the reviewed queue inventory and reject missing or skipped health regressions.
 
 - File mail sources now report unread bytes and stalled reads, including buffered and partial lines. Source changes retain known lost records and make uncertain backlog explicit.
 
