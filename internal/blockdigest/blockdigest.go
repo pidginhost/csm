@@ -70,7 +70,8 @@ type Options struct {
 
 // Collector accumulates observations and drains them into digests.
 type Collector struct {
-	opts Options
+	opts   Options
+	queues *digestQueues
 
 	mu             sync.Mutex
 	records        []Record
@@ -88,7 +89,7 @@ func New(opts Options) *Collector {
 		opts.CountryOf = func(string) string { return "" }
 	}
 	opts.Countries = append([]string(nil), opts.Countries...)
-	return &Collector{opts: opts, lastLive: make(map[string]time.Time)}
+	return &Collector{opts: opts, lastLive: make(map[string]time.Time), queues: newDigestQueues(opts)}
 }
 
 func (c *Collector) countriesSnapshot() []string {
@@ -246,6 +247,7 @@ func (c *Collector) Observe(ip, reason string, ts time.Time) {
 		// drop-oldest: the digest only needs the interval's worth.
 		c.records = append(c.records[1:], rec)
 	}
+	c.queues.admit()
 	c.mu.Unlock()
 
 	if c.opts.Live {
@@ -256,10 +258,23 @@ func (c *Collector) Observe(ip, reason string, ts time.Time) {
 // Drain pulls the current window into a Digest (deduped by IP, customer first)
 // and clears the buffer.
 func (c *Collector) Drain() Digest {
+	d, batch := c.drain()
+	batch.finish(true)
+	return d
+}
+
+func (c *Collector) drain() (Digest, *digestBatch) {
 	c.mu.Lock()
 	recs := c.records
 	c.records = nil
+	batch := c.queues.detach()
 	c.mu.Unlock()
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			batch.finish(false)
+		}
+	}()
 
 	d := Digest{
 		Window:     c.opts.Interval,
@@ -300,7 +315,9 @@ func (c *Collector) Drain() Digest {
 	d.Records = make([]Record, 0, len(customer)+len(attacker))
 	d.Records = append(d.Records, customer...)
 	d.Records = append(d.Records, attacker...)
-	return d
+	batch.coalesce(d.Total)
+	handedOff = true
+	return d, batch
 }
 
 // reasonKey collapses a reason to its leading phrase (before the first ':')
@@ -327,7 +344,9 @@ func (c *Collector) maybeLive(rec Record) {
 		return
 	}
 	c.lastLive[rec.IP] = now
+	plan := c.beginDelivery()
 	c.mu.Unlock()
+	defer plan.finish()
 
 	d := Digest{
 		Window: c.opts.Interval, Countries: c.countriesSnapshot(),
@@ -341,7 +360,7 @@ func (c *Collector) maybeLive(rec Record) {
 	} else {
 		d.AttackerCount = 1
 	}
-	c.dispatch("block_live", d)
+	c.deliver(plan, "block_live", d)
 }
 
 func (c *Collector) pruneLastLiveLocked(now time.Time) {
@@ -365,11 +384,13 @@ func (c *Collector) pruneLastLiveLocked(now time.Time) {
 
 // tick drains the window and sends a digest when gating allows.
 func (c *Collector) tick() {
-	d := c.Drain()
+	d, batch := c.drain()
+	defer batch.finish(false)
 	if !c.shouldSend(d) {
+		batch.finish(true)
 		return
 	}
-	c.dispatch("block_digest", d)
+	c.dispatch("block_digest", d, batch)
 }
 
 // Flush sends one final digest regardless of cadence (shutdown path).
@@ -377,6 +398,8 @@ func (c *Collector) Flush() { c.tick() }
 
 // Run loops draining on each tick and drains a final digest on stop.
 func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
+	c.queues.setStopped(false)
+	defer c.queues.setStopped(true)
 	for {
 		select {
 		case <-stop:
@@ -395,16 +418,37 @@ func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
 // dispatch delivers a digest through whichever sinks are configured. Alert
 // delivery is best-effort and must never block the collector or the auto-block
 // path beyond the sink's own timeout; failures are reported through OnError.
-func (c *Collector) dispatch(event string, d Digest) {
-	if c.opts.EmailSink != nil {
-		if err := c.opts.EmailSink(c.renderSubject(d), c.renderBody(d)); err != nil {
+func (c *Collector) dispatch(event string, d Digest, batch *digestBatch) {
+	plan := c.beginDelivery()
+	defer plan.finish()
+	// Both destinations own their notifications before the buffer releases
+	// the coalesced records. A failing first sink cannot hide the second.
+	batch.finish(true)
+	c.deliver(plan, event, d)
+}
+
+func (c *Collector) deliver(plan *digestDeliveryPlan, event string, d Digest) {
+	if job := plan.email; job != nil {
+		job.start()
+		subject, body := c.renderSubject(d), c.renderBody(d)
+		job.offered = true
+		err := c.opts.EmailSink(subject, body)
+		job.result(err)
+		if err != nil {
 			c.reportSinkError("email", err)
 		}
+		job.finish()
 	}
-	if c.opts.WebhookSink != nil {
-		if err := c.opts.WebhookSink(c.buildPayload(event, d)); err != nil {
+	if job := plan.webhook; job != nil {
+		job.start()
+		payload := c.buildPayload(event, d)
+		job.offered = true
+		err := c.opts.WebhookSink(payload)
+		job.result(err)
+		if err != nil {
 			c.reportSinkError("webhook", err)
 		}
+		job.finish()
 	}
 }
 

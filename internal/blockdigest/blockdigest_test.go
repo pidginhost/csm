@@ -224,7 +224,7 @@ func TestDispatchReportsSinkErrors(t *testing.T) {
 			Bucket:  BucketAttacker,
 			TS:      time.Unix(0, 0),
 		}},
-	})
+	}, nil)
 
 	if !eq(got, []string{"email:email down", "webhook:webhook down"}) {
 		t.Fatalf("OnError calls = %v", got)
