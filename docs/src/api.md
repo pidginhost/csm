@@ -382,7 +382,7 @@ progressing batch does not appear stalled solely because of its total duration.
 Waiting age or absent write progress of one minute degrades health.
 Completed JSONL records accepted by the file writer and successful database
 writes count as persisted. Buffered data alone does not. Confirmed unwritten
-events count as losses, including an interrupted batch's unattempted tail and
+events count as losses, including interrupted work left buffered or unencoded, and
 returned encoding failures. These losses are visible before cleanup; close errors
 or abnormal I/O exits preserve uncertainty
 with `dropped_lower_bound` and report `persistence_uncertain` for one minute.

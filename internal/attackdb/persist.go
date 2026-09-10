@@ -277,7 +277,7 @@ func (db *DB) appendEvents(events []Event, batch *eventBatch) {
 	defer batch.finish()
 	if sdb := store.Global(); sdb != nil {
 		for i, ev := range events {
-			batch.beginEvent()
+			batch.beginWrite(1)
 			ts := ev.Timestamp
 			if ts.IsZero() {
 				ts = time.Now()
@@ -341,14 +341,13 @@ func (db *DB) appendEvents(events []Event, batch *eventBatch) {
 		}
 	}()
 
-	// An interrupted encoder abandons its unstarted tail before file cleanup,
-	// which may itself block. The current I/O outcome remains uncertain.
+	// Settle buffered and unencoded work before file cleanup, which may block.
+	// Only complete records offered to an interrupted write remain uncertain.
 	defer batch.settleInterrupted()
 	w := bufio.NewWriter(eventWriter{writer: f, batch: batch})
 	output := &eventEncoderWriter{writer: w}
 	enc := json.NewEncoder(output)
 	for _, ev := range events {
-		batch.beginEvent()
 		output.called = false
 		if err := enc.Encode(ev); err != nil && !output.called {
 			batch.advance(0, 1)

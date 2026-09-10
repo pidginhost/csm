@@ -23,9 +23,9 @@ type eventQueue struct {
 }
 
 type eventBatch struct {
-	queue                         *eventQueue
-	count, attempted, saved, lost int
-	progress                      time.Time
+	queue                       *eventQueue
+	count, offered, saved, lost int
+	progress                    time.Time
 }
 
 func (db *DB) eventHealth() *eventQueue {
@@ -60,17 +60,17 @@ func (q *eventQueue) detach() *eventBatch {
 	return batch
 }
 
-func (b *eventBatch) beginEvent() {
+func (b *eventBatch) beginWrite(count int) {
 	if b == nil {
 		return
 	}
 	b.queue.mu.Lock()
-	b.attempted++
+	b.offered = count
 	b.queue.mu.Unlock()
 }
 
-// A boundary can accept bytes without returning its result. Separate the
-// unattempted tail from that uncertain work before another boundary can block.
+// Only complete records offered to the current write can have an unknown
+// outcome. Everything still buffered or not yet encoded is a confirmed loss.
 func (b *eventBatch) settleInterrupted() {
 	if b == nil {
 		return
@@ -78,10 +78,9 @@ func (b *eventBatch) settleInterrupted() {
 	q := b.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	count := b.count - b.attempted
+	count := b.count - b.saved - b.lost - b.offered
 	if count > 0 {
 		b.lost += count
-		b.attempted = b.count
 		q.losses.Lose(time.Now(), uint64(count))
 	}
 	if b.count > b.saved+b.lost {
@@ -97,6 +96,7 @@ func (b *eventBatch) advance(saved, lost int) {
 	q := b.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	b.offered = 0
 	b.saved += saved
 	b.lost += lost
 	now := time.Now()
@@ -124,7 +124,7 @@ func (b *eventBatch) discardRemaining() {
 	q := b.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	b.attempted = b.count
+	b.offered = 0
 	remaining := b.count - b.saved - b.lost
 	if remaining > 0 {
 		q.losses.Lose(time.Now(), uint64(remaining))
@@ -180,6 +180,7 @@ type eventWriter struct {
 }
 
 func (w eventWriter) Write(p []byte) (int, error) {
+	w.batch.beginWrite(bytes.Count(p, []byte{'\n'}))
 	n, err := w.writer.Write(p)
 	w.batch.advance(bytes.Count(p[:n], []byte{'\n'}), 0)
 	return n, err
