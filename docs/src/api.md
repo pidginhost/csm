@@ -229,6 +229,20 @@ This aggregate sets `capacity_unavailable`: separate scans have their own wrappe
 limits, and timed-out functions can outlive those slots. It does not measure
 checks awaiting dispatch, scan-job persistence or later automatic actions.
 Status reads memory without waiting for a check or accessing the state database.
+`checks.plugin_inventory` reports sites waiting for the five inventory workers
+per refresh, retaining each site through command execution, result collection and
+cache storage or failed-result cleanup. Concurrent refreshes have no fixed combined
+capacity. Inventory uses a four-minute budget for its two bounded commands, or
+the shorter check deadline; admission and result handling each have one minute.
+A full pool stays healthy within those budgets. A free slot with no dispatch
+progress for one minute reports backlog lag. Command, decoding and storage
+failures count once per site, including when cleanup also fails. Cancellation
+adds no losses; deadline withdrawal counts unfinished sites. Buffered sites stay
+visible until the original workers stop consuming and the refresh joins them.
+Actual commands remain in flight until they return. Health reads memory only and
+retains loss evidence after recovery. Shared-refresh waiters remain owned by
+`checks.executions`; they do not create another set of site jobs. Optional domain
+lookup fallback and plugin metadata enrichment keep their existing behavior.
 `checks.dispatch` reports pending checks and occupied runner wrappers across host
 and account scan batches. Concurrent batches have no fixed global waiting limit,
 so capacity is unavailable. Lag uses `consumer_progress` within each batch:
