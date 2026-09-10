@@ -66,6 +66,9 @@ type Options struct {
 	EmailSink    func(subject, body string) error
 	WebhookSink  func(p WebhookPayload) error
 	OnError      func(channel string, err error)
+	// DeliveryEnabled only reads current policy; unfinished delivery also
+	// consults it during cleanup. Nil means every configured sink is eligible.
+	DeliveryEnabled func(channel string) bool
 }
 
 // Collector accumulates observations and drains them into digests.
@@ -421,7 +424,7 @@ func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
 func (c *Collector) dispatch(event string, d Digest, batch *digestBatch) {
 	plan := c.beginDelivery()
 	defer plan.finish()
-	// Both destinations own their notifications before the buffer releases
+	// Eligible destinations own notifications before the buffer releases
 	// the coalesced records. A failing first sink cannot hide the second.
 	batch.finish(true)
 	c.deliver(plan, event, d)
@@ -429,24 +432,26 @@ func (c *Collector) dispatch(event string, d Digest, batch *digestBatch) {
 
 func (c *Collector) deliver(plan *digestDeliveryPlan, event string, d Digest) {
 	if job := plan.email; job != nil {
-		job.start()
-		subject, body := c.renderSubject(d), c.renderBody(d)
-		job.offered = true
-		err := c.opts.EmailSink(subject, body)
-		job.result(err)
-		if err != nil {
-			c.reportSinkError("email", err)
+		if job.start() {
+			subject, body := c.renderSubject(d), c.renderBody(d)
+			job.offered = true
+			err := c.opts.EmailSink(subject, body)
+			job.result(err)
+			if err != nil {
+				c.reportSinkError("email", err)
+			}
 		}
 		job.finish()
 	}
 	if job := plan.webhook; job != nil {
-		job.start()
-		payload := c.buildPayload(event, d)
-		job.offered = true
-		err := c.opts.WebhookSink(payload)
-		job.result(err)
-		if err != nil {
-			c.reportSinkError("webhook", err)
+		if job.start() {
+			payload := c.buildPayload(event, d)
+			job.offered = true
+			err := c.opts.WebhookSink(payload)
+			job.result(err)
+			if err != nil {
+				c.reportSinkError("webhook", err)
+			}
 		}
 		job.finish()
 	}

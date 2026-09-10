@@ -35,6 +35,9 @@ type digestDelivery struct {
 	queue                       *digestSinkQueue
 	ticket                      queuehealth.Ticket
 	offered, returned, finished bool
+	tracked                     bool
+	channel                     string
+	deliveryEnabled             func(string) bool
 }
 
 type digestDeliveryPlan struct{ email, webhook *digestDelivery }
@@ -101,18 +104,45 @@ func (q *digestQueues) setStopped(stopped bool) {
 	q.mu.Unlock()
 }
 
-func (q *digestSinkQueue) begin() *digestDelivery {
+func (q *digestSinkQueue) begin(channel string, enabled func(string) bool) *digestDelivery {
 	if q == nil {
 		return nil
 	}
-	return &digestDelivery{queue: q, ticket: q.tracker.Begin(time.Now())}
+	d := &digestDelivery{queue: q, channel: channel, deliveryEnabled: enabled}
+	if d.enabled() {
+		d.enqueue()
+	}
+	return d
 }
 
 func (c *Collector) beginDelivery() *digestDeliveryPlan {
-	return &digestDeliveryPlan{email: c.queues.sinks["email"].begin(), webhook: c.queues.sinks["webhook"].begin()}
+	return &digestDeliveryPlan{
+		email:   c.queues.sinks["email"].begin("email", c.opts.DeliveryEnabled),
+		webhook: c.queues.sinks["webhook"].begin("webhook", c.opts.DeliveryEnabled),
+	}
 }
 
-func (d *digestDelivery) start() { d.ticket.Start(time.Now()) }
+func (d *digestDelivery) enabled() bool {
+	return d.deliveryEnabled == nil || d.deliveryEnabled(d.channel)
+}
+
+func (d *digestDelivery) enqueue() {
+	d.ticket = d.queue.tracker.Begin(time.Now())
+	d.tracked = true
+}
+
+func (d *digestDelivery) start() bool {
+	if !d.enabled() {
+		d.returned = true
+		return false
+	}
+	// A reload may enable the second destination while the first is running.
+	if !d.tracked {
+		d.enqueue()
+	}
+	d.ticket.Start(time.Now())
+	return true
+}
 
 func (d *digestDelivery) result(err error) {
 	d.returned = true
@@ -131,11 +161,13 @@ func (d *digestDelivery) finish() {
 			d.queue.uncertain = true
 			d.queue.uncertainAt = time.Now()
 			d.queue.mu.Unlock()
-		} else {
+		} else if d.enabled() {
 			d.queue.tracker.Lose(time.Now(), 1)
 		}
 	}
-	d.ticket.Finish(time.Now())
+	if d.tracked {
+		d.ticket.Finish(time.Now())
+	}
 	d.finished = true
 }
 

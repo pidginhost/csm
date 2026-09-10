@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Block digests now report buffered blocks, stalled preparation or delivery, and confirmed losses through status and doctor. Normal batching and filtering stay healthy; interrupted deliveries remain explicit.
+- Block digests now report buffered blocks, stalled preparation or delivery, and confirmed losses through status and doctor. Normal batching and disabled default destinations stay healthy; interrupted deliveries remain explicit.
 
 - Findings parked at shutdown now report stored backlog, stalled persistence or replay, and confirmed losses through status and doctor. Failed writes distinguish retained work from uncertain outcomes, including log text repaired during storage.
 

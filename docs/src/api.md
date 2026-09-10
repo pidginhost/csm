@@ -427,9 +427,13 @@ the next window. Expected per-IP coalescing and delivery filtering are successfu
 completion, while abandoned preparation counts its discarded records as losses.
 
 `block_digest.email` and `block_digest.webhook` report configured destinations
-in notifications, with `capacity_unavailable`. Each destination owns one
-notification before delivery starts, including live alerts and configured empty
-heartbeats. One minute waiting or active reports lag. A returned sink error
+in notifications, with `capacity_unavailable`. Each eligible destination owns
+one notification before delivery starts, including live alerts and configured
+empty heartbeats. Default delivery follows current alert settings at admission,
+attempt and interrupted cleanup. Disabled destinations add no new waiting work
+or loss; destinations enabled during an earlier send are still handled. Explicit
+destination selection keeps its error when that alert channel is disabled.
+One minute waiting or active reports lag. A returned sink error
 counts one lost notification and stays in flight through error logging. If an
 operation exits without returning, its attempted delivery reports
 `delivery_uncertain` for one minute and retains `dropped_lower_bound`; a remaining
