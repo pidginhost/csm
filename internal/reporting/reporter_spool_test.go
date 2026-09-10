@@ -95,7 +95,9 @@ func TestSpoolerEnqueueAndDrainDelivers(t *testing.T) {
 	sp := NewSpooler(spool, sender, []Target{tgt}, time.Minute)
 
 	r := Report{IP: "203.0.113.5", Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1_700_000_000, 0).UTC(), LastSeen: time.Unix(1_700_000_000, 0).UTC()}
-	sp.Enqueue(r)
+	if err := sp.Enqueue(r); err != nil {
+		t.Fatal(err)
+	}
 	if spool.Len() != 1 {
 		t.Fatalf("spool len = %d, want 1", spool.Len())
 	}
@@ -133,7 +135,9 @@ func TestSpoolerRetainsWhenCollectorDown(t *testing.T) {
 	tgt := Target{Name: "central", URL: srv.URL + "/report", Transport: TransportEd25519, NodeID: "n1", KeyID: "k1", Ed25519Key: priv}
 	sp := NewSpooler(spool, sender, []Target{tgt}, time.Minute)
 
-	sp.Enqueue(Report{IP: "203.0.113.5", Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1, 0), LastSeen: time.Unix(1, 0)})
+	if err := sp.Enqueue(Report{IP: "203.0.113.5", Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1, 0), LastSeen: time.Unix(1, 0)}); err != nil {
+		t.Fatal(err)
+	}
 	sp.DrainOnce(context.Background())
 	// Collector returned 500: report must be retained for retry.
 	if spool.Len() != 1 {
@@ -165,7 +169,9 @@ func TestSpoolerRetryBuildsFreshEnvelope(t *testing.T) {
 	tgt := Target{Name: "central", URL: srv.URL + "/report", Transport: TransportEd25519, NodeID: "n1", KeyID: "k1", Ed25519Key: priv}
 	sp := NewSpooler(spool, sender, []Target{tgt}, time.Minute)
 
-	sp.Enqueue(Report{IP: "203.0.113.5", Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1, 0), LastSeen: time.Unix(1, 0)})
+	if err := sp.Enqueue(Report{IP: "203.0.113.5", Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1, 0), LastSeen: time.Unix(1, 0)}); err != nil {
+		t.Fatal(err)
+	}
 	sp.DrainOnce(context.Background())
 	if spool.Len() != 1 {
 		t.Fatalf("spool len after failed drain = %d, want 1", spool.Len())
@@ -237,7 +243,9 @@ func TestSpoolerDeduplicatesTargetNames(t *testing.T) {
 		{Name: "central", URL: "https://new.example/report", Transport: TransportEd25519, NodeID: "n1", KeyID: "new", Ed25519Key: priv},
 	}
 	sp := NewSpooler(spool, NewSender(nil, fixedClock()), targets, time.Minute)
-	sp.Enqueue(Report{IP: "203.0.113.5", Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1, 0), LastSeen: time.Unix(1, 0)})
+	if err := sp.Enqueue(Report{IP: "203.0.113.5", Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1, 0), LastSeen: time.Unix(1, 0)}); err != nil {
+		t.Fatal(err)
+	}
 
 	if spool.Len() != 1 {
 		t.Fatalf("spool len = %d, want one item for duplicate target names", spool.Len())

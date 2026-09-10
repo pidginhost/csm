@@ -199,6 +199,17 @@ definitive positive or negative answers remain expected outcomes; queue health
 does not turn a resolver failure into a spoof finding. Shutdown cancels DNS,
 waits for any active cache write and discards waiting work. Late submissions
 are refused, pending keys are released and loss totals remain available.
+`abuse_reporting.ingress` measures reports awaiting durable storage, with a
+capacity of 10,000 or the configured spool limit when smaller. Running time
+includes persistence to every configured target. Memory overflow, incomplete
+persistence and work abandoned by a worker failure count as losses; one source
+report counts once even when several targets fail. Outbound delivery can delay
+memory work, and that backlog remains visible. The queue stays open through
+the daemon's final finding flush. Reporter shutdown then closes admission and
+persists every accepted report before closing the spool; a failed write does
+not discard unrelated waiting reports. Captured hooks refuse later reports.
+This row measures the memory queue, not reports already retained on disk for
+retry; normal shutdown does not count those durable reports as lost.
 Each active BPF backend also exposes a `.kernel` row. `depth_unit: bytes`
 labels ring occupancy and capacity. `lag_basis: consumer_progress` means
 `lag_seconds` measures time without observed consumption while data remains,

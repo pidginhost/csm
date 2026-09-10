@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Abuse reporting now reports memory backlog, stalled persistence and lost reports through status and doctor.
+
 - Bot verification now reports backlog, stalled work and lost requests through status and doctor. DNS and cache failures remain visible without changing bot classification.
 
 - Central threat-intelligence actions now report backlog, stalled work and failures through status and doctor. Shutdown accounts for abandoned actions and refuses late submissions.
@@ -48,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
+
+- Abuse reporter shutdown now closes admission before persisting its remaining reports, so late submissions cannot be silently stranded. Persistence failures remain visible while unrelated reports continue to be saved.
 
 - Bot verification shutdown now accounts for abandoned requests and refuses later submissions. Queued requests retain their original address when a caller reuses its input buffer.
 

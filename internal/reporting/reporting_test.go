@@ -167,5 +167,7 @@ func TestMinimizedReportLeaksNoPII(t *testing.T) {
 
 func TestNoopReporter(t *testing.T) {
 	var r Reporter = Noop{}
-	r.Enqueue(Report{IP: "203.0.113.5"}) // must not panic
+	if err := r.Enqueue(Report{IP: "203.0.113.5"}); err != nil {
+		t.Fatalf("disabled reporter failed: %v", err)
+	}
 }
