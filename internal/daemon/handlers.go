@@ -39,7 +39,12 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 		for _, action := range filemanWriteActions {
 			if strings.Contains(requestURI, action) {
 				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
+					// Warning, not Critical: this fires on every File Manager
+					// write by any customer, and 401/403 are already skipped
+					// above, so it only reports authenticated operations. Its
+					// value is correlation with other findings on the account,
+					// not the single event.
+					Severity: alert.Warning,
 					Check:    "cpanel_file_upload_realtime",
 					Message:  fmt.Sprintf("cPanel File Manager write from non-infra IP: %s", ip),
 					Details:  truncateDaemon(line, 300),
@@ -213,7 +218,9 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 			return findings
 		}
 		findings = append(findings, alert.Finding{
-			Severity: alert.High,
+			// Warning, not High: pure-ftpd writes this only after the login
+			// succeeded, so it fires on every legitimate FTP session.
+			Severity: alert.Warning,
 			Check:    "ftp_login_realtime",
 			Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
 			Details:  truncateDaemon(line, 200),

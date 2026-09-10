@@ -164,12 +164,13 @@ type blockedIP struct {
 }
 
 type pendingIP struct {
-	IP     string `json:"ip"`
-	Reason string `json:"reason"`
+	IP       string         `json:"ip"`
+	Reason   string         `json:"reason"`
+	Check    string         `json:"check,omitempty"`
+	Severity alert.Severity `json:"severity,omitempty"`
 	// QueuedAt is when the IP first entered the queue; it survives
-	// requeue cycles so age accumulates instead of resetting. Zero on
-	// entries written by older builds (treated as fresh once, then
-	// stamped on the first requeue).
+	// requeue cycles so age accumulates instead of resetting. Stamped on
+	// the first requeue for eligible entries with no timestamp.
 	QueuedAt time.Time `json:"queued_at,omitempty"`
 }
 
@@ -191,9 +192,78 @@ type blockState struct {
 	PendingDropWarnedHour string `json:"pending_drop_warned_hour,omitempty"`
 }
 
-// AutoBlockIPs processes findings and blocks attacker IPs via the firewall engine.
-// Note: this should be called with ALL findings (not just new ones)
-// for reputation-based blocking to work on repeat offenders.
+// alwaysBlockChecks carry a confirmed attacker IP: thresholded brute force,
+// confirmed compromise, C2/reputation, or escalation. Raw mailbox auth
+// failures and account-only mail findings feed incident grouping and
+// thresholded trackers, but one row is not enough evidence for a block.
+var alwaysBlockChecks = map[string]bool{
+	"wp_login_bruteforce":         true,
+	"xmlrpc_abuse":                true,
+	"http_request_flood":          true,
+	"http_scanner_profile":        true,
+	"http_claimed_bot_unverified": true,
+	"http_ua_spoof":               true,
+	"ftp_bruteforce":              true,
+	"smtp_bruteforce":             true,
+	"smtp_probe_abuse":            true,
+	"mail_bruteforce":             true,
+	"mail_account_compromised":    true,
+	"admin_panel_bruteforce":      true,
+	"ssh_login_unknown_ip":        true,
+	"ssh_login_realtime":          true,
+	"pam_bruteforce":              true,
+	"credential_stuffing":         true,
+	"c2_connection":               true,
+	"ip_reputation":               true,
+	"local_threat_score":          true,
+	"modsec_block_escalation":     true,
+	"modsec_csm_block_escalation": true,
+	"email_compromised_account":   true,
+	"email_cloud_relay_abuse":     true,
+	"waf_attack_blocked":          true,
+}
+
+// cpanelWebmailFailureChecks are blockable only when block_cpanel_logins is
+// enabled (disabled by default). Every entry reports a FAILED or thresholded
+// authentication attempt, which is real evidence.
+//
+// Checks that report a SUCCESSFUL operation are deliberately absent, and must
+// stay absent. cpanel_login and cpanel_login_realtime were excluded first:
+// they fire on every direct form login from a non-infra IP, and blocking on
+// one such Warning turns a legitimate customer logging in from a new country
+// into a 24h lockout.
+//
+// cpanel_file_upload_realtime, ftp_login_realtime and webmail_login_realtime
+// were missed at the time and caused exactly that. A customer was blocked one
+// second after uploading a file in File Manager, and five addresses were
+// blocked for logging in to FTP successfully. The handler skips 401 and 403,
+// so these only fire once the user has authenticated; on shared hosting every
+// customer is a non-infra IP, so they fire on ordinary use of core features.
+// They remain findings, which is where their value is -- correlated with
+// other evidence on the same account -- but they never block on their own.
+var cpanelWebmailFailureChecks = map[string]bool{
+	"cpanel_multi_ip_login":     true,
+	"api_auth_failure":          true,
+	"api_auth_failure_realtime": true,
+	"webmail_bruteforce":        true,
+	"ftp_auth_failure_realtime": true,
+}
+
+// blockableCheck reports whether a finding's check may drive a firewall block.
+func blockableCheck(check string, blockCpanelLogins bool) bool {
+	if alwaysBlockChecks[check] {
+		return true
+	}
+	return blockCpanelLogins && cpanelWebmailFailureChecks[check]
+}
+
+func blockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
+	// An established multi-mailbox source is advisory below Critical.
+	return blockableCheck(f.Check, blockCpanelLogins) &&
+		(f.Check != "mail_account_compromised" || f.Severity == alert.Critical)
+}
+
+// AutoBlockIPs processes all findings, including repeats, for IP blocking.
 func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return nil
@@ -264,55 +334,6 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Collect IPs to block from findings
 	ipsToBlock := make(map[string]pendingIP)
 
-	// Always blockable findings carry a confirmed attacker IP: thresholded
-	// brute force, confirmed compromise, C2/reputation, or escalation.
-	// Raw mailbox auth failures and account-only mail findings feed incident
-	// grouping and thresholded trackers, but one row is not enough evidence
-	// for a firewall block.
-	alwaysBlock := map[string]bool{
-		"wp_login_bruteforce":         true,
-		"xmlrpc_abuse":                true,
-		"http_request_flood":          true,
-		"http_scanner_profile":        true,
-		"http_claimed_bot_unverified": true,
-		"http_ua_spoof":               true,
-		"ftp_bruteforce":              true,
-		"smtp_bruteforce":             true,
-		"smtp_probe_abuse":            true,
-		"mail_bruteforce":             true,
-		"mail_account_compromised":    true,
-		"admin_panel_bruteforce":      true,
-		"ssh_login_unknown_ip":        true,
-		"ssh_login_realtime":          true,
-		"pam_bruteforce":              true,
-		"credential_stuffing":         true,
-		"c2_connection":               true,
-		"ip_reputation":               true,
-		"local_threat_score":          true,
-		"modsec_block_escalation":     true,
-		"modsec_csm_block_escalation": true,
-		"email_compromised_account":   true,
-		"email_cloud_relay_abuse":     true,
-		"waf_attack_blocked":          true,
-	}
-
-	// Only blockable when block_cpanel_logins is enabled (disabled by default).
-	// cpanel_login / cpanel_login_realtime are deliberately absent: those
-	// fire as Warning-level audit on every direct form login from a non-
-	// infra IP and a single event is not brute-force evidence. Blocking on
-	// one Warning turns a legitimate customer logging in from a new country
-	// into a 24h lockout. Thresholded brute checks below stay blockable.
-	cpanelWebmailChecks := map[string]bool{
-		"cpanel_multi_ip_login":       true,
-		"cpanel_file_upload_realtime": true,
-		"api_auth_failure":            true,
-		"api_auth_failure_realtime":   true,
-		"webmail_bruteforce":          true,
-		"webmail_login_realtime":      true,
-		"ftp_login_realtime":          true,
-		"ftp_auth_failure_realtime":   true,
-	}
-
 	// Drain pending queue first (IPs from prior rate-limited or failed
 	// cycles). Stale entries are dropped by name so the audit trail shows
 	// exactly which attackers aged out instead of being blocked.
@@ -323,6 +344,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 		p.IP = ip
+		// Retry only evidence still eligible under the current policy. Older
+		// queues lack check identity; a free-text reason cannot establish it.
+		if !blockableFinding(alert.Finding{Check: p.Check, Severity: p.Severity}, cfg.AutoResponse.BlockCpanelLogins) {
+			fmt.Fprintf(os.Stderr, "auto-block: dropping ineligible pending %s (check %q)\n", p.IP, p.Check)
+			continue
+		}
 		if !p.QueuedAt.IsZero() && autoBlockNow().Sub(p.QueuedAt) > maxPendingAge {
 			fmt.Fprintf(os.Stderr, "auto-block: dropping stale pending %s (queued %s)\n",
 				p.IP, p.QueuedAt.Format(time.RFC3339))
@@ -387,22 +414,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		})
 	}
 
-	// blockOnlyAtCritical marks checks whose sub-critical findings are
-	// advisory annotations (e.g. an established multi-mailbox office source)
-	// rather than confirmed-attacker evidence; those must never firewall.
-	blockOnlyAtCritical := map[string]bool{
-		"mail_account_compromised": true,
-	}
-
 	for _, f := range findings {
-		isBlockable := alwaysBlock[f.Check]
-		if !isBlockable && cfg.AutoResponse.BlockCpanelLogins && cpanelWebmailChecks[f.Check] {
-			isBlockable = true
-		}
-		if !isBlockable {
-			continue
-		}
-		if blockOnlyAtCritical[f.Check] && f.Severity != alert.Critical {
+		if !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
 			continue
 		}
 
@@ -428,12 +441,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		// A drained pending entry keeps its QueuedAt when the same IP
-		// recurs in fresh findings; only the reason is refreshed.
+		// recurs in fresh findings; the check, severity and reason are refreshed.
 		if existing, ok := ipsToBlock[ip]; ok {
 			existing.Reason = f.Message
+			existing.Check = f.Check
+			existing.Severity = f.Severity
 			ipsToBlock[ip] = existing
 		} else {
-			ipsToBlock[ip] = pendingIP{IP: ip, Reason: f.Message}
+			ipsToBlock[ip] = pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity}
 		}
 	}
 

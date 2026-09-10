@@ -87,3 +87,10 @@ func TestAPIGeoIPBatchGetIsRejected(t *testing.T) {
 		t.Errorf("GET batch = %d, want 405", w.Code)
 	}
 }
+
+func TestAuthSuccessHasFriendlyLabel(t *testing.T) {
+	names := newTestServer(t, "tok").csmConfig()["checkNames"].(map[string]string)
+	if got := names["auth_success"]; got != "Authenticated Activity" {
+		t.Fatalf("auth_success label = %q", got)
+	}
+}

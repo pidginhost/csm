@@ -759,7 +759,7 @@ func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 		BlocksThisHour: config.DefaultMaxBlocksPerHour,
 		HourKey:        now.Add(-2 * time.Hour).Format("2006-01-02T15"),
 		Pending: []pendingIP{
-			{IP: "9.8.7.6", Reason: "queued brute force"},
+			{IP: "9.8.7.6", Check: "wp_login_bruteforce", Reason: "queued brute force"},
 		},
 	})
 
@@ -920,6 +920,7 @@ func TestAutoBlockIPs_PendingQueueCappedUnderFlood(t *testing.T) {
 	for i := 0; i < overflow; i++ {
 		pending = append(pending, pendingIP{
 			IP:     fmt.Sprintf("2001:db8::%x", i),
+			Check:  "wp_login_bruteforce",
 			Reason: "queued flood",
 		})
 	}
