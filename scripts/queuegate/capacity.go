@@ -19,6 +19,9 @@ func (s *sourceIndex) capacity(file *sourceFile, expr ast.Expr, seen map[ast.Nod
 		}
 	case *ast.BasicLit:
 	case *ast.SelectorExpr:
+		if alias, ok := expr.X.(*ast.Ident); ok && alias.Obj == nil && file.imports[alias.Name] != "" {
+			break
+		}
 		base, err := s.capacity(file, expr.X, seen)
 		if err != nil {
 			return "", err

@@ -98,3 +98,21 @@ func TestScanRejectsUnsupportedCapacityInsideSelector(t *testing.T) {
 		}
 	}
 }
+
+func TestScanDistinguishesImportNamespaceFromIota(t *testing.T) {
+	for _, tc := range []struct{ name, path, constant, want string }{
+		{"repository", "github.com/pidginhost/csm/internal/limits", "Bound", "4"},
+		{"external", "unicode", "MaxLatin1", "iota.MaxLatin1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := fmt.Sprintf(`package example; import iota %q; func start(){ _=make(chan int,iota.%s) }`, tc.path, tc.constant)
+			got, err := scanSources(queueFixture(map[string]string{
+				"internal/limits/source.go":  `package limits; const Bound=4`,
+				"internal/example/source.go": source,
+			}))
+			if err != nil || len(got) != 1 || got[0].Capacity != tc.want {
+				t.Fatalf("import namespace treated as predeclared iota: sites=%+v err=%v", got, err)
+			}
+		})
+	}
+}

@@ -123,7 +123,8 @@ the capacity and its local inputs in the enclosing function. Expression grouping
 and build-variant values are retained, including array lengths, literal indices and slice bounds.
 Implicit constant declarations, `iota`, closures and named composite literals
 in capacity expressions need explicit scanner support and are rejected, including
-when nested inside field selections. Runtime
+when nested inside field selections. Import aliases are resolved as package
+names, including aliases that match predeclared identifiers. Runtime
 collection lengths stay symbolic; only explicit construction and slice bounds
 enter the local capacity-input graph. The scanner does not infer arbitrary
 function bodies or type layouts and is not whole-program data-flow analysis.

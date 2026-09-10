@@ -97,7 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Queue inventory checks now catch capacity changes hidden in local declarations and nested expressions, including field selections, and reject ambiguous build variants.
+- Queue inventory checks now catch capacity changes hidden in local declarations and nested expressions, including field selections, and reject ambiguous build variants. Legal import aliases remain supported.
 
 - Cleanup loss counts now include newly blocked IPs after recovery from unreadable state. Old cleanup records retain their uncertain history without hiding new failures.
 
