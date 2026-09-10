@@ -99,6 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Interrupted attack event writes now retain confirmed losses while cleanup finishes. Events whose write outcome is unknown remain separate from work that was never submitted.
+
 - Queue inventory checks now catch capacity changes hidden in local declarations and nested expressions, including field selections, and reject ambiguous build variants. Legal import aliases remain supported.
 
 - Cleanup loss counts now include newly blocked IPs after recovery from unreadable state. Old cleanup records retain their uncertain history without hiding new failures.

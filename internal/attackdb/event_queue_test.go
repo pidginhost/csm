@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -427,5 +429,132 @@ func TestAttackEventQueueEncodingFailureCountsOnlyMissingEvent(t *testing.T) {
 				t.Fatalf("encoding failure lost healthy neighbors: %+v", s)
 			}
 		})
+	}
+}
+
+func TestAttackEventQueueAbandonedTailIsKnownLoss(t *testing.T) {
+	for _, exitMode := range []string{"panic", "goexit"} {
+		for _, scenario := range []string{"large_first", "marshal_before"} {
+			t.Run(exitMode+"/"+scenario, func(t *testing.T) {
+				db := eventQueueFlatDB(t)
+				first := findingFromIP("198.51.100.23")
+				wantLoss, wantSubmitted := uint64(2), 1
+				if scenario == "large_first" {
+					first.TenantID = strings.Repeat("a", 12000)
+				} else {
+					first.Timestamp = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+					wantLoss, wantSubmitted = 1, 2
+				}
+				db.RecordFinding(first)
+				db.RecordFinding(findingFromIP("203.0.113.24"))
+				db.RecordFinding(findingFromIP("203.0.113.25"))
+				submitted := 0
+				closed := false
+				db.openEvents = func(string) (io.WriteCloser, error) {
+					return eventQueueFaultFile{
+						write: func(p []byte) (int, error) {
+							submitted = bytes.Count(p, []byte{'\n'})
+							if exitMode == "goexit" {
+								runtime.Goexit()
+							}
+							panic("interrupted event writer")
+						},
+						close: func() error { closed = true; return nil },
+					}, nil
+				}
+				done := make(chan struct{})
+				returned, recovered := false, false
+				go func() {
+					defer close(done)
+					defer func() { recovered = recover() != nil }()
+					_ = db.Flush()
+					returned = true
+				}()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("interrupted flush did not release its caller")
+				}
+				if returned || recovered != (exitMode == "panic") || !closed {
+					t.Fatalf("wrong exit lifecycle: returned=%v recovered=%v closed=%v", returned, recovered, closed)
+				}
+				if submitted != wantSubmitted {
+					t.Fatalf("writer received %d complete events, want %d", submitted, wantSubmitted)
+				}
+				if s := eventQueueStatus(t, db, time.Now()); s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != wantLoss || !s.DroppedLowerBound || s.Reason != "persistence_uncertain" {
+					t.Fatalf("known abandoned work was hidden by uncertain current I/O: %+v", s)
+				}
+			})
+		}
+	}
+}
+
+func TestAttackEventQueueKnownLossVisibleBeforeCleanup(t *testing.T) {
+	db := eventQueueFlatDB(t)
+	for i := 0; i < 4; i++ {
+		f := findingFromIP("198.51.100.23")
+		if i == 0 {
+			f.Timestamp = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+		}
+		if i == 1 {
+			f.TenantID = strings.Repeat("a", 12000)
+		}
+		db.RecordFinding(f)
+	}
+	writing, closing := make(chan struct{}), make(chan struct{})
+	releaseWrite, releaseClose := make(chan struct{}), make(chan struct{})
+	var writeOnce, closeOnce sync.Once
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		writeOnce.Do(func() { close(releaseWrite) })
+		closeOnce.Do(func() { close(releaseClose) })
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("interrupted flush still blocked")
+		}
+	})
+	var accepted bytes.Buffer
+	db.openEvents = func(string) (io.WriteCloser, error) {
+		return eventQueueFaultFile{
+			write: func(p []byte) (int, error) {
+				close(writing)
+				<-releaseWrite
+				_, _ = accepted.Write(p)
+				panic("writer interrupted after accepting bytes")
+			},
+			close: func() error { close(closing); <-releaseClose; return nil },
+		}, nil
+	}
+	panicked := false
+	go func() { defer close(done); defer func() { panicked = recover() != nil }(); _ = db.Flush() }()
+	select {
+	case <-writing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer did not start")
+	}
+	if s := eventQueueStatus(t, db, time.Now()); s.Depth != 0 || s.InFlight != 4 || s.DroppedTotal != 1 {
+		t.Fatalf("returned marshal failure hidden by blocked writer: %+v", s)
+	}
+	writeOnce.Do(func() { close(releaseWrite) })
+	select {
+	case <-closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("close did not start")
+	}
+	if s := eventQueueStatus(t, db, time.Now()); s.Depth != 0 || s.InFlight != 4 || s.DroppedTotal != 3 || !s.DroppedLowerBound || s.Reason != "persistence_uncertain" {
+		t.Fatalf("cleanup hid known tail loss or uncertain write: %+v", s)
+	}
+	closeOnce.Do(func() { close(releaseClose) })
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("flush did not release")
+	}
+	if !panicked || bytes.Count(accepted.Bytes(), []byte{'\n'}) != 1 {
+		t.Fatalf("incorrect fault setup: panicked=%v accepted=%d", panicked, bytes.Count(accepted.Bytes(), []byte{'\n'}))
+	}
+	if s := eventQueueStatus(t, db, time.Now()); s.InFlight != 0 || s.DroppedTotal != 3 || !s.DroppedLowerBound {
+		t.Fatalf("cleanup double-counted abandoned work: %+v", s)
 	}
 }

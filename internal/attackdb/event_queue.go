@@ -23,9 +23,9 @@ type eventQueue struct {
 }
 
 type eventBatch struct {
-	queue              *eventQueue
-	count, saved, lost int
-	progress           time.Time
+	queue                         *eventQueue
+	count, attempted, saved, lost int
+	progress                      time.Time
 }
 
 func (db *DB) eventHealth() *eventQueue {
@@ -58,6 +58,36 @@ func (q *eventQueue) detach() *eventBatch {
 	q.oldest = time.Time{}
 	q.active = batch
 	return batch
+}
+
+func (b *eventBatch) beginEvent() {
+	if b == nil {
+		return
+	}
+	b.queue.mu.Lock()
+	b.attempted++
+	b.queue.mu.Unlock()
+}
+
+// A boundary can accept bytes without returning its result. Separate the
+// unattempted tail from that uncertain work before another boundary can block.
+func (b *eventBatch) settleInterrupted() {
+	if b == nil {
+		return
+	}
+	q := b.queue
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	count := b.count - b.attempted
+	if count > 0 {
+		b.lost += count
+		b.attempted = b.count
+		q.losses.Lose(time.Now(), uint64(count))
+	}
+	if b.count > b.saved+b.lost {
+		q.uncertain = true
+		q.uncertainAt = time.Now()
+	}
 }
 
 func (b *eventBatch) advance(saved, lost int) {
@@ -94,6 +124,7 @@ func (b *eventBatch) discardRemaining() {
 	q := b.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	b.attempted = b.count
 	remaining := b.count - b.saved - b.lost
 	if remaining > 0 {
 		q.losses.Lose(time.Now(), uint64(remaining))
@@ -105,14 +136,9 @@ func (b *eventBatch) finish() {
 	if b == nil {
 		return
 	}
+	b.settleInterrupted()
 	q := b.queue
 	q.mu.Lock()
-	// A panicking boundary may have accepted data without returning its result.
-	// Count only confirmed losses; keep the remainder explicitly uncertain.
-	if b.count > b.saved+b.lost {
-		q.uncertain = true
-		q.uncertainAt = time.Now()
-	}
 	q.active = nil
 	q.mu.Unlock()
 }
@@ -157,4 +183,16 @@ func (w eventWriter) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
 	w.batch.advance(bytes.Count(p[:n], []byte{'\n'}), 0)
 	return n, err
+}
+
+// An encoder error before Write confirms this event was never submitted, even
+// if a later file operation exits without returning an observable byte count.
+type eventEncoderWriter struct {
+	writer io.Writer
+	called bool
+}
+
+func (w *eventEncoderWriter) Write(p []byte) (int, error) {
+	w.called = true
+	return w.writer.Write(p)
 }
