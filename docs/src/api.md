@@ -243,6 +243,20 @@ Actual commands remain in flight until they return. Health reads memory only and
 retains loss evidence after recovery. Shared-refresh waiters remain owned by
 `checks.executions`; they do not create another set of site jobs. Optional domain
 lookup fallback and plugin metadata enrichment keep their existing behavior.
+`checks.file_index.waiting` reports live scans waiting for the shared baseline
+slot, with no fixed waiting capacity. Each wait keeps its shorter parent deadline
+or the file-index check budget; a free slot with no admission for one minute also
+reports backlog lag. `checks.file_index.active` reports the single occupied slot.
+Walking and file analysis use the check's original execution deadline (normally
+15 minutes) or the shorter parent deadline. Setup, persistence and cleanup each
+have a separate one-minute budget. A healthy long scan alone does not report a
+full queue. Actual filesystem work remains visible after cancellation until it
+returns. Deadline withdrawal, incomplete walks, failed state reads or writes and
+abnormal exits count once per live scan; explicit cancellation alone adds no loss.
+The common three-loss warning threshold applies, and recovery retains total losses.
+A successful late baseline commit adds no loss. Findings and shrink protection
+keep their existing behavior. Force-file-index audits bypass this stateful slot
+and remain owned by the check execution row. Snapshots read memory only.
 `checks.reputation_queries` publishes accepted lookups immediately after quota
 reservation, including while refused lookups receive fallback scoring. It follows
 the accepted work through HTTP,

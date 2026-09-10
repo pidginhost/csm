@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- File-index scans now report waiting callers, stalled scans and failed work through status and doctor. Audit scans remain independent, and successful late baseline writes do not count as lost work.
+
 - Reputation checks now report waiting queries, stalled result handling and failed work through status and doctor. Reserved lookups stay visible while fallback scoring runs; cache failures retain the findings, and normal quota limits remain separate from queue failures.
 
 - WordPress plugin inventory now reports waiting sites, stalled workers and failed completion through status and doctor. Canceled commands stay visible until they return, and shared refreshes count each site once.

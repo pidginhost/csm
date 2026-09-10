@@ -63,16 +63,24 @@ func TestIsSuspiciousPHPName(t *testing.T) {
 func TestDirCacheRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	orig := dirMtimeCache{"/foo": 1000, "/bar": 2000}
-	saveDirCache(dir, orig)
+	if err := saveDirCache(dir, orig); err != nil {
+		t.Fatal(err)
+	}
 
-	loaded := loadDirCache(dir)
+	loaded, err := loadDirCache(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if loaded["/foo"] != 1000 || loaded["/bar"] != 2000 {
 		t.Errorf("got %v, want %v", loaded, orig)
 	}
 }
 
 func TestLoadDirCacheMissing(t *testing.T) {
-	loaded := loadDirCache(t.TempDir())
+	loaded, err := loadDirCache(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(loaded) != 0 {
 		t.Errorf("missing file should return empty cache, got %v", loaded)
 	}
@@ -119,9 +127,14 @@ func TestWriteLoadIndexRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.idx")
 	entries := []string{"/a/b.php", "/c/d.php", "/e/f.phtml"}
-	writeIndex(path, entries)
+	if err := writeIndex(path, entries); err != nil {
+		t.Fatal(err)
+	}
 
-	loaded := loadIndex(path)
+	loaded, err := loadIndex(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(loaded) != len(entries) {
 		t.Fatalf("got %d entries, want %d", len(loaded), len(entries))
 	}
@@ -133,7 +146,11 @@ func TestWriteLoadIndexRoundTrip(t *testing.T) {
 }
 
 func TestLoadIndexMissing(t *testing.T) {
-	if got := loadIndex(filepath.Join(t.TempDir(), "nope")); got != nil {
+	got, err := loadIndex(filepath.Join(t.TempDir(), "nope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
 		t.Errorf("missing file should return nil, got %v", got)
 	}
 }
@@ -144,8 +161,12 @@ func TestCopyFile(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.txt")
 	dst := filepath.Join(dir, "dst.txt")
-	_ = os.WriteFile(src, []byte("hello"), 0644)
-	copyFile(src, dst)
+	if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(src, dst); err != nil {
+		t.Fatal(err)
+	}
 
 	data, err := os.ReadFile(dst)
 	if err != nil {
@@ -158,8 +179,13 @@ func TestCopyFile(t *testing.T) {
 
 func TestCopyFileMissingSrc(t *testing.T) {
 	dir := t.TempDir()
-	copyFile(filepath.Join(dir, "missing"), filepath.Join(dir, "dst"))
-	// Should not panic.
+	dst := filepath.Join(dir, "dst")
+	if err := copyFile(filepath.Join(dir, "missing"), dst); !os.IsNotExist(err) {
+		t.Fatalf("missing source returned %v", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatalf("missing source created destination: %v", err)
+	}
 }
 
 // --- groupEntriesByUploadDir ------------------------------------------
