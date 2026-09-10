@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -718,4 +719,200 @@ func TestFileIndexQueueAdmissionBudgetStartsWhenSlotFrees(t *testing.T) {
 			t.Fatalf("admission recovery leaked work: %+v", rows)
 		}
 	})
+}
+
+func TestFileIndexQueueUnreadableContentLoss(t *testing.T) {
+	for _, tc := range []struct{ dir, check string }{
+		{"uploads", "new_php_in_uploads"},
+		{"languages", "new_php_in_sensitive_dir"},
+		{"upgrade", "new_php_in_sensitive_dir"},
+	} {
+		t.Run(tc.dir, func(t *testing.T) {
+			cfg, fs := fileIndexQueueFixture(t)
+			previous := filepath.Join(cfg.StatePath, "fileindex.previous")
+			if err := os.WriteFile(previous, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			uploads := "/home/alice/public_html/wp-content/" + tc.dir
+			readDir, stat, open := fs.readDir, fs.stat, fs.open
+			var cycle int
+			var attempts int
+			var currentPath string
+			fs.readDir = func(name string) ([]os.DirEntry, error) {
+				if name == uploads {
+					return phpDirEntries(filepath.Base(currentPath)), nil
+				}
+				if name == "/home/alice/public_html/wp-content/uploads" {
+					return nil, nil
+				}
+				return readDir(name)
+			}
+			fs.stat = func(name string) (os.FileInfo, error) {
+				if name == uploads {
+					return &fakeFileInfoMtime{name: "uploads", dir: true, mode: 0755, mtime: time.Unix(100+int64(cycle), 0)}, nil
+				}
+				return stat(name)
+			}
+			fs.open = func(name string) (*os.File, error) {
+				if name == currentPath {
+					attempts++
+					return nil, os.ErrPermission
+				}
+				return open(name)
+			}
+			for cycle = 1; cycle <= 3; cycle++ {
+				currentPath = filepath.Join(uploads, fmt.Sprintf("ordinary-loader-%d.php", cycle))
+				findings := CheckFileIndex(context.Background(), cfg, nil)
+				if len(findings) != 1 || findings[0].Check != tc.check || findings[0].Severity != alert.High || findings[0].FilePath != currentPath || !strings.Contains(findings[0].Message, "unreadable") {
+					t.Fatalf("existing fail-closed verdict changed: %+v", findings)
+				}
+			}
+			if attempts != 3 {
+				t.Fatalf("actual content opens=%d, want 3", attempts)
+			}
+			rows := fileIndexQueueRows(t, time.Now())
+			if rows["active"].InFlight != 0 || rows["active"].DroppedTotal != 3 || rows["active"].Reason != "dropped_work" {
+				t.Errorf("failed content analysis stayed healthy: %+v", rows)
+			}
+		})
+	}
+}
+
+type fileIndexQueueMetadataEntry struct {
+	calls *atomic.Int32
+	err   error
+}
+
+func (fileIndexQueueMetadataEntry) Name() string      { return "worker" }
+func (fileIndexQueueMetadataEntry) IsDir() bool       { return false }
+func (fileIndexQueueMetadataEntry) Type() os.FileMode { return 0 }
+func (e fileIndexQueueMetadataEntry) Info() (os.FileInfo, error) {
+	e.calls.Add(1)
+	return nil, e.err
+}
+
+func TestFileIndexQueueExecutableMetadataFailureLoss(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		loss   uint64
+		reason string
+	}{
+		{name: "permission", err: os.ErrPermission, loss: 3, reason: "dropped_work"},
+		{name: "disappeared", err: os.ErrNotExist},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, fs := fileIndexQueueFixture(t)
+			readDir, stat := fs.readDir, fs.stat
+			var calls atomic.Int32
+			var cycle int
+			fs.readDir = func(name string) ([]os.DirEntry, error) {
+				switch name {
+				case "/home/alice/.config":
+					return []os.DirEntry{fileIndexQueueMetadataEntry{calls: &calls, err: tc.err}}, nil
+				case "/home/alice/public_html/wp-content/uploads":
+					return nil, nil
+				}
+				return readDir(name)
+			}
+			fs.stat = func(name string) (os.FileInfo, error) {
+				if name == "/home/alice/.config" {
+					return &fakeFileInfoMtime{name: ".config", dir: true, mode: 0755, mtime: time.Unix(100+int64(cycle), 0)}, nil
+				}
+				return stat(name)
+			}
+			for cycle = 1; cycle <= 3; cycle++ {
+				if findings := CheckFileIndex(context.Background(), cfg, nil); len(findings) != 0 {
+					t.Fatalf("metadata failure created findings: %+v", findings)
+				}
+			}
+			if calls.Load() != 3 {
+				t.Fatalf("actual metadata calls=%d, want 3", calls.Load())
+			}
+			rows := fileIndexQueueRows(t, time.Now())
+			if rows["active"].InFlight != 0 || rows["active"].DroppedTotal != tc.loss || rows["active"].Reason != tc.reason {
+				t.Errorf("incomplete executable enumeration stayed healthy: %+v", rows)
+			}
+		})
+	}
+}
+
+func TestFileIndexQueueContentOutcomeBeforeCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, check string
+		unreadable        bool
+		loss              uint64
+	}{
+		{name: "clean", body: "<?php echo 'ready';", check: "new_php_in_uploads_clean"},
+		{name: "empty", check: "new_php_in_uploads_clean"},
+		{name: "stub", body: "<?php // Silence is golden."},
+		{name: "unreadable", unreadable: true, check: "new_php_in_uploads", loss: 1},
+		{name: "c99", unreadable: true, check: "new_webshell_file", loss: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, fs := fileIndexQueueFixture(t)
+			previous := filepath.Join(cfg.StatePath, "fileindex.previous")
+			if err := os.WriteFile(previous, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			const uploads = "/home/alice/public_html/wp-content/uploads"
+			path := filepath.Join(uploads, tc.name+".php")
+			bodyPath := filepath.Join(t.TempDir(), "content.php")
+			if err := os.WriteFile(bodyPath, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			readDir, open, readFile, stat := fs.readDir, fs.open, fs.readFile, fs.stat
+			fs.readDir = func(name string) ([]os.DirEntry, error) {
+				if name == uploads {
+					return phpDirEntries(filepath.Base(path)), nil
+				}
+				return readDir(name)
+			}
+			fs.open = func(name string) (*os.File, error) {
+				if name == path {
+					if tc.unreadable {
+						return nil, os.ErrPermission
+					}
+					return os.Open(bodyPath)
+				}
+				return open(name)
+			}
+			fs.stat = func(name string) (os.FileInfo, error) {
+				if name == path {
+					return os.Stat(bodyPath)
+				}
+				return stat(name)
+			}
+			commits := 0
+			fs.readFile = func(name string) ([]byte, error) {
+				if name == filepath.Join(cfg.StatePath, "fileindex.current") {
+					commits++
+					rows := fileIndexQueueRows(t, time.Now())
+					if rows["active"].InFlight != 1 || rows["active"].DroppedTotal != tc.loss || rows["waiting"].Depth != 0 {
+						t.Fatalf("content outcome missing before baseline commit: %+v", rows)
+					}
+				}
+				return readFile(name)
+			}
+			findings := CheckFileIndex(context.Background(), cfg, nil)
+			if tc.check == "" {
+				if len(findings) != 0 {
+					t.Fatalf("inert stub produced findings: %+v", findings)
+				}
+			} else if len(findings) != 1 || findings[0].Check != tc.check || findings[0].FilePath != path {
+				t.Fatalf("content verdict changed: %+v", findings)
+			}
+			if commits != 1 {
+				t.Fatalf("baseline copies=%d, want 1", commits)
+			}
+			data, err := os.ReadFile(previous)
+			if err != nil || string(data) != path+"\n" {
+				t.Fatalf("baseline=%q err=%v", data, err)
+			}
+			rows := fileIndexQueueRows(t, time.Now())
+			if rows["active"].InFlight != 0 || rows["active"].DroppedTotal != tc.loss || rows["active"].RecentDrops != tc.loss || rows["active"].Status != "ok" || rows["waiting"].DroppedTotal != 0 {
+				t.Fatalf("content outcome changed on completion: %+v", rows)
+			}
+		})
+	}
 }

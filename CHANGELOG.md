@@ -83,6 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- File scan health now counts failed content and executable metadata reads. Existing findings remain available, and files disappearing during metadata enumeration do not count as lost work.
+
 - Completed mailbox audits no longer count as lost when a deadline expires during final cleanup. Draining canceled work no longer holds up health snapshots while checking the scan context.
 
 - Recovered PHP analyzer failures now appear in queue health even when worker communication succeeds. Existing scan results and worker recovery behavior are unchanged.

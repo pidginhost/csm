@@ -263,19 +263,19 @@ func TestCheckFileIndexFingerprintUsesClassifiedContent(t *testing.T) {
 func TestClassifyPHPWithFingerprintFailClosedWithoutHash(t *testing.T) {
 	cases := []struct {
 		name      string
-		classify  func() (alert.Severity, string, string, string)
+		classify  func() (alert.Severity, string, string, string, bool)
 		wantCheck string
 	}{
 		{
 			name: "upload-unreadable",
-			classify: func() (alert.Severity, string, string, string) {
+			classify: func() (alert.Severity, string, string, string, bool) {
 				return classifyUploadPHPWithFingerprint("/nonexistent/wp-content/uploads/gone.php")
 			},
 			wantCheck: "new_php_in_uploads",
 		},
 		{
 			name: "sensitive-unreadable",
-			classify: func() (alert.Severity, string, string, string) {
+			classify: func() (alert.Severity, string, string, string, bool) {
 				return classifySensitiveDirPHPWithFingerprint("/nonexistent/wp-content/languages/gone.php", "gone.php")
 			},
 			wantCheck: "new_php_in_sensitive_dir",
@@ -284,7 +284,10 @@ func TestClassifyPHPWithFingerprintFailClosedWithoutHash(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sev, check, _, hash := tc.classify()
+			sev, check, _, hash, readOK := tc.classify()
+			if readOK {
+				t.Fatal("unreadable content reported a successful read")
+			}
 			if sev != alert.High {
 				t.Fatalf("severity = %v, want High", sev)
 			}

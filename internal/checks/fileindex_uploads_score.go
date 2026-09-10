@@ -26,23 +26,23 @@ import (
 // intentionally absent from the correlation and auto-response maps -- neither
 // is an attack, and rating them High buries the findings that are.
 func classifyUploadPHP(path string) (alert.Severity, string, string) {
-	sev, check, message, _ := classifyUploadPHPWithFingerprint(path)
+	sev, check, message, _, _ := classifyUploadPHPWithFingerprint(path)
 	return sev, check, message
 }
 
-func classifyUploadPHPWithFingerprint(path string) (alert.Severity, string, string, string) {
+func classifyUploadPHPWithFingerprint(path string) (alert.Severity, string, string, string, bool) {
 	r, contentSHA256 := analyzePHPContentWithFingerprint(path)
 	if r.severity >= 0 {
-		return r.severity, r.check, fmt.Sprintf("%s: %s", r.message, path), contentSHA256
+		return r.severity, r.check, fmt.Sprintf("%s: %s", r.message, path), contentSHA256, r.readOK
 	}
 	if !r.readOK {
-		return alert.High, "new_php_in_uploads", fmt.Sprintf("New unreadable PHP file in uploads: %s", path), ""
+		return alert.High, "new_php_in_uploads", fmt.Sprintf("New unreadable PHP file in uploads: %s", path), "", false
 	}
 	if r.empty {
-		return alert.Warning, "new_php_in_uploads_clean", fmt.Sprintf("New empty PHP file in uploads (no content): %s", path), ""
+		return alert.Warning, "new_php_in_uploads_clean", fmt.Sprintf("New empty PHP file in uploads (no content): %s", path), "", true
 	}
 	if IsBenignPHPStub(path) {
-		return -1, "", "", ""
+		return -1, "", "", "", true
 	}
-	return alert.Warning, "new_php_in_uploads_clean", fmt.Sprintf("New PHP file in uploads (content clean): %s", path), ""
+	return alert.Warning, "new_php_in_uploads_clean", fmt.Sprintf("New PHP file in uploads (content clean): %s", path), "", true
 }

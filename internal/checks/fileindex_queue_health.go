@@ -12,6 +12,16 @@ import (
 
 var fileIndexQueues = newFileIndexQueue()
 
+type fileIndexWorkKey struct{}
+
+// Content and metadata failures retain existing findings and baseline policy.
+// They still belong to the live scan, even when a walker can continue.
+func reportFileIndexFailure(ctx context.Context) {
+	if work, ok := ctx.Value(fileIndexWorkKey{}).(*fileIndexWork); ok {
+		work.fail()
+	}
+}
+
 type fileIndexQueueMonitor struct {
 	mu                      sync.Mutex
 	waiting                 map[*fileIndexWork]struct{}

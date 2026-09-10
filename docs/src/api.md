@@ -251,8 +251,10 @@ Walking and file analysis use the check's original execution deadline (normally
 15 minutes) or the shorter parent deadline. Setup, persistence and cleanup each
 have a separate one-minute budget. A healthy long scan alone does not report a
 full queue. Actual filesystem work remains visible after cancellation until it
-returns. Deadline withdrawal, incomplete walks, failed state reads or writes and
-abnormal exits count once per live scan; explicit cancellation alone adds no loss.
+returns. Deadline withdrawal, incomplete walks, unreadable PHP content, failed
+executable metadata or state reads and writes, and abnormal exits count once per
+live scan. Executable entries disappearing during enumeration and explicit
+cancellation alone add no loss.
 The common three-loss warning threshold applies, and recovery retains total losses.
 A successful late baseline commit adds no loss. Findings and shrink protection
 keep their existing behavior. Force-file-index audits bypass this stateful slot
