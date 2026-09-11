@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Real-time WordPress admin-creation detection now recognizes the whitespace variants accepted by scheduled scanning.
+
 - Real-time WordPress admin-creation detection now covers the credential variants already recognized by scheduled scanning.
 
 - Audit records, stored finding history and attack events redact recognized credentials before they are written, including the history the web UI shows and exports. Session identifiers from cPanel login lines are covered.
