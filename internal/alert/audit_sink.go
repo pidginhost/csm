@@ -61,7 +61,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 	// Remediation records hash the original finding, so redaction must not
 	// change the ID used to join those records to this event.
 	id := FindingID(f)
-	f = sanitizeFinding(f)
+	f = SanitizeFinding(f)
 	return AuditEvent{
 		V:         AuditSchemaVersion,
 		Timestamp: f.Timestamp.UTC(),

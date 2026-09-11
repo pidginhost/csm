@@ -591,7 +591,7 @@ func (s *Store) appendHistoryFile(findings []alert.Finding) {
 	defer func() { _ = f.Close() }()
 
 	for _, finding := range findings {
-		line, err := json.Marshal(finding)
+		line, err := json.Marshal(alert.SanitizeFinding(finding))
 		if err != nil {
 			continue
 		}

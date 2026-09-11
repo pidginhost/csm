@@ -99,6 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Newly recorded finding history and attack events redact recognized credentials before storage, including history shown or exported by the web UI. Session redaction also covers security purge log entries.
+
 - Audit log messages and details redact recognized credentials, including session identifiers across cPanel services. Redaction preserves finding correlation and unrelated log evidence when applied repeatedly.
 
 - Audit logs and alert digests mask repeated and quoted credentials more consistently while retaining surrounding evidence.

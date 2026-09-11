@@ -51,6 +51,11 @@ func TestRedactSensitiveSessionToken(t *testing.T) {
 			"[cpdavd] 198.51.100.56 NEW _dav_:[REDACTED] app=cpdavd",
 		},
 		{
+			"security service purge",
+			"[security] internal PURGE shop:session-fixture password_change",
+			"[security] internal PURGE shop:[REDACTED] password_change",
+		},
+		{
 			"NUL-separated session field",
 			"[cpaneld]\x00NEW\x00shop:session-fixture\x00",
 			"[cpaneld] NEW shop:[REDACTED]",
@@ -243,7 +248,7 @@ func TestSanitizeFindingPreservesOtherFields(t *testing.T) {
 	want := f
 	want.Message = "password=[REDACTED]"
 	want.Details = "[cpaneld] NEW shop:[REDACTED]"
-	if got := sanitizeFinding(f); !reflect.DeepEqual(got, want) {
+	if got := SanitizeFinding(f); !reflect.DeepEqual(got, want) {
 		t.Errorf("sanitized finding = %+v, want %+v", got, want)
 	}
 	event := NewAuditEvent("host.example.com", f)

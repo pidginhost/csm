@@ -39,6 +39,7 @@ func FuzzRedactSensitive(f *testing.F) {
 		"[cpsrvd] NEW shop:session-fixture password=[REDACTED]",
 		"[whostmgrd] NEW root:session-fixture",
 		"[cpdavd] NEW _dav_:session-fixture",
+		"[security] internal PURGE shop:session-fixture password_change",
 		"password=fixture&password=other-fixture",
 		`log="request token_value=first-fixture token_value=second-fixture evidence"`,
 		`log="request password='quoted fixture' evidence"`,

@@ -313,7 +313,7 @@ func FormatAlert(hostname string, findings []Finding) string {
 	for _, sev := range []Severity{Critical, High, Warning} {
 		for _, f := range findings {
 			if f.Severity == sev {
-				b.WriteString(sanitizeFinding(f).String())
+				b.WriteString(SanitizeFinding(f).String())
 				b.WriteString("\n\n")
 			}
 		}
@@ -325,9 +325,11 @@ func FormatAlert(hostname string, findings []Finding) string {
 	return b.String()
 }
 
-// sanitizeFinding redacts sensitive data (passwords, tokens, secrets)
-// from finding messages and details before including them in alerts.
-func sanitizeFinding(f Finding) Finding {
+// SanitizeFinding returns a copy with recognized credentials redacted from
+// Message and Details. Call it at output and persistence boundaries so detection
+// and identity calculations can still use the original finding. Other fields
+// are unchanged; nested data is not modified.
+func SanitizeFinding(f Finding) Finding {
 	f.Message = redactSensitive(f.Message)
 	f.Details = redactSensitive(f.Details)
 	return f
@@ -477,9 +479,9 @@ func redactSessionLogLine(s string) string {
 }
 
 // cPanel session logs use both frontend service names and the shared server
-// daemon name. The DAV service also records account:session pairs.
+// daemon name. DAV and security purge logs also carry account:session pairs.
 func containsSessionLogTag(s string) bool {
-	for _, tag := range []string{"[cpaneld]", "[webmaild]", "[whostmgr]", "[whostmgrd]", "[cpsrvd]", "[cpdavd]"} {
+	for _, tag := range []string{"[cpaneld]", "[webmaild]", "[whostmgr]", "[whostmgrd]", "[cpsrvd]", "[cpdavd]", "[security]"} {
 		if strings.Contains(s, tag) {
 			return true
 		}

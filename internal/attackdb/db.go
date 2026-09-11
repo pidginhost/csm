@@ -366,6 +366,9 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	}
 
 	account := extractFindingAccount(f)
+	// Attribute the original finding, then redact before truncation can remove
+	// the service tag or other context needed to recognize a credential.
+	f = alert.SanitizeFinding(f)
 
 	event := Event{
 		Timestamp:  f.Timestamp,
