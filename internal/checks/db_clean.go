@@ -68,7 +68,7 @@ func DBCleanOption(account, optionName string, preview bool) DBCleanResult {
 		result.Message = "Content unchanged after cleaning"
 		return result
 	}
-	if extractMaliciousScriptURL(cleaned) != "" {
+	if optionInjectionRemains(optionName, cleaned) {
 		result.Message = "Failed to remove all malicious scripts"
 		return result
 	}

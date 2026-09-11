@@ -44,7 +44,8 @@ func twoInstallWPOS(t *testing.T) *mockOSGlobRoots {
 func wpProducerNames() []string {
 	return []string{
 		"db_rogue_admin", "db_suspicious_admin_email", "db_siteurl_hijack", "db_siteurl_foreign_host",
-		"db_options_injection", "db_options_new_external_script", "db_post_injection", "db_spam_injection",
+		"db_options_injection", "db_options_new_external_script", "db_options_plugin_notice_injection",
+		"db_post_injection", "db_spam_injection",
 		"db_spam_found", "db_spam_taxonomy", "db_stored_code_execution", "db_stored_cloak_logic",
 		"db_hidden_link_injection", "db_hostname_keyed_option", "db_doorway_sitemap_routes",
 		"db_phantom_post_author", "db_post_volume_burst",

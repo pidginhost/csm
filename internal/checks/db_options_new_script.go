@@ -19,6 +19,9 @@ import (
 func externalScriptHosts(content string) []string {
 	var hosts []string
 	seen := map[string]bool{}
+	// A payload stored as JSON carries escaped slashes, which the src
+	// grammar does not match; normalise before extracting.
+	content = unescapeStoredSlashes(content)
 	for _, match := range scriptSrcRe.FindAllStringSubmatch(content, -1) {
 		if len(match) < 2 {
 			continue

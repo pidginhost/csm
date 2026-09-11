@@ -45,6 +45,7 @@
       "db_malicious_trigger",
       "db_options_injection",
       "db_options_new_external_script",
+      "db_options_plugin_notice_injection",
       "db_phantom_post_author",
       "db_post_injection",
       "db_post_volume_burst",

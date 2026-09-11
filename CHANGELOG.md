@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Code stored in a plugin's own status options, which WordPress prints in the dashboard as a notice, is now reported as a critical database finding. LiteSpeed Cache is covered first, since an unauthenticated request can write those rows on older versions.
+
+- The known-vulnerable plugin feed now covers the three LiteSpeed Cache issues behind that injection, so a site still running an affected version alerts even after its stored payload is removed.
+
 ### Changed
 
 - Go dependencies and the pinned GitHub Actions are updated to their current releases.
@@ -21,11 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Shutting the daemon down no longer reports a real-time scanning failure. A clean restart raised one every time.
 
+- Script URLs stored as JSON, where every slash is escaped, are now recognised. Injected loaders in options, posts and page-builder content were invisible to the database scan in that form.
+
 - A file too large to analyze is reported as a coverage gap only when its leading bytes could be source of that language. Large images, archives and compiled catalogs no longer arrive as PHP or JavaScript the scan failed to examine, while oversize JavaScript that embeds binary characters in a literal or comment stays visible along with any earlier finding for it.
 
 - A deep scan that has reached its time limit no longer opens further files while recording what it did not examine.
 
 ### Security
+
+- Plugin notice scanning inspects longer stored messages and reports incomplete reads, preserving earlier findings when the full notice cannot be checked. Existing executable-markup checks now apply consistently to these notices.
+
+- Database cleanup refuses partial changes to plugin notices when executable content remains, including loaders on ordinary HTTPS hosts.
 
 - Audit records, stored finding history and attack events redact recognized credentials before they are written, including the history the web UI shows and exports. Session identifiers from cPanel login lines are covered.
 

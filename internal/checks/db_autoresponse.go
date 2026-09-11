@@ -291,6 +291,21 @@ func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext strin
 // attackers use all three forms to load external payloads.
 var scriptSrcRe = regexp.MustCompile(`(?i)<script[^>]+src\s*=\s*["']?((?:https?:)?//[^"'\s>]+)`)
 
+// escapedSlashRe matches a forward slash behind one or more backslashes, the
+// form every JSON-encoded and re-serialised option value takes.
+var escapedSlashRe = regexp.MustCompile(`\\+/`)
+
+// unescapeStoredSlashes restores the slashes of a URL stored inside a JSON or
+// serialised option value. WordPress writes json_encode output straight into
+// wp_options, so a stored payload reads "https:\/\/host\/payload.js"; without
+// this the script matcher sees no "//" after the scheme and extracts nothing.
+func unescapeStoredSlashes(value string) string {
+	if !strings.Contains(value, `\/`) {
+		return value
+	}
+	return escapedSlashRe.ReplaceAllString(value, "/")
+}
+
 // knownSafeDomains are legitimate services that embed scripts in wp_options.
 var knownSafeDomains = []string{
 	"googletagmanager.com",
@@ -351,7 +366,9 @@ var knownSafeDomains = []string{
 // knownSafeDomains is retained as a fast-path optimisation and operator-
 // pre-approved list — see isAttackerScriptURL for the composition order.
 func extractMaliciousScriptURL(content string) string {
-	matches := scriptSrcRe.FindAllStringSubmatch(content, -1)
+	// WordPress stores json_encode output verbatim, so a stored loader reads
+	// "https:\/\/host\/payload.js" and the src grammar never matches it.
+	matches := scriptSrcRe.FindAllStringSubmatch(unescapeStoredSlashes(content), -1)
 	for _, match := range matches {
 		if len(match) < 2 {
 			continue
@@ -574,7 +591,7 @@ func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, ma
 	// finding but never persist a value that still carries a live payload.
 	// Plain text references to the same URL are inert option data and must
 	// not block a valid script cleanup.
-	if extractMaliciousScriptURL(cleaned) != "" {
+	if optionInjectionRemains(optionName, cleaned) {
 		return false
 	}
 	if cleaned == originalValue {
@@ -598,6 +615,17 @@ func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, ma
 	runMySQLQuery(creds, updateQuery)
 
 	return true
+}
+
+// A notice sink makes executable markup malicious regardless of URL
+// reputation. Removing one known attacker URL must not permit a partial write
+// while an ordinary HTTPS loader or inline script survives in the same row.
+func optionInjectionRemains(option, value string) bool {
+	if extractMaliciousScriptURL(value) != "" {
+		return true
+	}
+	_, sink := pluginNoticeSinkOptions[strings.ToLower(strings.TrimSpace(option))]
+	return sink && executableMarkupRe.MatchString(unescapeStoredSlashes(value))
 }
 
 // --- Script removal ---

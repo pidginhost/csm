@@ -799,6 +799,13 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		}
 	}
 
+	// Path 1b: Plugin status options that WordPress renders as admin
+	// notices. These are queried by name because the generic script lookup
+	// above caps its result set and requires a src attribute, while an
+	// injection here may be inline. The option's identity is the verdict,
+	// so neither host reputation nor the first-seen baseline applies.
+	findings = append(findings, checkWPPluginNotices(user, creds, prefix)...)
+
 	// Path 2: Inline script/code injection in core WP options that should
 	// NEVER contain JavaScript (siteurl, home, blogname, blogdescription).
 	coreOpts := "siteurl', 'home', 'blogname', 'blogdescription', 'admin_email"

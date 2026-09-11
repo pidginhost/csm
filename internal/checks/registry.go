@@ -210,6 +210,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "db_malicious_trigger", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 	{Name: "db_options_injection", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 	{Name: "db_options_new_external_script", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
+	{Name: "db_options_plugin_notice_injection", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 	{Name: "db_post_injection", Category: CategoryDatabase, Correlation: CorrelationSecurityEvent},
 	{Name: "db_content_scan_incomplete", Category: CategoryDatabase, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "db_unexpected_event", Category: CategoryDatabase, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},

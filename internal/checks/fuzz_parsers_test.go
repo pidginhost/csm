@@ -1,12 +1,38 @@
 package checks
 
 import (
+	"encoding/hex"
 	"net/netip"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func FuzzParsePluginNoticeRow(f *testing.F) {
+	f.Add("litespeed.admin_display.messages\t0\tx")
+	f.Add(pluginNoticeQueryRow("litespeed.cdn_setup._summary", "<script\nsrc=https://loader.example.com/x.js></script>"))
+	f.Add("litespeed.admin_display.msg_pin\t1\tx0g")
+	f.Add("litespeed.admin_display.messages\t65537\tx")
+	f.Fuzz(func(t *testing.T, line string) {
+		option, value, complete := parsePluginNoticeRow(line)
+		if !complete {
+			if option != "" || value != "" {
+				t.Fatal("incomplete row exposed partial option data")
+			}
+			return
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		size, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || int64(len(value)) != size || len(value) > maxPluginNoticeBytes {
+			t.Fatal("complete row has missing or excessive bytes")
+		}
+		if option != parts[0] || !strings.EqualFold("x"+hex.EncodeToString([]byte(value)), parts[2]) {
+			t.Fatal("complete row changed stored bytes")
+		}
+	})
+}
 
 // These are fuzz targets for the string parsers that accept external input
 // (log lines, finding messages, wp-config bodies, /proc/net/tcp rows).
