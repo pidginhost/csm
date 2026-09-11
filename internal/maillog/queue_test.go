@@ -175,3 +175,16 @@ func TestMailQueueCountsOversizedRecordOnce(t *testing.T) {
 		}
 	})
 }
+
+// The cursor exposes no unread count, so the row measures operations only.
+func TestJournalSourceDoesNotClaimAMeasuredBacklog(t *testing.T) {
+	q := NewQueue()
+	q.journal.seen = true
+	row, ok := q.QueueStatuses(time.Now())["journal_source"]
+	if !ok {
+		t.Fatal("journal source queue missing")
+	}
+	if row.LagBasis != "unavailable" || strings.Contains(row.Evidence(), "lag=0s") {
+		t.Fatalf("a cursor with no backlog measurement reported an empty queue: %+v evidence=%q", row, row.Evidence())
+	}
+}

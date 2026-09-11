@@ -121,3 +121,30 @@ func TestFileSourcePartialRecordWaitsForInput(t *testing.T) {
 		}
 	})
 }
+
+// After the reader releases its descriptor there is no file to measure, so a
+// zero backlog would be an invented measurement.
+func TestFileSourceWithoutADescriptorReportsUnknownDepth(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "mail.log")
+		w, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer w.Close()
+		q := NewQueue()
+		cancel, out := startFileSourceProbe(t, path, q, func(base mailLogFile) mailLogFile { return base })
+		appendMailAndPoll(t, w, strings.Repeat("queued\n", 3))
+		if row := fileSourceRow(t, q); row.DepthUnavailable {
+			t.Fatalf("a live source reported an unknown backlog: %+v", row)
+		}
+		cancel()
+		synctest.Wait()
+		for line := range out {
+			line.reject()
+		}
+		if row := fileSourceRow(t, q); !row.DepthUnavailable || row.Depth != 0 {
+			t.Fatalf("a released source reported a measured backlog: %+v", row)
+		}
+	})
+}

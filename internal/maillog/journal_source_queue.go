@@ -69,7 +69,10 @@ func (q *Queue) finishJournal(normal, closed bool) {
 func (s *journalSourceQueue) snapshot(now time.Time) (queuehealth.Status, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row := queuehealth.Status{Status: "ok", DepthUnavailable: true, CapacityUnavailable: true, DroppedLowerBound: s.uncertain, LagBasis: "operation_progress"}
+	// The cursor exposes no unread count and no waiting age, so the row
+	// measures the current operation and says so instead of reporting a
+	// backlog of zero.
+	row := queuehealth.Status{Status: "ok", DepthUnavailable: true, CapacityUnavailable: true, DroppedLowerBound: s.uncertain, LagBasis: "unavailable"}
 	if s.selected {
 		row.InFlight = 1
 	}

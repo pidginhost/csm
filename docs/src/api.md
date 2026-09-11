@@ -182,7 +182,9 @@ path disappearance still follows the watcher's existing grace period.
 
 `mail.journal_source` reports the journal reader after its first successful
 attachment. The cursor exposes no exact unread-record count or queue capacity,
-so `depth_unavailable` and `capacity_unavailable` are always set. A selected
+so `depth_unavailable` and `capacity_unavailable` are always set, and
+`lag_basis: unavailable` marks the missing backlog age rather than reporting a
+waiting time of zero. The row measures the current operation instead. A selected
 entry remains in flight until delivery acquires it; known unreadable or abandoned
 selected entries count once in `mail.delivery`. The two stages must not be added
 together.
@@ -760,6 +762,11 @@ that are still detected, stored and delivered. An advisory row reports its own
 degradation with the same evidence, but leaves the host status and security
 posture unchanged, warns instead of failing `csm doctor`, and raises no
 notification.
+
+Doctor names each age by what it measures: `observed_lag` for an age taken at
+observation, `consumer_stall` for consumer progress, `operation_stall` for the
+current operation, `deferred_age` for work parked until a restart, and
+`lag=unavailable` where no age exists.
 
 A queue becomes degraded after three losses in a minute, thirty seconds
 continuously full, or a minute waiting or processing. These are operational

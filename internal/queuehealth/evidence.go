@@ -23,6 +23,10 @@ func (s Status) Evidence() string {
 		lag = fmt.Sprintf("observed_lag=%.0fs", s.LagSeconds)
 	case "consumer_progress":
 		lag = fmt.Sprintf("consumer_stall=%.0fs", s.LagSeconds)
+	case "operation_progress":
+		lag = fmt.Sprintf("operation_stall=%.0fs", s.LagSeconds)
+	case "deferred_checkpoint":
+		lag = fmt.Sprintf("deferred_age=%.0fs", s.LagSeconds)
 	case "unavailable":
 		lag = "lag=unavailable"
 	}

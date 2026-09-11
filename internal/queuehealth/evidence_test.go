@@ -25,3 +25,15 @@ func TestEvidenceLabelsObservedQueueAge(t *testing.T) {
 		t.Fatalf("observation age presented as persisted age: %q", got)
 	}
 }
+
+func TestEvidenceLabelsOperationAndCheckpointAges(t *testing.T) {
+	for basis, want := range map[string]string{
+		"operation_progress":  "operation_stall=90s",
+		"deferred_checkpoint": "deferred_age=90s",
+	} {
+		got := (Status{LagBasis: basis, LagSeconds: 90}).Evidence()
+		if !strings.Contains(got, want) || strings.Contains(got, "lag=90s") {
+			t.Fatalf("%s presented as a queue backlog age: %q", basis, got)
+		}
+	}
+}

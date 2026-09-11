@@ -218,6 +218,10 @@ func (s *fileSourceQueue) snapshot(now time.Time) (queuehealth.Status, bool) {
 		if !g.lagAt.IsZero() {
 			row.LagSeconds = max(0, now.Sub(g.lagAt).Seconds())
 		}
+	} else {
+		// No descriptor left to measure. Zero bytes would be an invented
+		// reading of a source that is no longer open.
+		row.DepthUnavailable = true
 	}
 	for _, at := range []time.Time{s.readerAt, s.sampleAt} {
 		if !at.IsZero() {
