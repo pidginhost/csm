@@ -693,8 +693,12 @@ Submission accounting precedes publication, so a fast reader cannot consume
 an event before it has been counted.
 `dropped_lower_bound: true` marks this final shutdown total: kernel detachment
 can leave callbacks finishing after the sample. Doctor prints `dropped>=...`
-for that bound. Counter lookup failure degrades the row as
-`measurement_unavailable`; a failed final sample remains degraded.
+for that bound. A counter lookup failure or an incoherent occupancy reading
+marks the measurement unavailable and degrades the row as
+`measurement_unavailable` once it lasts half a minute, so one artefact of
+reading a live ring raises nothing; a failed final sample degrades at once and
+remains degraded. A stopped reader is reported instead of the measurement
+artefacts it causes.
 The required kernel suite fills the shipped connection program's ring with
 real non-root connect calls and checks reservation loss and retained output.
 `fanotify.kernel` and `spool.kernel` report pending notification records and
@@ -705,8 +709,10 @@ differ from the limit captured when the watcher was created.
 Their loss totals are lower bounds: each overflow record proves at least one
 loss, and shutdown adds the records known to be unread before closing the
 descriptor. Events can still arrive between that sample and close.
-An unavailable pending-record measurement degrades the row; a failed final
-sample remains degraded. Closing a descriptor leaves known zero occupancy.
+An unavailable pending-record measurement degrades the row once it lasts half
+a minute; the reading taken at close degrades at once and remains degraded.
+Records the kernel has already dropped are reported ahead of an unreadable
+depth. Closing a descriptor leaves known zero occupancy.
 `fanotify.reader` and `spool.reader` track batches after a kernel read, until
 all records have been dispatched or filtered. A stalled batch remains visible
 even when the kernel queue is empty. Reader losses count batches interrupted

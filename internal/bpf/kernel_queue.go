@@ -25,6 +25,7 @@ type kernelQueue struct {
 	ring        ringMeasurement
 	counters    func() (kernelCounts, error)
 	health      *queuehealth.Sampled
+	unmeasured  queuehealth.Dwell
 	lost        uint64
 	closed      bool
 	finished    bool
@@ -62,18 +63,25 @@ func (q *kernelQueue) snapshot(now func() time.Time, consumed func() uint64) que
 			}
 		}
 	}
-	s := q.health.Snapshot(now())
+	at := now()
+	s := q.health.Snapshot(at)
 	s.DroppedLowerBound = q.finished
-	if q.closed && !q.finished {
-		s.Depth, s.LagSeconds = 0, 0
-		s.DepthUnavailable, s.LagBasis = true, "unavailable"
-		s.Status, s.Reason = "degraded", "reader_stopped"
-	}
 	if invalidDepth {
 		s.Depth, s.LagSeconds = 0, 0
 		s.DepthUnavailable, s.LagBasis = true, "unavailable"
 	}
-	if q.unavailable || invalidDepth {
+	unmeasured := q.unmeasured.Held(at, q.unavailable || invalidDepth, queuehealth.MeasurementWindow)
+	switch {
+	case q.closed && !q.finished:
+		// A reader that stopped explains every later measurement, so it is
+		// reported instead of the artefacts it causes.
+		s.Depth, s.LagSeconds = 0, 0
+		s.DepthUnavailable, s.LagBasis = true, "unavailable"
+		s.Status, s.Reason = "degraded", "reader_stopped"
+	case q.finished && q.unavailable:
+		// The final sample cannot be retried, so it degrades without a dwell.
+		s.Status, s.Reason = "degraded", "measurement_unavailable"
+	case unmeasured:
 		s.Status, s.Reason = "degraded", "measurement_unavailable"
 	}
 	return s

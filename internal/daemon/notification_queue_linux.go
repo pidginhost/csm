@@ -44,6 +44,7 @@ type notificationQueue struct {
 	mu              sync.Mutex
 	source          notificationSource
 	sampled         *queuehealth.Sampled
+	unmeasured      queuehealth.Dwell
 	losses          *queuehealth.Tracker
 	batches         *queuehealth.Tracker
 	consumed        uint64
@@ -70,23 +71,30 @@ func (q *notificationQueue) snapshot(now func() time.Time) (kernel, reader queue
 			q.sampled.Observe(now(), pending, q.consumed)
 		}
 	}
-	kernel = q.sampled.Snapshot(now())
-	losses := q.losses.Snapshot(now())
+	at := now()
+	kernel = q.sampled.Snapshot(at)
+	losses := q.losses.Snapshot(at)
 	kernel.DroppedTotal, kernel.RecentDrops = losses.DroppedTotal, losses.RecentDrops
-	if kernel.Reason == "" && losses.Status == "degraded" {
-		kernel.Status, kernel.Reason = losses.Status, losses.Reason
-	}
 	// The group limit is not exposed. The current sysctl can differ from the
 	// value copied at creation. An overflow marker also omits its loss count.
 	kernel.CapacityUnavailable, kernel.DroppedLowerBound = true, true
-	if q.unavailable {
-		kernel.Status, kernel.Reason = "degraded", "measurement_unavailable"
-		if !q.closed {
-			kernel.Depth, kernel.LagSeconds = 0, 0
-			kernel.DepthUnavailable, kernel.LagBasis = true, "unavailable"
-		}
+	// A live reading can be retried, so one failure is not yet a degradation.
+	// The reading taken at close is all there will ever be.
+	unmeasured := q.unmeasured.Held(at, q.unavailable, queuehealth.MeasurementWindow) || q.unavailable && q.closed
+	if q.unavailable && !q.closed {
+		// This reading invalidates the depth the sampled reason came from.
+		kernel.Depth, kernel.LagSeconds = 0, 0
+		kernel.DepthUnavailable, kernel.LagBasis = true, "unavailable"
+		kernel.Status, kernel.Reason = "ok", ""
 	}
-	reader = q.batches.Snapshot(now())
+	switch {
+	case losses.Status == "degraded" && kernel.Reason == "":
+		// Records the kernel already dropped outrank an unreadable depth.
+		kernel.Status, kernel.Reason = losses.Status, losses.Reason
+	case unmeasured:
+		kernel.Status, kernel.Reason = "degraded", "measurement_unavailable"
+	}
+	reader = q.batches.Snapshot(at)
 	reader.DepthUnit = "batches"
 	return kernel, reader
 }

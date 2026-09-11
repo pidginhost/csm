@@ -104,17 +104,25 @@ func TestNotificationQueueRetainsRunningBatchThroughClose(t *testing.T) {
 
 func TestNotificationQueueRejectsFailedMeasurements(t *testing.T) {
 	for _, pending := range []int{4, -1} {
+		now := time.Unix(1000, 0)
+		clock := func() time.Time { return now }
 		source := &notificationTestSource{pending: pending}
 		if pending == 4 {
 			source.err = unix.EIO
 		}
 		q := notificationQueueForTest(source)
-		kernel, _ := q.snapshot(time.Now)
+		kernel, _ := q.snapshot(clock)
+		if kernel.Status != "ok" || kernel.Reason != "" || !kernel.DepthUnavailable || kernel.LagBasis != "unavailable" {
+			t.Fatalf("one failed measurement raised an alarm: %+v", kernel)
+		}
+		now = now.Add(queuehealth.MeasurementWindow)
+		kernel, _ = q.snapshot(clock)
 		if kernel.Reason != "measurement_unavailable" || !kernel.DepthUnavailable || kernel.LagBasis != "unavailable" || kernel.Status != "degraded" {
-			t.Fatalf("invalid measurement presented as a healthy empty queue: %+v", kernel)
+			t.Fatalf("sustained invalid measurement presented as a healthy empty queue: %+v", kernel)
 		}
 		source.err, source.pending = nil, 4
-		kernel, _ = q.snapshot(time.Now)
+		now = now.Add(time.Second)
+		kernel, _ = q.snapshot(clock)
 		if kernel.Depth != 4 || kernel.DepthUnavailable || kernel.Status != "ok" || !kernel.CapacityUnavailable {
 			t.Fatalf("valid sample did not recover: %+v", kernel)
 		}
@@ -122,10 +130,24 @@ func TestNotificationQueueRejectsFailedMeasurements(t *testing.T) {
 		if err := q.close(); err != nil {
 			t.Fatal(err)
 		}
-		kernel, _ = q.snapshot(time.Now)
+		now = now.Add(time.Second)
+		kernel, _ = q.snapshot(clock)
 		if kernel.Reason != "measurement_unavailable" || kernel.Status != "degraded" || !kernel.DroppedLowerBound {
 			t.Fatalf("failed final sample was silently cleared: %+v", kernel)
 		}
+	}
+}
+
+func TestNotificationQueueReportsLossesOverMissingMeasurement(t *testing.T) {
+	now := time.Unix(1000, 0)
+	clock := func() time.Time { return now }
+	source := &notificationTestSource{pending: 4, err: unix.EIO}
+	q := notificationQueueForTest(source)
+	q.losses.Lose(now, 3)
+	now = now.Add(queuehealth.MeasurementWindow)
+	kernel, _ := q.snapshot(clock)
+	if kernel.Status != "degraded" || kernel.Reason != "dropped_work" || kernel.DroppedTotal != 3 {
+		t.Fatalf("confirmed kernel losses hidden behind an unreadable depth: %+v", kernel)
 	}
 }
 

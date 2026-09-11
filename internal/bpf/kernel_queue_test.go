@@ -84,18 +84,21 @@ func TestKernelQueueCounterFailureDoesNotClaimHealth(t *testing.T) {
 		}
 		return kernelCounts{Lost: 2, Submitted: 4}, nil
 	})
-	if got := kernelQueueSnapshot(q, now, 0); got.Status != "degraded" || got.Reason != "measurement_unavailable" || got.Depth != 64 {
-		t.Fatalf("missing counter evidence reported healthy: %+v", got)
+	if got := kernelQueueSnapshot(q, now, 0); got.Status != "ok" || got.Reason != "" || got.Depth != 64 {
+		t.Fatalf("one failed counter read raised an alarm: %+v", got)
+	}
+	if got := kernelQueueSnapshot(q, now.Add(queuehealth.MeasurementWindow), 0); got.Status != "degraded" || got.Reason != "measurement_unavailable" || got.Depth != 64 {
+		t.Fatalf("sustained missing counter evidence reported healthy: %+v", got)
 	}
 	failed = false
-	if got := kernelQueueSnapshot(q, now.Add(time.Second), 1); got.Status != "ok" || got.DroppedTotal != 2 {
+	if got := kernelQueueSnapshot(q, now.Add(queuehealth.MeasurementWindow+time.Second), 1); got.Status != "ok" || got.DroppedTotal != 2 {
 		t.Fatalf("counter recovery hid losses or retained the outage: %+v", got)
 	}
 	failed = true
 	if err := q.closeRing(func() error { ring.closed = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	finishKernelQueue(q, now.Add(2*time.Second), 1)
+	finishKernelQueue(q, now.Add(queuehealth.MeasurementWindow+2*time.Second), 1)
 	failed = false
 	if got := kernelQueueSnapshot(q, now.Add(time.Hour), 1); got.Status != "degraded" || got.Reason != "measurement_unavailable" || got.DroppedTotal != 2 {
 		t.Fatalf("failed final accounting was silently recovered: %+v", got)
@@ -145,14 +148,19 @@ func TestKernelQueueFinalCounterSnapshotIsALowerBound(t *testing.T) {
 
 func TestKernelQueueRejectsIncoherentOccupancySamples(t *testing.T) {
 	for _, depth := range []int{-64, 4160} {
+		now := time.Unix(1000, 0)
 		ring := &measuredRing{bytes: depth}
 		q := newKernelQueue(ring, func() (kernelCounts, error) { return kernelCounts{Lost: 2}, nil })
-		got := kernelQueueSnapshot(q, time.Now(), 0)
+		got := kernelQueueSnapshot(q, now, 0)
+		if got.Status != "ok" || got.Reason != "" || !got.DepthUnavailable || got.Depth != 0 || got.LagBasis != "unavailable" || got.DroppedTotal != 2 {
+			t.Fatalf("one torn occupancy read %d raised an alarm: %+v", depth, got)
+		}
+		got = kernelQueueSnapshot(q, now.Add(queuehealth.MeasurementWindow), 0)
 		if got.Status != "degraded" || got.Reason != "measurement_unavailable" || !got.DepthUnavailable || got.Depth != 0 || got.LagBasis != "unavailable" || got.DroppedTotal != 2 {
-			t.Fatalf("incoherent occupancy %d was exposed as a valid queue: %+v", depth, got)
+			t.Fatalf("sustained incoherent occupancy %d was exposed as a valid queue: %+v", depth, got)
 		}
 		ring.bytes = 64
-		if got := kernelQueueSnapshot(q, time.Now(), 1); got.Status != "ok" || got.DepthUnavailable || got.Depth != 64 || got.LagBasis != "consumer_progress" || got.DroppedTotal != 2 {
+		if got := kernelQueueSnapshot(q, now.Add(queuehealth.MeasurementWindow+time.Second), 1); got.Status != "ok" || got.DepthUnavailable || got.Depth != 64 || got.LagBasis != "consumer_progress" || got.DroppedTotal != 2 {
 			t.Fatalf("valid occupancy did not recover while retaining losses: %+v", got)
 		}
 	}
@@ -181,4 +189,25 @@ func kernelQueueSnapshot(q *kernelQueue, now time.Time, consumed uint64) queuehe
 }
 func finishKernelQueue(q *kernelQueue, now time.Time, consumed uint64) {
 	q.finish(func() time.Time { return now }, consumed)
+}
+
+func TestKernelQueueReportsStoppedReaderOverMissingCounters(t *testing.T) {
+	now := time.Unix(1000, 0)
+	ring := &measuredRing{bytes: 64}
+	failed := false
+	q := newKernelQueue(ring, func() (kernelCounts, error) {
+		if failed {
+			return kernelCounts{}, errors.New("map unavailable")
+		}
+		return kernelCounts{Lost: 1, Submitted: 2}, nil
+	})
+	kernelQueueSnapshot(q, now, 1)
+	failed = true
+	if err := q.closeRing(func() error { ring.closed = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got := kernelQueueSnapshot(q, now.Add(time.Minute), 1)
+	if got.Status != "degraded" || got.Reason != "reader_stopped" || !got.DepthUnavailable {
+		t.Fatalf("a stopped reader was reported as a measurement artefact: %+v", got)
+	}
 }
