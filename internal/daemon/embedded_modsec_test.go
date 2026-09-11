@@ -352,3 +352,164 @@ func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
 		t.Error("exemption still reads REQUEST_URI, which a query value can satisfy")
 	}
 }
+
+// CVE-2024-28000: LiteSpeed Cache below 6.4 signs the crawler's role
+// simulation with a six-character hash (Str::rrand(6), one million values
+// seeded from microsecond timing), so an unauthenticated attacker can brute
+// force it and have WordPress treat the request as that user. Sites whose
+// WordPress is too old for the fixed plugin line have no upgrade path, which
+// is what this patch is for.
+func TestModSecBlocksLiteSpeedRoleSimulation(t *testing.T) {
+	conf := string(embeddedModSec)
+	if !strings.Contains(conf, "id:900128") {
+		t.Fatal("id:900128 missing: no virtual patch for CVE-2024-28000")
+	}
+	if !strings.Contains(conf, "CVE-2024-28000") {
+		t.Fatal("rules do not name CVE-2024-28000")
+	}
+	// The patch must stand on request shape alone. SERVER_ADDR and other
+	// engine-specific variables cannot be verified against LiteSpeed's
+	// ModSecurity from here, and an unknown variable aborts the whole
+	// configuration load, taking every other rule down with it.
+	start := strings.Index(conf, "CVE-2024-28000")
+	if start < 0 {
+		t.Fatal("CVE-2024-28000 patch block not found")
+	}
+	patch := conf[start:]
+	for _, fragile := range []string{"SERVER_ADDR", "REMOTE_ADDR"} {
+		if strings.Contains(patch, fragile) {
+			t.Errorf("the CVE-2024-28000 patch depends on %s; keep it to request shape", fragile)
+		}
+	}
+}
+
+// Check complete chains rather than finding a matching regex somewhere later
+// in the file. A missing link must fail even if the next rule contains it.
+func liteSpeedSimulationChains(t *testing.T) [][]string {
+	t.Helper()
+	conf := string(embeddedModSec)
+	start := strings.Index(conf, "# --- CVE-2024-28000:")
+	if start < 0 {
+		t.Fatal("LiteSpeed simulation rules missing")
+	}
+	conf = strings.ReplaceAll(conf[start:], "\\\n", "")
+	links := regexp.MustCompile(`(?m)^SecRule (?:"([^"]+)"|(\S+)) "([^"]+)"\s+"([^"]+)"`).FindAllStringSubmatch(conf, -1)
+	if len(links) != 6 {
+		t.Fatalf("got %d chain links, want two complete three-link rules", len(links))
+	}
+	for i, link := range links {
+		if link[1] == "" {
+			link[1] = link[2]
+		}
+		actions := strings.Split(strings.ReplaceAll(link[4], " ", ""), ",")
+		if i%3 != 2 && actions[len(actions)-1] != "chain" {
+			t.Errorf("link %d: chain must be the last action", i)
+		}
+		if i%3 == 0 {
+			for _, required := range []string{"id:" + strconv.Itoa(900128+i/3), "phase:1", "deny", "status:403", "log", "t:none"} {
+				if !strings.Contains(link[4], required) {
+					t.Errorf("chain starter %d missing %s", i, required)
+				}
+			}
+		} else {
+			for _, action := range actions {
+				if !strings.HasPrefix(action, "t:") && (action != "chain" || i%3 != 1) {
+					t.Errorf("link %d has a starter-only or unexpected action %q", i, action)
+				}
+			}
+		}
+	}
+	return links
+}
+
+func TestLiteSpeedSimulationChainSyntax(t *testing.T) {
+	liteSpeedSimulationChains(t)
+}
+
+func TestLiteSpeedSimulationCookieSemantics(t *testing.T) {
+	links := liteSpeedSimulationChains(t)
+	for _, offset := range []int{0, 3} {
+		role, hash := links[offset], links[offset+1]
+		for _, tc := range []struct {
+			link []string
+			name string
+			want string
+		}{
+			{role, "role", `REQUEST_COOKIES:/^litespeed[._\x20\[]role$/`},
+			{hash, "hash", `REQUEST_COOKIES:/^litespeed[._\x20\[]hash$/`},
+		} {
+			if tc.link[1] != tc.want {
+				t.Errorf("%s selector = %q, must cover PHP cookie name aliases", tc.name, tc.link[1])
+			}
+		}
+		roleRE := regexp.MustCompile(strings.TrimPrefix(role[3], "@rx "))
+		for _, value := range []string{"1", "+1", "1.0", "1e0", "%31", " 1"} {
+			if !roleRE.MatchString(value) {
+				t.Errorf("role gate misses PHP numeric ID %q", value)
+			}
+		}
+		if !strings.Contains(hash[4], "t:none,t:urlDecode") {
+			t.Error("hash must decode PHP cookie values")
+		}
+		hashRE := regexp.MustCompile(strings.TrimPrefix(hash[3], "@rx "))
+		for _, tc := range []struct {
+			value string
+			match bool
+		}{
+			{"Ab3Xz9", true}, {"%41b3Xz9", true},
+			{"a", true}, {strings.Repeat("a", 16), true},
+			{strings.Repeat("a", 17), false}, {strings.Repeat("a", 32), false},
+			{"+123456", true}, {"123456.0", true}, {"1.23456e5", true}, {"1.23456e+5", true},
+			{"00000000000000000000000000123456", true},
+			{"", false}, {"a1b2-c3", false},
+		} {
+			value, err := url.QueryUnescape(tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hashRE.MatchString(value); got != tc.match {
+				t.Errorf("hash %q matched = %v, want %v", tc.value, got, tc.match)
+			}
+		}
+	}
+}
+
+func TestLiteSpeedSimulationRequestSemantics(t *testing.T) {
+	links := liteSpeedSimulationChains(t)
+	scope := links[2]
+	if scope[1] != `REQUEST_FILENAME|ARGS_GET:/^\x20*rest[._\x20\[]route$/` {
+		t.Fatalf("scope must separate paths from PHP-normalized REST query fields, got %q", scope[1])
+	}
+	scopeRE := regexp.MustCompile(strings.TrimPrefix(scope[3], "@rx "))
+	for _, tc := range []struct {
+		value string
+		match bool
+	}{
+		{"/wp-admin", true}, {"/blog/wp-admin/users.php", true},
+		{"/wp-json/wp/v2/users", true}, {"/wp/v2/users", true}, {"wp/v2/users", true},
+		{"/shop/product/", false}, {"/wp-json/wp/v2/posts", false},
+		{"/wp-json/wp/v2/users-guide", false}, {"/wp-admin-guide/", false},
+	} {
+		if got := scopeRE.MatchString(tc.value); got != tc.match {
+			t.Errorf("scope %q matched = %v, want %v", tc.value, got, tc.match)
+		}
+	}
+	method := links[5]
+	if method[1] != `REQUEST_METHOD|REQUEST_HEADERS:/(?i)^x[._-]http[._-]method[._-]override$/|ARGS_GET:/^\x20*[._\[]method$/` {
+		t.Fatalf("write guard must inspect PHP method overrides, got %q", method[1])
+	}
+	if !strings.HasPrefix(method[3], "!@rx ") {
+		t.Fatal("method guard must be a negated read match")
+	}
+	methodRE := regexp.MustCompile(strings.TrimPrefix(method[3], "!@rx "))
+	for _, value := range []string{"POST", "PUT", "PATCH", "DELETE", "post"} {
+		if methodRE.MatchString(value) {
+			t.Errorf("write %q exempted as a crawler read", value)
+		}
+	}
+	for _, value := range []string{"GET", "HEAD", "get", "head"} {
+		if !methodRE.MatchString(value) {
+			t.Errorf("read override %q blocked", value)
+		}
+	}
+}
