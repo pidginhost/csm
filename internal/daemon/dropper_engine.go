@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // maxDropperProbeAttempts bounds how many times an inconclusive probe (a
@@ -44,7 +45,7 @@ type dropperEngine struct {
 	ttl      time.Duration
 	selfPID  int32
 	emit     dropperEmitFn
-	attempts map[dropperCandidateKey]int
+	attempts map[queuehealth.Ticket]int
 	// ignorePath mirrors the suppression every other content check already
 	// honours. Applied at admit so a suppressed path never consumes tracker
 	// capacity a real candidate could have used.
@@ -56,7 +57,7 @@ func newDropperEngine(cfg dropperEngineConfig) *dropperEngine {
 		tr:         newDropperTracker(cfg.ttl),
 		ttl:        cfg.ttl,
 		selfPID:    cfg.selfPID,
-		attempts:   make(map[dropperCandidateKey]int),
+		attempts:   make(map[queuehealth.Ticket]int),
 		ignorePath: cfg.ignorePath,
 	}
 }
@@ -86,40 +87,56 @@ func (e *dropperEngine) admit(c dropperCandidate) bool {
 // the grace window independently of the TTL.
 func (e *dropperEngine) probeStep(probeNow time.Time, prober dropperFSProber, flushNow time.Time) {
 	for _, c := range e.tr.Due(probeNow) {
-		key := candidateKey(c)
+		// A close-write can strengthen the filesystem identity while queued.
+		// The work ticket survives that change and owns its attempt budget.
+		key := c.ticket
 		if e.ignorePath != nil && e.ignorePath(c.Path) {
 			delete(e.attempts, key)
+			c.ticket.Finish(e.tr.now())
 			continue
 		}
 		verdict := assessDropper(c, prober.probe(c))
 		if verdict == dropperInconclusive {
 			if e.attempts[key]+1 >= maxDropperProbeAttempts {
 				delete(e.attempts, key)
+				c.ticket.Reject(e.tr.now())
 				continue
 			}
-			e.attempts[key]++
-			e.tr.Observe(c) // requeue; Observe keeps the earliest Observed time
+			attempts := e.attempts[key] + 1
+			delete(e.attempts, key)
+			if retained, ok := e.tr.Retry(c); ok {
+				e.attempts[retained] = max(e.attempts[retained], attempts)
+			}
 			continue
 		}
 		delete(e.attempts, key)
+		c.ticket.Finish(e.tr.now())
 		e.tr.HoldGone(c, verdict, flushNow)
 	}
 	for _, f := range e.tr.FlushDue(flushNow) {
-		items := f.Items[:0]
+		e.flushFinding(f)
+	}
+}
+
+func (e *dropperEngine) flushFinding(f dropperFinding) {
+	defer func() {
 		for _, item := range f.Items {
-			if e.ignorePath == nil || !e.ignorePath(item.Cand.Path) {
-				items = append(items, item)
-			}
+			item.ticket.Finish(e.tr.now())
 		}
-		// Suppress before deciding burst severity. Otherwise excluded files
-		// can turn a remaining solitary dropper into a lower-severity burst.
-		if len(items) >= dropperBurstThreshold {
-			f.Items = items
-			e.emitFinding(f)
-		} else {
-			for _, item := range items {
-				e.emitFinding(dropperFinding{Docroot: f.Docroot, Items: []dropperGone{item}})
-			}
+	}()
+	items := make([]dropperGone, 0, len(f.Items))
+	for _, item := range f.Items {
+		if e.ignorePath == nil || !e.ignorePath(item.Cand.Path) {
+			items = append(items, item)
+		}
+	}
+	// Suppress before deciding burst severity. Otherwise excluded files
+	// can turn a remaining solitary dropper into a lower-severity burst.
+	if len(items) >= dropperBurstThreshold {
+		e.emitFinding(dropperFinding{Aggregate: true, Docroot: f.Docroot, Items: items})
+	} else {
+		for _, item := range items {
+			e.emitFinding(dropperFinding{Docroot: f.Docroot, Items: []dropperGone{item}})
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type stubComponentsProvider struct {
@@ -15,6 +16,8 @@ type stubComponentsProvider struct {
 	changed  map[string]time.Time
 	upstream map[string]health.UpstreamResult
 }
+
+func (s *stubComponentsProvider) QueueStatuses() map[string]queuehealth.Status { return nil }
 
 func (s *stubComponentsProvider) WatcherStatuses() map[string]bool       { return s.statuses }
 func (s *stubComponentsProvider) WatcherChangedAt() map[string]time.Time { return s.changed }

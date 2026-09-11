@@ -47,12 +47,15 @@ operational reliability, usability. **Prefer proving and improving the
 detectors that exist over adding new ones.** A new detector without a clean
 corpus result, an attack corpus sample and a correlation policy is not done.
 
-Two rules already followed in practice are now stated here so they are not
+Three rules already followed in practice are now stated here so they are not
 optional:
 
 - Every production false positive that is fixed gets a regression test that
   reproduces it before the fix.
 - Every correlation or response bug found in production gets a replay fixture.
+- Every new selecting table ships with a completeness guard. New registered
+  checks and incident sets need an explicit classification decision in the
+  [incident policy contract](docs/src/incidents.md#kinds).
 
 **Stable cross-references.** Older commits, CHANGELOG entries, and a few code
 comments reference `ROADMAP item N` by the number that item had when the commit
@@ -133,50 +136,15 @@ Main-branch cloud integration is manual and is not a publication dependency.
 
 # Priority 1 -- protection that fails silently
 
-## Remaining narrowing tables need completeness guards
+## WAF block scoring needs recorded-stream evidence
 
-**Status:** open. The first three tables of this class are guarded; the
-class is not retired.
+**Status:** open decision.
 
-Three hand-maintained tables narrowed behaviour and fell behind as the project
-grew without any test, lint or alert noticing: the taint analyzer's CMS path
-constants, the clean-corpus manifest, and the correlation security-event set.
-Each now has a completeness test that fails when the project grows past it:
-the supported CMS kinds are declared once in `internal/cms` and the taint
-constants, database adapters and corpus manifest are checked against that
-table; every registered check carries a correlation class with a stated
-reason or gap, and a new check without one fails the build; the response
-tables (manual, automatic and full-scan quarantine, attack-database mapping)
-are declared once each and every name they select must be a registered check.
-That last guard found three names no release ever emitted, two of them the
-only WAF entries the attack database had, so WAF blocks have never fed local
-reputation scoring. The manifest's accepted representation of missing
-evidence is an explicit `pending` entry with a reason; a pending entry is
-missing-evidence metadata, not non-WordPress coverage.
-
-Tables of the same class remain unguarded:
-
-- `hostIntegrityChecks` and the four `compound*Checks` sets in
-  `internal/incident`, and the incident kind switch that classifies findings.
-  These select by check name from another package, so a membership guard
-  needs a dependency decision first: either `internal/incident` imports the
-  check registry, or the registry exports a name list the incident package's
-  tests can consume without importing checks.
-- Future inventories this roadmap creates deliberately: response tiers,
-  root-requiring operations, and the parser inventory. Each ships with the
-  same completeness guard, or it is not done.
-
-**Decision:** whether the emitted ModSecurity block names
-(`modsec_block_realtime`, `modsec_block_escalation`,
-`modsec_csm_block_escalation`, `waf_attack_blocked`) should map into the
-attack database is a reputation-scoring change, not a table fix: WAF blocks
-are high volume and the WAF-block score branch has never run on real data.
-Decide it against recorded block streams before mapping.
-
-**Acceptance:** every table above has a test that fails when a name it
-selects is not a registered check or when a registered check that belongs in
-it is missing; the cross-package guard exists with its dependency direction
-recorded; no new selecting table lands without one.
+Whether the emitted ModSecurity block names (`modsec_block_realtime`,
+`modsec_block_escalation`, `modsec_csm_block_escalation`, `waf_attack_blocked`)
+should map into the attack database is a reputation-scoring change, not a table
+fix. WAF blocks are high volume and the WAF-block score branch has never run
+on real data. Decide it against recorded block streams before mapping.
 
 ## Cross-account correlation sees a tenth of the detectors
 
@@ -224,28 +192,6 @@ derivation, rather than assuming three accounts is still right at the full
 detector surface. Any change to the Critical-only limit comes with the same
 recorded-stream evidence.
 
-## Backlog and dropped work are reported as counters, not as failures
-
-**Status:** open. Partly instrumented.
-
-The daemon has several bounded queues between the kernel and an alert: the
-fanotify analyzer queue, the alert channel, the spool and log watchers, the BPF
-ring buffers, the dropper tracker and the staged-package verification queue.
-Overflow on the analyzer queue raises a `fanotify_overflow` finding and a
-reconcile scan. Every other drop is a `Warn` line and an atomic counter that
-`csm status` prints as `dropped alerts`. A watcher that falls minutes behind
-is not reported at all, and neither is a queue that is permanently full.
-
-A queue that silently sheds findings is the same failure as a table that
-silently narrows: healthy status, less protection.
-
-**Acceptance:** every bounded queue reports depth, drops and lag through the
-health snapshot and `csm doctor`, with a named degraded state when a threshold
-is crossed; a sustained drop rate on any queue raises a finding the way the
-analyzer overflow does today; no new queue can be added without those metrics
-(same completeness rule as above). The budgets themselves belong to
-[resource and performance budgets](#resource-and-performance-budgets).
-
 ## The firewall audit log is written to a path nothing reads
 
 **Status:** open. Confirmed in `internal/firewall/audit.go`.
@@ -269,6 +215,32 @@ erase history.
 **Size:** hours, plus a decision on which path is canonical.
 
 ---
+
+## WordPress installs nobody can verify are invisible
+
+**Status:** open. Confirmed in `internal/checks/web.go` and
+`internal/checks/plugincheck.go`.
+
+When wp-cli runs and exits with an error, the core-integrity check and the
+plugin inventory now treat that installation as checked: the command answered,
+so the queue counts no lost work. That is right for a directory that is not a
+WordPress installation, and wrong for a tree that fails every cycle for a
+reason the operator could fix -- a fatal in wp-config.php, a checksum service
+that is unreachable, a broken wp-cli. Nothing else reports those installs, so
+an account can go months without a single core-integrity check and the only
+trace is a line on stderr.
+
+Before this change the queue counted each one as lost work on every cycle,
+which alerted constantly and named no install. Neither state tells the operator
+which sites are unverified.
+
+**Acceptance:** a finding names the installation and the reason the last check
+could not complete, after the condition persists across cycles rather than on
+the first failure; the finding clears when a check succeeds; queue health keeps
+counting only work it actually lost. A count of unverified installs belongs in
+status alongside the verified ones.
+
+**Size:** hours, plus a decision on the persistence threshold.
 
 # Priority 2 -- detection precision and response safety
 
@@ -679,7 +651,7 @@ tampered artifact is refused on the path operators actually use.
 `csm doctor` now reports any deploy script on the host that still carries a path
 able to install an unverified release. This came from a hand-maintained copy
 that silently kept a superseded, weaker verification path -- the same
-stale-copy failure mode as the tables in Priority 1, on the supply chain.
+stale-copy failure mode that completeness guards prevent.
 
 **Remaining:** the check emits nothing when every script is current, unlike the
 other checks which report `[OK]`. Make it report the clean result so an operator
@@ -1001,9 +973,9 @@ volume and high filesystem event rates, run per release and recorded in the
 detection-quality report; every queue bounded with a stated cap (the staged
 package verification queue and the dropper tracker are the pattern); a named
 degraded mode -- deferred deep work, reconcile scans, refused new jobs --
-instead of falling behind quietly, with its lag and deferred work exposed as
-described in
-[Priority 1](#backlog-and-dropped-work-are-reported-as-counters-not-as-failures).
+instead of falling behind quietly, using the implemented
+[queue health reporting](docs/src/api.md#protection-queue-health) and
+[required ownership inventory](docs/src/production-tests.md#required-queue-inventory).
 
 ## Web UI module split
 

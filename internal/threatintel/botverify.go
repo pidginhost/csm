@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type resolver interface {
@@ -119,11 +122,15 @@ type AsyncBotVerifier struct {
 	v        map[string]*verifier // bot identity -> verifier; guarded by mu
 	res      resolver             // retained so SetOperatorEntries can rebuild v
 	put      func(net.IP, string, bool, time.Time) error
+	stats    *queuehealth.Tracker
+	stop     <-chan struct{}
+	closed   bool
 }
 
 type verifyJob struct {
-	IP  net.IP
-	Bot string
+	IP     net.IP
+	Bot    string
+	ticket queuehealth.Ticket
 }
 
 // BotDomains maps each claimed-bot identity to the DNS suffix list
@@ -154,6 +161,7 @@ func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error) *Async
 		v:        make(map[string]*verifier),
 		res:      res,
 		put:      put,
+		stats:    queuehealth.New(256, time.Minute),
 	}
 	for bot, domains := range BotDomains {
 		a.v[bot] = newVerifier(res, domains)
@@ -193,20 +201,34 @@ func (a *AsyncBotVerifier) SetOperatorEntries(entries []BotEntry) {
 func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) {
 	key := bot + "|" + ip.String()
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		a.stats.Lose(time.Now(), 1)
+		return
+	}
+	select {
+	case <-a.stop:
+		a.stats.Lose(time.Now(), 1)
+		return
+	default:
+	}
 	if _, ok := a.inflight[key]; ok {
-		a.mu.Unlock()
 		return
 	}
 	a.inflight[key] = struct{}{}
-	a.mu.Unlock()
-
+	// The caller may reuse its IP buffer as soon as admission returns. The
+	// queued lookup and its dedup key must retain the same address.
+	job := verifyJob{IP: slices.Clone(ip), Bot: bot, ticket: a.stats.Begin(time.Now())}
 	select {
-	case a.ch <- verifyJob{IP: ip, Bot: bot}:
+	case a.ch <- job:
 	default:
-		a.mu.Lock()
+		job.ticket.Reject(time.Now())
 		delete(a.inflight, key)
-		a.mu.Unlock()
 	}
+}
+
+func (a *AsyncBotVerifier) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return map[string]queuehealth.Status{"requests": a.stats.Snapshot(now)}
 }
 
 // Run processes the queue until stopCh closes. Runs as a single
@@ -217,8 +239,10 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) {
 // returns from its DNS lookup immediately rather than holding the Run
 // goroutine for the per-job 5s timeout.
 func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
+	a.mu.Lock()
+	a.stop = stopCh
+	a.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	bridge := make(chan struct{})
 	go func() {
@@ -232,13 +256,31 @@ func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
 	defer func() {
 		cancel()
 		<-bridge
+		a.mu.Lock()
+		a.closed = true
+		close(a.ch)
+		a.mu.Unlock()
+		for job := range a.ch {
+			a.finish(job, false)
+		}
 	}()
 
 	for {
 		select {
+		case <-stopCh:
+			return
+		default:
+		}
+		select {
 		case <-ctx.Done():
 			return
 		case job := <-a.ch:
+			select {
+			case <-stopCh:
+				a.finish(job, false)
+				return
+			default:
+			}
 			a.processWithContext(ctx, job)
 		}
 	}
@@ -249,25 +291,39 @@ func (a *AsyncBotVerifier) process(job verifyJob) {
 }
 
 func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verifyJob) {
-	defer a.finish(job)
+	job.ticket.Start(time.Now())
+	completed := false
+	defer func() { a.finish(job, completed) }()
 
 	a.mu.Lock()
 	v, ok := a.v[job.Bot]
 	a.mu.Unlock()
 	if !ok {
+		completed = true
 		return
 	}
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
 	result, err := v.verify(ctx, job.IP, job.Bot)
 	cancel()
-	if err != nil || a.put == nil {
+	if err != nil {
+		completed = errors.Is(err, ErrUnverifiable)
 		return
 	}
-	_ = a.put(job.IP, job.Bot, result, time.Now().Add(24*time.Hour))
+	if a.put == nil {
+		completed = true
+		return
+	}
+	completed = a.put(job.IP, job.Bot, result, time.Now().Add(24*time.Hour)) == nil
 }
 
-func (a *AsyncBotVerifier) finish(job verifyJob) {
+func (a *AsyncBotVerifier) finish(job verifyJob, completed bool) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	delete(a.inflight, job.Bot+"|"+job.IP.String())
-	a.mu.Unlock()
+	if completed {
+		job.ticket.Finish(time.Now())
+	} else {
+		job.ticket.Reject(time.Now())
+	}
 }

@@ -18,9 +18,7 @@ func emitBPFReaderError(alertCh chan<- alert.Finding, monitor string, err error)
 		Details:   err.Error(),
 		Timestamp: time.Now(),
 	}
-	select {
-	case alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(alertCh, finding) {
 		csmlog.Warn("bpf reader error finding dropped", "monitor", monitor, "err", err)
 	}
 }

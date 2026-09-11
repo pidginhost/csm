@@ -506,7 +506,10 @@ func TestKeyStringDoesNotCollideOnDelimiters(t *testing.T) {
 func TestCorrelatorPersistFiresExactlyOncePerCreateAndMerge(t *testing.T) {
 	var calls int
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(_ Incident) { calls++ },
+		Persist: func(_ Incident) error {
+			calls++
+			return nil
+		},
 	})
 	base := time.Unix(1_700_000_000, 0)
 	clock := base
@@ -577,9 +580,10 @@ func TestCorrelatorPersistRunsOutsideLock(t *testing.T) {
 	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
 
 	// Install Persist after construction so we have the *Correlator.
-	c.cfg.Persist = func(inc Incident) {
+	c.cfg.Persist = func(inc Incident) error {
 		// Re-enter; if mu were held this would deadlock the test.
 		_, _ = c.Get(inc.ID)
+		return nil
 	}
 
 	done := make(chan struct{})
@@ -612,15 +616,16 @@ func TestCorrelatorPersistReentrantReadDoesNotDeadlockBehindQueuedWriter(t *test
 	firstPersist := make(chan struct{})
 	allowFirstRead := make(chan struct{})
 	var persistCalls atomic.Int32
-	c.cfg.Persist = func(inc Incident) {
+	c.cfg.Persist = func(inc Incident) error {
 		if persistCalls.Add(1) != 1 {
-			return
+			return nil
 		}
 		close(firstPersist)
 		<-allowFirstRead
 		if _, ok := c.Get(inc.ID); !ok {
 			t.Errorf("Persist re-entry could not read incident %q", inc.ID)
 		}
+		return nil
 	}
 
 	firstDone := make(chan struct{})
@@ -686,16 +691,17 @@ func TestCorrelatorDeferredStatusPersistenceWaitsForEarlierWrites(t *testing.T) 
 			releaseFirst := make(chan struct{})
 			laterPersist := make(chan struct{}, 1)
 			var calls atomic.Int32
-			c.cfg.Persist = func(_ Incident) {
+			c.cfg.Persist = func(_ Incident) error {
 				if calls.Add(1) == 1 {
 					close(firstPersist)
 					<-releaseFirst
-					return
+					return nil
 				}
 				select {
 				case laterPersist <- struct{}{}:
 				default:
 				}
+				return nil
 			}
 
 			createDone := make(chan struct{})
@@ -763,12 +769,13 @@ func waitForTestSignal(t *testing.T, ch <-chan struct{}, message string) {
 func TestCorrelatorPersistReceivesDeepCopy(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{})
 	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
-	c.cfg.Persist = func(inc Incident) {
+	c.cfg.Persist = func(inc Incident) error {
 		inc.Findings[0] = "mutated-finding"
 		inc.Timeline[0].Message = "mutated-message"
 		if inc.CorrelationKey != nil {
 			inc.CorrelationKey.Account = "mallory"
 		}
+		return nil
 	}
 
 	id, _, _ := c.OnFinding(alert.Finding{

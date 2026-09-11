@@ -110,9 +110,7 @@ func processPHPShieldEventPacket(data []byte, archivePath string, cfg *config.Co
 		if finding.Timestamp.IsZero() {
 			finding.Timestamp = time.Now()
 		}
-		select {
-		case alertCh <- finding:
-		default:
+		if !alert.TryEnqueue(alertCh, finding) {
 			fmt.Fprintln(os.Stderr, "Warning: alert channel full, dropping PHP Shield finding")
 		}
 	}

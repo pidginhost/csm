@@ -176,7 +176,7 @@ func TestCloseStaleSkipsKindsWithoutThreshold(t *testing.T) {
 	// HostIntegrityRisk is intentionally absent from the threshold map so
 	// verdict-emitted kinds never auto-close.
 	id, _, err := c.OnFinding(alert.Finding{
-		Check:     "sensitive_file_write",
+		Check:     "sensitive_file_modified",
 		Message:   "tamper",
 		Severity:  alert.Critical,
 		TenantID:  "root",
@@ -184,6 +184,9 @@ func TestCloseStaleSkipsKindsWithoutThreshold(t *testing.T) {
 	})
 	if err != nil || id == "" {
 		t.Fatalf("seed: id=%q err=%v", id, err)
+	}
+	if inc, ok := c.Get(id); !ok || inc.Kind != KindHostIntegrityRisk {
+		t.Fatalf("setup must open a host-integrity incident, got %+v", inc)
 	}
 
 	closed, _, scanned := c.CloseStale(old.Add(48*time.Hour),
@@ -266,7 +269,10 @@ func TestCloseStaleHonorsDryRun(t *testing.T) {
 func TestCloseStalePersistsClosedReason(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(snap Incident) { persisted = append(persisted, snap) },
+		Persist: func(snap Incident) error {
+			persisted = append(persisted, snap)
+			return nil
+		},
 	})
 	old := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return old }

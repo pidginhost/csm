@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type mockResolver struct {
@@ -295,6 +297,7 @@ func TestAsyncBotVerifier_CancelsInflightOnShutdown(t *testing.T) {
 	a := &AsyncBotVerifier{
 		inflight: make(map[string]struct{}),
 		ch:       make(chan verifyJob, 4),
+		stats:    queuehealth.New(4, time.Minute),
 		v:        map[string]*verifier{"googlebot": newVerifier(res, []string{"googlebot.com"})},
 		put:      func(net.IP, string, bool, time.Time) error { return nil },
 	}
@@ -330,6 +333,7 @@ func TestAsyncBotVerifier_CancelsForwardLookupOnShutdown(t *testing.T) {
 	a := &AsyncBotVerifier{
 		inflight: make(map[string]struct{}),
 		ch:       make(chan verifyJob, 4),
+		stats:    queuehealth.New(4, time.Minute),
 		v:        map[string]*verifier{"googlebot": newVerifier(res, []string{"googlebot.com"})},
 		put:      func(net.IP, string, bool, time.Time) error { return nil },
 	}

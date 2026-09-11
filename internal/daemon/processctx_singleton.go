@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
@@ -21,10 +22,11 @@ const (
 )
 
 var (
-	processCtxOnce     sync.Once
-	processCtxCache    *processctx.Cache
-	processCtxEnr      *processctx.Enricher
-	processCtxRegistry = metrics.Default
+	processCtxOnce      sync.Once
+	processCtxCache     *processctx.Cache
+	processCtxEnr       *processctx.Enricher
+	processCtxPublished atomic.Pointer[processctx.Enricher]
+	processCtxRegistry  = metrics.Default
 )
 
 var processCtxReadStartedAt = defaultProcessCtxReadStartedAt
@@ -54,10 +56,17 @@ func ProcessCtx() (*processctx.Cache, *processctx.Enricher) {
 			Resolver: daemonProcessIdentityResolver{},
 		})
 		processctx.RegisterMetrics(processCtxRegistry(), processCtxCache, processCtxEnr)
+		processCtxPublished.Store(processCtxEnr)
 		processCtxEnr.Start()
 		wireAncestryProbeIfAvailable(processCtxCache)
 	})
 	return processCtxCache, processCtxEnr
+}
+
+func stopProcessCtx() {
+	if enr := processCtxPublished.Load(); enr != nil {
+		enr.Stop()
+	}
 }
 
 type daemonProcessIdentityResolver struct{}
@@ -88,6 +97,7 @@ func resetProcessCtxForTest() {
 	if processCtxEnr != nil {
 		processCtxEnr.Stop()
 	}
+	processCtxPublished.Store(nil)
 	processCtxOnce = sync.Once{}
 	processCtxCache = nil
 	processCtxEnr = nil

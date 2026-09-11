@@ -3,8 +3,10 @@ package checks
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -466,80 +468,107 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 	var findings []alert.Finding
 	var wg sync.WaitGroup
 
-	// Bounded worker pool
-	jobs := make(chan string, len(wpConfigs))
+	batch := wpCoreBatches.begin(len(wpConfigs), wpChecksumWorkers)
+	defer batch.abandon(ctx)
+	jobs := make(chan int, len(wpConfigs))
 	for i := 0; i < wpChecksumWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for wpConfig := range jobs {
-				if ctx.Err() != nil {
-					return
-				}
-				wpPath := filepath.Dir(wpConfig)
-				user := wpConfigUser(wpPath)
-
-				out, err := runCmdCombinedContext(ctx, "wp", "core", "verify-checksums",
-					"--path="+wpPath, "--allow-root")
-				if ctx.Err() != nil {
-					return
-				}
-
-				if err == nil {
-					// Verification passed - cache all core files
-					cacheWPCoreFiles(cache, wpPath)
-					continue
-				}
-
-				if out == nil {
-					continue
-				}
-
-				outStr := string(out)
-				var extraneous []string
-				for _, line := range strings.Split(outStr, "\n") {
-					if wpChecksumLineHasExtraneousCoreFile(line) {
-						extraneous = append(extraneous, strings.TrimSpace(line))
-						continue
+			for index := range jobs {
+				wpConfig, work := wpConfigs[index], batch.tasks[index]
+				work.admit()
+				stop := false
+				work.run(ctx, cmdTimeout, func() {
+					if parentErr := ctx.Err(); parentErr != nil {
+						work.withdraw(parentErr)
+						stop = true
+						return
 					}
-					// A shipped core file whose bytes changed is where backdoors
-					// are appended; that is worse than an extra file, and the
-					// path lets Re-check and the operator go straight to it.
-					if rel := wpChecksumModifiedCoreFile(line); rel != "" {
+					wpPath := filepath.Dir(wpConfig)
+					user := wpConfigUser(wpPath)
+
+					out, err := runCmdCombinedContext(ctx, "wp", "core", "verify-checksums",
+						"--path="+wpPath, "--allow-root")
+					work.progress()
+					if parentErr := ctx.Err(); parentErr != nil {
+						work.withdraw(parentErr)
+						stop = true
+						return
+					}
+
+					if err == nil {
+						// Verification passed - cache all core files
+						cacheWPCoreFiles(cache, wpPath)
+						return
+					}
+
+					// Partial integrity output cannot complete a command killed by a signal.
+					var commandExit *exec.ExitError
+					if errors.As(err, &commandExit) && commandExit.ExitCode() < 0 {
+						work.fail()
+					}
+					if out == nil {
+						work.fail()
+						return
+					}
+
+					outStr := string(out)
+					var extraneous []string
+					reported := false
+					for _, line := range strings.Split(outStr, "\n") {
+						reported = reported || wpChecksumModifiedFilePath(line) != "" || strings.Contains(line, "should not exist")
+						if wpChecksumLineHasExtraneousCoreFile(line) {
+							extraneous = append(extraneous, strings.TrimSpace(line))
+							continue
+						}
+						// A shipped core file whose bytes changed is where backdoors
+						// are appended; that is worse than an extra file, and the
+						// path lets Re-check and the operator go straight to it.
+						if rel := wpChecksumModifiedCoreFile(line); rel != "" {
+							mu.Lock()
+							findings = append(findings, alert.Finding{
+								Severity: wpCoreModifiedSeverity(wpCoreFilePathWithin(wpPath, rel), rel),
+								Check:    "wp_core_integrity",
+								Message:  fmt.Sprintf("WordPress core file modified for %s", user),
+								Details:  fmt.Sprintf("Path: %s\nFile: %s\n%s", wpPath, rel, line),
+								FilePath: wpCoreFilePathWithin(wpPath, rel),
+							})
+							mu.Unlock()
+						}
+					}
+					if len(extraneous) > 0 {
+						collapsed := wpCoreExtraneousFinding(user, wpPath, extraneous)
+						// No single file to name, so the install's owner carries
+						// the identity correlation needs.
+						if owner, ok := installOwner(wpConfig); ok {
+							collapsed.TenantID = owner
+						}
 						mu.Lock()
-						findings = append(findings, alert.Finding{
-							Severity: wpCoreModifiedSeverity(wpCoreFilePathWithin(wpPath, rel), rel),
-							Check:    "wp_core_integrity",
-							Message:  fmt.Sprintf("WordPress core file modified for %s", user),
-							Details:  fmt.Sprintf("Path: %s\nFile: %s\n%s", wpPath, rel, line),
-							FilePath: wpCoreFilePathWithin(wpPath, rel),
-						})
+						findings = append(findings, collapsed)
 						mu.Unlock()
 					}
-				}
-				if len(extraneous) > 0 {
-					collapsed := wpCoreExtraneousFinding(user, wpPath, extraneous)
-					// No single file to name, so the install's owner carries
-					// the identity correlation needs.
-					if owner, ok := installOwner(wpConfig); ok {
-						collapsed.TenantID = owner
+					// wp-cli that ran and refused this tree answered the check.
+					if !reported && !commandRefused(err) {
+						work.fail()
 					}
-					mu.Lock()
-					findings = append(findings, collapsed)
-					mu.Unlock()
+				})
+				if stop {
+					return
 				}
 			}
 		}()
 	}
 
-	for _, wpConfig := range wpConfigs {
+	for index := range wpConfigs {
 		if ctx.Err() != nil {
 			break
 		}
-		jobs <- wpConfig
+		jobs <- index
 	}
 	close(jobs)
 	wg.Wait()
+	batch.abandon(ctx)
 
 	fmt.Fprintf(os.Stderr, "CMS hash cache: %d verified core files cached\n", cache.Size())
 

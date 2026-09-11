@@ -530,7 +530,7 @@ func TestStagedPackageQueueCountsDrainingFiles(t *testing.T) {
 	if !q.push(stagedPackageFile{path: "first"}) {
 		t.Fatal("first push rejected")
 	}
-	files := q.take()
+	files := q.take(time.Now())
 	var workers sync.WaitGroup
 	accepted := make(chan string, 16)
 	for i := range 16 {
@@ -550,8 +550,8 @@ func TestStagedPackageQueueCountsDrainingFiles(t *testing.T) {
 	if len(want) != 2 {
 		t.Errorf("accepted %d total entries with limit 2 while draining", len(want))
 	}
-	q.requeue(files)
-	got := q.take()
+	q.requeue(files, time.Now())
+	got := q.take(time.Now())
 	if len(got) != len(want) || got[0].path != "first" {
 		t.Fatalf("requeue lost entries or order: %+v, want %v", got, want)
 	}
@@ -564,7 +564,7 @@ func TestStagedPackageQueueCountsDrainingFiles(t *testing.T) {
 	if len(want) != 0 {
 		t.Errorf("lost entries: %v", want)
 	}
-	q.requeue(nil)
+	q.requeue(nil, time.Now())
 	if !q.push(stagedPackageFile{path: "after-drain"}) {
 		t.Error("completed drain did not release capacity")
 	}

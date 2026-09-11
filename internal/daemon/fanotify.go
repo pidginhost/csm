@@ -25,6 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/wpcheck"
 	"github.com/pidginhost/csm/internal/yara"
@@ -147,9 +148,14 @@ type FileMonitor struct {
 
 	// panicMu / lastPanicAt rate-limit the realtime_scanner_panic finding
 	// raised when an analyzer panics on one event (see analyzeFileSafe).
-	panicMu     sync.Mutex
-	lastPanicAt time.Time
-	analyzerCh  chan fileEvent
+	panicMu           sync.Mutex
+	lastPanicAt       time.Time
+	analyzerCh        chan fileEvent
+	queueHealthOnce   sync.Once
+	analyzerHealth    *queuehealth.Tracker
+	reconcileHealth   *queuehealth.Tracker
+	kernelQueueHealth *queuehealth.Tracker
+	kernelQueue       *notificationQueue
 
 	// M7 - separate counters for dropped events and alerts
 	droppedEvents int64
@@ -206,7 +212,7 @@ type FileMonitor struct {
 	// reconcileWindow so bulk filesystem operations (unzip, backup restore)
 	// do not blind detection to actual threats landing in the storm.
 	reconcileMu   sync.Mutex
-	reconcileDirs map[string]time.Time
+	reconcileDirs map[string]reconcileDirectory
 
 	// reconcileSig is a buffered cap-1 channel that lets sendEvent's drop
 	// branch nudge overflowReporter to run reconcileDrops out of cycle
@@ -350,6 +356,7 @@ func recordReadTruncation(fd int, maxBytes int, check string) {
 }
 
 type fileEvent struct {
+	queueTicket   queuehealth.Ticket
 	path          string
 	fd            int
 	pid           int32
@@ -447,7 +454,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		analyzerCh:          make(chan fileEvent, analyzerChBufferSize),
 		pipeFds:             pipeFds,
 		stopCh:              make(chan struct{}),
-		reconcileDirs:       make(map[string]time.Time),
+		reconcileDirs:       make(map[string]reconcileDirectory),
 		reconcileSig:        make(chan struct{}, 1),
 		webRootPatterns:     webRootPatterns,
 		accountRootPatterns: checks.AccountHomePatterns(),
@@ -613,13 +620,12 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 			// #nosec G115 -- POSIX fd fits in int32.
 			if events[i].Fd == int32(fm.fd) {
 				// fanotify events ready — single read per epoll wake
-				nr, readErr := unix.Read(fm.fd, buf)
+				fm.initQueueHealth()
+				_, readErr := fm.kernelQueue.read(buf, fm.processEvents)
 				if readErr != nil {
 					if readErr != unix.EAGAIN && readErr != unix.EINTR {
 						fmt.Fprintf(os.Stderr, "[%s] fanotify read error: %v\n", ts(), readErr)
 					}
-				} else if nr >= metadataSize {
-					fm.processEvents(buf[:nr])
 				}
 			}
 		}
@@ -647,7 +653,8 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 		default:
 		}
 
-		n, err := unix.Read(fm.fd, buf)
+		fm.initQueueHealth()
+		_, err := fm.kernelQueue.read(buf, fm.processEvents)
 		if err != nil {
 			if err == unix.EAGAIN || err == unix.EINTR {
 				time.Sleep(100 * time.Millisecond)
@@ -658,11 +665,6 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 			continue
 		}
 
-		if n < metadataSize {
-			continue
-		}
-
-		fm.processEvents(buf[:n])
 	}
 }
 
@@ -696,6 +698,8 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 // lost, and nudge the reconcile pass to rescan directories that also saw
 // analyzer-queue drops during the same storm.
 func (fm *FileMonitor) handleQueueOverflow() {
+	fm.initQueueHealth()
+	fm.kernelQueueHealth.Lose(time.Now(), 1)
 	atomic.AddInt64(&fm.queueOverflows, 1)
 	if fanotifyKernelOverflowTotal != nil {
 		fanotifyKernelOverflowTotal.Inc()
@@ -729,6 +733,12 @@ func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
 		close(fm.analyzerCh)
 		fm.wg.Wait()
+		fm.discardReconcilePending()
+		fm.stagedPackages().discardPending(time.Now())
+		if fm.dropper != nil {
+			fm.dropper.tr.discardPending(time.Now())
+			clear(fm.dropper.attempts)
+		}
 		// Mark pipe as closed before actually closing, so Stop() won't
 		// write to an already-closed fd (H2 fix).
 		atomic.StoreInt32(&fm.pipeClosed, 1)
@@ -748,7 +758,8 @@ func (fm *FileMonitor) Stop() {
 			_, _ = unix.Write(fm.pipeFds[1], []byte{0})
 		}
 		// Close fanotify fd - causes any pending Read/EpollWait to return
-		_ = unix.Close(fm.fd)
+		fm.initQueueHealth()
+		_ = fm.kernelQueue.close()
 	})
 }
 
@@ -778,9 +789,12 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	}
 
 	// Send to analyzer pool (with backpressure)
+	fm.initQueueHealth()
+	ticket := fm.analyzerHealth.Begin(time.Now())
 	select {
 	case fm.analyzerCh <- fileEvent{
-		path: path, fd: fd, pid: pid, mask: mask,
+		queueTicket: ticket,
+		path:        path, fd: fd, pid: pid, mask: mask,
 		dropperOnly: !contentInteresting, phpExecutable: phpExecutable,
 	}:
 	default:
@@ -788,6 +802,7 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 		// reconcile pass in overflowReporter can rescan it. Without this
 		// every file in a bulk burst past buffer capacity is invisible to
 		// detection forever.
+		ticket.Reject(time.Now())
 		n := atomic.AddInt64(&fm.droppedEvents, 1)
 		if fanotifyDroppedTotal != nil {
 			fanotifyDroppedTotal.Inc()
@@ -817,92 +832,6 @@ func normalizeFanotifyEventPath(path string) string {
 // logic stays testable from a cross-platform test file.
 func (fm *FileMonitor) maybeTriggerEagerReconcile(droppedSoFar int64) {
 	signalEagerReconcile(fm.reconcileSig, droppedSoFar, eagerReconcileDropThreshold)
-}
-
-// recordDroppedDir registers a directory whose file had its fanotify event
-// dropped, capped at reconcileDirCap entries (oldest evicted).
-func (fm *FileMonitor) recordDroppedDir(path string) {
-	dir := filepath.Dir(path)
-	fm.reconcileMu.Lock()
-	defer fm.reconcileMu.Unlock()
-	if fm.reconcileDirs == nil {
-		fm.reconcileDirs = make(map[string]time.Time)
-	}
-	fm.reconcileDirs[dir] = time.Now()
-	if len(fm.reconcileDirs) <= reconcileDirCap {
-		return
-	}
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for k, t := range fm.reconcileDirs {
-		if first || t.Before(oldestTime) {
-			oldestKey, oldestTime, first = k, t, false
-		}
-	}
-	delete(fm.reconcileDirs, oldestKey)
-}
-
-// reconcileDrops walks every directory with a recent dropped event and
-// analyses any interesting file modified within reconcileWindow. Converts
-// lost events into delayed events rather than invisible ones. Called from
-// overflowReporter after the minute-granularity overflow alert.
-func (fm *FileMonitor) reconcileDrops() {
-	fm.reconcileMu.Lock()
-	dirs := fm.reconcileDirs
-	fm.reconcileDirs = make(map[string]time.Time)
-	fm.reconcileMu.Unlock()
-
-	if len(dirs) == 0 {
-		return
-	}
-
-	if fanotifyReconcileDur != nil {
-		start := time.Now()
-		defer func() {
-			fanotifyReconcileDur.Observe(time.Since(start).Seconds())
-		}()
-	}
-
-	cutoff := time.Now().Add(-reconcileWindow)
-	for dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			if info.ModTime().Before(cutoff) {
-				continue
-			}
-			fullPath := filepath.Join(dir, e.Name())
-			if !fm.isInteresting(fullPath) {
-				continue
-			}
-			// Open+analyse+close wrapped so a panic in analyzeFile does not
-			// leak the fd; otherwise `defer f.Close()` in a loop body would
-			// defer until reconcileDrops returns, accumulating fds across
-			// every entry in every tracked dir.
-			func() {
-				// #nosec G304 -- fullPath is a directory entry under a dir
-				// the kernel already notified us about; reconcile owns
-				// reopening because the original fanotify fd is gone.
-				f, err := os.Open(fullPath)
-				if err != nil {
-					return
-				}
-				defer func() { _ = f.Close() }()
-				// #nosec G115 -- POSIX fd fits in int32 (rlimit caps fds at ~1024).
-				fm.analyzeFile(fileEvent{path: fullPath, fd: int(f.Fd())})
-			}()
-		}
-	}
 }
 
 // isInteresting is the fast filter - zero I/O, pure string matching.
@@ -1061,7 +990,8 @@ func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
 			fm.reportScannerPanic(event.path, r)
 		}
 	}()
-	fileAnalyzer(fm, event)
+	work := queuehealth.Work[fileEvent]{Value: event, Ticket: event.queueTicket}
+	work.Process(func(queued fileEvent) { fileAnalyzer(fm, queued) })
 }
 
 // reportScannerPanic logs the panic with its stack, forwards it to
@@ -2259,9 +2189,7 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 		Details:   details,
 		Timestamp: time.Now(),
 	}
-	select {
-	case fm.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
 }
@@ -2283,9 +2211,7 @@ func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message
 		Timestamp:   time.Now(),
 	}
 	checks.StampContentFingerprint(&finding)
-	select {
-	case fm.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
 }

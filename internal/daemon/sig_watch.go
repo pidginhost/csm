@@ -169,20 +169,14 @@ func (w *sigWatcher) tick() {
 	}
 	w.rescanFlag.Store(true)
 	for _, c := range changed {
-		select {
-		case w.alertCh <- alert.Finding{
+		alert.TryEnqueue(w.alertCh, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "signature_update_rescan_queued",
 			Message:   fmt.Sprintf("Signature update detected, full deep rescan queued: %s", filepath.Base(c.Path)),
 			Details:   fmt.Sprintf("File: %s\nOld mtime: %s\nNew mtime: %s", c.Path, c.Old.UTC().Format(time.RFC3339), c.New.UTC().Format(time.RFC3339)),
 			FilePath:  c.Path,
 			Timestamp: time.Now(),
-		}:
-		default:
-			// Alert channel is full; the rescan flag is already set
-			// so the operator-visible "what happened" record is the
-			// less critical loss here.
-		}
+		})
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
@@ -119,6 +120,7 @@ type stagedPackageFile struct {
 	pkg      wpStagedPackage
 	key      stagedPackageKey
 	queuedAt time.Time
+	ticket   queuehealth.Ticket
 }
 
 // A pathname can be reused by a later unpack. Retained headers only belong
@@ -142,18 +144,27 @@ type stagedPackageQueue struct {
 	mu       sync.Mutex
 	limit    int
 	files    []stagedPackageFile
-	inFlight int
+	draining []stagedPackageFile
 	packages map[stagedPackageKey]stagedPackageInfo
+	health   *queuehealth.Tracker
+	now      func() time.Time
 }
 
 func newStagedPackageQueue(limit int) *stagedPackageQueue {
-	return &stagedPackageQueue{limit: limit, packages: make(map[stagedPackageKey]stagedPackageInfo)}
+	return &stagedPackageQueue{
+		limit: limit, packages: make(map[stagedPackageKey]stagedPackageInfo),
+		health: queuehealth.NewSharedCapacity(limit, time.Minute), now: time.Now,
+	}
+}
+
+func (q *stagedPackageQueue) snapshot(now time.Time) queuehealth.Status {
+	return q.health.Snapshot(now)
 }
 
 func (q *stagedPackageQueue) pendingCount() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.files) + q.inFlight
+	return len(q.files) + len(q.draining)
 }
 
 // note records a package the analyzer saw a file of and returns its info,
@@ -200,9 +211,11 @@ func (q *stagedPackageQueue) info(key stagedPackageKey) stagedPackageInfo {
 func (q *stagedPackageQueue) push(f stagedPackageFile) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.files)+q.inFlight >= q.limit {
+	if len(q.files)+len(q.draining) >= q.limit {
+		q.health.Lose(q.now(), 1)
 		return false
 	}
+	f.ticket = q.health.BeginAt(f.queuedAt, q.now())
 	q.files = append(q.files, f)
 	return true
 }
@@ -210,20 +223,45 @@ func (q *stagedPackageQueue) push(f stagedPackageFile) bool {
 // take hands every queued file to the single drain loop, which requeues the
 // ones still waiting. Reserve their capacity until requeue completes; new
 // arrivals must not overfill the queue while the slice is detached.
-func (q *stagedPackageQueue) take() []stagedPackageFile {
+func (q *stagedPackageQueue) take(now time.Time) []stagedPackageFile {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	files := q.files
 	q.files = nil
-	q.inFlight = len(files)
+	q.draining = files
+	for _, f := range files {
+		f.ticket.Start(now)
+	}
 	return files
 }
 
-func (q *stagedPackageQueue) requeue(files []stagedPackageFile) {
+func (q *stagedPackageQueue) requeue(files []stagedPackageFile, now time.Time) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	keep := make(map[queuehealth.Ticket]bool, len(files))
+	for _, f := range files {
+		keep[f.ticket] = true
+	}
+	for _, f := range q.draining {
+		if keep[f.ticket] {
+			f.ticket.Requeue(now)
+		} else {
+			f.ticket.Finish(now)
+		}
+	}
 	q.files = append(files, q.files...)
-	q.inFlight = 0
+	q.draining = nil
+}
+
+// The monitor calls this after joining the analyzer and verifier workers,
+// when no producer can append behind the final shutdown accounting.
+func (q *stagedPackageQueue) discardPending(now time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, f := range q.files {
+		f.ticket.Reject(now)
+	}
+	q.files = nil
 }
 
 func (q *stagedPackageQueue) evictIdle(now time.Time) {
@@ -430,7 +468,7 @@ func (fm *FileMonitor) redescribeStaged(f stagedPackageFile) wpcheck.Verificatio
 func (fm *FileMonitor) drainStagedPackages(now time.Time) {
 	q := fm.stagedPackages()
 	q.evictIdle(now)
-	files := q.take()
+	files := q.take(time.Now())
 	if len(files) == 0 {
 		return
 	}
@@ -462,7 +500,7 @@ func (fm *FileMonitor) drainStagedPackages(now time.Time) {
 			fm.alertStagedPackage(f.pkg, q.info(f.key), stagedPackageReason(v), f.procInfo)
 		}
 	}
-	q.requeue(keep)
+	q.requeue(keep, time.Now())
 }
 
 // stagedPackageLoop drains the queue once a second until the monitor stops.

@@ -96,7 +96,7 @@ func TestEmailPasswordHashRejectsUnboundedOrUnsupportedInput(t *testing.T) {
 }
 
 func TestEmailPasswordCancellationRetainsWorkerSlots(t *testing.T) {
-	started := make(chan struct{}, cap(emailHashSlots)+1)
+	started := make(chan struct{}, cap(emailHashes.slots)+1)
 	release := make(chan struct{})
 	var once sync.Once
 	t.Cleanup(func() { once.Do(func() { close(release) }) })
@@ -105,7 +105,7 @@ func TestEmailPasswordCancellationRetainsWorkerSlots(t *testing.T) {
 		<-release
 		return true, nil
 	}}
-	for range cap(emailHashSlots) {
+	for range cap(emailHashes.slots) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() { _, err := v.matches(ctx, "fixture"); done <- err }()
@@ -129,15 +129,15 @@ func TestEmailPasswordCancellationRetainsWorkerSlots(t *testing.T) {
 	if _, err := v.matches(ctx, "fixture"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("queued verification returned %v", err)
 	}
-	if len(started) != 0 || len(emailHashSlots) != cap(emailHashSlots) {
+	if len(started) != 0 || len(emailHashes.slots) != cap(emailHashes.slots) {
 		t.Fatal("cancellation released a still-running KDF slot")
 	}
 	once.Do(func() { close(release) })
 	deadline := time.Now().Add(time.Second)
-	for len(emailHashSlots) != 0 && time.Now().Before(deadline) {
+	for len(emailHashes.slots) != 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if len(emailHashSlots) != 0 {
+	if len(emailHashes.slots) != 0 {
 		t.Fatal("completed workers leaked slots")
 	}
 	if got, err := mustEmailPasswordVerifier(t, "{PLAIN}fixture").matches(context.Background(), "fixture"); err != nil || !got {

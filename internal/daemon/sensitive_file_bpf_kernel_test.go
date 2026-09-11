@@ -30,7 +30,12 @@ func TestKernelSensitiveFileStartupClosesReaderOnWatchsetFailure(t *testing.T) {
 	if err = watched.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reader, err := bpf.NewReader(events, decodeSensitiveFileEvent)
+	counters, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 16, MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = counters.Close() }()
+	reader, err := bpf.NewReader(events, counters, decodeSensitiveFileEvent)
 	if err != nil {
 		t.Fatal(err)
 	}

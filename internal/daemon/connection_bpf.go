@@ -20,6 +20,7 @@ import (
 	bpfprog "github.com/pidginhost/csm/internal/daemon/connection_bpfprog"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
@@ -32,6 +33,7 @@ type connectionBPF struct {
 	cfg          *config.Config
 	count        atomic.Uint64
 	uidRefresher *UIDRefresher // Phase 4: nil when enforcement is off
+	enricher     *verdictEnricher
 }
 
 // startConnectionBPF loads the BPF objects, attaches connect4 + connect6 to
@@ -92,7 +94,7 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 		return nil, fmt.Errorf("attach connect6: %w", err)
 	}
 
-	reader, err := bpf.NewReader[ConnectionEvent](objs.Events, decodeConnectionEvent)
+	reader, err := bpf.NewReader[ConnectionEvent](objs.Events, objs.QueueStats, decodeConnectionEvent)
 	if err != nil {
 		_ = l4.Close()
 		_ = l6.Close()
@@ -107,6 +109,14 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 		reader:  reader,
 		alertCh: alertCh,
 		cfg:     cfg,
+		enricher: newVerdictEnricher(verdictEnricherOpts{
+			Ask: func(ctx context.Context, req verdict.Request) (verdict.Response, error) {
+				return askBPFVerdict(ctx, activeConnectionCfg(cfg), req)
+			},
+			Workers: 4,
+			Queue:   256,
+			TTL:     time.Minute,
+		}),
 	}
 
 	// Phase 4: start the periodic safe-UID refresher only when
@@ -139,32 +149,33 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 func (c *connectionBPF) Mode() string       { return "bpf" }
 func (c *connectionBPF) EventCount() uint64 { return c.count.Load() }
 
+func (c *connectionBPF) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	states := c.reader.QueueStatuses(now)
+	for name, state := range c.enricher.QueueStatuses(now) {
+		states[name] = state
+	}
+	return states
+}
+
 func (c *connectionBPF) Run(ctx context.Context) {
+	stopReader := c.reader.Start(ctx)
 	defer func() {
 		if c.uidRefresher != nil {
 			c.uidRefresher.Stop()
 		}
-		_ = c.reader.Close()
 		_ = c.link4.Close()
 		_ = c.link6.Close()
+		stopReader()
 		_ = c.objs.Close()
 	}()
 
-	go c.reader.Run(ctx)
 	errorsCh := c.reader.Errors()
 	eventsCh := c.reader.Events()
 	pcCache, pcEnr := ProcessCtx()
 	// Verdict enrichment runs beside this loop, never inside it: the callback
 	// is a network round trip and this goroutine is the only reader of a
-	// 256-slot ring buffer.
-	enricher := newVerdictEnricher(verdictEnricherOpts{
-		Ask: func(ctx context.Context, req verdict.Request) (verdict.Response, error) {
-			return askBPFVerdict(ctx, activeConnectionCfg(c.cfg), req)
-		},
-		Workers: 4,
-		Queue:   256,
-		TTL:     time.Minute,
-	})
+	// 256-slot delivery queue.
+	enricher := c.enricher
 	// The loop also returns when the events channel closes, which does not
 	// cancel ctx; without a context of our own the wait below would never
 	// return.
@@ -187,25 +198,25 @@ func (c *connectionBPF) Run(ctx context.Context) {
 				continue
 			}
 			emitBPFReaderError(c.alertCh, "connection", err)
-		case ev, ok := <-eventsCh:
+		case work, ok := <-eventsCh:
 			if !ok {
 				return
 			}
-			c.count.Add(1)
-			user := checks.LookupUser(ev.UID)
-			liveCfg := activeConnectionCfg(c.cfg)
-			for _, finding := range evaluateConnectionEvent(liveCfg, mta, ev, user) {
-				attachProcessCtxToFinding(pcCache, pcEnr, &finding, ev)
-				if bpfVerdictEnabled(liveCfg, ev) {
-					enricher.annotate(&finding, ev.DstIP.String(),
-						bpfVerdictReason(finding.Check, ev.DstPort), finding.Severity.String())
+			work.Process(func(ev ConnectionEvent) {
+				c.count.Add(1)
+				user := checks.LookupUser(ev.UID)
+				liveCfg := activeConnectionCfg(c.cfg)
+				for _, finding := range evaluateConnectionEvent(liveCfg, mta, ev, user) {
+					attachProcessCtxToFinding(pcCache, pcEnr, &finding, ev)
+					if bpfVerdictEnabled(liveCfg, ev) {
+						enricher.annotate(&finding, ev.DstIP.String(),
+							bpfVerdictReason(finding.Check, ev.DstPort), finding.Severity.String())
+					}
+					if !alert.TryEnqueue(c.alertCh, finding) {
+						csmlog.Warn("connection bpf: alert channel full, dropping finding")
+					}
 				}
-				select {
-				case c.alertCh <- finding:
-				default:
-					csmlog.Warn("connection bpf: alert channel full, dropping finding")
-				}
-			}
+			})
 		}
 	}
 }

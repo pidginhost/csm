@@ -12,13 +12,19 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
 )
 
 func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 	now := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	queues := map[string]queuehealth.Status{"findings.ingest": {
+		Status: "degraded", Reason: "backlog_lag", Depth: 10, Capacity: 500,
+		InFlight: 2, DroppedTotal: 17, RecentDrops: 3, LagSeconds: 90, ProcessingSeconds: 12,
+	}}
 	s := &Server{cfg: capsTestCfg(), startTime: now.Add(-time.Hour), version: "test"}
 	s.SetHealthProvider(statusFakeProvider{
+		queues:               queues,
 		bpfEnforcementActive: true,
 		latestScan:           now.Add(-10 * time.Minute),
 		baselineAt:           now.Add(-24 * time.Hour),
@@ -63,6 +69,13 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 		t.Fatalf("unmarshal status: %v", err)
 	}
 	assertJSONKeys(t, raw, jsonStructKeys(reflect.TypeOf(health.Snapshot{})))
+	var snapshot health.Snapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(snapshot.Queues, queues) {
+		t.Fatalf("queue evidence changed in API response: got %+v want %+v", snapshot.Queues, queues)
+	}
 	automation, ok := raw["automation"].(map[string]any)
 	if !ok {
 		t.Fatalf("automation payload = %T, want object", raw["automation"])

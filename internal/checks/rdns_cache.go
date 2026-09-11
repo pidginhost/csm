@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // RDNSCacheConfig is the config block for NewRDNSCache. Resolve is the
@@ -20,8 +22,8 @@ type RDNSCacheConfig struct {
 	Resolve         func(ip net.IP) (string, error)
 	ResolveDeadline time.Duration
 	MaxSize         int
-	// MaxConcurrent caps the number of deadline-bound resolve goroutines in
-	// flight at once. A goroutine blocked on a wedged resolver cannot be
+	// MaxConcurrent caps deadline-bound lookups, including returned results
+	// still owned by their callers. A goroutine blocked on a wedged resolver cannot be
 	// cancelled in Go, so without a cap a burst of distinct IPs under deadline
 	// saturation spawns one abandonable goroutine per IP. 0 falls back to
 	// rdnsCacheDefaultMaxConcurrent.
@@ -48,6 +50,7 @@ type RDNSCache struct {
 	order   *list.List
 	entries map[string]*list.Element
 	sem     chan struct{}
+	stats   *queuehealth.Tracker
 }
 
 type rdnsEntry struct {
@@ -66,7 +69,7 @@ func NewRDNSCache(cfg RDNSCacheConfig) *RDNSCache {
 	if maxConcurrent <= 0 {
 		maxConcurrent = rdnsCacheDefaultMaxConcurrent
 	}
-	return &RDNSCache{
+	c := &RDNSCache{
 		ttl:     cfg.TTL,
 		deadln:  cfg.ResolveDeadline,
 		maxSize: maxSize,
@@ -76,6 +79,10 @@ func NewRDNSCache(cfg RDNSCacheConfig) *RDNSCache {
 		entries: map[string]*list.Element{},
 		sem:     make(chan struct{}, maxConcurrent),
 	}
+	if cfg.ResolveDeadline > 0 {
+		c.stats = queuehealth.NewSharedCapacity(maxConcurrent, cfg.ResolveDeadline)
+	}
+	return c
 }
 
 // evictOldestLocked drops the oldest cached entry. Caller holds c.mu.
@@ -140,21 +147,13 @@ func (c *RDNSCache) runWithDeadline(ip net.IP) string {
 	// resolver keeps its slot until the syscall finally returns, so under
 	// deadline saturation further lookups fail fast (return "" like a
 	// deadline miss) instead of spawning more abandonable goroutines.
-	select {
-	case c.sem <- struct{}{}:
-	default:
+	work := c.acquireResolve()
+	if work == nil {
 		return ""
 	}
-	type result struct {
-		host string
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		defer func() { <-c.sem }()
-		host, err := c.resolve(ip)
-		ch <- result{host, err}
-	}()
+	defer work.release()
+	ch := make(chan rdnsResult, 1)
+	go c.resolveTracked(work, ip, ch)
 	timer := time.NewTimer(c.deadln)
 	defer timer.Stop()
 	select {
@@ -164,6 +163,7 @@ func (c *RDNSCache) runWithDeadline(ip net.IP) string {
 		}
 		return r.host
 	case <-timer.C:
+		work.fail()
 		return ""
 	}
 }

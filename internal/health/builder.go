@@ -1,6 +1,11 @@
 package health
 
-import "time"
+import (
+	"maps"
+	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
+)
 
 // Provider is the contract the daemon (or a stub for tests) implements
 // so the snapshot builder doesn't depend on internal/daemon directly.
@@ -25,6 +30,7 @@ type Provider interface {
 	Mode() string
 	// CorrelationAttribution is nil until the first active-set merge.
 	CorrelationAttribution() *CorrelationAttribution
+	QueueStatuses() map[string]queuehealth.Status
 }
 
 // Build assembles a Snapshot from the provider plus the static version
@@ -38,6 +44,7 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 	}
 	caps := append([]string(nil), capabilities...)
 	return Snapshot{
+		Queues:                 maps.Clone(p.QueueStatuses()),
 		Version:                version,
 		Hostname:               p.Hostname(),
 		StartedAt:              started,

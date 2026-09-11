@@ -3,14 +3,16 @@ package reporting
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 )
 
 // Spooler is the production Reporter: it enqueues minimized reports to a durable
 // spool and drains them to all configured targets on an interval, retrying from
-// the spool when a collector is down. It never blocks the alert path beyond a
-// single bbolt write.
+// the spool when a collector is down. The daemon invokes persistence from its
+// report worker so database writes do not block the alert path.
 type Spooler struct {
 	spool    *Spool
 	sender   *Sender
@@ -41,21 +43,23 @@ func NewSpooler(spool *Spool, sender *Sender, targets []Target, interval time.Du
 
 // Enqueue persists r for delivery to every configured target. Dropped-count
 // from spool overflow is logged so a sustained outage is visible.
-func (s *Spooler) Enqueue(r Report) {
+func (s *Spooler) Enqueue(r Report) error {
 	body, err := json.Marshal(r)
 	if err != nil {
-		return
+		return err
 	}
+	var failures []error
 	for _, name := range s.order {
 		dropped, err := s.spool.Enqueue(name, body)
 		if err != nil {
-			s.logf("reporting: spool enqueue for %s failed: %v", name, err)
+			failures = append(failures, fmt.Errorf("spool enqueue for %s: %w", name, err))
 			continue
 		}
 		if dropped > 0 {
 			s.logf("reporting: spool over capacity, dropped %d oldest reports for %s", dropped, name)
 		}
 	}
+	return errors.Join(failures...)
 }
 
 // DrainOnce attempts one delivery pass over the spool.

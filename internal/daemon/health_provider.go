@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/checks"
@@ -16,9 +18,58 @@ import (
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/processhandle"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/updatecheck"
 )
+
+// QueueStatuses reports protection work independently of alert delivery.
+func (d *Daemon) QueueStatuses() map[string]queuehealth.Status {
+	return d.queueStatuses(time.Now())
+}
+
+func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
+	out := d.registeredQueueStatuses(now)
+	for name, status := range checks.AutoBlockQueueStatuses(now) {
+		out["auto_block."+name] = status
+	}
+	if incidentCorrelator != nil {
+		for name, status := range incidentCorrelator.QueueStatuses(now) {
+			out["incident."+name] = status
+		}
+	}
+	out["actionlog.writes"] = actionlog.QueueStatus(now)
+	out["phpanel.spool"] = alert.PhpanelQueueStatus(now)
+	out["checks.executions"] = checks.CheckExecutionQueueStatus(now)
+	out["checks.plugin_inventory"] = checks.PluginInventoryQueueStatus(now)
+	out["checks.wordpress_core"] = checks.WPCoreQueueStatus(now)
+	out["checks.reputation_queries"] = checks.ReputationQueueStatus(now)
+	for name, status := range checks.FileIndexQueueStatuses(now) {
+		out["checks.file_index."+name] = status
+	}
+	out["checks.dispatch"] = checks.CheckDispatchQueueStatus(now)
+	for name, status := range rdnsCache().QueueStatuses(now) {
+		out["smtp_rdns."+name] = status
+	}
+	for name, status := range checks.EmailPasswordQueueStatuses(now) {
+		out["email_password."+name] = status
+	}
+	if enr := processCtxPublished.Load(); enr != nil {
+		for name, state := range enr.QueueStatuses(now) {
+			out["processctx."+name] = state
+		}
+	}
+	if d.alertQueue != nil {
+		out["findings.ingest"] = d.alertQueue.Snapshot(now)
+	}
+	if fm := d.getFileMonitor(); fm != nil {
+		maps.Copy(out, fm.queueStatuses(now))
+	}
+	if sw := d.getSpoolWatcher(); sw != nil {
+		maps.Copy(out, sw.queueStatuses(now))
+	}
+	return out
+}
 
 // Hostname implements health.Provider.
 func (d *Daemon) Hostname() string {

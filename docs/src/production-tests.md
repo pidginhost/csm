@@ -97,3 +97,92 @@ The journal reader starts after existing matching records and also follows
 services with no prior records. Package integrity rechecks preserve a reported
 mismatch for the original finding even if that file is now absent or no longer
 executable; current file mode is not evidence that the modification was repaired.
+
+## Required Queue inventory
+
+Both runner modes validate `scripts/queue-inventory.json` before test selection
+and execution. Its reviewed owners cover channel handoffs, durable work,
+coalesced pending work and kernel buffers. Each owner records its health rows,
+bounds and required publication and lifecycle regressions. The runner writes
+the union of those regressions and its existing requirements to
+`production-results/<mode>/queue-required.json`, then requires actual passing
+events for every selected requirement.
+
+The portable baseline in `scripts/production-required.json` also requires the
+shared accounting, health reporting, doctor and gate regressions. Keep recovery
+and concurrency regressions with their owner when they test an owner-specific
+boundary; keep shared contracts in the baseline. A passing full suite alone
+does not protect an omitted requirement against a later skip.
+
+PHP relay publication requirements start the Linux wiring with temporary
+filesystem paths and a real state store. They check live registration,
+persistence, shutdown evidence and failed watcher attachment. They must also
+reject removal of either production registration; manually registering a
+provider in a test only proves that provider's behavior.
+
+The allocation scanner is available for ownership reviews:
+
+```bash
+go run ./scripts/queuegate -scan > queue-allocations.json
+```
+
+It scans repository Go source across all build constraints, excluding test files,
+`testdata`, hidden directories and vendored dependencies. It records raw channel
+allocations and imported `queuehealth.NewChannel` calls, including renamed and
+dot imports. Named channel aliases resolve across every package variant in a
+repository import directory; an alias that is a channel in only some variants fails
+explicitly. Imported named types use the Go toolchain's source importer.
+Unresolved types, reflective allocation and indirect references to the accounted constructor fail explicitly.
+Supporting a new constructor or generic constraint requires scanner tests and
+an ownership review first.
+
+Allocation identities use the file, enclosing function, assignment target,
+constructor kind and ordinal. The descriptor includes the allocation expression,
+expanded repository constants and assignments or local `var` initializers for
+the capacity and its local inputs in the enclosing function. Expression grouping
+and build-variant values are retained, including array lengths, literal indices and slice bounds.
+Implicit constant declarations, `iota`, closures and named composite literals
+in capacity expressions need explicit scanner support and are rejected, including
+when nested inside field selections. Import aliases are resolved as package
+names, including aliases that match predeclared identifiers. Runtime
+collection lengths stay symbolic; only explicit construction and slice bounds
+enter the local capacity-input graph. The scanner does not infer arbitrary
+function bodies or type layouts and is not whole-program data-flow analysis.
+
+A version 1 manifest contains `allocations` and `owners`. Each allocation copies
+its scanner descriptor and adds a reviewed `class`, `rationale`, and `queue`
+owner where applicable. Classes are `work`, `lifecycle`, `maintenance`, and
+`constructor`. A semaphore or completion signal can order data stored elsewhere;
+trace that data before deciding whether it belongs to a work owner. Every work
+allocation must reference an owner. Changes, omissions and stale descriptors
+fail validation.
+
+Each owner records health `rows`, reviewed `bounds`, and separate `publication`
+and `lifecycle` evidence lists. An evidence entry names a package, a top-level
+Go test and its required `portable` or `kernel` mode. Owners without a channel
+allocation need source `anchors`: a path, symbol and canonical shape. Supported
+anchors include struct fields, types, variable or constant declarations, and
+function signatures. Missing or changed anchors fail validation.
+
+For a reviewed manifest, generate requirements for the existing test verifier:
+
+```bash
+go run ./scripts/queuegate -manifest scripts/queue-inventory.json \
+  -mode portable -base-required scripts/production-required.json \
+  -required-out queue-required.json
+```
+
+Use the resulting file as `scripts/testgate -required` with the selected test
+inventory and actual Go JSON test events. It combines existing required tests
+with the owner's evidence for that mode. A missing, skipped or failed required
+test is not accepted. A passing scanner or a test name in JSON alone does not
+prove health publication or lifecycle coverage; the named tests need substantive
+assertions and execution evidence. Runner regression tests exercise both modes
+with real test events, including changed capacities, unclassified allocations,
+missing tests and skipped required evidence.
+
+The scanner cannot discover arbitrary queues held in maps, heaps, durable
+storage, kernel buffers or dependencies. Those need explicit owner entries and
+source anchors, plus tests that drive real admission, progress, loss and cleanup.
+Adding a new non-channel owner remains a code-review responsibility. No syntax
+inventory substitutes for reviewing the behavior of its required tests.

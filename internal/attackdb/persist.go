@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -139,11 +140,24 @@ func (db *DB) saveRecords() {
 		for ip := range db.deletedIPs {
 			deleted = append(deleted, ip)
 		}
+		batch := db.detachRecordsLocked()
 		db.mu.Unlock()
+		defer batch.finish(db)
 
+		save := db.saveRecord
+		if save == nil {
+			save = (*store.DB).SaveIPRecord
+		}
+		remove := db.deleteRecord
+		if remove == nil {
+			remove = (*store.DB).DeleteIPRecord
+		}
 		var failed []string
 		for _, sr := range records {
-			if err := sdb.SaveIPRecord(sr); err != nil {
+			batch.begin(sr.IP)
+			err := save(sdb, sr)
+			batch.result(sr.IP, err)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "attackdb: store save %s: %v\n", sr.IP, err)
 				failed = append(failed, sr.IP)
 			}
@@ -152,7 +166,10 @@ func (db *DB) saveRecords() {
 			var removed []string
 			var failedDeletes []string
 			for _, ip := range deleted {
-				if err := sdb.DeleteIPRecord(ip); err != nil {
+				batch.begin(ip)
+				err := remove(sdb, ip)
+				batch.result(ip, err)
+				if err != nil {
 					fmt.Fprintf(os.Stderr, "attackdb: store delete %s: %v\n", ip, err)
 					failedDeletes = append(failedDeletes, ip)
 					continue
@@ -203,23 +220,27 @@ func (db *DB) saveRecords() {
 	}
 	flushedDirty := db.dirtyIPs
 	db.dirtyIPs = make(map[string]struct{})
+	batch := db.detachRecordsLocked()
 	db.mu.Unlock()
+	defer batch.finish(db)
 
 	if err != nil {
+		batch.resultAll(err)
 		fmt.Fprintf(os.Stderr, "attackdb: error marshaling records: %v\n", err)
 		db.requeueDirty(flushedDirty, len(drained) > 0)
 		return
 	}
 
 	path := filepath.Join(db.dbPath, recordsFile)
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "attackdb: error writing %s: %v\n", tmpPath, err)
-		db.requeueDirty(flushedDirty, len(drained) > 0)
-		return
+	write := db.writeRecords
+	if write == nil {
+		write = writeRecordFile
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		fmt.Fprintf(os.Stderr, "attackdb: error renaming %s: %v\n", path, err)
+	batch.beginAll()
+	err = write(path, data)
+	batch.resultAll(err)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "attackdb: %v\n", err)
 		db.requeueDirty(flushedDirty, len(drained) > 0)
 		return
 	}
@@ -272,9 +293,11 @@ func toStoreIPRecord(rec *IPRecord) store.IPRecord {
 
 // appendEvents writes events to the bbolt store (if available) or appends
 // to the JSONL file, rotating if needed.
-func (db *DB) appendEvents(events []Event) {
+func (db *DB) appendEvents(events []Event, batch *eventBatch) {
+	defer batch.finish()
 	if sdb := store.Global(); sdb != nil {
 		for i, ev := range events {
+			batch.beginWrite(1)
 			ts := ev.Timestamp
 			if ts.IsZero() {
 				ts = time.Now()
@@ -289,7 +312,10 @@ func (db *DB) appendEvents(events []Event) {
 				Message:    ev.Message,
 			}
 			if err := sdb.RecordAttackEvent(se, i); err != nil {
+				batch.advance(0, 1)
 				fmt.Fprintf(os.Stderr, "attackdb: store event: %v\n", err)
+			} else {
+				batch.advance(1, 0)
 			}
 		}
 		return
@@ -299,6 +325,7 @@ func (db *DB) appendEvents(events []Event) {
 	// an empty dbPath yields a relative path, which would read and write
 	// state in whatever directory the process was started from.
 	if db.dbPath == "" {
+		batch.discardRemaining()
 		return
 	}
 
@@ -310,20 +337,44 @@ func (db *DB) appendEvents(events []Event) {
 		rotateEventsFile(path)
 	}
 
-	// #nosec G304 -- filepath.Join under operator-configured db.dbPath.
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	open := db.openEvents
+	if open == nil {
+		open = openEventsFile
+	}
+	f, err := open(path)
 	if err != nil {
+		batch.discardRemaining()
 		fmt.Fprintf(os.Stderr, "attackdb: error opening %s: %v\n", path, err)
 		return
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		returned := false
+		defer func() {
+			if !returned {
+				batch.uncertainOutcome()
+			}
+		}()
+		err := f.Close()
+		returned = true
+		if err != nil {
+			batch.uncertainOutcome()
+		}
+	}()
 
-	w := bufio.NewWriter(f)
-	enc := json.NewEncoder(w)
+	// Settle buffered and unencoded work before file cleanup, which may block.
+	// Only complete records offered to an interrupted write remain uncertain.
+	defer batch.settleInterrupted()
+	w := bufio.NewWriter(eventWriter{writer: f, batch: batch})
+	output := &eventEncoderWriter{writer: w}
+	enc := json.NewEncoder(output)
 	for _, ev := range events {
-		_ = enc.Encode(ev)
+		output.called = false
+		if err := enc.Encode(ev); err != nil && !output.called {
+			batch.advance(0, 1)
+		}
 	}
 	_ = w.Flush()
+	batch.discardRemaining()
 }
 
 // rotateEventsFile keeps the newest half of the file.
@@ -414,4 +465,20 @@ func (db *DB) QueryEvents(ip string, limit int) []Event {
 		all[i], all[j] = all[j], all[i]
 	}
 	return all
+}
+
+func openEventsFile(path string) (io.WriteCloser, error) {
+	// #nosec G304 -- path is eventsFile under the operator-configured db.dbPath.
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+}
+
+func writeRecordFile(path string, data []byte) error {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return fmt.Errorf("error writing %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("error renaming %s: %w", path, err)
+	}
+	return nil
 }

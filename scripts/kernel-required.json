@@ -18,5 +18,17 @@
   {
     "Package": "github.com/pidginhost/csm/internal/daemon",
     "Name": "TestKernelSensitiveFileStartupClosesReaderOnWatchsetFailure"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelConnectionQueueLoss"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelConnectionVerdictQueuePublishedBeforeRun"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestNotificationKernelQueuesExposePendingRecords"
   }
 ]

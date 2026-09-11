@@ -14,6 +14,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // ringReader is the subset of *ringbuf.Reader that Reader depends on. It exists
@@ -24,16 +25,18 @@ type ringReader interface {
 }
 
 // Reader wraps cilium/ebpf's ringbuf.Reader with a per-feature decoder
-// callback and a typed Go channel. Each BPF feature defines its own event
+// callback and a tracked Go channel. Each BPF feature defines its own event
 // struct (CSMConnEvent, CSMExecEvent, etc.) plus a decode func, then loops
-// over Events() in its Run goroutine.
+// over Events() in its Run goroutine, processing each work item through Process.
 //
 // The decoder runs on the reader goroutine; keep it allocation-light. Slow
 // userspace work (allocating findings, IO) belongs in the consumer.
 type Reader[T any] struct {
 	rb        ringReader
 	decode    func([]byte) (T, error)
-	out       chan T
+	out       *queuehealth.Channel[T]
+	kernel    *kernelQueue
+	consumed  atomic.Uint64
 	errs      chan error
 	count     atomic.Uint64
 	dropped   atomic.Uint64
@@ -41,11 +44,14 @@ type Reader[T any] struct {
 	closeErr  error
 }
 
-// NewReader takes a ringbuf-typed BPF map and a decoder. The map must have
-// already been created and pinned (or kept alive) by the caller.
-func NewReader[T any](m *ebpf.Map, decode func([]byte) (T, error)) (*Reader[T], error) {
+// NewReader takes an event ring, its loss/submission counter map and a decoder.
+// The caller keeps both maps alive until the reader and consumer stop.
+func NewReader[T any](m, counters *ebpf.Map, decode func([]byte) (T, error)) (*Reader[T], error) {
 	if m == nil {
 		return nil, errors.New("nil ringbuf map")
+	}
+	if counters == nil {
+		return nil, errors.New("nil kernel queue counter map")
 	}
 	if decode == nil {
 		return nil, errors.New("nil decoder")
@@ -55,16 +61,51 @@ func NewReader[T any](m *ebpf.Map, decode func([]byte) (T, error)) (*Reader[T], 
 		return nil, fmt.Errorf("ringbuf.NewReader: %w", err)
 	}
 	return &Reader[T]{
-		rb:     rb,
+		rb: rb,
+		kernel: newKernelQueue(rb, func() (kernelCounts, error) {
+			var counts kernelCounts
+			err := counters.Lookup(uint32(0), &counts)
+			return counts, err
+		}),
 		decode: decode,
-		out:    make(chan T, 256),
+		out:    queuehealth.NewChannel[T](256, time.Minute),
 		errs:   make(chan error, 1),
 	}, nil
 }
 
 // Events returns the channel that delivers decoded events. Closed when Run
 // returns (either ctx.Done() or rb.Close()).
-func (r *Reader[T]) Events() <-chan T { return r.out }
+func (r *Reader[T]) Events() <-chan queuehealth.Work[T] { return r.out.Items() }
+
+// QueueStatuses includes decoder failures and abandoned output, in addition
+// to the full-consumer-queue losses counted by DroppedCount.
+func (r *Reader[T]) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	states := map[string]queuehealth.Status{"output": r.out.Snapshot(now)}
+	if r.kernel != nil {
+		states["kernel"] = r.kernel.snapshot(time.Now, r.consumed.Load)
+	}
+	return states
+}
+
+// Start returns a stop function that joins the producer before discarding
+// unconsumed output. The owner stops consuming and detaches kernel producers
+// before calling it, and keeps the BPF maps alive until it returns.
+// Call once, instead of Run, for a reader owned by a backend consumer.
+func (r *Reader[T]) Start(ctx context.Context) func() {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(ctx)
+	}()
+	return func() {
+		_ = r.Close()
+		<-done
+		r.out.DiscardPending()
+		if r.kernel != nil {
+			r.kernel.finish(time.Now, r.consumed.Load())
+		}
+	}
+}
 
 // Errors reports one unexpected read error per outage. Run keeps retrying;
 // a successful read resets the outage gate so a later failure is reported.
@@ -81,7 +122,7 @@ func (r *Reader[T]) DroppedCount() uint64 { return r.dropped.Load() }
 // Decoder errors are logged at warn level (do not stall the loop on a single
 // malformed record).
 func (r *Reader[T]) Run(ctx context.Context) {
-	defer close(r.out)
+	defer r.out.Close()
 	if r.errs != nil {
 		defer close(r.errs)
 	}
@@ -132,15 +173,16 @@ func (r *Reader[T]) Run(ctx context.Context) {
 		}
 		retryDelay = 10 * time.Millisecond
 		errorReported = false
+		r.consumed.Add(1)
 		ev, err := r.decode(rec.RawSample)
 		if err != nil {
 			csmlog.Warn("bpf ringbuf decode error", "err", err, "len", len(rec.RawSample))
+			r.out.Lose(1)
 			continue
 		}
-		select {
-		case r.out <- ev:
+		if r.out.TrySend(ev) {
 			r.count.Add(1)
-		default:
+		} else {
 			dropped := r.dropped.Add(1)
 			if shouldLogDroppedEvent(dropped) {
 				csmlog.Warn("bpf ringbuf consumer back-pressure dropped events", "dropped_total", dropped, "events_delivered", r.count.Load())
@@ -155,6 +197,12 @@ func (r *Reader[T]) Close() error { return r.closeReader() }
 
 // closeReader closes the underlying ringbuf reader exactly once.
 func (r *Reader[T]) closeReader() error {
-	r.closeOnce.Do(func() { r.closeErr = r.rb.Close() })
+	r.closeOnce.Do(func() {
+		if r.kernel != nil {
+			r.closeErr = r.kernel.closeRing(r.rb.Close)
+		} else {
+			r.closeErr = r.rb.Close()
+		}
+	})
 	return r.closeErr
 }

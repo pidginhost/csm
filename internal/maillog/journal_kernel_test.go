@@ -59,7 +59,8 @@ func TestKernelJournalDelivery(t *testing.T) {
 				}
 				command("journalctl", "--sync")
 			}
-			lines, err := NewJournalReader(units).Run(ctx)
+			queue := NewQueue()
+			lines, err := NewJournalReader(units, queue).Run(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -83,6 +84,7 @@ func TestKernelJournalDelivery(t *testing.T) {
 						t.Fatalf("duplicate line: %+v", line)
 					}
 					got[line.Unit] = line.Message
+					line.Process(func(Line) bool { return true })
 				case <-deadline:
 					t.Fatalf("journal delivery timed out: %+v", got)
 				}
@@ -91,6 +93,9 @@ func TestKernelJournalDelivery(t *testing.T) {
 				if got[unit+".service"] != fmt.Sprintf("csm-mail-%d", i) {
 					t.Fatalf("wrong journal content: %+v", got)
 				}
+			}
+			if health := queue.QueueStatuses(time.Now())["delivery"]; health.Depth != 0 || health.InFlight != 0 || health.DroppedTotal != 0 {
+				t.Fatalf("journal delivery left unfinished work: %+v", health)
 			}
 			cancel()
 			select {

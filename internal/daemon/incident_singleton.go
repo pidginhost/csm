@@ -85,18 +85,9 @@ var incidentOpenThreshold = 2
 func IncidentCorrelator() *incident.Correlator {
 	incidentOnce.Do(func() {
 		db := store.Global()
-		var persist func(incident.Incident)
+		var persist func(incident.Incident) error
 		if db != nil {
-			persist = func(inc incident.Incident) {
-				if err := db.SaveIncident(inc); err != nil {
-					// The in-memory correlator has already advanced, so
-					// failed writes mean the next restore may replay stale
-					// incident state unless operators repair the store.
-					csmlog.Warn("incident persist failed",
-						"id", inc.ID, "kind", string(inc.Kind),
-						"status", string(inc.Status), "err", err)
-				}
-			}
+			persist = db.SaveIncident
 		}
 		// Resolve spray-suppression knobs from the active config. nil
 		// config (early test wiring) leaves the detector disabled.

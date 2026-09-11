@@ -71,7 +71,7 @@ func TestSupervisorAutoRepicksAfterAttachmentFailure(t *testing.T) {
 		var choices, messages []string
 		var states []bool
 		go Supervise(ctx, func() (Reader, error) {
-			reader, err := New(cfg, "")
+			reader, err := New(cfg, "", NewQueue())
 			if _, journal := reader.(*JournalReader); journal {
 				choices = append(choices, "journal")
 				return supervisorReaderFunc(func(context.Context) (<-chan Line, error) {
@@ -118,7 +118,7 @@ func TestSupervisorSourceMigrationHonorsExplicitMode(t *testing.T) {
 				var states []bool
 				activeJournals := 0
 				go Supervise(ctx, func() (Reader, error) {
-					reader, err := New(cfg, "")
+					reader, err := New(cfg, "", NewQueue())
 					if file, ok := reader.(*FileReader); ok {
 						choices = append(choices, "file")
 						file.goneGrace = 2 * time.Second
@@ -256,8 +256,9 @@ func TestSupervisorReportsOutageWhileConsumerBusyAndDrainsQueuedLines(t *testing
 		defer releaseConsumer()
 		var states []bool
 		var messages []string
+		queue := NewQueue()
 		go Supervise(ctx, func() (Reader, error) {
-			reader, err := New(config.MailLogsConfig{Source: "file", File: path}, "")
+			reader, err := New(config.MailLogsConfig{Source: "file", File: path}, "", queue)
 			if file, ok := reader.(*FileReader); ok {
 				file.goneGrace = 2 * time.Second
 			}
@@ -286,6 +287,9 @@ func TestSupervisorReportsOutageWhileConsumerBusyAndDrainsQueuedLines(t *testing
 		synctest.Wait()
 		if !slices.Equal(messages, []string{"one\n", "two\n"}) {
 			t.Fatalf("queued records lost during source replacement: %q", messages)
+		}
+		if got := queue.QueueStatuses(time.Now())["delivery"]; got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+			t.Fatalf("source migration left queued or lost work: %+v", got)
 		}
 	})
 }

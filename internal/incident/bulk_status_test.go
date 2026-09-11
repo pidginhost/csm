@@ -75,8 +75,9 @@ func TestBulkSetStatusDryRunFiltersAndDoesNotMutate(t *testing.T) {
 func TestBulkSetStatusAppliesOldestFirstAndUnbindsClosedIncident(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(inc Incident) {
+		Persist: func(inc Incident) error {
 			persisted = append(persisted, inc)
+			return nil
 		},
 	})
 	base := time.Unix(1_700_000_000, 0)

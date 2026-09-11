@@ -393,6 +393,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "local_threat_score", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "mail_auth_backend_degraded", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "mail_log_source_unavailable", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "protection_queue_degraded", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "protection_queue_recovered", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 
 	// --- Internal (not shown in user-facing dropdowns) -------------------
 	{Name: "test_alert", Category: CategoryInternal, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},

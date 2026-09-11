@@ -74,7 +74,8 @@ func consumeReader(ctx context.Context, reader Reader, ready func(), unavailable
 	}
 	defer func() {
 		cancel()
-		for range lines {
+		for line := range lines {
+			line.reject()
 		}
 	}()
 	if err := ctx.Err(); err != nil {
@@ -89,9 +90,10 @@ func consumeReader(ctx context.Context, reader Reader, ready func(), unavailable
 			cancel()
 			for line := range lines {
 				if ctxErr := ctx.Err(); ctxErr != nil {
+					line.reject()
 					return ctxErr
 				}
-				if !consume(line) {
+				if !line.Process(consume) {
 					return context.Canceled
 				}
 			}
@@ -100,7 +102,7 @@ func consumeReader(ctx context.Context, reader Reader, ready func(), unavailable
 			if !ok {
 				return errors.New("mail log reader stopped")
 			}
-			if !consume(line) {
+			if !line.Process(consume) {
 				return context.Canceled
 			}
 		}

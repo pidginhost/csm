@@ -233,6 +233,10 @@ func TestStartSpoolWatcher_EnabledOnMacOS(t *testing.T) {
 	cfg.EmailAV.ClamdSocket = "/nonexistent/clamd.sock"
 	d := New(cfg, nil, nil, "")
 	d.startSpoolWatcher()
+	status, ok := d.QueueStatuses()["email_av.scans"]
+	if !ok || status.Status != "ok" || !status.CapacityUnavailable || status.Depth != 0 || status.InFlight != 0 || status.DroppedTotal != 0 {
+		t.Fatalf("email AV queue health was not published: found=%v status=%+v", ok, status)
+	}
 	// On macOS, NewSpoolWatcher returns error. Should not panic.
 	if d.getSpoolWatcher() != nil {
 		t.Error("spoolWatcher should be nil on macOS")

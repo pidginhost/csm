@@ -91,7 +91,7 @@ func TestFileReader_StreamsLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
@@ -122,6 +122,7 @@ func TestFileReader_StreamsLines(t *testing.T) {
 		if line.Source != "file" || line.Message != "Jan  2 10:00:00 host postfix: hello\n" {
 			t.Fatalf("unexpected mail line: %+v", line)
 		}
+		line.Process(func(Line) bool { return true })
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for line")
 	}
@@ -134,7 +135,7 @@ func TestFileReader_SkipsOversizedLineAndContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
@@ -171,6 +172,7 @@ func TestFileReader_SkipsOversizedLineAndContinues(t *testing.T) {
 		if line.Message != "Jan  2 10:00:01 host dovecot: after\n" {
 			t.Fatalf("line = %q, want post-oversize line", line.Message)
 		}
+		line.Process(func(Line) bool { return true })
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for post-oversize line")
 	}
@@ -183,7 +185,7 @@ func TestFileReader_RotationReadsReplacementFromStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 
@@ -208,13 +210,14 @@ func TestFileReader_RotationReadsReplacementFromStart(t *testing.T) {
 		if line.Message != want {
 			t.Fatalf("line = %q, want rotated replacement line %q", line.Message, want)
 		}
+		line.Process(func(Line) bool { return true })
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for rotated line")
 	}
 }
 
 func TestFileReader_MissingFileReturnsError(t *testing.T) {
-	r := NewFileReader(filepath.Join(t.TempDir(), "missing"))
+	r := NewFileReader(filepath.Join(t.TempDir(), "missing"), NewQueue())
 	out, err := r.Run(context.Background())
 	if err == nil {
 		t.Fatal("expected missing file error")
@@ -231,7 +234,7 @@ func TestFileReader_ContextCancelClosesChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithCancel(context.Background())
 	out, err := r.Run(ctx)
 	if err != nil {

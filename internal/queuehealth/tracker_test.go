@@ -1,0 +1,281 @@
+package queuehealth
+
+import (
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestTrackerMeasuresWaitingAndRunningWork(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(4, time.Minute)
+	first := q.Begin(now)
+	second := q.Begin(now.Add(10 * time.Second))
+	first.Start(now.Add(20 * time.Second))
+	s := q.Snapshot(now.Add(30 * time.Second))
+	if s.Depth != 1 || s.InFlight != 1 || s.Capacity != 4 || s.LagSeconds != 20 || s.ProcessingSeconds != 10 || s.Status != "ok" {
+		t.Fatalf("waiting and active work were conflated: %+v", s)
+	}
+	second.Start(now.Add(31 * time.Second))
+	second.Finish(now.Add(32 * time.Second))
+	s = q.Snapshot(now.Add(81 * time.Second))
+	if s.Depth != 0 || s.InFlight != 1 || s.Status != "degraded" || s.Reason != "processing_lag" || s.ProcessingSeconds != 61 {
+		t.Fatalf("out-of-order completion hid stalled worker: %+v", s)
+	}
+	first.Finish(now.Add(82 * time.Second))
+	s = q.Snapshot(now.Add(83 * time.Second))
+	if s.Depth != 0 || s.InFlight != 0 || s.LagSeconds != 0 || s.ProcessingSeconds != 0 || s.Status != "ok" {
+		t.Fatalf("drained queue did not recover: %+v", s)
+	}
+}
+
+func TestTrackerBacklogAgesWhileConsumersMakeProgress(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(4, time.Minute)
+	first := q.Begin(now)
+	second := q.Begin(now.Add(time.Second))
+	first.Start(now.Add(59 * time.Second))
+	first.Finish(now.Add(60 * time.Second))
+	s := q.Snapshot(now.Add(62 * time.Second))
+	if s.LagSeconds != 61 || s.Status != "degraded" || s.Reason != "backlog_lag" {
+		t.Fatalf("one completed item hid an old queued item: %+v", s)
+	}
+	second.Start(now.Add(63 * time.Second))
+	second.Finish(now.Add(64 * time.Second))
+	if s := q.Snapshot(now.Add(65 * time.Second)); s.Status != "ok" {
+		t.Fatalf("queue stayed degraded after draining: %+v", s)
+	}
+}
+
+func TestTrackerSustainedFullQueueAndRecovery(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(1, time.Minute)
+	work := q.Begin(now)
+	if s := q.Snapshot(now.Add(29 * time.Second)); s.Status != "ok" {
+		t.Fatalf("brief full queue degraded: %+v", s)
+	}
+	if s := q.Snapshot(now.Add(30 * time.Second)); s.Status != "degraded" || s.Reason != "queue_full" {
+		t.Fatalf("sustained full queue stayed healthy: %+v", s)
+	}
+	work.Start(now.Add(31 * time.Second))
+	work.Finish(now.Add(32 * time.Second))
+	next := q.Begin(now.Add(33 * time.Second))
+	if s := q.Snapshot(now.Add(34 * time.Second)); s.Status != "ok" {
+		t.Fatalf("full timer survived queue recovery: %+v", s)
+	}
+	next.Finish(now.Add(35 * time.Second))
+}
+
+func TestTrackerDropsRemainVisibleAfterQueueDrains(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(1, time.Minute)
+	for i := 0; i < 3; i++ {
+		x := q.Begin(now.Add(time.Duration(i) * time.Second))
+		x.Reject(now.Add(time.Duration(i) * time.Second))
+	}
+	s := q.Snapshot(now.Add(3 * time.Second))
+	if s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 3 || s.RecentDrops != 3 || s.Status != "degraded" || s.Reason != "dropped_work" {
+		t.Fatalf("rejected work disappeared from health: %+v", s)
+	}
+	s = q.Snapshot(now.Add(62 * time.Second))
+	if s.Status != "ok" || s.RecentDrops != 0 || s.DroppedTotal != 3 {
+		t.Fatalf("recovery lost cumulative evidence or failed to expire the window: %+v", s)
+	}
+	q.Lose(now.Add(63*time.Second), 5)
+	s = q.Snapshot(now.Add(64 * time.Second))
+	if s.DroppedTotal != 8 || s.RecentDrops != 5 || s.Status != "degraded" {
+		t.Fatalf("kernel loss not counted without a userspace ticket: %+v", s)
+	}
+}
+
+func TestTrackerOneDropDoesNotManufactureSustainedOverload(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(1, time.Minute)
+	q.Lose(now, 1)
+	s := q.Snapshot(now.Add(time.Second))
+	if s.Status != "ok" || s.DroppedTotal != 1 || s.RecentDrops != 1 {
+		t.Fatalf("isolated loss must stay visible without an overload alarm: %+v", s)
+	}
+}
+
+func TestTrackerConcurrentProducersConsumersAndSnapshots(t *testing.T) {
+	q := New(32, time.Minute)
+	var wg sync.WaitGroup
+	for worker := 0; worker < 16; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				now := time.Now()
+				work := q.Begin(now)
+				if i%2 == 0 {
+					work.Reject(now)
+				} else {
+					work.Start(now)
+					work.Finish(now)
+				}
+				_ = q.Snapshot(now)
+			}
+		}()
+	}
+	wg.Wait()
+	s := q.Snapshot(time.Now())
+	if s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 800 {
+		t.Fatalf("concurrent accounting lost work: %+v", s)
+	}
+}
+
+func TestTrackerRetryPreservesOriginalWaitingAge(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(2, time.Minute)
+	item := q.Begin(now)
+	item.Start(now.Add(10 * time.Second))
+	item.Requeue(now.Add(20 * time.Second))
+	if got := q.Snapshot(now.Add(30 * time.Second)); got.Depth != 1 || got.InFlight != 0 || got.LagSeconds != 30 || got.ProcessingSeconds != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("retry changed admission age or lost accounting: %+v", got)
+	}
+	item.Start(now.Add(35 * time.Second))
+	item.Requeue(now.Add(45 * time.Second))
+	if got := q.Snapshot(now.Add(60 * time.Second)); got.Status != "degraded" || got.Reason != "backlog_lag" || got.LagSeconds != 60 {
+		t.Fatalf("retries hid a stalled work item: %+v", got)
+	}
+	item.Start(now.Add(61 * time.Second))
+	item.Finish(now.Add(62 * time.Second))
+	if got := q.Snapshot(now.Add(63 * time.Second)); got.Status != "ok" || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("completed retry did not recover: %+v", got)
+	}
+	var synchronous Ticket
+	synchronous.Requeue(now)
+}
+
+func TestTrackerSharedCapacityIncludesRunningReservations(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := NewSharedCapacity(2, time.Minute)
+	first, second := q.Begin(now), q.Begin(now)
+	first.Start(now.Add(time.Second))
+	second.Start(now.Add(2 * time.Second))
+	if got := q.Snapshot(now.Add(30 * time.Second)); got.Status != "degraded" || got.Reason != "queue_full" || got.Depth != 0 || got.InFlight != 2 {
+		t.Fatalf("running work released reserved capacity: %+v", got)
+	}
+	first.Finish(now.Add(31 * time.Second))
+	if got := q.Snapshot(now.Add(32 * time.Second)); got.Status != "ok" || got.InFlight != 1 {
+		t.Fatalf("finished item did not release its reservation: %+v", got)
+	}
+	third := q.Begin(now.Add(33 * time.Second))
+	if got := q.Snapshot(now.Add(34 * time.Second)); got.Status != "ok" || got.Depth != 1 || got.InFlight != 1 {
+		t.Fatalf("old full timer survived a released slot: %+v", got)
+	}
+	second.Finish(now.Add(35 * time.Second))
+	third.Finish(now.Add(35 * time.Second))
+}
+
+func TestTrackerAdmissionAgeDoesNotBackdateSaturation(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := NewSharedCapacity(1, 2*time.Minute)
+	item := q.BeginAt(now.Add(-45*time.Second), now)
+	if got := q.Snapshot(now); got.Status != "ok" || got.Depth != 1 || got.LagSeconds != 45 {
+		t.Fatalf("existing work age backdated a new admission: %+v", got)
+	}
+	if got := q.Snapshot(now.Add(30 * time.Second)); got.Status != "degraded" || got.Reason != "queue_full" || got.LagSeconds != 75 {
+		t.Fatalf("actual saturation start did not drive the full timer: %+v", got)
+	}
+	item.Finish(now.Add(31 * time.Second))
+}
+
+func TestTrackerMergeRetainsAgeAndOccupiedWaitingSlot(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(1, time.Minute)
+	active := q.Begin(now)
+	active.Start(now.Add(time.Second))
+	waiting := q.Begin(now.Add(10 * time.Second))
+	waiting.MergeRunning(active, now.Add(41*time.Second))
+	if got := q.Snapshot(now.Add(42 * time.Second)); got.Depth != 1 || got.InFlight != 0 || got.LagSeconds != 42 || got.Status != "degraded" || got.Reason != "queue_full" || got.DroppedTotal != 0 {
+		t.Fatalf("coalescing a retry reset age, capacity or accounting: %+v", got)
+	}
+	waiting.Start(now.Add(43 * time.Second))
+	waiting.Finish(now.Add(44 * time.Second))
+	if got := q.Snapshot(now.Add(45 * time.Second)); got.Status != "ok" || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("merged work did not finish exactly once: %+v", got)
+	}
+}
+
+func TestTrackerDeferredWorkMeasuresOnlyOverdueLag(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(2, time.Minute)
+	item := q.BeginAt(now.Add(3*time.Minute), now)
+	if got := q.Snapshot(now.Add(2 * time.Minute)); got.Status != "ok" || got.Depth != 1 || got.LagSeconds != 0 {
+		t.Fatalf("intentional delay reported backlog lag: %+v", got)
+	}
+	if got := q.Snapshot(now.Add(4 * time.Minute)); got.Status != "degraded" || got.Reason != "backlog_lag" || got.LagSeconds != 60 {
+		t.Fatalf("overdue work did not report lag after eligibility: %+v", got)
+	}
+	item.Start(now.Add(4*time.Minute + time.Second))
+	if got := q.Snapshot(now.Add(5*time.Minute + 2*time.Second)); got.Status != "degraded" || got.Reason != "processing_lag" || got.ProcessingSeconds != 61 {
+		t.Fatalf("intentional waiting delay extended the processing budget: %+v", got)
+	}
+	item.Finish(now.Add(5*time.Minute + 3*time.Second))
+}
+
+func TestTrackerRetainsEarlierEligibility(t *testing.T) {
+	now := time.Now()
+	q := New(4, time.Minute)
+	ticket := q.BeginAt(now.Add(time.Minute), now)
+	ticket.RetainQueuedAt(now.Add(-time.Minute))
+	ticket.RetainQueuedAt(now.Add(2 * time.Minute))
+	got := q.Snapshot(now)
+	if got.Depth != 1 || got.InFlight != 0 || got.LagSeconds != 60 || got.Reason != "backlog_lag" {
+		t.Fatalf("coalesced observation changed capacity or hid earlier eligibility: %+v", got)
+	}
+	ticket.Finish(now)
+}
+
+func TestTrackerHoldFreezesAgesUntilRelease(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(1, time.Minute)
+	before := q.Begin(now)
+	q.Hold(now.Add(10 * time.Second))
+	during := q.Begin(now.Add(20 * time.Second))
+	during.Start(now.Add(21 * time.Second))
+	s := q.Snapshot(now.Add(5 * time.Minute))
+	if s.Status != "ok" || s.Depth != 1 || s.InFlight != 1 || s.LagSeconds != 10 || s.ProcessingSeconds != 0 {
+		t.Fatalf("deliberate hold reported as a stall: %+v", s)
+	}
+	q.Lose(now.Add(6*time.Minute), dropThreshold)
+	if s = q.Snapshot(now.Add(6 * time.Minute)); s.Status != "degraded" || s.Reason != "dropped_work" {
+		t.Fatalf("losses during a hold were hidden: %+v", s)
+	}
+	release := now.Add(10 * time.Minute)
+	q.Release(release)
+	s = q.Snapshot(release.Add(19 * time.Second))
+	if s.Status != "ok" || s.LagSeconds != 29 || s.ProcessingSeconds != 19 {
+		t.Fatalf("release did not resume ages without the held time: %+v", s)
+	}
+	if s = q.Snapshot(release.Add(20 * time.Second)); s.Status != "degraded" || s.Reason != "queue_full" {
+		t.Fatalf("full timer did not resume from release: %+v", s)
+	}
+	during.Finish(release.Add(21 * time.Second))
+	before.Start(release.Add(21 * time.Second))
+	before.Finish(release.Add(22 * time.Second))
+	q.Release(release.Add(23 * time.Second))
+	if s = q.Snapshot(release.Add(23 * time.Second)); s.Status != "ok" || s.Depth != 0 || s.InFlight != 0 {
+		t.Fatalf("release without a hold changed accounting: %+v", s)
+	}
+}
+
+func TestTrackerReleasePreservesFutureEligibility(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(4, time.Minute)
+	ticket := q.BeginAt(now.Add(10*time.Minute), now)
+	q.Hold(now)
+	q.Release(now.Add(time.Minute))
+	if got := q.Snapshot(now.Add(2 * time.Minute)); got.Status != "ok" || got.LagSeconds != 0 || got.Depth != 1 || got.InFlight != 0 {
+		t.Fatalf("release made deferred work overdue before eligibility: %+v", got)
+	}
+	if got := q.Snapshot(now.Add(11 * time.Minute)); got.Reason != "backlog_lag" || got.LagSeconds != 60 {
+		t.Fatalf("release changed the original eligibility time: %+v", got)
+	}
+	ticket.Finish(now.Add(11 * time.Minute))
+	if got := q.Snapshot(now.Add(12 * time.Minute)); got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("deferred ticket was not settled exactly once: %+v", got)
+	}
+}

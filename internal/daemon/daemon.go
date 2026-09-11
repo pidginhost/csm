@@ -41,6 +41,7 @@ import (
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/phptaintworker"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/sdnotify"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
@@ -65,6 +66,7 @@ type Daemon struct {
 	logWatchers      []*LogWatcher
 	logWatchersMu    sync.Mutex
 	fileMonitor      *FileMonitor
+	fileMonitorMu    sync.RWMutex
 	hijackDetector   *PasswordHijackDetector
 	pamListener      *PAMListener
 	controlListener  *ControlListener
@@ -84,9 +86,13 @@ type Daemon struct {
 	version          string
 	blockDigest      *blockdigest.Collector
 	alertCh          chan alert.Finding
+	alertQueue       *queuehealth.Tracker
+	queueSourcesMu   sync.RWMutex
+	queueSources     map[string]queueSource
 	// alertHold, while open, keeps the dispatcher draining alertCh into its
 	// batch without dispatching, so realtime producers (which never block)
-	// lose nothing during the synchronous startup baseline. Closed by
+	// lose nothing during the synchronous startup baseline. The ingest queue
+	// health is held with it, so the baseline is not reported as a stall. Closed by
 	// releaseAlertDispatch once the baseline has published; nil means the
 	// dispatcher never holds.
 	alertHold        chan struct{}
@@ -202,6 +208,9 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	// Remediation records what it wrote here, so the sensitive-file detectors
 	// can tell CSM's own change from a third party's after a restart.
 	checks.SetSelfWriteStore(store)
+	if store != nil {
+		d.registerQueueSource("state", store)
+	}
 	d.smtpAuthTracker = newSMTPAuthTracker(
 		cfg.Thresholds.SMTPBruteForceThreshold,
 		cfg.Thresholds.SMTPBruteForceSubnetThresh,
@@ -539,6 +548,8 @@ func (d *Daemon) registerFirewallMetrics() {
 
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
+	d.alertQueue = queuehealth.New(cap(d.alertCh), time.Minute)
+	defer alert.RegisterQueue(d.alertCh, d.alertQueue)()
 	if err := d.checkObserveStartupRecovery(); err != nil {
 		return err
 	}
@@ -583,8 +594,7 @@ func (d *Daemon) Run() error {
 
 	// Initialize the findings broadcast bus so passive observers (SSE, etc.)
 	// can subscribe before any findings are dispatched.
-	d.findingBus = broadcast.NewBus(64)
-	alert.FindingBus = d.findingBus
+	d.installFindingBus()
 
 	// Install config-supplied platform overrides BEFORE the first Detect()
 	// call so every check sees the merged view. The daemon command installs
@@ -687,13 +697,7 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
 	}
 	if adb := attackdb.Init(d.cfg.StatePath); adb != nil {
-		// Seed from permanent blocklist on first run (when attack DB is empty)
-		if adb.TotalIPs() == 0 {
-			if n := adb.SeedFromPermanentBlocklist(d.cfg.StatePath); n > 0 {
-				fmt.Fprintf(os.Stderr, "[%s] Attack DB seeded %d IPs from permanent blocklist\n", ts(), n)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "[%s] Attack DB initialized (%s)\n", ts(), adb.FormatTopLine())
+		d.prepareAttackDatabase(adb)
 	}
 
 	// Install operator verified-bot ranges before the firewall engine is
@@ -802,6 +806,8 @@ func (d *Daemon) Run() error {
 	// still running on a large host.
 	d.wg.Add(1)
 	obs.Go("watchdog-notifier", d.watchdogNotifier)
+	d.wg.Add(1)
+	obs.Go("queue-health", d.monitorQueueHealth)
 
 	if sent, err := sdnotify.Ready(); err != nil {
 		fmt.Fprintf(os.Stderr, "sd_notify READY failed: %v\n", err)
@@ -936,15 +942,14 @@ func (d *Daemon) Run() error {
 			defer d.wg.Done()
 			cfg := d.currentCfg()
 			retro := ScanEximHistoryForCloudRelay(cfg, "", time.Now(), 24*time.Hour)
-			for _, f := range retro {
+			for i, f := range retro {
 				// Enqueue the finding FIRST; only after it is
 				// accepted by the dispatcher do we trigger the
 				// account-suspend side-effect. This prevents a
 				// silent mailbox suspension if the daemon begins
 				// shutting down between these two operations.
-				select {
-				case d.alertCh <- f:
-				case <-d.stopCh:
+				if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+					alert.RecordQueueLoss(d.alertCh, uint64(len(retro[i+1:])))
 					return
 				}
 				sender := extractSenderFromCloudRelayMessage(f.Message)
@@ -1024,6 +1029,7 @@ func (d *Daemon) Run() error {
 				"backend", mon.Mode(),
 				"state", kstate.String(),
 			)
+			d.registerBackendQueues("bpf.af_alg", mon)
 			d.wg.Add(1)
 			obs.Go("af-alg-listener", func() {
 				defer d.wg.Done()
@@ -1039,6 +1045,7 @@ func (d *Daemon) Run() error {
 	d.startPHPRelay()
 
 	if mon := StartConnectionTracker(d.alertCh, d.cfg); mon != nil {
+		d.registerBackendQueues("bpf.connection", mon)
 		csmlog.Info("connection_tracker: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("connection-tracker", func() {
@@ -1051,6 +1058,7 @@ func (d *Daemon) Run() error {
 	}
 
 	if mon := StartExecMonitor(d.alertCh, d.cfg); mon != nil {
+		d.registerBackendQueues("bpf.execution", mon)
 		csmlog.Info("exec_monitor: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("exec-monitor", func() {
@@ -1063,6 +1071,7 @@ func (d *Daemon) Run() error {
 	}
 
 	if mon := StartSensitiveFileMonitor(d.alertCh, d.cfg, d.store); mon != nil {
+		d.registerBackendQueues("bpf.sensitive_files", mon)
 		csmlog.Info("sensitive_files: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("sensitive-files", func() {
@@ -1196,8 +1205,8 @@ func (d *Daemon) Run() error {
 		}
 		d.challengeGate = nil
 	}
-	if d.fileMonitor != nil {
-		d.fileMonitor.Stop()
+	if fm := d.getFileMonitor(); fm != nil {
+		fm.Stop()
 	}
 	if sw := d.getSpoolWatcher(); sw != nil {
 		sw.Stop()
@@ -1216,6 +1225,7 @@ func (d *Daemon) Run() error {
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 
 	d.wg.Wait()
+	stopProcessCtx()
 	csmlog.Info("workers drained", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
@@ -1307,6 +1317,9 @@ func contentReverifyOutcomeMessage(outcome checks.ContentReverifyDismissal) stri
 // DroppedAlerts returns the total number of alerts dropped due to
 // channel backpressure since the daemon started.
 func (d *Daemon) DroppedAlerts() int64 {
+	if d.alertQueue != nil {
+		return int64(d.alertQueue.Snapshot(time.Now()).DroppedTotal) // #nosec G115 -- a daemon cannot produce MaxInt64 findings within its lifetime.
+	}
 	return atomic.LoadInt64(&d.droppedAlerts)
 }
 
@@ -1337,6 +1350,9 @@ const alertHoldMaxBatch = 5000
 // goroutine starts.
 func (d *Daemon) holdAlertDispatch() {
 	d.alertHold = make(chan struct{})
+	if d.alertQueue != nil {
+		d.alertQueue.Hold(time.Now())
+	}
 }
 
 // releaseAlertDispatch lets the dispatcher start dispatching its batches.
@@ -1345,7 +1361,12 @@ func (d *Daemon) releaseAlertDispatch() {
 	if d.alertHold == nil {
 		return
 	}
-	d.alertReleaseOnce.Do(func() { close(d.alertHold) })
+	d.alertReleaseOnce.Do(func() {
+		if d.alertQueue != nil {
+			d.alertQueue.Release(time.Now())
+		}
+		close(d.alertHold)
+	})
 }
 
 func (d *Daemon) alertDispatcher() {
@@ -1366,7 +1387,9 @@ func (d *Daemon) alertDispatcher() {
 			return
 
 		case f := <-d.alertCh:
+			alert.StartQueued(f)
 			if held != nil && len(batch) >= alertHoldMaxBatch {
+				alert.RejectQueued(f)
 				heldDropped++
 				atomic.AddInt64(&d.droppedAlerts, 1)
 				continue
@@ -1398,6 +1421,7 @@ func (d *Daemon) drainAlertChannel(batch []alert.Finding) []alert.Finding {
 			if !ok {
 				return batch
 			}
+			alert.StartQueued(f)
 			batch = append(batch, f)
 		default:
 			return batch
@@ -1421,6 +1445,7 @@ func (d *Daemon) flushPendingAlertsOnShutdown() {
 // the next start releases the dispatcher. Nothing here is marked sent via
 // store.Update, so the replay's dispatch is not suppressed.
 func (d *Daemon) persistPendingFindingsOnShutdown(batch []alert.Finding) {
+	defer alert.FinishQueued(batch)
 	if len(batch) == 0 {
 		return
 	}
@@ -1457,6 +1482,7 @@ func operatorAlertableFindings(findings []alert.Finding) []alert.Finding {
 }
 
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {
+	defer alert.FinishQueued(findings)
 	// Realtime producers may hand over findings without a Timestamp; stamp
 	// them once here so history, incidents, the latest set and every alert
 	// sink see the same time.
@@ -1625,24 +1651,19 @@ func (d *Daemon) enqueueScanAlertsWithin(findings []alert.Finding, label string,
 		if !scanFindingIsAlertable(f) {
 			continue
 		}
-		select {
-		case d.alertCh <- f:
+		err := alert.EnqueueWithin(d.alertCh, f, d.stopCh, timeout)
+		if err == nil {
 			continue
-		default:
 		}
-		timer := time.NewTimer(timeout)
-		select {
-		case d.alertCh <- f:
-			timer.Stop()
-		case <-d.stopCh:
-			timer.Stop()
-			return
-		case <-timer.C:
-			dropped := countAlertableScanFindings(findings[i:])
-			atomic.AddInt64(&d.droppedAlerts, int64(dropped))
+		remaining := countAlertableScanFindings(findings[i+1:])
+		// EnqueueWithin already counted the rejected send, including shutdown.
+		alert.RecordQueueLoss(d.alertCh, uint64(remaining)) // #nosec G115 -- countAlertableScanFindings returns a nonnegative count bounded by the slice length.
+		dropped := remaining + 1
+		atomic.AddInt64(&d.droppedAlerts, int64(dropped))
+		if errors.Is(err, alert.ErrQueueTimeout) {
 			fmt.Fprintf(os.Stderr, "[%s] alert channel jammed for %s, dropping %d remaining %s findings (first: %s)\n", ts(), timeout, dropped, label, f.Check)
-			return
 		}
+		return
 	}
 }
 
@@ -1772,7 +1793,7 @@ func (d *Daemon) deepScanner() {
 			case rescan:
 				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 				observeSignatureRescan()
-			case d.fileMonitor != nil:
+			case d.getFileMonitor() != nil:
 				findings, purgeChecks = checks.RunReducedDeepWithContext(scanCtx, cfg, d.store)
 			default:
 				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
@@ -1800,14 +1821,12 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	var err error
 	cfg, err = d.verifyPeriodicIntegritySnapshot(cfg)
 	if err != nil {
-		select {
-		case d.alertCh <- alert.Finding{
+		if !alert.TryEnqueue(d.alertCh, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "integrity",
 			Message:   fmt.Sprintf("BINARY/CONFIG TAMPER DETECTED: %v", err),
 			Timestamp: time.Now(),
-		}:
-		default:
+		}) {
 			atomic.AddInt64(&d.droppedAlerts, 1)
 			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping integrity finding\n", ts())
 		}
@@ -1878,15 +1897,12 @@ func (d *Daemon) heartbeat() {
 func (d *Daemon) startPHPRelay() {
 	info := platform.Detect()
 	if !info.IsCPanel() {
-		select {
-		case d.alertCh <- alert.Finding{
+		alert.TryEnqueue(d.alertCh, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "email_php_relay_disabled",
 			Message:   "php_relay disabled: not a cPanel host",
 			Timestamp: time.Now(),
-		}:
-		default:
-		}
+		})
 		return
 	}
 	if !d.cfg.EmailProtection.PHPRelay.Enabled {
@@ -1895,15 +1911,12 @@ func (d *Daemon) startPHPRelay() {
 	if path, err := exec.LookPath("exim"); err == nil {
 		eximBinary = path
 	} else {
-		select {
-		case d.alertCh <- alert.Finding{
+		alert.TryEnqueue(d.alertCh, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "email_php_relay_no_exim",
 			Message:   "php_relay auto-action disabled: exim binary not in PATH",
 			Timestamp: time.Now(),
-		}:
-		default:
-		}
+		})
 	}
 	// Bridge to the linux-only wiring (Phase O2). On non-linux GOOS
 	// the stub in php_relay_wiring_other.go is a no-op.
@@ -2274,10 +2287,10 @@ func (d *Daemon) emitAuthBackendFindings() bool {
 	if d.authBackend == nil {
 		return true
 	}
-	for _, f := range d.authBackend.Observe() {
-		select {
-		case d.alertCh <- f:
-		case <-d.stopCh:
+	findings := d.authBackend.Observe()
+	for i, f := range findings {
+		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false
 		}
 	}
@@ -2293,9 +2306,11 @@ func (d *Daemon) handleMailLogSourceGone(err error) {
 		Timestamp: time.Now(),
 	}
 	select {
-	case d.alertCh <- finding:
 	case <-d.stopCh:
+		return
 	default:
+	}
+	if !alert.TryEnqueue(d.alertCh, finding) {
 		atomic.AddInt64(&d.droppedAlerts, 1)
 		fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping maillog source finding\n", ts())
 	}
@@ -2307,10 +2322,9 @@ func (d *Daemon) handleMailLogSourceRestored() {
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) bool {
 	findings := handler(line.Message, d.currentCfg())
-	for _, f := range findings {
-		select {
-		case d.alertCh <- f:
-		case <-d.stopCh:
+	for i, f := range findings {
+		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false
 		}
 	}
@@ -2398,7 +2412,7 @@ func (d *Daemon) startWebUI() {
 	d.logWatchersMu.Lock()
 	numWatchers := len(d.logWatchers)
 	d.logWatchersMu.Unlock()
-	srv.SetHealthInfo(d.fileMonitor != nil, numWatchers)
+	srv.SetHealthInfo(d.getFileMonitor() != nil, numWatchers)
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}
@@ -2456,7 +2470,7 @@ func (d *Daemon) startFileMonitor() {
 		return
 	}
 	fm.registerMetrics()
-	d.fileMonitor = fm
+	d.setFileMonitor(fm)
 	d.wg.Add(1)
 	obs.Go("fanotify", func() {
 		defer d.wg.Done()
@@ -2491,6 +2505,7 @@ func (d *Daemon) startSpoolWatcher() {
 	// Create orchestrator with both engines
 	scanners := []emailav.Scanner{clamScanner, yaraScanner}
 	orch := emailav.NewOrchestrator(scanners, d.cfg.EmailAV.ScanTimeoutDuration())
+	d.registerQueueSource("email_av", orch)
 
 	// Create quarantine
 	quar := emailav.NewQuarantine("/opt/csm/quarantine/email")
@@ -2588,6 +2603,9 @@ func (d *Daemon) runSpoolWatcherLoopWithFactory(current spoolWatcherRuntime, res
 
 func (d *Daemon) setSpoolWatcher(sw *SpoolWatcher) {
 	d.spoolWatcherMu.Lock()
+	if d.spoolWatcher != nil {
+		sw.inheritQueueHealth(d.spoolWatcher)
+	}
 	d.spoolWatcher = sw
 	d.spoolWatcherMu.Unlock()
 	d.syncEmailAVWebState()
@@ -2608,6 +2626,7 @@ func (d *Daemon) startForwarderWatcher() {
 		return
 	}
 	d.forwarderWatcher = fw
+	d.registerQueueSource("forwarder", fw)
 	d.wg.Add(1)
 	obs.Go("forwarder-watcher", func() {
 		defer d.wg.Done()

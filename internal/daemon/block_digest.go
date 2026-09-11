@@ -40,7 +40,7 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 		}
 	}
 	email, webhook := d.blockDigestSinks(cfg)
-	return blockdigest.New(blockdigest.Options{
+	collector := blockdigest.New(blockdigest.Options{
 		Countries:    countries,
 		SendOn:       cfg.Alerts.BlockDigest.SendOn,
 		Interval:     cfg.BlockDigestInterval(),
@@ -56,7 +56,24 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 		OnError: func(channel string, err error) {
 			csmlog.Warn("block_digest delivery failed", "channel", channel, "err", err)
 		},
+		DeliveryEnabled: func(channel string) bool {
+			// Explicit destinations still attempt delivery and report disabled
+			// channels as errors. Default delivery follows current alert policy.
+			if cfg.Alerts.BlockDigest.Channel != "" {
+				return true
+			}
+			live := d.currentCfg()
+			if live == nil {
+				live = cfg
+			}
+			if channel == "email" {
+				return live.Alerts.Email.Enabled
+			}
+			return live.Alerts.Webhook.Enabled
+		},
 	})
+	d.registerQueueSource("block_digest", collector)
+	return collector
 }
 
 // blockDigestSinks selects delivery: an empty channel follows whichever alerts

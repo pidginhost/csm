@@ -22,7 +22,7 @@ func withPollingMailFile(t *testing.T, test func(*testing.T, string, *os.File, <
 		defer w.Close()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		out, err := NewFileReader(path).Run(ctx)
+		out, err := NewFileReader(path, NewQueue()).Run(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}

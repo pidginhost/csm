@@ -12,11 +12,13 @@ func fillProcReadSlots(t *testing.T) {
 	acquired := 0
 	t.Cleanup(func() {
 		for i := 0; i < acquired; i++ {
-			releaseProcReadSlot()
+			<-procReads.slots
 		}
 	})
 	for i := 0; i < procReadConcurrency; i++ {
-		if !acquireProcReadSlot() {
+		select {
+		case procReads.slots <- struct{}{}:
+		default:
 			t.Fatalf("could not acquire slot %d while filling the semaphore", i)
 		}
 		acquired++
@@ -27,11 +29,11 @@ func waitForProcReadSlots(t *testing.T, want int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
-		if got := len(procReadSem); got == want {
+		if got := len(procReads.slots); got == want {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("proc read slots in use = %d, want %d", len(procReadSem), want)
+			t.Fatalf("proc read slots in use = %d, want %d", len(procReads.slots), want)
 		}
 		time.Sleep(time.Millisecond)
 	}

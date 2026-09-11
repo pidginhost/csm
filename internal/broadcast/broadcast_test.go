@@ -1,146 +1,143 @@
 package broadcast
 
 import (
-	"sync"
+	"fmt"
 	"testing"
-	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
 
+func receiveFinding(t *testing.T, sub *Subscription) alert.Finding {
+	t.Helper()
+	select {
+	case delivery, ok := <-sub.Events():
+		if !ok {
+			t.Fatal("subscription closed before delivery")
+		}
+		var finding alert.Finding
+		if err := delivery.Process(func(f alert.Finding) error { finding = f; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		return finding
+	default:
+		t.Fatal("expected buffered delivery")
+		return alert.Finding{}
+	}
+}
+
+func requireClosed(t *testing.T, sub *Subscription) {
+	t.Helper()
+	select {
+	case _, ok := <-sub.Events():
+		if ok {
+			t.Fatal("expected closed and empty subscription")
+		}
+	default:
+		t.Fatal("subscription is not closed")
+	}
+}
+
 func TestBus_FanOutToTwoSubscribers(t *testing.T) {
 	bus := NewBus(8)
 	defer bus.Close()
-
-	subA := bus.Subscribe()
-	subB := bus.Subscribe()
-
-	finding := alert.Finding{Check: "x", Severity: alert.High}
-	bus.Publish(finding)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	gotA, gotB := false, false
-
-	go func() {
-		defer wg.Done()
-		select {
-		case f := <-subA:
-			if f.Check == "x" {
-				gotA = true
+	a, b := bus.Subscribe(), bus.Subscribe()
+	defer bus.Unsubscribe(a)
+	defer bus.Unsubscribe(b)
+	for i := range 3 {
+		bus.Publish(alert.Finding{Check: fmt.Sprint(i), Severity: alert.High})
+	}
+	for _, sub := range []*Subscription{a, b} {
+		for i := range 3 {
+			f := receiveFinding(t, sub)
+			if f.Check != fmt.Sprint(i) || f.Severity != alert.High {
+				t.Fatalf("delivery %d = %+v", i, f)
 			}
-		case <-time.After(time.Second):
 		}
-	}()
-	go func() {
-		defer wg.Done()
-		select {
-		case f := <-subB:
-			if f.Check == "x" {
-				gotB = true
-			}
-		case <-time.After(time.Second):
-		}
-	}()
-	wg.Wait()
-	if !gotA || !gotB {
-		t.Fatalf("expected both subscribers to receive: gotA=%v gotB=%v", gotA, gotB)
 	}
 }
 
 func TestBus_SlowSubscriberDoesNotBlockOthers(t *testing.T) {
-	bus := NewBus(2) // tiny buffer
+	bus := NewBus(2)
 	defer bus.Close()
-
-	slow := bus.Subscribe()
-	fast := bus.Subscribe()
-
-	for i := 0; i < 10; i++ {
-		bus.Publish(alert.Finding{Check: "x"})
-	}
-
-	// Fast subscriber must drain at least 2 in <100ms (buffered).
-	count := 0
-	deadline := time.After(100 * time.Millisecond)
-loop:
-	for {
-		select {
-		case <-fast:
-			count++
-		case <-deadline:
-			break loop
+	slow, fast := bus.Subscribe(), bus.Subscribe()
+	defer bus.Unsubscribe(slow)
+	defer bus.Unsubscribe(fast)
+	for i := range 10 {
+		bus.Publish(alert.Finding{Check: fmt.Sprint(i)})
+		if f := receiveFinding(t, fast); f.Check != fmt.Sprint(i) {
+			t.Fatalf("fast delivery %d = %+v", i, f)
 		}
 	}
-	if count < 2 {
-		t.Fatalf("fast subscriber starved by slow one: drained %d", count)
+	for i := range 2 {
+		if f := receiveFinding(t, slow); f.Check != fmt.Sprint(i) {
+			t.Fatalf("slow delivery %d = %+v", i, f)
+		}
 	}
-	_ = slow
+	select {
+	case <-slow.Events():
+		t.Fatal("slow subscriber retained more than its capacity")
+	default:
+	}
 }
 
 func TestBus_UnsubscribeStopsDelivery(t *testing.T) {
 	bus := NewBus(8)
 	defer bus.Close()
-
-	ch := bus.Subscribe()
-	bus.Unsubscribe(ch)
-	bus.Publish(alert.Finding{Check: "x"})
-
-	select {
-	case f, ok := <-ch:
-		if ok {
-			t.Fatalf("expected channel closed/empty, got %+v", f)
-		}
-	case <-time.After(50 * time.Millisecond):
-		// channel never received - acceptable
-	}
+	sub := bus.Subscribe()
+	bus.Publish(alert.Finding{Check: "withdrawn"})
+	bus.Unsubscribe(sub)
+	bus.Unsubscribe(sub)
+	bus.Publish(alert.Finding{Check: "late"})
+	requireClosed(t, sub)
 }
 
 func TestBus_CloseDrainsAllSubscribers(t *testing.T) {
 	bus := NewBus(8)
-	chA := bus.Subscribe()
-	chB := bus.Subscribe()
+	a, b := bus.Subscribe(), bus.Subscribe()
+	bus.Publish(alert.Finding{Check: "retained"})
 	bus.Close()
-
-	if _, ok := <-chA; ok {
-		t.Fatal("expected chA closed")
-	}
-	if _, ok := <-chB; ok {
-		t.Fatal("expected chB closed")
+	bus.Close()
+	bus.Publish(alert.Finding{Check: "late"})
+	for _, sub := range []*Subscription{a, b} {
+		if f := receiveFinding(t, sub); f.Check != "retained" {
+			t.Fatalf("buffered delivery = %+v", f)
+		}
+		requireClosed(t, sub)
+		bus.Unsubscribe(sub)
 	}
 }
 
 func TestBus_SubscribeAfterCloseReturnsClosedChannel(t *testing.T) {
 	bus := NewBus(8)
 	bus.Close()
-
-	ch := bus.Subscribe()
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Fatal("expected closed channel from closed bus")
-		}
-	case <-time.After(50 * time.Millisecond):
-		t.Fatal("expected closed channel immediately")
+	requireClosed(t, bus.Subscribe())
+	sub, ok := bus.TrySubscribe()
+	if !ok {
+		t.Fatal("closed bus refused an empty closed subscription")
 	}
+	requireClosed(t, sub)
 }
 
-// TrySubscribe enforces the concurrent-subscriber cap so an untrusted SSE
-// client cannot open unbounded streams; a freed slot is reusable.
 func TestBus_TrySubscribeEnforcesCap(t *testing.T) {
-	b := NewBus(4)
-	b.SetMaxSubscribers(2)
-
-	c1, ok1 := b.TrySubscribe()
-	_, ok2 := b.TrySubscribe()
-	if !ok1 || !ok2 {
-		t.Fatalf("first two subscriptions should succeed, got %v %v", ok1, ok2)
+	bus := NewBus(4)
+	defer bus.Close()
+	bus.SetMaxSubscribers(2)
+	a, ok := bus.TrySubscribe()
+	if !ok {
+		t.Fatal("first subscription refused")
 	}
-	if _, ok := b.TrySubscribe(); ok {
-		t.Fatal("subscription beyond the cap must be rejected")
+	b, ok := bus.TrySubscribe()
+	if !ok {
+		t.Fatal("second subscription refused")
 	}
-
-	b.Unsubscribe(c1)
-	if _, ok := b.TrySubscribe(); !ok {
-		t.Fatal("a freed slot must allow a new subscription")
+	defer bus.Unsubscribe(b)
+	if extra, admitted := bus.TrySubscribe(); admitted || extra != nil {
+		t.Fatal("subscription beyond cap accepted")
 	}
+	bus.Unsubscribe(a)
+	c, ok := bus.TrySubscribe()
+	if !ok {
+		t.Fatal("freed slot refused")
+	}
+	bus.Unsubscribe(c)
 }

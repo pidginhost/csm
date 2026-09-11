@@ -16,18 +16,19 @@ import (
 // tag; default builds get the stub from journal_reader_stub.go.
 type JournalReader struct {
 	units []string
+	queue *Queue
 }
 
 // NewJournalReader constructs a JournalReader matching the given systemd
 // unit names (e.g., "postfix", "dovecot", or full "*.service" names).
-func NewJournalReader(units []string) *JournalReader {
-	return &JournalReader{units: units}
+func NewJournalReader(units []string, queue *Queue) *JournalReader {
+	return &JournalReader{units: units, queue: queue}
 }
 
 func JournalSupported() bool { return true }
 
 func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
-	out := make(chan Line, 64)
+	out := r.queue.channel()
 
 	j, err := sdjournal.NewJournal()
 	if err != nil {
@@ -71,6 +72,7 @@ func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
 		}
 	}
 
+	r.queue.file.replaced()
 	go r.loop(ctx, j, out)
 	return out, nil
 }
@@ -83,37 +85,67 @@ func journalUnitName(unit string) string {
 	return unit + ".service"
 }
 
-func (r *JournalReader) loop(ctx context.Context, j *sdjournal.Journal, out chan<- Line) {
+type journalEntries interface {
+	Next() (uint64, error)
+	GetEntry() (*sdjournal.JournalEntry, error)
+	Wait(time.Duration) int
+	Close() error
+}
+
+func (r *JournalReader) loop(ctx context.Context, j journalEntries, out chan<- Line) {
 	defer close(out)
-	defer func() { _ = j.Close() }()
+	r.queue.journal.begin()
+	normal, closed := false, false
+	defer func() { r.queue.finishJournal(normal, closed) }()
+	defer func() {
+		if !normal {
+			r.queue.journal.outcome(true, true)
+		}
+		r.queue.journal.progress()
+		if err := j.Close(); err != nil {
+			r.queue.journal.outcome(true, true)
+		}
+		closed = true
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
+			normal = true
 			return
 		default:
 		}
 
+		r.queue.journal.progress()
 		n, err := j.Next()
 		if err != nil {
+			r.queue.journal.outcome(true, true)
 			fmt.Println("journal Next:", err)
 			time.Sleep(time.Second)
 			continue
 		}
 		if n == 0 {
 			// No new entry; wait up to 2s for one.
-			_ = j.Wait(2 * time.Second)
+			r.queue.journal.outcome(false, false)
+			r.queue.journal.progress()
+			if j.Wait(2*time.Second) < 0 {
+				r.queue.journal.outcome(true, true)
+			}
 			continue
 		}
+		r.queue.journal.selectEntry()
 		entry, err := j.GetEntry()
 		if err != nil {
+			r.queue.lose()
+			r.queue.journal.outcome(true, false)
+			r.queue.journal.releaseEntry()
 			continue
 		}
+		r.queue.journal.outcome(false, false)
 		unit := entry.Fields["_SYSTEMD_UNIT"]
 		msg := entry.Fields["MESSAGE"]
-		select {
-		case out <- Line{Source: "journal", Unit: unit, Message: msg}:
-		case <-ctx.Done():
+		if !r.queue.sendJournal(ctx, out, Line{Source: "journal", Unit: unit, Message: msg}) {
+			normal = true
 			return
 		}
 	}

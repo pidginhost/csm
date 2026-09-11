@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -59,6 +60,9 @@ func retryFirewallStartup(stop <-chan struct{}, delays []time.Duration, attempt 
 }
 
 func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
+	if err := checks.InitAutoBlockQueueHealth(d.cfg.StatePath); err != nil {
+		csmlog.Error("auto-block retry state unreadable", "err", err)
+	}
 	effectiveFirewall := config.EffectiveFirewallConfig(d.cfg)
 	if effectiveFirewall == nil || !effectiveFirewall.Enabled {
 		return
@@ -122,9 +126,7 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 			resolver.RegisterInfraHost(h)
 		}
 		resolver.SetFindingSink(func(host string) {
-			select {
-			case d.alertCh <- dynDNSUnresolvableFinding(host):
-			default:
+			if !alert.TryEnqueue(d.alertCh, dynDNSUnresolvableFinding(host)) {
 				atomic.AddInt64(&d.droppedAlerts, 1)
 				fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping dyndns guard finding: %s\n", ts(), host)
 			}

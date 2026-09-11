@@ -279,7 +279,10 @@ pack is noticed rather than silently given a no-ban path.
 - `post_exploit_process` -- process exec from `/tmp`, `/var/tmp`,
   `/dev/shm`.
 - `host_integrity_risk` -- daemon/kernel-level signals (sensitive file
-  writes, fake kernel threads, auditd disabled).
+  changes, fake kernel threads, binary/config tampering). Periodic
+  binary/config tamper findings join the local host incident even without
+  account or IP attribution. Startup verification still alerts and refuses
+  to start before normal incident processing is available.
 - `host_takeover` -- any two of a new uid-0 account, a planted suid
   binary, and an outbound connection to a bad ASN, seen for the same host
   inside the merge window.
@@ -289,6 +292,23 @@ pack is noticed rather than silently given a no-ban path.
   produces one super-incident instead of thousands of mailbox_bruteforce
   rows. Findings from the same IP after the trip attach to this
   incident's timeline. See "Credential-spray suppression" below.
+
+The host-integrity set, all five compound sets, kind selectors and identity
+exclusions are checked against the detector registry. The independent test
+fixture `internal/incident/testdata/check-policy.json` records an explicit
+classification role and selecting-set membership for every registered check,
+including checks with no named override. Tests reject unknown names, missing
+eligible members, new tables without a contract and new checks without a
+policy decision. They also exercise each check with account, mailbox, process
+and source-IP attribution to test classification precedence.
+
+These tests live in the external `incident_test` package, which can import the
+check registry without adding a production dependency from `incident` to
+`checks`. That dependency would cycle through `checks -> control -> incident`.
+Changes to the fixture require a review of the detector's emitted evidence;
+do not regenerate it from the selecting tables. Classification coverage does
+not calibrate correlation weights or prove that broader compound membership
+is safe.
 
 ## Severity policy
 
@@ -717,6 +737,8 @@ Attribution gaps:
 | `php_shield_webshell` | security event |  |  |
 | `php_suspicious_execution` | security event |  |  |
 | `php_taint_scan_incomplete` | ignored | self-health |  |
+| `protection_queue_degraded` | ignored | self-health |  |
+| `protection_queue_recovered` | ignored | self-health |  |
 | `realtime_scanner_panic` | ignored | self-health |  |
 | `reputation_quota_exhausted` | ignored | self-health |  |
 | `root_password_change` | ignored | host-scope |  |

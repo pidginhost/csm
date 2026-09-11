@@ -281,20 +281,13 @@ func TestDispatchPhpanelWebhookDoesNotWaitForNetwork(t *testing.T) {
 }
 
 func TestPhpanelQueueBatchKeepsNewestItemsAtLimit(t *testing.T) {
-	t.Cleanup(closePhpanelQueuesForTest)
-	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
-	cfg.Alerts.Webhook.URL = "https://panel.invalid/findings"
-	cfg.Alerts.Webhook.HMACSecret = "secret"
-	queue, err := phpanelQueueFor(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	queue := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{}, 2)
 	items := []queuedPhpanelFinding{
 		{Finding: Finding{Check: "a"}, Timestamp: time.Now()},
 		{Finding: Finding{Check: "b"}, Timestamp: time.Now()},
 		{Finding: Finding{Check: "c"}, Timestamp: time.Now()},
 	}
-	dropped, err := queue.enqueueBatch(items, 2)
+	dropped, err := queue.enqueueBatch(items)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,19 +316,17 @@ func TestPhpanelQueueQuarantinesMalformedEntryAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := queue.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "seed"}, Timestamp: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := queue.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(phpanelQueueBucket)
-		seq, err := bucket.NextSequence()
-		if err != nil {
-			return err
-		}
-		var key [8]byte
-		binary.BigEndian.PutUint64(key[:], seq)
-		return bucket.Put(key[:], []byte("not-json"))
+		key, _ := bucket.Cursor().First()
+		return bucket.Put(key, []byte("not-json"))
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := queue.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "valid"}, Timestamp: time.Now()}}, phpanelQueueLimit); err != nil {
+	if _, err := queue.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "valid"}, Timestamp: time.Now()}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,6 +358,9 @@ func TestPhpanelQueueBoundsMalformedEntryQuarantine(t *testing.T) {
 		var key [8]byte
 		binary.BigEndian.PutUint64(key[:], uint64(i)) // #nosec G115 -- bounded positive test loop.
 		payload := []byte("bad")
+		if _, err := queue.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "seed"}, Timestamp: time.Now()}}); err != nil {
+			t.Fatal(err)
+		}
 		if err := queue.db.Update(func(tx *bolt.Tx) error {
 			return tx.Bucket(phpanelQueueBucket).Put(key[:], payload)
 		}); err != nil {
@@ -500,23 +494,17 @@ func phpanelQuarantineDepthForTest(t *testing.T, queue *phpanelQueue) int {
 // not register it in phpanelQueues or start its worker, so a test can drive
 // enqueueBatch/drainQueued and manipulate q.stop directly without the package
 // cleanup double-closing it.
-func newUnregisteredPhpanelQueue(t *testing.T, delivery phpanelDeliveryConfig) *phpanelQueue {
+func newUnregisteredPhpanelQueue(t *testing.T, delivery phpanelDeliveryConfig, limit int) *phpanelQueue {
 	t.Helper()
 	db, err := bolt.Open(filepath.Join(t.TempDir(), "phpanel.db"), 0o600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := db.Update(func(tx *bolt.Tx) error {
-		if _, e := tx.CreateBucketIfNotExists(phpanelQueueBucket); e != nil {
-			return e
-		}
-		_, e := tx.CreateBucketIfNotExists(phpanelQuarantineBucket)
-		return e
-	}); err != nil {
+	q, err := newPhpanelQueue(db, limit)
+	if err != nil {
 		t.Fatal(err)
 	}
-	q := &phpanelQueue{db: db, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
 	q.cfg = delivery
 	return q
 }
@@ -571,12 +559,12 @@ func TestQueuedFindingCountTracksEveryProductionDeletePath(t *testing.T) {
 	restore := SetWebhookTransportForTest(oneSuccessWebhookTransport{requests: &requests})
 	t.Cleanup(restore)
 
-	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: "secret"})
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: "secret"}, 3)
 	items := make([]queuedPhpanelFinding, 4)
 	for i := range items {
 		items[i] = queuedPhpanelFinding{Finding: Finding{Check: "c"}, Timestamp: time.Now()}
 	}
-	dropped, err := q.enqueueBatch(items, 3)
+	dropped, err := q.enqueueBatch(items)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,12 +603,12 @@ func TestDrainQueuedStopsPromptlyWhenClosing(t *testing.T) {
 	restore := SetWebhookTransportForTest(oneSuccessWebhookTransport{requests: &delivered})
 	t.Cleanup(restore)
 
-	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: "secret"})
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: "secret"}, phpanelQueueLimit)
 	items := make([]queuedPhpanelFinding, 20)
 	for i := range items {
 		items[i] = queuedPhpanelFinding{Finding: Finding{Check: "c"}, Timestamp: time.Now()}
 	}
-	if _, err := q.enqueueBatch(items, phpanelQueueLimit); err != nil {
+	if _, err := q.enqueueBatch(items); err != nil {
 		t.Fatal(err)
 	}
 

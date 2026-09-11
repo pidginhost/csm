@@ -10,6 +10,7 @@
 
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
+#include "../bpf_headers/csm_ringbuf.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 
@@ -46,7 +47,7 @@ int BPF_PROG(csm_block_af_alg, int family, int type, int protocol, int kern, int
         return 0; // root keeps kcrypto access; userspace policy hardens
     }
 
-    struct af_alg_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    struct af_alg_event *e = csm_ringbuf_reserve(&events, sizeof(*e));
     if (e) {
         e->uid = uid;
         e->pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
@@ -82,7 +83,7 @@ int BPF_PROG(csm_block_af_alg, int family, int type, int protocol, int kern, int
             __builtin_memset(e->exe, 0, sizeof(e->exe));
         }
 
-        bpf_ringbuf_submit(e, 0);
+        csm_ringbuf_submit(e);
     }
     return -EPERM;
 }

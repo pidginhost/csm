@@ -186,14 +186,12 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		// kicked the tier run. The client also gets an error so the
 		// systemd timer unit fails loudly.
 		if args.Alerts {
-			select {
-			case c.d.alertCh <- alert.Finding{
+			if !alert.TryEnqueue(c.d.alertCh, alert.Finding{
 				Severity:  alert.Critical,
 				Check:     "integrity",
 				Message:   fmt.Sprintf("BINARY/CONFIG TAMPER DETECTED: %v", vErr),
 				Timestamp: time.Now(),
-			}:
-			default:
+			}) {
 				atomic.AddInt64(&c.d.droppedAlerts, 1)
 			}
 		}

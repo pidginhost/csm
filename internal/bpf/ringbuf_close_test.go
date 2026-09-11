@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf/ringbuf"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type transientRingReader struct {
@@ -46,7 +47,7 @@ func TestReaderRecoversAfterTransientReadError(t *testing.T) {
 	r := &Reader[int]{
 		rb:     f,
 		decode: func(data []byte) (int, error) { return int(data[0]), nil },
-		out:    make(chan int, 1),
+		out:    queuehealth.NewChannel[int](1, time.Minute),
 		errs:   make(chan error, 1),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -63,9 +64,10 @@ func TestReaderRecoversAfterTransientReadError(t *testing.T) {
 	}
 	select {
 	case event := <-r.Events():
-		if event != 42 {
-			t.Fatalf("event = %d, want 42", event)
+		if event.Value != 42 {
+			t.Fatalf("event = %d, want 42", event.Value)
 		}
+		event.Process(func(int) {})
 	case <-time.After(time.Second):
 		t.Fatal("reader stopped instead of recovering")
 	}
@@ -98,7 +100,7 @@ func TestReaderCloseIsIdempotent(t *testing.T) {
 	r := &Reader[int]{
 		rb:     f,
 		decode: func([]byte) (int, error) { return 0, nil },
-		out:    make(chan int, 1),
+		out:    queuehealth.NewChannel[int](1, time.Minute),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -120,7 +122,7 @@ func TestReaderCloseIsIdempotent(t *testing.T) {
 		t.Fatal("Run did not return after shutdown")
 	}
 
-	if _, ok := <-r.out; ok {
+	if _, ok := <-r.Events(); ok {
 		t.Error("events channel should be closed when Run returns")
 	}
 	if got := f.closes.Load(); got != 1 {
@@ -135,7 +137,7 @@ func TestReaderCloseWithoutCtxCancel(t *testing.T) {
 	r := &Reader[int]{
 		rb:     f,
 		decode: func([]byte) (int, error) { return 0, nil },
-		out:    make(chan int, 1),
+		out:    queuehealth.NewChannel[int](1, time.Minute),
 	}
 
 	runDone := make(chan struct{})

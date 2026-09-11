@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 // sseWriteTimeout caps how long each SSE write is allowed to block on a
@@ -27,8 +29,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
@@ -41,7 +42,25 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many event stream subscribers", http.StatusServiceUnavailable)
 		return
 	}
-	defer bus.Unsubscribe(sub)
+	shutdownDone := s.pruneDone
+	streamStopped := func() bool {
+		if r.Context().Err() != nil {
+			return true
+		}
+		select {
+		case <-shutdownDone:
+			return true
+		default:
+			return false
+		}
+	}
+	defer func() {
+		if streamStopped() {
+			bus.Unsubscribe(sub)
+		} else {
+			bus.Abort(sub)
+		}
+	}()
 
 	rc := http.NewResponseController(w)
 	setWriteDeadline := func() error {
@@ -64,8 +83,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		if _, err := fmt.Fprintf(w, format, args...); err != nil {
 			return err
 		}
-		flusher.Flush()
-		return nil
+		return rc.Flush()
 	}
 
 	// Initial flush establishes the connection and proxies see the headers
@@ -76,9 +94,11 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 
 	keepalive := time.NewTicker(25 * time.Second)
 	defer keepalive.Stop()
-	shutdownDone := s.pruneDone
 
 	for {
+		if streamStopped() {
+			return
+		}
 		select {
 		case <-r.Context().Done():
 			return
@@ -88,15 +108,29 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 			if err := writeFrame(": keepalive\n\n"); err != nil {
 				return
 			}
-		case f, ok := <-sub:
+		case delivery, ok := <-sub.Events():
 			if !ok {
 				return
 			}
-			body, err := json.Marshal(f)
-			if err != nil {
-				continue
-			}
-			if err := writeFrame("data: %s\n\n", body); err != nil {
+			encodingFailed := false
+			err := delivery.Process(func(f alert.Finding) error {
+				if streamStopped() {
+					return nil
+				}
+				body, err := json.Marshal(f)
+				if err != nil {
+					encodingFailed = true
+					return err
+				}
+				err = writeFrame("data: %s\n\n", body)
+				// Closing a tab can interrupt its write. Once demand is withdrawn,
+				// that cancellation must not become a host delivery failure.
+				if err != nil && streamStopped() {
+					return nil
+				}
+				return err
+			})
+			if err != nil && !encodingFailed {
 				return
 			}
 		}

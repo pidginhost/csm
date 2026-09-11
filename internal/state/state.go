@@ -56,6 +56,11 @@ type Store struct {
 	savedHash            string // hash of last saved state
 	throttleReservations map[string]struct{}
 
+	pendingHealthOnce sync.Once
+	pendingQueue      *pendingQueue
+	readPendingFile   func(string) ([]byte, error)
+	writePendingFile  func(string, os.FileMode, any) error
+
 	// LatestFindings holds the full output of the most recent scan cycle.
 	// This is what the Findings page shows - "what's wrong right now" -
 	// separate from the alert dedup state above which controls "what to email."
@@ -98,6 +103,7 @@ func Open(path string) (*Store, error) {
 		s.latestFindings = findings
 	}
 
+	s.observePendingQueue()
 	return s, nil
 }
 

@@ -613,7 +613,7 @@ func TestAppendEventsFallback(t *testing.T) {
 		{Timestamp: time.Now(), IP: "1.1.1.1", AttackType: AttackBruteForce, CheckName: "ssh_login_realtime", Severity: 2},
 		{Timestamp: time.Now(), IP: "2.2.2.2", AttackType: AttackWebshell, CheckName: "webshell", Severity: 3},
 	}
-	db.appendEvents(events)
+	db.appendEvents(events, nil)
 
 	data, err := os.ReadFile(filepath.Join(db.dbPath, eventsFile))
 	if err != nil {
@@ -634,7 +634,7 @@ func TestQueryEventsFallback(t *testing.T) {
 		{Timestamp: base.Add(time.Minute), IP: "2.2.2.2", AttackType: AttackWebshell, CheckName: "b"},
 		{Timestamp: base.Add(2 * time.Minute), IP: "1.1.1.1", AttackType: AttackRecon, CheckName: "c"},
 	}
-	db.appendEvents(events)
+	db.appendEvents(events, nil)
 
 	got := db.QueryEvents("1.1.1.1", 10)
 	if len(got) != 2 {
@@ -655,7 +655,7 @@ func TestQueryEventsLimitTrimsToNewestN(t *testing.T) {
 			IP:         "1.1.1.1",
 			AttackType: AttackRecon,
 			CheckName:  "c",
-		}})
+		}}, nil)
 	}
 	got := db.QueryEvents("1.1.1.1", 3)
 	if len(got) != 3 {
@@ -707,7 +707,7 @@ func TestStatsAndComputeStats(t *testing.T) {
 		Check: "wp_login_bruteforce", Message: "brute from 2.2.2.2", Timestamp: now,
 	})
 	// Flush pending events so readAllEvents() sees them from disk.
-	db.appendEvents(db.pendingEvents)
+	db.appendEvents(db.pendingEvents, nil)
 
 	// Reset the stats cache so we hit the compute path.
 	cachedStatsMu.Lock()
@@ -751,7 +751,7 @@ func TestByType24hSkipsEmptyAttackType(t *testing.T) {
 	db.pendingEvents = append(db.pendingEvents, Event{
 		Timestamp: now, IP: "3.3.3.3", AttackType: "",
 	})
-	db.appendEvents(db.pendingEvents)
+	db.appendEvents(db.pendingEvents, nil)
 
 	cachedStatsMu.Lock()
 	cachedStatsTime = time.Time{}
@@ -779,7 +779,7 @@ func TestByType24hExcludesOldEvents(t *testing.T) {
 	db.RecordFinding(alert.Finding{
 		Check: "webshell", Message: "fresh shell from 2.2.2.2", Timestamp: recent,
 	})
-	db.appendEvents(db.pendingEvents)
+	db.appendEvents(db.pendingEvents, nil)
 
 	cachedStatsMu.Lock()
 	cachedStatsTime = time.Time{}

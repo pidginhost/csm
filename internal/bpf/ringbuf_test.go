@@ -42,7 +42,7 @@ func TestReaderClosesEventsAfterCancellation(t *testing.T) {
 	}
 	defer func() { _ = m.Close() }()
 
-	r, err := NewReader(m, decodeTiny)
+	r, err := NewReader(m, testKernelCounters(t), decodeTiny)
 	if err != nil {
 		t.Fatalf("NewReader: %v", err)
 	}
@@ -63,4 +63,18 @@ func TestReaderClosesEventsAfterCancellation(t *testing.T) {
 			t.Fatal("event received after cancellation without a producer")
 		}
 	}
+}
+
+func testKernelCounters(t *testing.T) *ebpf.Map {
+	t.Helper()
+	m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 16, MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := m.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return m
 }

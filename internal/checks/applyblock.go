@@ -63,11 +63,17 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 		observeBlockOutcome(res.Outcome, ErrNoIPBlocker, req.Source)
 		return res, ErrNoIPBlocker
 	}
-	blockStateMu.Lock()
-	defer blockStateMu.Unlock()
-	state := loadBlockState(cfg.StatePath)
-	res, err := applyBlockLocked(cfg, blocker, state, req)
-	saveBlockState(cfg.StatePath, state)
+	work := autoBlockQueues.acquire()
+	defer work.finish()
+	state := work.loadState(cfg.StatePath)
+	attemptAt := autoBlockNow()
+	res, err := applyBlockLocked(cfg, blocker, state, req, work.progress, func(err error) { work.directOutcome(req.IP, attemptAt, err) })
+	if !errors.Is(err, firewall.ErrIPProtected) {
+		work.observe(err)
+	}
+	work.progress()
+	work.saveState(cfg.StatePath, state)
+	work.complete()
 	return res, err
 }
 
@@ -76,8 +82,10 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 // and saving state. It writes no stderr lines for live blocks - callers
 // keep their own operational logging - and emits findings instead of
 // dispatching them.
-func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest) (ApplyBlockResult, error) {
+func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest, progress func(), observe func(error)) (ApplyBlockResult, error) {
+	progress()
 	outcome, err := callBlockIP(blocker, req.IP, req.EngineReason, req.TTL)
+	observe(err)
 	observeBlockOutcome(outcome, err, req.Source)
 	res := ApplyBlockResult{Outcome: outcome}
 	if err != nil {
@@ -113,6 +121,7 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	// Record in the local threat DB with the same lifetime as the firewall
 	// block. A permanent record here would re-flag the IP via ip_reputation
 	// after the temp block lapses and re-block it forever (permablock loop).
+	progress()
 	if db := GetThreatDB(); db != nil {
 		db.AddTemporary(req.IP, req.Reason, req.TTL)
 	}
@@ -125,6 +134,7 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	})
 
 	details := fmt.Sprintf("Reason: %s", req.Reason)
+	progress()
 	if cc, ok := blocker.(cloudflareCoverChecker); ok && cc.CloudflareCovers(req.IP) {
 		details += " (warning: " + firewall.CloudflareCoverageWarning + ")"
 	}
@@ -148,8 +158,10 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 			count = config.DefaultPermBlockCount
 		}
 		interval := parseExpiryWithDefault(cfg.AutoResponse.PermBlockInterval, config.DefaultPermBlockInterval)
+		progress()
 		if checkPermBlockEscalation(cfg.StatePath, req.IP, count, interval) {
 			permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
+			progress()
 			if promoteToPermanentBlock(blocker, req.IP, permReason) {
 				res.Findings = append(res.Findings, alert.Finding{
 					Severity:  alert.Critical,

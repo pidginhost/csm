@@ -38,6 +38,8 @@ parallel=${CSM_TEST_PARALLEL_PACKAGES:-$(( cpus < 4 ? cpus : 4 ))}
 } > "$artifacts/engines.txt"
 export CGO_ENABLED=1
 export CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)"
+go run ./scripts/queuegate -manifest scripts/queue-inventory.json -mode "$mode" -base-required "$required" -required-out "$artifacts/queue-required.json"
+required="$artifacts/queue-required.json"
 chmod -R go-w configs
 if [[ "$mode" == kernel ]]; then
   go run ./scripts/testgate -tags "$tags" -base-tags yara,journal,bpf -required "$required" -pattern-file "$artifacts/pattern.txt" -inventory "$artifacts/inventory.json" "${packages[@]}"

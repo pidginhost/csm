@@ -103,7 +103,7 @@ func TestAppendEventsViaBbolt(t *testing.T) {
 	events := []Event{
 		{IP: "203.0.113.5", AttackType: AttackBruteForce, CheckName: "ssh", Message: "test", Timestamp: time.Now()},
 	}
-	db.appendEvents(events)
+	db.appendEvents(events, nil)
 
 	// Verify via store — events should be stored
 	sdb := store.Global()
@@ -122,7 +122,7 @@ func TestQueryEventsViaBbolt(t *testing.T) {
 	db.appendEvents([]Event{
 		{IP: "203.0.113.5", AttackType: AttackBruteForce, CheckName: "ssh", Message: "test", Timestamp: time.Now()},
 		{IP: "198.51.100.1", AttackType: AttackWebshell, CheckName: "wshell", Message: "test2", Timestamp: time.Now()},
-	})
+	}, nil)
 
 	events := db.QueryEvents("203.0.113.5", 10)
 	if len(events) != 1 {

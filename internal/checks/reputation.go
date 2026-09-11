@@ -243,17 +243,29 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		category string
 		err      error
 	}
-	if len(pendingQueries) > 0 {
-		if sdb != nil {
-			reserved := sdb.ReserveAbuseQuerySlots(utcDay, len(pendingQueries), maxDailyAbuseQueries)
-			if reserved < len(pendingQueries) {
-				for _, q := range pendingQueries[reserved:] {
-					if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
-						appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
-					}
-				}
-				pendingQueries = pendingQueries[:reserved]
-			}
+	var refusedQueries []pendingQuery
+	if len(pendingQueries) > 0 && sdb != nil {
+		reserved := sdb.ReserveAbuseQuerySlots(utcDay, len(pendingQueries), maxDailyAbuseQueries)
+		refusedQueries = pendingQueries[reserved:]
+		pendingQueries = pendingQueries[:reserved]
+	}
+
+	batch := &reputationQueryBatch{}
+	queryWork := make([]*reputationQueryWork, len(pendingQueries))
+	for i := range queryWork {
+		queryWork[i] = reputationQueries.begin(batch)
+	}
+	defer func() {
+		for _, work := range queryWork {
+			work.finish(false)
+		}
+	}()
+
+	// Reserved work already exists while the refused tail is scored. Publish
+	// it first so a stalled or abandoned fallback cannot hide those queries.
+	for _, q := range refusedQueries {
+		if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
+			appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
 		}
 	}
 
@@ -266,20 +278,30 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		if workers > maxQueriesPerCycle {
 			workers = maxQueriesPerCycle
 		}
-		jobs := make(chan pendingQuery, len(pendingQueries))
-		for _, q := range pendingQueries {
-			jobs <- q
+		jobs := make(chan int, len(pendingQueries))
+		for i := range pendingQueries {
+			jobs <- i
 		}
 		close(jobs)
 		for i := 0; i < workers; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for q := range jobs {
-					score, category, err := queryAbuseIPDB(client, q.ip, cfg.Reputation.AbuseIPDBKey)
-					mu.Lock()
-					results[q.ip] = queryResult{score: score, category: category, err: err}
-					mu.Unlock()
+				for index := range jobs {
+					q, work := pendingQueries[index], queryWork[index]
+					work.start(client.Timeout)
+					func() {
+						completed := false
+						defer func() { work.returned(completed) }()
+						score, category, err := queryAbuseIPDB(client, q.ip, cfg.Reputation.AbuseIPDBKey, work)
+						if err != nil && !abuseQuotaError(err) {
+							work.fail()
+						}
+						mu.Lock()
+						results[q.ip] = queryResult{score: score, category: category, err: err}
+						mu.Unlock()
+						completed = true
+					}()
 				}
 			}()
 		}
@@ -289,13 +311,17 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 	// Pass 3: apply each tier-4 result back into cache + findings.
 	// Serial so cache writes and quota-exhaustion handling stay
 	// consistent regardless of which worker observed which HTTP error.
-	for _, q := range pendingQueries {
+	var cacheWork []*reputationQueryWork
+	for index, q := range pendingQueries {
+		work := queryWork[index]
+		work.phase(true)
 		res, ok := results[q.ip]
 		if !ok {
+			work.finish(false)
 			continue
 		}
 		if res.err != nil {
-			if strings.Contains(res.err.Error(), "429") || strings.Contains(res.err.Error(), "402") {
+			if abuseQuotaError(res.err) {
 				quotaErrorObserved = true
 				resetAt := nextUTCMidnight(time.Now())
 				fmt.Fprintf(os.Stderr, "abuseipdb: quota exhausted (%v), pausing lookups until %s\n",
@@ -305,12 +331,14 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 				// flag has no further reader past this loop.
 				if sdb != nil {
 					if err := sdb.SetAbuseQuotaExhaustedUntil(resetAt); err != nil {
+						work.fail()
 						fmt.Fprintf(os.Stderr, "abuseipdb: persisting quota backoff: %v\n", err)
 					}
 				}
-				if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
+				if supplemental, src, ok := supplementalResultThreatScore(ctx, cfg, supplementalAgg, q.ip, work); ok && supplemental >= abuseConfidenceThreshold {
 					appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
 				}
+				work.finish(true)
 				continue
 			}
 			cache.set(q.ip, &reputationEntry{
@@ -322,9 +350,11 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 				// errorCacheExpiry, giving a real ~1h TTL on error entries.
 				CheckedAt: time.Now().Add(-(cacheExpiry - errorCacheExpiry)),
 			})
-			if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
+			if supplemental, src, ok := supplementalResultThreatScore(ctx, cfg, supplementalAgg, q.ip, work); ok && supplemental >= abuseConfidenceThreshold {
 				appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
 			}
+			work.phase(false)
+			cacheWork = append(cacheWork, work)
 			continue
 		}
 
@@ -337,7 +367,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		score := res.score
 		category := res.category
 		provider := "AbuseIPDB"
-		if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental > score {
+		if supplemental, src, ok := supplementalResultThreatScore(ctx, cfg, supplementalAgg, q.ip, work); ok && supplemental > score {
 			score = supplemental
 			category = strings.ToLower(src) + " history"
 			provider = src
@@ -346,11 +376,19 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		if score >= abuseConfidenceThreshold {
 			appendReputationFinding(&findings, q.ip, q.source, provider, score, category)
 		}
+		work.phase(false)
+		cacheWork = append(cacheWork, work)
 	}
 
-	// Clean and cap cache
+	// All results awaiting the shared cache commit retain their own owner.
+	for _, work := range cacheWork {
+		work.phase(true)
+	}
 	cleanCache(cache)
-	saveReputationCache(cfg.StatePath, cache)
+	saved := saveReputationCache(cfg.StatePath, cache)
+	for _, work := range cacheWork {
+		work.finish(saved)
+	}
 	healthNow := time.Now()
 	quotaExhausted = quotaErrorObserved || !abuseQuotaReady(sdb, healthNow)
 	findings = append(findings, reputationHealthFindings(ctx, cfg, sdb, scanState, healthNow, quotaExhausted)...)
@@ -385,6 +423,28 @@ func newSupplementalThreatAggregator(cfg *config.Config) *threatintel.Aggregator
 		agg.Register(upstream)
 	}
 	return agg
+}
+
+func supplementalResultThreatScore(ctx context.Context, cfg *config.Config, agg *threatintel.Aggregator, ip string, work *reputationQueryWork) (int, string, bool) {
+	if agg == nil {
+		return 0, "", false
+	}
+	// The aggregator runs its sources serially. Keep their configured HTTP
+	// budget separate from cache writes and other local result handling.
+	var budget time.Duration
+	if cfg.Reputation.Rspamd.Enabled {
+		budget += 5 * time.Second
+	}
+	if cfg.Reputation.Upstream.Enabled {
+		timeout := cfg.Reputation.Upstream.TimeoutSec
+		if timeout == 0 {
+			timeout = 5
+		}
+		budget += time.Duration(timeout) * time.Second
+	}
+	work.consuming(ctx, budget)
+	defer work.phase(true)
+	return supplementalThreatScore(ctx, agg, ip)
 }
 
 // supplementalThreatScore queries the aggregator for ip and returns the
@@ -810,7 +870,7 @@ type abuseIPDBResponse struct {
 
 // queryAbuseIPDB returns (score, category, error).
 // Returns specific errors for rate limiting (429) and quota exhaustion (402).
-func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error) {
+func queryAbuseIPDB(client *http.Client, ip, apiKey string, work *reputationQueryWork) (score int, category string, err error) {
 	req, err := http.NewRequest("GET", abuseIPDBEndpoint+"?ipAddress="+url.QueryEscape(ip)+"&maxAgeInDays=90", nil)
 	if err != nil {
 		return 0, "", err
@@ -822,7 +882,10 @@ func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error)
 	if err != nil {
 		return 0, "", err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		work.cleanup(err)
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == 429 {
 		return 0, "", fmt.Errorf("429 rate limited")
@@ -843,7 +906,7 @@ func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error)
 		return 0, "", fmt.Errorf("API error: %s", result.Errors[0].Detail)
 	}
 
-	category := result.Data.UsageType
+	category = result.Data.UsageType
 	if result.Data.ISP != "" {
 		category += " (" + result.Data.ISP + ")"
 	}
@@ -852,6 +915,10 @@ func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error)
 	}
 
 	return result.Data.AbuseConfidenceScore, category, nil
+}
+
+func abuseQuotaError(err error) bool {
+	return strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "402")
 }
 
 // cleanCache removes expired entries and caps at maxCacheEntries.
@@ -929,24 +996,29 @@ func loadReputationCache(statePath string) *reputationCache {
 	return cache
 }
 
-func saveReputationCache(statePath string, cache *reputationCache) {
+func saveReputationCache(statePath string, cache *reputationCache) bool {
 	if sdb := store.Global(); sdb != nil {
 		changed := cache.changedEntries()
 		if len(changed) == 0 && len(cache.removed) == 0 {
-			return
+			return true
 		}
 		if err := sdb.ApplyReputationChanges(changed, cache.removed); err != nil {
 			// Keep the pending marks so a later save can retry the flush.
-			return
+			return false
 		}
 		clear(cache.dirty)
 		clear(cache.removed)
-		return
+		return true
 	}
 
 	// Fallback: flat-file JSON.
-	data, _ := json.MarshalIndent(cache, "", "  ")
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return false
+	}
 	tmpPath := filepath.Join(statePath, reputationCacheFile+".tmp")
-	_ = os.WriteFile(tmpPath, data, 0600)
-	_ = os.Rename(tmpPath, filepath.Join(statePath, reputationCacheFile))
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return false
+	}
+	return os.Rename(tmpPath, filepath.Join(statePath, reputationCacheFile)) == nil
 }

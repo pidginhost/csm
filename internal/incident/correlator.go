@@ -45,16 +45,17 @@ const incidentMergeWindow = 15 * time.Minute
 // severity, or kind) rewrites the whole incident blob to the store. A busy
 // incident under sustained attack would otherwise fsync a ~100-300KB blob on
 // every finding; instead those writes coalesce to at most one per window.
-// State-changing transitions always persist synchronously, so the only thing
-// at risk on a hard kill is up to one window of fingerprint bookkeeping.
+// State-changing transitions always persist synchronously. Quiet bookkeeping
+// waits for the next mutation or explicit flush; there is no periodic writer.
 const incidentPersistDebounce = 5 * time.Second
 
 // CorrelatorConfig is reserved for future tunables and the persistence
 // hook used by the daemon to write incidents to bbolt.
 type CorrelatorConfig struct {
-	// Persist is invoked after every create/update. Implementations
-	// must be quick and idempotent. nil means "in-memory only".
-	Persist func(Incident)
+	// Persist receives ordered immutable snapshots; bookkeeping may coalesce.
+	// Implementations must be quick and idempotent. Errors are logged and
+	// counted without rolling back in-memory transitions. nil is memory-only.
+	Persist func(Incident) error
 
 	// OpenThreshold is the number of correlated findings required before
 	// a thresholded finding opens an incident. Critical-severity findings and
@@ -163,12 +164,8 @@ type counters struct {
 // Correlator groups findings into incidents. In-memory state; the
 // daemon is responsible for wiring it to a store via CorrelatorConfig.Persist.
 type Correlator struct {
-	mu sync.Mutex
-	// persistMu protects persistTail. Persist callbacks wait on the
-	// previously queued write instead of holding this lock, so re-entrant
-	// callbacks can still take c.mu while later writers are queued.
-	persistMu             sync.Mutex
-	persistTail           chan struct{}
+	mu                    sync.Mutex
+	persistence           *persistQueue
 	cfg                   CorrelatorConfig
 	incidents             map[string]*Incident
 	byKey                 map[string]string
@@ -179,13 +176,10 @@ type Correlator struct {
 	now                   func() time.Time
 	counters              counters
 	spray                 *sprayDetector
-	// lastPersistAt records the wall-clock time of the most recent store
-	// write per incident id, used to debounce bookkeeping-only merges.
+	// lastPersistAt records the wall-clock time of the most recent scheduled
+	// store write per incident id, used to debounce bookkeeping-only merges.
 	// Written under c.mu; cleared when the incident leaves c.incidents.
 	lastPersistAt map[string]time.Time
-	// pendingPersist records incidents whose latest bookkeeping-only merge was
-	// intentionally not written because it landed inside the debounce window.
-	pendingPersist map[string]struct{}
 }
 
 // pendingFinding is a finding seen for a key that has not yet met the
@@ -205,7 +199,7 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 	}
 	c := &Correlator{
 		cfg:                   cfg,
-		persistTail:           closedPersistTail(),
+		persistence:           newPersistQueue(),
 		incidents:             map[string]*Incident{},
 		byKey:                 map[string]string{},
 		pending:               map[string]pendingFinding{},
@@ -214,16 +208,9 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 		openThreshold:         threshold,
 		now:                   time.Now,
 		lastPersistAt:         map[string]time.Time{},
-		pendingPersist:        map[string]struct{}{},
 	}
 	c.spray = newSprayDetector(cfg.SpraySuppression, incidentMergeWindow, func() time.Time { return c.now() }, cfg.IsWhitelisted)
 	return c
-}
-
-func closedPersistTail() chan struct{} {
-	done := make(chan struct{})
-	close(done)
-	return done
 }
 
 // OnFinding ingests a Finding. Returns the incident id (if attributable)
@@ -750,7 +737,6 @@ func (c *Correlator) persistAfterMergeLocked(inc *Incident, now time.Time, merge
 
 func (c *Correlator) markPersistedLocked(id string, at time.Time) {
 	c.lastPersistAt[id] = at
-	delete(c.pendingPersist, id)
 }
 
 // persistDebouncedLocked writes inc only when at least incidentPersistDebounce
@@ -759,7 +745,9 @@ func (c *Correlator) markPersistedLocked(id string, at time.Time) {
 // Caller holds c.mu.
 func (c *Correlator) persistDebouncedLocked(inc *Incident, now time.Time) {
 	if last, ok := c.lastPersistAt[inc.ID]; ok && now.Sub(last) < incidentPersistDebounce {
-		c.pendingPersist[inc.ID] = struct{}{}
+		if c.cfg.Persist != nil {
+			c.persistence.deferWrite(inc.ID)
+		}
 		return
 	}
 	c.markPersistedLocked(inc.ID, now)
@@ -770,13 +758,13 @@ func (c *Correlator) persistDebouncedLocked(inc *Incident, now time.Time) {
 // skipped by the debounce window. It is intentionally cheap when no incidents
 // are dirty and is used by shutdown hooks before the store closes.
 func (c *Correlator) FlushPendingPersists() int {
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	c.mu.Lock()
 	now := c.now()
-	for id := range c.pendingPersist {
+	for _, id := range c.persistence.deferredIDs() {
 		inc, ok := c.incidents[id]
 		if !ok {
-			delete(c.pendingPersist, id)
+			c.persistence.discardDeferred(id)
 			delete(c.lastPersistAt, id)
 			continue
 		}
@@ -787,9 +775,7 @@ func (c *Correlator) FlushPendingPersists() int {
 	}
 	c.mu.Unlock()
 
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return len(persist)
 }
 
@@ -934,45 +920,6 @@ func timelineTruncationMarker(count int, at time.Time) IncidentEvent {
 	}
 }
 
-type queuedPersist struct {
-	previous <-chan struct{}
-	done     chan struct{}
-	snap     Incident
-	persist  func(Incident)
-}
-
-// queuePersistLocked reserves this write's place in mutation order while
-// c.mu is still held. The returned callback must run after c.mu is released.
-func (c *Correlator) queuePersistLocked(snap Incident) (queuedPersist, bool) {
-	if snap.ID != "" {
-		// A queued full snapshot supersedes any bookkeeping-only merge that
-		// was skipped inside the debounce window.
-		delete(c.pendingPersist, snap.ID)
-	}
-	persist := c.cfg.Persist
-	if persist == nil {
-		return queuedPersist{}, false
-	}
-	snap = cloneIncident(snap)
-	done := make(chan struct{})
-	c.persistMu.Lock()
-	previous := c.persistTail
-	c.persistTail = done
-	c.persistMu.Unlock()
-	return queuedPersist{
-		previous: previous,
-		done:     done,
-		snap:     snap,
-		persist:  persist,
-	}, true
-}
-
-func (c *Correlator) runQueuedPersist(req queuedPersist) {
-	<-req.previous
-	defer close(req.done)
-	req.persist(req.snap)
-}
-
 // persistLocked invokes the Persist callback while temporarily releasing
 // the correlator mutex so a re-entrant Persist that reads Correlator
 // state does not deadlock. The caller MUST already hold c.mu; the
@@ -1069,7 +1016,7 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 	if len(idleThresholds) == 0 {
 		return 0, 0, 0, false
 	}
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	c.mu.Lock()
 	for id, inc := range c.incidents {
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
@@ -1118,9 +1065,7 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 	}
 	c.mu.Unlock()
 
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return closed, dryRunCount, scanned, more
 }
 
@@ -1157,7 +1102,7 @@ func (c *Correlator) CloseStaleByAge(now time.Time, maxAge time.Duration, limit 
 	if maxAge <= 0 {
 		return 0, false
 	}
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	c.mu.Lock()
 	for id, inc := range c.incidents {
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
@@ -1177,9 +1122,7 @@ func (c *Correlator) CloseStaleByAge(now time.Time, maxAge time.Duration, limit 
 		closed++
 	}
 	c.mu.Unlock()
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return closed, more
 }
 
@@ -1211,7 +1154,7 @@ func (c *Correlator) EnforceActiveCap(now time.Time, maxActive, limit int) (clos
 	sort.Slice(active, func(i, j int) bool { return active[i].updated.Before(active[j].updated) })
 
 	overflow := len(active) - maxActive
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	for _, a := range active {
 		if overflow <= 0 {
 			break
@@ -1232,9 +1175,7 @@ func (c *Correlator) EnforceActiveCap(now time.Time, maxActive, limit int) (clos
 		overflow--
 	}
 	c.mu.Unlock()
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return closed, more
 }
 
@@ -1284,7 +1225,7 @@ func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration
 		}
 		delete(c.incidents, id)
 		delete(c.lastPersistAt, id)
-		delete(c.pendingPersist, id)
+		c.persistence.discardDeferred(id)
 		c.unbindLocked(id)
 		if c.spray != nil {
 			prunedIDs = append(prunedIDs, id)
@@ -1310,7 +1251,7 @@ func (c *Correlator) Restore(incidents []Incident) {
 		inc := incidents[i]
 		c.incidents[inc.ID] = &inc
 		delete(c.lastPersistAt, inc.ID)
-		delete(c.pendingPersist, inc.ID)
+		c.persistence.discardDeferred(inc.ID)
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
 			continue
 		}

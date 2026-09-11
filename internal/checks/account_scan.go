@@ -188,33 +188,39 @@ func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *sta
 	var findings []alert.Finding
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallel)
+	dispatches := checkDispatches.begin(len(checks), parallel)
+	checkDispatches.observe(ctx, dispatches)
 
-	for _, nc := range checks {
+	for i, nc := range checks {
 		wg.Add(1)
 		c := nc
+		task := dispatches[i]
 		// Account checks run against user filesystem content (unparsed PHP,
 		// crafted archives, foreign encodings) so a panic is plausible.
 		// runAccountScanCheck surfaces it as check_panic, keeping the scan and
 		// daemon alive.
-		obs.SafeGo("account-scan-runner", func() {
+		obs.SafeGo("account-scan-runner", task.wrap(func() {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
+				task.withdraw(ctx)
 				return
 			}
 			defer func() { <-sem }()
+			task.admit()
 			if ctx.Err() != nil {
+				task.withdraw(ctx)
 				return
 			}
 
-			results := runAccountScanCheck(ctx, c, cfg, store, timeoutFor(c.name))
+			results := runAccountScanCheck(withCheckDispatch(ctx, task), c, cfg, store, timeoutFor(c.name))
 			if len(results) > 0 {
 				mu.Lock()
 				findings = append(findings, results...)
 				mu.Unlock()
 			}
-		})
+		}))
 	}
 
 	wg.Wait()
@@ -227,17 +233,20 @@ func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *sta
 // results the cancel keeps.
 func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, store *state.Store, timeout time.Duration) []alert.Finding {
 	if ctx.Err() != nil {
+		checkDispatchFrom(ctx).withdraw(ctx)
 		return nil
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	done := executeCheckAsync("account-scan-exec", func() []alert.Finding {
+	execution := executeCheckAsync(cctx, "account-scan-exec", func() []alert.Finding {
 		return c.fn(cctx, cfg, store)
 	})
+	defer execution.finishCaller()
 
 	select {
-	case outcome := <-done:
+	case outcome := <-execution.done:
+		execution.received()
 		if outcome.panicErr != "" {
 			return []alert.Finding{{
 				Severity:  alert.High,
@@ -249,6 +258,7 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 		}
 		return outcome.findings
 	case <-cctx.Done():
+		execution.withdraw(cctx.Err())
 		if ctx.Err() != nil {
 			return nil
 		}

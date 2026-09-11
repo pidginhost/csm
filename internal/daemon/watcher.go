@@ -250,9 +250,7 @@ func (w *LogWatcher) readNewLines() {
 				if f.Timestamp.IsZero() {
 					f.Timestamp = time.Now()
 				}
-				select {
-				case w.alertCh <- f:
-				default:
+				if !alert.TryEnqueue(w.alertCh, f) {
 					if f.Check == "exim_frozen_realtime" {
 						releaseEximFrozenDedup(line)
 					}

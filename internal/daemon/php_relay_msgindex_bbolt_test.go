@@ -52,8 +52,30 @@ func TestMsgIndexPersister_OverflowDropsAndCounts(t *testing.T) {
 	p.Enqueue("a", indexEntry{At: time.Now()})
 	p.Enqueue("b", indexEntry{At: time.Now()})
 
-	if got := p.DroppedCount(); got == 0 {
-		t.Errorf("expected drop count > 0, got %d", got)
+	if got := p.DroppedCount(); got != 1 {
+		t.Fatalf("expected exactly one refused write, got %d", got)
+	}
+	provider, ok := any(p).(queueSource)
+	if !ok {
+		t.Fatal("persistence queue has no health provider")
+	}
+	got := provider.QueueStatuses(time.Now())["persistence"]
+	if got.Depth != 1 || got.Capacity != 1 || got.DroppedTotal != 1 {
+		t.Fatalf("persistence pressure is not represented: %+v", got)
+	}
+}
+
+func TestMsgIndexPersisterRejectsWritesAfterStop(t *testing.T) {
+	db := openTestDB(t)
+	p := newMsgIndexPersister(db, 4, time.Hour)
+	p.Start()
+	p.Stop()
+	p.Enqueue("late", indexEntry{At: time.Now()})
+	if len(p.queue) != 0 || p.DroppedCount() != 1 {
+		t.Fatalf("stopped writer accepted unreachable work: queued=%d dropped=%d", len(p.queue), p.DroppedCount())
+	}
+	if _, exists, err := p.Lookup("late"); err != nil || exists {
+		t.Fatalf("refused write reached storage: exists=%v err=%v", exists, err)
 	}
 }
 

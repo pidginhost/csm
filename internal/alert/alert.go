@@ -14,6 +14,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/processctx"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 const alertDispatchFailuresMetric = "csm_alert_dispatch_failures_total"
@@ -59,7 +60,8 @@ func (s Severity) String() string {
 
 // Finding represents a single security check result.
 type Finding struct {
-	Severity Severity `json:"severity"`
+	queueTicket queuehealth.Ticket
+	Severity    Severity `json:"severity"`
 	// DemotedFrom retains the severity an automatically demoted finding came
 	// from, so a later positive re-check can restore it. It is deliberately not
 	// part of Key(): a finding's identity must not change when its severity
