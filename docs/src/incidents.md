@@ -803,6 +803,7 @@ Attribution gaps:
 | `yara_forge_rollback` | ignored | self-health |  |
 | `yara_match_realtime` | security event |  |  |
 | `yara_match_scheduled` | security event |  |  |
+| `yara_realtime_scan_error` | ignored | self-health |  |
 | `yara_scan_incomplete` | ignored | self-health |  |
 | `yara_worker_crashed` | ignored | self-health |  |
 <!-- correlation-table:end -->

@@ -115,6 +115,7 @@ func TestAPIComponents_RealtimeChecksAttributeToWatcher(t *testing.T) {
 	}{
 		{check: "modsec_block_realtime", watcher: "modsec"},
 		{check: "webshell_realtime", watcher: "fanotify"},
+		{check: "yara_realtime_scan_error", watcher: "fanotify"},
 		{check: "email_auth_failure_realtime", watcher: "maillog"},
 		{check: "mail_bruteforce_suspected", watcher: "maillog"},
 		{check: "mail_auth_backend_degraded", watcher: "maillog"},
@@ -174,6 +175,7 @@ func TestAPIComponents_NonUniqueCheckFindingsDoNotAttributeToWatcher(t *testing.
 		{check: "outdated_plugins", watcher: "fanotify"},
 		{check: "suspicious_crontab", watcher: "fanotify"},
 		{check: "webshell", watcher: "fanotify"},
+		{check: "yara_scan_incomplete", watcher: "fanotify"},
 		{check: "waf_status", watcher: "modsec"},
 		{check: "waf_attack_blocked", watcher: "modsec"},
 		{check: "mail_queue", watcher: "maillog"},

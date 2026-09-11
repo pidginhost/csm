@@ -237,6 +237,7 @@
       "yara_forge_rollback",
       "yara_match_realtime",
       "yara_match_scheduled",
+      "yara_realtime_scan_error",
       "yara_scan_incomplete",
       "yara_worker_crashed"
     ]
