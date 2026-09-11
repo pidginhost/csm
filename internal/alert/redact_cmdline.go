@@ -85,7 +85,10 @@ func RedactCommandLine(s string) string {
 			continue
 		}
 		hasURL := strings.Contains(text, "://")
-		if !hasURL {
+		// An assignment can contain a URL as its value. An equals sign
+		// inside the URL itself must never make its authority a secret key.
+		eq := strings.IndexByte(text, '=')
+		if !hasURL || (eq >= 0 && eq < strings.Index(text, "://")) {
 			if r, ok := redactAssignments(text); ok {
 				tok.text = r
 				changed = true
@@ -103,8 +106,8 @@ func RedactCommandLine(s string) string {
 			if r := redactURLToken(text); r != text {
 				tok.text = r
 				changed = true
-				continue
 			}
+			continue
 		}
 		if r, ok := redactAssignments(text); ok {
 			tok.text = r

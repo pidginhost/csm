@@ -58,11 +58,14 @@ type AuditSink interface {
 // line -- cPanel session identifiers, password fields -- were written
 // to audit.jsonl and shipped to syslog in the clear.
 func NewAuditEvent(hostname string, f Finding) AuditEvent {
+	// Remediation records hash the original finding, so redaction must not
+	// change the ID used to join those records to this event.
+	id := FindingID(f)
 	f = sanitizeFinding(f)
 	return AuditEvent{
 		V:         AuditSchemaVersion,
 		Timestamp: f.Timestamp.UTC(),
-		FindingID: FindingID(f),
+		FindingID: id,
 		Severity:  f.Severity.String(),
 		Check:     f.Check,
 		Message:   f.Message,

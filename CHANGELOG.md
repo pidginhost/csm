@@ -99,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Audit log records are redacted before they are written. A session identifier or password field copied out of a log line no longer reaches the audit log or syslog.
+- Audit log messages and details redact recognized credentials, including session identifiers across cPanel services. Redaction preserves finding correlation and unrelated log evidence when applied repeatedly.
 
 - WordPress integrity checks no longer treat command timeouts as successful verification.
 

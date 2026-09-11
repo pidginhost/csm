@@ -356,7 +356,7 @@ func redactSensitive(s string) string {
 	} {
 		searchFrom := 0
 		for searchFrom < len(s) {
-			lower := strings.ToLower(s[searchFrom:])
+			lower := lowerASCII(s[searchFrom:])
 			rel := strings.Index(lower, prefix)
 			if rel < 0 {
 				break
@@ -384,7 +384,7 @@ func redactSensitive(s string) string {
 
 	// Redact API token values (long alphanumeric strings after token-like keys)
 	for _, prefix := range []string{"token_value=", "api_token="} {
-		lower := strings.ToLower(s)
+		lower := lowerASCII(s)
 		if idx := strings.Index(lower, prefix); idx >= 0 {
 			valStart := idx + len(prefix)
 			valEnd := valStart
@@ -397,67 +397,84 @@ func redactSensitive(s string) string {
 		}
 	}
 
-	// Redact cPanel/WHM session identifiers. cpaneld, webmaild and
-	// whostmgr record a created or purged session as
-	// "NEW <account>:<session id>" and "PURGE <account>:<session id>".
-	// The account is the part of the finding an operator needs; the
-	// identifier behind the colon rides the session and is therefore a
-	// credential, so only it is replaced. Anchoring on the keyword
-	// keeps ordinary colons -- timestamps, host:port pairs -- intact.
-	// The search base advances past each replacement so the inserted
-	// marker is never rescanned into an endless rewrite.
-	//
-	// The service tag gates the whole rule: only a login-log line
-	// carries this shape, and without the gate an ordinary finding
-	// whose text held an uppercase NEW ahead of a colon lost the value
-	// behind it -- a reported file path, say -- to the marker.
-	if containsSessionLogTag(s) {
-		for _, keyword := range []string{" NEW ", " PURGE "} {
-			searchFrom := 0
-			for searchFrom < len(s) {
-				rel := strings.Index(s[searchFrom:], keyword)
-				if rel < 0 {
-					break
-				}
-				fieldStart := searchFrom + rel + len(keyword)
-				fieldEnd := fieldStart
-				for fieldEnd < len(s) {
-					c := s[fieldEnd]
-					if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-						break
-					}
-					fieldEnd++
-				}
-				colon := strings.IndexByte(s[fieldStart:fieldEnd], ':')
-				if colon < 0 {
-					// No "account:id" pair here; skip the whole field so a
-					// later occurrence on the same line is still examined.
-					searchFrom = fieldEnd
-					continue
-				}
-				tokenStart := fieldStart + colon + 1
-				if tokenStart >= fieldEnd {
-					// Trailing colon with no identifier after it.
-					searchFrom = fieldEnd
-					continue
-				}
-				s = s[:tokenStart] + "[REDACTED]" + s[fieldEnd:]
-				searchFrom = tokenStart + len("[REDACTED]")
-			}
-		}
+	// Normalize command-line text first: NUL-delimited arguments can expose
+	// session keywords once the argument separators become spaces.
+	s = RedactCommandLine(s)
+
+	// Gate each log line separately: a finding can also contain unrelated
+	// prose with NEW/PURGE and colons whose evidence must survive.
+	var lines strings.Builder
+	for line := range strings.SplitAfterSeq(s, "\n") {
+		lines.WriteString(redactSessionLogLine(line))
 	}
 
-	// Command-line style secrets (-pSECRET, KEY=VALUE assignments, URL
-	// userinfo) quoted in messages or details.
-	return RedactCommandLine(s)
+	return lines.String()
 }
 
-// containsSessionLogTag reports whether text looks like a line from
-// cPanel's login log. Those are the only lines that carry a
-// "<account>:<session id>" pair, so the session-identifier redaction
-// is confined to them.
+// Credential names are ASCII. Unicode case folding can change byte lengths
+// (including invalid UTF-8 from logs), invalidating offsets into the input.
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+func redactSessionLogLine(s string) string {
+	if !containsSessionLogTag(s) {
+		return s
+	}
+	// Scan the original text only, keeping replacements out of the search.
+	// Account names survive; only the credential after the colon is masked.
+	var b strings.Builder
+	last := 0
+	for i := 0; i < len(s); i++ {
+		keywordLen := 0
+		switch {
+		case strings.HasPrefix(s[i:], " NEW "):
+			keywordLen = len(" NEW ")
+		case strings.HasPrefix(s[i:], " PURGE "):
+			keywordLen = len(" PURGE ")
+		default:
+			continue
+		}
+		fieldStart := i + keywordLen
+		fieldEnd := fieldStart
+		for fieldEnd < len(s) && !strings.ContainsRune(" \t\n\r", rune(s[fieldEnd])) {
+			fieldEnd++
+		}
+		colon := strings.IndexByte(s[fieldStart:fieldEnd], ':')
+		// Keep the keyword's trailing space searchable: the malformed field
+		// may itself be NEW or PURGE, followed by a valid account:session.
+		i = fieldStart - 2
+		if colon < 0 {
+			continue
+		}
+		tokenStart := fieldStart + colon + 1
+		if tokenStart == fieldEnd {
+			continue
+		}
+		if s[tokenStart:fieldEnd] != redactedToken {
+			b.WriteString(s[last:tokenStart])
+			b.WriteString(redactedToken)
+			last = fieldEnd
+		}
+		i = fieldEnd - 1
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// cPanel session logs use both frontend service names and the shared server
+// daemon name. The DAV service also records account:session pairs.
 func containsSessionLogTag(s string) bool {
-	for _, tag := range []string{"[cpaneld]", "[webmaild]", "[whostmgr]"} {
+	for _, tag := range []string{"[cpaneld]", "[webmaild]", "[whostmgr]", "[whostmgrd]", "[cpsrvd]", "[cpdavd]"} {
 		if strings.Contains(s, tag) {
 			return true
 		}

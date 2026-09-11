@@ -26,6 +26,8 @@ func TestRedactCommandLine(t *testing.T) {
 		{"camelcase token env", "authToken=abcdef123456 ./sync", "authToken=[REDACTED] ./sync"},
 		{"joined secret env", "CLIENTSECRET=abcdef123456 ./sync", "CLIENTSECRET=[REDACTED] ./sync"},
 		{"url userinfo", "wget https://shop:S3cr3t@example.com/dump.sql", "wget https://shop:[REDACTED]@example.com/dump.sql"},
+		{"url authority is not an assignment", "curl https://shop:fixture@token=0", "curl https://shop:[REDACTED]@token=0"},
+		{"secret URL assignment", "API_KEY=https://example.com/fixture", "API_KEY=[REDACTED]"},
 		{"url token query", "curl https://example.com/hook?token=abcdef&x=1", "curl https://example.com/hook?token=[REDACTED]&x=1"},
 		{"ssh port untouched", "ssh -p 2222 backup@203.0.113.9", "ssh -p 2222 backup@203.0.113.9"},
 		{"ssh attached port untouched", "ssh -p2222 backup@203.0.113.9", "ssh -p2222 backup@203.0.113.9"},
@@ -48,6 +50,9 @@ func TestRedactCommandLine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := RedactCommandLine(tc.in); got != tc.want {
 				t.Fatalf("RedactCommandLine(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+			if got := RedactCommandLine(tc.want); got != tc.want {
+				t.Fatalf("redacting sanitized command changed it: got %q, want %q", got, tc.want)
 			}
 		})
 	}

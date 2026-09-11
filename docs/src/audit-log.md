@@ -198,11 +198,18 @@ webhook stream. Plan SIEM retention accordingly.
 
 ### What does not get logged
 
-Credentials do not reach the log. Every record is redacted before it
-is written, so password fields, command-line secrets and the cPanel or
-WHM session identifier that appears in a login log line are replaced
-with `[REDACTED]`. The account name beside a session identifier is
-kept, because that is the part an operator needs to act on.
+Before an audit record is written, its message and details replace
+recognized password fields, command-line secrets and cPanel session
+identifiers with `[REDACTED]`. Session redaction covers cPanel, WHM,
+Webmail, the shared server daemon and DAV log lines. It keeps the
+account name and unrelated lines in a multiline finding. Applying
+redaction again preserves already redacted text.
+
+Finding IDs are computed from the original finding so audit records
+still correlate with remediation records. Other structured fields are
+copied unchanged. This redaction applies to audit output and email
+digests; it does not sanitize the separate finding history store or
+the web UI responses served from that store.
 
 The audit log is not a replacement for `csm.history` (the bbolt
 history bucket). Only findings that pass through `alert.Dispatch()`

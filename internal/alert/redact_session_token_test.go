@@ -1,18 +1,16 @@
 package alert
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
-// cPanel writes a new session's identifier into the login log as
-// "NEW <account>:<session id>", and WHM writes the same shape for a
-// purge. The realtime login watchers copy that raw line into
-// Finding.Details, so the session identifier reached every alert
-// channel, the finding store and /var/log/csm/audit.jsonl verbatim.
-// Possession of a live session identifier is enough to ride the
-// session, so it is a credential and must never be persisted.
+// Watchers copy session log lines into finding details. Redaction must mask
+// the session credential without losing the account or unrelated evidence.
 func TestRedactSensitiveSessionToken(t *testing.T) {
 	cases := []struct {
 		name, in, want string
@@ -36,6 +34,61 @@ func TestRedactSensitiveSessionToken(t *testing.T) {
 			"trailing token at end of line",
 			"[cpaneld] 198.51.100.56 NEW shopuser:Ab3dEfGhIjKlMnOp",
 			"[cpaneld] 198.51.100.56 NEW shopuser:[REDACTED]",
+		},
+		{
+			"cpsrvd session",
+			"[cpsrvd] 198.51.100.56 NEW shop:session-fixture app=cpaneld",
+			"[cpsrvd] 198.51.100.56 NEW shop:[REDACTED] app=cpaneld",
+		},
+		{
+			"whostmgrd session",
+			"[whostmgrd] 198.51.100.56 NEW root:session-fixture app=whostmgrd",
+			"[whostmgrd] 198.51.100.56 NEW root:[REDACTED] app=whostmgrd",
+		},
+		{
+			"cpdavd session",
+			"[cpdavd] 198.51.100.56 NEW _dav_:session-fixture app=cpdavd",
+			"[cpdavd] 198.51.100.56 NEW _dav_:[REDACTED] app=cpdavd",
+		},
+		{
+			"NUL-separated session field",
+			"[cpaneld]\x00NEW\x00shop:session-fixture\x00",
+			"[cpaneld] NEW shop:[REDACTED]",
+		},
+		{
+			"multiple session fields",
+			"[cpaneld] NEW shop:first-fixture PURGE shop:second-fixture NEW shop:third-fixture PURGE shop:fourth-fixture",
+			"[cpaneld] NEW shop:[REDACTED] PURGE shop:[REDACTED] NEW shop:[REDACTED] PURGE shop:[REDACTED]",
+		},
+		{
+			"already redacted beside live session",
+			"[cpaneld] NEW shop:[REDACTED] NEW shop:session-fixture password=[REDACTED]",
+			"[cpaneld] NEW shop:[REDACTED] NEW shop:[REDACTED] password=[REDACTED]",
+		},
+		{
+			"keyword at end",
+			"[cpaneld] NEW ",
+			"[cpaneld] NEW ",
+		},
+		{
+			"bare colon at end",
+			"[cpaneld] NEW :",
+			"[cpaneld] NEW :",
+		},
+		{
+			"empty field before populated field",
+			"[cpaneld] NEW shop: NEW shop:session-fixture",
+			"[cpaneld] NEW shop: NEW shop:[REDACTED]",
+		},
+		{
+			"keyword after malformed field",
+			"[cpaneld] NEW NEW shop:session-fixture PURGE PURGE shop:purge-fixture",
+			"[cpaneld] NEW NEW shop:[REDACTED] PURGE PURGE shop:[REDACTED]",
+		},
+		{
+			"tag only applies to its line",
+			"Detected NEW file:/home/shop/index.php\n[cpaneld] NEW shop:session-fixture\r\nScheduled PURGE queue:pending",
+			"Detected NEW file:/home/shop/index.php\n[cpaneld] NEW shop:[REDACTED]\r\nScheduled PURGE queue:pending",
 		},
 		// Negative cases: the rule is anchored on the NEW/PURGE keyword,
 		// so ordinary colons in timestamps, host:port pairs and prose
@@ -80,7 +133,70 @@ func TestRedactSensitiveSessionToken(t *testing.T) {
 			if got := redactSensitive(tc.in); got != tc.want {
 				t.Errorf("redactSensitive(%q)\n got %q\nwant %q", tc.in, got, tc.want)
 			}
+			if got := redactSensitive(tc.want); got != tc.want {
+				t.Errorf("redacting sanitized text changed it: got %q, want %q", got, tc.want)
+			}
 		})
+	}
+}
+
+func TestRedactSensitivePreservesByteOffsets(t *testing.T) {
+	for _, prefix := range []string{"\u0130\u0130\u0130 ", "\xff\xff\xff "} {
+		for _, key := range []string{"Password=", "Api_token="} {
+			in := prefix + key + "credential-fixture evidence"
+			want := prefix + key + "[REDACTED] evidence"
+			if got := redactSensitive(in); got != want {
+				t.Errorf("redactSensitive(%q) = %q, want %q", in, got, want)
+			}
+			if got := redactSensitive(want); got != want {
+				t.Errorf("redacting sanitized bytes changed them: got %q, want %q", got, want)
+			}
+		}
+	}
+}
+
+func TestNewAuditEventPreservesFindingIdentity(t *testing.T) {
+	f := Finding{
+		Check: "auth_failure", Message: "password=first-fixture", Details: "password=details-fixture",
+		Timestamp: time.Unix(1757589449, 0),
+	}
+	event := NewAuditEvent("host.example.com", f)
+	if event.FindingID != FindingID(f) {
+		t.Errorf("audit ID %q differs from remediation ID %q", event.FindingID, FindingID(f))
+	}
+	other := f
+	other.Message = "password=second-fixture"
+	if event.FindingID == NewAuditEvent("host.example.com", other).FindingID {
+		t.Error("different findings collapsed to the same audit ID after redaction")
+	}
+	if event.Message != "password=[REDACTED]" || event.Details != "password=[REDACTED]" {
+		t.Errorf("audit text not redacted: %+v", event)
+	}
+}
+
+func TestSanitizeFindingPreservesOtherFields(t *testing.T) {
+	f := Finding{
+		Message: "password=message-fixture", Details: "[cpaneld] NEW shop:session-fixture",
+		Check: "password=check-fixture", FilePath: "/password=path-fixture",
+		ProcessInfo: "password=process-info-fixture", TenantID: "password=tenant-fixture",
+		Domain: "password=domain-fixture", Mailbox: "password=mailbox-fixture",
+		Process: &processctx.ProcessContext{PID: 1234, Comm: "password=process-fixture"},
+		MsgIDs:  []string{"password=message-id-fixture"},
+	}
+	want := f
+	want.Message = "password=[REDACTED]"
+	want.Details = "[cpaneld] NEW shop:[REDACTED]"
+	if got := sanitizeFinding(f); !reflect.DeepEqual(got, want) {
+		t.Errorf("sanitized finding = %+v, want %+v", got, want)
+	}
+	event := NewAuditEvent("host.example.com", f)
+	if event.FilePath != f.FilePath || event.Check != f.Check || event.TenantID != f.TenantID ||
+		event.Domain != f.Domain || event.Mailbox != f.Mailbox || event.Process != f.Process {
+		t.Errorf("audit redaction changed other fields: %+v", event)
+	}
+	if f.Message != "password=message-fixture" || f.Details != "[cpaneld] NEW shop:session-fixture" ||
+		f.Process.Comm != "password=process-fixture" || f.MsgIDs[0] != "password=message-id-fixture" {
+		t.Fatalf("redaction mutated the original finding: %+v", f)
 	}
 }
 
