@@ -591,7 +591,7 @@ func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, ma
 	// finding but never persist a value that still carries a live payload.
 	// Plain text references to the same URL are inert option data and must
 	// not block a valid script cleanup.
-	if extractMaliciousScriptURL(cleaned) != "" {
+	if optionInjectionRemains(optionName, cleaned) {
 		return false
 	}
 	if cleaned == originalValue {
@@ -615,6 +615,17 @@ func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, ma
 	runMySQLQuery(creds, updateQuery)
 
 	return true
+}
+
+// A notice sink makes executable markup malicious regardless of URL
+// reputation. Removing one known attacker URL must not permit a partial write
+// while an ordinary HTTPS loader or inline script survives in the same row.
+func optionInjectionRemains(option, value string) bool {
+	if extractMaliciousScriptURL(value) != "" {
+		return true
+	}
+	_, sink := pluginNoticeSinkOptions[strings.ToLower(strings.TrimSpace(option))]
+	return sink && executableMarkupRe.MatchString(unescapeStoredSlashes(value))
 }
 
 // --- Script removal ---

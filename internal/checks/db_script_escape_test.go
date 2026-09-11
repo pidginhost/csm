@@ -1,8 +1,12 @@
 package checks
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
 // The campaign against CVE-2023-40000 stores its loader in a LiteSpeed Cache
@@ -16,6 +20,61 @@ func TestExternalScriptHostsSeesJSONEscapedSlashes(t *testing.T) {
 
 	if len(hosts) != 1 || hosts[0] != "zeroday2024.com" {
 		t.Fatalf("hosts = %v, want [zeroday2024.com]", hosts)
+	}
+}
+
+// Removing a literal loader must not permit a write while an escaped loader
+// remains. The serialized wrapper also makes slash normalization destructive.
+func TestEscapedPayloadBlocksPartialAutoClean(t *testing.T) {
+	escaped := `{"cdn_setup_err":"<script src=http:\/\/198.51.100.7\/speed.js><\/script>"}`
+	literal := `<script src=http://203.0.113.9/loader.js></script>`
+	for name, value := range map[string]string{
+		"json":                  fmt.Sprintf(`[%s,"%s"]`, escaped, literal),
+		"serialized json":       fmt.Sprintf(`a:1:{s:7:"message";s:%d:"%s";}`, len(escaped+literal), escaped+literal),
+		"ordinary HTTPS notice": fmt.Sprintf(`[%s,"%s"]`, strings.ReplaceAll(escaped, `http:\/\/198.51.100.7`, `https:\/\/loader.example.com`), literal),
+	} {
+		t.Run(name, func(t *testing.T) {
+			previous := runMySQLQuery
+			queries := 0
+			runMySQLQuery = func(_ wpDBCreds, _ string) []string {
+				queries++
+				return nil
+			}
+			t.Cleanup(func() { runMySQLQuery = previous })
+			if removed := removeMaliciousScripts(value); removed == value || !strings.Contains(removed, `<\/script>`) {
+				t.Fatal("fixture must remove the literal loader and leave the escaped bytes intact")
+			}
+			if backupAndCleanOption(wpDBCreds{dbName: "alice_wp"}, "wp_", "litespeed.cdn_setup._summary", value, "http://198.51.100.7/speed.js") {
+				t.Fatal("partial removal claimed a clean")
+			}
+			if queries != 0 {
+				t.Fatalf("partial removal issued %d database queries", queries)
+			}
+		})
+	}
+}
+
+func TestDBCleanOptionRefusesPartialNoticeCleanup(t *testing.T) {
+	withMockOS(t, wpConfigFixture(t, "alice", wpConfigBodyFor("alice_wp")))
+	value := `["<script src=http://203.0.113.9/loader.js></script>",` +
+		`{"cdn_setup_err":"<script src=https:\/\/loader.example.com\/speed.js><\/script>"}]`
+	writes := 0
+	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
+		if strings.HasPrefix(query, "SELECT option_value") {
+			return []string{strings.ReplaceAll(value, `\`, `\\`)}, nil
+		}
+		writes++
+		return nil, nil
+	})
+	t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+	for _, preview := range []bool{true, false} {
+		result := DBCleanOption("alice", "litespeed.cdn_setup._summary", preview)
+		if result.Success || !strings.Contains(result.Message, "Failed to remove all malicious scripts") {
+			t.Errorf("preview=%t accepted a partial notice cleanup: %+v", preview, result)
+		}
+	}
+	if writes != 0 {
+		t.Fatalf("partial notice cleanup issued %d writes", writes)
 	}
 }
 

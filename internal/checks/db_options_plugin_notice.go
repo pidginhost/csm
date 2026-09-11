@@ -1,9 +1,11 @@
 package checks
 
 import (
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -29,6 +31,51 @@ var pluginNoticeSinkOptions = map[string]string{
 // Notice sinks legitimately carry layout markup -- LiteSpeed writes its own
 // errors as a styled div -- so only the executing constructs count.
 var executableMarkupRe = regexp.MustCompile(`(?i)<script[\s>]|<iframe[\s>]|javascript:|\bon(?:error|load|click|mouseover)\s*=|eval\s*\(\s*atob`)
+
+const maxPluginNoticeBytes = 65536
+
+// Notice lists can grow beyond a preview-sized read. Bound each value in bytes
+// and carry its stored length so omitted content never looks like a clean scan.
+// Hex preserves whitespace and stored escapes through the batch-row transport.
+func checkWPPluginNotices(user string, creds wpDBCreds, prefix string) []alert.Finding {
+	query := fmt.Sprintf(
+		"SELECT option_name, OCTET_LENGTH(option_value), "+
+			"CONCAT('x', HEX(LEFT(CAST(option_value AS BINARY), %d))) FROM %soptions "+
+			"WHERE option_name IN (%s) LIMIT %d",
+		maxPluginNoticeBytes, prefix, pluginNoticeSinkNameList(), len(pluginNoticeSinkOptions))
+	var findings []alert.Finding
+	for _, line := range runMySQLQuery(creds, query) {
+		option, value, complete := parsePluginNoticeRow(line)
+		if !complete {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+			continue
+		}
+		if finding := pluginNoticeInjectionFinding(user, creds, prefix, option, value); finding != nil {
+			findings = append(findings, *finding)
+		}
+	}
+	return findings
+}
+
+func parsePluginNoticeRow(line string) (option, value string, complete bool) {
+	parts := strings.SplitN(line, "\t", 3)
+	if len(parts) != 3 {
+		return "", "", false
+	}
+	size, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || size < 0 || size > maxPluginNoticeBytes {
+		return "", "", false
+	}
+	encoded := parts[2]
+	if !strings.HasPrefix(encoded, "x") || int64(len(encoded)-1) != 2*size {
+		return "", "", false
+	}
+	decoded, err := hex.DecodeString(encoded[1:])
+	if err != nil {
+		return "", "", false
+	}
+	return parts[0], string(decoded), true
+}
 
 // pluginNoticeInjectionFinding reports executable markup stored in a plugin
 // status option that WordPress renders as an admin notice. The option's
