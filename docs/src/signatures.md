@@ -135,10 +135,11 @@ have separate ownership, so one path cannot purge the other's results.
 
 A real-time scan that cannot inspect a changed file emits
 `yara_realtime_scan_error` instead, so a scanning outage stays separable from
-the scheduled coverage report, which names every archive past the size limit
-on every sweep. Nothing is emitted while the daemon is shutting down: the
-YARA backend is stopped before the file monitor has finished draining, and a
-clean restart is not an outage.
+the scheduled coverage report. The dashboard's Components matrix shows this
+finding as Fanotify's last event; scheduled coverage reports do not advance
+that event time. This error finding is suppressed while the file monitor is
+stopping: the YARA backend is stopped before the file monitor has finished
+draining, and a clean restart is not an outage.
 
 Without the `yara` build tag, YARA rules are not loaded or evaluated.
 
