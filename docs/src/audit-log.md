@@ -198,29 +198,30 @@ webhook stream. Plan SIEM retention accordingly.
 
 ### What does not get logged
 
-Before an audit record is written, its message and details replace
-recognized password fields, command-line secrets and cPanel session
+Before a record is written, its message and details replace recognized
+password fields, API tokens, command-line secrets and cPanel session
 identifiers with `[REDACTED]`. Session redaction covers cPanel, WHM,
-Webmail, the shared server daemon, DAV and security purge log lines.
-It keeps the account name and unrelated lines in a multiline finding. Applying
-redaction again preserves already redacted text.
+Webmail, the shared server daemon, DAV and security purge log lines. It
+keeps the account name beside a session identifier, leaves unrelated
+lines of a multiline finding alone, and leaves already redacted text
+unchanged when it runs again. Repeated and quoted values are all
+covered, including the displayed form of NUL-separated arguments.
 
-Repeated password and API token fields are all redacted, including
-quoted values in log excerpts. Whitespace and adjacent fields remain
-intact. Command-line redaction also checks the displayed form of
-NUL-separated arguments before the record is written.
+The same redaction runs on email digests, on new finding history in
+both the bbolt and the legacy JSONL backend, and therefore on the
+history the web UI serves and exports as CSV. Attack event messages are
+redacted before truncation, so a truncated line cannot hide a
+credential behind a cut service tag; attack events store no finding
+details. Account and IP attribution is read from the original finding,
+and finding IDs are computed from it too, so audit records still
+correlate with remediation records. Other structured fields are copied
+unchanged.
 
-Finding IDs are computed from the original finding so audit records
-still correlate with remediation records. Other structured fields are
-copied unchanged. Email digests use the same redaction, which also runs before
-new findings enter history, for both bbolt and the legacy JSONL backend.
-History responses and CSV exports in the web UI therefore receive the
-redacted text. Attack event messages are redacted before truncation and
-storage; attack events do not store finding details. Account and IP
-attribution is extracted before redaction.
-
-These changes do not rewrite records stored by earlier versions, or
-sanitize the separate active-finding snapshots and pending queues.
+Two limits are worth knowing. Records written by earlier versions are
+not rewritten, so an existing log keeps whatever it already holds. The
+active-finding snapshot and the pending queues are process-local state
+that is read back and compared by the daemon itself, so they are not
+redacted.
 
 The audit log is not a replacement for `csm.history` (the bbolt
 history bucket). Only findings that pass through `alert.Dispatch()`
