@@ -254,7 +254,9 @@ func hasMaliciousExternalScript(content string) bool {
 // hosts — so dropping the HTTP signal for this context eliminates the
 // legacy-embed false positives without giving up meaningful detection.
 func hasMaliciousExternalScriptInPost(content string) bool {
-	matches := scriptSrcRe.FindAllStringSubmatch(content, -1)
+	// Page builders keep their markup as JSON inside the post row, which
+	// escapes every slash of an injected loader URL.
+	matches := scriptSrcRe.FindAllStringSubmatch(unescapeStoredSlashes(content), -1)
 	for _, match := range matches {
 		if len(match) < 2 {
 			continue

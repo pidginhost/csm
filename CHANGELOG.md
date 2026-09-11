@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Script URLs stored as JSON, where every slash is escaped, are now recognised. Injected loaders in options, posts and page-builder content were invisible to the database scan in that form.
+
 - A file too large to analyze is reported as a coverage gap only when its leading bytes could be source of that language. Large images, archives and compiled catalogs no longer arrive as PHP or JavaScript the scan failed to examine, while oversize JavaScript that embeds binary characters in a literal or comment stays visible along with any earlier finding for it.
 
 - A deep scan that has reached its time limit no longer opens further files while recording what it did not examine.
