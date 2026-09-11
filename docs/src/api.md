@@ -413,7 +413,8 @@ writes count as persisted. Buffered data alone does not. Confirmed unwritten
 events count as losses, including interrupted work left buffered or unencoded, and
 returned encoding failures. These losses are visible before cleanup; close errors
 or abnormal I/O exits preserve uncertainty
-with `dropped_lower_bound` and report `persistence_uncertain` for one minute.
+with `dropped_lower_bound` and report `persistence_uncertain` for one minute,
+ahead of a backlog or a stalled write, as the record queue already does.
 The common loss threshold and recovery policy apply to confirmed losses.
 These measurements preserve the existing write, retention and shutdown policy;
 they do not add retries or promise storage durability beyond the writer's result.

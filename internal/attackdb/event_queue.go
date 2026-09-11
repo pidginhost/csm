@@ -160,13 +160,15 @@ func (db *DB) eventQueueStatus(now time.Time) queuehealth.Status {
 		row.InFlight = b.count
 		row.ProcessingSeconds = max(0, now.Sub(b.progress).Seconds())
 	}
+	// An uncertain write may have lost evidence already accepted; a backlog
+	// has not. The record queue orders its reasons the same way.
 	switch {
+	case !q.uncertainAt.IsZero() && now.Sub(q.uncertainAt) < time.Minute:
+		row.Status, row.Reason = "degraded", "persistence_uncertain"
 	case row.LagSeconds >= time.Minute.Seconds():
 		row.Status, row.Reason = "degraded", "backlog_lag"
 	case row.ProcessingSeconds >= time.Minute.Seconds():
 		row.Status, row.Reason = "degraded", "processing_lag"
-	case !q.uncertainAt.IsZero() && now.Sub(q.uncertainAt) < time.Minute:
-		row.Status, row.Reason = "degraded", "persistence_uncertain"
 	}
 	return row
 }

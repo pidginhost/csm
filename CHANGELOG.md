@@ -111,6 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Attack event health now names an uncertain write ahead of a backlog, the way the record queue already did.
+
 - A burst of automatic responses writing to the action log no longer degrades health. Recording work is now reported as stalled on the same timescale as every other queue.
 
 - Doctor no longer prints a mail journal source or a released log file as an empty queue. Ages are now labelled by what they measure instead of all appearing as backlog.

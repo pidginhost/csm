@@ -558,3 +558,17 @@ func TestAttackEventQueueKnownLossVisibleBeforeCleanup(t *testing.T) {
 		t.Fatalf("cleanup double-counted abandoned work: %+v", s)
 	}
 }
+
+// An uncertain write can have lost persisted evidence; a backlog has not.
+func TestAttackEventQueueReportsUncertainPersistenceFirst(t *testing.T) {
+	db := eventQueueFlatDB(t)
+	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23"})
+	q := db.eventHealth()
+	q.mu.Lock()
+	q.oldest = time.Now().Add(-2 * time.Minute)
+	q.uncertain, q.uncertainAt = true, time.Now()
+	q.mu.Unlock()
+	if s := eventQueueStatus(t, db, time.Now()); s.Reason != "persistence_uncertain" || s.Status != "degraded" {
+		t.Fatalf("a backlog hid an uncertain write: %+v", s)
+	}
+}
