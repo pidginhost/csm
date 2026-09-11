@@ -53,6 +53,21 @@ func TestMayBePHPSourceRejectsBinaryContent(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "full tag before embedded binary payload",
+			src:  []byte("<?php __halt_compiler();\x00\xffpayload"),
+			want: true,
+		},
+		{
+			name: "short tag before embedded binary payload",
+			src:  []byte("<? echo 'ok'; ?>\x00\xffpayload"),
+			want: true,
+		},
+		{
+			name: "echo tag before embedded binary payload",
+			src:  []byte("<?= 'ok' ?>\x00\xffpayload"),
+			want: true,
+		},
+		{
 			name: "large text source with a trailing tag stays admitted",
 			src:  append(bytes.Repeat([]byte("plain text line\n"), 64), []byte("<?= $value ?>")...),
 			want: true,

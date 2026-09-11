@@ -3,6 +3,7 @@ package checks
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,5 +154,57 @@ func TestOversizePHPGateDoesNotOpenPastTheSoftDeadline(t *testing.T) {
 
 	if counter.opens[path] != 0 {
 		t.Fatalf("PHP oversize gate opened the file %d time(s) after the soft deadline, want 0", counter.opens[path])
+	}
+}
+
+type taintPrefixOS struct {
+	OS
+	readPrefix func(string, os.FileInfo, int64) ([]byte, error)
+}
+
+func (fs taintPrefixOS) ReadRegularFilePrefix(path string, info os.FileInfo, limit int64) ([]byte, error) {
+	return fs.readPrefix(path, info, limit)
+}
+
+func TestOversizeTaintGatesKeepGapOnPartialReadError(t *testing.T) {
+	withMockOS(t, taintPrefixOS{OS: realOS{}, readPrefix: func(string, os.FileInfo, int64) ([]byte, error) {
+		// This prefix would be rejected by either predicate without the error.
+		return []byte("\x00\x00binary"), errors.New("forced partial read failure")
+	}})
+	if !phpFileMayBePHP("ignored", nil) || !jsFileMayBeJS("ignored", nil) {
+		t.Fatal("partial read failure silently dropped a taint coverage gap")
+	}
+}
+
+func TestOversizeTaintGatesCheckDeadlineBetweenPeeks(t *testing.T) {
+	useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "oversize.dat", strings.Repeat("x", max(phptaint.MaxSourceBytes, jstaint.MaxSourceBytes)+1))
+	base := time.Now().Add(time.Hour)
+	clock := base
+	useYARADeepClock(t, &clock)
+	peeks := 0
+	withMockOS(t, taintPrefixOS{OS: realOS{}, readPrefix: func(gotPath string, info os.FileInfo, limit int64) ([]byte, error) {
+		peeks++
+		if gotPath != path || info == nil || limit != phpTaintOversizePeekBytes {
+			t.Fatalf("unexpected prefix read: %s, %v, %d", gotPath, info, limit)
+		}
+		clock = base.Add(2 * yaraDeepDeadlineMargin)
+		return []byte("<?php"), nil
+	}})
+	ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+	defer cancel()
+	findings := CheckYARADeep(ctx, &config.Config{
+		AccountRoots: []string{root}, DisabledChecks: []string{"yara_deep"},
+	}, nil)
+	if peeks != 1 {
+		t.Fatalf("prefix reads = %d, want only PHP's pre-deadline peek", peeks)
+	}
+	for _, check := range []string{"php_taint_scan_incomplete", "js_taint_scan_incomplete"} {
+		gaps := jsFindingsByCheck(findings, check)
+		if len(gaps) != 1 || !strings.Contains(gaps[0].Details, "oversize=1") {
+			t.Errorf("%s = %+v, want one recorded oversize gap", check, gaps)
+		}
 	}
 }

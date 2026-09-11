@@ -1,12 +1,41 @@
 package jstaint
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 
 	"github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/js"
 )
+
+func FuzzMayBeJSSource(f *testing.F) {
+	for _, src := range []string{
+		"const a='\x00';",
+		"/*\x00*/const a=1;",
+		"const a=`${`\x00`}\x00`;",
+		"const a=/[\x00]/;",
+		"#!/usr/bin/env node\nconst a='\x00';",
+		"\x89PNG\r\n\x1a\n\x00\x00\x00\x0d",
+		"PK\x03\x04\x14\x00\x00\x00",
+	} {
+		f.Add([]byte(src), uint16(len(src)))
+	}
+	f.Fuzz(func(t *testing.T, src []byte, cut uint16) {
+		if len(src) > 64<<10 {
+			return
+		}
+		before := bytes.Clone(src)
+		end := int(cut) % (len(src) + 1)
+		got := MayBeJSSource(src[:end])
+		if !bytes.Equal(src, before) {
+			t.Fatal("source gate modified its input")
+		}
+		if _, err := js.Parse(parse.NewInputBytes(src[:len(src):len(src)]), js.Options{}); err == nil && !got {
+			t.Fatalf("valid JavaScript excluded by its prefix: %q", src[:end])
+		}
+	})
+}
 
 func FuzzLiteralText(f *testing.F) {
 	f.Add(uint16(js.IdentifierToken), []byte("key"))

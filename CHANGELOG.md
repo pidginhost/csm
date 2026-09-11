@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Oversize JavaScript source remains visible in incomplete-scan reports when it contains embedded binary characters. Previous findings for those files are retained.
+
 - Audit records, stored finding history and attack events redact recognized credentials before they are written, including the history the web UI shows and exports. Session identifiers from cPanel login lines are covered.
 
 - Repeated and quoted password and token fields are now redacted consistently. Redaction keeps finding correlation and unrelated log evidence intact.
