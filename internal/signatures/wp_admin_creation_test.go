@@ -1,6 +1,7 @@
 package signatures
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,7 @@ func wpAdminCreationSamples() []struct {
 		{"empty", "", false},
 		{"function_only", `wp_create_user($login, $password);`, false},
 		{"literal_create", `wp_create_user('fixture-user', 'fixture-password');`, true},
+		{"literal_create_unicode_data", "wp_create_user('\u017f', 'bb');", true},
 		{"literal_create_vertical_tab", "wp_create_user\v(\v'fixture-user'\v,\v'fixture-password');", true},
 		{"literal_create_limit", `wp_create_user('` + strings.Repeat("a", 40) + `', 'fixture-password');`, true},
 		{"literal_create_over_limit", `wp_create_user('` + strings.Repeat("a", 41) + `', 'fixture-password');`, false},
@@ -29,6 +31,7 @@ func wpAdminCreationSamples() []struct {
 		{"literal_insert_overlapping_token", `$data = ['user_pass' => 'wp_insert_user'];`, true},
 		{"literal_insert_overlapping_token_offset", `$data = ['user_pass' => 'xwp_insert_user'];`, true},
 		{"literal_insert_minimum", `wp_insert_user($data); $data = ['user_pass' => 'ab'];`, true},
+		{"literal_insert_unicode_data", "wp_insert_user($data); $data = ['user_pass' => '\u017f\u017f'];", true},
 		{"literal_insert_too_short", `wp_insert_user($data); $data = ['user_pass' => 'a'];`, false},
 		{"literal_insert_without_insert", `$data = ['user_pass' => 'fixture-password']; wp_create_user($login, $password);`, false},
 		{"request_create", `wp_create_user($_POST['nu'], $_GET['np']);`, true},
@@ -99,6 +102,48 @@ func checkWPAdminCreationSamples(t *testing.T, match func(*testing.T, string) bo
 				})
 			}
 		})
+	}
+	t.Run("case_folding", func(t *testing.T) {
+		checkWPAdminCreationCaseFolding(t, match)
+	})
+}
+
+// Go folds the Unicode long s into ASCII s/S; YARA nocase only folds ASCII.
+// Every s in these samples is part of a required token, so replacing one must
+// invalidate that shape. Check each position to keep either gate from masking
+// a Unicode token accepted by the other gate.
+func checkWPAdminCreationCaseFolding(t *testing.T, match func(*testing.T, string) bool) {
+	t.Helper()
+	creations := []string{
+		`wp_create_user('aa', 'bb');`,
+		`wp_insert_user($d); ['user_pass' => 'bb'];`,
+		`['user_login' => 'aa']; wp_insert_user($d);`,
+		`wp_create_user($_POST['n'], $_REQUEST['p']);`,
+		`wp_insert_user(['user_pass' => $_POST['p']]);`,
+		`wp_insert_user(['user_login' => $_GET['n']]);`,
+		`$_POST['username']; $_GET['password']; wp_create_user($l, $p);`,
+		`$_REQUEST['pass']; $_GET['user']; wp_insert_user($d);`,
+	}
+	for creationIndex, creation := range creations {
+		for roleIndex, role := range []string{`set_role('administrator');`, `['role' => 'administrator'];`} {
+			source := "<?php " + creation + " " + role
+			for _, ascii := range []string{source, strings.ToUpper(source)} {
+				if !match(t, ascii) {
+					t.Errorf("ASCII case variant did not match: %q", ascii)
+				}
+				for offset, ch := range ascii {
+					if ch != 's' && ch != 'S' {
+						continue
+					}
+					t.Run(fmt.Sprintf("creation_%d_role_%d_offset_%d_%c", creationIndex, roleIndex, offset, ch), func(t *testing.T) {
+						variant := ascii[:offset] + "\u017f" + ascii[offset+1:]
+						if match(t, variant) {
+							t.Errorf("Unicode case variant matched an ASCII token: %q", variant)
+						}
+					})
+				}
+			}
+		}
 	}
 }
 

@@ -55,9 +55,13 @@ directory, repeated after the normal alert cooldown if activity continues.
 
 Both real-time and scheduled WordPress admin-creation signatures require an
 administrator role plus literal or request-derived credentials, and accept the
-same ASCII whitespace. Bundled importers that create users with generated
-passwords do not trigger this signature solely because they read a login from an
-import form.
+same ASCII whitespace and case variants for required tokens. Bundled importers
+that create users with generated passwords do not trigger this signature solely
+because they read a login from an import form.
+
+The engines still differ on non-ASCII text in bounded credential expressions:
+real-time YAML regexes count Unicode characters, while scheduled YARA regexes
+count bytes. Full strictness parity is not yet enforced across the rulesets.
 
 Complete blank files are excluded from dropper alerts after a close-write
 observation. Metadata-only changes during the read, such as an unlink, are

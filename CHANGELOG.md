@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Real-time WordPress admin-creation detection now uses the same role and credential requirements as scheduled scanning, avoiding false alerts on bundled importers.
 
+- Real-time WordPress admin-creation detection no longer treats Unicode lookalikes as role or credential tokens.
+
 - The dashboard now shows real-time YARA scan failures in the filesystem monitor's last event, instead of leaving that event missing or stale.
 
 - A real-time scan that cannot inspect a changed file is now its own finding, separate from the scheduled coverage report it used to share a name with. A scanning outage is no longer indistinguishable from the routine backlog of files past the scan size limit.
