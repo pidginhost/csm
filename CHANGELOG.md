@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.37.0] - 2026-09-11
+
+### Highlights
+
+- Every bounded queue in the daemon now reports depth, work in flight, losses and lag through `csm status`, `/api/v1/status` and `csm doctor`. A busy cPanel host publishes around sixty rows.
+- `csm doctor` exits 1 while a protection queue is degraded. Check any monitoring that treats its exit code as pass or fail before upgrading.
+- Sustained overload raises one `protection_queue_degraded` notification per queue at most every five minutes, followed by a recovery event once the pressure clears.
+- Queues whose work is best effort, such as live event streams and process context lookups, warn in doctor and never change the host status or the dashboard posture.
+- Successful logins and cPanel File Manager use no longer block or raise the threat score of a customer's own address.
+- Work that was never lost is no longer counted as lost: the startup baseline hold, temporary trees removed during bulk extraction, and installations wp-cli refuses to read.
+- A kernel measurement has to stay unreadable for half a minute before it degrades anything, so a single torn reading raises nothing.
+- Production checks enforce a reviewed queue inventory: a new bounded queue without an owner entry and health regressions fails the pipeline.
+
 ### Added
 
 - WordPress core checks now report waiting installations, stalled workers and failed work through status and doctor, including interrupted commands that return partial findings. Active commands and result handling remain visible after cancellation, and concurrent scans retain separate ownership.
@@ -111,19 +124,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Queue health no longer reports a stall from invalid kernel occupancy or work that is not yet eligible. Adopted panel webhooks retain their waiting age, and plugin commands with missing output count as incomplete work.
+#### Queue health and doctor
 
-- A stored report or panel finding with missing queue accounting is now delivered or counted, instead of stopping the worker that was processing it.
+- Queue health no longer reports a stall from invalid kernel occupancy or work that is not yet eligible. Adopted panel webhooks retain their waiting age, and plugin commands with missing output count as incomplete work.
 
 - Attack event health now names an uncertain write ahead of a backlog, the way the record queue already did.
 
 - A burst of automatic responses writing to the action log no longer degrades health. Recording work is now reported as stalled on the same timescale as every other queue.
 
 - Doctor no longer prints a mail journal source or a released log file as an empty queue. Ages are now labelled by what they measure instead of all appearing as backlog.
-
-- WordPress installations that wp-cli refuses to read, such as a directory that is not an installation or one whose configuration fails to load, no longer count as lost protection work on every cycle. Interrupted and killed commands still do.
-
-- A failure while finishing an automatic response no longer leaves the state lock held, which stopped every later block, firewall flush and state write until a restart.
 
 - Recovery scans no longer count files and directories that were removed before the scan ran as lost protection work. Bulk extraction, package restores and update temp trees stopped degrading health on every burst.
 
@@ -133,11 +142,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A queue that repeatedly degrades and recovers no longer sends unbounded notification pairs. The five-minute bound now survives a recovery, and a recovery is reported only for a degradation that was announced.
 
-- Attack event health now counts buffered records lost during an interrupted write. Only complete records submitted to the writer can have an uncertain outcome.
+- BPF queue health no longer reports a permanent measurement failure when a reader consumes an event during shutdown.
 
-- Interrupted attack event writes now retain confirmed losses while cleanup finishes. Events whose write outcome is unknown remain separate from work that was never submitted.
+- Dropper queue health now times probes and finding delivery from their actual start, so earlier delays do not trigger a false stalled-worker warning.
 
-- Queue inventory checks now catch capacity changes hidden in local declarations and nested expressions, including field selections, and reject ambiguous build variants. Legal import aliases remain supported.
+- Package verification saturation warnings now follow actual capacity use while work is running or being retried, without counting earlier metadata delays as time spent full.
+
+#### Automatic response and blocking
+
+- A failure while finishing an automatic response no longer leaves the state lock held, which stopped every later block, firewall flush and state write until a restart.
 
 - Cleanup loss counts now include newly blocked IPs after recovery from unreadable state. Old cleanup records retain their uncertain history without hiding new failures.
 
@@ -149,7 +162,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Failed firewall cleanup writes now appear in health checks even when diagnostic output is blocked. The failure remains counted once after cleanup finishes.
 
-- An interrupted bulk incident write no longer leaves later writes blocked. Abandoned writes are counted while later incident updates can continue.
+#### Checks and scanning
+
+- WordPress installations that wp-cli refuses to read, such as a directory that is not an installation or one whose configuration fails to load, no longer count as lost protection work on every cycle. Interrupted and killed commands still do.
 
 - File scan health now counts failed content and executable metadata reads. Existing findings remain available, and files disappearing during metadata enumeration do not count as lost work.
 
@@ -159,9 +174,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Full scans left queued by a daemon restart now report interruption instead of waiting forever. A terminated scan worker refuses new jobs and accounts for abandoned requests.
 
+- Recovered file and mail scanner failures now count as lost work, so repeated panics degrade health even while workers continue scanning later events.
+
+#### Delivery and reporting
+
+- A stored report or panel finding with missing queue accounting is now delivered or counted, instead of stopping the worker that was processing it.
+
 - Abuse reports already acknowledged by a collector no longer count as lost if database cleanup fails and the queue later overflows.
 
 - Event streams now close when a flush fails, releasing their subscriber slot so clients can reconnect.
+
+#### Persistence and shutdown
+
+- Attack event health now counts buffered records lost during an interrupted write. Only complete records submitted to the writer can have an uncertain outcome.
+
+- Interrupted attack event writes now retain confirmed losses while cleanup finishes. Events whose write outcome is unknown remain separate from work that was never submitted.
+
+- An interrupted bulk incident write no longer leaves later writes blocked. Abandoned writes are counted while later incident updates can continue.
 
 - Abuse reporter shutdown now closes admission before persisting its remaining reports, so late submissions cannot be silently stranded. Persistence failures remain visible while unrelated reports continue to be saved.
 
@@ -173,15 +202,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - PHP relay shutdown now drains accepted index writes and refuses later submissions. Flushes use bounded transactions, preserving unrelated batches when a write fails.
 
-- Recovered file and mail scanner failures now count as lost work, so repeated panics degrade health even while workers continue scanning later events.
-
-- BPF queue health no longer reports a permanent measurement failure when a reader consumes an event during shutdown.
-
-- Dropper queue health now times probes and finding delivery from their actual start, so earlier delays do not trigger a false stalled-worker warning.
-
-- Package verification saturation warnings now follow actual capacity use while work is running or being retried, without counting earlier metadata delays as time spent full.
-
 - Finding loss totals now include every unsent finding in a batch canceled during shutdown.
+
+#### Build and CI
+
+- Queue inventory checks now catch capacity changes hidden in local declarations and nested expressions, including field selections, and reject ambiguous build variants. Legal import aliases remain supported.
 
 ## [3.36.0] - 2026-09-09
 
