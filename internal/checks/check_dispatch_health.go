@@ -75,6 +75,7 @@ func (t *checkDispatch) executing(ctx context.Context) {
 	if t == nil {
 		return
 	}
+	// A caller without a deadline is unbounded rather than already overdue.
 	deadline, _ := ctx.Deadline()
 	m := t.batch.monitor
 	m.mu.Lock()
@@ -152,7 +153,7 @@ func (m *checkDispatchMonitor) QueueStatus(now time.Time) queuehealth.Status {
 			} else {
 				running++
 				status.ProcessingSeconds = max(status.ProcessingSeconds, now.Sub(task.started).Seconds())
-				runnerLate = runnerLate || !now.Before(task.deadline)
+				runnerLate = runnerLate || overdue(now, task.deadline)
 			}
 		}
 		status.Depth += waiting

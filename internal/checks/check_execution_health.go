@@ -53,7 +53,8 @@ func (m *checkExecutionMonitor) begin(deadline time.Time) *checkExecution {
 }
 
 func (m *checkExecutionMonitor) execute(ctx context.Context, component string, fn func() []alert.Finding) *checkExecution {
-	// Both runners construct a bounded per-check context before dispatch.
+	// Both runners construct a bounded per-check context before dispatch. A
+	// caller without one is unbounded rather than already overdue.
 	deadline, _ := ctx.Deadline()
 	execution := m.begin(deadline)
 	execution.dispatch = checkDispatchFrom(ctx)
@@ -108,11 +109,11 @@ func (m *checkExecutionMonitor) QueueStatus(now time.Time) queuehealth.Status {
 		if execution.started.IsZero() {
 			status.Depth++
 			status.LagSeconds = max(status.LagSeconds, now.Sub(execution.queued).Seconds())
-			waitingLate = waitingLate || !now.Before(execution.deadline)
+			waitingLate = waitingLate || overdue(now, execution.deadline)
 		} else {
 			status.InFlight++
 			status.ProcessingSeconds = max(status.ProcessingSeconds, now.Sub(execution.started).Seconds())
-			runningLate = runningLate || !now.Before(execution.deadline)
+			runningLate = runningLate || overdue(now, execution.deadline)
 		}
 	}
 	// Each call has its own deadline. A heavy check must not lend its longer
@@ -132,4 +133,10 @@ func (m *checkExecutionMonitor) QueueStatus(now time.Time) queuehealth.Status {
 // CheckExecutionQueueStatus reads memory only, including after a runner exits.
 func CheckExecutionQueueStatus(now time.Time) queuehealth.Status {
 	return checkExecutions.QueueStatus(now)
+}
+
+// overdue reports whether a bounded deadline has passed. Work with no deadline
+// has no bound to miss.
+func overdue(now, deadline time.Time) bool {
+	return !deadline.IsZero() && !now.Before(deadline)
 }

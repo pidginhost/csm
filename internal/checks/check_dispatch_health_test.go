@@ -457,3 +457,17 @@ func TestCheckDispatchHealthProgressDoesNotHideOverduePeer(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckDispatchHealthWithoutADeadlineIsNotLate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := newCheckDispatchMonitor()
+		tasks := m.begin(1, 1)
+		tasks[0].admit()
+		tasks[0].executing(context.Background())
+		time.Sleep(time.Hour)
+		if status := checkDispatchStatus(t, m); status.Status != "ok" || status.InFlight != 1 {
+			t.Fatalf("a check with no deadline was reported overdue: %+v", status)
+		}
+		tasks[0].wrap(func() {})()
+	})
+}

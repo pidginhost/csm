@@ -339,3 +339,21 @@ func TestCheckExecutionHealthTracksBothRunnersAfterTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckExecutionHealthWithoutADeadlineIsNotLate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := newCheckExecutionMonitor()
+		release := make(chan struct{})
+		releaseFunction := sync.OnceFunc(func() { close(release) })
+		defer releaseFunction()
+		execution := m.execute(context.Background(), "check-health-test", func() []alert.Finding { <-release; return nil })
+		synctest.Wait()
+		time.Sleep(time.Hour)
+		if status := checkExecutionStatus(t, m, time.Now()); status.Status != "ok" || status.InFlight != 1 {
+			t.Fatalf("a check with no deadline was reported overdue: %+v", status)
+		}
+		releaseFunction()
+		synctest.Wait()
+		execution.finishCaller()
+	})
+}
