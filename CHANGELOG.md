@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A real-time scan that cannot inspect a changed file is now its own finding, separate from the scheduled coverage report it used to share a name with. A scanning outage is no longer indistinguishable from the routine backlog of files past the scan size limit.
+
+- Shutting the daemon down no longer reports a real-time scanning failure. A clean restart raised one every time.
+
 - A file too large to analyze is reported as a coverage gap only when its leading bytes could be source of that language. Large images, archives and compiled catalogs no longer arrive as PHP or JavaScript the scan failed to examine, while oversize JavaScript that embeds binary characters in a literal or comment stays visible along with any earlier finding for it.
 
 - A deep scan that has reached its time limit no longer opens further files while recording what it did not examine.

@@ -46,8 +46,8 @@ func TestFanotifyYARAErrorIsNotTreatedAsClean(t *testing.T) {
 	}
 	select {
 	case finding := <-alerts:
-		if finding.Check != "yara_scan_incomplete" {
-			t.Fatalf("finding = %+v, want yara_scan_incomplete", finding)
+		if finding.Check != "yara_realtime_scan_error" {
+			t.Fatalf("finding = %+v, want yara_realtime_scan_error", finding)
 		}
 	default:
 		t.Fatal("scan error was silently treated as clean")

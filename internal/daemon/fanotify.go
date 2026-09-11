@@ -2165,7 +2165,36 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 	return matched
 }
 
+// stopping reports whether this monitor has been signalled to stop. A nil
+// stopCh (a monitor built directly in a test) is never stopping, because a
+// receive on a nil channel cannot proceed.
+func (fm *FileMonitor) stopping() bool {
+	select {
+	case <-fm.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// reportYARAScanError names a changed file the scanner could not inspect.
+// It is its own check rather than the deep scan's "yara_scan_incomplete",
+// which reports scheduled coverage: that report fires for every archive past
+// the scan size limit, roughly thirteen times a day forever on a live host,
+// and sharing the name left a real scanning outage indistinguishable from
+// routine backlog.
+//
+// Shutdown is not an outage. The daemon stops the YARA backend while this
+// monitor's goroutine is still draining events, because the wait for workers
+// comes after the teardown, so a clean restart otherwise reported a
+// High-severity scanning failure every time. The teardown cannot move after
+// that wait, which is unbounded and would hang on a wedged worker. The
+// return happens before the rate-limit window is taken, so a suppressed
+// shutdown report cannot swallow the first genuine failure afterwards.
 func (fm *FileMonitor) reportYARAScanError(path string, err error) {
+	if fm.stopping() {
+		return
+	}
 	fm.yaraErrorReportMu.Lock()
 	if !fm.lastYARAError.IsZero() && time.Since(fm.lastYARAError) < time.Minute {
 		fm.yaraErrorReportMu.Unlock()
@@ -2173,7 +2202,7 @@ func (fm *FileMonitor) reportYARAScanError(path string, err error) {
 	}
 	fm.lastYARAError = time.Now()
 	fm.yaraErrorReportMu.Unlock()
-	fm.sendAlert(alert.High, "yara_scan_incomplete",
+	fm.sendAlert(alert.High, "yara_realtime_scan_error",
 		"YARA real-time scan could not inspect a changed file",
 		fmt.Sprintf("File: %s\nError: %v", path, err))
 }
