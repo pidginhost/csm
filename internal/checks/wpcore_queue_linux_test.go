@@ -103,8 +103,11 @@ func TestWPCoreQueueInterruptedCommandRetainsPartialResults(t *testing.T) {
 						}
 					}
 				}
+				// A command the kernel killed lost its work. One that ran and
+				// exited with an error answered the check, even when the
+				// answer is that this tree could not be verified.
 				wantLoss := uint64(0)
-				if signaled || shape.name == "no_integrity_control" {
+				if signaled {
 					wantLoss = 3
 				}
 				row := wpCoreQueueSnapshot(t, time.Now())

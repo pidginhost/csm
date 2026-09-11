@@ -29,8 +29,10 @@ func TestDaemonPublishesActualFileSourceBytes(t *testing.T) {
 		line.Process(func(maillog.Line) bool { return false })
 		t.Error("canceled file source emitted historical work")
 	}
+	// The reader released its descriptor, so the remaining byte count is no
+	// longer measurable and the row says so instead of reporting zero.
 	row, exists := d.QueueStatuses()["mail.file_source"]
-	if !exists || row.Status != "ok" || row.Depth != 0 || row.DepthUnavailable || row.DepthUnit != "bytes" || !row.CapacityUnavailable || !row.DroppedLowerBound || row.ProcessingSeconds != 0 || row.LagBasis != "consumer_progress" {
+	if !exists || row.Status != "ok" || row.Depth != 0 || !row.DepthUnavailable || row.DepthUnit != "bytes" || !row.CapacityUnavailable || !row.DroppedLowerBound || row.ProcessingSeconds != 0 || row.LagBasis != "consumer_progress" {
 		t.Fatalf("actual file source row missing or mislabeled: exists=%v row=%+v", exists, row)
 	}
 }
