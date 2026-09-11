@@ -766,6 +766,16 @@ degradation with the same evidence, but leaves the host status and security
 posture unchanged, warns instead of failing `csm doctor`, and raises no
 notification.
 
+Each degraded row names its condition: `backlog_lag` for the oldest waiting
+item past its budget, `processing_lag` for the oldest running item,
+`queue_full` for capacity held continuously, `dropped_work` for recent losses,
+`consumer_stalled` for a sampled queue whose consumer stopped advancing,
+`reader_stopped` for a released kernel descriptor, `measurement_unavailable`
+for a reading that stayed unavailable, and `persistence_uncertain` for a write
+whose outcome is unknown. The owner-specific conditions `retry_failed`,
+`source_io`, `spool_io`, `state_io`, `delivery_failed`, `delivery_uncertain`
+and `consumer_stopped` are described with their rows above.
+
 Doctor names each age by what it measures: `observed_lag` for an age taken at
 observation, `consumer_stall` for consumer progress, `operation_stall` for the
 current operation, `deferred_age` for work parked until a restart, and
