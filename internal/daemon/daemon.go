@@ -91,7 +91,8 @@ type Daemon struct {
 	queueSources     map[string]queueSource
 	// alertHold, while open, keeps the dispatcher draining alertCh into its
 	// batch without dispatching, so realtime producers (which never block)
-	// lose nothing during the synchronous startup baseline. Closed by
+	// lose nothing during the synchronous startup baseline. The ingest queue
+	// health is held with it, so the baseline is not reported as a stall. Closed by
 	// releaseAlertDispatch once the baseline has published; nil means the
 	// dispatcher never holds.
 	alertHold        chan struct{}
@@ -1349,6 +1350,9 @@ const alertHoldMaxBatch = 5000
 // goroutine starts.
 func (d *Daemon) holdAlertDispatch() {
 	d.alertHold = make(chan struct{})
+	if d.alertQueue != nil {
+		d.alertQueue.Hold(time.Now())
+	}
 }
 
 // releaseAlertDispatch lets the dispatcher start dispatching its batches.
@@ -1357,7 +1361,12 @@ func (d *Daemon) releaseAlertDispatch() {
 	if d.alertHold == nil {
 		return
 	}
-	d.alertReleaseOnce.Do(func() { close(d.alertHold) })
+	d.alertReleaseOnce.Do(func() {
+		if d.alertQueue != nil {
+			d.alertQueue.Release(time.Now())
+		}
+		close(d.alertHold)
+	})
 }
 
 func (d *Daemon) alertDispatcher() {

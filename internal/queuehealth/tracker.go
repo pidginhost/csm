@@ -57,6 +57,7 @@ type Tracker struct {
 	pending        map[uint64]work
 	waiting        int
 	fullSince      time.Time
+	heldSince      time.Time
 	dropped        uint64
 	drops          [60]dropBucket
 }
@@ -205,6 +206,44 @@ func (q *Tracker) updateFull(now time.Time) {
 	}
 }
 
+// Hold parks the queue while its owner deliberately withholds the consumer,
+// such as the startup baseline. Ages stop at the hold so intentional waiting
+// cannot report a stall; losses still count.
+func (q *Tracker) Hold(now time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.heldSince.IsZero() {
+		q.heldSince = now
+	}
+}
+
+// Release resumes measurement. The held time is removed from every age, so
+// work parked by the hold is measured from the release.
+func (q *Tracker) Release(now time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.heldSince.IsZero() {
+		return
+	}
+	shift := now.Sub(q.heldSince)
+	rebase := func(t time.Time) time.Time {
+		switch {
+		case t.IsZero():
+			return t
+		case t.Before(q.heldSince):
+			return t.Add(shift)
+		default:
+			return now
+		}
+	}
+	for id, w := range q.pending {
+		w.queued, w.started = rebase(w.queued), rebase(w.started)
+		q.pending[id] = w
+	}
+	q.fullSince = rebase(q.fullSince)
+	q.heldSince = time.Time{}
+}
+
 // Lose records upstream loss for which no userspace work item exists, such
 // as a kernel overflow. The cumulative count is never drained by a reporter.
 func (q *Tracker) Lose(now time.Time, count uint64) {
@@ -227,11 +266,16 @@ func (q *Tracker) Snapshot(now time.Time) Status {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	s := Status{Status: "ok", Capacity: q.capacity, Depth: q.waiting, InFlight: len(q.pending) - q.waiting, DroppedTotal: q.dropped}
+	// A held queue measures ages up to the hold; drops keep the real clock.
+	clock := now
+	if !q.heldSince.IsZero() && q.heldSince.Before(now) {
+		clock = q.heldSince
+	}
 	for _, w := range q.pending {
 		if w.started.IsZero() {
-			s.LagSeconds = max(s.LagSeconds, now.Sub(w.queued).Seconds())
+			s.LagSeconds = max(s.LagSeconds, clock.Sub(w.queued).Seconds())
 		} else {
-			s.ProcessingSeconds = max(s.ProcessingSeconds, now.Sub(w.started).Seconds())
+			s.ProcessingSeconds = max(s.ProcessingSeconds, clock.Sub(w.started).Seconds())
 		}
 	}
 	second := now.Unix()
@@ -245,7 +289,7 @@ func (q *Tracker) Snapshot(now time.Time) Status {
 		s.Reason = "backlog_lag"
 	case s.ProcessingSeconds >= q.maxLag.Seconds():
 		s.Reason = "processing_lag"
-	case !q.fullSince.IsZero() && now.Sub(q.fullSince) >= fullWindow:
+	case !q.fullSince.IsZero() && clock.Sub(q.fullSince) >= fullWindow:
 		s.Reason = "queue_full"
 	case s.RecentDrops >= dropThreshold:
 		s.Reason = "dropped_work"

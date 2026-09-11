@@ -106,6 +106,9 @@ losses during the last minute, the oldest waiting item's age and the oldest
 running item's processing time.
 Waiting work includes producers blocked on admission. Ingest work remains
 running while the dispatcher holds or processes its batch, including startup.
+Ages pause while the startup hold is in place and resume from its release, so
+a long baseline scan is not reported as a stall; work lost during the hold
+still counts.
 Loss totals include the undelivered tail of a batch canceled during shutdown;
 scan warnings intentionally excluded from alerts do not count as lost work.
 Recovered file and spool scanner panics count as lost scan work. The workers

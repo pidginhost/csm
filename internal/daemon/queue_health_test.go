@@ -203,3 +203,47 @@ func TestQueueHealthCanceledBatchesCountEveryAbandonedFinding(t *testing.T) {
 		}
 	}
 }
+
+func TestQueueHealthStartupHoldIsNotDelay(t *testing.T) {
+	d := queueLifecycleDaemon(t, 4)
+	prevInterval := alertBatchInterval
+	alertBatchInterval = time.Hour
+	t.Cleanup(func() { alertBatchInterval = prevInterval })
+	previousHook := alert.CentralHook
+	var ingestEvents []alert.Finding
+	alert.SetCentralHook(func(f alert.Finding) {
+		if strings.Contains(f.Details, "queue=findings.ingest") {
+			ingestEvents = append(ingestEvents, f)
+		}
+	})
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+	d.holdAlertDispatch()
+	if !alert.TryEnqueue(d.alertCh, alert.Finding{Check: "queue_lifecycle", Severity: alert.Warning, Message: "held finding"}) {
+		t.Fatal("queue rejected a finding within its capacity")
+	}
+	d.wg.Add(1)
+	go d.alertDispatcher()
+	t.Cleanup(func() {
+		close(d.stopCh)
+		d.wg.Wait()
+	})
+	deadline := time.Now().Add(alertHoldTestBudget)
+	for d.alertQueue.Snapshot(time.Now()).InFlight != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	var reporter queuehealth.Reporter
+	d.reportQueueHealth(time.Now().Add(2*time.Minute), &reporter)
+	if len(ingestEvents) != 0 {
+		t.Fatalf("startup hold reported as a stalled ingest queue: %+v", ingestEvents)
+	}
+	release := time.Now()
+	d.releaseAlertDispatch()
+	s := d.alertQueue.Snapshot(release.Add(30 * time.Second))
+	if s.Status != "ok" || s.InFlight != 1 || s.ProcessingSeconds <= 29 || s.ProcessingSeconds > 30 {
+		t.Fatalf("held work did not resume processing from the release: %+v", s)
+	}
+	d.reportQueueHealth(release.Add(30*time.Second), &reporter)
+	if len(ingestEvents) != 0 {
+		t.Fatalf("released hold reported as a stalled ingest queue: %+v", ingestEvents)
+	}
+}

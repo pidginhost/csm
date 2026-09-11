@@ -228,3 +228,36 @@ func TestTrackerRetainsEarlierEligibility(t *testing.T) {
 	}
 	ticket.Finish(now)
 }
+
+func TestTrackerHoldFreezesAgesUntilRelease(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(1, time.Minute)
+	before := q.Begin(now)
+	q.Hold(now.Add(10 * time.Second))
+	during := q.Begin(now.Add(20 * time.Second))
+	during.Start(now.Add(21 * time.Second))
+	s := q.Snapshot(now.Add(5 * time.Minute))
+	if s.Status != "ok" || s.Depth != 1 || s.InFlight != 1 || s.LagSeconds != 10 || s.ProcessingSeconds != 0 {
+		t.Fatalf("deliberate hold reported as a stall: %+v", s)
+	}
+	q.Lose(now.Add(6*time.Minute), dropThreshold)
+	if s := q.Snapshot(now.Add(6 * time.Minute)); s.Status != "degraded" || s.Reason != "dropped_work" {
+		t.Fatalf("losses during a hold were hidden: %+v", s)
+	}
+	release := now.Add(10 * time.Minute)
+	q.Release(release)
+	s = q.Snapshot(release.Add(19 * time.Second))
+	if s.Status != "ok" || s.LagSeconds != 29 || s.ProcessingSeconds != 19 {
+		t.Fatalf("release did not resume ages without the held time: %+v", s)
+	}
+	if s = q.Snapshot(release.Add(20 * time.Second)); s.Status != "degraded" || s.Reason != "queue_full" {
+		t.Fatalf("full timer did not resume from release: %+v", s)
+	}
+	during.Finish(release.Add(21 * time.Second))
+	before.Start(release.Add(21 * time.Second))
+	before.Finish(release.Add(22 * time.Second))
+	q.Release(release.Add(23 * time.Second))
+	if s = q.Snapshot(release.Add(23 * time.Second)); s.Status != "ok" || s.Depth != 0 || s.InFlight != 0 {
+		t.Fatalf("release without a hold changed accounting: %+v", s)
+	}
+}
