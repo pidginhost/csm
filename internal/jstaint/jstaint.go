@@ -12,6 +12,7 @@
 package jstaint
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -181,6 +182,50 @@ func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report
 		Results:           results,
 		TotalResults:      total,
 		EvidenceTruncated: evidenceTruncated,
+	}
+}
+
+// MayBeJSSource reports whether a prefix could be JavaScript source at all.
+// It exists for files too large to analyze: the deep walk hands every
+// readable file to this analyzer, and without a content check each oversize
+// one became "JavaScript we failed to examine" -- 118,688 claimed skips over
+// eight weeks on a live host, whose examples were .jpg, .png, .zip and
+// .mmdb.
+//
+// The test is deliberately "is this source at all" rather than "is this a
+// candidate". Analyze runs its size gate ahead of isCandidate on purpose, so
+// padding cannot hide a payload behind an uninteresting prefix; deciding
+// candidacy from a prefix here would reintroduce exactly that. NUL suggests
+// binary content but is legal inside JS literals and comments. Only reject
+// binary bytes the lexer encounters outside those tokens; incomplete tokens
+// and ambiguous syntax must keep their coverage gap.
+func MayBeJSSource(prefix []byte) bool {
+	if bytes.IndexByte(prefix, 0) < 0 {
+		return true
+	}
+
+	// The parser input appends a sentinel. Cap the slice so it cannot write
+	// into a caller's source beyond the peek, including concurrent readers.
+	input := parse.NewInputBytes(prefix[:len(prefix):len(prefix)])
+	lexer := js.NewLexer(input)
+	for {
+		token, data := lexer.Next()
+		switch token {
+		case js.ErrorToken:
+			// EOF can split a literal, comment or UTF-8 sequence. Other
+			// syntax errors are not proof of binary content either.
+			if input.Err() != nil {
+				return true
+			}
+			if !utf8.Valid(data) {
+				return false
+			}
+			return len(data) != 1 || (data[0] >= 0x20 && data[0] != 0x7f)
+		case js.DivToken, js.DivEqToken:
+			// Distinguishing division from a regexp needs parser context.
+			// Either may lead to a literal containing binary bytes.
+			return true
+		}
 	}
 }
 
