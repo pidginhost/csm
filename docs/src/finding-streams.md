@@ -13,8 +13,8 @@ recorded stream is a copy of those files with every identity removed.
 ```bash
 # On the operator machine, after copying the files read-only from the host:
 go run ./scripts/finding-stream anonymize \
-    --salt-file .cache/finding-streams/salt \
-    --out .cache/finding-streams/host-a.jsonl.gz \
+    --salt-file ~/.local/share/csm/finding-streams/salt \
+    --out ~/.local/share/csm/finding-streams/host-a.jsonl.gz \
     raw/audit.jsonl raw/audit.jsonl-*.gz
 ```
 
@@ -76,6 +76,29 @@ Handling rules:
   A complete gzip stream is written to a private temporary file and renamed
   into place; failures leave any previous recording intact. Output has mode
   0600 even when replacing a less restricted file.
-- Recorded streams stay outside the repository, under the ignored
-  `.cache/finding-streams/` directory. A pseudonymized stream still describes
-  real incidents on a real host, and this repository is public.
+- Recorded streams stay outside the repository entirely, in a private
+  directory such as `~/.local/share/csm/finding-streams/` with mode 0700. A
+  pseudonymized stream still describes real incidents on a real host, and this
+  repository is public. Do not keep them in an ignored directory inside the
+  checkout: `git clean -fdx` removes ignored files too, and a recording that
+  took a host weeks to accumulate is not reproducible from anywhere else.
+
+## Replaying a stream through correlation
+
+`scripts/correlation-calibrate` replays a recording through the production
+cross-account correlation so its thresholds can be re-derived from what hosts
+produced rather than from an assumption:
+
+```bash
+go run ./scripts/correlation-calibrate \
+    ~/.local/share/csm/finding-streams/host-a.jsonl.gz
+```
+
+It reports how much of the correlation input is the same finding re-reported,
+which checks dominate it, and what the aggregates did under both derivations:
+per dispatch batch, and over the persisted latest-state set. For each it prints
+a threshold sweep, so one replay answers what every candidate account count
+would have raised. `--window` simulates an active-set retention the store does
+not have, which is how the one-hour correlation bound was chosen.
+
+The tool needs no host access and reads nothing but the recording.

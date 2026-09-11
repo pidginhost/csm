@@ -5,9 +5,25 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
+
+// correlationWindow bounds how far apart two findings may be and still count
+// as one cross-account event. A dispatch batch is stamped within milliseconds,
+// so the bound is inert there; it matters for the persisted active set, which
+// holds every current finding on the host and has no age of its own.
+//
+// Without it the aggregate is a latch rather than an alert: replaying a
+// 100-day recording of one production host left coordinated_attack raised for
+// 76% of the recording, and a two-day recording of a second host for 99%,
+// because the first three accounts that ever carried a critical finding never
+// left the set. One hour was chosen against those recordings: it holds the
+// aggregate raised for 2.4% of the first recording where six hours leaves
+// 19.6% and a day leaves 46.1%, and it still spans a full scan sweep, whose
+// findings land together. Re-derive it with scripts/correlation-calibrate.
+const correlationWindow = time.Hour
 
 // CorrelationResult is the output of one CorrelateFindings call.
 type CorrelationResult struct {
@@ -16,7 +32,9 @@ type CorrelationResult struct {
 	// Timestamps are left unset for the caller to stamp.
 	Derived []alert.Finding
 	// Unattributed counts qualifying input rows per check that carried no
-	// account identity. It is a snapshot for this call, not a running total.
+	// account identity. It is a snapshot for this call, not a running total,
+	// and it counts only rows inside the correlation window: a finding too old
+	// to affect an aggregate is not an input whose attribution matters.
 	Unattributed map[string]int
 }
 
@@ -28,9 +46,13 @@ func CorrelateFindings(findings []alert.Finding) CorrelationResult {
 	res := CorrelationResult{Unattributed: make(map[string]int)}
 	accounts := make(map[string]bool)
 	malwareByCheck := make(map[string]map[string]bool)
+	cutoff := correlationCutoff(findings)
 	for _, f := range findings {
 		class := correlationClassOf(f.Check)
 		if class != CorrelationSecurityEvent && class != CorrelationMalwareArtifact {
+			continue
+		}
+		if !f.Timestamp.IsZero() && f.Timestamp.Before(cutoff) {
 			continue
 		}
 		countsForAttack := f.Severity == alert.Critical
@@ -75,6 +97,36 @@ func CorrelateFindings(findings []alert.Finding) CorrelationResult {
 		})
 	}
 	return res
+}
+
+// CorrelationInputOf reports how one finding enters cross-account
+// correlation: the hosting account it resolves to, empty when none could be
+// determined, and whether its check is an eligible input at all. It applies
+// the same registry classification and identity rules CorrelateFindings uses,
+// so a caller can explain or calibrate a correlation result without
+// re-implementing them. Eligibility here is the check's class only; whether a
+// given finding then counts also depends on its severity.
+func CorrelationInputOf(f alert.Finding) (account string, eligible bool) {
+	class := correlationClassOf(f.Check)
+	eligible = class == CorrelationSecurityEvent || class == CorrelationMalwareArtifact
+	return extractAccountFromFinding(f), eligible
+}
+
+// correlationCutoff is the oldest timestamp that still counts towards an
+// aggregate: the newest finding in the set, less the window. A finding with no
+// timestamp predates the fix that stamps every finding and is always counted,
+// so an old stored row cannot drop out of correlation silently.
+func correlationCutoff(findings []alert.Finding) time.Time {
+	var newest time.Time
+	for _, f := range findings {
+		if f.Timestamp.After(newest) {
+			newest = f.Timestamp
+		}
+	}
+	if newest.IsZero() {
+		return time.Time{}
+	}
+	return newest.Add(-correlationWindow)
 }
 
 func uniqueStrings(input []string) []string {

@@ -360,6 +360,15 @@ realtime dispatcher derive two findings from the findings they see:
   `new_executable_in_config`) is present on two or more accounts at any
   severity. Different malware checks on different accounts do not combine.
 
+Both aggregates only combine findings raised within one hour of each other.
+A dispatch batch is stamped within milliseconds, so the bound changes nothing
+for the realtime and scan paths; it matters for the persisted latest-state
+merge, which holds every current finding on the host and would otherwise
+combine accounts attacked months apart. Because the bound is relative to the
+newest finding in the set, the aggregate clears once an hour passes without a
+qualifying finding, instead of staying raised for the life of the host. A
+finding carrying no timestamp at all still counts.
+
 Every registered check is classified as a security event, a malware
 artifact, ignored with a stated reason, or derived. Derived findings are never
 inputs. A nonempty `TenantID` wins verbatim, including case, over the file
