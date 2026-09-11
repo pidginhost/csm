@@ -12,12 +12,17 @@ type writePool struct {
 	stats *queuehealth.Tracker
 }
 
+// writeStallBudget is how long a sink write may run before the row reports a
+// stall. The caller's own wait budget is far shorter, so a batch of actions
+// serialising behind one file lock is normal rather than a degradation.
+const writeStallBudget = time.Minute
+
 var actionWrites = newWritePool(64)
 
 func newWritePool(capacity int) *writePool {
 	return &writePool{
 		slots: make(chan struct{}, capacity),
-		stats: queuehealth.NewSharedCapacity(capacity, writeTimeout),
+		stats: queuehealth.NewSharedCapacity(capacity, writeStallBudget),
 	}
 }
 

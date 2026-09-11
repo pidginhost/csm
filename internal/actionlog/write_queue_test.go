@@ -26,7 +26,7 @@ func TestWriteQueueRetainsSlowWriterAndCountsRefusedRecords(t *testing.T) {
 			t.Fatalf("caller waited %s, want %s", time.Since(start), writeTimeout)
 		}
 		got := pool.stats.Snapshot(time.Now())
-		if calls != 1 || got.Capacity != 1 || got.Depth != 0 || got.InFlight != 1 || got.DroppedTotal != 0 || got.ProcessingSeconds != writeTimeout.Seconds() || got.Reason != "processing_lag" {
+		if calls != 1 || got.Capacity != 1 || got.Depth != 0 || got.InFlight != 1 || got.DroppedTotal != 0 || got.ProcessingSeconds != writeTimeout.Seconds() || got.Status != "ok" {
 			t.Fatalf("caller timeout hid or discarded active writer: calls=%d status=%+v", calls, got)
 		}
 		for range 3 {
@@ -166,8 +166,11 @@ func TestWriteQueueReportsLossBeforeBlockedPanicLog(t *testing.T) {
 		pool.write(sinkFunc(func(Record) error { panic("failed") }), Record{Op: "panic"})
 		synctest.Wait()
 		got := pool.stats.Snapshot(time.Now())
-		if got.InFlight != 1 || got.Depth != 0 || got.DroppedTotal != 1 || got.Reason != "processing_lag" {
+		if got.InFlight != 1 || got.Depth != 0 || got.DroppedTotal != 1 {
 			t.Fatalf("panic log hid known loss or released the writer early: %+v", got)
+		}
+		if late := pool.stats.Snapshot(time.Now().Add(time.Minute)); late.Reason != "processing_lag" {
+			t.Fatalf("a writer blocked for a minute was not reported: %+v", late)
 		}
 		pool.write(sinkFunc(func(Record) error { t.Error("occupied slot accepted another writer"); return nil }), Record{Op: "refused"})
 		releaseLog()
@@ -176,5 +179,25 @@ func TestWriteQueueReportsLossBeforeBlockedPanicLog(t *testing.T) {
 		if got.InFlight != 0 || got.Depth != 0 || got.DroppedTotal != 2 {
 			t.Fatalf("panic log recovery settled records incorrectly: %+v", got)
 		}
+	})
+}
+
+func TestWriteQueueDoesNotDegradeOnTheCallerBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		pool := newWritePool(64)
+		release := make(chan struct{})
+		releaseWrite := sync.OnceFunc(func() { close(release) })
+		defer releaseWrite()
+		pool.write(sinkFunc(func(Record) error { <-release; return nil }), Record{Op: "slow"})
+		synctest.Wait()
+		got := pool.stats.Snapshot(time.Now())
+		if got.InFlight != 1 || got.Status != "ok" || got.Reason != "" {
+			t.Fatalf("a write past the caller budget was reported as a stalled queue: %+v", got)
+		}
+		if late := pool.stats.Snapshot(time.Now().Add(time.Minute)); late.Reason != "processing_lag" {
+			t.Fatalf("a writer stalled for a minute was not reported: %+v", late)
+		}
+		releaseWrite()
+		synctest.Wait()
 	})
 }

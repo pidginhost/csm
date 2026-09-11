@@ -668,8 +668,10 @@ stalled database or collector cannot block status. Disabling delivery preserves
 the durable backlog and cumulative loss; enabling it resumes the stored work.
 Stopped queue instances refuse late admissions.
 `actionlog.writes` measures the 64 process-wide action-log write slots. A sink
-write running past the caller's 250ms wait budget degrades the row and stays in
-flight until the sink and any panic reporting finish. A caller deadline after
+write that outlives the caller's 250ms wait budget stays in flight until the
+sink and any panic reporting finish; a batch of actions serialising behind one
+file lock is normal, and only a minute without the write returning degrades the
+row. A caller deadline after
 admission does not count as loss, since the sink may still record the action.
 Refused admission, sink errors and panics count as lost records, once per record.
 Changing or disabling the sink preserves outstanding work and cumulative loss.
