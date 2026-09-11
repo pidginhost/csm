@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Go dependencies and the pinned GitHub Actions are updated to their current releases.
 
+- The README no longer shows the retired Go Report Card badge. It reports the Go version the project builds with instead.
+
 ### Security
 
 - Audit records, stored finding history and attack events redact recognized credentials before they are written, including the history the web UI shows and exports. Session identifiers from cPanel login lines are covered.
