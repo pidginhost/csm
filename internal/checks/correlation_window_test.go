@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -14,6 +15,67 @@ func criticalAt(account, check string, at time.Time) alert.Finding {
 		Message:   "finding for " + account,
 		TenantID:  account,
 		Timestamp: at,
+	}
+}
+
+func TestCorrelationWindowIgnoresDerivedTimestamps(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	at := time.Now().Add(-2 * time.Hour)
+	rows := []alert.Finding{
+		criticalAt("one", "webshell", at),
+		criticalAt("two", "webshell", at),
+		criticalAt("three", "db_rogue_admin", at),
+		criticalAt("", "db_rogue_admin", at),
+	}
+	want := CorrelateFindings(rows)
+	for _, check := range DerivedCorrelationChecks() {
+		withDerived := append(append([]alert.Finding(nil), rows...), criticalAt("", check, time.Now()))
+		if got := CorrelateFindings(withDerived); !reflect.DeepEqual(got, want) {
+			t.Fatalf("derived %s changed correlation: got %+v, want %+v", check, got, want)
+		}
+	}
+}
+
+func TestCorrelationWindowBoundaryAndUnattributed(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	at := time.Now()
+	rows := []alert.Finding{
+		criticalAt("one", "webshell", at.Add(-time.Hour)),
+		criticalAt("two", "webshell", at),
+		criticalAt("three", "db_rogue_admin", time.Time{}),
+		criticalAt("", "webshell", at.Add(-time.Hour)),
+		criticalAt("", "webshell", time.Time{}),
+		criticalAt("", "webshell", at.Add(-time.Hour-time.Nanosecond)),
+	}
+	got := CorrelateFindings(rows)
+	if !raised(got, "coordinated_attack") || !raised(got, "cross_account_malware") || got.Unattributed["webshell"] != 2 {
+		t.Fatalf("window boundary or legacy input lost: %+v", got)
+	}
+}
+
+func TestLatestStateWindowExpiresOnEmptyScan(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	st := newTestStore(t)
+	prev := defaultUnattributedReporter
+	defaultUnattributedReporter = newUnattributedReporter(func(string, ...any) {})
+	t.Cleanup(func() { defaultUnattributedReporter = prev })
+	at := time.Now().Add(-2 * time.Hour)
+	rows := []alert.Finding{
+		criticalAt("one", "webshell", at),
+		criticalAt("two", "webshell", at),
+		criticalAt("three", "db_rogue_admin", at),
+		criticalAt("", "db_rogue_admin", at),
+		criticalAt("", "webshell", time.Time{}),
+	}
+	RecordUnattributedActiveSet(map[string]int{"db_rogue_admin": 1, "webshell": 1})
+	st.SetLatestFindings(rows)
+	StoreLatestScanFindings(st, []string{"file_index"}, nil)
+	if got := checksIn(st.LatestFindings()); got["coordinated_attack"] != 0 || got["cross_account_malware"] != 0 || len(st.LatestFindings()) != len(rows) {
+		t.Fatalf("empty scan did not expire aggregates while retaining sources: %v", got)
+	}
+	h := AttributionHealth()
+	if !reflect.DeepEqual(h.Current, map[string]int{"webshell": 1}) || h.Cumulative["db_rogue_admin"] != 1 || h.Cumulative["webshell"] != 2 {
+		t.Fatalf("expiry must clear current loss, preserve history and count unstamped rows: %+v", h)
 	}
 }
 

@@ -192,9 +192,10 @@ through the production correlation. Against 100 days of one production host
 (301,860 timestamped rows, 29,533 eligible, 92.6% attributed) and two days of a
 second:
 
-- 98.8% of the correlation input is the same finding re-reported: 324 distinct
+- 98.8% of attributed rows repeat an account-and-check pair: 324 distinct
   account-and-check pairs produced 27,357 attributed rows. One check alone
-  contributed 15,916 rows across 26 accounts.
+  contributed 15,916 rows across 26 accounts. A repeated pair can include
+  distinct findings on that account, so it does not by itself prove re-reporting.
 - The two derivations behave nothing alike. Per batch, the aggregate raised 51
   times in 100 days. Over the persisted set it raised 3 times and stayed raised
   for 76% of the recording, and for 99% of the two-day recording: a latch, not
@@ -205,9 +206,11 @@ second:
   from 76% raised (unbounded) to 46.1% at a day, 19.6% at six hours, 5.4% at
   two hours and 2.4% at one hour.
 
-Correlation now only combines findings raised within an hour of each other,
-which is inert for the batch paths and fixes the persisted latch. The
-three-account threshold and the Critical-only limit stay: including High
+Persisted correlation only combines findings from the last hour.
+Persisted merges measure age at merge time, so an empty completed scan can
+clear expired aggregates; batches retain their dispatch grouping even for
+carried-forward findings with older timestamps. The three-account threshold
+and the Critical-only limit stay: including High
 severities in the account count changed the firing count by one event in 100
 days, which does not justify widening what raises a Critical aggregate.
 
@@ -222,6 +225,11 @@ change to the finding record, not to correlation.
 
 **Acceptance:** met for the threshold. Re-deriving it again, or changing the
 Critical-only limit, uses the same tool and the same recorded-stream evidence.
+The figures above record the original calibration run. The replay now applies
+the selected window directly to correlation and counts the same windowed
+accounts in its sweep; it recomputes on every arrival, including ignored checks.
+Recordings cannot reconstruct empty scans, purges or dismissals, so replay
+duration describes the observed arrivals rather than exact store history.
 
 ## The firewall audit log is written to a path nothing reads
 

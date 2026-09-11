@@ -15,8 +15,9 @@ import (
 // a health endpoint without this.
 type AttributionReport struct {
 	// Current holds, per check, the qualifying rows in the latest-state
-	// active set that carry no hosting owner, as of its most recent merge.
-	// It clears when a later merge attributes them.
+	// active set that carry no hosting owner and fall inside the correlation
+	// window at its most recent merge. Unstamped legacy rows also count.
+	// A later merge clears rows that gain an owner or age out of the window.
 	Current map[string]int
 	// Cumulative sums every unattributed row reported since start, by
 	// check, across active-set merges and per-batch derivations.

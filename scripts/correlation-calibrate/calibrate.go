@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // Event is one recorded finding in arrival order. At is the audit timestamp,
@@ -73,7 +74,7 @@ func (s *ActiveSet) evict() (evicted bool) {
 	if s.window > 0 {
 		cutoff := s.newest.Add(-s.window)
 		for key, f := range s.byKey {
-			if f.Timestamp.Before(cutoff) {
+			if !f.Timestamp.IsZero() && f.Timestamp.Before(cutoff) {
 				delete(s.byKey, key)
 				evicted = true
 			}
@@ -121,12 +122,13 @@ func (s *ActiveSet) Findings() []alert.Finding {
 }
 
 // Pairs reports how many rows the stream carries and how many distinct
-// account-and-check combinations produced them. A large gap between the two is
-// the signature of long-lived findings re-reported on every scan.
+// account-and-check combinations produced them. Repeated pairs can represent
+// different findings on the same account, not just re-reports of one finding.
 func Pairs(events []Event) (rows, pairs int) {
 	seen := make(map[[2]string]bool)
+	correlator := recordingCorrelator(0)
 	for _, e := range events {
-		account, eligible := checks.CorrelationInputOf(e.Finding)
+		account, eligible := correlator.InputOf(e.Finding)
 		if !eligible || account == "" {
 			continue
 		}
@@ -168,37 +170,24 @@ func (s *Spread) Points() int { return len(s.counts) }
 
 // Firing is one point in the replay where correlation raised an aggregate.
 type Firing struct {
-	At     time.Time
-	Check  string
-	Checks []string
+	At    time.Time
+	Check string
 }
 
 // Derive runs the production correlation over one set of findings and reports
 // both the aggregates it raised and the distinct-account count that decided
 // them, so a threshold can be re-derived from the same replay.
-func Derive(at time.Time, findings []alert.Finding) (fires []Firing, criticalAccounts int) {
-	accounts := make(map[string]bool)
-	checkNames := make(map[string]bool)
-	for _, f := range findings {
-		account, eligible := checks.CorrelationInputOf(f)
-		if !eligible || account == "" || f.Severity != alert.Critical {
-			continue
-		}
-		accounts[account] = true
-		checkNames[f.Check] = true
-	}
-	res := checks.CorrelateFindings(findings)
+func Derive(at time.Time, findings []alert.Finding, window time.Duration) (fires []Firing, criticalAccounts int) {
+	res := recordingCorrelator(window).Correlate(findings, at)
 	for _, d := range res.Derived {
-		fires = append(fires, Firing{At: at, Check: d.Check, Checks: sortedSet(checkNames)})
+		fires = append(fires, Firing{At: at, Check: d.Check})
 	}
-	return fires, len(accounts)
+	return fires, res.CriticalAccounts
 }
 
-func sortedSet(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+func recordingCorrelator(window time.Duration) checks.Correlator {
+	// Recordings use cPanel account paths. Constructing Info is pure;
+	// Detect would read files and execute commands on the replay machine.
+	info := platform.Info{Panel: platform.PanelCPanel}
+	return checks.NewCorrelator(window, info.AccountHomeRoots())
 }

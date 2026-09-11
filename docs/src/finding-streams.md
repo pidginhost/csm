@@ -94,11 +94,27 @@ go run ./scripts/correlation-calibrate \
     ~/.local/share/csm/finding-streams/host-a.jsonl.gz
 ```
 
-It reports how much of the correlation input is the same finding re-reported,
-which checks dominate it, and what the aggregates did under both derivations:
+It reports how often account-and-check pairs repeat, which checks dominate
+the input, and what the aggregates did under both derivations:
 per dispatch batch, and over the persisted latest-state set. For each it prints
-a threshold sweep, so one replay answers what every candidate account count
-would have raised. `--window` simulates an active-set retention the store does
-not have, which is how the one-hour correlation bound was chosen.
+a threshold sweep using the same eligible, windowed accounts as the aggregate.
+`--window` selects the persisted correlation bound: it defaults to
+one hour, and `--window 0` reproduces the original unbounded correlation.
+Longer windows are applied directly, without the production default limiting
+them. The source set keeps the store's retention and size limit. Batch
+correlation counts all qualifying rows grouped into that dispatch batch.
+Repeated pairs can include distinct findings on the same account; this metric
+does not establish how many rows are re-reports of the same finding.
 
-The tool needs no host access and reads nothing but the recording.
+Batch boundaries are inferred from timestamp gaps. Persisted correlation is
+recomputed at every recorded arrival, including ignored checks that only
+advance time. Raised duration is measured between those observations, not
+against an invented scan schedule. Recordings do not contain empty scans,
+purges or dismissals, so this replay models latest-state accumulation rather
+than reconstructing every store transition. Rows with no timestamp are counted
+and skipped because they have no replay position; runtime correlation still
+counts unstamped stored rows.
+
+The tool needs no host access and reads nothing but the recording. It uses
+cPanel account roots supplied directly to correlation, without platform
+discovery on the replay machine.

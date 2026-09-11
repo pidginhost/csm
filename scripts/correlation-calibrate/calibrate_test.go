@@ -72,6 +72,16 @@ func TestActiveSetWindowEvictsAgedRows(t *testing.T) {
 	}
 }
 
+func TestActiveSetWindowRetainsUnstampedRows(t *testing.T) {
+	set := NewActiveSet(time.Hour)
+	legacy := critical("a", "webshell", "legacy", time.Time{}).Finding
+	set.Admit(legacy)
+	set.Admit(critical("b", "webshell", "current", time.Now()).Finding)
+	if got := set.Findings(); len(got) != 2 || !got[1].Timestamp.IsZero() {
+		t.Fatalf("unstamped evidence was evicted: %+v", got)
+	}
+}
+
 func TestPairsCountsDistinctAccountAndCheck(t *testing.T) {
 	base := time.Unix(1_770_000_000, 0)
 	events := []Event{

@@ -4,14 +4,15 @@
 //	go run ./scripts/correlation-calibrate --window 24h stream.jsonl.gz [more...]
 //
 // It reports what the coordinated-attack threshold would have done on real
-// hosts: how often three or more accounts co-occur, how much of that is the
-// same long-lived finding re-reported, and how per-batch derivation differs
+// hosts: how often three or more accounts co-occur, how often account-and-check
+// pairs repeat, and how per-batch derivation differs
 // from the persisted active set. Streams are produced by scripts/finding-stream
 // and are never committed; see docs/src/finding-streams.md.
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"flag"
@@ -23,8 +24,6 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/checks"
-	"github.com/pidginhost/csm/internal/platform"
 )
 
 func main() {
@@ -37,7 +36,7 @@ func main() {
 func run(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("correlation-calibrate", flag.ContinueOnError)
 	fs.SetOutput(out)
-	window := fs.Duration("window", 0, "active-set retention to simulate; 0 is today's unbounded behaviour")
+	window := fs.Duration("window", time.Hour, "persisted correlation window to simulate; 0 reproduces unbounded correlation")
 	gap := fs.Duration("batch-gap", time.Second, "arrival gap that separates two dispatch batches")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -46,17 +45,20 @@ func run(args []string, out io.Writer) error {
 		return fmt.Errorf("usage: correlation-calibrate [--window D] [--batch-gap D] STREAM [STREAM...]")
 	}
 
-	// Correlation resolves accounts through the platform's account roots.
-	// A recorded stream carries cPanel-shaped paths whatever host reads it.
-	panel := platform.PanelCPanel
-	platform.SetOverrides(platform.Overrides{Panel: &panel})
+	if *window < 0 || *gap < 0 {
+		return fmt.Errorf("window and batch-gap must be nonnegative")
+	}
 
 	for _, path := range fs.Args() {
 		events, skipped, err := readStream(path)
 		if err != nil {
 			return err
 		}
-		report(out, path, events, skipped, *window, *gap)
+		var rendered bytes.Buffer
+		report(&rendered, path, events, skipped, *window, *gap)
+		if _, err := io.Copy(out, &rendered); err != nil {
+			return fmt.Errorf("write report: %w", err)
+		}
 	}
 	return nil
 }
@@ -92,7 +94,7 @@ func readStream(path string) (events []Event, skipped int, err error) {
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			return nil, 0, fmt.Errorf("%s: %w", path, err)
 		}
-		if ev.Timestamp.IsZero() || ev.Timestamp.Year() < 2000 {
+		if ev.Timestamp.IsZero() {
 			skipped++
 			continue
 		}
@@ -143,8 +145,9 @@ func report(out io.Writer, path string, events []Event, skipped int, window, gap
 	unattributed := make(map[string]int)
 	rowsByCheck := make(map[string]int)
 	pairsByCheck := make(map[string]map[string]bool)
+	correlator := recordingCorrelator(window)
 	for _, e := range events {
-		account, ok := checks.CorrelationInputOf(e.Finding)
+		account, ok := correlator.InputOf(e.Finding)
 		if !ok {
 			continue
 		}
@@ -163,10 +166,10 @@ func report(out io.Writer, path string, events []Event, skipped int, window, gap
 	rows, pairs := Pairs(events)
 	fmt.Fprintf(out, "   eligible %d (%.1f%%), attributed %d (%.1f%% of eligible)\n",
 		eligible, pct(eligible, len(events)), attributed, pct(attributed, eligible))
-	fmt.Fprintf(out, "   distinct account+check pairs %d from %d attributed rows (%.1f%% of rows are re-reports)\n",
+	fmt.Fprintf(out, "   distinct account+check pairs %d from %d attributed rows (%.1f%% of rows repeat a pair)\n",
 		pairs, rows, pct(rows-pairs, rows))
 
-	fmt.Fprintf(out, "   checks with the widest gap between rows and pairs:\n")
+	fmt.Fprintf(out, "   checks producing the most eligible rows:\n")
 	for _, line := range floodLines(rowsByCheck, pairsByCheck, 6) {
 		fmt.Fprintf(out, "     %s\n", line)
 	}
@@ -204,7 +207,7 @@ func replayBatches(batches [][]Event) (fires int, spread Spread) {
 		for _, e := range batch {
 			findings = append(findings, e.Finding)
 		}
-		raised, accounts := Derive(batch[len(batch)-1].At, findings)
+		raised, accounts := Derive(batch[len(batch)-1].At, findings, 0)
 		spread.Observe(accounts)
 		for _, f := range raised {
 			if f.Check == "coordinated_attack" {
@@ -220,18 +223,17 @@ func replayBatches(batches [][]Event) (fires int, spread Spread) {
 // latchedPct is how much of the recording the aggregate stayed raised for:
 // an aggregate that never clears is a latch, not an alert.
 func replayPersisted(events []Event, window time.Duration) (fires int, spread Spread, latchedPct float64) {
-	set := NewActiveSet(window)
+	// Keep the real store's unbounded source set; only correlation is
+	// windowed. Retention would change which rows survive the store cap.
+	set := NewActiveSet(0)
 	raisedSpans := time.Duration(0)
 	var raisedSince time.Time
 	wasRaised := false
 	for _, e := range events {
-		evicted := set.Admit(e.Finding)
-		// Only an eligible finding can change what correlation derives, unless
-		// an eviction removed one that already counted.
-		if _, eligible := checks.CorrelationInputOf(e.Finding); !eligible && !evicted {
-			continue
-		}
-		derived, accounts := Derive(e.At, set.Snapshot())
+		set.Admit(e.Finding)
+		// Ignored arrivals also advance the observation time and may expire
+		// inputs, even when the persisted set did not evict anything.
+		derived, accounts := Derive(e.At, set.Snapshot(), window)
 		spread.Observe(accounts)
 		isRaised := false
 		for _, f := range derived {

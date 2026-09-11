@@ -1,7 +1,9 @@
 package checks
 
 import (
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
@@ -53,6 +55,34 @@ func TestCorrelationInputOfMatchesCorrelationRules(t *testing.T) {
 				t.Errorf("eligible = %v, want %v", eligible, tc.wantEligible)
 			}
 		})
+	}
+}
+
+func TestOfflineCorrelatorUsesOnlyExplicitRoots(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	accountHomeRoots = func() []string {
+		t.Fatal("offline correlator consulted host account roots")
+		return nil
+	}
+	roots := []string{"/var/www/vhosts"}
+	c := NewCorrelator(time.Hour, roots)
+	roots[0] = "/home" // The caller does not own the correlator's roots.
+	at := time.Now()
+	rows := []alert.Finding{
+		{Check: "webshell", Severity: alert.Critical, FilePath: "/var/www/vhosts/a/site.php", Timestamp: at},
+		{Check: "webshell", Severity: alert.Critical, Message: "found /var/www/vhosts/b/site.php", Timestamp: at},
+		{Check: "db_rogue_admin", Severity: alert.Critical, TenantID: "c", Timestamp: at},
+		{Check: "webshell", Severity: alert.Critical, FilePath: "/home/ignored/site.php", Timestamp: at},
+	}
+	for i, want := range []string{"a", "b", "c", ""} {
+		account, eligible := c.InputOf(rows[i])
+		if account != want || !eligible {
+			t.Fatalf("input %d: account=%q eligible=%v", i, account, eligible)
+		}
+	}
+	got := c.Correlate(rows, at)
+	if got.CriticalAccounts != 3 || len(got.Derived) != 2 || !reflect.DeepEqual(got.Unattributed, map[string]int{"webshell": 1}) {
+		t.Fatalf("offline correlation: %+v", got)
 	}
 }
 
