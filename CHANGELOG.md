@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A file too large to analyze is reported as a coverage gap only when its leading bytes could be source of that language. Large images, archives and compiled catalogs no longer arrive as PHP or JavaScript the scan failed to examine.
+
+- A deep scan that has reached its time limit no longer opens further files while recording what it did not examine.
+
 ### Security
 
 - Audit records, stored finding history and attack events redact recognized credentials before they are written, including the history the web UI shows and exports. Session identifiers from cPanel login lines are covered.

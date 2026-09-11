@@ -12,6 +12,7 @@
 package jstaint
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -182,6 +183,23 @@ func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report
 		TotalResults:      total,
 		EvidenceTruncated: evidenceTruncated,
 	}
+}
+
+// MayBeJSSource reports whether a prefix could be JavaScript source at all.
+// It exists for files too large to analyze: the deep walk hands every
+// readable file to this analyzer, and without a content check each oversize
+// one became "JavaScript we failed to examine" -- 118,688 claimed skips over
+// eight weeks on a live host, whose examples were .jpg, .png, .zip and
+// .mmdb.
+//
+// The test is deliberately "is this source at all" rather than "is this a
+// candidate". Analyze runs its size gate ahead of isCandidate on purpose, so
+// padding cannot hide a payload behind an uninteresting prefix; deciding
+// candidacy from a prefix here would reintroduce exactly that. Text is the
+// weakest property that still excludes media, archives and databases, so a
+// NUL byte is what rules a file out.
+func MayBeJSSource(prefix []byte) bool {
+	return bytes.IndexByte(prefix, 0) < 0
 }
 
 // isCandidate reports whether src carries both a key-handler token and a sink
