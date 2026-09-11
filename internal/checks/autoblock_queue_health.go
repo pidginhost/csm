@@ -81,6 +81,10 @@ func (w *autoBlockStateWork) finish() {
 	q := w.queue
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	// Release the real slot with its owner, including when the accounting
+	// below fails. A successor must not publish over a callback whose cleanup
+	// is still running, and a failure must not strand every later block.
+	defer blockStateMu.Unlock()
 	if !w.completed {
 		w.failLocked()
 	}
@@ -88,9 +92,6 @@ func (w *autoBlockStateWork) finish() {
 	w.finishCleanupLocked()
 	q.active = nil
 	q.idleSince = time.Now()
-	// Release the real slot with its owner. A successor must not publish over
-	// a callback whose cleanup is still running.
-	blockStateMu.Unlock()
 }
 
 // AutoBlockQueueStatuses reads queue memory without waiting for the state mutex,

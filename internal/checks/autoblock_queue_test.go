@@ -384,3 +384,25 @@ func TestAutoBlockQueueLongPruneKeepsProgress(t *testing.T) {
 		assertAutoBlockQueueDrained(t, 0)
 	})
 }
+
+func TestAutoBlockStateWorkReleasesStateLockOnPanic(t *testing.T) {
+	q := newAutoBlockQueue()
+	// Failed accounting must not strand the lock that every block, flush and
+	// state write waits on.
+	q.retries = nil
+	w := &autoBlockStateWork{queue: q, at: time.Now(), readingState: true}
+	q.active = w
+	blockStateMu.Lock()
+	var caught any
+	func() {
+		defer func() { caught = recover() }()
+		w.finish()
+	}()
+	if caught == nil {
+		t.Fatal("finish accounting completed; the panic path is no longer exercised")
+	}
+	if !blockStateMu.TryLock() {
+		t.Fatal("failed accounting kept the automatic response state lock")
+	}
+	blockStateMu.Unlock()
+}
