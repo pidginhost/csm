@@ -150,7 +150,8 @@ func (s Snapshot) AllWatchersAttached() bool {
 //   - "down" if the snapshot was zero-valued (never assembled)
 //   - "degraded" if a watcher is detached, the store is unhealthy, an enabled
 //     firewall is unmanaged, enabled termination has no safe kernel path,
-//     or a protection queue is degraded
+//     or a protection queue is degraded. Advisory queues carry best-effort
+//     work and are reported without changing the host status.
 //   - "ok" otherwise
 func (s Snapshot) OverallStatus() string {
 	if s.StartedAt.IsZero() && len(s.Watchers) == 0 {
@@ -161,7 +162,7 @@ func (s Snapshot) OverallStatus() string {
 		return "degraded"
 	}
 	for _, q := range s.Queues {
-		if q.Status == "degraded" {
+		if q.Status == "degraded" && !q.Advisory {
 			return "degraded"
 		}
 	}

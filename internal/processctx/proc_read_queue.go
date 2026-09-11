@@ -106,6 +106,11 @@ func runProcReadWithDeadline[T any](pool *procReadPool, d time.Duration, fn func
 	}
 }
 
+// QueueStatuses reports deadline-bounded process reads. The row is advisory:
+// an expired read costs one detail on a finding that is still raised, and a
+// loaded host expires reads without losing protection work.
 func (*ProcReader) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return map[string]queuehealth.Status{"proc_reads": procReads.stats.Snapshot(now)}
+	status := procReads.stats.Snapshot(now)
+	status.Advisory = true
+	return map[string]queuehealth.Status{"proc_reads": status}
 }

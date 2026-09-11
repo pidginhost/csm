@@ -22,6 +22,9 @@ func queueDoctorChecks(queues map[string]queuehealth.Status) []DoctorCheck {
 		}
 		if q.Status == "degraded" {
 			check.Status = "fail"
+			if q.Advisory {
+				check.Status = "warn"
+			}
 			check.Message += "; " + q.Reason
 			check.Fix = "inspect worker errors and host CPU, memory and I/O pressure; reduce competing bulk work, then verify the backlog drains and recent drops stop"
 		}

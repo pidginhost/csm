@@ -79,3 +79,27 @@ func TestDoctorReportsKernelQueueMeasurements(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorWarnsOnAdvisoryQueueOverload(t *testing.T) {
+	wire := `{"snapshot":{"started_at":"2026-09-09T12:00:00Z","store_healthy":true,"watchers":{"fanotify":true},"queues":{"events.deliveries":{"status":"degraded","advisory":true,"reason":"queue_full","depth":64,"capacity":64,"dropped_total":9}}}}`
+	report := buildDoctorReport(func() (*config.Config, error) { return validDoctorConfig(), nil }, func() ([]byte, error) { return []byte(wire), nil }, integrityOK)
+	count := 0
+	for _, c := range report.Checks {
+		if c.Name != "queue: events.deliveries" {
+			continue
+		}
+		count++
+		if c.Status != "warn" {
+			t.Errorf("advisory queue check status = %q, want warn", c.Status)
+		}
+		if !strings.Contains(c.Message, "queue_full") || c.Fix == "" {
+			t.Errorf("advisory queue lost its reason or guidance: %+v", c)
+		}
+	}
+	if count != 1 {
+		t.Fatalf("got %d queue checks, want exactly one", count)
+	}
+	if report.OverallStatus == "fail" {
+		t.Fatalf("a best-effort queue failed doctor: %s", report.OverallStatus)
+	}
+}

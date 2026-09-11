@@ -121,8 +121,13 @@ func (e *verdictEnricher) wait() {
 	})
 }
 
+// QueueStatuses reports annotation work. The row is advisory: the finding is
+// dispatched with or without a verdict, so a stalled lookup delays context
+// rather than protection.
 func (e *verdictEnricher) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return map[string]queuehealth.Status{"verdict": e.queueStats.Snapshot(now)}
+	status := e.queueStats.Snapshot(now)
+	status.Advisory = true
+	return map[string]queuehealth.Status{"verdict": status}
 }
 
 func (e *verdictEnricher) droppedEnrichments() int64 { return e.dropped.Load() }

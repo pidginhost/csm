@@ -48,11 +48,13 @@ func (d Delivery) finish(failed bool) {
 // QueueStatuses aggregates subscriber work without retaining departed clients
 // or exposing client identities. The total tracker keeps in-flight work and
 // cumulative loss after removal; local trackers prevent an empty peer from
-// hiding a full subscriber buffer.
+// hiding a full subscriber buffer. The row is advisory: a client that stops
+// reading loses its own copy of findings that are already stored.
 func (b *Bus) QueueStatuses(now time.Time) map[string]queuehealth.Status {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	status := b.stats.Snapshot(now)
+	status.Advisory = true
 	for sub := range b.subscribers {
 		local := sub.stats.Snapshot(now)
 		status.Capacity += local.Capacity

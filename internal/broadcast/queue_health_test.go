@@ -196,3 +196,11 @@ func TestBusConcurrentCloseAbortAndOwnedDelivery(t *testing.T) {
 		}
 	})
 }
+
+func TestBusDeliveriesAreAdvisory(t *testing.T) {
+	bus := NewBus(1)
+	defer bus.Close()
+	if q := bus.QueueStatuses(time.Now())["deliveries"]; !q.Advisory {
+		t.Fatalf("a client that stops reading can degrade the host: %+v", q)
+	}
+}

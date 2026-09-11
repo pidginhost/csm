@@ -17,9 +17,12 @@ const (
 // LagSeconds measures the oldest waiting item unless LagBasis names another
 // measurement. ProcessingSeconds measures
 // the oldest running item, so an empty queue cannot conceal a stuck worker.
+// Advisory marks a queue whose work is best effort, so its degradation is
+// reported but does not make the host degraded and raises no notification.
 type Status struct {
 	Status              string  `json:"status"`
 	Reason              string  `json:"reason,omitempty"`
+	Advisory            bool    `json:"advisory,omitempty"`
 	Depth               int     `json:"depth"`
 	DepthUnit           string  `json:"depth_unit,omitempty"`
 	DepthUnavailable    bool    `json:"depth_unavailable,omitempty"`

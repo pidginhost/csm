@@ -131,7 +131,7 @@ func operationalProblems(sigCount int, snap health.Snapshot) int {
 		problems++
 	}
 	for _, q := range snap.Queues {
-		if q.Status == "degraded" {
+		if q.Status == "degraded" && !q.Advisory {
 			problems++
 			break
 		}

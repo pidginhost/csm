@@ -261,3 +261,10 @@ func TestProcReadQueueFileAndLinkHelpersPublishTheirFailures(t *testing.T) {
 		t.Fatalf("file/link errors did not reach the shared provider: before=%+v after=%+v", before, got)
 	}
 }
+
+func TestProcReadQueueIsAdvisory(t *testing.T) {
+	reader := NewProcReader(t.TempDir(), time.Second)
+	if got := reader.QueueStatuses(time.Now())["proc_reads"]; !got.Advisory {
+		t.Fatalf("expired process context reads can degrade the host: %+v", got)
+	}
+}

@@ -253,3 +253,16 @@ func TestVerdictQueueConcurrentAdmissionAndShutdown(t *testing.T) {
 		t.Fatalf("concurrent shutdown failed to account for every incomplete annotation: status=%+v retained=%d", got, len(e.inFlight))
 	}
 }
+
+func TestVerdictQueueIsAdvisory(t *testing.T) {
+	e := newVerdictEnricher(verdictEnricherOpts{
+		Ask: func(context.Context, verdict.Request) (verdict.Response, error) {
+			return verdict.Response{}, nil
+		},
+		Workers: 1,
+		Queue:   2,
+	})
+	if got := verdictQueueStatus(t, e); !got.Advisory {
+		t.Fatalf("an unreachable panel can degrade the host: %+v", got)
+	}
+}

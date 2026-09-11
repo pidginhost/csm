@@ -59,3 +59,19 @@ func TestBuildCopiesQueueEvidenceFromProvider(t *testing.T) {
 		t.Fatal("provider mutation changed an already built snapshot")
 	}
 }
+
+// Best-effort queues carry their own evidence but must not make the host look
+// compromised: a stalled dashboard client is not a protection failure.
+func TestSnapshotAdvisoryQueueDoesNotDegradeHost(t *testing.T) {
+	wire := `{"started_at":"2026-09-09T12:00:00Z","store_healthy":true,"watchers":{"fanotify":true},"queues":{"events.deliveries":{"status":"degraded","advisory":true,"reason":"queue_full","depth":64,"capacity":64}}}`
+	var snap Snapshot
+	if err := json.Unmarshal([]byte(wire), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.OverallStatus(); got != "ok" {
+		t.Fatalf("best-effort queue set the host status to %q", got)
+	}
+	if q := snap.Queues["events.deliveries"]; q.Status != "degraded" || !q.Advisory {
+		t.Fatalf("advisory row lost its evidence: %+v", q)
+	}
+}

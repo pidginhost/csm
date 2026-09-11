@@ -76,3 +76,16 @@ func TestReporterBoundsNotificationsWhenAQueueFlaps(t *testing.T) {
 		t.Fatalf("recovery after an announced degradation = %+v", got)
 	}
 }
+
+func TestReporterIgnoresAdvisoryQueues(t *testing.T) {
+	now := time.Unix(1000, 0)
+	r := Reporter{}
+	states := map[string]Status{"events.deliveries": {Status: "degraded", Advisory: true, Reason: "queue_full"}}
+	if got := r.Events(now, states); len(got) != 0 {
+		t.Fatalf("best-effort queue raised a notification: %+v", got)
+	}
+	states["events.deliveries"] = Status{Status: "ok", Advisory: true}
+	if got := r.Events(now.Add(time.Second), states); len(got) != 0 {
+		t.Fatalf("best-effort queue announced a recovery: %+v", got)
+	}
+}

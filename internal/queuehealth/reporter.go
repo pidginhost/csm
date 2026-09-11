@@ -46,6 +46,9 @@ func (r *Reporter) Events(now time.Time, states map[string]Status) []Event {
 		s := states[name]
 		state := r.last[name]
 		switch {
+		case s.Advisory:
+			// Best-effort work is visible in status and doctor only.
+			continue
 		case s.Status == "degraded":
 			if state.announcedAt.IsZero() || now.Sub(state.announcedAt) >= reminderInterval {
 				events = append(events, Event{Name: name, Current: s})

@@ -741,6 +741,14 @@ Shutdown closes admission and drains accepted writes; later submissions count
 as refused work. The existing persistence dropped metric counts refused
 submissions, while queue health also includes writes that fail after admission.
 
+Some rows carry `advisory`. Their work is best effort: a client that stops
+reading its event stream, an unreachable panel asked for an optional
+annotation, and expired process context reads all lose detail around findings
+that are still detected, stored and delivered. An advisory row reports its own
+degradation with the same evidence, but leaves the host status and security
+posture unchanged, warns instead of failing `csm doctor`, and raises no
+notification.
+
 A queue becomes degraded after three losses in a minute, thirty seconds
 continuously full, or a minute waiting or processing. These are operational
 alert budgets, not measured throughput guarantees. Health is computed directly
