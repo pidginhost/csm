@@ -95,7 +95,10 @@ func TestSpoolHealthDoesNotWaitForDatabaseWriter(t *testing.T) {
 		for {
 			status := s.QueueStatuses(time.Now().Add(121 * time.Second))["spool"]
 			if status.InFlight == 1 {
-				observed <- status
+				// The clock above can be sampled between admission and the
+				// start of the write. Measure the blocked writer's age from a
+				// reading taken after it is known to be running.
+				observed <- s.QueueStatuses(time.Now().Add(121 * time.Second))["spool"]
 				return
 			}
 			select {
