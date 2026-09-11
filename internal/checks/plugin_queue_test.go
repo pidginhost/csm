@@ -392,24 +392,54 @@ func refusedCommand(t *testing.T) error {
 	return exit
 }
 
-func TestPluginQueueRefusedSitesAreNotLostWork(t *testing.T) {
-	previous := pluginInventoryBatches
-	pluginInventoryBatches = newScanBatchMonitor()
-	defer func() { pluginInventoryBatches = previous }()
-	db := setupPluginStore(t)
-	pluginQueueRoots(t, 3)
+func TestPluginQueueClassifiesCommandOutcomes(t *testing.T) {
 	refused := refusedCommand(t)
-	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if !strings.Contains(strings.Join(args, " "), "plugin list") {
-			return []byte("https://example.test"), nil
-		}
-		return nil, refused
-	}})
-	captureStderr(t, func() { refreshPluginCache(context.Background(), db) })
-	if q := pluginQueue(t, time.Now()); q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 0 || q.Status != "ok" {
-		t.Fatalf("sites wp-cli refused to inventory were counted as lost work: %+v", q)
+	_, stderrRefusal := exec.Command("sh", "-c", "printf 'fixture refusal' >&2; exit 1").Output()
+	var refusedExit *exec.ExitError
+	if !errors.As(stderrRefusal, &refusedExit) || refusedExit.ExitCode() != 1 || string(refusedExit.Stderr) != "fixture refusal" {
+		t.Fatalf("expected refusal on stderr, got %v", stderrRefusal)
 	}
-	if len(db.AllSitePlugins()) != 0 || !db.GetPluginRefreshTime().IsZero() {
-		t.Fatal("refused inventories were recorded as fresh")
+	killed := exec.Command("sh", "-c", `kill -TERM "$$"`).Run()
+	var exit *exec.ExitError
+	if !errors.As(killed, &exit) || exit.ExitCode() >= 0 {
+		t.Fatalf("expected signal termination, got %v", killed)
+	}
+	for _, tc := range []struct {
+		name string
+		out  []byte
+		err  error
+		lost uint64
+	}{
+		{"refused", []byte("Error: This does not seem to be a WordPress installation."), refused, 0},
+		{"refused_on_stderr", nil, stderrRefusal, 0},
+		{"refused_without_output", nil, refused, 3},
+		{"nil_output", nil, nil, 3},
+		{"deadline", nil, context.DeadlineExceeded, 3},
+		{"signal", []byte("partial output"), killed, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := pluginInventoryBatches
+			pluginInventoryBatches = newScanBatchMonitor()
+			t.Cleanup(func() { pluginInventoryBatches = previous })
+			db := setupPluginStore(t)
+			pluginQueueRoots(t, 3)
+			withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if !strings.Contains(strings.Join(args, " "), "plugin list") {
+					return []byte("https://example.test"), nil
+				}
+				return tc.out, tc.err
+			}})
+			captureStderr(t, func() { refreshPluginCache(context.Background(), db) })
+			wantStatus := "ok"
+			if tc.lost > 0 {
+				wantStatus = "degraded"
+			}
+			if q := pluginQueue(t, time.Now()); q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != tc.lost || q.Status != wantStatus {
+				t.Fatalf("command outcome lost its queue accounting: %+v", q)
+			}
+			if len(db.AllSitePlugins()) != 0 || !db.GetPluginRefreshTime().IsZero() {
+				t.Fatal("failed inventories were recorded as fresh")
+			}
+		})
 	}
 }

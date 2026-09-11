@@ -233,6 +233,9 @@ func (q *Tracker) Release(now time.Time) {
 		switch {
 		case t.IsZero():
 			return t
+		case t.After(now):
+			// Deferred work has not begun aging and keeps its eligibility.
+			return t
 		case t.Before(q.heldSince):
 			return t.Add(shift)
 		default:

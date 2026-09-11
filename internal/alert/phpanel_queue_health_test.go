@@ -2,6 +2,8 @@ package alert
 
 import (
 	"crypto/rand"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/queuehealth"
+	bolt "go.etcd.io/bbolt"
 )
 
 func phpanelHealthStatus(t *testing.T, q *phpanelQueue, now time.Time) queuehealth.Status {
@@ -157,33 +160,62 @@ func TestPhpanelQueueHealthSurvivesBlockedDelivery(t *testing.T) {
 	}
 }
 
-// The queue file outlives the process that wrote it. A record with no
-// accounting in memory must not take the delivery worker down with it.
-func TestPhpanelQueueHealthSurvivesRecordsWithoutAccounting(t *testing.T) {
-	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{}, phpanelQueueLimit)
-	if _, err := q.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "orphan"}, Timestamp: time.Now()}}); err != nil {
+// Bypass admission to represent a boundary record without creating an orphaned
+// ticket. Normal opens rebuild accounting for every persisted record.
+func insertUntrackedPhpanelRecord(t *testing.T, q *phpanelQueue, payload []byte) []byte {
+	t.Helper()
+	var key [8]byte
+	if err := q.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(phpanelQueueBucket)
+		seq, err := b.NextSequence()
+		if err != nil {
+			return err
+		}
+		binary.BigEndian.PutUint64(key[:], seq)
+		return b.Put(key[:], payload)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	q.mutation.Lock()
-	clear(q.health.pending)
-	q.mutation.Unlock()
+	return key[:]
+}
+
+func TestPhpanelQueueHealthSurvivesRecordsWithoutAccounting(t *testing.T) {
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{}, phpanelQueueLimit)
+	now := time.Now()
+	item := queuedPhpanelFinding{Finding: Finding{Check: "orphan"}, Timestamp: now.Add(-2 * time.Minute)}
+	body, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertUntrackedPhpanelRecord(t, q, body)
 	key, payload, work, err := q.takeDelivery()
 	if err != nil || key == nil || work == nil || len(payload) == 0 {
 		t.Fatalf("a record with no accounting was not taken for delivery: key=%q work=%v err=%v", key, work, err)
 	}
-	if status := phpanelHealthStatus(t, q, time.Now()); status.InFlight != 1 {
+	if status := phpanelHealthStatus(t, q, time.Now()); status.InFlight != 1 || status.Depth != 0 {
 		t.Fatalf("adopted record is not in flight: %+v", status)
+	}
+	q.finishDelivery(work, false, false)
+	if status := phpanelHealthStatus(t, q, time.Now()); status.Depth != 1 || status.InFlight != 0 || status.DroppedTotal != 0 || status.LagSeconds < 120 || status.Reason != "backlog_lag" {
+		t.Fatalf("adopted retry lost its persisted waiting age: %+v", status)
+	}
+	key, _, work, err = q.takeDelivery()
+	if err != nil || work == nil {
+		t.Fatalf("take retry: work=%v err=%v", work, err)
+	}
+	removed, err := q.removeDelivered(key)
+	if err != nil || !removed {
+		t.Fatalf("remove delivered record: removed=%v err=%v", removed, err)
+	}
+	q.finishDelivery(work, true, removed)
+	if status := phpanelHealthStatus(t, q, time.Now()); status.Depth != 0 || status.InFlight != 0 || status.DroppedTotal != 0 || len(q.health.pending) != 0 || phpanelActiveDepth(t, q) != 0 {
+		t.Fatalf("adopted record did not settle exactly once: %+v", status)
 	}
 }
 
 func TestPhpanelQueueHealthCountsEvictedRecordsWithoutAccounting(t *testing.T) {
 	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{}, 1)
-	if _, err := q.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "first"}, Timestamp: time.Now()}}); err != nil {
-		t.Fatal(err)
-	}
-	q.mutation.Lock()
-	clear(q.health.pending)
-	q.mutation.Unlock()
+	insertUntrackedPhpanelRecord(t, q, []byte(`{"finding":{"check":"first"}}`))
 	// A record with no ticket can only be counted in the process-wide row,
 	// which is also where losses from replaced queues live.
 	before := PhpanelQueueStatus(time.Now()).DroppedTotal
@@ -192,5 +224,38 @@ func TestPhpanelQueueHealthCountsEvictedRecordsWithoutAccounting(t *testing.T) {
 	}
 	if got := PhpanelQueueStatus(time.Now()).DroppedTotal; got != before+1 {
 		t.Fatalf("an evicted record with no accounting vanished: dropped=%d, want %d", got, before+1)
+	}
+	if got := phpanelHealthStatus(t, q, time.Now()); got.Depth != 1 || got.InFlight != 0 || len(q.health.pending) != 1 || phpanelActiveDepth(t, q) != 1 {
+		t.Fatalf("eviction left unmatched accounting: %+v", got)
+	}
+}
+
+func TestPhpanelQueueHealthQuarantinesUntrackedRecords(t *testing.T) {
+	for _, adopted := range []bool{false, true} {
+		q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{}, 1)
+		payload := []byte(`{"finding":`)
+		key := insertUntrackedPhpanelRecord(t, q, payload)
+		before := PhpanelQueueStatus(time.Now()).DroppedTotal
+		if adopted {
+			q.drainQueued()
+		} else if err := q.quarantineMalformed(key, payload, errors.New("invalid record")); err != nil {
+			t.Fatal(err)
+		}
+		// An empty drain and repeated quarantine must not settle or count the
+		// already discarded record a second time.
+		q.drainQueued()
+		if err := q.quarantineMalformed(key, payload, errors.New("invalid record")); err != nil {
+			t.Fatal(err)
+		}
+		if got := PhpanelQueueStatus(time.Now()).DroppedTotal; got != before+1 {
+			t.Fatalf("quarantine loss count = %d, want %d (adopted=%v)", got, before+1, adopted)
+		}
+		wantLocalLoss := uint64(0)
+		if adopted {
+			wantLocalLoss = 1
+		}
+		if got := phpanelHealthStatus(t, q, time.Now()); got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != wantLocalLoss || len(q.health.pending) != 0 || phpanelActiveDepth(t, q) != 0 {
+			t.Fatalf("quarantined record left unmatched accounting: %+v (adopted=%v)", got, adopted)
+		}
 	}
 }

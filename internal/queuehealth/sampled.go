@@ -45,6 +45,17 @@ func (q *Sampled) Observe(now time.Time, depth int, progress uint64) {
 
 func (q *Sampled) Lose(now time.Time, count uint64) { q.losses.Lose(now, count) }
 
+// SnapshotUnavailable retains independently counted losses without deriving
+// pressure from an occupancy reading the owner could not validate.
+func (q *Sampled) SnapshotUnavailable(now time.Time) Status {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	s := q.losses.Snapshot(now)
+	s.Capacity, s.DepthUnit = q.capacity, q.unit
+	s.DepthUnavailable, s.LagBasis = true, "unavailable"
+	return s
+}
+
 func (q *Sampled) Snapshot(now time.Time) Status {
 	q.mu.Lock()
 	defer q.mu.Unlock()

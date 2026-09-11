@@ -187,20 +187,23 @@ func newPhpanelQueue(db *bolt.DB, limit int) (*phpanelQueue, error) {
 	now := time.Now()
 	if err := db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(phpanelQueueBucket).ForEach(func(key, payload []byte) error {
-			var item queuedPhpanelFinding
-			queuedAt := now
-			if err := json.Unmarshal(payload, &item); err == nil && !item.Timestamp.IsZero() && item.Timestamp.Before(now) {
-				queuedAt = item.Timestamp
-			}
-			// Damaged or future timestamps supply no reliable elapsed age.
-			// The record still enters normal delivery/quarantine processing.
-			q.health.pending[string(key)] = &phpanelWork{ticket: q.health.stats.BeginAt(queuedAt, now)}
+			q.health.pending[string(key)] = &phpanelWork{ticket: q.health.stats.BeginAt(phpanelRecordTime(payload, now), now)}
 			return nil
 		})
 	}); err != nil {
 		return nil, err
 	}
 	return q, nil
+}
+
+func phpanelRecordTime(payload []byte, now time.Time) time.Time {
+	var item queuedPhpanelFinding
+	if err := json.Unmarshal(payload, &item); err == nil && !item.Timestamp.IsZero() && item.Timestamp.Before(now) {
+		return item.Timestamp
+	}
+	// Damaged or future timestamps supply no reliable elapsed age.
+	// The record still enters normal delivery/quarantine processing.
+	return now
 }
 
 func (q *phpanelQueue) updateConfig(cfg *config.Config) {
@@ -300,12 +303,12 @@ func (q *phpanelQueue) enqueueBatch(items []queuedPhpanelFinding) (int, error) {
 	for _, key := range evicted {
 		entry := q.health.pending[key]
 		delete(q.health.pending, key)
-		switch {
-		case entry == nil:
+		switch entry {
+		case nil:
 			// A record evicted from the queue file with no accounting cannot
 			// be attributed to a caller; count the finding it carried as lost.
 			phpanelHealth.losses.Lose(now, 1)
-		case entry == q.health.active:
+		case q.health.active:
 			entry.evicted = true
 		default:
 			q.discardWork(entry, now)
@@ -397,9 +400,10 @@ func (q *phpanelQueue) takeDelivery() ([]byte, []byte, *phpanelWork, error) {
 	}
 	work := q.health.pending[string(key)]
 	if work == nil {
-		// The queue file outlives the process that wrote it. A record with no
-		// accounting still has to be delivered, so it is adopted here.
-		work = &phpanelWork{ticket: q.health.stats.Begin(time.Now())}
+		// A boundary record absent from the rebuilt map still needs delivery
+		// and must retain any reliable waiting age across retries.
+		now := time.Now()
+		work = &phpanelWork{ticket: q.health.stats.BeginAt(phpanelRecordTime(payload, now), now)}
 		q.health.pending[string(key)] = work
 	}
 	work.ticket.Start(time.Now())
@@ -517,11 +521,11 @@ func (q *phpanelQueue) quarantineMalformedWithLimit(key, payload []byte, decodeE
 	if updateErr == nil && removed {
 		work := q.health.pending[string(key)]
 		delete(q.health.pending, string(key))
-		switch {
-		case work == nil:
+		switch work {
+		case nil:
 			// Quarantined a record this process never accounted for.
 			phpanelHealth.losses.Lose(time.Now(), 1)
-		case work == q.health.active:
+		case q.health.active:
 			work.evicted = true
 		default:
 			q.discardWork(work, time.Now())

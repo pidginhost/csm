@@ -108,7 +108,8 @@ Waiting work includes producers blocked on admission. Ingest work remains
 running while the dispatcher holds or processes its batch, including startup.
 Ages pause while the startup hold is in place and resume from its release, so
 a long baseline scan is not reported as a stall; work lost during the hold
-still counts.
+still counts. Releasing a hold preserves any future eligibility time for
+deliberately deferred work.
 Loss totals include the undelivered tail of a batch canceled during shutdown;
 scan warnings intentionally excluded from alerts do not count as lost work.
 Recovered file and spool scanner panics count as lost scan work. The workers
@@ -295,8 +296,9 @@ the shorter check deadline; admission and result handling each have one minute.
 A full pool stays healthy within those budgets. A free slot with no dispatch
 progress for one minute reports backlog lag. Command, decoding and storage
 failures count once per site, including when cleanup also fails. A command that
-ran and exited with an error, such as a tree wp-cli will not inventory, answered
-the check and counts no loss. Cancellation
+ran and returned output (on stdout or stderr) with an error, such as a tree
+wp-cli will not inventory, answered the check and counts no loss. Missing command output still counts as
+lost work, including when the command exited with an error. Cancellation
 adds no losses; deadline withdrawal counts unfinished sites. Buffered sites stay
 visible until the original workers stop consuming and the refresh joins them.
 Actual commands remain in flight until they return. Health reads memory only and
@@ -316,6 +318,7 @@ Recognized integrity results from a completed command, including deliberately
 filtered output, complete without a queue loss. So does a command that ran and
 refused the tree, such as a directory that is not a WordPress installation or
 one whose configuration fails to load.
+Missing command output still counts as lost work.
 Cancellation withdraws unfinished demand without loss, while deadline withdrawal
 counts unfinished installations. Commands ignoring cancellation remain in flight
 until they return. A deadline during caching cannot undo completed verification,
@@ -661,8 +664,10 @@ remains durable. An overflowed record counts as lost only when no send was
 acknowledged during this process; an active send settles that count when it
 finishes. Malformed findings count once when removed from delivery;
 their bounded diagnostic archive is retained history, not pending work.
-Waiting age uses the persisted enqueue timestamp after restart. Missing,
-damaged or future timestamps are timed from queue open. A minute of waiting
+Waiting age uses the persisted enqueue timestamp after restart. Boundary
+records absent from the accounting rebuilt at open are adopted with the same
+timestamp, so retrying them does not reset their age. Missing, damaged or future
+timestamps are timed from queue open or adoption. A minute of waiting
 or processing degrades the row; delivery and database errors remain visible
 until the affected operation succeeds. Health reads use memory only, so a
 stalled database or collector cannot block status. Disabling delivery preserves
@@ -709,7 +714,8 @@ marks the measurement unavailable and degrades the row as
 `measurement_unavailable` once it lasts half a minute, so one artefact of
 reading a live ring raises nothing; a failed final sample degrades at once and
 remains degraded. A stopped reader is reported instead of the measurement
-artefacts it causes.
+artefacts it causes. Invalid occupancy cannot inherit fullness or consumer
+stall alarms from an earlier sample; independently counted losses remain visible.
 The required kernel suite fills the shipped connection program's ring with
 real non-root connect calls and checks reservation loss and retained output.
 `fanotify.kernel` and `spool.kernel` report pending notification records and

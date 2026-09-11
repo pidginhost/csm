@@ -269,3 +269,21 @@ func TestWPCoreQueueRefusedInstallationsAreNotLostWork(t *testing.T) {
 		t.Fatal("a refused installation entered the verified cache")
 	}
 }
+
+func TestWPCoreQueueRefusalWithoutOutputIsLostWork(t *testing.T) {
+	wpCoreQueueFixtures(t, 3)
+	refused := refusedCommand(t)
+	withMockCmd(t, &mockCmd{runContext: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		wpCoreQueuePath(t, name, args)
+		return nil, refused
+	}})
+	if findings := CheckWPCore(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("missing output raised integrity findings: %+v", findings)
+	}
+	if q := wpCoreQueueSnapshot(t, time.Now()); q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 3 || q.Reason != "dropped_work" {
+		t.Fatalf("missing output was treated as a completed refusal: %+v", q)
+	}
+	if GlobalCMSCache().Size() != 0 {
+		t.Fatal("missing output entered the verified cache")
+	}
+}

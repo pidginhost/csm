@@ -111,7 +111,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A spooled report or panel finding whose accounting is missing after a restart is now delivered or counted, instead of stopping the worker that was processing it.
+- Queue health no longer reports a stall from invalid kernel occupancy or work that is not yet eligible. Adopted panel webhooks retain their waiting age, and plugin commands with missing output count as incomplete work.
+
+- A stored report or panel finding with missing queue accounting is now delivered or counted, instead of stopping the worker that was processing it.
 
 - Attack event health now names an uncertain write ahead of a backlog, the way the record queue already did.
 

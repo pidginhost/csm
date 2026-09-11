@@ -241,7 +241,7 @@ func TestTrackerHoldFreezesAgesUntilRelease(t *testing.T) {
 		t.Fatalf("deliberate hold reported as a stall: %+v", s)
 	}
 	q.Lose(now.Add(6*time.Minute), dropThreshold)
-	if s := q.Snapshot(now.Add(6 * time.Minute)); s.Status != "degraded" || s.Reason != "dropped_work" {
+	if s = q.Snapshot(now.Add(6 * time.Minute)); s.Status != "degraded" || s.Reason != "dropped_work" {
 		t.Fatalf("losses during a hold were hidden: %+v", s)
 	}
 	release := now.Add(10 * time.Minute)
@@ -259,5 +259,23 @@ func TestTrackerHoldFreezesAgesUntilRelease(t *testing.T) {
 	q.Release(release.Add(23 * time.Second))
 	if s = q.Snapshot(release.Add(23 * time.Second)); s.Status != "ok" || s.Depth != 0 || s.InFlight != 0 {
 		t.Fatalf("release without a hold changed accounting: %+v", s)
+	}
+}
+
+func TestTrackerReleasePreservesFutureEligibility(t *testing.T) {
+	now := time.Unix(1000, 0)
+	q := New(4, time.Minute)
+	ticket := q.BeginAt(now.Add(10*time.Minute), now)
+	q.Hold(now)
+	q.Release(now.Add(time.Minute))
+	if got := q.Snapshot(now.Add(2 * time.Minute)); got.Status != "ok" || got.LagSeconds != 0 || got.Depth != 1 || got.InFlight != 0 {
+		t.Fatalf("release made deferred work overdue before eligibility: %+v", got)
+	}
+	if got := q.Snapshot(now.Add(11 * time.Minute)); got.Reason != "backlog_lag" || got.LagSeconds != 60 {
+		t.Fatalf("release changed the original eligibility time: %+v", got)
+	}
+	ticket.Finish(now.Add(11 * time.Minute))
+	if got := q.Snapshot(now.Add(12 * time.Minute)); got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("deferred ticket was not settled exactly once: %+v", got)
 	}
 }

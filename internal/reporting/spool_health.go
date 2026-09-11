@@ -56,12 +56,12 @@ func (s *Spool) applyEnqueue(key string, ticket queuehealth.Ticket, evicted []st
 	for _, key := range evicted {
 		work := s.health.pending[key]
 		delete(s.health.pending, key)
-		switch {
-		case work == nil:
+		switch work {
+		case nil:
 			// A record evicted from disk with no accounting cannot be
 			// attributed to a caller; count the report it carried as lost.
 			s.health.stats.Lose(now, 1)
-		case work == s.health.active:
+		case s.health.active:
 			work.evicted = true
 		default:
 			work.discard(now)

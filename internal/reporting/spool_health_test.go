@@ -1,6 +1,8 @@
 package reporting
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -254,37 +256,67 @@ func TestSpoolHealthCorruptHeadIsVisibleAndRetained(t *testing.T) {
 	}
 }
 
-// The durable spool is written by earlier processes. A record on disk with no
-// accounting in memory must not take the abuse-report worker down with it.
+// Normal opens rebuild accounting. Insert directly to exercise a boundary
+// record without leaving an unrelated admitted ticket behind.
+func insertUntrackedSpoolBody(t *testing.T, s *Spool, body string) {
+	t.Helper()
+	payload, err := json.Marshal(spoolItem{Target: "collector", Body: []byte(body)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(s.bucket)
+		seq, err := b.NextSequence()
+		if err != nil {
+			return err
+		}
+		var key [8]byte
+		binary.BigEndian.PutUint64(key[:], seq)
+		return b.Put(key[:], payload)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSpoolHealthSurvivesRecordsWithoutAccounting(t *testing.T) {
 	s := newSpool(t, 3)
-	enqueueSpoolBody(t, s, "a")
-	s.mutation.Lock()
-	clear(s.health.pending)
-	s.mutation.Unlock()
+	insertUntrackedSpoolBody(t, s, "a")
 
 	var delivered []string
-	n, err := s.Drain(func(_ string, body []byte) error {
+	n, err := s.Drain(func(target string, body []byte) error {
+		if target != "collector" {
+			t.Errorf("target = %q", target)
+		}
 		delivered = append(delivered, string(body))
 		return nil
 	})
-	if err != nil || n != 1 || len(delivered) != 1 {
+	if err != nil || n != 1 || !reflect.DeepEqual(delivered, []string{"a"}) {
 		t.Fatalf("a record with no accounting was not delivered: delivered=%v n=%d err=%v", delivered, n, err)
 	}
-	// The cleared accounting leaves the original ticket waiting; what matters
-	// is that the adopted record finished rather than staying in flight.
-	if got := s.QueueStatuses(time.Now())["spool"]; got.InFlight != 0 || got.DroppedTotal != 0 {
-		t.Fatalf("adopted record left work in flight or counted a loss: %+v", got)
+	if got := s.QueueStatuses(time.Now())["spool"]; got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 || len(s.health.pending) != 0 || s.Len() != 0 {
+		t.Fatalf("adopted record did not settle exactly once: %+v", got)
 	}
 }
 
 func TestSpoolHealthCountsEvictedRecordsWithoutAccounting(t *testing.T) {
-	s := newSpool(t, 3)
-	before := s.QueueStatuses(time.Now())["spool"].DroppedTotal
-	s.mutation.Lock()
-	s.applyEnqueue("live", s.health.stats.Begin(time.Now()), []string{"forgotten"})
-	s.mutation.Unlock()
-	if got := s.QueueStatuses(time.Now())["spool"]; got.DroppedTotal != before+1 {
+	s := newSpool(t, 1)
+	insertUntrackedSpoolBody(t, s, "a")
+	if dropped := enqueueSpoolBody(t, s, "b"); dropped != 1 {
+		t.Fatalf("overflow dropped %d records, want 1", dropped)
+	}
+	if got := s.QueueStatuses(time.Now())["spool"]; got.DroppedTotal != 1 || got.Depth != 1 || got.InFlight != 0 {
 		t.Fatalf("an evicted record with no accounting vanished: %+v", got)
+	}
+	n, err := s.Drain(func(_ string, body []byte) error {
+		if string(body) != "b" {
+			t.Errorf("eviction retained the wrong body: %q", body)
+		}
+		return nil
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("drain: delivered=%d err=%v", n, err)
+	}
+	if got := s.QueueStatuses(time.Now())["spool"]; got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 1 || len(s.health.pending) != 0 || s.Len() != 0 {
+		t.Fatalf("eviction and delivery left unmatched accounting: %+v", got)
 	}
 }

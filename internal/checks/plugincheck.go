@@ -9,6 +9,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -436,7 +437,7 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 					work.progress()
 					if err != nil {
 						parentErr := ctx.Err()
-						if (!errors.Is(err, context.Canceled) || parentErr == nil) && !commandRefused(err) {
+						if (!errors.Is(err, context.Canceled) || parentErr == nil) && (!commandRefused(err) || errors.Is(err, errWPInventoryNoOutput)) {
 							work.fail()
 						}
 						if parentErr != nil {
@@ -663,6 +664,9 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 // unparseable JSON, so callers can tell a parse failure from an exec failure.
 var errWPInventoryParse = errors.New("wp-cli plugin list: invalid JSON")
 
+// A refusal without command output cannot account for the inventory work.
+var errWPInventoryNoOutput = errors.New("wp-cli plugin list: no output")
+
 // inventoryWPSite runs wp-cli for a single site (as the site owner) and returns
 // its current plugin inventory. Shared by the periodic cache refresh and the
 // per-finding re-check so both see identical results. Read-only: it inventories,
@@ -693,6 +697,14 @@ func inventoryWPSiteWithDomain(ctx context.Context, wpConfig string, includeDoma
 	out, err := runWPCLIStdout(ctx, user,
 		wpCLIFlags+"plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
 	)
+	if out == nil {
+		// Output retains a failed command's stderr on ExitError. A refusal
+		// there still answers the check without contaminating the JSON input.
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || len(exit.Stderr) == 0 {
+			return store.SitePlugins{}, errors.Join(errWPInventoryNoOutput, err)
+		}
+	}
 	if err != nil {
 		return store.SitePlugins{}, err
 	}

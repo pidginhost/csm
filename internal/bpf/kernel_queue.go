@@ -65,11 +65,10 @@ func (q *kernelQueue) snapshot(now func() time.Time, consumed func() uint64) que
 	}
 	at := now()
 	s := q.health.Snapshot(at)
-	s.DroppedLowerBound = q.finished
 	if invalidDepth {
-		s.Depth, s.LagSeconds = 0, 0
-		s.DepthUnavailable, s.LagBasis = true, "unavailable"
+		s = q.health.SnapshotUnavailable(at)
 	}
+	s.DroppedLowerBound = q.finished
 	unmeasured := q.unmeasured.Held(at, q.unavailable || invalidDepth, queuehealth.MeasurementWindow)
 	switch {
 	case q.closed && !q.finished:

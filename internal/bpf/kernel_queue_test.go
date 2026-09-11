@@ -211,3 +211,29 @@ func TestKernelQueueReportsStoppedReaderOverMissingCounters(t *testing.T) {
 		t.Fatalf("a stopped reader was reported as a measurement artefact: %+v", got)
 	}
 }
+
+func TestKernelQueueInvalidDepthDoesNotInheritPressure(t *testing.T) {
+	for _, depth := range []int{64, 4096} {
+		for _, lost := range []uint64{0, 3} {
+			now := time.Unix(1000, 0)
+			ring := &measuredRing{bytes: depth}
+			counts := kernelCounts{}
+			q := newKernelQueue(ring, func() (kernelCounts, error) { return counts, nil })
+			kernelQueueSnapshot(q, now, 0)
+			ring.bytes = -64
+			counts.Lost = lost
+			at := now.Add(time.Minute)
+			got := kernelQueueSnapshot(q, at, 1)
+			wantStatus, wantReason := "ok", ""
+			if lost > 0 {
+				wantStatus, wantReason = "degraded", "dropped_work"
+			}
+			if got.Status != wantStatus || got.Reason != wantReason || !got.DepthUnavailable || got.Depth != 0 || got.LagSeconds != 0 || got.DroppedTotal != lost {
+				t.Fatalf("first invalid sample inherited depth %d: %+v", depth, got)
+			}
+			if got := kernelQueueSnapshot(q, at.Add(queuehealth.MeasurementWindow), 1); got.Status != "degraded" || got.Reason != "measurement_unavailable" {
+				t.Fatalf("sustained invalid depth did not degrade: %+v", got)
+			}
+		}
+	}
+}
