@@ -682,15 +682,15 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 	// Cold detection runs commands; correlation under latestMu must only
 	// read cached platform roots.
 	platform.Detect()
-	now := time.Now()
 	latestScanMergeMu.Lock()
+	now := time.Now()
 	st.PurgeAndMergeFindingsDerivedWithGaps(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
 		gapPaths,
 		DerivedCorrelationChecks(),
 		func(merged []alert.Finding) []alert.Finding {
-			res := CorrelateFindings(merged)
+			res := defaultCorrelator.Correlate(merged, now)
 			for i := range res.Derived {
 				if res.Derived[i].Timestamp.IsZero() {
 					res.Derived[i].Timestamp = now
@@ -701,7 +701,7 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 	)
 	// Adding derived findings can evict source rows at the active-set cap.
 	// Count the final set, not the intermediate input to derivation.
-	unattributed := CorrelateFindings(st.LatestFindings()).Unattributed
+	unattributed := defaultCorrelator.Correlate(st.LatestFindings(), now).Unattributed
 	reporter := defaultUnattributedReporter
 	warnings := reporter.record(unattributed, true)
 	latestScanMergeMu.Unlock()
@@ -1132,7 +1132,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	if len(findings) > 0 {
 		platform.Detect()
 	}
-	correlated := CorrelateFindings(findings)
+	correlated := CorrelateBatchFindings(findings)
 	for i := range correlated.Derived {
 		if correlated.Derived[i].Timestamp.IsZero() {
 			correlated.Derived[i].Timestamp = now

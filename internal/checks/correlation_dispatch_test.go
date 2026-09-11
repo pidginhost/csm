@@ -8,6 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // Derived aggregates carry no action target. Passing them through every
@@ -52,5 +53,27 @@ func TestDerivedAggregatesNeverDispatchResponses(t *testing.T) {
 	}
 	if actions := AutoVirtualPatchExposedFiles(cfg, aggregates); len(actions) != 0 {
 		t.Fatalf("virtual patch stage acted on aggregates: %+v", actions)
+	}
+}
+
+func TestScanBatchCorrelationRetainsCarriedTimestamps(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	at := time.Now()
+	batch := []alert.Finding{
+		criticalAt("one", "php_remote_taint", at.Add(-2*time.Hour)),
+		criticalAt("two", "php_remote_taint", at.Add(-3*time.Hour)),
+		criticalAt("three", "webshell", at),
+	}
+	batch[0].ScanCarryForward = true
+	batch[1].ScanCarryForward = true
+	rows, _ := runParallel(&config.Config{}, nil, []namedCheck{{name: "php_taint_deep", fn: func(context.Context, *config.Config, *state.Store) []alert.Finding {
+		return batch
+	}}}, "test", true)
+	counts := checksIn(rows)
+	if counts["coordinated_attack"] != 1 || counts["cross_account_malware"] != 0 || len(rows) != 4 {
+		t.Fatalf("batch lost carried-forward evidence: %v", counts)
+	}
+	if !rows[0].Timestamp.Equal(batch[0].Timestamp) || !rows[1].Timestamp.Equal(batch[1].Timestamp) {
+		t.Fatal("batch rewrote the age of carried-forward evidence")
 	}
 }

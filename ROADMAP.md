@@ -148,7 +148,8 @@ on real data. Decide it against recorded block streams before mapping.
 
 ## Cross-account correlation sees a tenth of the detectors
 
-**Status:** open; classification complete, calibration not started.
+**Status:** open; classification and calibration complete, identity gaps and
+re-report counting remain.
 
 Every registered check now carries a correlation class (security event,
 malware artifact, ignored with a reason, or derived), the coverage table in
@@ -172,8 +173,9 @@ What remains open:
 - Mailbox and domain identities need cPanel's domain-owner table. Those
   lookups stay unattributed on other panels; authenticated bare hosting users
   and PHP relay users can still resolve through validated passwd homes.
-- The three-account threshold was set when a tenth of the detectors were
-  eligible. It has not been re-derived.
+- The three-account threshold has now been re-derived against recorded
+  streams (below). It stays at three; what was wrong was the absence of any
+  time bound, now fixed.
 - Attribution loss is now visible: the health snapshot and `csm doctor`
   name the checks whose active-set findings carry no owner and keep a
   cumulative count since start, so calibration work can see what it is
@@ -185,12 +187,49 @@ audit log into a joinable stream (see
 recordings from production hosts are kept locally, outside the repository.
 Calibration can start from them.
 
-**Acceptance:** re-derive the coordinated-attack threshold against recorded
-finding streams, including false-positive floods, unrelated long-lived
-findings, and the difference between per-batch and persisted active-state
-derivation, rather than assuming three accounts is still right at the full
-detector surface. Any change to the Critical-only limit comes with the same
-recorded-stream evidence.
+**Calibration result.** `scripts/correlation-calibrate` replays a recording
+through the production correlation. Against 100 days of one production host
+(301,860 timestamped rows, 29,533 eligible, 92.6% attributed) and two days of a
+second:
+
+- 98.8% of attributed rows repeat an account-and-check pair: 324 distinct
+  account-and-check pairs produced 27,357 attributed rows. One check alone
+  contributed 15,916 rows across 26 accounts. A repeated pair can include
+  distinct findings on that account, so it does not by itself prove re-reporting.
+- The two derivations behave nothing alike. Per batch, the aggregate raised 51
+  times in 100 days. Over the persisted set it raised 3 times and stayed raised
+  for 76% of the recording, and for 99% of the two-day recording: a latch, not
+  an alert, because the first three accounts that ever carried a critical
+  finding never left the set.
+- The account count was not the lever. Sweeping it over the same replay moves
+  the persisted result barely at all, while bounding the set by age moves it
+  from 76% raised (unbounded) to 46.1% at a day, 19.6% at six hours, 5.4% at
+  two hours and 2.4% at one hour.
+
+Persisted correlation only combines findings from the last hour.
+Persisted merges measure age at merge time, so an empty completed scan can
+clear expired aggregates; batches retain their dispatch grouping even for
+carried-forward findings with older timestamps. The three-account threshold
+and the Critical-only limit stay: including High
+severities in the account count changed the firing count by one event in 100
+days, which does not justify widening what raises a Critical aggregate.
+
+What this calibration leaves open, with the numbers to size it: correlation
+still counts rows rather than distinct observations, so a long-lived finding
+re-reported on every scan keeps refreshing its timestamp and keeps its account
+inside the window. Counting an account once per first observation instead
+collapses the same 100 days from 27,357 rows to 213 events and the per-batch
+firings from 51 to 7. Doing that needs a first-seen timestamp that survives the
+latest-state merge, which replaces a stored finding wholesale today; that is a
+change to the finding record, not to correlation.
+
+**Acceptance:** met for the threshold. Re-deriving it again, or changing the
+Critical-only limit, uses the same tool and the same recorded-stream evidence.
+The figures above record the original calibration run. The replay now applies
+the selected window directly to correlation and counts the same windowed
+accounts in its sweep; it recomputes on every arrival, including ignored checks.
+Recordings cannot reconstruct empty scans, purges or dismissals, so replay
+duration describes the observed arrivals rather than exact store history.
 
 ## The firewall audit log is written to a path nothing reads
 

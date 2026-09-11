@@ -99,8 +99,9 @@ type AutomationAction struct {
 
 // CorrelationAttribution is the operator-facing view of cross-account
 // correlation attribution. Current is the per-check count of qualifying
-// findings in the latest-state active set that carry no hosting owner, as
-// of its most recent merge; it clears when a later merge attributes them.
+// findings in the latest-state active set that carry no hosting owner and
+// are inside the correlation window at its most recent merge. Unstamped
+// legacy rows also count. A later merge clears attributed or expired rows.
 // Cumulative sums every unattributed row reported since the daemon started,
 // across active-set merges and per-batch derivations, so a producer that
 // recovered stays visible as having failed. Kept as its own type so

@@ -360,6 +360,17 @@ realtime dispatcher derive two findings from the findings they see:
   `new_executable_in_config`) is present on two or more accounts at any
   severity. Different malware checks on different accounts do not combine.
 
+Over the persisted latest-state set, both aggregates only combine findings
+from the last hour. The window is relative to the merge time, so the next
+completed scan clears expired aggregates even if it produces no findings.
+Source rows are retained when their aggregates expire, and a finding carrying
+no timestamp at all still counts. Derived timestamps never affect the window.
+
+The realtime and scan batch paths keep their existing grouping and count all
+qualifying rows in the batch. A scan can carry forward an older finding for a
+file it could not examine; its original timestamp does not exclude it from
+batch correlation or get refreshed by correlation.
+
 Every registered check is classified as a security event, a malware
 artifact, ignored with a stated reason, or derived. Derived findings are never
 inputs. A nonempty `TenantID` wins verbatim, including case, over the file
@@ -390,9 +401,10 @@ when its producer does supply an authoritative owner, that Critical counts.
 
 The health snapshot (`csm status --json`, `/api/v1/status`) carries a
 `correlation_attribution` block with two views: `current` is the per-check
-count of unattributed qualifying rows retained in the active set after its
-latest merge, including any eviction caused by the size limit, and clears
-when a later merge attributes them; `cumulative`
+count of unattributed qualifying rows retained in the active set and inside
+the correlation window at its latest merge, including any eviction caused by
+the size limit. Unstamped legacy rows also count. It clears when a later merge
+attributes those rows or they age out of the window; `cumulative`
 sums every unattributed row since the daemon started, across active-set
 merges and per-batch derivations, so a producer that recovered stays visible
 as having failed. Counters are published together in merge order. The block

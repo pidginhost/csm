@@ -65,7 +65,7 @@ func expandWithCorrelation(findings []alert.Finding, now time.Time) []alert.Find
 		seen[findings[i].Key()] = struct{}{}
 	}
 
-	res := checks.CorrelateFindings(findings)
+	res := checks.CorrelateBatchFindings(findings)
 	for i := range res.Derived {
 		if res.Derived[i].Timestamp.IsZero() {
 			res.Derived[i].Timestamp = now

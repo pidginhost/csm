@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A calibration tool replays a recorded finding stream through cross-account correlation and reports what each candidate threshold would have raised, so the thresholds can be re-derived from what hosts produced.
+
 - CSM now ships a request filter for the LiteSpeed Cache role-simulation takeover. Sites whose WordPress is too old for the fixed plugin line have no upgrade path, and ordinary crawling still works because the filter only covers privileged targets and writes.
 
 - Code stored in a plugin's own status options, which WordPress prints in the dashboard as a notice, is now reported as a critical database finding. LiteSpeed Cache is covered first, since an unauthenticated request can write those rows on older versions.
@@ -24,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - WordPress database scan warnings now count config, query and content-read failures, name examples, and keep discovery gaps visible. Multisite safety-limit warnings no longer hide failures at other installs.
+
+- Cross-account correlation now only combines findings from the last hour of the stored finding set, and clears an aggregate on the next scan once that hour passes. It had no time bound at all, so the coordinated-attack alert latched on the first three accounts that ever carried a critical finding and never cleared. Attribution health reports the same window.
 
 - Real-time WordPress admin-creation detection now requires an administrator role token alongside the credential shape, matching the scheduled rule of the same name, and accepts the same whitespace. The importer bundled inside many themes and plugins creates users from an import form without touching a role, and was reported as critical on every plugin update that staged it.
 

@@ -17,6 +17,28 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
+func TestExpandWithCorrelationKeepsBatchWithOldTimestamps(t *testing.T) {
+	now := time.Now()
+	batch := []alert.Finding{
+		{Check: "webshell", Severity: alert.Critical, TenantID: "one", Timestamp: now.Add(-3 * time.Hour)},
+		{Check: "webshell", Severity: alert.Critical, TenantID: "two", Timestamp: now.Add(-2 * time.Hour)},
+		{Check: "db_rogue_admin", Severity: alert.Critical, TenantID: "three", Timestamp: now},
+		{Check: "webshell", Severity: alert.Critical, Timestamp: now.Add(-2 * time.Hour)},
+	}
+	checks.ResetAttributionHealthForTest()
+	t.Cleanup(checks.ResetAttributionHealthForTest)
+	got := expandWithCorrelation(batch, now)
+	if len(got) != 6 || got[4].Check != "coordinated_attack" || got[5].Check != "cross_account_malware" {
+		t.Fatalf("batch lost timestamped evidence: %+v", got)
+	}
+	if h := checks.AttributionHealth(); h.Cumulative["webshell"] != 1 {
+		t.Fatalf("batch lost attribution diagnostics: %+v", h)
+	}
+	if again := expandWithCorrelation(got, now.Add(time.Hour)); !reflect.DeepEqual(again, got) {
+		t.Fatal("dispatch changed an already-correlated batch")
+	}
+}
+
 func TestExpandWithCorrelationSharesUnattributedReporter(t *testing.T) {
 	// A subprocess starts with a fresh process-wide seen set without
 	// resetting a reporter that other daemon tests may have used.

@@ -116,8 +116,12 @@ func accountHomeSubPatterns(sub string) []string {
 // must lie strictly inside an account directory: a root or an account home
 // itself is not "inside an account".
 func accountRootOf(path string) (root, account string, ok bool) {
+	return accountRootOfAt(path, accountHomeRoots())
+}
+
+func accountRootOfAt(path string, roots []string) (root, account string, ok bool) {
 	clean := filepath.Clean(path)
-	for _, r := range accountHomeRoots() {
+	for _, r := range roots {
 		r = filepath.Clean(r)
 		rest, found := strings.CutPrefix(clean, r+string(filepath.Separator))
 		if !found {
@@ -167,11 +171,12 @@ func accountRootPrefixes(extra ...string) []string {
 	return append(out, extra...)
 }
 
-// accountNameInText returns the account named by the first
+// accountNameInTextAt returns the account named by the first
 // "<root>/<account>/" reference in free text (a finding message or
 // details), or "" when none is present.
-func accountNameInText(text string) string {
-	for _, prefix := range accountRootPrefixes() {
+func accountNameInTextAt(text string, roots []string) string {
+	for _, root := range roots {
+		prefix := filepath.Clean(root) + string(filepath.Separator)
 		idx := strings.Index(text, prefix)
 		if idx < 0 {
 			continue
