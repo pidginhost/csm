@@ -383,127 +383,133 @@ func TestModSecBlocksLiteSpeedRoleSimulation(t *testing.T) {
 	}
 }
 
-// Role simulation is legitimate only while the crawler warms public pages.
-// The takeover needs a privileged target -- the REST users route, or
-// wp-admin -- so the patch is scoped there and ordinary crawling is untouched.
-func TestLiteSpeedSimulationPatchScopesToPrivilegedTargets(t *testing.T) {
+// Check complete chains rather than finding a matching regex somewhere later
+// in the file. A missing link must fail even if the next rule contains it.
+func liteSpeedSimulationChains(t *testing.T) [][]string {
+	t.Helper()
 	conf := string(embeddedModSec)
-	re := regexp.MustCompile(`SecRule REQUEST_URI "@rx ([^"]+)"[\s\S]{0,200}CVE-2024-28000`)
-	m := regexp.MustCompile(`(?s)id:900128.*?SecRule REQUEST_URI "@rx ([^"]+)"`).FindStringSubmatch(conf)
-	if m == nil {
-		m = re.FindStringSubmatch(conf)
-	}
-	if m == nil {
-		t.Fatal("no REQUEST_URI scope on the CVE-2024-28000 patch")
-	}
-	uriRE := regexp.MustCompile(m[1])
-	for _, tc := range []struct {
-		uri   string
-		match bool
-	}{
-		{"/wp-json/wp/v2/users", true},
-		{"/wp-json/wp/v2/users/", true},
-		{"/index.php?rest_route=/wp/v2/users", true},
-		{"/wp-admin/user-new.php", true},
-		{"/wp-admin/", true},
-		// What the crawler actually visits.
-		{"/", false},
-		{"/shop/product-1/", false},
-		{"/wp-json/wp/v2/posts", false},
-		{"/blog/2026/09/a-post/", false},
-	} {
-		if got := uriRE.MatchString(tc.uri); got != tc.match {
-			t.Errorf("uri %q matched = %v, want %v", tc.uri, got, tc.match)
-		}
-	}
-}
-
-// The hash length is the discriminator: six characters is the vulnerable
-// line, and 6.4 and later use thirty-two. Matching the longer form would
-// block the crawler on a patched site for no gain.
-func TestLiteSpeedSimulationHashPatternTargetsTheWeakHash(t *testing.T) {
-	conf := string(embeddedModSec)
-	re := regexp.MustCompile(`SecRule REQUEST_COOKIES:litespeed_hash "@rx ([^"]+)"`)
-	m := re.FindStringSubmatch(conf)
-	if m == nil {
-		t.Fatal("no litespeed_hash cookie pattern in the rules")
-	}
-	hashRE := regexp.MustCompile(m[1])
-	for _, tc := range []struct {
-		hash  string
-		match bool
-	}{
-		{"a1b2c3", true}, // Str::rrand(6), the vulnerable hash
-		{"000000", true}, // brute force walks the whole space
-		{"Ab3Xz9", true}, // mixed case is in the alphabet
-		{"a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6", false}, // Str::rrand(32), the fixed line
-		{"a1b2c3d4e5f6g7h8i9j0k1", false},           // anything past the weak length
-		{"a1b2-c3", false},                          // not the plugin's alphabet
-	} {
-		if got := hashRE.MatchString(tc.hash); got != tc.match {
-			t.Errorf("hash %q matched = %v, want %v", tc.hash, got, tc.match)
-		}
-	}
-}
-
-// Role simulation names a user ID. Anything else in that cookie is not the
-// shape the plugin writes.
-func TestLiteSpeedSimulationRolePatternIsAUserID(t *testing.T) {
-	conf := string(embeddedModSec)
-	re := regexp.MustCompile(`SecRule REQUEST_COOKIES:litespeed_role "@rx ([^"]+)"`)
-	m := re.FindStringSubmatch(conf)
-	if m == nil {
-		t.Fatal("no litespeed_role cookie pattern in the rules")
-	}
-	roleRE := regexp.MustCompile(m[1])
-	for _, tc := range []struct {
-		role  string
-		match bool
-	}{
-		{"1", true},
-		{"42", true},
-		{"", false},
-		{"1; drop", false},
-		{"admin", false},
-	} {
-		if got := roleRE.MatchString(tc.role); got != tc.match {
-			t.Errorf("role %q matched = %v, want %v", tc.role, got, tc.match)
-		}
-	}
-}
-
-// Blocking the published path is not enough. A simulated administrator can
-// reach any privileged endpoint, and WordPress exposes plugin installation
-// over REST too. The crawler only ever issues GET while warming public pages,
-// so a write carrying simulation cookies is never the crawler.
-func TestLiteSpeedSimulationPatchBlocksWritesAnywhere(t *testing.T) {
-	conf := string(embeddedModSec)
-	start := strings.Index(conf, "id:900129")
+	start := strings.Index(conf, "# --- CVE-2024-28000:")
 	if start < 0 {
-		t.Fatal("id:900129 missing: simulation cookies on a write request are unpatched")
+		t.Fatal("LiteSpeed simulation rules missing")
 	}
-	block := conf[start:]
-	m := regexp.MustCompile(`SecRule REQUEST_METHOD "([^"]+)"`).FindStringSubmatch(block)
-	if m == nil {
-		t.Fatal("id:900129 does not test REQUEST_METHOD")
+	conf = strings.ReplaceAll(conf[start:], "\\\n", "")
+	links := regexp.MustCompile(`(?m)^SecRule (?:"([^"]+)"|(\S+)) "([^"]+)"\s+"([^"]+)"`).FindAllStringSubmatch(conf, -1)
+	if len(links) != 6 {
+		t.Fatalf("got %d chain links, want two complete three-link rules", len(links))
 	}
-	if !strings.HasPrefix(m[1], "!@rx ") {
-		t.Fatalf("REQUEST_METHOD operator = %q, want a negated match so reads pass", m[1])
+	for i, link := range links {
+		if link[1] == "" {
+			link[1] = link[2]
+		}
+		actions := strings.Split(strings.ReplaceAll(link[4], " ", ""), ",")
+		if i%3 != 2 && actions[len(actions)-1] != "chain" {
+			t.Errorf("link %d: chain must be the last action", i)
+		}
+		if i%3 == 0 {
+			for _, required := range []string{"id:" + strconv.Itoa(900128+i/3), "phase:1", "deny", "status:403", "log", "t:none"} {
+				if !strings.Contains(link[4], required) {
+					t.Errorf("chain starter %d missing %s", i, required)
+				}
+			}
+		} else {
+			for _, action := range actions {
+				if !strings.HasPrefix(action, "t:") && !(action == "chain" && i%3 == 1) {
+					t.Errorf("link %d has a starter-only or unexpected action %q", i, action)
+				}
+			}
+		}
 	}
-	methodRE := regexp.MustCompile(strings.TrimPrefix(m[1], "!@rx "))
+	return links
+}
+
+func TestLiteSpeedSimulationChainSyntax(t *testing.T) {
+	liteSpeedSimulationChains(t)
+}
+
+func TestLiteSpeedSimulationCookieSemantics(t *testing.T) {
+	links := liteSpeedSimulationChains(t)
+	for _, offset := range []int{0, 3} {
+		role, hash := links[offset], links[offset+1]
+		for _, tc := range []struct {
+			link []string
+			name string
+			want string
+		}{
+			{role, "role", `REQUEST_COOKIES:/^litespeed[._\x20\[]role$/`},
+			{hash, "hash", `REQUEST_COOKIES:/^litespeed[._\x20\[]hash$/`},
+		} {
+			if tc.link[1] != tc.want {
+				t.Errorf("%s selector = %q, must cover PHP cookie name aliases", tc.name, tc.link[1])
+			}
+		}
+		roleRE := regexp.MustCompile(strings.TrimPrefix(role[3], "@rx "))
+		for _, value := range []string{"1", "+1", "1.0", "1e0", "%31", " 1"} {
+			if !roleRE.MatchString(value) {
+				t.Errorf("role gate misses PHP numeric ID %q", value)
+			}
+		}
+		if !strings.Contains(hash[4], "t:none,t:urlDecode") {
+			t.Error("hash must decode PHP cookie values")
+		}
+		hashRE := regexp.MustCompile(strings.TrimPrefix(hash[3], "@rx "))
+		for _, tc := range []struct {
+			value string
+			match bool
+		}{
+			{"Ab3Xz9", true}, {"%41b3Xz9", true},
+			{"a", true}, {strings.Repeat("a", 16), true},
+			{strings.Repeat("a", 17), false}, {strings.Repeat("a", 32), false},
+			{"+123456", true}, {"123456.0", true}, {"1.23456e5", true}, {"1.23456e+5", true},
+			{"00000000000000000000000000123456", true},
+			{"", false}, {"a1b2-c3", false},
+		} {
+			value, err := url.QueryUnescape(tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hashRE.MatchString(value); got != tc.match {
+				t.Errorf("hash %q matched = %v, want %v", tc.value, got, tc.match)
+			}
+		}
+	}
+}
+
+func TestLiteSpeedSimulationRequestSemantics(t *testing.T) {
+	links := liteSpeedSimulationChains(t)
+	scope := links[2]
+	if scope[1] != `REQUEST_FILENAME|ARGS_GET:/^\x20*rest[._\x20\[]route$/` {
+		t.Fatalf("scope must separate paths from PHP-normalized REST query fields, got %q", scope[1])
+	}
+	scopeRE := regexp.MustCompile(strings.TrimPrefix(scope[3], "@rx "))
 	for _, tc := range []struct {
-		method string
-		read   bool
+		value string
+		match bool
 	}{
-		{"GET", true},
-		{"HEAD", true},
-		{"POST", false},
-		{"PUT", false},
-		{"PATCH", false},
-		{"DELETE", false},
+		{"/wp-admin", true}, {"/blog/wp-admin/users.php", true},
+		{"/wp-json/wp/v2/users", true}, {"/wp/v2/users", true}, {"wp/v2/users", true},
+		{"/shop/product/", false}, {"/wp-json/wp/v2/posts", false},
+		{"/wp-json/wp/v2/users-guide", false}, {"/wp-admin-guide/", false},
 	} {
-		if got := methodRE.MatchString(tc.method); got != tc.read {
-			t.Errorf("%s treated as a crawler read = %v, want %v", tc.method, got, tc.read)
+		if got := scopeRE.MatchString(tc.value); got != tc.match {
+			t.Errorf("scope %q matched = %v, want %v", tc.value, got, tc.match)
+		}
+	}
+	method := links[5]
+	if method[1] != `REQUEST_METHOD|REQUEST_HEADERS:/(?i)^x[._-]http[._-]method[._-]override$/|ARGS_GET:/^\x20*[._\[]method$/` {
+		t.Fatalf("write guard must inspect PHP method overrides, got %q", method[1])
+	}
+	if !strings.HasPrefix(method[3], "!@rx ") {
+		t.Fatal("method guard must be a negated read match")
+	}
+	methodRE := regexp.MustCompile(strings.TrimPrefix(method[3], "!@rx "))
+	for _, value := range []string{"POST", "PUT", "PATCH", "DELETE", "post"} {
+		if methodRE.MatchString(value) {
+			t.Errorf("write %q exempted as a crawler read", value)
+		}
+	}
+	for _, value := range []string{"GET", "HEAD", "get", "head"} {
+		if !methodRE.MatchString(value) {
+			t.Errorf("read override %q blocked", value)
 		}
 	}
 }

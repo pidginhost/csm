@@ -43,6 +43,26 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **WAF event log parsing** - correlates events by IP, URI, and rule ID
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
 
+The LiteSpeed Cache role-simulation filter covers privileged routes and writes,
+including WordPress REST method overrides, when requests carry simulation cookies
+with a weak hash. Ordinary public GET/HEAD crawling remains allowed. This is a
+request-scoped mitigation: public reads still run under the simulated identity,
+so upgrading the vulnerable plugin remains necessary.
+
+The usual hash discriminator is 1-16 alphanumeric characters versus the fixed
+plugin's 32-character hashes. Numeric equivalents are also filtered because the
+vulnerable plugin compares hashes loosely; padding or exponent notation must not
+turn a weak hash into an exempt one. These checks also keep public crawler reads
+allowed.
+
+For Apache ModSecurity v2 regression validation, run
+`python3 scripts/test-litespeed-modsec.py` in a disposable Debian Linux environment
+with `apache2`, `libapache2-mod-security2`, `libapache2-mod-php`, and `python3`
+installed. The test loads the complete shipped configuration and exercises HTTP
+requests through the actual engine and PHP parser. It does not establish
+LiteSpeed runtime compatibility; verify changed rules on the supported LiteSpeed
+engine before deployment.
+
 ## Web UI Pages
 
 **ModSecurity** (`/modsec`) - WAF status overview, event log, active block list, filterable by time range, minimum severity, and source country

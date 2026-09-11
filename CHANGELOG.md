@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The LiteSpeed Cache request filter now covers equivalent cookie and request forms while preserving ordinary crawler reads. Public links to administrative pages no longer cause false blocks.
+
 - Plugin notice scanning inspects longer stored messages and reports incomplete reads, preserving earlier findings when the full notice cannot be checked. Existing executable-markup checks now apply consistently to these notices.
 
 - Database cleanup refuses partial changes to plugin notices when executable content remains, including loaders on ordinary HTTPS hosts.
