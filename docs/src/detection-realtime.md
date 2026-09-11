@@ -53,6 +53,11 @@ directory, repeated after the normal alert cooldown if activity continues.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
+WordPress admin-creation signatures use the same role and credential requirements
+in real-time and scheduled scans. Bundled importers that create users with
+generated passwords do not trigger this signature solely because they read a
+login from an import form.
+
 Complete blank files are excluded from dropper alerts after a close-write
 observation. Metadata-only changes during the read, such as an unlink, are
 retried only while content metadata, executable mode and the retained bytes
