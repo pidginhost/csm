@@ -229,7 +229,11 @@ func (c *dbScanCoverage) summary() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d of %d discovered installs could not be fully inspected.\n", c.skipped(), c.discovered)
 	for _, reason := range reasons {
-		fmt.Fprintf(&b, "%s=%d (example: %s)\n", reason, c.counts[reason], truncateDB(c.examples[reason], 200))
+		// Account-controlled names must not forge reason lines or terminal
+		// commands. Bound the escaped display so expansion cannot grow it.
+		example := strconv.QuoteToASCII(c.examples[reason])
+		example = truncateDB(example[1:len(example)-1], 200)
+		fmt.Fprintf(&b, "%s=%d (example: %s)\n", reason, c.counts[reason], example)
 	}
 	if c.discoveryIncomplete {
 		b.WriteString("Document-root discovery was incomplete; additional installs may be missing.\n")

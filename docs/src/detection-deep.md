@@ -57,7 +57,9 @@ The WordPress database scan reports what it could not fully inspect as
 `db_content_scan_incomplete`, counting affected installs against the number
 discovered and naming one bounded example config path per reason:
 `unreadable_config`, `missing_credentials`, `unresolved_table_prefix`,
-`query_failed` or `incomplete_content`. Content gaps include truncated or
+`query_failed` or `incomplete_content`. Example paths use ASCII escapes for
+control characters, non-ASCII bytes, quotes and backslashes, with the existing
+length limit applied after escaping. Content gaps include truncated or
 unusable query results. Each install counts once; installs sharing a failed
 database count as affected without retrying its queries. Incomplete discovery
 is reported separately in the details because additional installs may be

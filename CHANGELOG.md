@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- WordPress database scan warnings now escape account-controlled names so they cannot alter the diagnostic or terminal display.
+
 - The LiteSpeed Cache request filter now covers equivalent cookie and request forms while preserving ordinary crawler reads. Public links to administrative pages no longer cause false blocks.
 
 - Plugin notice scanning inspects longer stored messages and reports incomplete reads, preserving earlier findings when the full notice cannot be checked. Existing executable-markup checks now apply consistently to these notices.
