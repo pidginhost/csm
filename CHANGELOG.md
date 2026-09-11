@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Audit records, stored finding history and attack events redact recognized credentials before they are written, including the history the web UI shows and exports. Session identifiers from cPanel login lines are covered.
+
+- Repeated and quoted password and token fields are now redacted consistently. Redaction keeps finding correlation and unrelated log evidence intact.
+
 ## [3.37.0] - 2026-09-11
 
 ### Highlights

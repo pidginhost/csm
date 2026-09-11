@@ -22,7 +22,7 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 		b := tx.Bucket([]byte("history"))
 
 		for i, f := range findings {
-			val, err := json.Marshal(f)
+			val, err := json.Marshal(alert.SanitizeFinding(f))
 			if err != nil {
 				return err
 			}

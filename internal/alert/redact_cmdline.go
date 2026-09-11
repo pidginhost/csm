@@ -85,7 +85,10 @@ func RedactCommandLine(s string) string {
 			continue
 		}
 		hasURL := strings.Contains(text, "://")
-		if !hasURL {
+		// An assignment can contain a URL as its value. An equals sign
+		// inside the URL itself must never make its authority a secret key.
+		eq := strings.IndexByte(text, '=')
+		if !hasURL || (eq >= 0 && eq < strings.Index(text, "://")) {
 			if r, ok := redactAssignments(text); ok {
 				tok.text = r
 				changed = true
@@ -103,28 +106,33 @@ func RedactCommandLine(s string) string {
 			if r := redactURLToken(text); r != text {
 				tok.text = r
 				changed = true
-				continue
 			}
+			continue
 		}
 		if r, ok := redactAssignments(text); ok {
 			tok.text = r
 			changed = true
 		}
 	}
-	if !changed {
-		return display
+	if changed {
+		var b strings.Builder
+		b.Grow(len(display))
+		last := 0
+		for _, tok := range tokens {
+			b.WriteString(display[last:tok.start])
+			b.WriteString(tok.text)
+			last = tok.end
+		}
+		b.WriteString(display[last:])
+		display = b.String()
 	}
-
-	var b strings.Builder
-	b.Grow(len(display))
-	last := 0
-	for _, tok := range tokens {
-		b.WriteString(display[last:tok.start])
-		b.WriteString(tok.text)
-		last = tok.end
+	// Flattening argv changes how quotes group the displayed text. Redact
+	// that representation too, after protecting values with known argv
+	// boundaries. The display has no NULs, so this cannot recurse again.
+	if strings.IndexByte(s, 0) >= 0 {
+		return RedactCommandLine(display)
 	}
-	b.WriteString(display[last:])
-	return b.String()
+	return display
 }
 
 type cmdToken struct {

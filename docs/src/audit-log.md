@@ -198,6 +198,31 @@ webhook stream. Plan SIEM retention accordingly.
 
 ### What does not get logged
 
+Before a record is written, its message and details replace recognized
+password fields, API tokens, command-line secrets and cPanel session
+identifiers with `[REDACTED]`. Session redaction covers cPanel, WHM,
+Webmail, the shared server daemon, DAV and security purge log lines. It
+keeps the account name beside a session identifier, leaves unrelated
+lines of a multiline finding alone, and leaves already redacted text
+unchanged when it runs again. Repeated and quoted values are all
+covered, including the displayed form of NUL-separated arguments.
+
+The same redaction runs on email digests, on new finding history in
+both the bbolt and the legacy JSONL backend, and therefore on the
+history the web UI serves and exports as CSV. Attack event messages are
+redacted before truncation, so a truncated line cannot hide a
+credential behind a cut service tag; attack events store no finding
+details. Account and IP attribution is read from the original finding,
+and finding IDs are computed from it too, so audit records still
+correlate with remediation records. Other structured fields are copied
+unchanged.
+
+Two limits are worth knowing. Records written by earlier versions are
+not rewritten, so an existing log keeps whatever it already holds. The
+active-finding snapshot and the pending queues are process-local state
+that is read back and compared by the daemon itself, so they are not
+redacted.
+
 The audit log is not a replacement for `csm.history` (the bbolt
 history bucket). Only findings that pass through `alert.Dispatch()`
 are emitted. Internal state changes -- daemon startup, reload events,
