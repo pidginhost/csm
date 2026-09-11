@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.37.0] - 2026-09-11
+
 ### Highlights
 
 - Every bounded queue in the daemon now reports depth, work in flight, losses and lag through `csm status`, `/api/v1/status` and `csm doctor`. A busy cPanel host publishes around sixty rows.
