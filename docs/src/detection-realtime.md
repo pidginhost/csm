@@ -53,15 +53,20 @@ directory, repeated after the normal alert cooldown if activity continues.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
-Both real-time and scheduled WordPress admin-creation signatures require an
-administrator role plus literal or request-derived credentials, and accept the
-same ASCII whitespace and case variants for required tokens. Bundled importers
-that create users with generated passwords do not trigger this signature solely
-because they read a login from an import form.
+Both the real-time and the scheduled WordPress admin-creation signature
+require an administrator role token plus literal or request-derived
+credentials, and both accept the same ASCII whitespace, including the vertical
+tab. An importer that creates users with a generated password does not trigger
+either one just for reading a login from an import form.
 
-The engines still differ on non-ASCII text in bounded credential expressions:
-real-time YAML regexes count Unicode characters, while scheduled YARA regexes
-count bytes. Full strictness parity is not yet enforced across the rulesets.
+Two divergences between the engines are known and left in place. Go folds the
+Unicode long s into ASCII s and YARA's nocase does not, so a token spelled
+with it can match in real time where a scan declines. Bounded expressions also
+count differently: the real-time engine counts characters and the scheduled one
+counts bytes. Neither can occur in real PHP, and both belong in the scanner's
+regex compilation rather than in hand-written escapes inside every rule.
+Strictness parity is not enforced across the rulesets: the parity check
+compares rule names, not how strict each side is.
 
 Complete blank files are excluded from dropper alerts after a close-write
 observation. Metadata-only changes during the read, such as an unlink, are
