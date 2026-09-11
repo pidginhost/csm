@@ -413,7 +413,7 @@ func liteSpeedSimulationChains(t *testing.T) [][]string {
 			}
 		} else {
 			for _, action := range actions {
-				if !strings.HasPrefix(action, "t:") && !(action == "chain" && i%3 == 1) {
+				if !strings.HasPrefix(action, "t:") && (action != "chain" || i%3 != 1) {
 					t.Errorf("link %d has a starter-only or unexpected action %q", i, action)
 				}
 			}
