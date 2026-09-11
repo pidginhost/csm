@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Code stored in a plugin's own status options, which WordPress prints in the dashboard as a notice, is now reported as a critical database finding. LiteSpeed Cache is covered first, since an unauthenticated request can write those rows on older versions.
 
+- The known-vulnerable plugin feed now covers the three LiteSpeed Cache issues behind that injection, so a site still running an affected version alerts even after its stored payload is removed.
+
 ### Changed
 
 - Go dependencies and the pinned GitHub Actions are updated to their current releases.
