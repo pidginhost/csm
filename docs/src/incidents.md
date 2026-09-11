@@ -548,6 +548,7 @@ Attribution gaps:
 | `db_malicious_trigger` | security event |  |  |
 | `db_options_injection` | security event |  |  |
 | `db_options_new_external_script` | security event |  |  |
+| `db_options_plugin_notice_injection` | security event |  |  |
 | `db_phantom_post_author` | security event |  |  |
 | `db_post_injection` | security event |  |  |
 | `db_post_volume_burst` | security event |  |  |

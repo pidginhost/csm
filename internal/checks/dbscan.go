@@ -799,6 +799,24 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		}
 	}
 
+	// Path 1b: Plugin status options that WordPress renders as admin
+	// notices. These are queried by name because the generic script lookup
+	// above caps its result set and requires a src attribute, while an
+	// injection here may be inline. The option's identity is the verdict,
+	// so neither host reputation nor the first-seen baseline applies.
+	query = fmt.Sprintf(
+		"SELECT option_name, LEFT(option_value, 500) FROM %soptions WHERE option_name IN (%s) AND option_value LIKE '%%<script%%' LIMIT %d",
+		prefix, pluginNoticeSinkNameList(), len(pluginNoticeSinkOptions))
+	for _, line := range runMySQLQuery(creds, query) {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if finding := pluginNoticeInjectionFinding(user, creds, prefix, parts[0], parts[1]); finding != nil {
+			findings = append(findings, *finding)
+		}
+	}
+
 	// Path 2: Inline script/code injection in core WP options that should
 	// NEVER contain JavaScript (siteurl, home, blogname, blogdescription).
 	coreOpts := "siteurl', 'home', 'blogname', 'blogdescription', 'admin_email"
