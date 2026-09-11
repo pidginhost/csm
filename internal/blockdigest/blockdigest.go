@@ -347,8 +347,10 @@ func (c *Collector) maybeLive(rec Record) {
 		return
 	}
 	c.lastLive[rec.IP] = now
-	plan := c.beginDelivery()
 	c.mu.Unlock()
+	// The delivery policy is injected by the caller, so it is consulted
+	// outside this lock. The dedup decision above already stands.
+	plan := c.beginDelivery()
 	defer plan.finish()
 
 	d := Digest{

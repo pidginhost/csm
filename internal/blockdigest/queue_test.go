@@ -128,3 +128,26 @@ func TestBlockDigestQueueGatingAndShutdown(t *testing.T) {
 		t.Fatalf("explicit final flush changed existing recovery: calls=%d row=%+v", calls, row)
 	}
 }
+
+// The policy lookup is injected by the daemon. Calling it under the collector
+// lock puts that caller's locks behind this one.
+func TestLiveAlertConsultsDeliveryPolicyWithoutTheCollectorLock(t *testing.T) {
+	var c *Collector
+	held := false
+	c = New(Options{
+		Interval: time.Hour, SendOn: "any", MinBlock: 1, Live: true,
+		EmailSink: func(string, string) error { return nil },
+		DeliveryEnabled: func(string) bool {
+			if c.mu.TryLock() {
+				c.mu.Unlock()
+			} else {
+				held = true
+			}
+			return true
+		},
+	})
+	c.Observe("198.51.100.23", "fixture customer block", time.Unix(0, 0))
+	if held {
+		t.Fatal("delivery policy was consulted while the collector lock was held")
+	}
+}
