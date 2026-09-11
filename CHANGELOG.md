@@ -25,9 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Cross-account alerts now expire after quiet scans, and attribution health uses the same observation window. Offline calibration honors the selected window, keeps its account counts consistent with alerts, and no longer probes the replay host.
-
-- Cross-account correlation now only combines findings raised within an hour of each other. Over the persisted finding set it had no time bound at all, so the coordinated-attack aggregate latched on the first three accounts that ever carried a critical finding and never cleared.
+- Cross-account correlation now only combines findings from the last hour of the stored finding set, and clears an aggregate on the next scan once that hour passes. It had no time bound at all, so the coordinated-attack alert latched on the first three accounts that ever carried a critical finding and never cleared. Attribution health reports the same window.
 
 - Real-time WordPress admin-creation detection now requires an administrator role token alongside the credential shape, matching the scheduled rule of the same name, and accepts the same whitespace. The importer bundled inside many themes and plugins creates users from an import form without touching a role, and was reported as critical on every plugin update that staged it.
 
