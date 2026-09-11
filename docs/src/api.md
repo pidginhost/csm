@@ -292,7 +292,9 @@ capacity. Inventory uses a four-minute budget for its two bounded commands, or
 the shorter check deadline; admission and result handling each have one minute.
 A full pool stays healthy within those budgets. A free slot with no dispatch
 progress for one minute reports backlog lag. Command, decoding and storage
-failures count once per site, including when cleanup also fails. Cancellation
+failures count once per site, including when cleanup also fails. A command that
+ran and exited with an error, such as a tree wp-cli will not inventory, answered
+the check and counts no loss. Cancellation
 adds no losses; deadline withdrawal counts unfinished sites. Buffered sites stay
 visible until the original workers stop consuming and the refresh joins them.
 Actual commands remain in flight until they return. Health reads memory only and
@@ -309,7 +311,9 @@ dispatch progress for one minute reports backlog lag. Returned operational
 failures and abandoned work count once per installation. A command killed by a
 signal counts as failed work while retaining any partial integrity findings.
 Recognized integrity results from a completed command, including deliberately
-filtered output, complete without a queue loss.
+filtered output, complete without a queue loss. So does a command that ran and
+refused the tree, such as a directory that is not a WordPress installation or
+one whose configuration fails to load.
 Cancellation withdraws unfinished demand without loss, while deadline withdrawal
 counts unfinished installations. Commands ignoring cancellation remain in flight
 until they return. A deadline during caching cannot undo completed verification,

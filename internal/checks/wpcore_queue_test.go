@@ -251,3 +251,21 @@ func TestWPCoreQueueWorkerExitAccountsForAbandonedSites(t *testing.T) {
 		t.Fatal("interrupted checks entered verified cache")
 	}
 }
+
+func TestWPCoreQueueRefusedInstallationsAreNotLostWork(t *testing.T) {
+	wpCoreQueueFixtures(t, 3)
+	refused := refusedCommand(t)
+	withMockCmd(t, &mockCmd{runContext: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		wpCoreQueuePath(t, name, args)
+		return []byte("Error: This does not seem to be a WordPress installation.\n"), refused
+	}})
+	if findings := CheckWPCore(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("a refused installation raised integrity findings: %+v", findings)
+	}
+	if q := wpCoreQueueSnapshot(t, time.Now()); q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 0 || q.Status != "ok" {
+		t.Fatalf("installations wp-cli refused to check were counted as lost work: %+v", q)
+	}
+	if GlobalCMSCache().Size() != 0 {
+		t.Fatal("a refused installation entered the verified cache")
+	}
+}

@@ -548,7 +548,8 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 						findings = append(findings, collapsed)
 						mu.Unlock()
 					}
-					if !reported {
+					// wp-cli that ran and refused this tree answered the check.
+					if !reported && !commandRefused(err) {
 						work.fail()
 					}
 				})

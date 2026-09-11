@@ -436,7 +436,7 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 					work.progress()
 					if err != nil {
 						parentErr := ctx.Err()
-						if !errors.Is(err, context.Canceled) || parentErr == nil {
+						if (!errors.Is(err, context.Canceled) || parentErr == nil) && !commandRefused(err) {
 							work.fail()
 						}
 						if parentErr != nil {

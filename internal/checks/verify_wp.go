@@ -19,7 +19,7 @@ import (
 var wpVerifyAllowedRoots []string
 
 // wpVerifyTimeout bounds the synchronous wp-cli re-scan a Re-check click runs.
-const wpVerifyTimeout = 30 * time.Second
+var wpVerifyTimeout = 30 * time.Second
 
 // findingDetailPath extracts the "Path: <dir>" value emitted in a finding's
 // Details (outdated_plugins and the WordPress checks record the install path

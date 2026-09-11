@@ -13,6 +13,7 @@ import (
 )
 
 func TestWPCoreRealCommandTimeoutMustNotVerifyFiles(t *testing.T) {
+	withCommandTimeout(t, 2*time.Second)
 	wpCoreQueueFixtures(t, 1)
 	var calls atomic.Int32
 	withMockCmd(t, &mockCmd{runContext: func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -86,6 +87,9 @@ func TestRunCmdCombinedContextPreservesParentDeadline(t *testing.T) {
 }
 
 func TestVerifyWPCoreRealTimeoutDoesNotResolveFinding(t *testing.T) {
+	previous := wpVerifyTimeout
+	wpVerifyTimeout = 2 * time.Second
+	t.Cleanup(func() { wpVerifyTimeout = previous })
 	root := t.TempDir()
 	withWPVerifyAllowedRoots(t, root)
 	dir := makeWPInstall(t, root, "alice")
@@ -114,4 +118,13 @@ func TestVerifyWPCoreRealTimeoutDoesNotResolveFinding(t *testing.T) {
 	if calls != 1 || result.Checked || result.Resolved {
 		t.Fatalf("timed-out re-check: commands=%d result=%+v", calls, result)
 	}
+}
+
+// withCommandTimeout shortens the external command budget for one test, so a
+// test of the real deadline does not spend the package's runtime waiting.
+func withCommandTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	previous := cmdTimeout
+	cmdTimeout = d
+	t.Cleanup(func() { cmdTimeout = previous })
 }

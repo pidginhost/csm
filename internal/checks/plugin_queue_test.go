@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -376,5 +377,39 @@ func TestPluginQueueSharedRefreshOwnedByCheckExecutions(t *testing.T) {
 	}
 	if inventories.Load() != 1 || len(db.AllSitePlugins()) != 1 || db.GetPluginRefreshTime().IsZero() {
 		t.Fatal("shared refresh duplicated inventory or lost successful result")
+	}
+}
+
+// refusedCommand returns the error a command that ran and exited non-zero
+// produces, which is what wp-cli answers for a tree it will not inventory.
+func refusedCommand(t *testing.T) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit 1").Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("expected an exit status, got %v", err)
+	}
+	return exit
+}
+
+func TestPluginQueueRefusedSitesAreNotLostWork(t *testing.T) {
+	previous := pluginInventoryBatches
+	pluginInventoryBatches = newScanBatchMonitor()
+	defer func() { pluginInventoryBatches = previous }()
+	db := setupPluginStore(t)
+	pluginQueueRoots(t, 3)
+	refused := refusedCommand(t)
+	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if !strings.Contains(strings.Join(args, " "), "plugin list") {
+			return []byte("https://example.test"), nil
+		}
+		return nil, refused
+	}})
+	captureStderr(t, func() { refreshPluginCache(context.Background(), db) })
+	if q := pluginQueue(t, time.Now()); q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 0 || q.Status != "ok" {
+		t.Fatalf("sites wp-cli refused to inventory were counted as lost work: %+v", q)
+	}
+	if len(db.AllSitePlugins()) != 0 || !db.GetPluginRefreshTime().IsZero() {
+		t.Fatal("refused inventories were recorded as fresh")
 	}
 }
