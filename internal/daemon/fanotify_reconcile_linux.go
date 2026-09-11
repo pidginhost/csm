@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -84,10 +86,13 @@ func (fm *FileMonitor) reconcileDrops() {
 	}
 }
 
+// A tree removed before recovery ran holds nothing left to scan, so the
+// kernel loss that started the recovery is the only loss. Reads that failed
+// for any other reason left work the operator can still act on.
 func (fm *FileMonitor) reconcileDirectory(dir string, cutoff time.Time) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return false
+		return errors.Is(err, fs.ErrNotExist)
 	}
 	complete := true
 	for _, entry := range entries {
@@ -100,7 +105,9 @@ func (fm *FileMonitor) reconcileDirectory(dir string, cutoff time.Time) bool {
 		}
 		info, err := entry.Info()
 		if err != nil {
-			complete = false
+			if !errors.Is(err, fs.ErrNotExist) {
+				complete = false
+			}
 			continue
 		}
 		if info.ModTime().Before(cutoff) {
@@ -117,7 +124,7 @@ func (fm *FileMonitor) reconcileFile(path string) bool {
 	// #nosec G304 -- path is a candidate in a directory recorded after a dropped event; its original event fd is no longer available.
 	file, err := os.Open(path)
 	if err != nil {
-		return false
+		return errors.Is(err, fs.ErrNotExist)
 	}
 	// Close per file, including panic, rather than retaining the whole batch's fds.
 	defer func() { _ = file.Close() }()

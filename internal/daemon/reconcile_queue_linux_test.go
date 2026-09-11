@@ -142,7 +142,11 @@ func TestReconcileQueueCountsUnreadDirectories(t *testing.T) {
 	fm := reconcileQueueTestMonitor()
 	root := t.TempDir()
 	for _, name := range []string{"first", "second", "third"} {
-		fm.recordDroppedDir(filepath.Join(root, name, "candidate.php"))
+		blocked := filepath.Join(root, name)
+		if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fm.recordDroppedDir(filepath.Join(blocked, "candidate.php"))
 	}
 	requireReconcileQueue(t, fm)
 	fm.reconcileDrops()
@@ -152,11 +156,28 @@ func TestReconcileQueueCountsUnreadDirectories(t *testing.T) {
 	}
 }
 
+// Bulk unzips and package restores drop events for trees that are gone by the
+// time recovery runs. There is nothing left to scan, so the kernel loss that
+// started the recovery is the only loss.
+func TestReconcileQueueTreatsVanishedDirectoriesAsRecovered(t *testing.T) {
+	fm := reconcileQueueTestMonitor()
+	root := t.TempDir()
+	for _, name := range []string{"first", "second", "third"} {
+		fm.recordDroppedDir(filepath.Join(root, name, "candidate.php"))
+	}
+	requireReconcileQueue(t, fm)
+	fm.reconcileDrops()
+	got := requireReconcileQueue(t, fm)
+	if got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 || got.Status != "ok" {
+		t.Fatalf("directories removed before recovery were counted as lost work: %+v", got)
+	}
+}
+
 func TestReconcileQueueCountsPartialDirectoryOnce(t *testing.T) {
 	fm := reconcileQueueTestMonitor()
 	dir := t.TempDir()
 	for _, name := range []string{"a-broken.php", "b-broken.php"} {
-		if err := os.Symlink(filepath.Join(dir, "absent"), filepath.Join(dir, name)); err != nil {
+		if err := os.Symlink(name, filepath.Join(dir, name)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -332,5 +353,32 @@ func TestReconcileQueuePanicKeepsCompletedDirectories(t *testing.T) {
 	got := requireReconcileQueue(t, fm)
 	if caught != "last directory failed" || calls != 3 || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 1 {
 		t.Fatalf("later panic altered completed recovery: caught=%v calls=%d status=%+v", caught, calls, got)
+	}
+}
+
+func TestReconcileQueueTreatsVanishedCandidatesAsRecovered(t *testing.T) {
+	fm := reconcileQueueTestMonitor()
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "absent"), filepath.Join(dir, "a-gone.php")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "z-good.php")
+	if err := os.WriteFile(path, []byte("<?php return true;"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := fileAnalyzer
+	defer func() { fileAnalyzer = previous }()
+	calls := 0
+	fileAnalyzer = func(_ *FileMonitor, event fileEvent) {
+		calls++
+		if event.path != path {
+			t.Errorf("scanner received a candidate that no longer exists: %q", event.path)
+		}
+	}
+	fm.recordDroppedDir(path)
+	fm.reconcileDrops()
+	got := requireReconcileQueue(t, fm)
+	if calls != 1 || got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 || got.Status != "ok" {
+		t.Fatalf("a candidate removed before recovery was counted as lost work: scans=%d status=%+v", calls, got)
 	}
 }

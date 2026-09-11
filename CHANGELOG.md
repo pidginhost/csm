@@ -111,6 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recovery scans no longer count files and directories that were removed before the scan ran as lost protection work. Bulk extraction, package restores and update temp trees stopped degrading health on every burst.
+
 - A single unreadable kernel queue measurement no longer degrades health and raises a notification. The reading has to stay unavailable for half a minute, a stopped reader is named instead of the artefacts it causes, and records the kernel already dropped are reported ahead of an unreadable depth.
 
 - Queues whose work is best effort no longer change the host status, the dashboard posture or the doctor exit status. A client that stops reading its event stream, an unreachable panel and expired process context reads now warn with the same evidence instead of reporting a protection failure.

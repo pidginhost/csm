@@ -120,7 +120,9 @@ including new work for a directory that is already being scanned.
 Eviction, work older than the recovery scan window, unreadable directories or
 candidate files, interrupted batches and unfinished shutdown work count as
 failed recovery tasks. An incomplete task may still have scanned some files;
-each directory task counts at most once.
+each directory task counts at most once. Directories and files that no longer
+exist when recovery runs hold nothing left to scan and complete the task,
+which keeps bulk extraction and package restores out of the loss counters.
 The recovery window includes its cutoff; work completed exactly at that
 boundary does not count as expired.
 Staged package verification reserves capacity for its whole running batch.
