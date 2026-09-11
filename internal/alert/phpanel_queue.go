@@ -274,6 +274,11 @@ func (q *phpanelQueue) enqueueBatch(items []queuedPhpanelFinding) (int, error) {
 		}
 		for count > q.limit {
 			oldest, _ := bucket.Cursor().First()
+			if oldest == nil {
+				// The live span is empty, so the count came from somewhere
+				// other than this bucket. Nothing is left to evict.
+				break
+			}
 			evictedKey := string(oldest)
 			if err := bucket.Delete(oldest); err != nil {
 				return err
@@ -295,9 +300,14 @@ func (q *phpanelQueue) enqueueBatch(items []queuedPhpanelFinding) (int, error) {
 	for _, key := range evicted {
 		entry := q.health.pending[key]
 		delete(q.health.pending, key)
-		if entry == q.health.active {
+		switch {
+		case entry == nil:
+			// A record evicted from the queue file with no accounting cannot
+			// be attributed to a caller; count the finding it carried as lost.
+			phpanelHealth.losses.Lose(now, 1)
+		case entry == q.health.active:
 			entry.evicted = true
-		} else {
+		default:
 			q.discardWork(entry, now)
 		}
 	}
@@ -386,6 +396,12 @@ func (q *phpanelQueue) takeDelivery() ([]byte, []byte, *phpanelWork, error) {
 		return key, payload, nil, err
 	}
 	work := q.health.pending[string(key)]
+	if work == nil {
+		// The queue file outlives the process that wrote it. A record with no
+		// accounting still has to be delivered, so it is adopted here.
+		work = &phpanelWork{ticket: q.health.stats.Begin(time.Now())}
+		q.health.pending[string(key)] = work
+	}
 	work.ticket.Start(time.Now())
 	q.health.active = work
 	return key, payload, work, nil
@@ -501,9 +517,13 @@ func (q *phpanelQueue) quarantineMalformedWithLimit(key, payload []byte, decodeE
 	if updateErr == nil && removed {
 		work := q.health.pending[string(key)]
 		delete(q.health.pending, string(key))
-		if work == q.health.active {
+		switch {
+		case work == nil:
+			// Quarantined a record this process never accounted for.
+			phpanelHealth.losses.Lose(time.Now(), 1)
+		case work == q.health.active:
 			work.evicted = true
-		} else {
+		default:
 			q.discardWork(work, time.Now())
 		}
 	}

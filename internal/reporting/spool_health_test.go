@@ -253,3 +253,38 @@ func TestSpoolHealthCorruptHeadIsVisibleAndRetained(t *testing.T) {
 		t.Fatalf("corrupt head did not recover: %+v", got)
 	}
 }
+
+// The durable spool is written by earlier processes. A record on disk with no
+// accounting in memory must not take the abuse-report worker down with it.
+func TestSpoolHealthSurvivesRecordsWithoutAccounting(t *testing.T) {
+	s := newSpool(t, 3)
+	enqueueSpoolBody(t, s, "a")
+	s.mutation.Lock()
+	clear(s.health.pending)
+	s.mutation.Unlock()
+
+	var delivered []string
+	n, err := s.Drain(func(_ string, body []byte) error {
+		delivered = append(delivered, string(body))
+		return nil
+	})
+	if err != nil || n != 1 || len(delivered) != 1 {
+		t.Fatalf("a record with no accounting was not delivered: delivered=%v n=%d err=%v", delivered, n, err)
+	}
+	// The cleared accounting leaves the original ticket waiting; what matters
+	// is that the adopted record finished rather than staying in flight.
+	if got := s.QueueStatuses(time.Now())["spool"]; got.InFlight != 0 || got.DroppedTotal != 0 {
+		t.Fatalf("adopted record left work in flight or counted a loss: %+v", got)
+	}
+}
+
+func TestSpoolHealthCountsEvictedRecordsWithoutAccounting(t *testing.T) {
+	s := newSpool(t, 3)
+	before := s.QueueStatuses(time.Now())["spool"].DroppedTotal
+	s.mutation.Lock()
+	s.applyEnqueue("live", s.health.stats.Begin(time.Now()), []string{"forgotten"})
+	s.mutation.Unlock()
+	if got := s.QueueStatuses(time.Now())["spool"]; got.DroppedTotal != before+1 {
+		t.Fatalf("an evicted record with no accounting vanished: %+v", got)
+	}
+}

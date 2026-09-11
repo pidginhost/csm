@@ -111,6 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A spooled report or panel finding whose accounting is missing after a restart is now delivered or counted, instead of stopping the worker that was processing it.
+
 - Attack event health now names an uncertain write ahead of a backlog, the way the record queue already did.
 
 - A burst of automatic responses writing to the action log no longer degrades health. Recording work is now reported as stalled on the same timescale as every other queue.

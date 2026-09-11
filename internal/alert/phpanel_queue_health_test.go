@@ -156,3 +156,41 @@ func TestPhpanelQueueHealthSurvivesBlockedDelivery(t *testing.T) {
 		t.Fatalf("blocked delivery was hidden: %+v", status)
 	}
 }
+
+// The queue file outlives the process that wrote it. A record with no
+// accounting in memory must not take the delivery worker down with it.
+func TestPhpanelQueueHealthSurvivesRecordsWithoutAccounting(t *testing.T) {
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{}, phpanelQueueLimit)
+	if _, err := q.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "orphan"}, Timestamp: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	q.mutation.Lock()
+	clear(q.health.pending)
+	q.mutation.Unlock()
+	key, payload, work, err := q.takeDelivery()
+	if err != nil || key == nil || work == nil || len(payload) == 0 {
+		t.Fatalf("a record with no accounting was not taken for delivery: key=%q work=%v err=%v", key, work, err)
+	}
+	if status := phpanelHealthStatus(t, q, time.Now()); status.InFlight != 1 {
+		t.Fatalf("adopted record is not in flight: %+v", status)
+	}
+}
+
+func TestPhpanelQueueHealthCountsEvictedRecordsWithoutAccounting(t *testing.T) {
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{}, 1)
+	if _, err := q.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "first"}, Timestamp: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	q.mutation.Lock()
+	clear(q.health.pending)
+	q.mutation.Unlock()
+	// A record with no ticket can only be counted in the process-wide row,
+	// which is also where losses from replaced queues live.
+	before := PhpanelQueueStatus(time.Now()).DroppedTotal
+	if dropped, err := q.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "second"}, Timestamp: time.Now()}}); err != nil || dropped != 1 {
+		t.Fatalf("overflow enqueue: dropped=%d err=%v", dropped, err)
+	}
+	if got := PhpanelQueueStatus(time.Now()).DroppedTotal; got != before+1 {
+		t.Fatalf("an evicted record with no accounting vanished: dropped=%d, want %d", got, before+1)
+	}
+}

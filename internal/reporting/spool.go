@@ -169,6 +169,13 @@ func (s *Spool) next() (key []byte, item spoolItem, work *spoolWork, err error) 
 		return nil, item, nil, nil
 	}
 	work = s.health.pending[string(key)]
+	if work == nil {
+		// The spool outlives the process that wrote it. A record with no
+		// accounting still has to be delivered, so it is adopted here rather
+		// than taken as an invariant.
+		work = &spoolWork{ticket: s.health.stats.Begin(time.Now())}
+		s.health.pending[string(key)] = work
+	}
 	work.ticket.Start(time.Now())
 	s.health.active = work
 	return key, item, work, nil
