@@ -747,6 +747,9 @@ alert budgets, not measured throughput guarantees. Health is computed directly
 from the counters, independently of finding delivery. The daemon records and
 dispatches `protection_queue_degraded` at most once per queue every five
 minutes while pressure remains, then one `protection_queue_recovered` event.
+The five-minute bound spans recoveries, so a queue that clears and degrades
+again inside the window stays degraded in status without a second event, and
+no recovery event follows a degradation the bound suppressed.
 These are CSM health events and do not feed account-compromise correlation or
 automatic response. Recovery preserves cumulative loss evidence; restarting a
 spool watcher also preserves it. Restarting the daemon resets the counters.

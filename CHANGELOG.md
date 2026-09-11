@@ -111,6 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A queue that repeatedly degrades and recovers no longer sends unbounded notification pairs. The five-minute bound now survives a recovery, and a recovery is reported only for a degradation that was announced.
+
 - Attack event health now counts buffered records lost during an interrupted write. Only complete records submitted to the writer can have an uncertain outcome.
 
 - Interrupted attack event writes now retain confirmed losses while cleanup finishes. Events whose write outcome is unknown remain separate from work that was never submitted.
