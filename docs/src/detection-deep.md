@@ -53,14 +53,20 @@ An oversize file is judged once more before it counts. Only a file whose leading
 
 A finding's severity follows how firmly the source was shown to be remote: a decoder-confirmed remote fetch reaching execution is Critical, a fetch carrying a remote URL is High, and a dual-use call whose argument could not be resolved either way is a Warning for review. When one file contains several flows, its strongest flow sets the severity. The last group is where legitimate template compilers and cache layers land, so it is kept visible without paging anyone.
 
-The WordPress database scan reports what it could not inspect as
-`db_content_scan_incomplete`, counting the installs it skipped against the
-number discovered and naming one example config path per reason:
-`unreadable_config`, `missing_credentials` or `unresolved_table_prefix`. When
-the scan stops before reaching any install it falls back to naming the three
-possible causes instead. These findings carry no file path, so the whole
-scanner's prior findings are retained rather than only those for the skipped
-installs.
+The WordPress database scan reports what it could not fully inspect as
+`db_content_scan_incomplete`, counting affected installs against the number
+discovered and naming one bounded example config path per reason:
+`unreadable_config`, `missing_credentials`, `unresolved_table_prefix`,
+`query_failed` or `incomplete_content`. Content gaps include truncated or
+unusable query results. Each install counts once; installs sharing a failed
+database count as affected without retrying its queries. Incomplete discovery
+is reported separately in the details because additional installs may be
+missing from the total. With no attributed reasons, including when discovery
+stops before reaching any install, the generic three-cause sentence remains
+the fallback. Multisite safety limits keep their own account-specific warning
+and do not count again in the summary or hide unrelated failures. These
+findings carry no file path, so the whole scanner's prior findings are retained
+rather than only those for the affected installs.
 
 Coverage the scan could not reach is reported as `php_taint_scan_incomplete`, which names how many files were affected and why -- a per-file status such as a timeout or a worker failure, or a location the walk could not read at all, where the affected files cannot even be listed. Panics and timeouts are reported in a separate aggregate so hard analyzer failures remain visible beside routine coverage limits. A file that had a finding and later becomes unexaminable keeps its previous finding rather than having it cleared.
 

@@ -29,10 +29,15 @@ func TestDatabaseScanIncompleteNamesInstallAndCause(t *testing.T) {
 	if err := os.WriteFile(noCreds, []byte("<?php\n$table_prefix = 'wp_';\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	unsafePrefix := filepath.Join(dir, "unsafe-prefix-wp-config.php")
+	if err := os.WriteFile(unsafePrefix, []byte("<?php\ndefine('DB_NAME', 'fixture');\ndefine('DB_USER', 'fixture');\n$table_prefix = 'unsafe-';\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	installs := []string{
 		"/home/alice/public_html/wp-config.php",
 		"/home/bob/public_html/wp-config.php",
+		"/home/carol/public_html/wp-config.php",
 	}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
@@ -45,6 +50,9 @@ func TestDatabaseScanIncompleteNamesInstallAndCause(t *testing.T) {
 			if strings.Contains(name, "alice") {
 				return os.Open(oversized)
 			}
+			if strings.Contains(name, "carol") {
+				return os.Open(unsafePrefix)
+			}
 			return os.Open(noCreds)
 		},
 		lstat: func(name string) (os.FileInfo, error) { return mockPathInfo(name, installs) },
@@ -56,33 +64,16 @@ func TestDatabaseScanIncompleteNamesInstallAndCause(t *testing.T) {
 		t.Fatal("unreadable installs did not mark the database scan incomplete")
 	}
 
-	var gap *string
-	for i := range findings {
-		if findings[i].Check == "db_content_scan_incomplete" {
-			gap = &findings[i].Details
-		}
+	if len(findings) != 1 {
+		t.Fatalf("want exactly one incomplete finding: %+v", findings)
 	}
-	if gap == nil {
-		t.Fatalf("no db_content_scan_incomplete finding: %+v", findings)
-	}
-	details := *gap
-
-	// How many of how many, so the scale is visible without guessing.
-	if !strings.Contains(details, "2 of 2") {
-		t.Errorf("details do not say how many installs of how many failed: %q", details)
-	}
-	// Which cause, counted, rather than a list of every possible cause.
-	for _, want := range []string{"unreadable_config=1", "missing_credentials=1"} {
-		if !strings.Contains(details, want) {
-			t.Errorf("details do not count the cause %q: %q", want, details)
-		}
-	}
-	// Which install to go and look at.
-	if !strings.Contains(details, "/home/alice/public_html/wp-config.php") {
-		t.Errorf("details name no example install for the unreadable config: %q", details)
-	}
-	// The retention promise must survive.
-	if !strings.Contains(details, "retained") {
-		t.Errorf("details dropped the retention note: %q", details)
+	details := databaseCoverageSummary(t, findings).Details
+	want := "3 of 3 discovered installs could not be fully inspected.\n" +
+		"missing_credentials=1 (example: /home/bob/public_html/wp-config.php)\n" +
+		"unreadable_config=1 (example: /home/alice/public_html/wp-config.php)\n" +
+		"unresolved_table_prefix=1 (example: /home/carol/public_html/wp-config.php)\n" +
+		"Findings from the previous complete scan are retained."
+	if details != want {
+		t.Errorf("details = %q, want %q", details, want)
 	}
 }
