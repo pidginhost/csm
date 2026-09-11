@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The WordPress database scan now says how many discovered installs it could not inspect, why, and names one example for each reason. It previously listed every possible cause in one sentence without saying which install failed, which left nothing to act on while it repeated every cycle.
+
 - Real-time WordPress admin-creation detection now requires an administrator role token alongside the credential shape, matching the scheduled rule of the same name, and accepts the same whitespace. The importer bundled inside many themes and plugins creates users from an import form without touching a role, and was reported as critical on every plugin update that staged it.
 
 - The dashboard now shows real-time YARA scan failures in the filesystem monitor's last event, instead of leaving that event missing or stale.

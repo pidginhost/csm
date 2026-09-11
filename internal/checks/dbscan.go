@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -176,13 +177,76 @@ func spamCountLabel(n int, truncated bool) string {
 
 // CheckDatabaseContent scans WordPress databases for injected malware,
 // spam content, siteurl hijacking, and rogue admin accounts.
+// dbScanCoverage counts why discovered installs could not be inspected and
+// keeps one example path per reason. The finding it renders used to name all
+// three possible causes in one static sentence without saying which install
+// failed or which cause applied, which left an operator nothing to act on
+// while it fired every cycle.
+//
+// This records reasons for reporting only. Preservation still uses the
+// pathless whole-check marker: these findings carry no FilePath, so the
+// path-attributed gap mechanism cannot match them and would purge them
+// instead of retaining them.
+type dbScanCoverage struct {
+	discovered int
+	counts     map[string]int
+	examples   map[string]string
+}
+
+func (c *dbScanCoverage) record(reason, configPath string) {
+	if c == nil {
+		return
+	}
+	if c.counts == nil {
+		c.counts = make(map[string]int, 3)
+		c.examples = make(map[string]string, 3)
+	}
+	c.counts[reason]++
+	if c.examples[reason] == "" {
+		c.examples[reason] = configPath
+	}
+}
+
+func (c *dbScanCoverage) skipped() int {
+	if c == nil {
+		return 0
+	}
+	var n int
+	for _, v := range c.counts {
+		n += v
+	}
+	return n
+}
+
+// summary renders the reason breakdown, or the empty string when nothing was
+// attributed -- an empty collector means the scan stopped before it reached
+// any install, and the generic sentence still applies.
+func (c *dbScanCoverage) summary() string {
+	if c.skipped() == 0 {
+		return ""
+	}
+	reasons := make([]string, 0, len(c.counts))
+	for reason := range c.counts {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d of %d discovered installs could not be inspected.\n", c.skipped(), c.discovered)
+	for _, reason := range reasons {
+		fmt.Fprintf(&b, "%s=%d (example: %s)\n", reason, c.counts[reason], truncateDB(c.examples[reason], 200))
+	}
+	return b.String()
+}
+
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
+	coverage := &dbScanCoverage{}
 	installs, panelDomains := wpInstallsWithDomains(ctx, "db_content")
 	if len(installs) == 0 {
-		return appendDatabaseScanIncompleteFinding(ctx, nil)
+		return appendDatabaseScanIncompleteFinding(ctx, nil, coverage)
 	}
+	coverage.discovered = len(installs)
 	wpConfigs := make([]string, 0, len(installs))
 	servedRoots := make(map[string]servedState, len(installs))
 	for _, in := range installs {
@@ -200,10 +264,12 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		user := wpConfigUser(filepath.Dir(wpConfig))
 		creds, complete := parseWPConfigChecked(wpConfig)
 		if !complete {
+			coverage.record("unreadable_config", wpConfig)
 			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
 		if creds.dbName == "" || creds.dbUser == "" {
+			coverage.record("missing_credentials", wpConfig)
 			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
@@ -213,6 +279,7 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 
 		prefix, ok := resolveTablePrefix(creds)
 		if !ok {
+			coverage.record("unresolved_table_prefix", wpConfig)
 			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
@@ -233,7 +300,7 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		findings = append(findings, stampTenantIDIfEmpty(installFindings, owners[wpConfig])...)
 	}
 
-	return appendDatabaseScanIncompleteFinding(ctx, findings)
+	return appendDatabaseScanIncompleteFinding(ctx, findings, coverage)
 }
 
 // wpInstallScanner is the per-install scan boundary. Tests replace it with
@@ -295,7 +362,7 @@ func wpConfigUser(path string) string {
 	return extractUser(path)
 }
 
-func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.Finding) []alert.Finding {
+func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.Finding, coverage *dbScanCoverage) []alert.Finding {
 	if !checkMarkedIncomplete(ctx, "db_content") {
 		return findings
 	}
@@ -308,8 +375,19 @@ func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.F
 		Severity: alert.Warning,
 		Check:    "db_content_scan_incomplete",
 		Message:  "WordPress database scan could not inspect every discovered install",
-		Details:  "A document-root record, wp-config.php file, or database query could not be read safely. Findings from the previous complete scan are retained.",
+		Details:  databaseScanIncompleteDetails(coverage),
 	})
+}
+
+// databaseScanIncompleteDetails names what was skipped and why when the scan
+// got far enough to attribute a cause, and falls back to the generic sentence
+// when it stopped before reaching any install.
+func databaseScanIncompleteDetails(coverage *dbScanCoverage) string {
+	const retained = "Findings from the previous complete scan are retained."
+	if summary := coverage.summary(); summary != "" {
+		return summary + retained
+	}
+	return "A document-root record, wp-config.php file, or database query could not be read safely. " + retained
 }
 
 // scanMultisiteSecondaryBlogs queries wp_blogs for active blog IDs other than 1

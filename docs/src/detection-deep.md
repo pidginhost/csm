@@ -53,6 +53,15 @@ An oversize file is judged once more before it counts. Only a file whose leading
 
 A finding's severity follows how firmly the source was shown to be remote: a decoder-confirmed remote fetch reaching execution is Critical, a fetch carrying a remote URL is High, and a dual-use call whose argument could not be resolved either way is a Warning for review. When one file contains several flows, its strongest flow sets the severity. The last group is where legitimate template compilers and cache layers land, so it is kept visible without paging anyone.
 
+The WordPress database scan reports what it could not inspect as
+`db_content_scan_incomplete`, counting the installs it skipped against the
+number discovered and naming one example config path per reason:
+`unreadable_config`, `missing_credentials` or `unresolved_table_prefix`. When
+the scan stops before reaching any install it falls back to naming the three
+possible causes instead. These findings carry no file path, so the whole
+scanner's prior findings are retained rather than only those for the skipped
+installs.
+
 Coverage the scan could not reach is reported as `php_taint_scan_incomplete`, which names how many files were affected and why -- a per-file status such as a timeout or a worker failure, or a location the walk could not read at all, where the affected files cannot even be listed. Panics and timeouts are reported in a separate aggregate so hard analyzer failures remain visible beside routine coverage limits. A file that had a finding and later becomes unexaminable keeps its previous finding rather than having it cleared.
 
 Separately from the outcome, an analyzed file can still report reduced precision. Constructs that defeat static variable identity -- `extract()`, `compact()`, variable variables, a call dispatched through a value, an assignment target the analyzer cannot name, or a value a closure or arrow function captures from its enclosing scope -- are recorded alongside the result. A recorded loss means tracking stopped at that point and the file may hold a flow that was not followed; it is never left implicit. The capture case is recorded only when the captured value was itself tainted, so it marks a real loss rather than the mere presence of a closure.
