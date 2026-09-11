@@ -397,9 +397,72 @@ func redactSensitive(s string) string {
 		}
 	}
 
+	// Redact cPanel/WHM session identifiers. cpaneld, webmaild and
+	// whostmgr record a created or purged session as
+	// "NEW <account>:<session id>" and "PURGE <account>:<session id>".
+	// The account is the part of the finding an operator needs; the
+	// identifier behind the colon rides the session and is therefore a
+	// credential, so only it is replaced. Anchoring on the keyword
+	// keeps ordinary colons -- timestamps, host:port pairs -- intact.
+	// The search base advances past each replacement so the inserted
+	// marker is never rescanned into an endless rewrite.
+	//
+	// The service tag gates the whole rule: only a login-log line
+	// carries this shape, and without the gate an ordinary finding
+	// whose text held an uppercase NEW ahead of a colon lost the value
+	// behind it -- a reported file path, say -- to the marker.
+	if containsSessionLogTag(s) {
+		for _, keyword := range []string{" NEW ", " PURGE "} {
+			searchFrom := 0
+			for searchFrom < len(s) {
+				rel := strings.Index(s[searchFrom:], keyword)
+				if rel < 0 {
+					break
+				}
+				fieldStart := searchFrom + rel + len(keyword)
+				fieldEnd := fieldStart
+				for fieldEnd < len(s) {
+					c := s[fieldEnd]
+					if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+						break
+					}
+					fieldEnd++
+				}
+				colon := strings.IndexByte(s[fieldStart:fieldEnd], ':')
+				if colon < 0 {
+					// No "account:id" pair here; skip the whole field so a
+					// later occurrence on the same line is still examined.
+					searchFrom = fieldEnd
+					continue
+				}
+				tokenStart := fieldStart + colon + 1
+				if tokenStart >= fieldEnd {
+					// Trailing colon with no identifier after it.
+					searchFrom = fieldEnd
+					continue
+				}
+				s = s[:tokenStart] + "[REDACTED]" + s[fieldEnd:]
+				searchFrom = tokenStart + len("[REDACTED]")
+			}
+		}
+	}
+
 	// Command-line style secrets (-pSECRET, KEY=VALUE assignments, URL
 	// userinfo) quoted in messages or details.
 	return RedactCommandLine(s)
+}
+
+// containsSessionLogTag reports whether text looks like a line from
+// cPanel's login log. Those are the only lines that carry a
+// "<account>:<session id>" pair, so the session-identifier redaction
+// is confined to them.
+func containsSessionLogTag(s string) bool {
+	for _, tag := range []string{"[cpaneld]", "[webmaild]", "[whostmgr]"} {
+		if strings.Contains(s, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 func filterChecks(findings []Finding, disabledChecks []string) []Finding {

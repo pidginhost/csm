@@ -198,6 +198,12 @@ webhook stream. Plan SIEM retention accordingly.
 
 ### What does not get logged
 
+Credentials do not reach the log. Every record is redacted before it
+is written, so password fields, command-line secrets and the cPanel or
+WHM session identifier that appears in a login log line are replaced
+with `[REDACTED]`. The account name beside a session identifier is
+kept, because that is the part an operator needs to act on.
+
 The audit log is not a replacement for `csm.history` (the bbolt
 history bucket). Only findings that pass through `alert.Dispatch()`
 are emitted. Internal state changes -- daemon startup, reload events,

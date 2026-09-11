@@ -99,6 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Audit log records are redacted before they are written. A session identifier or password field copied out of a log line no longer reaches the audit log or syslog.
+
 - WordPress integrity checks no longer treat command timeouts as successful verification.
 
 - Binary and configuration tamper findings now retain their host identity when joining incidents, even without account or IP attribution. Classification checks catch missing detector mappings before release.

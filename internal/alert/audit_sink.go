@@ -51,7 +51,14 @@ type AuditSink interface {
 // NewAuditEvent builds a versioned audit event from a Finding. hostname
 // comes from cfg.Hostname (or os.Hostname() fallback); the caller is
 // responsible for picking a stable value across emits.
+//
+// The finding is redacted here because this is the one constructor both
+// audit sinks build from. Redaction used to run only while rendering
+// the email digest, so secrets a watcher had copied out of a raw log
+// line -- cPanel session identifiers, password fields -- were written
+// to audit.jsonl and shipped to syslog in the clear.
 func NewAuditEvent(hostname string, f Finding) AuditEvent {
+	f = sanitizeFinding(f)
 	return AuditEvent{
 		V:         AuditSchemaVersion,
 		Timestamp: f.Timestamp.UTC(),
