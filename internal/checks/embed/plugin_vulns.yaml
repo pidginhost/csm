@@ -54,6 +54,7 @@ plugins:
 
   - slug: litespeed-cache
     cve: CVE-2024-28000
+    virtual_patch: true
     title: "Unauthenticated privilege escalation to administrator via a guessable crawler hash"
     fixed_in: "6.4"
     kev: false

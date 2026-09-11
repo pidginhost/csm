@@ -352,3 +352,158 @@ func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
 		t.Error("exemption still reads REQUEST_URI, which a query value can satisfy")
 	}
 }
+
+// CVE-2024-28000: LiteSpeed Cache below 6.4 signs the crawler's role
+// simulation with a six-character hash (Str::rrand(6), one million values
+// seeded from microsecond timing), so an unauthenticated attacker can brute
+// force it and have WordPress treat the request as that user. Sites whose
+// WordPress is too old for the fixed plugin line have no upgrade path, which
+// is what this patch is for.
+func TestModSecBlocksLiteSpeedRoleSimulation(t *testing.T) {
+	conf := string(embeddedModSec)
+	if !strings.Contains(conf, "id:900128") {
+		t.Fatal("id:900128 missing: no virtual patch for CVE-2024-28000")
+	}
+	if !strings.Contains(conf, "CVE-2024-28000") {
+		t.Fatal("rules do not name CVE-2024-28000")
+	}
+	// The patch must stand on request shape alone. SERVER_ADDR and other
+	// engine-specific variables cannot be verified against LiteSpeed's
+	// ModSecurity from here, and an unknown variable aborts the whole
+	// configuration load, taking every other rule down with it.
+	start := strings.Index(conf, "CVE-2024-28000")
+	if start < 0 {
+		t.Fatal("CVE-2024-28000 patch block not found")
+	}
+	patch := conf[start:]
+	for _, fragile := range []string{"SERVER_ADDR", "REMOTE_ADDR"} {
+		if strings.Contains(patch, fragile) {
+			t.Errorf("the CVE-2024-28000 patch depends on %s; keep it to request shape", fragile)
+		}
+	}
+}
+
+// Role simulation is legitimate only while the crawler warms public pages.
+// The takeover needs a privileged target -- the REST users route, or
+// wp-admin -- so the patch is scoped there and ordinary crawling is untouched.
+func TestLiteSpeedSimulationPatchScopesToPrivilegedTargets(t *testing.T) {
+	conf := string(embeddedModSec)
+	re := regexp.MustCompile(`SecRule REQUEST_URI "@rx ([^"]+)"[\s\S]{0,200}CVE-2024-28000`)
+	m := regexp.MustCompile(`(?s)id:900128.*?SecRule REQUEST_URI "@rx ([^"]+)"`).FindStringSubmatch(conf)
+	if m == nil {
+		m = re.FindStringSubmatch(conf)
+	}
+	if m == nil {
+		t.Fatal("no REQUEST_URI scope on the CVE-2024-28000 patch")
+	}
+	uriRE := regexp.MustCompile(m[1])
+	for _, tc := range []struct {
+		uri   string
+		match bool
+	}{
+		{"/wp-json/wp/v2/users", true},
+		{"/wp-json/wp/v2/users/", true},
+		{"/index.php?rest_route=/wp/v2/users", true},
+		{"/wp-admin/user-new.php", true},
+		{"/wp-admin/", true},
+		// What the crawler actually visits.
+		{"/", false},
+		{"/shop/product-1/", false},
+		{"/wp-json/wp/v2/posts", false},
+		{"/blog/2026/09/a-post/", false},
+	} {
+		if got := uriRE.MatchString(tc.uri); got != tc.match {
+			t.Errorf("uri %q matched = %v, want %v", tc.uri, got, tc.match)
+		}
+	}
+}
+
+// The hash length is the discriminator: six characters is the vulnerable
+// line, and 6.4 and later use thirty-two. Matching the longer form would
+// block the crawler on a patched site for no gain.
+func TestLiteSpeedSimulationHashPatternTargetsTheWeakHash(t *testing.T) {
+	conf := string(embeddedModSec)
+	re := regexp.MustCompile(`SecRule REQUEST_COOKIES:litespeed_hash "@rx ([^"]+)"`)
+	m := re.FindStringSubmatch(conf)
+	if m == nil {
+		t.Fatal("no litespeed_hash cookie pattern in the rules")
+	}
+	hashRE := regexp.MustCompile(m[1])
+	for _, tc := range []struct {
+		hash  string
+		match bool
+	}{
+		{"a1b2c3", true}, // Str::rrand(6), the vulnerable hash
+		{"000000", true}, // brute force walks the whole space
+		{"Ab3Xz9", true}, // mixed case is in the alphabet
+		{"a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6", false}, // Str::rrand(32), the fixed line
+		{"a1b2c3d4e5f6g7h8i9j0k1", false},           // anything past the weak length
+		{"a1b2-c3", false},                          // not the plugin's alphabet
+	} {
+		if got := hashRE.MatchString(tc.hash); got != tc.match {
+			t.Errorf("hash %q matched = %v, want %v", tc.hash, got, tc.match)
+		}
+	}
+}
+
+// Role simulation names a user ID. Anything else in that cookie is not the
+// shape the plugin writes.
+func TestLiteSpeedSimulationRolePatternIsAUserID(t *testing.T) {
+	conf := string(embeddedModSec)
+	re := regexp.MustCompile(`SecRule REQUEST_COOKIES:litespeed_role "@rx ([^"]+)"`)
+	m := re.FindStringSubmatch(conf)
+	if m == nil {
+		t.Fatal("no litespeed_role cookie pattern in the rules")
+	}
+	roleRE := regexp.MustCompile(m[1])
+	for _, tc := range []struct {
+		role  string
+		match bool
+	}{
+		{"1", true},
+		{"42", true},
+		{"", false},
+		{"1; drop", false},
+		{"admin", false},
+	} {
+		if got := roleRE.MatchString(tc.role); got != tc.match {
+			t.Errorf("role %q matched = %v, want %v", tc.role, got, tc.match)
+		}
+	}
+}
+
+// Blocking the published path is not enough. A simulated administrator can
+// reach any privileged endpoint, and WordPress exposes plugin installation
+// over REST too. The crawler only ever issues GET while warming public pages,
+// so a write carrying simulation cookies is never the crawler.
+func TestLiteSpeedSimulationPatchBlocksWritesAnywhere(t *testing.T) {
+	conf := string(embeddedModSec)
+	start := strings.Index(conf, "id:900129")
+	if start < 0 {
+		t.Fatal("id:900129 missing: simulation cookies on a write request are unpatched")
+	}
+	block := conf[start:]
+	m := regexp.MustCompile(`SecRule REQUEST_METHOD "([^"]+)"`).FindStringSubmatch(block)
+	if m == nil {
+		t.Fatal("id:900129 does not test REQUEST_METHOD")
+	}
+	if !strings.HasPrefix(m[1], "!@rx ") {
+		t.Fatalf("REQUEST_METHOD operator = %q, want a negated match so reads pass", m[1])
+	}
+	methodRE := regexp.MustCompile(strings.TrimPrefix(m[1], "!@rx "))
+	for _, tc := range []struct {
+		method string
+		read   bool
+	}{
+		{"GET", true},
+		{"HEAD", true},
+		{"POST", false},
+		{"PUT", false},
+		{"PATCH", false},
+		{"DELETE", false},
+	} {
+		if got := methodRE.MatchString(tc.method); got != tc.read {
+			t.Errorf("%s treated as a crawler read = %v, want %v", tc.method, got, tc.read)
+		}
+	}
+}

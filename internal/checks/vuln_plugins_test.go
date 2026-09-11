@@ -73,10 +73,10 @@ func TestLoadPluginVulnFeed_Embedded(t *testing.T) {
 	}
 	// virtual_patch drives what the unprotected annotation claims, so it must
 	// name exactly the CVEs configs/csm_modsec_custom.conf actually blocks:
-	// the Ultimate Member privilege escalation and the wp-file-manager
-	// connector.minimal.php upload. Marking one CSM does not patch overstates
+	// the Ultimate Member privilege escalation, the wp-file-manager
+	// connector.minimal.php upload, and the LiteSpeed Cache role simulation. Marking one CSM does not patch overstates
 	// the gap; leaving one unmarked understates it.
-	want := map[string]bool{"CVE-2023-3460": true, "CVE-2020-25213": true}
+	want := map[string]bool{"CVE-2023-3460": true, "CVE-2020-25213": true, "CVE-2024-28000": true}
 	if !maps.Equal(patched, want) {
 		t.Fatalf("feed marks %v as virtually patched, want %v", patched, want)
 	}

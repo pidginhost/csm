@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CSM now ships a request filter for the LiteSpeed Cache role-simulation takeover. Sites whose WordPress is too old for the fixed plugin line have no upgrade path, and ordinary crawling still works because the filter only covers privileged targets and writes.
+
 - Code stored in a plugin's own status options, which WordPress prints in the dashboard as a notice, is now reported as a critical database finding. LiteSpeed Cache is covered first, since an unauthenticated request can write those rows on older versions.
 
 - The known-vulnerable plugin feed now covers the three LiteSpeed Cache issues behind that injection, so a site still running an affected version alerts even after its stored payload is removed.
