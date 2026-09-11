@@ -339,63 +339,7 @@ func redactSensitive(s string) string {
 		return s
 	}
 
-	// Redact password= values in URLs and POST data.
-	// Matches: password=X, pass=X, passwd=X (up to next & or space or quote).
-	//
-	// The search base advances past each replacement (or past an
-	// empty-value occurrence) so we never re-match the same prefix
-	// position on the next iteration. An earlier version of this code
-	// restarted the search at position 0 after every replacement, which
-	// re-found the same prefix and re-wrote `[REDACTED]` -> `[REDACTED]`
-	// forever whenever the replacement was non-empty. That infinite
-	// loop would hang the daemon's alert dispatch on any log line that
-	// contained a populated password field.
-	for _, prefix := range []string{
-		"password=", "pass=", "passwd=", "new_password=",
-		"old_password=", "confirmpassword=",
-	} {
-		searchFrom := 0
-		for searchFrom < len(s) {
-			lower := lowerASCII(s[searchFrom:])
-			rel := strings.Index(lower, prefix)
-			if rel < 0 {
-				break
-			}
-			idx := searchFrom + rel
-			valStart := idx + len(prefix)
-			valEnd := valStart
-			for valEnd < len(s) {
-				c := s[valEnd]
-				if c == '&' || c == ' ' || c == '\n' || c == '"' || c == '\'' || c == ',' {
-					break
-				}
-				valEnd++
-			}
-			if valEnd > valStart {
-				s = s[:valStart] + "[REDACTED]" + s[valEnd:]
-				searchFrom = valStart + len("[REDACTED]")
-			} else {
-				// Empty value (e.g. `password=&`): advance past this
-				// occurrence so a later populated field is still redacted.
-				searchFrom = valStart
-			}
-		}
-	}
-
-	// Redact API token values (long alphanumeric strings after token-like keys)
-	for _, prefix := range []string{"token_value=", "api_token="} {
-		lower := lowerASCII(s)
-		if idx := strings.Index(lower, prefix); idx >= 0 {
-			valStart := idx + len(prefix)
-			valEnd := valStart
-			for valEnd < len(s) && s[valEnd] != ' ' && s[valEnd] != '\n' && s[valEnd] != '&' {
-				valEnd++
-			}
-			if valEnd > valStart {
-				s = s[:valStart] + "[REDACTED]" + s[valEnd:]
-			}
-		}
-	}
+	s = redactCredentialFields(s)
 
 	// Normalize command-line text first: NUL-delimited arguments can expose
 	// session keywords once the argument separators become spaces.
@@ -409,6 +353,67 @@ func redactSensitive(s string) string {
 	}
 
 	return lines.String()
+}
+
+// Scan the original text once so every field is covered without searching
+// replacement markers or changing byte offsets. Log envelopes can quote a whole
+// request, so command-line tokenization alone cannot find these nested fields.
+func redactCredentialFields(s string) string {
+	lower := lowerASCII(s)
+	var b strings.Builder
+	last := 0
+	for i := 0; i < len(s); {
+		prefixLen := 0
+		for _, prefix := range []string{
+			"password=", "pass=", "passwd=", "new_password=",
+			"old_password=", "confirmpassword=", "token_value=", "api_token=",
+		} {
+			if strings.HasPrefix(lower[i:], prefix) {
+				prefixLen = len(prefix)
+				break
+			}
+		}
+		if prefixLen == 0 {
+			i++
+			continue
+		}
+		start := i + prefixLen
+		end := start
+		var quote byte
+		if end < len(s) && (s[end] == '\'' || s[end] == '"') {
+			quote = s[end]
+			end++
+		}
+		for end < len(s) {
+			c := s[end]
+			if c == '\\' && end+1 < len(s) {
+				end += 2
+				continue
+			}
+			if quote != 0 {
+				end++
+				if c == quote {
+					quote = 0
+				}
+				continue
+			}
+			if strings.ContainsRune(" &\t\n\r\v\f\x00\"',", rune(c)) {
+				break
+			}
+			end++
+		}
+		if end > start && s[start:end] != redactedToken {
+			b.WriteString(s[last:start])
+			b.WriteString(redactedToken)
+			last = end
+		}
+		i = end
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 // Credential names are ASCII. Unicode case folding can change byte lengths

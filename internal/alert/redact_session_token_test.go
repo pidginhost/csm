@@ -155,6 +155,63 @@ func TestRedactSensitivePreservesByteOffsets(t *testing.T) {
 	}
 }
 
+func TestNewAuditEventRedactsRepeatedTokenFields(t *testing.T) {
+	for _, key := range []string{"token_value", "api_token"} {
+		for _, first := range []string{"first-fixture", "[REDACTED]", ""} {
+			t.Run(key+"/"+first, func(t *testing.T) {
+				in := `log="request ` + key + `=` + first + ` ` + key + `=second-fixture evidence"`
+				redactedFirst := "[REDACTED]"
+				if first == "" {
+					redactedFirst = ""
+				}
+				want := `log="request ` + key + `=` + redactedFirst + ` ` + key + `=[REDACTED] evidence"`
+				event := NewAuditEvent("host.example.com", Finding{Message: in, Details: in})
+				if event.Message != want || event.Details != want {
+					t.Fatalf("audit text = %q / %q, want %q", event.Message, event.Details, want)
+				}
+				if got := redactSensitive(want); got != want {
+					t.Fatalf("redaction changed sanitized text: %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestRedactSensitivePreservesCredentialBoundaries(t *testing.T) {
+	for _, key := range []string{"password", "token_value", "api_token"} {
+		for _, separator := range []string{"\t", "\r\n", "\v", "\f", ","} {
+			t.Run(key+"/"+separator, func(t *testing.T) {
+				in := `log="request ` + key + `=credential-fixture` + separator + `user=shop"`
+				want := `log="request ` + key + `=[REDACTED]` + separator + `user=shop"`
+				if got := redactSensitive(in); got != want {
+					t.Errorf("redaction = %q, want %q", got, want)
+				}
+				if got := redactSensitive(want); got != want {
+					t.Errorf("redaction changed sanitized text: %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestNewAuditEventRedactsQuotedCredentialFields(t *testing.T) {
+	for _, key := range []string{"password", "token_value", "api_token"} {
+		for _, value := range []string{`'quoted fixture'`, `'escaped \' fixture'`, `'unterminated fixture`, `'quoted fixture'tail`} {
+			t.Run(key+"/"+value, func(t *testing.T) {
+				in := `log="request ` + key + `=` + value
+				want := `log="request ` + key + `=[REDACTED]`
+				event := NewAuditEvent("host.example.com", Finding{Message: in, Details: in})
+				if event.Message != want || event.Details != want {
+					t.Errorf("audit text = %q / %q, want %q", event.Message, event.Details, want)
+				}
+				if got := redactSensitive(want); got != want {
+					t.Errorf("redaction changed sanitized text: %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
 func TestNewAuditEventPreservesFindingIdentity(t *testing.T) {
 	f := Finding{
 		Check: "auth_failure", Message: "password=first-fixture", Details: "password=details-fixture",

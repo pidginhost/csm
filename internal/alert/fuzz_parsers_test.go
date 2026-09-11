@@ -40,6 +40,9 @@ func FuzzRedactSensitive(f *testing.F) {
 		"[whostmgrd] NEW root:session-fixture",
 		"[cpdavd] NEW _dav_:session-fixture",
 		"password=fixture&password=other-fixture",
+		`log="request token_value=first-fixture token_value=second-fixture evidence"`,
+		`log="request password='quoted fixture' evidence"`,
+		"log=\"password=[REDACTED]\tuser=shop\"",
 		`curl https://user:fixture@example.com/?api_token=fixture&x=1`,
 		"",
 	} {

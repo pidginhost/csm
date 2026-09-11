@@ -38,6 +38,7 @@ func TestRedactCommandLine(t *testing.T) {
 		{"proc argv preserves spaces", "pg_dump\x00--password=S3 cr3t\x00shop\x00", "pg_dump --password=[REDACTED] shop"},
 		{"proc separated value preserves spaces", "pg_dump\x00--password\x00S3 cr3t\x00shop\x00", "pg_dump --password [REDACTED] shop"},
 		{"proc shell command argument", "sh\x00-c\x00mysql -pS3cr3t shop\x00", "sh -c mysql -p[REDACTED] shop"},
+		{"proc quoted URL crosses argument boundary", "curl\x00https://user:fixture\"\x00@example.com", "curl https://user:[REDACTED]@example.com"},
 		{"git author untouched", "git commit --author=Alice", "git commit --author=Alice"},
 		{"ordinary tokenize option untouched", "tool --tokenize=words", "tool --tokenize=words"},
 		{"ordinary pass-through option untouched", "tool --pass-through=data", "tool --pass-through=data"},

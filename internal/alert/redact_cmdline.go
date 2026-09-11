@@ -114,20 +114,25 @@ func RedactCommandLine(s string) string {
 			changed = true
 		}
 	}
-	if !changed {
-		return display
+	if changed {
+		var b strings.Builder
+		b.Grow(len(display))
+		last := 0
+		for _, tok := range tokens {
+			b.WriteString(display[last:tok.start])
+			b.WriteString(tok.text)
+			last = tok.end
+		}
+		b.WriteString(display[last:])
+		display = b.String()
 	}
-
-	var b strings.Builder
-	b.Grow(len(display))
-	last := 0
-	for _, tok := range tokens {
-		b.WriteString(display[last:tok.start])
-		b.WriteString(tok.text)
-		last = tok.end
+	// Flattening argv changes how quotes group the displayed text. Redact
+	// that representation too, after protecting values with known argv
+	// boundaries. The display has no NULs, so this cannot recurse again.
+	if strings.IndexByte(s, 0) >= 0 {
+		return RedactCommandLine(display)
 	}
-	b.WriteString(display[last:])
-	return b.String()
+	return display
 }
 
 type cmdToken struct {

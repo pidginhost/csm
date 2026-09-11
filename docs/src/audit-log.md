@@ -205,6 +205,11 @@ Webmail, the shared server daemon and DAV log lines. It keeps the
 account name and unrelated lines in a multiline finding. Applying
 redaction again preserves already redacted text.
 
+Repeated password and API token fields are all redacted, including
+quoted values in log excerpts. Whitespace and adjacent fields remain
+intact. Command-line redaction also checks the displayed form of
+NUL-separated arguments before the record is written.
+
 Finding IDs are computed from the original finding so audit records
 still correlate with remediation records. Other structured fields are
 copied unchanged. This redaction applies to audit output and email
