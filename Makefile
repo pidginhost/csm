@@ -99,9 +99,13 @@ test:
 	@mkdir -p $(TEST_TMPDIR)
 	TMPDIR=$(TEST_TMPDIR) go test -v -race -short ./...
 
-# Run linter
+# Run linter.
+#
+# GOOS=linux for the same reason as sec below: most of the daemon is
+# linux-tagged, so a darwin run reports its callers as unused and skips the
+# code that actually ships. This matches what the CI pipeline lints.
 lint:
-	$(GOBIN)/golangci-lint run --timeout 10m
+	GOOS=linux $(GOBIN)/golangci-lint run --timeout 10m
 
 # Static security analysis. -exclude=G104 because golangci-lint's errcheck
 # already handles unhandled errors with a curated exclude-functions list

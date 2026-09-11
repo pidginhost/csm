@@ -129,9 +129,10 @@ make fmt-check                   # checks tracked Go files with the pinned forma
 
 `make lint` uses repo-local cache directories under `.cache/` and a five-minute
 timeout, matching `.golangci.yml` and CI. Install the pinned tools with
-`make tools`; golangci-lint is 2.11.4. On macOS, set `GOOS=linux` for the
-canonical default-tag lint check. Production-tag lint needs the Linux CGO
-libraries described in [production tests](production-tests.md).
+`make tools`; golangci-lint is 2.11.4. It lints the Linux build, so a macOS
+host checks the code that ships rather than reporting its linux-only callers
+as unused. Production-tag lint needs the Linux CGO libraries described in
+[production tests](production-tests.md).
 
 `make sec`, `make vuln`, and `make check-fixtures` are the local security,
 vulnerability and fixture checks. For an aggregate local check use `make ci`,

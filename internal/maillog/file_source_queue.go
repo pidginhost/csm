@@ -150,12 +150,6 @@ func (s *fileSourceQueue) finish() {
 	s.mu.Unlock()
 }
 
-func (s *fileSourceQueue) replaced() {
-	s.mu.Lock()
-	s.failures, s.sampleFailed = 0, false
-	s.mu.Unlock()
-}
-
 func bufferedMailRecords(reader *bufio.Reader) int {
 	// Peek only bytes already in memory; this must not read a closing source.
 	data, _ := reader.Peek(reader.Buffered())

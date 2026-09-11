@@ -39,12 +39,6 @@ func (q *Queue) send(ctx context.Context, out chan<- Line, line Line) bool {
 	return q.sendTracked(ctx, out, line)
 }
 
-func (q *Queue) sendJournal(ctx context.Context, out chan<- Line, line Line) bool {
-	line.ticket = q.health.Begin(time.Now())
-	q.journal.releaseEntry()
-	return q.sendTracked(ctx, out, line)
-}
-
 func (q *Queue) sendFile(ctx context.Context, out chan<- Line, line Line, source *fileSourceGeneration) bool {
 	line.ticket = q.health.Begin(time.Now())
 	q.file.complete(source)
