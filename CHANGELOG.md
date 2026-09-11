@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- WordPress database scan warnings now count config, query and content-read failures, name examples, and keep discovery gaps visible. Multisite safety-limit warnings no longer hide failures at other installs.
+
 - Real-time WordPress admin-creation detection now requires an administrator role token alongside the credential shape, matching the scheduled rule of the same name, and accepts the same whitespace. The importer bundled inside many themes and plugins creates users from an import form without touching a role, and was reported as critical on every plugin update that staged it.
 
 - The dashboard now shows real-time YARA scan failures in the filesystem monitor's last event, instead of leaving that event missing or stale.
@@ -38,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A deep scan that has reached its time limit no longer opens further files while recording what it did not examine.
 
 ### Security
+
+- WordPress database scan warnings now escape account-controlled names so they cannot alter the diagnostic or terminal display.
 
 - The LiteSpeed Cache request filter now covers equivalent cookie and request forms while preserving ordinary crawler reads. Public links to administrative pages no longer cause false blocks.
 
