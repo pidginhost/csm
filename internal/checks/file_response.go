@@ -171,25 +171,47 @@ func readFileResponseState(path string, now time.Time) (*fileResponseState, erro
 	if len(data) > maxSize {
 		return nil, errors.New("safety state is too large")
 	}
-	var state fileResponseState
-	if err := json.Unmarshal(data, &state); err != nil {
+	var stored struct {
+		Version  int             `json:"version"`
+		Attempts json.RawMessage `json:"attempts"`
+	}
+	if err := json.Unmarshal(data, &stored); err != nil {
 		return nil, err
 	}
-	if state.Version != 1 {
+	if stored.Version != 1 {
 		return nil, errors.New("unknown safety state format")
 	}
-	active := state.Attempts[:0]
-	for _, attempt := range state.Attempts {
+	if len(stored.Attempts) == 0 {
+		return nil, errors.New("safety state is missing reservations")
+	}
+	// Account and Failed have meaningful zero values. Missing or null fields
+	// must not silently turn a charged reservation into an unknown account
+	// or a successful action and reopen capacity after state corruption.
+	var attempts []struct {
+		At      time.Time `json:"at"`
+		Account *string   `json:"account"`
+		Failed  *bool     `json:"failed"`
+	}
+	if err := json.Unmarshal(stored.Attempts, &attempts); err != nil {
+		return nil, err
+	}
+	if attempts == nil {
+		return nil, errors.New("safety state has null reservations")
+	}
+	state := &fileResponseState{Version: stored.Version}
+	for _, attempt := range attempts {
 		if attempt.At.IsZero() {
 			return nil, errors.New("safety state has an undated reservation")
 		}
+		if attempt.Account == nil || attempt.Failed == nil {
+			return nil, errors.New("safety state has an incomplete reservation")
+		}
 		// Future entries remain charged when the clock moves backwards.
 		if attempt.At.After(now.Add(-time.Hour)) {
-			active = append(active, attempt)
+			state.Attempts = append(state.Attempts, fileResponseAttempt{At: attempt.At, Account: *attempt.Account, Failed: *attempt.Failed})
 		}
 	}
-	state.Attempts = active
-	return &state, nil
+	return state, nil
 }
 
 var fileResponseNotices = struct {

@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Automatic file responses no longer repeat during alert delivery or for duplicate detections of one file. Incomplete safety records now pause changes instead of losing accounting.
+
 - Account scans retain individual WordPress verification warnings, and host-wide warnings no longer appear to belong to the first sampled account.
 
 - WordPress installations whose core checks or plugin inventories repeatedly fail now produce a warning naming the installation and cause. A fault that stops many installations at once is reported as one warning instead of one per site. Successful checks clear the warning even when scans finish out of order, and status distinguishes completed checks from partial output.

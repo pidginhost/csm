@@ -2119,9 +2119,16 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 			if !suppressed {
 				details := fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
 					m.Category, m.Description, strings.Join(m.Matched, ", "))
-				fm.sendAlertWithPath(sev, "signature_match_realtime",
-					fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
-					details, path, procInfo)
+				fm.sendFileFinding(alert.Finding{
+					Severity:    sev,
+					Check:       "signature_match_realtime",
+					Message:     fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
+					Details:     details,
+					FilePath:    path,
+					ProcessInfo: procInfo,
+					// Delivery must not race or retry the inline decision below.
+					AutoFileResponseEvaluated: sev == alert.Critical,
+				})
 
 				// Inline quarantine: move high-confidence malware to quarantine
 				// immediately instead of waiting for the 5-second batch dispatcher.
@@ -2231,18 +2238,21 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 // ProcessInfo fields for structured propagation to auto-response.
 // Applies per-path deduplication to prevent alert storms from rapid writes.
 func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message, details, filePath, processInfo string) {
-	if !fm.shouldAlert(check, filePath) {
-		return
-	}
-	finding := alert.Finding{
+	fm.sendFileFinding(alert.Finding{
 		Severity:    severity,
 		Check:       check,
 		Message:     message,
 		Details:     details,
 		FilePath:    filePath,
 		ProcessInfo: processInfo,
-		Timestamp:   time.Now(),
+	})
+}
+
+func (fm *FileMonitor) sendFileFinding(finding alert.Finding) {
+	if !fm.shouldAlert(finding.Check, finding.FilePath) {
+		return
 	}
+	finding.Timestamp = time.Now()
 	checks.StampContentFingerprint(&finding)
 	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)

@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -67,5 +70,60 @@ func TestRealtimeFileResponsePauseKeepsBothDetections(t *testing.T) {
 	}
 	if pauses != 1 {
 		t.Fatalf("pause notices=%d, want one", pauses)
+	}
+}
+
+func TestRealtimeFileResponsePauseDoesNotRetryOnDelivery(t *testing.T) {
+	useRealtimeRules(t, strings.ReplaceAll(strings.ReplaceAll(realtimeHighRule, "severity: high", "severity: critical"), "category: obfuscation", "category: dropper"))
+	root := t.TempDir()
+	cfg := &config.Config{StatePath: root}
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.QuarantineFiles = true, true
+	lock, err := os.Create(filepath.Join(root, "file-response.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	// The inline call refuses the busy lock. If alert delivery evaluates the
+	// response again after the lock clears, it will hit this broken ledger
+	// and publish a second pause for a detection already left for review.
+	if err = os.WriteFile(filepath.Join(root, "file-response.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	alerts := make(chan alert.Finding, 32)
+	fm := &FileMonitor{cfg: cfg, alertCh: alerts}
+	payload := []byte("<?php /* EVIL_MARKER_A " + strings.Repeat("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-", 32) + " */")
+	path := filepath.Join(root, "test.php")
+	if err = os.WriteFile(path, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fm.runSignatureScanWithSize(payload, int64(len(payload)), path, ".php", "", info) {
+		t.Fatal("inline refusal lost the original detection")
+	}
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	close(alerts)
+	var findings []alert.Finding
+	detected, paused := false, false
+	for f := range alerts {
+		findings = append(findings, f)
+		detected = detected || f.Check == "signature_match_realtime"
+		paused = paused || f.Check == "auto_response_paused"
+	}
+	if !detected || !paused {
+		t.Fatalf("expected the original detection and busy notice: %+v", findings)
+	}
+	if actions := checks.AutoQuarantineFiles(cfg, findings); len(actions) != 0 {
+		t.Fatalf("alert delivery retried a refused inline response: %+v", actions)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(payload) {
+		t.Fatalf("refused file was changed: %v", err)
 	}
 }

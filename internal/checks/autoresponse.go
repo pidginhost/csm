@@ -143,13 +143,15 @@ func recordKillAction(f *alert.Finding, pid, exe string, err error) {
 
 // AutoQuarantineFiles moves malicious files to quarantine directory.
 // Preserves original path and metadata in a sidecar .meta file.
+// Marks evaluated input findings so alert delivery cannot repeat a response.
 func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles || cfg.ObserveMode() {
 		return nil
 	}
 	var actions []alert.Finding
-	for _, f := range findings {
-		if !autoQuarantineChecks[f.Check] || f.Severity != alert.Critical {
+	seen := make(map[string]bool)
+	for i, f := range findings {
+		if f.AutoFileResponseEvaluated || !autoQuarantineChecks[f.Check] || f.Severity != alert.Critical {
 			continue
 		}
 		path := f.FilePath
@@ -157,6 +159,11 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			path = extractFilePath(f.Message)
 		}
 		if path == "" {
+			continue
+		}
+		findings[i].AutoFileResponseEvaluated = true
+		key := filepath.Clean(path)
+		if seen[key] {
 			continue
 		}
 		realtime := f.Check == "signature_match_realtime"
@@ -167,6 +174,9 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
+		// Multiple checks can report one file. Do not re-clean a repaired
+		// target or charge repeated failures for the same batch of evidence.
+		seen[key] = true
 		paused := runAutoFileResponse(cfg, path, info, func() error {
 			// Cleaning is one response attempt. A failed cleaner leaves the file
 			// and any backup for review; it must not escalate to removing the file.
@@ -721,6 +731,7 @@ func extractCategory(details string) string {
 // them to /opt/csm/quarantine breaks the site). Each invocation
 // backs up the original to /opt/csm/quarantine/pre_clean/<ts>_*
 // inside CleanHtaccessFile before atomic-replacing.
+// Marks evaluated input findings so alert delivery cannot repeat a response.
 func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.CleanHtaccess || cfg.ObserveMode() {
 		return nil
@@ -728,8 +739,8 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 
 	var actions []alert.Finding
 	seen := make(map[string]struct{})
-	for _, f := range findings {
-		if !isHtaccessHardenedFinding(f.Check) {
+	for i, f := range findings {
+		if f.AutoFileResponseEvaluated || !isHtaccessHardenedFinding(f.Check) {
 			continue
 		}
 		path := f.FilePath
@@ -739,13 +750,15 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		if path == "" {
 			continue
 		}
+		findings[i].AutoFileResponseEvaluated = true
 		// One Clean per file per autoresponse pass: multiple
 		// detector findings on the same file converge on a single
 		// cleaning call (CleanHtaccessFile re-runs every detector).
-		if _, ok := seen[path]; ok {
+		key := filepath.Clean(path)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[path] = struct{}{}
+		seen[key] = struct{}{}
 
 		info, err := osFS.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
