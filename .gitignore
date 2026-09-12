@@ -13,6 +13,7 @@ graphify-out/
 CLAUDE.md
 AGENTS.md
 docs/superpowers/
+.codex-flow/
 scripts/deploy-gitlab.sh
 
 # Local daemon artifacts produced if dev runs point state/cert paths at source dirs
