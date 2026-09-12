@@ -999,6 +999,10 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 		remove[c] = true
 	}
 	existing := make(map[string]alert.Finding, len(current)+len(findings))
+	// Owner replacement removes old rows from the output, but a key reported
+	// again in this merge must inherit its pre-purge observation. This history
+	// lasts only for this merge; resolved keys leave no tombstone behind.
+	observations := make(map[string]time.Time, len(current)+len(findings))
 	preserveAliases := normalizedPreservePathAliases(preservePathsByCheck)
 	preservationActive := preservePathsByCheck != nil
 	mismatchedCarryKeys := make(map[string]struct{})
@@ -1020,6 +1024,8 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 	}
 	protectedKeys := make(map[string]struct{})
 	for _, f := range current {
+		key := f.Key()
+		observations[key] = earliestObservation(alert.Finding{}, f)
 		// A finding this package demoted is waiting on the re-verifier, which
 		// reads the file, not on a scan that merely did not raise it again.
 		// Purging it here would discard the demotion state and let the same
@@ -1030,9 +1036,9 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 		preserved := holdChecks[f.Check] || pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check])
 		if preserved ||
 			isAutomaticallyDemotedFinding(f) || !shouldPurgeLatestFinding(f, remove) {
-			existing[f.Key()] = f
+			existing[key] = f
 			if preserved {
-				protectedKeys[f.Key()] = struct{}{}
+				protectedKeys[key] = struct{}{}
 			}
 		}
 	}
@@ -1053,7 +1059,8 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 			continue
 		}
 		f.ScanCarryForward = false
-		f.FirstSeen = earliestObservation(existing[key], f)
+		f.FirstSeen = earliestObservation(alert.Finding{FirstSeen: observations[key]}, f)
+		observations[key] = f.FirstSeen
 		existing[key] = f
 		if pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
 			protectedKeys[key] = struct{}{}

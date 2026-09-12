@@ -94,6 +94,53 @@ type Incident struct {
 	// early webshell or C2 signal still drives the compound rule when
 	// the matching counterpart arrives much later.
 	CompoundFlags CompoundFlags `json:"compound_flags,omitzero"`
+	// AutoBlock records what the automatic firewall hand-off already did for
+	// this incident. The block it applies expires; without this the marker
+	// saying "already blocked" did not, so an attack that outlasted its
+	// expiry was never blocked again.
+	AutoBlock AutoBlockState `json:"auto_block,omitzero"`
+}
+
+// AutoBlockState is the escalation ladder's memory for one incident. Count is
+// how many blocks the hand-off has requested, ExpiresAt when the most recent
+// one lapses, and a zero ExpiresAt with a nonzero Count means that block is
+// permanent and nothing re-requests it. Reset when the incident leaves an
+// active status, so a later recurrence starts from the bottom of the ladder.
+type AutoBlockState struct {
+	Count     int       `json:"count,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	LastAt    time.Time `json:"last_at,omitempty"`
+}
+
+// lapsed reports whether the hand-off may request another block: never
+// blocked, or the last block has expired. A permanent block never lapses.
+func (s AutoBlockState) lapsed(now time.Time) bool {
+	if s.Count == 0 {
+		return true
+	}
+	if s.ExpiresAt.IsZero() {
+		return false
+	}
+	return !now.Before(s.ExpiresAt)
+}
+
+// blockTTLForAttempt escalates the hand-off: the first block uses the
+// operator's configured expiry, the second a week, and any later one is
+// permanent (the firewall reads a zero timeout as permanent). An attacker who
+// outlasts one expiry pays more each time, while a single false positive
+// still ages out on its own.
+func blockTTLForAttempt(attempt int, configured time.Duration) time.Duration {
+	switch {
+	case attempt <= 1:
+		if configured <= 0 {
+			return 24 * time.Hour
+		}
+		return configured
+	case attempt == 2:
+		return 7 * 24 * time.Hour
+	default:
+		return 0
+	}
 }
 
 // CompoundFlags records the union of compound-pattern signals an

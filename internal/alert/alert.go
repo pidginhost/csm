@@ -142,7 +142,7 @@ type Finding struct {
 	// re-emitted by every scan cannot keep re-entering a recent-activity
 	// window. Zero on findings that never went through the merge, and on
 	// rows stored before the field existed; callers fall back to Timestamp.
-	FirstSeen time.Time `json:"first_seen,omitempty"`
+	FirstSeen time.Time `json:"first_seen,omitzero"`
 
 	// Full-scan quarantine outcome (Phase 2). Set ONLY on findings produced by a
 	// `--full --quarantine` job; empty for all report-only findings so existing

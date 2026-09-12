@@ -334,6 +334,30 @@ unrecognised value became a challenge policy) and
 `incidents.*.block_at_severity`, which accepts only `high` or `critical` and
 silently disabled incident blocking on anything else.
 
+## Incident auto-block escalation
+
+An incident-driven block used to be requested once per incident and never
+again. The block it applied expired after `auto_response.block_expiry`, but the
+marker saying "already blocked" did not, so an attacker who kept going past the
+expiry was never blocked a second time while the incident stayed open and kept
+collecting evidence.
+
+A block is now re-requested whenever the previous one has lapsed and the
+incident is still active and still receiving qualifying findings, and each
+request lasts longer than the last:
+
+| block | lifetime |
+|-------|----------|
+| first | `auto_response.block_expiry` (24h by default) |
+| second | 7 days |
+| third and later | permanent |
+
+A permanent block is never re-requested. Closing an incident, by an operator or
+by the stale-incident sweep, resets the ladder, so a later recurrence starts at
+the bottom rather than inheriting a months-old episode. Concurrent findings
+still collapse into one firewall call, and a declined or dry-run request is not
+recorded, so it can retry.
+
 ## Infrastructure IP DNS guard
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). This prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.

@@ -19,7 +19,7 @@ func TestCorrelatorIgnoresPostureFindings(t *testing.T) {
 					Enabled:         true,
 					BlockAtSeverity: "critical",
 				},
-				OnIncidentBlock: func(_, _ string) bool {
+				OnIncidentBlock: func(_, _ string, _ time.Duration) bool {
 					blockCalls++
 					return true
 				},

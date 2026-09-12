@@ -233,9 +233,10 @@ actionable. That is the remaining defect, not a tuning question.
 
 That defect is now closed: a finding carries the time its condition was first
 observed, the latest-state merge keeps it across re-reports, and correlation
-judges window membership by it. The first observation is not retroactive, so on
-a host that has been running a while the aggregate only settles as the active
-set turns over.
+judges window membership by it, including when a completed scan replaces its
+owned findings. The first observation is not retroactive: upgraded rows adopt
+their saved report time and age out one hour after it. The next completed scan
+clears expired aggregates without requiring the source findings to disappear.
 
 **Acceptance:** met for the threshold. Re-deriving it again, or changing the
 Critical-only limit, uses the same tool and the same recorded-stream evidence.

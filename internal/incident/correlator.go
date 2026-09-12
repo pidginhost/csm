@@ -93,7 +93,7 @@ type CorrelatorConfig struct {
 	// upstream gate refused, and the audit "credential_spray_block_requested"
 	// action is not appended in that case so operators cannot mistake a
 	// declined request for an enforced block.
-	OnSprayBlock func(ip, reason string) bool
+	OnSprayBlock func(ip, reason string, ttl time.Duration) bool
 
 	// AutoBlock turns on the generic incident-driven firewall hand-off
 	// for non-spray kinds. Independent of SpraySuppression; applies when
@@ -115,7 +115,7 @@ type CorrelatorConfig struct {
 	// disabled, and failed attempts must return false so the correlator
 	// can retry on the next finding instead of permanently latching the
 	// incident. nil disables the path even when AutoBlock is configured.
-	OnIncidentBlock func(ip, reason string) bool
+	OnIncidentBlock func(ip, reason string, ttl time.Duration) bool
 }
 
 // IncidentAutoBlockConfig drives the generic incident-driven firewall
@@ -131,6 +131,9 @@ type IncidentAutoBlockConfig struct {
 	// case-insensitive. Any other value is ignored so operator typos
 	// cannot accidentally engage blocking.
 	BlockAtSeverity string
+	// BlockExpiry is the operator's configured auto-response block duration,
+	// the first rung of the escalation ladder. Zero falls back to 24h.
+	BlockExpiry time.Duration
 	// Kinds, when non-empty, restricts the auto-block path to the
 	// listed incident kinds. Empty means "every kind that carries one
 	// unambiguous remote IP". Credential_spray is implicitly excluded
@@ -972,6 +975,10 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 			inc.ClosedAt = now
 			inc.ClosedBy = "operator"
 		}
+		// Closing ends the episode. A later recurrence is new activity and
+		// starts at the bottom of the escalation ladder, rather than jumping
+		// to a permanent block off the back of a long-closed incident.
+		inc.AutoBlock = AutoBlockState{}
 		c.unbindLocked(id)
 		if c.spray != nil {
 			c.spray.UnbindIncident(id)
@@ -1520,7 +1527,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 	if inc == nil || c.cfg.OnIncidentBlock == nil {
 		return nil
 	}
-	if hasIncidentAction(inc.Actions, "incident_block_requested") {
+	if !inc.AutoBlock.lapsed(now) {
 		return nil
 	}
 	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
@@ -1528,7 +1535,12 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 	}
 	c.pendingIncidentBlocks[inc.ID] = struct{}{}
 	incidentID := inc.ID
+	attempt := inc.AutoBlock.Count + 1
+	ttl := blockTTLForAttempt(attempt, c.cfg.AutoBlock.BlockExpiry)
 	reason := "incident " + string(inc.Kind) + " " + inc.Severity.String() + " (" + why + ")"
+	if attempt > 1 {
+		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
+	}
 	onBlock := c.cfg.OnIncidentBlock
 	return func() {
 		var live bool
@@ -1544,19 +1556,23 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 				return
 			}
 			current, ok := c.incidents[incidentID]
-			if !ok || hasIncidentAction(current.Actions, "incident_block_requested") {
+			if !ok || !current.AutoBlock.lapsed(now) {
 				return
+			}
+			current.AutoBlock = AutoBlockState{Count: attempt, LastAt: now}
+			if ttl > 0 {
+				current.AutoBlock.ExpiresAt = now.Add(ttl)
 			}
 			current.Actions = append(current.Actions, IncidentAction{
 				Time:    now,
 				Action:  "incident_block_requested",
 				Result:  "ok",
-				Details: ip + " " + reason,
+				Details: ip + " " + reason + " " + blockDurationLabel(ttl),
 			})
 			c.markPersistedLocked(incidentID, c.now())
 			c.persistLocked(*current)
 		}()
-		live = onBlock(ip, reason)
+		live = onBlock(ip, reason, ttl)
 		callbackReturned = true
 	}
 }
@@ -1623,6 +1639,15 @@ func normalizeIncidentRemoteIP(raw string) string {
 	return ip.String()
 }
 
+// blockDurationLabel renders a block's lifetime for the incident action so an
+// operator reading the timeline can see the ladder escalating.
+func blockDurationLabel(ttl time.Duration) string {
+	if ttl <= 0 {
+		return "(permanent)"
+	}
+	return "(" + ttl.String() + ")"
+}
+
 func hasIncidentAction(actions []IncidentAction, action string) bool {
 	for _, a := range actions {
 		if a.Action == action {
@@ -1643,14 +1668,19 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 	if inc == nil || c.cfg.OnSprayBlock == nil {
 		return nil
 	}
-	if hasIncidentAction(inc.Actions, "credential_spray_block_requested") {
+	if !inc.AutoBlock.lapsed(now) {
 		return nil
 	}
 	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
 		return nil
 	}
 	c.pendingSprayBlocks[inc.ID] = struct{}{}
+	attempt := inc.AutoBlock.Count + 1
+	ttl := blockTTLForAttempt(attempt, c.spray.cfg.BlockExpiry)
 	reason := "credential_spray: " + strconv.Itoa(hits) + " distinct mailboxes (" + why + ")"
+	if attempt > 1 {
+		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
+	}
 	onSprayBlock := c.cfg.OnSprayBlock
 	incidentID := inc.ID
 	return func() {
@@ -1668,19 +1698,23 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 				return
 			}
 			current, ok := c.incidents[incidentID]
-			if !ok || hasIncidentAction(current.Actions, "credential_spray_block_requested") {
+			if !ok || !current.AutoBlock.lapsed(now) {
 				return
+			}
+			current.AutoBlock = AutoBlockState{Count: attempt, LastAt: now}
+			if ttl > 0 {
+				current.AutoBlock.ExpiresAt = now.Add(ttl)
 			}
 			current.Actions = append(current.Actions, IncidentAction{
 				Time:    now,
 				Action:  "credential_spray_block_requested",
 				Result:  "ok",
-				Details: ip + " " + reason,
+				Details: ip + " " + reason + " " + blockDurationLabel(ttl),
 			})
 			c.markPersistedLocked(incidentID, c.now())
 			c.persistLocked(*current)
 		}()
-		live = onSprayBlock(ip, reason)
+		live = onSprayBlock(ip, reason, ttl)
 		callbackReturned = true
 	}
 }

@@ -31,6 +31,20 @@ var (
 	incidentSprayBlocker func(ip, reason string, timeout time.Duration) (bool, error)
 )
 
+// autoResponseBlockExpiry is the operator's configured block duration, the
+// first rung of the incident auto-block escalation ladder. An unset or
+// unparseable value falls back to a day, matching the firewall default.
+func autoResponseBlockExpiry(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return 24 * time.Hour
+	}
+	timeout, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry)
+	if err != nil || timeout <= 0 {
+		return 24 * time.Hour
+	}
+	return timeout
+}
+
 // SetIncidentSprayBlocker installs the firewall-side hand-off used by the
 // incident auto-block paths. Call once after the firewall engine is built
 // and before the first IncidentCorrelator() call.
@@ -94,13 +108,14 @@ func IncidentCorrelator() *incident.Correlator {
 		var spray incident.SpraySuppressionConfig
 		var autoBlock incident.IncidentAutoBlockConfig
 		var whitelisted func(string) bool
-		var onSprayBlock func(ip, reason string) bool
-		var onIncidentBlock func(ip, reason string) bool
+		var onSprayBlock func(ip, reason string, ttl time.Duration) bool
+		var onIncidentBlock func(ip, reason string, ttl time.Duration) bool
 		if cfg := globalCfgForIncidents(); cfg != nil {
 			spray = incident.SpraySuppressionConfig{
 				Enabled:            cfg.Incidents.SpraySuppression.Enabled,
 				DryRun:             cfg.Incidents.SpraySuppression.DryRun,
 				DistinctMailboxes:  cfg.Incidents.SpraySuppression.DistinctMailboxes,
+				BlockExpiry:        autoResponseBlockExpiry(cfg),
 				SeverityEscalateAt: cfg.Incidents.SpraySuppression.SeverityEscalateAt,
 				PerCheck:           cfg.IncidentsSpraySuppressionPerCheck(),
 				MaxTrackedIPs:      cfg.Incidents.SpraySuppression.MaxTrackedIPs,
@@ -113,16 +128,14 @@ func IncidentCorrelator() *incident.Correlator {
 			// the singleton.
 			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onSprayBlock = func(ip, reason string) bool {
+				onSprayBlock = func(ip, reason string, ttl time.Duration) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
-					timeout, perr := time.ParseDuration(liveCfg.AutoResponse.BlockExpiry)
-					if perr != nil || timeout <= 0 {
-						timeout = 24 * time.Hour
-					}
-					live, err := blocker(ip, "CSM credential_spray: "+reason, timeout)
+					// ttl comes from the correlator's escalation ladder; zero
+					// is a permanent block, which the engine understands.
+					live, err := blocker(ip, "CSM credential_spray: "+reason, ttl)
 					if err != nil {
 						if !isProtectedIPRefusal(err) {
 							csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
@@ -143,20 +156,17 @@ func IncidentCorrelator() *incident.Correlator {
 			autoBlock = incident.IncidentAutoBlockConfig{
 				Enabled:         cfg.Incidents.AutoBlock.Enabled,
 				BlockAtSeverity: cfg.Incidents.AutoBlock.BlockAtSeverity,
+				BlockExpiry:     autoResponseBlockExpiry(cfg),
 				Kinds:           kinds,
 			}
 			if autoBlock.Enabled && autoBlock.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onIncidentBlock = func(ip, reason string) bool {
+				onIncidentBlock = func(ip, reason string, ttl time.Duration) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
-					timeout, perr := time.ParseDuration(liveCfg.AutoResponse.BlockExpiry)
-					if perr != nil || timeout <= 0 {
-						timeout = 24 * time.Hour
-					}
-					live, err := blocker(ip, "CSM incident: "+reason, timeout)
+					live, err := blocker(ip, "CSM incident: "+reason, ttl)
 					if err != nil {
 						// Own-interface / infra IPs are intentionally never
 						// blockable; the incident still opened, so the operator is

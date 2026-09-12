@@ -9,8 +9,8 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-func (b *blockCapture) recordOK(ip, reason string) bool {
-	b.record(ip, reason)
+func (b *blockCapture) recordOK(ip, reason string, ttl time.Duration) bool {
+	b.record(ip, reason, ttl)
 	return true
 }
 
@@ -671,8 +671,8 @@ func TestAutoBlockRetriesWhenCallbackReportsNoLiveBlock(t *testing.T) {
 			Enabled:         true,
 			BlockAtSeverity: "critical",
 		},
-		OnIncidentBlock: func(ip, reason string) bool {
-			cap.record(ip, reason)
+		OnIncidentBlock: func(ip, reason string, ttl time.Duration) bool {
+			cap.record(ip, reason, ttl)
 			return live
 		},
 	})
@@ -829,7 +829,7 @@ func TestAutoBlockSkipsTruncatedTimelineWithoutRemoteIPKey(t *testing.T) {
 // the auto-block path offline for the entire incident's lifetime.
 func TestAutoBlockReleasesPendingSlotOnPanic(t *testing.T) {
 	calls := 0
-	cb := func(_, _ string) bool {
+	cb := func(_, _ string, _ time.Duration) bool {
 		calls++
 		if calls == 1 {
 			panic("simulated firewall panic")

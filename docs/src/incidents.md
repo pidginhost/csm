@@ -365,17 +365,21 @@ whose condition was **first observed** in the last hour. A scan re-emits every
 finding it still sees and the merge refreshes its report time, so judging by
 that would let a months-old condition re-enter the window on every cycle; the
 merge therefore carries each finding's first observation across re-reports and
-correlation reads that instead. The window is relative to the merge time, so
+correlation reads that instead, including when a completed scan replaces its
+owned findings. A condition removed by a completed scan starts a new observation
+if it is found again later. The window is relative to the merge time, so
 the next completed scan clears expired aggregates even if it produces no
 findings. Source rows are retained when their aggregates expire, a finding
 carrying no first observation falls back to its report time, and a finding
 carrying no timestamp at all still counts. Derived timestamps never affect the
-window.
+window. JSON output omits `first_seen` when no first observation was recorded.
 
 The first observation is not retroactive. On upgrade, a stored finding adopts
 its existing report time, because nothing recorded when that condition actually
-started. Long-lived findings therefore look freshly observed once, and the
-aggregate only settles as the active set turns over.
+started. A long-lived finding with a recent report can therefore count once
+after upgrading; it ages out one hour after that saved report time, and the
+next completed scan clears expired aggregates even if it reports the same
+conditions again.
 
 The realtime and scan batch paths keep their existing grouping and count all
 qualifying rows in the batch. A scan can carry forward an older finding for a

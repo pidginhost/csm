@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cross-account correlation now judges an account by when its finding was first observed, not by when a scan last re-reported it. Every scan refreshes the report time of findings it still sees, so a months-old compromise kept re-entering the recent-activity window and the coordinated-attack alert named most of the accounts on the host.
 
+- Completed scans now preserve the original observation when replacing a finding, so repeated reports cannot renew an expired correlation alert. Findings with no recorded first observation omit that optional date from JSON output.
+
 - Cross-account correlation now only combines findings from the last hour of the stored finding set, and clears an aggregate on the next scan once that hour passes. It had no time bound at all, so the coordinated-attack alert latched on the first three accounts that ever carried a critical finding and never cleared. Attribution health reports the same window.
 
 - Real-time WordPress admin-creation detection now requires an administrator role token alongside the credential shape, matching the scheduled rule of the same name, and accepts the same whitespace. The importer bundled inside many themes and plugins creates users from an import form without touching a role, and was reported as critical on every plugin update that staged it.
@@ -46,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A deep scan that has reached its time limit no longer opens further files while recording what it did not examine.
 
 ### Security
+
+- An incident-driven firewall block is re-applied when the previous one expires and the attack is still going, escalating from the configured expiry to seven days and then to a permanent block. A block was previously requested once per incident while the block itself expired after a day, so anyone who kept going past that was never blocked again; on a production host one address sprayed mail credentials for six days after its block lapsed, with the incident open throughout.
 
 - WordPress database scan warnings now escape account-controlled names so they cannot alter the diagnostic or terminal display.
 
