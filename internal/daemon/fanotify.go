@@ -2136,7 +2136,11 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 						Details:  details,
 						FilePath: path,
 					}
-					if qPath, ok := checks.InlineQuarantineGatedIdentified(fm.currentCfg(), finding, path, data, scanned); ok {
+					qPath, ok, paused := checks.InlineQuarantineGatedIdentified(fm.currentCfg(), finding, path, data, scanned)
+					if paused != nil && !alert.TryEnqueue(fm.alertCh, *paused) {
+						atomic.AddInt64(&fm.droppedAlerts, 1)
+					}
+					if ok {
 						fm.recordDropperQuarantine(path, qPath)
 						fm.sendAlert(alert.Critical, "auto_response",
 							fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),

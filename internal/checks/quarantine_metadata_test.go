@@ -72,7 +72,7 @@ func TestQuarantineWritersPreserveOriginalMetadata(t *testing.T) {
 			switch kind {
 			case "automatic":
 				reason = "detected test evidence"
-				cfg := &config.Config{}
+				cfg := &config.Config{StatePath: t.TempDir()}
 				cfg.AutoResponse.Enabled, cfg.AutoResponse.QuarantineFiles = true, true
 				got := AutoQuarantineFiles(cfg, []alert.Finding{{Check: "backdoor_binary", Severity: alert.Critical, FilePath: path, Message: reason}})
 				if len(got) != 1 {

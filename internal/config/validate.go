@@ -435,6 +435,15 @@ func Validate(cfg *Config) []ValidationResult {
 	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute != 0 && (cfg.AutoResponse.PHPRelay.MaxActionsPerMinute < 1 || cfg.AutoResponse.PHPRelay.MaxActionsPerMinute > 600) {
 		results = append(results, ValidationResult{"error", "auto_response.php_relay.max_actions_per_minute", fmt.Sprintf("max_actions_per_minute must be between 1 and 600, got %d", cfg.AutoResponse.PHPRelay.MaxActionsPerMinute)})
 	}
+	for key, value := range map[string]int{
+		"max_file_actions_per_hour":             cfg.AutoResponse.MaxFileActionsPerHour,
+		"max_file_actions_per_account_per_hour": cfg.AutoResponse.MaxFileActionsPerAccountPerHour,
+		"max_file_action_failures_per_hour":     cfg.AutoResponse.MaxFileActionFailuresPerHour,
+	} {
+		if value < 0 || value > MaxFileResponseLimit {
+			results = append(results, ValidationResult{"error", "auto_response." + key, fmt.Sprintf("must be between 0 and %d (0 uses the default)", MaxFileResponseLimit)})
+		}
+	}
 	if cfg.AutoResponse.MaxBlocksPerHour < 0 {
 		results = append(results, ValidationResult{"error", "auto_response.max_blocks_per_hour", fmt.Sprintf("max_blocks_per_hour must be >= 0 (0 uses default %d), got %d", DefaultMaxBlocksPerHour, cfg.AutoResponse.MaxBlocksPerHour)})
 	}

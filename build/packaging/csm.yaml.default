@@ -336,6 +336,9 @@ auto_response:
   enabled: false              # must be explicitly enabled
   kill_processes: false       # auto-kill fake kernel threads, reverse shells
   quarantine_files: false     # auto-move webshells/backdoors to /opt/csm/quarantine/
+  max_file_actions_per_hour: 50         # shared quarantine and file-cleaning attempt budget
+  max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
+  max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: false            # auto-block attacker IPs via nftables
   block_expiry: "24h"         # how long IPs stay blocked
   http_asn_crawl_tempban: "24h"  # ban duration for http_asn_crawl findings

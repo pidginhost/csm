@@ -384,6 +384,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "account_scan", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "auto_block", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "auto_response", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
+	{Name: "auto_response_paused", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "challenge_route", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "check_timeout", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "config_reload_error", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

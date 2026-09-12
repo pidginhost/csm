@@ -43,6 +43,48 @@ Manual kill-and-quarantine reports a termination failure even if the file was
 successfully quarantined; inspect both the process and recovery entry before
 retrying. Manual request cancellation is checked before sending a signal.
 
+### Automatic file response limits
+
+Realtime quarantine, scheduled quarantine, PHP cleaning and automatic `.htaccess`
+cleaning share one rolling-hour budget. `auto_response.max_file_actions_per_hour`
+caps host-wide attempts (default 50), `max_file_actions_per_account_per_hour` caps
+attempts for one account (default 10), and `max_file_action_failures_per_hour`
+pauses these responses after repeated failures (default 3). Zero or an omitted
+key uses the default; negative values and values above 10000 are rejected.
+
+Each attempt is reserved before touching the file. Successful, failed and
+interrupted attempts all consume capacity. Reservations live in
+`<state_path>/file-response.json` and survive configuration reloads and daemon
+restarts. Entries expire one hour after admission. A backwards clock adjustment
+keeps future-dated reservations charged until their window has passed.
+
+Account budgets come from the target's account-home path, not finding text.
+Paths outside recognized account homes share an unknown-account budget. One
+account reaching its limit does not stop other accounts unless the host or
+failure limit is also reached. Automatic directory and special-file quarantine
+is refused because one directory move can affect an unbounded number of files.
+Manual remediation remains available after reviewing the original detection.
+
+A busy safety lock refuses that attempt without waiting behind another file
+operation. Unreadable or unwritable safety state also refuses mutations. The
+original detections remain visible and a deduplicated `auto_response_paused`
+warning reports the cause. Account-limit notices are grouped at host scope so
+a fault across many accounts cannot flood the alert budget. Paused findings are
+not queued for automatic retry; new eligible detections can act after capacity
+returns. Review outstanding findings and recovery evidence before manual
+remediation. Do not delete safety state to clear a pause; repair storage faults
+and let reservations expire.
+
+A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
+It no longer escalates to whole-file quarantine. Quarantine and cleaners retain
+their descriptor-based identity checks, and automatic actions revalidate the
+file after saving the reservation.
+
+These limits use the existing `enabled`, `quarantine_files` and `clean_htaccess`
+opt-ins. Observe mode still forbids automatic changes. `dry_run` continues to
+control IP blocking and web-exposed-file virtual patches; it does not preview
+file quarantine or cleaning. Other response families have their own controls.
+
 ### Restoring quarantined files
 
 Regular-file quarantine and pre-clean backups write and sync the private content
@@ -104,6 +146,9 @@ auto_response:
   enabled: true
   kill_processes: true
   quarantine_files: true
+  max_file_actions_per_hour: 50
+  max_file_actions_per_account_per_hour: 10
+  max_file_action_failures_per_hour: 3
   block_ips: true
   block_expiry: "24h"         # positive temp block duration; omitted defaults to 24h
   max_blocks_per_hour: 50     # per-IP blocks per hour; 0/omitted uses default

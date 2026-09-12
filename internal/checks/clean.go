@@ -71,7 +71,11 @@ var cleanMaxFileSize int64 = 8 << 20
 // 2. Prepend injection - remove malicious code blocks at start of file (entropy-validated)
 // 3. Append injection - remove malicious code after closing ?> or end of PSR-12 file
 // 4. Inline eval injection - remove eval(base64_decode(...)) single-line injections
-func CleanInfectedFile(path string) (result CleanResult) {
+func CleanInfectedFile(path string) CleanResult {
+	return cleanInfectedFileIdentified(path, nil)
+}
+
+func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result CleanResult) {
 	result = CleanResult{Path: path}
 	audit := newCleanAction(path)
 	defer func() { audit.finish(result.Error) }()
@@ -82,6 +86,10 @@ func CleanInfectedFile(path string) (result CleanResult) {
 		return result
 	}
 	defer target.Close()
+	if expected != nil && (!sameFileIdentity(expected, target.Info) || !sameContentShape(expected, target.Info)) {
+		result.Error = "file changed before automatic cleaning"
+		return result
+	}
 
 	if sz := target.Info.Size(); sz > cleanMaxFileSize {
 		result.Error = fmt.Sprintf("file too large to clean (%d bytes > %d)", sz, cleanMaxFileSize)

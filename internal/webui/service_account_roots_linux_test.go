@@ -110,7 +110,7 @@ func TestCustomAccountRootsInSystemdService(t *testing.T) {
 	server.cfg.AccountRoots = []string{root}
 	server.cfg.AutoResponse.Enabled, server.cfg.AutoResponse.QuarantineFiles = true, true
 	finding := alert.Finding{Severity: alert.Critical, Check: "signature_match_realtime", FilePath: path, Details: fmt.Sprintf("Category: %s\n", matches[0].Category)}
-	qpath, ok := checks.InlineQuarantineGatedIdentified(server.cfg, finding, path, []byte(payload), original)
+	qpath, ok, _ := checks.InlineQuarantineGatedIdentified(server.cfg, finding, path, []byte(payload), original)
 	if !ok {
 		t.Fatal("detected content was not quarantined under the service sandbox")
 	}

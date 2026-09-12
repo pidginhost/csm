@@ -38,6 +38,16 @@ func observeAutoResponse(action string, n int) {
 	autoResponseActions.With(action).Add(float64(n))
 }
 
+func observeFileResponseActions(action string, findings []alert.Finding) {
+	n := 0
+	for _, finding := range findings {
+		if finding.Check == "auto_response" {
+			n++
+		}
+	}
+	observeAutoResponse(action, n)
+}
+
 // checkDuration is the per-check latency histogram for /metrics.
 // Labelled by check name and tier so scrapers can spot a single check
 // regressing without scanning logs. Buckets span the observed range
@@ -663,6 +673,7 @@ var latestVolatileCheckNames = []string{
 	"account_scan_truncated",
 	"auto_block",
 	"auto_response",
+	"auto_response_paused",
 	"challenge_route",
 	"check_panic",
 	"check_timeout",
@@ -1185,7 +1196,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				quarantineActions[i].Timestamp = now
 			}
 		}
-		observeAutoResponse("quarantine", len(quarantineActions))
+		observeFileResponseActions("quarantine", quarantineActions)
 		findings = append(findings, quarantineActions...)
 
 		htaccessActions := AutoCleanHtaccess(cfg, findings)
@@ -1194,7 +1205,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				htaccessActions[i].Timestamp = now
 			}
 		}
-		observeAutoResponse("htaccess_clean", len(htaccessActions))
+		observeFileResponseActions("htaccess_clean", htaccessActions)
 		findings = append(findings, htaccessActions...)
 
 		vpatchActions := AutoVirtualPatchExposedFiles(cfg, findings)

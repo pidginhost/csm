@@ -144,7 +144,7 @@ func TestQuarantineCallersTreatRemainingLinksAsCompleted(t *testing.T) {
 		src, other := linkedQuarantineFixture(t, []byte("<?php /* linked */"))
 		qdir := filepath.Join(filepath.Dir(src), "quarantine")
 		withAutoRespQuarantineDir(t, qdir)
-		cfg := &config.Config{}
+		cfg := &config.Config{StatePath: t.TempDir()}
 		cfg.AutoResponse.Enabled = true
 		cfg.AutoResponse.QuarantineFiles = true
 

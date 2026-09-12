@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Automatic file quarantine and cleaning now share persistent host and account limits and pause after repeated failures. Failed cleaning and whole-directory findings leave the source for manual review.
+
 - The dashboard's browser sources now have unit tests, run through the Go suite on machines that have node.
 
 - The incident view has a Block button for incidents with one unambiguous source address. It blocks permanently, records the block on the incident timeline, and stops the automatic hand-off from re-blocking an address an operator just handled.

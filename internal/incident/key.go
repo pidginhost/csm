@@ -27,7 +27,7 @@ func excludedFromIncidents(check string) bool {
 	case "vulnerable_plugins", "outdated_plugins":
 		// An installed weakness is not evidence that the account was entered.
 		return true
-	case "auto_block", "auto_response", "challenge_route",
+	case "auto_block", "auto_response", "auto_response_paused", "challenge_route",
 		"reputation_quota_exhausted", "threat_feed_stale",
 		"wp_core_unverified", "wp_plugin_inventory_unverified":
 		// CSM output must not re-enter the incident response path. In

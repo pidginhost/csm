@@ -246,28 +246,6 @@ accounts in its sweep; it recomputes on every arrival, including ignored checks.
 Recordings cannot reconstruct empty scans, purges or dismissals, so replay
 duration describes the observed arrivals rather than exact store history.
 
-## The firewall audit log is written to a path nothing reads
-
-**Status:** open. Confirmed in `internal/firewall/audit.go`.
-
-`AppendAudit` writes every firewall mutation to `<state>/audit.jsonl`.
-`ReadAuditLog`, which backs `csm firewall audit` and the web UI's audit view,
-reads `<state>/firewall/audit.jsonl`. The two paths have never agreed, so the
-reader returns an empty list on a host with a full audit file, and an operator
-asking "what has the firewall done" is told "nothing".
-
-An audit trail that reads empty is worse than an absent one: the empty answer
-looks like a clean history rather than a broken reader. Every entry now also
-reaches `internal/actionlog`, so the data is not lost, but the firewall's own
-view is still wrong.
-
-**Acceptance:** writer and reader resolve one path through a single helper; a
-test writes an entry and reads it back through the public reader; existing
-files at the historical path are still read so an upgrade does not appear to
-erase history.
-
-**Size:** hours, plus a decision on which path is canonical.
-
 ---
 
 # Priority 2 -- detection precision and response safety
@@ -282,7 +260,8 @@ None of these should be closed by raising a threshold or excluding a path.
 
 ## Auto-response safety model
 
-**Status:** open. Pieces exist, the model does not.
+**Status:** partial. Automatic file response limits are implemented; the full
+risk model and the remaining response families are open.
 
 What exists: `auto_response.dry_run` defaults to on; per-IP blocks are capped
 at `max_blocks_per_hour` (default 50) and service restarts at
@@ -294,11 +273,25 @@ mode; firewall changes record a rollback point; `mode: observe` refuses to run
 any of it. See [auto-response](docs/src/auto-response.md) and
 [observe mode](docs/src/observe-mode.md).
 
-What does not exist: quarantine has no hourly cap at all, so one false
-positive rule on a realtime write path can quarantine every matching file on
-the server; no action is classified by risk; nothing disables a response after
-it keeps failing; and the reputation permablock loop (June 2026) showed that a
-faulty feedback path can block indefinitely inside the per-hour cap.
+Implemented for automatic file responses:
+
+- Realtime and scheduled quarantine, PHP cleaning and access-file cleaning
+  share persistent host and account budgets over a rolling hour.
+- Reservations survive reloads, restarts and interrupted actions. Repeated
+  failures pause these responses, and unavailable safety state refuses changes.
+- Pause warnings are deduplicated while original detections remain visible.
+  Account identity comes from account-home paths; unknown paths share a budget.
+- Failed cleaning leaves the source and recovery evidence for review.
+  Whole-directory and special-file quarantine require manual review.
+- Automatic actions revalidate the target after budget persistence, and the
+  cleaners receive the same file identity captured before admission.
+- Tests cover shared entry points, concurrency, restart, rolling expiry,
+  clock rollback, failed state writes, preserved backups and file replacement.
+
+Remaining: no complete action risk table, no shared limits or failure pause
+across the other response families, and no complete rollback and detection-time
+identity proof for every action. The reputation escalation loop also needs its
+own feedback-lifecycle guard; an hourly cap alone does not bound its lifetime.
 
 **Decision:** classify every automated action into a tier, in one table with a
 completeness test:
@@ -312,8 +305,8 @@ completeness test:
 | 4 | destructive or process-affecting | process kill, service restart, config rewrite |
 
 Each tier gets a confidence floor, a per-action circuit breaker (count per
-hour and per account, with quarantine gaining the cap that blocks already
-have), mandatory identity revalidation immediately before tiers 3 and 4
+hour and per account, extending the file-response limits to other actions),
+mandatory identity revalidation immediately before tiers 3 and 4
 (inode and device for files, pidfd for processes, rule handle for firewall
 entries), and enough recorded metadata to reverse the action. A response
 mechanism that fails N times in a window disables itself and raises a finding

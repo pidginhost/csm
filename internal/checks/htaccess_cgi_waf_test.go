@@ -291,7 +291,7 @@ func TestNewHtaccessDetectorsApplyAndAutoClean(t *testing.T) {
 			body: "keep\nSecRuleEngine Off\nend\n",
 		},
 	}
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.CleanHtaccess = true
 

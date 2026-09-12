@@ -775,7 +775,11 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 // Caller is responsible for gating on cfg.AutoResponse.CleanHtaccess
 // before invoking; this function will clean unconditionally if
 // detectors find anything.
-func CleanHtaccessFile(path string) (result RemediationResult) {
+func CleanHtaccessFile(path string) RemediationResult {
+	return cleanHtaccessFileIdentified(path, nil)
+}
+
+func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result RemediationResult) {
 	audit := newCleanAction(path)
 	defer func() { audit.finish(result.Error) }()
 	if filepath.Base(path) != ".htaccess" {
@@ -795,6 +799,11 @@ func CleanHtaccessFile(path string) (result RemediationResult) {
 		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
 	}
 	defer target.Close()
+	if expected != nil && (!sameFileIdentity(expected, target.Info) || !sameContentShape(expected, target.Info)) {
+		result.Error = "file changed before automatic cleaning"
+		return result
+	}
+
 	audit.rec.Result = actionlog.Failed
 	original, err := io.ReadAll(target.File)
 	if err != nil {

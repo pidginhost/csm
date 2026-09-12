@@ -84,7 +84,7 @@ func TestAutoResponseFindingsStampTimestamp(t *testing.T) {
 		if err := os.WriteFile(path, []byte("<?php system($_GET['cmd']);"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		cfg := &config.Config{}
+		cfg := &config.Config{StatePath: t.TempDir()}
 		cfg.AutoResponse.Enabled, cfg.AutoResponse.QuarantineFiles = true, true
 		before := time.Now()
 		findings := AutoQuarantineFiles(cfg, []alert.Finding{{

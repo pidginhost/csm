@@ -533,6 +533,7 @@ Attribution gaps:
 | `api_tokens` | ignored | informational |  |
 | `auto_block` | ignored | response |  |
 | `auto_response` | ignored | response |  |
+| `auto_response_paused` | ignored | response |  |
 | `backdoor_binary` | malware artifact |  |  |
 | `backdoor_port` | security event |  | socket-owner |
 | `backdoor_port_outbound` | security event |  | socket-owner |

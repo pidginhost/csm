@@ -262,12 +262,13 @@ func TestQuarantineMoveDispatchPerName(t *testing.T) {
 // Ordinary automatic names move a Critical file and refuse a lower severity.
 // A realtime signature match on these benign small bytes must be rejected.
 func TestAutoQuarantineDispatchPerName(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 	for _, name := range expectedAutoQuarantineChecks {
 		t.Run(name, func(t *testing.T) {
 			root, qdir := withResponseRoots(t)
+			cfg.StatePath = t.TempDir()
 			path := writeResponseFixture(t, root, name+".php")
 			actions := AutoQuarantineFiles(cfg, []alert.Finding{{Check: name, Severity: alert.High, FilePath: path}})
 			if len(actions) != 0 {
@@ -301,7 +302,7 @@ func TestAutoQuarantineDispatchPerName(t *testing.T) {
 // Accepted realtime matches bypass surgical cleaning, even on a plugin path.
 // The comment has high entropy but contains no executable code or encoding.
 func TestAutoQuarantineRealtimeAccepted(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 	for _, category := range []string{"dropper", "webshell"} {
@@ -347,11 +348,11 @@ func TestAutoQuarantineRealtimeAccepted(t *testing.T) {
 	}
 }
 
-// Full-scan cleaning errors retain the file for review; the automatic path
-// reports the error and moves it. Lowering the cleaner's size limit exercises
-// both production error paths using the same inert file.
+// Cleaning errors retain the file for review in both scan and automatic
+// response paths. Lowering the cleaner's size limit exercises the real error
+// without risking removal of application code.
 func TestResponseCleaningFailurePerName(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 	oldMax := cleanMaxFileSize
@@ -360,6 +361,7 @@ func TestResponseCleaningFailurePerName(t *testing.T) {
 	for _, name := range expectedQuarantineMoveChecks {
 		t.Run(name, func(t *testing.T) {
 			root, qdir := withResponseRoots(t)
+			cfg.StatePath = t.TempDir()
 			path := writeResponseFixture(t, root, "wp-content/plugins/example/main.php")
 			finding := alert.Finding{Check: name, Severity: alert.Critical, FilePath: path}
 			result, eligible := QuarantineFindingFile(finding)
@@ -373,19 +375,16 @@ func TestResponseCleaningFailurePerName(t *testing.T) {
 				t.Fatalf("full-scan wrote quarantine entries after cleaning error: %v, %v", entries, err)
 			}
 			actions := AutoQuarantineFiles(cfg, []alert.Finding{finding})
-			if len(actions) != 2 || actions[0].Severity != alert.Warning || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN failed") || !strings.Contains(actions[0].Details, "file too large to clean") || actions[1].Severity != alert.Critical || !strings.HasPrefix(actions[1].Message, "AUTO-QUARANTINE:") {
-				t.Fatalf("automatic path must report cleaning failure then quarantine: %+v", actions)
+			if len(actions) != 1 || actions[0].Severity != alert.Warning || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN failed") || !strings.Contains(actions[0].Details, "file too large to clean") {
+				t.Fatalf("automatic path must report cleaning failure for manual review: %+v", actions)
 			}
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatalf("automatic path left source after cleaning error: %v", err)
+			if data, err := os.ReadFile(path); err != nil || string(data) != "<?php // response fixture\n" {
+				t.Fatalf("automatic path changed source after cleaning error: %q, %v", data, err)
 			}
-			files := quarantinedFiles(t, qdir)
-			if len(files) != 1 {
-				t.Fatalf("want one quarantined file, got %v", files)
+			if files := quarantinedFiles(t, qdir); len(files) != 0 {
+				t.Fatalf("failed cleaner escalated to quarantine: %v", files)
 			}
-			if data, err := os.ReadFile(files[0]); err != nil || string(data) != "<?php // response fixture\n" { // #nosec G304 -- test fixture
-				t.Fatalf("quarantine did not preserve source bytes: %v", err)
-			}
+
 		})
 	}
 }
