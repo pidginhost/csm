@@ -97,20 +97,23 @@ func wpVerificationFindings(ctx context.Context, db *store.DB, kind, owner strin
 
 // Integrity warnings can precede a later operational error. Only wp-cli's
 // expected checksum-mismatch summary establishes a completed negative check.
-func wpCoreVerificationCompleted(err error, out []byte, reported bool) bool {
-	if !reported || !commandRefused(err) {
+func wpCoreVerificationCompleted(err error, out []byte) bool {
+	if !commandRefused(err) {
 		return false
 	}
+	completed := false
 	for _, line := range strings.Split(strings.ToLower(string(out)), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.Contains(line, "fatal error") || strings.Contains(line, "parse error") {
 			return false
 		}
-		if strings.HasPrefix(line, "error:") && line != "error: wordpress installation doesn't verify against checksums." {
+		if line == "error: wordpress installation doesn't verify against checksums." {
+			completed = true
+		} else if strings.HasPrefix(line, "error:") {
 			return false
 		}
 	}
-	return true
+	return completed
 }
 
 type wpInventoryError struct {

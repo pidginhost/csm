@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- WordPress installations whose core checks or plugin inventories repeatedly fail now produce a warning naming the installation and cause. Successful checks clear the warning, and status reports verification coverage.
+- WordPress installations whose core checks or plugin inventories repeatedly fail now produce a warning naming the installation and cause. Successful checks clear the warning even when scans finish out of order, and status distinguishes completed checks from partial output.
 
 - WordPress database scan warnings now count config, query and content-read failures, name examples, and keep discovery gaps visible. Multisite safety-limit warnings no longer hide failures at other installs.
 

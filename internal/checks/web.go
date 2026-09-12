@@ -563,7 +563,7 @@ func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findi
 						findings = append(findings, collapsed)
 						mu.Unlock()
 					}
-					if wpCoreVerificationCompleted(err, out, reported) {
+					if wpCoreVerificationCompleted(err, out) {
 						coverage.record(wpPath, store.WPVerificationResult{State: "modified"})
 					}
 					// wp-cli that ran and refused this tree answered the check.

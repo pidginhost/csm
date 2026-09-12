@@ -100,9 +100,12 @@ history is available. The same fields appear in `csm status --json`; human statu
 shows the counts. Each entry reports `verified`, `modified`, `unverified`, `unknown`,
 `not_wordpress` and `last_attempt`. `unknown` means discovery found a directory
 but no completed attempt is recorded. `modified` means core verification
-completed with integrity findings; a verified plugin inventory can still contain
-vulnerable versions. The timestamp is the latest recorded attempt in that group.
+completed with integrity differences, including missing core files. A verified
+plugin inventory can still contain vulnerable versions. The timestamp is the
+latest recorded attempt in that group.
 Counts retain the last observed results across restarts and cached scan cycles.
+Overlapping scans retain the latest attempt and its consecutive failure history
+in scan order. Discovery without an attempt does not replace verification evidence.
 An absent group means there is no retained installation history, not proof of
 coverage. An `error` field reports unreadable history instead of clean counts.
 

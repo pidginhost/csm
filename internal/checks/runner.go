@@ -303,7 +303,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {logicalOwnerPHPTaintDeep, "php_remote_taint"},
 	logicalOwnerReputationQuota:     {logicalOwnerReputationQuota, "reputation_quota_exhausted", "ip_reputation"},
 	logicalOwnerReputationFeedStale: {logicalOwnerReputationFeedStale, "threat_feed_stale", "ip_reputation"},
-	logicalOwnerWPCoreVerification:  {logicalOwnerWPCoreVerification, "wp_core_unverified", "wp_core", "wp_core_integrity"},
+	logicalOwnerWPCoreVerification:  {logicalOwnerWPCoreVerification, "wp_core_unverified", "wp_core"},
 }
 
 // physicalCheckLogicalOwners maps a runnable check to the logical owners it
@@ -326,6 +326,11 @@ func disabledLogicalOwners(cfg *config.Config) map[string]struct{} {
 	for _, name := range cfg.DisabledChecks {
 		if name = strings.TrimSpace(name); name != "" {
 			disabled[name] = struct{}{}
+			// A public finding alias also disables owners that explicitly
+			// inherit disablement from its physical check.
+			for _, runner := range runnerNamesForFinding(name) {
+				disabled[runner] = struct{}{}
+			}
 		}
 	}
 	for owner, aliases := range logicalOwnerDisableAliases {

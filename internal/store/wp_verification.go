@@ -22,6 +22,12 @@ type WPVerificationRecord struct {
 	ObservedAt time.Time `json:"observed_at"`
 	AttemptAt  time.Time `json:"attempt_at"`
 	Failures   int       `json:"failures"`
+	// Keep the preceding attempt so overlapping scans can finish out of order
+	// without inventing or losing a consecutive failure.
+	PreviousAttemptAt time.Time `json:"previous_attempt_at,omitzero"`
+	PreviousState     string    `json:"previous_state,omitempty"`
+	// AbsentAt fences off attempts from before this installation was removed.
+	AbsentAt time.Time `json:"absent_at,omitzero"`
 }
 
 type wpVerificationState struct {
@@ -75,28 +81,23 @@ func (db *DB) UpdateWPVerification(kind string, at time.Time, scope string, disc
 			if scope != "" && account != scope {
 				continue
 			}
-			if s.Discovery[""].After(at) || s.Discovery[account].After(at) {
+			row, exists := s.Rows[path]
+			if !exists {
+				row.AbsentAt = s.Discovery[""]
+				if s.Discovery[account].After(row.AbsentAt) {
+					row.AbsentAt = s.Discovery[account]
+				}
+			}
+			if row.AbsentAt.After(at) || (row.Account != account && row.ObservedAt.After(at)) {
 				continue
 			}
-			row := s.Rows[path]
-			if row.ObservedAt.After(at) {
-				continue
+			if !row.ObservedAt.After(at) {
+				row.Account, row.ObservedAt = account, at
 			}
-			row.Account, row.ObservedAt = account, at
-			if result, ok := results[path]; ok && at.After(row.AttemptAt) {
-				switch result.State {
-				case "verified", "modified", "not_wordpress", "unverified":
-				default:
-					return fmt.Errorf("invalid WordPress verification result %q", result.State)
+			if result, ok := results[path]; ok {
+				if attemptErr := row.recordAttempt(at, result); attemptErr != nil {
+					return attemptErr
 				}
-				if result.State == "unverified" {
-					if row.Failures < 2 {
-						row.Failures++
-					}
-				} else {
-					row.Failures = 0
-				}
-				row.WPVerificationResult, row.AttemptAt = result, at
 			}
 			s.Rows[path] = row
 		}
@@ -121,6 +122,31 @@ func (db *DB) UpdateWPVerification(kind string, at time.Time, scope string, disc
 		}
 		return b.Put(key, data)
 	})
+}
+
+func (row *WPVerificationRecord) recordAttempt(at time.Time, result WPVerificationResult) error {
+	if at.Equal(row.AttemptAt) || !at.After(row.PreviousAttemptAt) {
+		return nil
+	}
+	switch result.State {
+	case "verified", "modified", "not_wordpress", "unverified":
+	default:
+		return fmt.Errorf("invalid WordPress verification result %q", result.State)
+	}
+	if at.After(row.AttemptAt) {
+		row.PreviousAttemptAt, row.PreviousState = row.AttemptAt, row.State
+		row.WPVerificationResult, row.AttemptAt = result, at
+	} else {
+		row.PreviousAttemptAt, row.PreviousState = at, result.State
+	}
+	row.Failures = 0
+	if row.State == "unverified" {
+		row.Failures = 1
+		if row.PreviousState == "unverified" {
+			row.Failures = 2
+		}
+	}
+	return nil
 }
 
 // WPVerification reports persisted coverage, returning read errors rather than

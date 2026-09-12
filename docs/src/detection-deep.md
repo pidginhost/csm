@@ -102,7 +102,9 @@ failed attempts in distinct scan cycles raise a Warning naming the installation,
 last attempt and a bounded reason category. Raw wp-cli output is never stored in
 this history. These warnings do not enter incidents or automatic remediation.
 The history survives restarts, and successful checks clear the warnings through
-the normal completed-scan merge.
+the normal completed-scan merge. Overlapping scans preserve attempt order and
+failure streaks even when they finish out of order. New discovery alone does not
+discard an attempt still finishing in another scan.
 
 Cache reads do not count as attempts. Plugin coverage uses
 `thresholds.plugin_check_interval_min`; partial refreshes keep the existing
@@ -112,7 +114,9 @@ Cancellation and incomplete discovery retain earlier evidence. Complete discover
 removes installations that are no longer present, scoped to the account scanned.
 A wp-cli refusal explicitly identifying a non-WordPress directory is recorded as
 not applicable rather than an outage. A completed core check that finds modified
-files retains its existing integrity findings and is counted separately.
+or missing files retains its existing integrity findings and is counted separately.
+Only the completed checksum summary establishes a negative verification result;
+partial warnings without that summary remain unverified.
 
 `csm status`, `csm status --json` and `/api/v1/status` report the last observed
 coverage for core verification and plugin inventory. These counts describe
