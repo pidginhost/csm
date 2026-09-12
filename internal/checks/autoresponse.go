@@ -188,10 +188,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 						outcome = "refused"
 					}
 					actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
-					// A recognized-nothing refusal changed nothing, so it is not
-					// evidence that the response mechanism is broken. Charging it
-					// would let ordinary plugin-path false positives pause every
-					// automatic file response on the host.
+					// Safety refusals consume capacity without charging a failure.
 					if result.Refused {
 						return nil
 					}
@@ -641,25 +638,27 @@ func isHexDigit(b byte) bool {
 // operator in monitor mode (auto-response off, or quarantine_files off) gets
 // the alert without having files moved out from under them.
 func InlineQuarantineGated(cfg *config.Config, f alert.Finding, path string, data []byte) (string, bool) {
-	path, ok, _ := InlineQuarantineGatedIdentified(cfg, f, path, data, nil)
+	path, ok, _ := InlineQuarantineGatedIdentified(cfg, &f, path, data, nil)
 	return path, ok
 }
 
 // InlineQuarantineGatedIdentified applies the auto-response policy gate and
 // then quarantines the exact file the caller scanned. See
 // InlineQuarantineIdentified for why the identity matters.
-func InlineQuarantineGatedIdentified(cfg *config.Config, f alert.Finding, path string, data []byte, scanned os.FileInfo) (string, bool, *alert.Finding) {
-	if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles || cfg.ObserveMode() {
+// Marks the finding evaluated only once it reaches the shared budget gate.
+func InlineQuarantineGatedIdentified(cfg *config.Config, f *alert.Finding, path string, data []byte, scanned os.FileInfo) (string, bool, *alert.Finding) {
+	if f == nil || cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles || cfg.ObserveMode() {
 		return "", false, nil
 	}
-	info, ok := inlineQuarantineInfo(f, path, data, scanned)
+	info, ok := inlineQuarantineInfo(*f, path, data, scanned)
 	if !ok {
 		return "", false, nil
 	}
 	var qPath string
+	f.AutoFileResponseEvaluated = true
 	paused := runAutoFileResponse(cfg, path, info, func() error {
 		var err error
-		qPath, err = quarantineInlineTarget(f, path, info)
+		qPath, err = quarantineInlineTarget(*f, path, info)
 		return err
 	})
 	return qPath, qPath != "", paused
@@ -785,7 +784,7 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 					Details:   result.Description,
 					Timestamp: time.Now(),
 				})
-			} else if result.Error != "" && !strings.Contains(result.Error, "no malicious directives") {
+			} else if result.Error != "" && !result.Refused {
 				actions = append(actions, alert.Finding{
 					Severity:  alert.Warning,
 					Check:     "auto_response",
@@ -794,7 +793,7 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 					Timestamp: time.Now(),
 				})
 			}
-			if result.Error != "" && !strings.Contains(result.Error, "no malicious directives") {
+			if result.Error != "" && !result.Refused {
 				return errors.New(result.Error)
 			}
 			return nil

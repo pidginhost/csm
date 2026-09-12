@@ -473,7 +473,7 @@ func TestAutoFileResponsePoliciesLeaveFilesAndBudgetUntouched(t *testing.T) {
 			f := responseFile(t, homes, "alice", "keep.bin", payload)
 			f.Details = "Category: dropper\n"
 			AutoQuarantineFiles(cfg, []alert.Finding{f})
-			if _, ok, _ := InlineQuarantineGatedIdentified(cfg, f, f.FilePath, payload, nil); ok {
+			if _, ok, _ := InlineQuarantineGatedIdentified(cfg, &f, f.FilePath, payload, nil); ok {
 				t.Fatal("disabled policy quarantined inline")
 			}
 			assertResponseFile(t, f.FilePath, payload)

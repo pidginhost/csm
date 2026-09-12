@@ -1,6 +1,10 @@
 package checks
 
-import "github.com/pidginhost/csm/internal/actionlog"
+import (
+	"errors"
+
+	"github.com/pidginhost/csm/internal/actionlog"
+)
 
 type cleanAction struct{ rec actionlog.Record }
 
@@ -22,6 +26,8 @@ func (a *cleanAction) replace(target *cleanTarget, content []byte, backupPath st
 	if target.installed {
 		a.rec.Result = actionlog.Applied
 		a.rec.After = actionlog.ContentState(target.replacementInfo, content)
+	} else if errors.Is(err, errFileResponseRefused) {
+		a.rec.Result = actionlog.Refused
 	}
 	return err
 }

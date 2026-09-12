@@ -349,15 +349,14 @@ func TestAutoQuarantineRealtimeAccepted(t *testing.T) {
 }
 
 // Cleaning errors retain the file for review in both scan and automatic
-// response paths. Lowering the cleaner's size limit exercises the real error
-// without risking removal of application code.
+// response paths. Failed backup storage must not escalate to file removal.
 func TestResponseCleaningFailurePerName(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
-	oldMax := cleanMaxFileSize
-	cleanMaxFileSize = 1
-	t.Cleanup(func() { cleanMaxFileSize = oldMax })
+	oldStore := storeQuarantineBackup
+	storeQuarantineBackup = func(string, []byte, QuarantineMeta, os.FileMode) error { return os.ErrPermission }
+	t.Cleanup(func() { storeQuarantineBackup = oldStore })
 	for _, name := range expectedQuarantineMoveChecks {
 		t.Run(name, func(t *testing.T) {
 			root, qdir := withResponseRoots(t)
@@ -365,7 +364,7 @@ func TestResponseCleaningFailurePerName(t *testing.T) {
 			path := writeResponseFixture(t, root, "wp-content/plugins/example/main.php")
 			finding := alert.Finding{Check: name, Severity: alert.Critical, FilePath: path}
 			result, eligible := QuarantineFindingFile(finding)
-			if !eligible || result.Success || !strings.Contains(result.Error, "file too large to clean") {
+			if !eligible || result.Success || !strings.Contains(result.Error, "cannot create durable backup") {
 				t.Fatalf("full-scan must report cleaning failure: eligible=%v, result=%+v", eligible, result)
 			}
 			if data, err := os.ReadFile(path); err != nil || string(data) != "<?php // response fixture\n" { // #nosec G304 -- test fixture
@@ -375,7 +374,7 @@ func TestResponseCleaningFailurePerName(t *testing.T) {
 				t.Fatalf("full-scan wrote quarantine entries after cleaning error: %v, %v", entries, err)
 			}
 			actions := AutoQuarantineFiles(cfg, []alert.Finding{finding})
-			if len(actions) != 1 || actions[0].Severity != alert.Warning || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN failed") || !strings.Contains(actions[0].Details, "file too large to clean") {
+			if len(actions) != 1 || actions[0].Severity != alert.Warning || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN failed") || !strings.Contains(actions[0].Details, "cannot create durable backup") {
 				t.Fatalf("automatic path must report cleaning failure for manual review: %+v", actions)
 			}
 			if data, err := os.ReadFile(path); err != nil || string(data) != "<?php // response fixture\n" {

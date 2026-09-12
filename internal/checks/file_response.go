@@ -35,6 +35,17 @@ type fileResponseState struct {
 var fileResponseNow = time.Now
 var writeFileResponseState = atomicio.AtomicWriteJSON
 
+// A refusal leaves the customer file untouched and consumes attempt capacity,
+// but does not indicate a failed response mechanism.
+var errFileResponseRefused = errors.New("file response refused")
+
+func fileResponseSourceError(err error) error {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+		return errors.Join(errFileResponseRefused, err)
+	}
+	return err
+}
+
 // runAutoFileResponse is shared by the automatic PHP/access-file cleaners and
 // both quarantine entry points. Manual remediation does not enter this gate.
 // A nonblocking process-shared lock keeps concurrency from spending the same
@@ -108,18 +119,22 @@ func runAutoFileResponse(cfg *config.Config, path string, info os.FileInfo, appl
 	// The caller's snapshot predates budget persistence. Recheck it after that
 	// I/O; the descriptor-based quarantine/cleaner checks it again when opening.
 	current, err := os.Lstat(path)
+	err = fileResponseSourceError(err)
 	if err == nil && (!sameFileIdentity(info, current) || !sameContentShape(info, current)) {
-		err = errors.New("file changed before automatic response")
+		err = errFileResponseRefused
 	}
 	if err == nil {
 		err = apply()
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, errFileResponseRefused) {
 		csmlog.Warn("automatic file response failed", "path", path, "err", err)
 		if failures+1 >= failureLimit {
 			return notice("failures", "", "Automatic file response is paused after repeated action failures in the rolling hour. Detection continues; inspect the action log and recovery copies before manual remediation.")
 		}
 		return nil
+	}
+	if err != nil {
+		csmlog.Warn("automatic file response refused", "path", path, "err", err)
 	}
 	state.Attempts[len(state.Attempts)-1].Failed = false
 	if err = writeFileResponseState(statePath, 0600, state); err != nil {

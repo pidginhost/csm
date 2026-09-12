@@ -60,7 +60,7 @@ func QuarantineFindingFile(f alert.Finding) (RemediationResult, bool) {
 				Description:       fmt.Sprintf("Removed: %s (backup: %s)", strings.Join(clean.Removals, "; "), clean.BackupPath),
 				RemediationStatus: "cleaned",
 			}, true
-		case clean.Error == "":
+		case clean.Refused || clean.Error == "":
 			// Nothing the cleaner recognises: a core file with no removable
 			// injection is an operator decision, not a move.
 			return RemediationResult{}, false

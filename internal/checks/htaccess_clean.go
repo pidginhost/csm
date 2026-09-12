@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -783,11 +784,11 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	audit := newCleanAction(path)
 	defer func() { audit.finish(result.Error) }()
 	if filepath.Base(path) != ".htaccess" {
-		return RemediationResult{Error: "automated .htaccess remediation only applies to .htaccess files"}
+		return RemediationResult{Refused: true, Error: "automated .htaccess remediation only applies to .htaccess files"}
 	}
 	resolved, _, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
-		return RemediationResult{Error: err.Error()}
+		return RemediationResult{Refused: errors.Is(fileResponseSourceError(err), errFileResponseRefused), Error: err.Error()}
 	}
 
 	// The account owner controls this directory and we run as root, so the
@@ -796,10 +797,11 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	// plant a symlink there and have the cleaned bytes written anywhere.
 	target, err := openCleanTarget(resolved)
 	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
+		return RemediationResult{Refused: errors.Is(fileResponseSourceError(err), errFileResponseRefused), Error: fmt.Sprintf("cannot open: %v", err)}
 	}
 	defer target.Close()
 	if expected != nil && (!sameFileIdentity(expected, target.Info) || !sameContentShape(expected, target.Info)) {
+		result.Refused = true
 		result.Error = "file changed before automatic cleaning"
 		return result
 	}
@@ -814,12 +816,12 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	audit.rec.Result = actionlog.Refused
 	_, ranges := AuditHtaccessContent(resolved, original)
 	if len(ranges) == 0 {
-		return RemediationResult{Error: "no malicious directives found to remove"}
+		return RemediationResult{Refused: true, Error: "no malicious directives found to remove"}
 	}
 
 	cleaned := applyRangeRemoval(original, ranges)
 	if len(cleaned) == len(original) {
-		return RemediationResult{Error: "no bytes removed (range computation produced empty diff)"}
+		return RemediationResult{Refused: true, Error: "no bytes removed (range computation produced empty diff)"}
 	}
 
 	backupDir := htaccessBackupDirRoot
@@ -833,7 +835,7 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	}
 
 	if err := audit.replace(target, cleaned, backupPath); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("atomic replace: %v", err)}
+		return RemediationResult{Refused: errors.Is(err, errFileResponseRefused), Error: fmt.Sprintf("atomic replace: %v", err)}
 	}
 
 	bytesRemoved := len(original) - len(cleaned)

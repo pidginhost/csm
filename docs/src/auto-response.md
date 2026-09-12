@@ -77,18 +77,26 @@ faults and let reservations expire.
 
 Duplicate detections of one path share a single response attempt in each batch.
 Within one daemon run, alert delivery does not repeat a file response already
-evaluated by a scan or realtime detector, including refusals. The original
-findings still reach alerts and history; a new detection can be evaluated again.
+evaluated by a scan or admitted to the realtime safety gate, including budget
+refusals. A realtime detection rejected using sampled content remains eligible
+for full-file validation during delivery. The original findings still reach
+alerts and history; a new detection can be evaluated again.
 Findings still queued at shutdown retain the existing restart replay behavior:
 the next daemon run evaluates them again under the same persisted limits.
 
 A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
 It no longer escalates to whole-file quarantine. A cleaner that recognizes no
-injection refuses the file instead of failing: the attempt still uses capacity
-and is reported for review, but it does not count toward the failure pause, so
-ordinary false positives on application paths cannot stop response elsewhere. Quarantine and cleaners retain
-their descriptor-based identity checks, and automatic actions revalidate the
-file after saving the reservation.
+injection or declines an unsupported target refuses the file instead of failing.
+Sources that change or disappear before mutation are also refusals. These
+attempts still use capacity but do not count toward the failure pause. Read,
+write, backup and durability errors still count as failures. Quarantine and
+cleaners retain their descriptor-based identity checks, and automatic actions
+revalidate the file after saving the reservation. Opening a replacement special
+file cannot block response processing.
+
+Manual full scans leave cleaner refusals for review instead of reporting a
+failed remediation. `csm clean` also distinguishes a refusal from an action
+failure; both return a nonzero exit status when the file was not cleaned.
 
 These limits use the existing `enabled`, `quarantine_files` and `clean_htaccess`
 opt-ins. Observe mode still forbids automatic changes. `dry_run` continues to

@@ -274,7 +274,7 @@ func TestQuarantineAuditCoversSetupAndCompletedWarnings(t *testing.T) {
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}
-				want = actionlog.Failed
+				want = actionlog.Refused
 			case "replacement":
 				old := quarantineTargetFn
 				quarantineTargetFn = func(p, q string, i os.FileInfo, data []byte) error {

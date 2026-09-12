@@ -127,3 +127,49 @@ func TestRealtimeFileResponsePauseDoesNotRetryOnDelivery(t *testing.T) {
 		t.Fatalf("refused file was changed: %v", err)
 	}
 }
+
+func TestRealtimeFileResponseWindowAllowsFullFileEvaluation(t *testing.T) {
+	useRealtimeRules(t, strings.ReplaceAll(strings.ReplaceAll(realtimeHighRule, "severity: high", "severity: critical"), "category: obfuscation", "category: dropper"))
+	root := t.TempDir()
+	cfg := &config.Config{StatePath: root}
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.QuarantineFiles = true, true
+	if err := os.WriteFile(filepath.Join(root, "file-response.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	window := []byte("<?php /* EVIL_MARKER_A " + strings.Repeat("a", 2048))
+	content := append(append([]byte(nil), window...), []byte(strings.Repeat("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-", 1024)+" */")...)
+	path := filepath.Join(root, "sample.php")
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alerts := make(chan alert.Finding, 32)
+	fm := &FileMonitor{cfg: cfg, alertCh: alerts}
+	if !fm.runSignatureScanWithSize(window, info.Size(), path, ".php", "", info) {
+		t.Fatal("window detection lost")
+	}
+	close(alerts)
+	var findings []alert.Finding
+	for f := range alerts {
+		if f.Check == "auto_response_paused" {
+			t.Fatal("window unexpectedly reached response budget")
+		}
+		if f.Check == "signature_match_realtime" {
+			findings = append(findings, f)
+		}
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected original detection, got %+v", findings)
+	}
+	// The full file passes confidence validation and reaches the broken ledger.
+	// A window-only refusal must leave this evaluation to alert delivery.
+	if actions := checks.AutoQuarantineFiles(cfg, findings); len(actions) != 1 || actions[0].Check != "auto_response_paused" {
+		t.Fatalf("full-file evaluation was lost: %+v", actions)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(content) {
+		t.Fatalf("paused file was changed: %v", err)
+	}
+}
