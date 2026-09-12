@@ -1175,6 +1175,10 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		IP       string `json:"ip"`
 		Reason   string `json:"reason"`
 		Duration string `json:"duration"`
+		// IncidentID, when set, notes the block on that incident so the
+		// timeline shows an operator acted. Optional: the firewall action is
+		// the point, the note is bookkeeping.
+		IncidentID string `json:"incident_id"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
@@ -1209,6 +1213,15 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditLog(r, "block_ip", req.IP, req.Reason)
+	// A failure to annotate must not turn a successful block into an error:
+	// the address is blocked either way, and a stale incident id is the
+	// operator's tab being out of date, not a fault worth refusing.
+	if req.IncidentID != "" && s.incidentCorrelator != nil {
+		if err := s.incidentCorrelator.RecordOperatorBlock(req.IncidentID, req.IP, dur); err != nil {
+			log.Printf("webui: could not note an operator block on incident %s: %v",
+				safeLogString(req.IncidentID), err)
+		}
+	}
 	resp := map[string]string{"status": "blocked", "ip": req.IP}
 	// The input chain accepts Cloudflare edges on 80/443 before the blocked
 	// drop, so a block of a covered IP does not stop its web traffic.

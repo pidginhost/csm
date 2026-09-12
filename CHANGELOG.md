@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The incident view has a Block button for incidents that carry a source address. It blocks permanently, records the block on the incident timeline, and stops the automatic hand-off from re-blocking an address an operator just handled.
+
 - A calibration tool replays a recorded finding stream through cross-account correlation and reports what each candidate threshold would have raised, so the thresholds can be re-derived from what hosts produced.
 
 - CSM now ships a request filter for the LiteSpeed Cache role-simulation takeover. Sites whose WordPress is too old for the fixed plugin line have no upgrade path, and ordinary crawling still works because the filter only covers privileged targets and writes.

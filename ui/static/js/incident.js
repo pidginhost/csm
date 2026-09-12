@@ -525,6 +525,12 @@
         }
         html += '</div>';
         var footer = '';
+        if (incSourceIP) {
+            footer += '<button class="btn btn-danger btn-sm" id="csm-incident-block-btn" ' +
+                'data-csm-block-ip="' + CSM.attr(incSourceIP) + '" ' +
+                'title="Block this address" aria-label="Block this address">' +
+                '<i class="ti ti-ban"></i>&nbsp;Block</button>';
+        }
         footer += statusButton(inc, 'open', 'rotate-clockwise');
         footer += statusButton(inc, 'contained', 'shield-check');
         footer += statusButton(inc, 'resolved', 'circle-check');
@@ -542,6 +548,39 @@
         panel.querySelectorAll('[data-status-target]').forEach(function(btn) {
             btn.addEventListener('click', function() {
                 setIncidentStatus(inc.id, this.getAttribute('data-status-target'));
+            });
+        });
+        var blockBtn = panel.querySelector('#csm-incident-block-btn');
+        if (blockBtn) {
+            blockBtn.addEventListener('click', function() {
+                blockIncidentIP(inc.id, this.getAttribute('data-csm-block-ip'), this);
+            });
+        }
+    }
+
+    // blockIncidentIP blocks the incident's address from the incident view.
+    // The block is permanent: an operator reaching for this has already
+    // decided, and the automatic ladder's expiring blocks are what let an
+    // attacker walk in the first place.
+    function blockIncidentIP(id, ip, btn) {
+        if (!ip) return;
+        CSM.confirm('Block ' + ip + ' permanently?').then(function() {
+            if (btn) btn.disabled = true;
+            return CSM.post('/api/v1/block-ip', {
+                ip: ip,
+                reason: 'Blocked from incident ' + id,
+                duration: '0', // the API reads 0 as permanent
+                incident_id: id
+            }).then(function(r) {
+                if (r && r.warning) {
+                    CSM.toast(r.warning, 'warning');
+                } else {
+                    CSM.toast('Blocked ' + ip, 'success');
+                }
+                attachFirewallStatus('csm-incident-fw-status', ip);
+                loadIncidentDetail(id);
+            }).catch(function() {
+                if (btn) btn.disabled = false;
             });
         });
     }

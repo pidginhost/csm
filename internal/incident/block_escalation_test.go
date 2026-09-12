@@ -128,3 +128,54 @@ func TestResolvingAnIncidentResetsTheEscalationLadder(t *testing.T) {
 		}
 	}
 }
+
+// An operator blocking from the incident view must show up on the incident and
+// must settle the automatic ladder: the hand-off has no business re-requesting
+// a block for an address the operator just blocked.
+func TestOperatorBlockRecordsAnActionAndSettlesTheLadder(t *testing.T) {
+	var cap blockCapture
+	c, setNow := escalationCorrelator(t, &cap)
+	start := time.Unix(1_700_000_000, 0)
+	sprayBurst(c, start, 0)
+
+	var id string
+	for _, inc := range c.Snapshot() {
+		if inc.Kind == KindCredentialSpray {
+			id = inc.ID
+		}
+	}
+	if id == "" {
+		t.Fatal("no credential_spray incident")
+	}
+
+	// A permanent operator block.
+	if err := c.RecordOperatorBlock(id, "192.0.2.10", 0); err != nil {
+		t.Fatalf("RecordOperatorBlock: %v", err)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident vanished")
+	}
+	if !hasIncidentAction(inc.Actions, "operator_block") {
+		t.Error("incident missing operator_block action")
+	}
+	if inc.AutoBlock.Count == 0 || !inc.AutoBlock.ExpiresAt.IsZero() {
+		t.Errorf("operator block left ladder state %+v, want a permanent entry", inc.AutoBlock)
+	}
+
+	before := cap.len()
+	at := start.Add(400 * 24 * time.Hour)
+	setNow(at)
+	sprayBurst(c, at, 50)
+	if got := cap.len(); got != before {
+		t.Errorf("auto hand-off re-requested %d block(s) after an operator permanent block", got-before)
+	}
+}
+
+func TestRecordOperatorBlockRejectsUnknownIncident(t *testing.T) {
+	var cap blockCapture
+	c, _ := escalationCorrelator(t, &cap)
+	if err := c.RecordOperatorBlock("inc_missing", "192.0.2.10", time.Hour); err == nil {
+		t.Fatal("RecordOperatorBlock accepted an unknown incident")
+	}
+}

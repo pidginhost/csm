@@ -358,6 +358,11 @@ the bottom rather than inheriting a months-old episode. Concurrent findings
 still collapse into one firewall call, and a declined or dry-run request is not
 recorded, so it can retry.
 
+The incident view carries a Block button whenever the incident has one source
+address. It blocks permanently, notes the block on the incident timeline as
+`operator_block`, and settles the ladder so the automatic hand-off does not
+re-request a block for an address the operator just blocked.
+
 ## Infrastructure IP DNS guard
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). This prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.

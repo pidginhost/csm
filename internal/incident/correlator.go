@@ -942,6 +942,34 @@ func (c *Correlator) persistLocked(snap Incident) {
 // the incident is unbound from the active byKey index so future
 // findings for the same correlation key start a fresh incident.
 // Returns ErrIncidentNotFound if id is unknown.
+// RecordOperatorBlock notes on the incident that an operator blocked its
+// address from the incident view, and settles the automatic escalation ladder
+// to match: the hand-off has no business re-requesting a block for an address
+// the operator just blocked. A zero ttl is a permanent block, which the ladder
+// records as never lapsing.
+func (c *Correlator) RecordOperatorBlock(id, ip string, ttl time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inc, ok := c.incidents[id]
+	if !ok {
+		return fmt.Errorf("incident %s not found", id)
+	}
+	now := c.now()
+	inc.AutoBlock = AutoBlockState{Count: inc.AutoBlock.Count + 1, LastAt: now}
+	if ttl > 0 {
+		inc.AutoBlock.ExpiresAt = now.Add(ttl)
+	}
+	inc.Actions = append(inc.Actions, IncidentAction{
+		Time:    now,
+		Action:  "operator_block",
+		Result:  "ok",
+		Details: ip + " blocked by operator " + blockDurationLabel(ttl),
+	})
+	c.markPersistedLocked(id, now)
+	c.persistLocked(*inc)
+	return nil
+}
+
 func (c *Correlator) SetStatus(id string, status Status, details string) error {
 	if !validStatus(status) {
 		return fmt.Errorf("incident: invalid status %q", status)
