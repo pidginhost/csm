@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- WordPress installations whose core checks or plugin inventories repeatedly fail now produce a warning naming the installation and cause. Successful checks clear the warning, and status reports verification coverage.
+
 - WordPress database scan warnings now count config, query and content-read failures, name examples, and keep discovery gaps visible. Multisite safety-limit warnings no longer hide failures at other installs.
 
 - Cross-account correlation now judges an account by when its finding was first observed, not by when a scan last re-reported it. Every scan refreshes the report time of findings it still sees, so a months-old compromise kept re-entering the recent-activity window and the coordinated-attack alert named most of the accounts on the host.

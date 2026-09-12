@@ -271,6 +271,7 @@ var runnerFindingNames = map[string][]string{
 	"whm_access":           {"whm_account_action", "whm_password_change"},
 	"wp_bruteforce":        {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood", "http_asn_crawl"},
 	"wp_core":              {"wp_core_integrity"},
+	"wp_plugin_inventory":  {"wp_plugin_inventory_unverified"},
 }
 
 const (
@@ -278,6 +279,7 @@ const (
 	logicalOwnerPHPTaintDeep        = "php_taint_deep"
 	logicalOwnerReputationQuota     = "reputation_quota_health"
 	logicalOwnerReputationFeedStale = "reputation_feed_health"
+	logicalOwnerWPCoreVerification  = "wp_core_verification"
 )
 
 // logicalOwnerFindingNames maps a logical finding owner hosted inside another
@@ -290,6 +292,7 @@ var logicalOwnerFindingNames = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {"php_remote_taint", "php_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {"reputation_quota_exhausted"},
 	logicalOwnerReputationFeedStale: {"threat_feed_stale"},
+	logicalOwnerWPCoreVerification:  {"wp_core_unverified"},
 }
 
 // logicalOwnerDisableAliases maps a logical owner to the disabled_checks
@@ -300,6 +303,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {logicalOwnerPHPTaintDeep, "php_remote_taint"},
 	logicalOwnerReputationQuota:     {logicalOwnerReputationQuota, "reputation_quota_exhausted", "ip_reputation"},
 	logicalOwnerReputationFeedStale: {logicalOwnerReputationFeedStale, "threat_feed_stale", "ip_reputation"},
+	logicalOwnerWPCoreVerification:  {logicalOwnerWPCoreVerification, "wp_core_unverified", "wp_core", "wp_core_integrity"},
 }
 
 // physicalCheckLogicalOwners maps a runnable check to the logical owners it
@@ -309,6 +313,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 var physicalCheckLogicalOwners = map[string][]string{
 	"yara_deep":     {logicalOwnerJSTaintDeep, logicalOwnerPHPTaintDeep},
 	"ip_reputation": {logicalOwnerReputationQuota, logicalOwnerReputationFeedStale},
+	"wp_core":       {logicalOwnerWPCoreVerification},
 }
 
 // disabledLogicalOwners returns the logical owners disabled by cfg.
@@ -496,6 +501,7 @@ func deepChecks() []namedCheck {
 		{"credential_reuse", CheckCredentialReuse},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
+		{"wp_plugin_inventory", CheckWPPluginVerification},
 		{"vulnerable_plugins", CheckVulnerablePlugins},
 		{"vulnerable_timthumb", CheckVulnerableTimThumb},
 		{"supply_chain", CheckSupplyChain},
@@ -541,6 +547,7 @@ func reducedDeepChecks() []namedCheck {
 		{"credential_reuse", CheckCredentialReuse},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
+		{"wp_plugin_inventory", CheckWPPluginVerification},
 		{"vulnerable_plugins", CheckVulnerablePlugins},
 		{"vulnerable_timthumb", CheckVulnerableTimThumb},
 		{"supply_chain", CheckSupplyChain},
@@ -643,6 +650,7 @@ var perRunFindingNames = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {"php_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {},
 	logicalOwnerReputationFeedStale: {},
+	logicalOwnerWPCoreVerification:  {},
 	"php_config_changes":            {"php_config_scan_incomplete"},
 }
 

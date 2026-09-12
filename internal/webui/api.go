@@ -114,6 +114,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	if len(snap.Queues) != 0 {
 		resp["queues"] = snap.Queues
 	}
+	if len(snap.WordPressVerification) != 0 {
+		resp["wordpress_verification"] = snap.WordPressVerification
+	}
 	writeJSON(w, resp)
 }
 

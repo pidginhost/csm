@@ -43,7 +43,12 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 		uptime = int64(time.Since(started).Seconds())
 	}
 	caps := append([]string(nil), capabilities...)
+	var wordpress map[string]WPVerificationCounts
+	if wp, ok := p.(WordPressVerificationProvider); ok {
+		wordpress = maps.Clone(wp.WordPressVerification())
+	}
 	return Snapshot{
+		WordPressVerification:  wordpress,
 		Queues:                 maps.Clone(p.QueueStatuses()),
 		Version:                version,
 		Hostname:               p.Hostname(),

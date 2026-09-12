@@ -28,7 +28,8 @@ func excludedFromIncidents(check string) bool {
 		// An installed weakness is not evidence that the account was entered.
 		return true
 	case "auto_block", "auto_response", "challenge_route",
-		"reputation_quota_exhausted", "threat_feed_stale":
+		"reputation_quota_exhausted", "threat_feed_stale",
+		"wp_core_unverified", "wp_plugin_inventory_unverified":
 		// CSM output must not re-enter the incident response path. In
 		// particular, response findings may gain attacker attribution later.
 		return true

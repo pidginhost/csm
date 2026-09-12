@@ -14,6 +14,7 @@ import (
 )
 
 type statusFakeProvider struct {
+	wordpress            map[string]health.WPVerificationCounts
 	queues               map[string]queuehealth.Status
 	started              time.Time
 	bpfEnforcementActive bool
@@ -24,6 +25,10 @@ type statusFakeProvider struct {
 	watchers             map[string]bool
 	storeHealthy         *bool
 	attribution          *health.CorrelationAttribution
+}
+
+func (f statusFakeProvider) WordPressVerification() map[string]health.WPVerificationCounts {
+	return f.wordpress
 }
 
 func (f statusFakeProvider) QueueStatuses() map[string]queuehealth.Status { return f.queues }

@@ -284,6 +284,8 @@
       "outdated_plugins",
       "reputation_quota_exhausted",
       "threat_feed_stale",
+      "wp_core_unverified",
+      "wp_plugin_inventory_unverified",
       "vulnerable_plugins"
     ]
   },

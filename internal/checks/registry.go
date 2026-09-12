@@ -197,6 +197,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "php_config_realtime", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
 	{Name: "symlink_attack", Category: CategoryWeb, Correlation: CorrelationSecurityEvent},
 	{Name: "wp_core_integrity", Category: CategoryWeb, Correlation: CorrelationSecurityEvent},
+	{Name: "wp_core_unverified", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "wp_plugin_inventory_unverified", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 
 	// --- Database Content -----------------------------------------------
 	{Name: "database_dump", Category: CategoryDatabase, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},

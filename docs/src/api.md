@@ -93,6 +93,24 @@ POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a
 GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
 
+### WordPress verification coverage
+
+`wordpress_verification` contains `core` and `plugins` coverage when installation
+history is available. The same fields appear in `csm status --json`; human status
+shows the counts. Each entry reports `verified`, `modified`, `unverified`, `unknown`,
+`not_wordpress` and `last_attempt`. `unknown` means discovery found a directory
+but no completed attempt is recorded. `modified` means core verification
+completed with integrity findings; a verified plugin inventory can still contain
+vulnerable versions. The timestamp is the latest recorded attempt in that group.
+Counts retain the last observed results across restarts and cached scan cycles.
+An absent group means there is no retained installation history, not proof of
+coverage. An `error` field reports unreadable history instead of clean counts.
+
+The first failed attempt increases `unverified`; repeated failures also produce
+an installation-specific Warning. These findings are separate from queue health:
+a command that completed with a refusal did not lose queue work. Existing queue
+loss accounting remains responsible for interrupted or missing command work.
+
 ### Protection queue health
 
 `status.queue_health.v1` advertises the `queues` map on status responses.
