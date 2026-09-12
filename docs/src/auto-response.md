@@ -67,18 +67,20 @@ Manual remediation remains available after reviewing the original detection.
 
 A busy safety lock refuses that attempt without waiting behind another file
 operation. Unreadable, incomplete or unwritable safety state also refuses
-mutations. The original detections remain visible and a deduplicated `auto_response_paused`
-warning reports the cause. Account-limit notices are grouped at host scope so
-a fault across many accounts cannot flood the alert budget. Paused findings are
-not queued for automatic retry; new eligible detections can act after capacity
-returns. Review outstanding findings and recovery evidence before manual
-remediation. Do not delete safety state to clear a pause; repair storage faults
-and let reservations expire.
+mutations. The original detections remain visible and a deduplicated
+`auto_response_paused` warning reports the cause. Account-limit notices are
+grouped at host scope so a fault across many accounts cannot flood the alert
+budget. A pause does not create a retry job; new eligible detections can act
+after capacity returns. Review outstanding findings and recovery evidence before
+manual remediation. Do not delete safety state to clear a pause; repair storage
+faults and let reservations expire.
 
 Duplicate detections of one path share a single response attempt in each batch.
 Within one daemon run, alert delivery does not repeat a file response already
 evaluated by a scan or realtime detector, including refusals. The original
 findings still reach alerts and history; a new detection can be evaluated again.
+Findings still queued at shutdown retain the existing restart replay behavior:
+the next daemon run evaluates them again under the same persisted limits.
 
 A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
 It no longer escalates to whole-file quarantine. Quarantine and cleaners retain

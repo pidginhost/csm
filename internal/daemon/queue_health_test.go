@@ -34,23 +34,40 @@ func TestQueueHealthNotificationBypassesFullFindingChannel(t *testing.T) {
 	d.alertQueue.Lose(now, 3)
 	previousHook := alert.CentralHook
 	var delivered []alert.Finding
-	alert.SetCentralHook(func(f alert.Finding) { delivered = append(delivered, f) })
+	var ingestEvents []alert.Finding
+	alert.SetCentralHook(func(f alert.Finding) {
+		delivered = append(delivered, f)
+		// Other tests can leave valid health evidence in shared queue owners.
+		// This test verifies the ingest queue without hiding their delivery.
+		if strings.HasPrefix(f.Details, "queue=findings.ingest ") {
+			ingestEvents = append(ingestEvents, f)
+		}
+	})
 	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
 	previousScan := st.LatestScanTime()
 	var reporter queuehealth.Reporter
 	d.reportQueueHealth(now, &reporter)
 	d.reportQueueHealth(now.Add(time.Second), &reporter)
-	if len(delivered) != 1 || delivered[0].Check != "protection_queue_degraded" || !strings.Contains(delivered[0].Details, "findings.ingest") {
+	if len(ingestEvents) != 1 || ingestEvents[0].Check != "protection_queue_degraded" {
 		t.Fatalf("full ingest channel hid or repeated health notification: %+v", delivered)
 	}
 	d.reportQueueHealth(now.Add(time.Minute), &reporter)
 	d.reportQueueHealth(now.Add(2*time.Minute), &reporter)
-	if len(delivered) != 2 || delivered[1].Check != "protection_queue_recovered" {
+	if len(ingestEvents) != 2 || ingestEvents[1].Check != "protection_queue_recovered" {
 		t.Fatalf("recovery was lost or repeated: %+v", delivered)
 	}
-	history, total := st.ReadHistory(10, 0)
-	if total != 2 || len(history) != 2 {
+	history, total := st.ReadHistory(len(delivered), 0)
+	if total != len(delivered) || len(history) != len(delivered) {
 		t.Fatalf("health transitions missing from history: total=%d entries=%+v", total, history)
+	}
+	ingestHistory := 0
+	for _, f := range history {
+		if strings.HasPrefix(f.Details, "queue=findings.ingest ") {
+			ingestHistory++
+		}
+	}
+	if ingestHistory != 2 {
+		t.Fatalf("ingest transitions missing from history: %+v", history)
 	}
 	if !st.LatestScanTime().Equal(previousScan) {
 		t.Fatal("health polling advanced the scan completion time")

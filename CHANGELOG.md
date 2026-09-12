@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- DNS and queue health tests no longer depend on external resolution or unrelated queue events. The roadmap drops an incorrect firewall audit path item, and file response docs clarify restart replay.
+
 - Automatic file responses no longer repeat during alert delivery or for duplicate detections of one file. Incomplete safety records now pause changes instead of losing accounting.
 
 - Account scans retain individual WordPress verification warnings, and host-wide warnings no longer appear to belong to the first sampled account.

@@ -246,28 +246,6 @@ accounts in its sweep; it recomputes on every arrival, including ignored checks.
 Recordings cannot reconstruct empty scans, purges or dismissals, so replay
 duration describes the observed arrivals rather than exact store history.
 
-## The firewall audit log is written to a path nothing reads
-
-**Status:** open. Confirmed in `internal/firewall/audit.go`.
-
-`AppendAudit` writes every firewall mutation to `<state>/audit.jsonl`.
-`ReadAuditLog`, which backs `csm firewall audit` and the web UI's audit view,
-reads `<state>/firewall/audit.jsonl`. The two paths have never agreed, so the
-reader returns an empty list on a host with a full audit file, and an operator
-asking "what has the firewall done" is told "nothing".
-
-An audit trail that reads empty is worse than an absent one: the empty answer
-looks like a clean history rather than a broken reader. Every entry now also
-reaches `internal/actionlog`, so the data is not lost, but the firewall's own
-view is still wrong.
-
-**Acceptance:** writer and reader resolve one path through a single helper; a
-test writes an entry and reads it back through the public reader; existing
-files at the historical path are still read so an upgrade does not appear to
-erase history.
-
-**Size:** hours, plus a decision on which path is canonical.
-
 ---
 
 # Priority 2 -- detection precision and response safety
