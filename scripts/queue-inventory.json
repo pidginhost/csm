@@ -229,9 +229,21 @@
       "queue": "checks.file_index"
     },
     {
-      "id": "internal/checks/plugincheck.go::ensurePluginCacheFresh::done::channel::1",
-      "path": "internal/checks/plugincheck.go",
+      "id": "internal/checks/plugin_refresh_cycle.go::ensurePluginCacheFresh::done::channel::1",
+      "path": "internal/checks/plugin_refresh_cycle.go",
       "owner": "ensurePluginCacheFresh",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Publishes one scan's refresh result to later consumers of the same cycle; a consumer that starts after the leader finished reuses that result instead of enqueueing site work again.",
+      "queue": "checks.plugin_inventory"
+    },
+    {
+      "id": "internal/checks/plugincheck.go::ensurePluginCacheFreshShared::done::channel::1",
+      "path": "internal/checks/plugincheck.go",
+      "owner": "ensurePluginCacheFreshShared",
       "target": "done",
       "kind": "channel",
       "source": "make(chan struct{})",
