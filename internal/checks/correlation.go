@@ -88,7 +88,7 @@ func (c Correlator) Correlate(findings []alert.Finding, at time.Time) Correlatio
 		if class != CorrelationSecurityEvent && class != CorrelationMalwareArtifact {
 			continue
 		}
-		if c.window > 0 && !f.Timestamp.IsZero() && f.Timestamp.Before(cutoff) {
+		if observed := observedAt(f); c.window > 0 && !observed.IsZero() && observed.Before(cutoff) {
 			continue
 		}
 		countsForAttack := f.Severity == alert.Critical
@@ -155,6 +155,17 @@ func (c Correlator) InputOf(f alert.Finding) (account string, eligible bool) {
 	return c.accountOf(f), eligible
 }
 
+// observedAt is when a finding's condition started: its first observation,
+// falling back to its report time. A scan re-emits every finding it still
+// sees with a fresh report time, so judging membership by Timestamp let a
+// months-old condition re-enter the window on every cycle.
+func observedAt(f alert.Finding) time.Time {
+	if !f.FirstSeen.IsZero() {
+		return f.FirstSeen
+	}
+	return f.Timestamp
+}
+
 // A missing timestamp must not silently discard legacy stored evidence.
 func (c Correlator) cutoff(findings []alert.Finding, at time.Time) time.Time {
 	if c.window == 0 {
@@ -163,7 +174,9 @@ func (c Correlator) cutoff(findings []alert.Finding, at time.Time) time.Time {
 	if at.IsZero() {
 		for _, f := range findings {
 			// Synthesized findings must not feed back into either aggregate
-			// membership or attribution-health accounting.
+			// membership or attribution-health accounting. The reference is
+			// the newest report, not the newest first observation: it stands
+			// for "now" when the caller supplied no observation time.
 			if !IsDerivedCorrelationCheck(f.Check) && f.Timestamp.After(at) {
 				at = f.Timestamp
 			}

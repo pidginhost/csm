@@ -66,6 +66,9 @@ func (s *ActiveSet) Admit(f alert.Finding) (evicted bool) {
 	if f.Timestamp.After(s.newest) {
 		s.newest = f.Timestamp
 	}
+	// The store keeps a condition's first observation across re-reports.
+	// Mirror it, or the replay measures a behaviour production no longer has.
+	f.FirstSeen = earliestObservation(s.byKey[f.Key()], f)
 	s.byKey[f.Key()] = f
 	return s.evict()
 }
@@ -89,6 +92,21 @@ func (s *ActiveSet) evict() (evicted bool) {
 		evicted = true
 	}
 	return evicted
+}
+
+// earliestObservation mirrors the store's rule: the stored row's first
+// observation wins, falling back to timestamps for rows that carry none.
+func earliestObservation(stored, reported alert.Finding) time.Time {
+	var earliest time.Time
+	for _, t := range []time.Time{stored.FirstSeen, stored.Timestamp, reported.FirstSeen, reported.Timestamp} {
+		if t.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || t.Before(earliest) {
+			earliest = t
+		}
+	}
+	return earliest
 }
 
 // Snapshot returns the set in map order. Correlation does not care about

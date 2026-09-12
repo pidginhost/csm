@@ -80,6 +80,7 @@ func TestLatestStateAggregatesAcrossMerges(t *testing.T) {
 		rows := make(map[string]alert.Finding)
 		for _, f := range st.LatestFindings() {
 			f.Timestamp = f.Timestamp.UTC()
+			f.FirstSeen = f.FirstSeen.UTC()
 			rows[f.Key()] = f
 		}
 		return rows

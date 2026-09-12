@@ -361,10 +361,21 @@ realtime dispatcher derive two findings from the findings they see:
   severity. Different malware checks on different accounts do not combine.
 
 Over the persisted latest-state set, both aggregates only combine findings
-from the last hour. The window is relative to the merge time, so the next
-completed scan clears expired aggregates even if it produces no findings.
-Source rows are retained when their aggregates expire, and a finding carrying
-no timestamp at all still counts. Derived timestamps never affect the window.
+whose condition was **first observed** in the last hour. A scan re-emits every
+finding it still sees and the merge refreshes its report time, so judging by
+that would let a months-old condition re-enter the window on every cycle; the
+merge therefore carries each finding's first observation across re-reports and
+correlation reads that instead. The window is relative to the merge time, so
+the next completed scan clears expired aggregates even if it produces no
+findings. Source rows are retained when their aggregates expire, a finding
+carrying no first observation falls back to its report time, and a finding
+carrying no timestamp at all still counts. Derived timestamps never affect the
+window.
+
+The first observation is not retroactive. On upgrade, a stored finding adopts
+its existing report time, because nothing recorded when that condition actually
+started. Long-lived findings therefore look freshly observed once, and the
+aggregate only settles as the active set turns over.
 
 The realtime and scan batch paths keep their existing grouping and count all
 qualifying rows in the batch. A scan can carry forward an older finding for a

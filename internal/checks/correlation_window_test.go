@@ -170,3 +170,52 @@ func TestCorrelateFindingsCountsUnstampedFindings(t *testing.T) {
 		t.Fatal("an unstamped finding was dropped from correlation")
 	}
 }
+
+// The defect the window alone could not fix: a scan re-emits every finding it
+// still sees with a fresh timestamp, so long-lived conditions kept re-entering
+// the window on every cycle. On one production host 98.8% of correlation input
+// was a re-report, and the aggregate named 75 accounts. Correlation must judge
+// a finding by when the condition started, not by when it was last reported.
+func TestCorrelateFindingsJudgesAccountsByFirstObservation(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	now := time.Unix(1_770_000_000, 0)
+	old := now.Add(-30 * 24 * time.Hour)
+
+	// Three long-standing conditions, all re-reported by the scan that just
+	// ran. Their Timestamp is current; their FirstSeen is a month old.
+	restamped := []alert.Finding{
+		{Severity: alert.Critical, Check: "webshell", TenantID: "one", Timestamp: now, FirstSeen: old},
+		{Severity: alert.Critical, Check: "webshell", TenantID: "two", Timestamp: now, FirstSeen: old},
+		{Severity: alert.Critical, Check: "phishing_php", TenantID: "three", Timestamp: now, FirstSeen: old},
+	}
+	if raised(CorrelateFindings(restamped), "coordinated_attack") {
+		t.Fatal("a scan re-reporting month-old conditions raised a coordinated attack")
+	}
+
+	// The same three accounts, newly compromised, must still correlate.
+	fresh := []alert.Finding{
+		{Severity: alert.Critical, Check: "webshell", TenantID: "one", Timestamp: now, FirstSeen: now.Add(-20 * time.Minute)},
+		{Severity: alert.Critical, Check: "webshell", TenantID: "two", Timestamp: now, FirstSeen: now.Add(-10 * time.Minute)},
+		{Severity: alert.Critical, Check: "phishing_php", TenantID: "three", Timestamp: now, FirstSeen: now},
+	}
+	if !raised(CorrelateFindings(fresh), "coordinated_attack") {
+		t.Fatal("three accounts first seen inside the window did not correlate")
+	}
+}
+
+// A finding with no FirstSeen (a batch that never reached the merge, or a row
+// stored before the field existed) falls back to its Timestamp rather than
+// dropping out of correlation.
+func TestCorrelateFindingsFallsBackToTimestampWithoutFirstSeen(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	now := time.Unix(1_770_000_000, 0)
+
+	findings := []alert.Finding{
+		{Severity: alert.Critical, Check: "webshell", TenantID: "one", Timestamp: now},
+		{Severity: alert.Critical, Check: "webshell", TenantID: "two", Timestamp: now.Add(-time.Minute)},
+		{Severity: alert.Critical, Check: "phishing_php", TenantID: "three", Timestamp: now.Add(-2 * time.Minute)},
+	}
+	if !raised(CorrelateFindings(findings), "coordinated_attack") {
+		t.Fatal("findings without FirstSeen stopped correlating")
+	}
+}

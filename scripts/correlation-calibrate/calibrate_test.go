@@ -124,3 +124,24 @@ func TestSpreadSweepCountsPointsAtOrAboveEachThreshold(t *testing.T) {
 		t.Errorf("Points() = %d, want 7", got)
 	}
 }
+
+// The store carries a condition's first observation across re-reports. The
+// replay has to do the same or it measures a behaviour production no longer
+// has.
+func TestActiveSetCarriesFirstSeenAcrossRepeats(t *testing.T) {
+	base := time.Unix(1_770_000_000, 0)
+	set := NewActiveSet(0)
+	set.Admit(critical("a", "webshell", "same", base).Finding)
+	set.Admit(critical("a", "webshell", "same", base.Add(72*time.Hour)).Finding)
+
+	got := set.Findings()
+	if len(got) != 1 {
+		t.Fatalf("active set holds %d findings, want 1", len(got))
+	}
+	if !got[0].Timestamp.Equal(base.Add(72 * time.Hour)) {
+		t.Errorf("Timestamp = %v, want the latest report", got[0].Timestamp)
+	}
+	if !got[0].FirstSeen.Equal(base) {
+		t.Errorf("FirstSeen = %v, want the first observation %v", got[0].FirstSeen, base)
+	}
+}

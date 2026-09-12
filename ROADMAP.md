@@ -148,8 +148,8 @@ on real data. Decide it against recorded block streams before mapping.
 
 ## Cross-account correlation sees a tenth of the detectors
 
-**Status:** open; classification and calibration complete, identity gaps and
-re-report counting remain.
+**Status:** open; classification, calibration and re-report counting complete.
+The named identity gaps remain.
 
 Every registered check now carries a correlation class (security event,
 malware artifact, ignored with a reason, or derived), the coverage table in
@@ -231,14 +231,11 @@ genuinely stale evidence and lets the aggregate clear, but on a host whose
 scans restamp 157 critical rows at a time it does not make the aggregate
 actionable. That is the remaining defect, not a tuning question.
 
-What this calibration leaves open, with the numbers to size it: correlation
-still counts rows rather than distinct observations, so a long-lived finding
-re-reported on every scan keeps refreshing its timestamp and keeps its account
-inside the window. Counting an account once per first observation instead
-collapses the same 100 days from 27,357 rows to 213 events and the per-batch
-firings from 51 to 7. Doing that needs a first-seen timestamp that survives the
-latest-state merge, which replaces a stored finding wholesale today; that is a
-change to the finding record, not to correlation.
+That defect is now closed: a finding carries the time its condition was first
+observed, the latest-state merge keeps it across re-reports, and correlation
+judges window membership by it. The first observation is not retroactive, so on
+a host that has been running a while the aggregate only settles as the active
+set turns over.
 
 **Acceptance:** met for the threshold. Re-deriving it again, or changing the
 Critical-only limit, uses the same tool and the same recorded-stream evidence.

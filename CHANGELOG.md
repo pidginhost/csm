@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - WordPress database scan warnings now count config, query and content-read failures, name examples, and keep discovery gaps visible. Multisite safety-limit warnings no longer hide failures at other installs.
 
+- Cross-account correlation now judges an account by when its finding was first observed, not by when a scan last re-reported it. Every scan refreshes the report time of findings it still sees, so a months-old compromise kept re-entering the recent-activity window and the coordinated-attack alert named most of the accounts on the host.
+
 - Cross-account correlation now only combines findings from the last hour of the stored finding set, and clears an aggregate on the next scan once that hour passes. It had no time bound at all, so the coordinated-attack alert latched on the first three accounts that ever carried a critical finding and never cleared. Attribution health reports the same window.
 
 - Real-time WordPress admin-creation detection now requires an administrator role token alongside the credential shape, matching the scheduled rule of the same name, and accepts the same whitespace. The importer bundled inside many themes and plugins creates users from an import form without touching a role, and was reported as critical on every plugin update that staged it.

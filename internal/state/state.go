@@ -971,6 +971,25 @@ func (s *Store) purgeAndMergeFindingsDerived(purgeChecks []string, findings []al
 	s.persistLatestLocked()
 }
 
+// earliestObservation resolves the first-seen time a re-reported finding
+// keeps. The stored row wins because it was there first; a row written before
+// FirstSeen existed contributes its Timestamp instead, so upgrading does not
+// reset the history of every long-lived finding. A finding nobody stored
+// before starts from its own timestamp.
+func earliestObservation(stored, reported alert.Finding) time.Time {
+	candidates := []time.Time{stored.FirstSeen, stored.Timestamp, reported.FirstSeen, reported.Timestamp}
+	var earliest time.Time
+	for _, t := range candidates {
+		if t.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || t.Before(earliest) {
+			earliest = t
+		}
+	}
+	return earliest
+}
+
 // purgeAndMergeLatest drops findings owned by purgeChecks (and the timeout
 // findings those runners produced), merges findings by key, and returns the
 // ordered, capped result.
@@ -1034,6 +1053,7 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 			continue
 		}
 		f.ScanCarryForward = false
+		f.FirstSeen = earliestObservation(existing[key], f)
 		existing[key] = f
 		if pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
 			protectedKeys[key] = struct{}{}
