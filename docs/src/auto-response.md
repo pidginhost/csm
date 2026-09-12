@@ -83,7 +83,10 @@ Findings still queued at shutdown retain the existing restart replay behavior:
 the next daemon run evaluates them again under the same persisted limits.
 
 A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
-It no longer escalates to whole-file quarantine. Quarantine and cleaners retain
+It no longer escalates to whole-file quarantine. A cleaner that recognizes no
+injection refuses the file instead of failing: the attempt still uses capacity
+and is reported for review, but it does not count toward the failure pause, so
+ordinary false positives on application paths cannot stop response elsewhere. Quarantine and cleaners retain
 their descriptor-based identity checks, and automatic actions revalidate the
 file after saving the reservation.
 

@@ -26,6 +26,10 @@ type CleanResult struct {
 	BackupPath string
 	Removals   []string // descriptions of what was removed
 	Error      string
+	// Refused marks a target the cleaner declined because it recognizes no
+	// injection, as opposed to an attempt that failed part way. The file is
+	// untouched, so an automatic caller must not treat it as a broken action.
+	Refused bool
 }
 
 var (
@@ -152,6 +156,7 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 	// If nothing was removed, file couldn't be cleaned
 	if len(removals) == 0 || len(content) == originalLen {
 		audit.rec.Result = actionlog.Refused
+		result.Refused = true
 		result.Error = "no known injection patterns found - file may need manual review"
 		return result
 	}

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Automatic file quarantine and cleaning now share persistent host and account limits and pause after repeated failures. Failed cleaning and whole-directory findings leave the source for manual review.
+- Automatic file quarantine and cleaning now share persistent host and account limits and pause after repeated failures. Cleaning that fails or finds nothing to remove, and whole-directory findings, leave the source for manual review, and a cleaner that finds nothing does not count toward the pause.
 
 - The dashboard's browser sources now have unit tests, run through the Go suite on machines that have node.
 

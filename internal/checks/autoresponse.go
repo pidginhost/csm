@@ -183,7 +183,18 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			if !realtime && ShouldCleanInsteadOfQuarantine(path) {
 				result := cleanInfectedFileIdentified(path, info)
 				if result.Error != "" {
-					actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN failed for %s; manual review required", path), Details: result.Error, Timestamp: time.Now()})
+					outcome := "failed"
+					if result.Refused {
+						outcome = "refused"
+					}
+					actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
+					// A recognized-nothing refusal changed nothing, so it is not
+					// evidence that the response mechanism is broken. Charging it
+					// would let ordinary plugin-path false positives pause every
+					// automatic file response on the host.
+					if result.Refused {
+						return nil
+					}
 					return errors.New(result.Error)
 				}
 				if result.Cleaned {

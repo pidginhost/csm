@@ -124,3 +124,24 @@ func TestAutoFileResponseHtaccessDuplicatesAndDeliveryShareAttempt(t *testing.T)
 		t.Errorf("duplicate access-file cleaning spent another account's capacity: %v", err)
 	}
 }
+
+// A cleaner that recognizes no injection refuses the file; it does not fail.
+// Charging those refusals lets a handful of plugin-path false positives trip
+// the host-wide breaker and stop quarantine for every other path.
+func TestAutoFileResponseCleanerRefusalIsNotAFailure(t *testing.T) {
+	cfg, homes := fileResponseFixture(t, "  max_file_action_failures_per_hour: 1\n")
+	body := []byte("<?php echo 'original application';\n")
+	refused := responseFile(t, homes, "alice", "wp-content/plugins/example/main.php", body)
+	actions := AutoQuarantineFiles(cfg, []alert.Finding{refused})
+	assertResponseFile(t, refused.FilePath, body)
+	if len(actions) != 1 || actions[0].Severity != alert.Warning || !strings.Contains(actions[0].Message, "manual review required") {
+		t.Fatalf("refusal not reported for review: %+v", actions)
+	}
+	other := responseFile(t, homes, "bob", "other.bin", []byte("test evidence"))
+	if pauses := responsePauses(AutoQuarantineFiles(cfg, []alert.Finding{other})); pauses != 0 {
+		t.Error("cleaner refusal tripped the failure breaker")
+	}
+	if _, err := os.Stat(other.FilePath); !os.IsNotExist(err) {
+		t.Errorf("cleaner refusal stopped quarantine on another path: %v", err)
+	}
+}
