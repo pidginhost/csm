@@ -87,7 +87,8 @@ the next daemon run evaluates them again under the same persisted limits.
 A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
 It no longer escalates to whole-file quarantine. A cleaner that recognizes no
 injection or declines an unsupported target refuses the file instead of failing.
-Sources that change or disappear before mutation are also refusals. These
+Sources that change or disappear before mutation are also refusals, including
+socket replacements and parent paths replaced after quarantine copying. These
 attempts still use capacity but do not count toward the failure pause. Read,
 write, backup and durability errors still count as failures. Quarantine and
 cleaners retain their descriptor-based identity checks, and automatic actions
@@ -339,7 +340,7 @@ receive them.
 - Infrastructure IPs (`infra_ips` in config) are never blocked
 - Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
-- Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a failed remediation, with the captured copy kept as evidence and the replacement left untouched
+- Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
 - CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour)

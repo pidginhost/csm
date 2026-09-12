@@ -70,7 +70,7 @@ func removeQuarantinedSource(path, qPath string, original os.FileInfo) error {
 			}
 			return nil
 		}
-		return fmt.Errorf("quarantine: stat source before unlink %s; recovery copy retained at %s: %w", path, qPath, err)
+		return fmt.Errorf("quarantine: stat source before unlink %s; recovery copy retained at %s: %w", path, qPath, fileResponseSourceError(err))
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !sameFileIdentity(info, original) {
 		return refuseFileResponse(fmt.Errorf("quarantine: source at %s was replaced before unlink; the detected content is kept at %s and the replacement was left in place", path, qPath))

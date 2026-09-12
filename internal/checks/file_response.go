@@ -53,7 +53,9 @@ func (fileResponseRefusal) Is(target error) bool { return target == errFileRespo
 func refuseFileResponse(err error) error { return fileResponseRefusal{err: err} }
 
 func fileResponseSourceError(err error) error {
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+	// A socket replacement cannot be opened as a file and returns ENXIO
+	// before the descriptor-based regular-file check can refuse it.
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ENXIO) {
 		return refuseFileResponse(err)
 	}
 	return err

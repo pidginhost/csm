@@ -103,7 +103,7 @@ func TestAutoFileResponseChangedSourceAfterCopyDoesNotTripBreaker(t *testing.T) 
 }
 
 func TestAutomaticCleanSourceRefusals(t *testing.T) {
-	for _, kind := range []string{"removed", "symlink", "special file"} {
+	for _, kind := range []string{"removed", "symlink", "special file", "socket"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg, homes := fileResponseFixture(t, "")
 			oldRoots := fixHtaccessAllowedRoots
@@ -122,6 +122,8 @@ func TestAutomaticCleanSourceRefusals(t *testing.T) {
 				err = os.Symlink(cfg.StatePath, f.FilePath)
 			case "special file":
 				err = unix.Mkfifo(f.FilePath, 0600)
+			case "socket":
+				err = unix.Mknod(f.FilePath, unix.S_IFSOCK|0600, 0)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -132,6 +134,70 @@ func TestAutomaticCleanSourceRefusals(t *testing.T) {
 			if result := cleanHtaccessFileIdentified(f.FilePath, info); !result.Refused || result.Success {
 				t.Errorf("access-file source refusal reported as failure: %+v", result)
 			}
+		})
+	}
+}
+
+func TestAutoFileResponseSocketReplacementDoesNotTripBreaker(t *testing.T) {
+	cfg, homes := fileResponseFixture(t, "  max_file_action_failures_per_hour: 1\n")
+	sink := withActionSink(t)
+	f := responseFile(t, homes, "alice", "source.bin", []byte("original content"))
+	oldMove := quarantineTargetFn
+	quarantineTargetFn = func(path, qpath string, info os.FileInfo, data []byte) error {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		if err := unix.Mknod(path, unix.S_IFSOCK|0600, 0); err != nil {
+			return err
+		}
+		return oldMove(path, qpath, info, data)
+	}
+	t.Cleanup(func() { quarantineTargetFn = oldMove })
+	AutoQuarantineFiles(cfg, []alert.Finding{f})
+	quarantineTargetFn = oldMove
+	if len(sink.records) != 1 || sink.records[0].Result != actionlog.Refused {
+		t.Errorf("socket replacement recorded as failure: %+v", sink.records)
+	}
+	if info, err := os.Lstat(f.FilePath); err != nil || info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("socket replacement was not preserved: %v", err)
+	}
+	assertOtherAccountCanRespond(t, cfg, homes)
+}
+
+func TestAutoFileResponseParentReplacementAfterCopyDoesNotTripBreaker(t *testing.T) {
+	for _, kind := range []string{"file", "symlink loop"} {
+		t.Run(kind, func(t *testing.T) {
+			cfg, homes := fileResponseFixture(t, "  max_file_action_failures_per_hour: 1\n")
+			sink := withActionSink(t)
+			body := []byte("original content")
+			f := responseFile(t, homes, "alice", "source.bin", body)
+			parent := filepath.Dir(f.FilePath)
+			moved := parent + ".moved"
+			oldCopy := quarantineCopyByFD
+			quarantineCopyByFD = func(file *os.File, path string, metadata []byte) error {
+				if err := oldCopy(file, path, metadata); err != nil {
+					return err
+				}
+				if err := os.Rename(parent, moved); err != nil {
+					return err
+				}
+				if kind == "symlink loop" {
+					return os.Symlink(parent, parent)
+				}
+				return os.WriteFile(parent, []byte("replacement"), 0600)
+			}
+			t.Cleanup(func() { quarantineCopyByFD = oldCopy })
+			AutoQuarantineFiles(cfg, []alert.Finding{f})
+			quarantineCopyByFD = oldCopy
+			if len(sink.records) != 1 {
+				t.Fatalf("expected one quarantine record, got %+v", sink.records)
+			}
+			if sink.records[0].Result != actionlog.Refused {
+				t.Errorf("parent replacement recorded as failure: %+v", sink.records)
+			}
+			assertResponseFile(t, filepath.Join(moved, filepath.Base(f.FilePath)), body)
+			assertResponseFile(t, sink.records[0].RecoveryPath, body)
+			assertOtherAccountCanRespond(t, cfg, homes)
 		})
 	}
 }
