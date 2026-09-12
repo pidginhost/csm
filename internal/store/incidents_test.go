@@ -73,6 +73,83 @@ func TestSaveAndGetIncident(t *testing.T) {
 	}
 }
 
+func TestIncidentBlockLadderSurvivesStoreAndRestore(t *testing.T) {
+	for _, spray := range []bool{false, true} {
+		t.Run(map[bool]string{false: "generic", true: "spray"}[spray], func(t *testing.T) {
+			db := newTestStore(t)
+			now := time.Now().UTC()
+			inc := sampleIncident("inc_ladder")
+			inc.Account = ""
+			inc.CorrelationKey = &incident.Key{RemoteIP: "192.0.2.10"}
+			inc.Kind = incident.KindWebAttack
+			check := "modsec_csm_block_escalation"
+			if spray {
+				inc.Kind, check = incident.KindCredentialSpray, "email_auth_failure_realtime"
+			}
+			inc.Timeline = []incident.IncidentEvent{{Kind: "finding", Check: check, RemoteIP: "192.0.2.10"}}
+			// A restart can happen long after the last finding and block expiry.
+			inc.UpdatedAt = now.Add(-25 * time.Hour)
+			inc.AutoBlock = incident.AutoBlockState{Count: 1, LastAt: inc.UpdatedAt, ExpiresAt: now.Add(-time.Hour)}
+			for _, count := range []int{1, 2, 3} {
+				if err := db.SaveIncident(inc); err != nil {
+					t.Fatal(err)
+				}
+				rows, err := db.ListIncidents()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(rows) != 1 || rows[0].AutoBlock != inc.AutoBlock {
+					t.Fatalf("stored block state = %+v, want %+v", rows, inc.AutoBlock)
+				}
+				var calls []time.Duration
+				block := func(_, _ string, ttl time.Duration) bool { calls = append(calls, ttl); return true }
+				cfg := incident.CorrelatorConfig{Persist: db.SaveIncident, AutoBlock: incident.IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"}, OnIncidentBlock: block}
+				if spray {
+					cfg.SpraySuppression = incident.SpraySuppressionConfig{Enabled: true, DistinctMailboxes: 2, BlockAtSeverity: "high", PerCheck: map[string]bool{check: true}}
+					cfg.OnSprayBlock = block
+					cfg.OnIncidentBlock = func(string, string, time.Duration) bool { t.Error("spray reached generic hand-off"); return false }
+				}
+				c := incident.NewCorrelator(cfg)
+				c.Restore(rows)
+				if len(calls) != 0 {
+					t.Fatal("restore requested a block without a finding")
+				}
+				for i := 0; i < 3; i++ {
+					id, _, findingErr := c.OnFinding(alert.Finding{Check: check, SourceIP: "192.0.2.10", Mailbox: "alice@example.com", Severity: alert.Critical, Timestamp: now})
+					if findingErr != nil || id != inc.ID {
+						t.Fatalf("restored finding id=%q err=%v, want %q", id, findingErr, inc.ID)
+					}
+				}
+				got, ok, err := db.GetIncident(inc.ID)
+				if err != nil || !ok {
+					t.Fatalf("read blocked incident: found=%v err=%v", ok, err)
+				}
+				if count == 3 {
+					if len(calls) != 0 || got.AutoBlock != inc.AutoBlock {
+						t.Fatalf("permanent block re-requested: calls=%v state=%+v", calls, got.AutoBlock)
+					}
+				} else {
+					wantTTL := time.Duration(0)
+					if count == 1 {
+						wantTTL = 7 * 24 * time.Hour
+					}
+					if len(calls) != 1 || calls[0] != wantTTL || got.AutoBlock.Count != count+1 {
+						t.Fatalf("restored ladder skipped or duplicated a rung: calls=%v state=%+v", calls, got.AutoBlock)
+					}
+					if wantTTL == 0 && !got.AutoBlock.ExpiresAt.IsZero() {
+						t.Fatal("permanent expiry was not persisted")
+					}
+				}
+				inc = got
+				inc.UpdatedAt = now.Add(-25 * time.Hour)
+				if count == 1 {
+					inc.AutoBlock.ExpiresAt = now.Add(-time.Hour)
+				}
+			}
+		})
+	}
+}
+
 func TestGetIncidentMissReturnsFalseNoError(t *testing.T) {
 	db := newTestStore(t)
 	_, ok, err := db.GetIncident("inc_missing")

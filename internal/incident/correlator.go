@@ -167,14 +167,16 @@ type counters struct {
 // Correlator groups findings into incidents. In-memory state; the
 // daemon is responsible for wiring it to a store via CorrelatorConfig.Persist.
 type Correlator struct {
-	mu                    sync.Mutex
-	persistence           *persistQueue
-	cfg                   CorrelatorConfig
-	incidents             map[string]*Incident
-	byKey                 map[string]string
-	pending               map[string]pendingFinding
-	pendingSprayBlocks    map[string]struct{}
-	pendingIncidentBlocks map[string]struct{}
+	mu          sync.Mutex
+	persistence *persistQueue
+	cfg         CorrelatorConfig
+	incidents   map[string]*Incident
+	byKey       map[string]string
+	pending     map[string]pendingFinding
+	// A false pending value keeps the in-flight slot occupied but discards
+	// its result after an incident closes, even if it is reopened meanwhile.
+	pendingSprayBlocks    map[string]bool
+	pendingIncidentBlocks map[string]bool
 	openThreshold         int
 	now                   func() time.Time
 	counters              counters
@@ -206,8 +208,8 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 		incidents:             map[string]*Incident{},
 		byKey:                 map[string]string{},
 		pending:               map[string]pendingFinding{},
-		pendingSprayBlocks:    map[string]struct{}{},
-		pendingIncidentBlocks: map[string]struct{}{},
+		pendingSprayBlocks:    map[string]bool{},
+		pendingIncidentBlocks: map[string]bool{},
 		openThreshold:         threshold,
 		now:                   time.Now,
 		lastPersistAt:         map[string]time.Time{},
@@ -310,7 +312,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	}
 
 	if id, ok := c.byKey[keyStr]; ok {
-		if inc, exists := c.incidents[id]; exists && now.Sub(inc.UpdatedAt) <= incidentMergeWindow {
+		// A quiet interval must not erase an active incident's block ladder.
+		// Only closing the incident ends that episode, including after restore.
+		if inc, exists := c.incidents[id]; exists && (now.Sub(inc.UpdatedAt) <= incidentMergeWindow || inc.AutoBlock.Count > 0) {
 			c.mergeLocked(inc, f, now, true)
 			delete(c.pending, keyStr)
 			if cb := c.maybeBlockIncidentLocked(inc, now, "merge"); cb != nil {
@@ -938,10 +942,6 @@ func (c *Correlator) persistLocked(snap Incident) {
 	c.runQueuedPersist(req)
 }
 
-// SetStatus transitions an incident's status. On Resolved/Dismissed
-// the incident is unbound from the active byKey index so future
-// findings for the same correlation key start a fresh incident.
-// Returns ErrIncidentNotFound if id is unknown.
 // RecordOperatorBlock notes on the incident that an operator blocked its
 // address from the incident view, and settles the automatic escalation ladder
 // to match: the hand-off has no business re-requesting a block for an address
@@ -952,12 +952,23 @@ func (c *Correlator) RecordOperatorBlock(id, ip string, ttl time.Duration) error
 	defer c.mu.Unlock()
 	inc, ok := c.incidents[id]
 	if !ok {
-		return fmt.Errorf("incident %s not found", id)
+		return ErrIncidentNotFound
+	}
+	ip = normalizeIncidentRemoteIP(ip)
+	if ip == "" || ip != incidentBlockCandidate(inc) {
+		return errors.New("incident: blocked address does not match incident source")
 	}
 	now := c.now()
-	inc.AutoBlock = AutoBlockState{Count: inc.AutoBlock.Count + 1, LastAt: now}
-	if ttl > 0 {
-		inc.AutoBlock.ExpiresAt = now.Add(ttl)
+	if incidentStatusActive(inc.Status) {
+		count := inc.AutoBlock.Count
+		// Refreshing an existing block is not a recurrence after expiry.
+		if inc.AutoBlock.lapsed(now) {
+			count++
+		}
+		inc.AutoBlock = AutoBlockState{Count: count, LastAt: now}
+		if ttl > 0 {
+			inc.AutoBlock.ExpiresAt = now.Add(ttl)
+		}
 	}
 	inc.Actions = append(inc.Actions, IncidentAction{
 		Time:    now,
@@ -970,6 +981,22 @@ func (c *Correlator) RecordOperatorBlock(id, ip string, ttl time.Duration) error
 	return nil
 }
 
+// resetAutoBlockLocked ends the ladder and invalidates any callback still
+// running for this episode without releasing its concurrency guard early.
+func (c *Correlator) resetAutoBlockLocked(inc *Incident) {
+	inc.AutoBlock = AutoBlockState{}
+	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
+		c.pendingSprayBlocks[inc.ID] = false
+	}
+	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
+		c.pendingIncidentBlocks[inc.ID] = false
+	}
+}
+
+// SetStatus transitions an incident's status. On Resolved/Dismissed
+// the incident is unbound from the active byKey index so future
+// findings for the same correlation key start a fresh incident.
+// Returns ErrIncidentNotFound if id is unknown.
 func (c *Correlator) SetStatus(id string, status Status, details string) error {
 	if !validStatus(status) {
 		return fmt.Errorf("incident: invalid status %q", status)
@@ -1006,7 +1033,7 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 		// Closing ends the episode. A later recurrence is new activity and
 		// starts at the bottom of the escalation ladder, rather than jumping
 		// to a permanent block off the back of a long-closed incident.
-		inc.AutoBlock = AutoBlockState{}
+		c.resetAutoBlockLocked(inc)
 		c.unbindLocked(id)
 		if c.spray != nil {
 			c.spray.UnbindIncident(id)
@@ -1080,6 +1107,7 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 		inc.UpdatedAt = now
 		inc.ClosedAt = now
 		inc.ClosedBy = "auto:stale"
+		c.resetAutoBlockLocked(inc)
 		inc.Actions = append(inc.Actions, IncidentAction{
 			Time:    now,
 			Action:  "incident_auto_closed",
@@ -1107,6 +1135,7 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 // closeIncidentLocked force-resolves an active incident with the given
 // attribution. Caller holds c.mu and must queue/run the persist of *inc.
 func (c *Correlator) closeIncidentLocked(inc *Incident, id string, now time.Time, by, detail string) {
+	c.resetAutoBlockLocked(inc)
 	from := inc.Status
 	inc.Status = StatusResolved
 	inc.UpdatedAt = now
@@ -1561,7 +1590,11 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
 		return nil
 	}
-	c.pendingIncidentBlocks[inc.ID] = struct{}{}
+	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
+		return nil
+	}
+	c.pendingIncidentBlocks[inc.ID] = true
+	prior := inc.AutoBlock
 	incidentID := inc.ID
 	attempt := inc.AutoBlock.Count + 1
 	ttl := blockTTLForAttempt(attempt, c.cfg.AutoBlock.BlockExpiry)
@@ -1579,12 +1612,13 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		defer func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
+			valid := c.pendingIncidentBlocks[incidentID]
 			delete(c.pendingIncidentBlocks, incidentID)
-			if !callbackReturned || !live {
+			if !valid || !callbackReturned || !live {
 				return
 			}
 			current, ok := c.incidents[incidentID]
-			if !ok || !current.AutoBlock.lapsed(now) {
+			if !ok || current != inc || !incidentStatusActive(current.Status) || current.AutoBlock != prior {
 				return
 			}
 			current.AutoBlock = AutoBlockState{Count: attempt, LastAt: now}
@@ -1600,6 +1634,12 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 			c.markPersistedLocked(incidentID, c.now())
 			c.persistLocked(*current)
 		}()
+		c.mu.Lock()
+		valid := c.pendingIncidentBlocks[incidentID] && c.incidents[incidentID] == inc && incidentStatusActive(inc.Status) && inc.AutoBlock == prior
+		c.mu.Unlock()
+		if !valid {
+			return
+		}
 		live = onBlock(ip, reason, ttl)
 		callbackReturned = true
 	}
@@ -1702,7 +1742,11 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
 		return nil
 	}
-	c.pendingSprayBlocks[inc.ID] = struct{}{}
+	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
+		return nil
+	}
+	c.pendingSprayBlocks[inc.ID] = true
+	prior := inc.AutoBlock
 	attempt := inc.AutoBlock.Count + 1
 	ttl := blockTTLForAttempt(attempt, c.spray.cfg.BlockExpiry)
 	reason := "credential_spray: " + strconv.Itoa(hits) + " distinct mailboxes (" + why + ")"
@@ -1721,12 +1765,13 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		defer func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
+			valid := c.pendingSprayBlocks[incidentID]
 			delete(c.pendingSprayBlocks, incidentID)
-			if !callbackReturned || !live {
+			if !valid || !callbackReturned || !live {
 				return
 			}
 			current, ok := c.incidents[incidentID]
-			if !ok || !current.AutoBlock.lapsed(now) {
+			if !ok || current != inc || !incidentStatusActive(current.Status) || current.AutoBlock != prior {
 				return
 			}
 			current.AutoBlock = AutoBlockState{Count: attempt, LastAt: now}
@@ -1742,6 +1787,12 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 			c.markPersistedLocked(incidentID, c.now())
 			c.persistLocked(*current)
 		}()
+		c.mu.Lock()
+		valid := c.pendingSprayBlocks[incidentID] && c.incidents[incidentID] == inc && incidentStatusActive(inc.Status) && inc.AutoBlock == prior
+		c.mu.Unlock()
+		if !valid {
+			return
+		}
 		live = onSprayBlock(ip, reason, ttl)
 		callbackReturned = true
 	}

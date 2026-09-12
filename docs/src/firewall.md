@@ -358,10 +358,22 @@ the bottom rather than inheriting a months-old episode. Concurrent findings
 still collapse into one firewall call, and a declined or dry-run request is not
 recorded, so it can retry.
 
-The incident view carries a Block button whenever the incident has one source
-address. It blocks permanently, notes the block on the incident timeline as
+The ladder survives restarts and quiet intervals while the incident remains
+active. Closing the incident, manually or automatically, resets it; a pending
+block callback cannot restore the old ladder after that close.
+
+The incident view carries a Block button whenever the incident has one
+unambiguous source address. Mixed-source or truncated timelines without an
+address in the correlation key do not offer a block target. The button asks
+for confirmation, blocks permanently, notes the block on the incident timeline as
 `operator_block`, and settles the ladder so the automatic hand-off does not
 re-request a block for an address the operator just blocked.
+
+The block API accepts an optional `incident_id`. An invalid, unknown, or
+address-mismatched incident ID does not prevent the firewall block, but does
+not change the incident. Refreshing an existing temporary block does not
+advance the escalation rung. Blocks recorded on closed incidents remain audit
+actions without restarting the ladder.
 
 ## Infrastructure IP DNS guard
 

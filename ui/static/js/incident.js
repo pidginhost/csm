@@ -75,20 +75,17 @@
     function incidentSourceIP(inc) {
         if (!inc) return '';
         if (inc.correlation_key && inc.correlation_key.remote_ip) return inc.correlation_key.remote_ip;
-        var counts = {};
-        var best = '';
-        var bestCount = 0;
+        var candidate = '';
         var tl = inc.timeline || [];
         for (var i = 0; i < tl.length; i++) {
+            // Partial or mixed-source timelines cannot identify a block target.
+            if (tl[i].kind === 'truncated') return '';
             var ip = tl[i].remote_ip;
             if (!ip) continue;
-            counts[ip] = (counts[ip] || 0) + 1;
-            if (counts[ip] > bestCount || (counts[ip] === bestCount && (best === '' || ip < best))) {
-                best = ip;
-                bestCount = counts[ip];
-            }
+            if (candidate && candidate !== ip) return '';
+            candidate = ip;
         }
-        return best;
+        return candidate;
     }
 
     function firewallStatusClass(baseClass, tone) {
@@ -564,7 +561,7 @@
     // attacker walk in the first place.
     function blockIncidentIP(id, ip, btn) {
         if (!ip) return;
-        CSM.confirm('Block ' + ip + ' permanently?').then(function() {
+        return CSM.confirm('Block ' + ip + ' permanently?').then(function() {
             if (btn) btn.disabled = true;
             return CSM.post('/api/v1/block-ip', {
                 ip: ip,
@@ -579,9 +576,9 @@
                 }
                 attachFirewallStatus('csm-incident-fw-status', ip);
                 loadIncidentDetail(id);
-            }).catch(function() {
-                if (btn) btn.disabled = false;
             });
+        }).catch(function() {
+            if (btn) btn.disabled = false;
         });
     }
 

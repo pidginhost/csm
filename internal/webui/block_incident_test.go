@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -77,7 +78,14 @@ func TestBlockIPSucceedsWithoutAnIncidentID(t *testing.T) {
 	for _, body := range []string{
 		`{"ip":"203.0.113.99","reason":"r","duration":"24h"}`,
 		`{"ip":"203.0.113.99","reason":"r","duration":"24h","incident_id":"inc_missing"}`,
+		`{"ip":"203.0.113.99","duration":"0","incident_id":123}`,
+		`{"ip":"203.0.113.99","duration":"0","incident_id":{}}`,
+		`{"ip":"203.0.113.99","duration":"0","incident_id":[]}`,
+		`{"ip":"203.0.113.99","duration":"0","incident_id":false}`,
+		`{"ip":"203.0.113.99","duration":"0","incident_id":null}`,
 	} {
+		blocker := &stubBlocker{}
+		s.blocker = blocker
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/api/v1/block-ip", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -85,5 +93,64 @@ func TestBlockIPSucceedsWithoutAnIncidentID(t *testing.T) {
 		if w.Code != 200 {
 			t.Errorf("block with body %s returned %d: %s", body, w.Code, w.Body.String())
 		}
+		if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.99" {
+			t.Errorf("block with body %s made firewall calls %v", body, blocker.blocked)
+		}
+	}
+}
+
+type incidentOperatorBlocker struct {
+	stubBlocker
+	ttl time.Duration
+	err error
+}
+
+func (b *incidentOperatorBlocker) BlockIPForce(ip, reason string, ttl time.Duration) error {
+	b.ttl = ttl
+	b.blocked = append(b.blocked, ip)
+	return b.err
+}
+
+func TestIncidentBlockBookkeepingMatchesFirewallOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name, ip string
+		fail     bool
+	}{
+		{"permanent", "203.0.113.99", false},
+		{"unrelated", "203.0.113.100", false},
+		{"failed", "203.0.113.99", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServerWithFirewall(t, "tok")
+			b := &incidentOperatorBlocker{}
+			if tc.fail {
+				b.err = errors.New("firewall unavailable")
+			}
+			s.blocker = b
+			c := incident.NewCorrelator(incident.CorrelatorConfig{})
+			c.Restore([]incident.Incident{{ID: "inc_test", Status: incident.StatusOpen, CorrelationKey: &incident.Key{RemoteIP: "203.0.113.99"}}})
+			s.SetIncidentCorrelator(c)
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("POST", "/api/v1/block-ip", strings.NewReader(`{"ip":"`+tc.ip+`","duration":"0","incident_id":"inc_test"}`))
+			s.apiBlockIP(w, r)
+			wantCode := 200
+			if tc.fail {
+				wantCode = 500
+			}
+			if w.Code != wantCode {
+				t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+			}
+			if len(b.blocked) != 1 || b.blocked[0] != tc.ip || b.ttl != 0 {
+				t.Fatalf("force block = %+v", b)
+			}
+			inc, _ := c.Get("inc_test")
+			if tc.name == "permanent" {
+				if inc.AutoBlock.Count != 1 || !inc.AutoBlock.ExpiresAt.IsZero() || len(inc.Actions) != 1 {
+					t.Fatalf("permanent operator state = %+v", inc)
+				}
+			} else if inc.AutoBlock.Count != 0 || len(inc.Actions) != 0 {
+				t.Fatalf("incident falsely marked blocked: %+v", inc)
+			}
+		})
 	}
 }

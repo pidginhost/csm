@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The incident view has a Block button for incidents that carry a source address. It blocks permanently, records the block on the incident timeline, and stops the automatic hand-off from re-blocking an address an operator just handled.
+- The incident view has a Block button for incidents with one unambiguous source address. It blocks permanently, records the block on the incident timeline, and stops the automatic hand-off from re-blocking an address an operator just handled.
 
 - A calibration tool replays a recorded finding stream through cross-account correlation and reports what each candidate threshold would have raised, so the thresholds can be re-derived from what hosts produced.
 
@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A deep scan that has reached its time limit no longer opens further files while recording what it did not examine.
 
 ### Security
+
+- Incident blocks now retain their escalation across quiet periods and restarts, and closing an incident clears it even with a block request in flight. Manual block records validate the incident address, and refreshing a live block no longer skips an escalation step.
 
 - An incident-driven firewall block is re-applied when the previous one expires and the attack is still going, escalating from the configured expiry to seven days and then to a permanent block. A block was previously requested once per incident while the block itself expired after a day, so anyone who kept going past that was never blocked again; on a production host one address sprayed mail credentials for six days after its block lapsed, with the incident open throughout.
 
