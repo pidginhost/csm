@@ -83,6 +83,18 @@ Handling rules:
   checkout: `git clean -fdx` removes ignored files too, and a recording that
   took a host weeks to accumulate is not reproducible from anywhere else.
 
+## What a recording does and does not contain
+
+The audit log is the dispatch record: it holds findings that were alerted,
+after deduplication. It is not the persisted latest-state set, which is larger
+because every scan re-emits the findings it still sees and the merge refreshes
+their timestamps. On one production host a single sweep dispatched 49 critical
+findings while the active set carried 157 refreshed critical rows.
+
+A replay therefore understates how full the persisted correlation window gets.
+Compare windows against each other, and treat an absolute rate from a replay as
+a property of the replay, not of the live host.
+
 ## Replaying a stream through correlation
 
 `scripts/correlation-calibrate` replays a recording through the production

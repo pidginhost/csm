@@ -187,6 +187,16 @@ audit log into a joinable stream (see
 recordings from production hosts are kept locally, outside the repository.
 Calibration can start from them.
 
+**What a recording is.** `scripts/finding-stream` records the *audit log*, which
+is the dispatch record: it holds what was alerted, after deduplication. The
+persisted latest-state set is different and larger, because every scan re-emits
+the findings it still sees and the merge refreshes their timestamps. During one
+sweep on a production host the audit log recorded 49 dispatched criticals while
+the active set carried 157 refreshed critical rows. A replay therefore
+understates how full the persisted window gets, and a percentage measured from
+a recording describes the replay, not the live active set. Directional
+comparisons between windows hold; absolute rates do not transfer.
+
 **Calibration result.** `scripts/correlation-calibrate` replays a recording
 through the production correlation. Against 100 days of one production host
 (301,860 timestamped rows, 29,533 eligible, 92.6% attributed) and two days of a
@@ -213,6 +223,13 @@ carried-forward findings with older timestamps. The three-account threshold
 and the Critical-only limit stay: including High
 severities in the account count changed the firing count by one event in 100
 days, which does not justify widening what raises a Critical aggregate.
+
+Measured on the live host after the window shipped: of 81 accounts carrying a
+critical finding in the whole active set, 75 were still inside the one-hour
+window, and 20 rows reaching back to 2026-07-19 were excluded. The window drops
+genuinely stale evidence and lets the aggregate clear, but on a host whose
+scans restamp 157 critical rows at a time it does not make the aggregate
+actionable. That is the remaining defect, not a tuning question.
 
 What this calibration leaves open, with the numbers to size it: correlation
 still counts rows rather than distinct observations, so a long-lived finding
