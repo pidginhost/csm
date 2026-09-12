@@ -76,23 +76,90 @@ func wpVerificationFindings(ctx context.Context, db *store.DB, kind, owner strin
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	var findings []alert.Finding
+	scope := AccountFromContext(ctx)
+	byReason := make(map[string][]string)
 	for _, path := range paths {
 		row := rows[path]
-		if scope := AccountFromContext(ctx); scope != "" && row.Account != scope {
+		if scope != "" && row.Account != scope {
 			continue
 		}
 		if row.State != "unverified" || row.Failures < 2 {
 			continue
 		}
-		findings = append(findings, alert.Finding{
-			Check: check, Severity: alert.Warning,
-			Message:  "WordPress " + label + " repeatedly failed: " + strconv.QuoteToASCII(path),
-			Details:  fmt.Sprintf("Installation: %s\nLast attempt: %s\nReason: %s\nVerification could not complete in consecutive scan cycles. Check wp-cli and this installation locally; raw command output is not stored.", strconv.QuoteToASCII(path), row.AttemptAt.UTC().Format(time.RFC3339), row.Reason),
-			FilePath: path, TenantID: row.Account, DedupKey: path,
-		})
+		byReason[row.Reason] = append(byReason[row.Reason], path)
+	}
+	reasons := make([]string, 0, len(byReason))
+	for reason := range byReason {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	var findings []alert.Finding
+	for _, reason := range reasons {
+		group := byReason[reason]
+		if len(group) > wpVerificationCollapseCap {
+			findings = append(findings, wpVerificationCollapsedFinding(check, label, reason, group, rows))
+			continue
+		}
+		for _, path := range group {
+			row := rows[path]
+			findings = append(findings, alert.Finding{
+				Check: check, Severity: alert.Warning,
+				Message:  "WordPress " + label + " repeatedly failed: " + strconv.QuoteToASCII(path),
+				Details:  fmt.Sprintf("Installation: %s\nLast attempt: %s\nReason: %s\nVerification could not complete in consecutive scan cycles. Check wp-cli and this installation locally; raw command output is not stored.", strconv.QuoteToASCII(path), row.AttemptAt.UTC().Format(time.RFC3339), reason),
+				FilePath: path, TenantID: row.Account, DedupKey: path,
+			})
+		}
 	}
 	return findings
+}
+
+// wpVerificationCollapseCap is how many installations may share one cause
+// before the finding stops naming them one alert at a time. A missing wp-cli
+// or an unreachable checksum service fails every installation on the host in
+// the same cycle, and one alert per installation would spend the whole
+// alerts.max_per_hour budget on a single operational fault.
+const wpVerificationCollapseCap = 10
+
+// wpVerificationSampleLimit bounds how many installations a collapsed finding
+// quotes. Enough to recognise the affected accounts without a wall of paths.
+const wpVerificationSampleLimit = 10
+
+// wpVerificationCollapsedFinding reports one cause that stopped verification
+// across many installations. The cause is what the operator acts on, so the
+// identity is the cause and not any single installation.
+func wpVerificationCollapsedFinding(check, label, reason string, group []string, rows map[string]store.WPVerificationRecord) alert.Finding {
+	var last time.Time
+	accounts := make(map[string]struct{}, len(group))
+	for _, path := range group {
+		row := rows[path]
+		accounts[row.Account] = struct{}{}
+		if row.AttemptAt.After(last) {
+			last = row.AttemptAt
+		}
+	}
+	var details strings.Builder
+	fmt.Fprintf(&details, "Reason: %s\n", reason)
+	fmt.Fprintf(&details, "Installations affected: %d\n", len(group))
+	fmt.Fprintf(&details, "Last attempt: %s\n", last.UTC().Format(time.RFC3339))
+	for _, path := range firstN(group, wpVerificationSampleLimit) {
+		fmt.Fprintf(&details, "- %s\n", strconv.QuoteToASCII(path))
+	}
+	if extra := len(group) - wpVerificationSampleLimit; extra > 0 {
+		fmt.Fprintf(&details, "... and %d more\n", extra)
+	}
+	details.WriteString("Verification could not complete in consecutive scan cycles. One cause stopped every installation listed, so fix it once; raw command output is not stored.")
+	finding := alert.Finding{
+		Check: check, Severity: alert.Warning,
+		Message:  fmt.Sprintf("WordPress %s repeatedly failed for %d installations", label, len(group)),
+		Details:  details.String(),
+		DedupKey: "reason:" + reason,
+	}
+	if len(accounts) == 1 {
+		for account := range accounts {
+			finding.TenantID = account
+		}
+	}
+	return finding
 }
 
 // Integrity warnings can precede a later operational error. Only wp-cli's

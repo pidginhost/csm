@@ -99,8 +99,11 @@ The parser supports PHP syntax up to version 8.1. A file written against a newer
 Core verification and plugin inventory report persistent failures separately from
 malware or integrity findings. A failed attempt first appears in status; repeated
 failed attempts in distinct scan cycles raise a Warning naming the installation,
-last attempt and a bounded reason category. Raw wp-cli output is never stored in
-this history. These warnings do not enter incidents or automatic remediation.
+last attempt and a bounded reason category. A missing wp-cli or an unreachable
+checksum service stops every installation on the host at once, so when one reason
+covers more installations than the per-cause limit the warnings collapse into a
+single finding naming that reason, the total and a sample of the paths. Raw
+wp-cli output is never stored in this history. These warnings do not enter incidents or automatic remediation.
 The history survives restarts, and successful checks clear the warnings through
 the normal completed-scan merge. Overlapping scans preserve attempt order and
 failure streaks even when they finish out of order. New discovery alone does not

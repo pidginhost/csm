@@ -11,7 +11,7 @@ type WPVerificationCounts struct {
 	Unverified   int       `json:"unverified"`
 	Unknown      int       `json:"unknown"`
 	NotWordPress int       `json:"not_wordpress"`
-	LastAttempt  time.Time `json:"last_attempt,omitempty"`
+	LastAttempt  time.Time `json:"last_attempt,omitzero"`
 	Error        string    `json:"error,omitempty"`
 }
 
