@@ -93,6 +93,33 @@ POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a
 GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
 
+### WordPress verification coverage
+
+`wordpress_verification` contains `core` and `plugins` coverage when installation
+history is available. The same fields appear in `csm status --json`; human status
+shows the counts. Each entry reports `verified`, `modified`, `unverified`, `unknown`,
+`not_wordpress` and `last_attempt`. `unknown` means discovery found a directory
+but no completed attempt is recorded. `modified` means core verification
+completed with integrity differences, including missing core files. A verified
+plugin inventory can still contain vulnerable versions. The timestamp is the
+latest recorded attempt in that group.
+Counts retain the last observed results across restarts and cached scan cycles.
+Overlapping scans retain the latest attempt and its consecutive failure history
+in scan order. Discovery without an attempt does not replace verification evidence.
+An absent group means there is no retained installation history, not proof of
+coverage. An `error` field reports unreadable history instead of clean counts.
+
+The first failed attempt increases `unverified`; repeated failures also produce
+an installation-specific Warning. In host scans, when one cause stops more
+installations than the per-cause limit, the warnings collapse into a single
+finding that names the cause, the total and a sample, so a host-wide fault cannot spend the whole
+`alerts.max_per_hour` budget. The limit applies across accounts for each kind of
+verification and cause. Account scans keep installation-specific warnings.
+A summary has no installation path and names an account only when all affected
+installations share it. These findings are separate from queue health:
+a command that completed with a refusal did not lose queue work. Existing queue
+loss accounting remains responsible for interrupted or missing command work.
+
 ### Protection queue health
 
 `status.queue_health.v1` advertises the `queues` map on status responses.

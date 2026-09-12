@@ -207,7 +207,7 @@ func pluginCacheFresh(db *store.DB, cfg *config.Config) bool {
 // known-vulnerable detectors. The checks run concurrently, so list order in
 // the runner cannot establish the inventory dependency. Waiters reuse the
 // leader's failed result as well, avoiding a duplicate walk in the same scan.
-func ensurePluginCacheFresh(ctx context.Context, cfg *config.Config, db *store.DB) bool {
+func ensurePluginCacheFreshShared(ctx context.Context, cfg *config.Config, db *store.DB) bool {
 	if pluginCacheFresh(db, cfg) {
 		return true
 	}
@@ -381,6 +381,12 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 	}
 	wpConfigs := findAllWPInstalls(ctx)
 	discoveryIncomplete := checkMarkedIncomplete(ctx, "vulnerable_plugins")
+	coverage := newWPVerificationBatch(ctx, db, "plugins", "wp_plugin_inventory", wpConfigs)
+	defer func() {
+		if err := coverage.finish(ctx, !discoveryIncomplete); err != nil {
+			fmt.Fprintln(os.Stderr, "plugincheck: could not save verification history")
+		}
+	}()
 	if ctx.Err() != nil {
 		return
 	}
@@ -445,6 +451,7 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 							stop = true
 							return
 						}
+						coverage.record(wpPath, wpVerificationFailure(err, nil))
 						mu.Lock()
 						switch {
 						case errors.Is(err, context.DeadlineExceeded):
@@ -470,7 +477,9 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 					}
 					mu.Unlock()
 
+					coverage.record(wpPath, store.WPVerificationResult{State: "verified"})
 					if err := db.SetSitePlugins(wpPath, sitePlugins); err != nil {
+						coverage.record(wpPath, store.WPVerificationResult{State: "unverified", Reason: "CSM could not save the plugin inventory"})
 						work.fail()
 						fmt.Fprintf(os.Stderr, "plugincheck: store failed for %s: %v\n", wpPath, err)
 						if cleanupErr := db.DeleteSitePlugins(wpPath); cleanupErr != nil {
@@ -706,7 +715,7 @@ func inventoryWPSiteWithDomain(ctx context.Context, wpConfig string, includeDoma
 		}
 	}
 	if err != nil {
-		return store.SitePlugins{}, err
+		return store.SitePlugins{}, &wpInventoryError{err: err, result: wpVerificationFailure(err, out)}
 	}
 
 	var entries []wpCLIPluginEntry

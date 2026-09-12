@@ -270,32 +270,6 @@ erase history.
 
 ---
 
-## WordPress installs nobody can verify are invisible
-
-**Status:** open. Confirmed in `internal/checks/web.go` and
-`internal/checks/plugincheck.go`.
-
-When wp-cli runs and exits with an error, the core-integrity check and the
-plugin inventory now treat that installation as checked: the command answered,
-so the queue counts no lost work. That is right for a directory that is not a
-WordPress installation, and wrong for a tree that fails every cycle for a
-reason the operator could fix -- a fatal in wp-config.php, a checksum service
-that is unreachable, a broken wp-cli. Nothing else reports those installs, so
-an account can go months without a single core-integrity check and the only
-trace is a line on stderr.
-
-Before this change the queue counted each one as lost work on every cycle,
-which alerted constantly and named no install. Neither state tells the operator
-which sites are unverified.
-
-**Acceptance:** a finding names the installation and the reason the last check
-could not complete, after the condition persists across cycles rather than on
-the first failure; the finding clears when a check succeeds; queue health keeps
-counting only work it actually lost. A count of unverified installs belongs in
-status alongside the verified ones.
-
-**Size:** hours, plus a decision on the persistence threshold.
-
 # Priority 2 -- detection precision and response safety
 
 A false positive here is not cosmetic. Findings drive automatic quarantine and

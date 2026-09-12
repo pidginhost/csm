@@ -762,6 +762,7 @@ func printStatusHuman(s control.StatusResult) {
 			fmt.Printf("mode:             %s\n", s.Snapshot.Mode)
 		}
 		printAutomationStatusHuman(s.Snapshot.Automation)
+		printWPVerificationHuman(s.Snapshot.WordPressVerification)
 	}
 }
 

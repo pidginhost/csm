@@ -24,6 +24,7 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 	}}
 	s := &Server{cfg: capsTestCfg(), startTime: now.Add(-time.Hour), version: "test"}
 	s.SetHealthProvider(statusFakeProvider{
+		wordpress:            map[string]health.WPVerificationCounts{"core": {Verified: 3, Unverified: 2, LastAttempt: now}},
 		queues:               queues,
 		bpfEnforcementActive: true,
 		latestScan:           now.Add(-10 * time.Minute),
@@ -75,6 +76,9 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 	}
 	if !reflect.DeepEqual(snapshot.Queues, queues) {
 		t.Fatalf("queue evidence changed in API response: got %+v want %+v", snapshot.Queues, queues)
+	}
+	if got := snapshot.WordPressVerification["core"]; got.Verified != 3 || got.Unverified != 2 || !got.LastAttempt.Equal(now) {
+		t.Fatalf("WordPress coverage changed in API response: %+v", got)
 	}
 	automation, ok := raw["automation"].(map[string]any)
 	if !ok {

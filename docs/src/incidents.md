@@ -825,7 +825,9 @@ Attribution gaps:
 | `whm_unauth_scripts_realtime` | ignored | attacker-side |  |
 | `world_writable_php` | ignored | posture |  |
 | `wp_core_integrity` | security event |  |  |
+| `wp_core_unverified` | ignored | self-health |  |
 | `wp_login_bruteforce` | ignored | attacker-side |  |
+| `wp_plugin_inventory_unverified` | ignored | self-health |  |
 | `wp_user_enumeration` | ignored | attacker-side |  |
 | `xmlrpc_abuse` | ignored | attacker-side |  |
 | `yara_forge_rollback` | ignored | self-health |  |

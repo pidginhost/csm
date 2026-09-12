@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // wpInstall is one discovered WordPress installation.
@@ -84,6 +85,8 @@ type wpInstallCacheKey struct{}
 // WordPress consumers run per cycle and each used to walk every account home
 // for itself.
 type wpInstallCache struct {
+	inventory wpInventoryCycle
+	started   time.Time
 	mu        sync.Mutex
 	byAccount map[string]wpDiscovery
 }
@@ -98,6 +101,7 @@ func withWPInstallCache(ctx context.Context) context.Context {
 	}
 	return context.WithValue(ctx, wpInstallCacheKey{}, &wpInstallCache{
 		byAccount: make(map[string]wpDiscovery),
+		started:   time.Now(),
 	})
 }
 

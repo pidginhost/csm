@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 const wpChecksumWorkers = 5 // concurrent wp core verify-checksums
@@ -456,8 +457,21 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 // Installations that pass verification have their core files cached in
 // GlobalCMSCache so the real-time scanner can skip signature matches
 // on known-clean CMS files.
-func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findings []alert.Finding) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if incompleteCollectorFrom(ctx) == nil {
+		ctx, _ = withIncompleteCheckCollector(ctx)
+	}
 	wpConfigs := wpCoreScanRoots(ctx)
+	coverage := newWPVerificationBatch(ctx, store.Global(), "core", logicalOwnerWPCoreVerification, wpConfigs)
+	defer func() {
+		err := coverage.finish(ctx, !checkMarkedIncomplete(ctx, "wp_core"))
+		if _, disabled := disabledLogicalOwners(cfg)[logicalOwnerWPCoreVerification]; !disabled {
+			findings = append(findings, wpVerificationFindings(ctx, coverage.db, "core", logicalOwnerWPCoreVerification, err)...)
+		}
+	}()
 	if len(wpConfigs) == 0 {
 		return nil
 	}
@@ -465,7 +479,6 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 	cache := GlobalCMSCache()
 
 	var mu sync.Mutex
-	var findings []alert.Finding
 	var wg sync.WaitGroup
 
 	batch := wpCoreBatches.begin(len(wpConfigs), wpChecksumWorkers)
@@ -498,11 +511,13 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 					}
 
 					if err == nil {
+						coverage.record(wpPath, store.WPVerificationResult{State: "verified"})
 						// Verification passed - cache all core files
 						cacheWPCoreFiles(cache, wpPath)
 						return
 					}
 
+					coverage.record(wpPath, wpVerificationFailure(err, out))
 					// Partial integrity output cannot complete a command killed by a signal.
 					var commandExit *exec.ExitError
 					if errors.As(err, &commandExit) && commandExit.ExitCode() < 0 {
@@ -547,6 +562,9 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 						mu.Lock()
 						findings = append(findings, collapsed)
 						mu.Unlock()
+					}
+					if wpCoreVerificationCompleted(err, out) {
+						coverage.record(wpPath, store.WPVerificationResult{State: "modified"})
 					}
 					// wp-cli that ran and refused this tree answered the check.
 					if !reported && !commandRefused(err) {
