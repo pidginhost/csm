@@ -46,9 +46,9 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, meta
 	// rejection above, this closes the symlink-swap variant.
 	// #nosec G304 -- path is the quarantine subject; O_NOFOLLOW plus
 	// fd identity verification below fail closed on symlink and inode swaps.
-	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return fmt.Errorf("quarantine: open %s: %w", path, err)
+		return fmt.Errorf("quarantine: open %s: %w", path, fileResponseSourceError(err))
 	}
 	defer fd.Close()
 
@@ -60,14 +60,14 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, meta
 		return fmt.Errorf("quarantine: fstat %s: %w", path, err)
 	}
 	if !sameFileIdentity(cur, originalInfo) {
-		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU)", path)
+		return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU)", path))
 	}
 	// Defence against inode reuse: on busy tmpfs / ext4 mounts the kernel
 	// can hand out the freed inode to whatever the attacker wrote next.
 	// A matching inode is necessary but not sufficient; also require the
 	// content shape (size + mtime) to match what the detector recorded.
 	if !sameContentShape(cur, originalInfo) {
-		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path)
+		return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path))
 	}
 	// Refuse to quarantine a non-regular file (block, char, socket,
 	// FIFO). The detector only flags regular files, so a non-regular

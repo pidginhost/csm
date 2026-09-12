@@ -143,115 +143,85 @@ func recordKillAction(f *alert.Finding, pid, exe string, err error) {
 
 // AutoQuarantineFiles moves malicious files to quarantine directory.
 // Preserves original path and metadata in a sidecar .meta file.
+// Marks evaluated input findings so alert delivery cannot repeat a response.
 func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.Finding {
-	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles {
+	if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles || cfg.ObserveMode() {
 		return nil
 	}
-
 	var actions []alert.Finding
-
-	for _, f := range findings {
-		// Only quarantine specific file-based findings.
-		if !autoQuarantineChecks[f.Check] {
+	seen := make(map[string]bool)
+	for i, f := range findings {
+		if f.AutoFileResponseEvaluated || !autoQuarantineChecks[f.Check] || f.Severity != alert.Critical {
 			continue
 		}
-		isRealtimeMatch := f.Check == "signature_match_realtime"
-		if f.Severity != alert.Critical {
-			continue
-		}
-
-		// Extract file path - prefer structured field, fallback to message parsing
 		path := f.FilePath
 		if path == "" {
-			path = extractFilePath(f.Message) // fallback for legacy findings
+			path = extractFilePath(f.Message)
 		}
 		if path == "" {
 			continue
 		}
-
-		// Realtime signature matches require additional validation to avoid
-		// quarantining false positives (e.g. legitimate PHPMailer matching
-		// "webshell_marijuana", or zip libraries matching hex patterns).
-		// Only quarantine when the file is genuinely obfuscated malware.
-		if isRealtimeMatch && !isHighConfidenceRealtimeMatch(f, path, nil) {
+		findings[i].AutoFileResponseEvaluated = true
+		key := filepath.Clean(path)
+		if seen[key] {
 			continue
 		}
-
-		// Verify file or directory exists and reject symlinks
+		realtime := f.Check == "signature_match_realtime"
+		if realtime && !isHighConfidenceRealtimeMatch(f, path, nil) {
+			continue
+		}
 		info, err := osFS.Lstat(path)
-		if err != nil {
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-
-		// Realtime high-confidence matches are fully obfuscated malware -
-		// there is no legitimate code to preserve, skip cleaning and go
-		// straight to quarantine.
-		if isRealtimeMatch {
-			goto quarantine
-		}
-
-		// For WP core/plugin/theme files: clean surgically instead of quarantining.
-		// This preserves site functionality while removing the injected code.
-		if !info.IsDir() && ShouldCleanInsteadOfQuarantine(path) {
-			result := CleanInfectedFile(path)
-			switch {
-			case result.Cleaned:
-				actions = append(actions, alert.Finding{
-					Severity:  alert.Critical,
-					Check:     "auto_response",
-					Message:   fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path),
-					Details:   fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")),
-					Timestamp: time.Now(),
-				})
-				continue // successfully cleaned, skip quarantine
-			case result.Error != "":
-				// Cleaning failed - fall through to quarantine
-				actions = append(actions, alert.Finding{
-					Severity:  alert.Warning,
-					Check:     "auto_response",
-					Message:   fmt.Sprintf("AUTO-CLEAN failed for %s, quarantining instead", path),
-					Details:   result.Error,
-					Timestamp: time.Now(),
-				})
-				// Don't continue - fall through to quarantine below
-			default:
-				continue // no changes needed
+		// Multiple checks can report one file. Do not re-clean a repaired
+		// target or charge repeated failures for the same batch of evidence.
+		seen[key] = true
+		paused := runAutoFileResponse(cfg, path, info, func() error {
+			// Cleaning is one response attempt. A failed cleaner leaves the file
+			// and any backup for review; it must not escalate to removing the file.
+			if !realtime && ShouldCleanInsteadOfQuarantine(path) {
+				result := cleanInfectedFileIdentified(path, info)
+				if result.Error != "" {
+					outcome := "failed"
+					if result.Refused {
+						outcome = "refused"
+					}
+					actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
+					// Safety refusals consume capacity without charging a failure.
+					if result.Refused {
+						return nil
+					}
+					return errors.New(result.Error)
+				}
+				if result.Cleaned {
+					actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
+				}
+				return nil
 			}
-		}
-
-	quarantine:
-		// Build quarantine destination preserving directory structure
-		qPath := newQuarantinePath(quarantineDir, path)
-		var quarantineWarning string
-
-		meta := quarantineMetadata(path, info, f.Message)
-		meta.FindingID = alert.FindingID(f)
-		if err := quarantineTarget(path, qPath, info, meta); err != nil {
-			var completed bool
-			quarantineWarning, completed = completedQuarantineWarning(err)
-			if !completed {
-				fmt.Fprintf(os.Stderr, "autoresponse: refused quarantine of %s: %v\n", path, err)
-				continue
+			qPath := newQuarantinePath(quarantineDir, path)
+			meta := quarantineMetadata(path, info, f.Message)
+			meta.FindingID = alert.FindingID(f)
+			err := quarantineTarget(path, qPath, info, meta)
+			warning := ""
+			if err != nil {
+				var completed bool
+				warning, completed = completedQuarantineWarning(err)
+				if !completed {
+					return err
+				}
 			}
-			fmt.Fprintf(os.Stderr, "autoresponse: %s\n", quarantineWarning)
-		}
-
-		details := fmt.Sprintf("Quarantined to: %s\nOriginal finding: %s", qPath, f.Message)
-		if quarantineWarning != "" {
-			details += "\nWarning: " + quarantineWarning
-		}
-		actions = append(actions, alert.Finding{
-			Severity:  alert.Critical,
-			Check:     "auto_response",
-			Message:   fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path),
-			Timestamp: time.Now(),
-			Details:   details,
+			details := fmt.Sprintf("Quarantined to: %s\nOriginal finding: %s", qPath, f.Message)
+			if warning != "" {
+				details += "\nWarning: " + warning
+			}
+			actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path), Timestamp: time.Now(), Details: details})
+			return nil
 		})
+		if paused != nil {
+			actions = append(actions, *paused)
+		}
 	}
-
 	return actions
 }
 
@@ -668,17 +638,30 @@ func isHexDigit(b byte) bool {
 // operator in monitor mode (auto-response off, or quarantine_files off) gets
 // the alert without having files moved out from under them.
 func InlineQuarantineGated(cfg *config.Config, f alert.Finding, path string, data []byte) (string, bool) {
-	return InlineQuarantineGatedIdentified(cfg, f, path, data, nil)
+	path, ok, _ := InlineQuarantineGatedIdentified(cfg, &f, path, data, nil)
+	return path, ok
 }
 
 // InlineQuarantineGatedIdentified applies the auto-response policy gate and
 // then quarantines the exact file the caller scanned. See
 // InlineQuarantineIdentified for why the identity matters.
-func InlineQuarantineGatedIdentified(cfg *config.Config, f alert.Finding, path string, data []byte, scanned os.FileInfo) (string, bool) {
-	if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles {
-		return "", false
+// Marks the finding evaluated only once it reaches the shared budget gate.
+func InlineQuarantineGatedIdentified(cfg *config.Config, f *alert.Finding, path string, data []byte, scanned os.FileInfo) (string, bool, *alert.Finding) {
+	if f == nil || cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles || cfg.ObserveMode() {
+		return "", false, nil
 	}
-	return InlineQuarantineIdentified(f, path, data, scanned)
+	info, ok := inlineQuarantineInfo(*f, path, data, scanned)
+	if !ok {
+		return "", false, nil
+	}
+	var qPath string
+	f.AutoFileResponseEvaluated = true
+	paused := runAutoFileResponse(cfg, path, info, func() error {
+		var err error
+		qPath, err = quarantineInlineTarget(*f, path, info)
+		return err
+	})
+	return qPath, qPath != "", paused
 }
 
 // InlineQuarantine moves a file to quarantine immediately if it passes the
@@ -699,43 +682,43 @@ func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) 
 // malware. A nil identity keeps the older path-based behaviour for callers that
 // began from a path in the first place, such as the batch dispatcher.
 func InlineQuarantineIdentified(f alert.Finding, path string, data []byte, scanned os.FileInfo) (string, bool) {
-	if !isHighConfidenceRealtimeMatch(f, path, data) {
+	info, ok := inlineQuarantineInfo(f, path, data, scanned)
+	if !ok {
 		return "", false
 	}
-
-	// Lstat (not Stat) so a symlink is seen as a symlink and rejected. Stat
-	// follows the link, letting an attacker who swaps the file for a symlink
-	// between detection and the move trick CSM into relocating the target.
-	info, err := osFS.Lstat(path)
+	qPath, err := quarantineInlineTarget(f, path, info)
 	if err != nil {
-		return "", false
+		csmlog.Warn("inline quarantine refused", "path", path, "err", err)
 	}
-	if scanned != nil {
-		// What is on disk now must be what was scanned. Without this the
-		// window between reading the event descriptor and this Lstat is
-		// unguarded, and the quarantine moves the attacker's replacement.
-		if !sameFileIdentity(info, scanned) || !sameContentShape(info, scanned) {
-			return "", false
-		}
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", false
-	}
+	return qPath, err == nil
+}
 
+func inlineQuarantineInfo(f alert.Finding, path string, data []byte, scanned os.FileInfo) (os.FileInfo, bool) {
+	if !isHighConfidenceRealtimeMatch(f, path, data) {
+		return nil, false
+	}
+	info, err := osFS.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return nil, false
+	}
+	if scanned != nil && (!sameFileIdentity(info, scanned) || !sameContentShape(info, scanned)) {
+		return nil, false
+	}
+	return info, true
+}
+
+func quarantineInlineTarget(f alert.Finding, path string, info os.FileInfo) (string, error) {
 	qPath := newQuarantinePath(quarantineDir, path)
-
 	meta := quarantineMetadata(path, info, "Inline quarantine: high-confidence realtime signature match")
 	meta.FindingID = alert.FindingID(f)
 	if err := quarantineTarget(path, qPath, info, meta); err != nil {
 		if warning, completed := completedQuarantineWarning(err); completed {
-			fmt.Fprintf(os.Stderr, "autoresponse: %s\n", warning)
+			csmlog.Warn("inline quarantine completed with warning", "warning", warning)
 		} else {
-			fmt.Fprintf(os.Stderr, "autoresponse: refused inline quarantine of %s: %v\n", path, err)
-			return "", false
+			return "", err
 		}
 	}
-
-	return qPath, true
+	return qPath, nil
 }
 
 // extractCategory parses "Category: <value>" from a finding's Details field.
@@ -758,15 +741,16 @@ func extractCategory(details string) string {
 // them to /opt/csm/quarantine breaks the site). Each invocation
 // backs up the original to /opt/csm/quarantine/pre_clean/<ts>_*
 // inside CleanHtaccessFile before atomic-replacing.
+// Marks evaluated input findings so alert delivery cannot repeat a response.
 func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Finding {
-	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.CleanHtaccess {
+	if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.CleanHtaccess || cfg.ObserveMode() {
 		return nil
 	}
 
 	var actions []alert.Finding
 	seen := make(map[string]struct{})
-	for _, f := range findings {
-		if !isHtaccessHardenedFinding(f.Check) {
+	for i, f := range findings {
+		if f.AutoFileResponseEvaluated || !isHtaccessHardenedFinding(f.Check) {
 			continue
 		}
 		path := f.FilePath
@@ -776,31 +760,46 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		if path == "" {
 			continue
 		}
+		findings[i].AutoFileResponseEvaluated = true
 		// One Clean per file per autoresponse pass: multiple
 		// detector findings on the same file converge on a single
 		// cleaning call (CleanHtaccessFile re-runs every detector).
-		if _, ok := seen[path]; ok {
+		key := filepath.Clean(path)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[path] = struct{}{}
+		seen[key] = struct{}{}
 
-		result := CleanHtaccessFile(path)
-		if result.Success {
-			actions = append(actions, alert.Finding{
-				Severity:  alert.Critical,
-				Check:     "auto_response",
-				Message:   fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path),
-				Details:   result.Description,
-				Timestamp: time.Now(),
-			})
-		} else if result.Error != "" && !strings.Contains(result.Error, "no malicious directives") {
-			actions = append(actions, alert.Finding{
-				Severity:  alert.Warning,
-				Check:     "auto_response",
-				Message:   fmt.Sprintf("AUTO-CLEAN failed: %s", path),
-				Details:   result.Error,
-				Timestamp: time.Now(),
-			})
+		info, err := osFS.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		paused := runAutoFileResponse(cfg, path, info, func() error {
+			result := cleanHtaccessFileIdentified(path, info)
+			if result.Success {
+				actions = append(actions, alert.Finding{
+					Severity:  alert.Critical,
+					Check:     "auto_response",
+					Message:   fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path),
+					Details:   result.Description,
+					Timestamp: time.Now(),
+				})
+			} else if result.Error != "" && !result.Refused {
+				actions = append(actions, alert.Finding{
+					Severity:  alert.Warning,
+					Check:     "auto_response",
+					Message:   fmt.Sprintf("AUTO-CLEAN failed: %s", path),
+					Details:   result.Error,
+					Timestamp: time.Now(),
+				})
+			}
+			if result.Error != "" && !result.Refused {
+				return errors.New(result.Error)
+			}
+			return nil
+		})
+		if paused != nil {
+			actions = append(actions, *paused)
 		}
 	}
 	return actions

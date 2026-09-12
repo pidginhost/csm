@@ -70,6 +70,8 @@ func recordQuarantineAction(path, qPath string, metadata QuarantineMeta, before 
 		rec.Error = err.Error()
 		if _, completed := completedQuarantineWarning(err); completed {
 			rec.Result = actionlog.Applied
+		} else if errors.Is(err, errFileResponseRefused) {
+			rec.Result = actionlog.Refused
 		}
 	}
 	actionlog.Write(rec)

@@ -341,6 +341,9 @@ auto_response:
   enabled: false
   kill_processes: false                 # kill malicious processes
   quarantine_files: false               # move malware to quarantine
+  max_file_actions_per_hour: 50         # shared quarantine and file-cleaning attempt budget
+  max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
+  max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: false                      # block attacker IPs via firewall
   block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default
   http_asn_crawl_tempban: "24h"         # Critical ASN-crawl subnet ban duration

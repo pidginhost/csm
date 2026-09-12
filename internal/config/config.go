@@ -33,6 +33,13 @@ const (
 	// DefaultMaxBlocksPerHour is the safe hourly cap used when the operator
 	// leaves auto_response.max_blocks_per_hour unset or sets it to 0.
 	DefaultMaxBlocksPerHour = 50
+	// File response limits share one rolling window across automatic cleaners
+	// and quarantine. Zero selects these defaults, never an unlimited budget.
+	DefaultMaxFileActionsPerHour           = 50
+	DefaultMaxFileActionsPerAccountPerHour = 10
+	DefaultMaxFileActionFailuresPerHour    = 3
+	// MaxFileResponseLimit bounds retained hourly safety reservations.
+	MaxFileResponseLimit = 10000
 	// DefaultNetBlockThreshold is how many blocked addresses in one IPv4 /24
 	// or IPv6 /64 escalate to a subnet block when the key is unset.
 	DefaultNetBlockThreshold = 3
@@ -701,11 +708,14 @@ type Config struct {
 	} `yaml:"suppressions" hotreload:"safe"`
 
 	AutoResponse struct {
-		Enabled         bool   `yaml:"enabled"`
-		KillProcesses   bool   `yaml:"kill_processes"`
-		QuarantineFiles bool   `yaml:"quarantine_files"`
-		BlockIPs        bool   `yaml:"block_ips"`
-		BlockExpiry     string `yaml:"block_expiry"` // e.g. "24h", "12h"
+		Enabled                         bool   `yaml:"enabled"`
+		KillProcesses                   bool   `yaml:"kill_processes"`
+		QuarantineFiles                 bool   `yaml:"quarantine_files"`
+		MaxFileActionsPerHour           int    `yaml:"max_file_actions_per_hour"`
+		MaxFileActionsPerAccountPerHour int    `yaml:"max_file_actions_per_account_per_hour"`
+		MaxFileActionFailuresPerHour    int    `yaml:"max_file_action_failures_per_hour"`
+		BlockIPs                        bool   `yaml:"block_ips"`
+		BlockExpiry                     string `yaml:"block_expiry"` // e.g. "24h", "12h"
 		// HTTPASNCrawlTempban is the ban duration for http_asn_crawl findings
 		// when auto-response is enabled. Default "24h".
 		HTTPASNCrawlTempban string `yaml:"http_asn_crawl_tempban"`
@@ -1928,6 +1938,15 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute == 0 {
 		cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 60
+	}
+	if cfg.AutoResponse.MaxFileActionsPerHour == 0 {
+		cfg.AutoResponse.MaxFileActionsPerHour = DefaultMaxFileActionsPerHour
+	}
+	if cfg.AutoResponse.MaxFileActionsPerAccountPerHour == 0 {
+		cfg.AutoResponse.MaxFileActionsPerAccountPerHour = DefaultMaxFileActionsPerAccountPerHour
+	}
+	if cfg.AutoResponse.MaxFileActionFailuresPerHour == 0 {
+		cfg.AutoResponse.MaxFileActionFailuresPerHour = DefaultMaxFileActionFailuresPerHour
 	}
 	if cfg.AutoResponse.MaxBlocksPerHour == 0 {
 		cfg.AutoResponse.MaxBlocksPerHour = DefaultMaxBlocksPerHour

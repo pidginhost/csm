@@ -280,6 +280,7 @@
     "checks": [
       "auto_block",
       "auto_response",
+      "auto_response_paused",
       "challenge_route",
       "outdated_plugins",
       "reputation_quota_exhausted",

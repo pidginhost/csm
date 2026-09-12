@@ -44,7 +44,7 @@ func TestQuarantineMetadataFailureKeepsOriginal(t *testing.T) {
 				return oldCopy(src, destination, metadata)
 			}
 			if automatic {
-				cfg := &config.Config{}
+				cfg := &config.Config{StatePath: t.TempDir()}
 				cfg.AutoResponse.Enabled = true
 				cfg.AutoResponse.QuarantineFiles = true
 				actions := AutoQuarantineFiles(cfg, []alert.Finding{{Check: "backdoor_binary", Severity: alert.Critical, FilePath: source, Message: "detected test content"}})

@@ -94,6 +94,11 @@ type Finding struct {
 	// current scan could not examine its path. It is process-local provenance for
 	// the atomic latest-state merge, not part of the public finding contract.
 	ScanCarryForward bool `json:"-"`
+	// AutoFileResponseEvaluated records process-local delivery provenance.
+	// A detector or scan already considered automatic file remediation, so
+	// the alert dispatcher must not retry it, including a refused attempt.
+	// New detections and findings read from storage get a fresh evaluation.
+	AutoFileResponseEvaluated bool `json:"-"`
 
 	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
 	// zero values mean "this finding does not carry that dimension".

@@ -43,6 +43,67 @@ Manual kill-and-quarantine reports a termination failure even if the file was
 successfully quarantined; inspect both the process and recovery entry before
 retrying. Manual request cancellation is checked before sending a signal.
 
+### Automatic file response limits
+
+Realtime quarantine, scheduled quarantine, PHP cleaning and automatic `.htaccess`
+cleaning share one rolling-hour budget. `auto_response.max_file_actions_per_hour`
+caps host-wide attempts (default 50), `max_file_actions_per_account_per_hour` caps
+attempts for one account (default 10), and `max_file_action_failures_per_hour`
+pauses these responses after repeated failures (default 3). Zero or an omitted
+key uses the default; negative values and values above 10000 are rejected.
+
+Each attempt is reserved before touching the file. Successful, failed and
+interrupted attempts all consume capacity. Reservations live in
+`<state_path>/file-response.json` and survive configuration reloads and daemon
+restarts. Entries expire one hour after admission. A backwards clock adjustment
+keeps future-dated reservations charged until their window has passed.
+
+Account budgets come from the target's account-home path, not finding text.
+Paths outside recognized account homes share an unknown-account budget. One
+account reaching its limit does not stop other accounts unless the host or
+failure limit is also reached. Automatic directory and special-file quarantine
+is refused because one directory move can affect an unbounded number of files.
+Manual remediation remains available after reviewing the original detection.
+
+A busy safety lock refuses that attempt without waiting behind another file
+operation. Unreadable, incomplete or unwritable safety state also refuses
+mutations. The original detections remain visible and a deduplicated
+`auto_response_paused` warning reports the cause. Account-limit notices are
+grouped at host scope so a fault across many accounts cannot flood the alert
+budget. A pause does not create a retry job; new eligible detections can act
+after capacity returns. Review outstanding findings and recovery evidence before
+manual remediation. Do not delete safety state to clear a pause; repair storage
+faults and let reservations expire.
+
+Duplicate detections of one path share a single response attempt in each batch.
+Within one daemon run, alert delivery does not repeat a file response already
+evaluated by a scan or admitted to the realtime safety gate, including budget
+refusals. A realtime detection rejected using sampled content remains eligible
+for full-file validation during delivery. The original findings still reach
+alerts and history; a new detection can be evaluated again.
+Findings still queued at shutdown retain the existing restart replay behavior:
+the next daemon run evaluates them again under the same persisted limits.
+
+A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
+It no longer escalates to whole-file quarantine. A cleaner that recognizes no
+injection or declines an unsupported target refuses the file instead of failing.
+Sources that change or disappear before mutation are also refusals, including
+socket replacements and parent paths replaced after quarantine copying. These
+attempts still use capacity but do not count toward the failure pause. Read,
+write, backup and durability errors still count as failures. Quarantine and
+cleaners retain their descriptor-based identity checks, and automatic actions
+revalidate the file after saving the reservation. Opening a replacement special
+file cannot block response processing.
+
+Manual full scans leave cleaner refusals for review instead of reporting a
+failed remediation. `csm clean` also distinguishes a refusal from an action
+failure; both return a nonzero exit status when the file was not cleaned.
+
+These limits use the existing `enabled`, `quarantine_files` and `clean_htaccess`
+opt-ins. Observe mode still forbids automatic changes. `dry_run` continues to
+control IP blocking and web-exposed-file virtual patches; it does not preview
+file quarantine or cleaning. Other response families have their own controls.
+
 ### Restoring quarantined files
 
 Regular-file quarantine and pre-clean backups write and sync the private content
@@ -104,6 +165,9 @@ auto_response:
   enabled: true
   kill_processes: true
   quarantine_files: true
+  max_file_actions_per_hour: 50
+  max_file_actions_per_account_per_hour: 10
+  max_file_action_failures_per_hour: 3
   block_ips: true
   block_expiry: "24h"         # positive temp block duration; omitted defaults to 24h
   max_blocks_per_hour: 50     # per-IP blocks per hour; 0/omitted uses default
@@ -276,7 +340,7 @@ receive them.
 - Infrastructure IPs (`infra_ips` in config) are never blocked
 - Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
-- Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a failed remediation, with the captured copy kept as evidence and the replacement left untouched
+- Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
 - CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour)

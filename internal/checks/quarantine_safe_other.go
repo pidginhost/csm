@@ -20,9 +20,9 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, meta
 
 	// #nosec G304 -- path is the quarantine subject; O_NOFOLLOW plus fd
 	// identity verification below fail closed on symlink and inode swaps.
-	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return fmt.Errorf("quarantine: open %s: %w", path, err)
+		return fmt.Errorf("quarantine: open %s: %w", path, fileResponseSourceError(err))
 	}
 	defer func() { _ = fd.Close() }()
 
@@ -31,10 +31,10 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, meta
 		return fmt.Errorf("quarantine: fstat %s: %w", path, err)
 	}
 	if !sameFileIdentity(cur, originalInfo) {
-		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU)", path)
+		return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU)", path))
 	}
 	if !sameContentShape(cur, originalInfo) {
-		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path)
+		return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path))
 	}
 	if !cur.Mode().IsRegular() {
 		return fmt.Errorf("quarantine: refusing non-regular file at %s (mode=%v)", path, cur.Mode())

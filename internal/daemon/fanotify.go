@@ -2119,30 +2119,34 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 			if !suppressed {
 				details := fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
 					m.Category, m.Description, strings.Join(m.Matched, ", "))
-				fm.sendAlertWithPath(sev, "signature_match_realtime",
-					fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
-					details, path, procInfo)
-
-				// Inline quarantine: move high-confidence malware to quarantine
-				// immediately instead of waiting for the 5-second batch dispatcher.
-				// Uses the same 3-gate validation as AutoQuarantineFiles (category +
-				// library exclusion + entropy >= 5.5) to prevent false positives,
-				// and the same auto-response policy gate (enabled + quarantine_files)
-				// so the realtime path never moves files the batch path would not.
+				finding := alert.Finding{
+					Severity:    sev,
+					Check:       "signature_match_realtime",
+					Message:     fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
+					Details:     details,
+					FilePath:    path,
+					ProcessInfo: procInfo,
+				}
+				var qPath string
+				var quarantined bool
+				var paused *alert.Finding
 				if sev == alert.Critical {
-					finding := alert.Finding{
-						Severity: sev,
-						Check:    "signature_match_realtime",
-						Details:  details,
-						FilePath: path,
-					}
-					if qPath, ok := checks.InlineQuarantineGatedIdentified(fm.currentCfg(), finding, path, data, scanned); ok {
-						fm.recordDropperQuarantine(path, qPath)
-						fm.sendAlert(alert.Critical, "auto_response",
-							fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
-							fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
-						return true
-					}
+					// Capture provenance before remediation can remove the source.
+					checks.StampContentFingerprint(&finding)
+					qPath, quarantined, paused = checks.InlineQuarantineGatedIdentified(fm.currentCfg(), &finding, path, data, scanned)
+				}
+				// Publish after the inline decision so delivery sees its budget
+				// provenance. A rejected window can still get full-file validation.
+				fm.sendFileFinding(finding)
+				if paused != nil && !alert.TryEnqueue(fm.alertCh, *paused) {
+					atomic.AddInt64(&fm.droppedAlerts, 1)
+				}
+				if quarantined {
+					fm.recordDropperQuarantine(path, qPath)
+					fm.sendAlert(alert.Critical, "auto_response",
+						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
+						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
+					return true
 				}
 			}
 		}
@@ -2227,18 +2231,21 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 // ProcessInfo fields for structured propagation to auto-response.
 // Applies per-path deduplication to prevent alert storms from rapid writes.
 func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message, details, filePath, processInfo string) {
-	if !fm.shouldAlert(check, filePath) {
-		return
-	}
-	finding := alert.Finding{
+	fm.sendFileFinding(alert.Finding{
 		Severity:    severity,
 		Check:       check,
 		Message:     message,
 		Details:     details,
 		FilePath:    filePath,
 		ProcessInfo: processInfo,
-		Timestamp:   time.Now(),
+	})
+}
+
+func (fm *FileMonitor) sendFileFinding(finding alert.Finding) {
+	if !fm.shouldAlert(finding.Check, finding.FilePath) {
+		return
 	}
+	finding.Timestamp = time.Now()
 	checks.StampContentFingerprint(&finding)
 	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)

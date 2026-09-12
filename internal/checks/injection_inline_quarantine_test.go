@@ -60,7 +60,7 @@ func TestInlineQuarantineGatedEnabledQuarantines(t *testing.T) {
 	}
 	finding := alert.Finding{Check: "yara_match", Details: "Category: dropper\nRule: webshell_generic\n"}
 
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 	qPath, ok := InlineQuarantineGated(cfg, finding, src, payload)
