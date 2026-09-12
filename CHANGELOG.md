@@ -31,9 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Replaced sockets and parent paths no longer pause automatic file response for other accounts. Refused quarantine attempts retain captured evidence and leave replacements untouched.
-
-- Automatic file response retains full-file validation after partial realtime checks and no longer pauses other accounts for safety refusals. Special-file replacements cannot stall response processing.
+- Automatic file response keeps full-file validation after partial realtime checks. Safety refusals, such as a replaced or vanished source, no longer count toward the failure pause, and special-file replacements cannot stall response processing.
 
 - DNS and queue health tests no longer depend on external resolution or unrelated queue events. The roadmap drops an incorrect firewall audit path item, and file response docs clarify restart replay.
 
