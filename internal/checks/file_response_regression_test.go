@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -298,4 +299,22 @@ func TestAutoFileResponseHtaccessOutsideRootsDoesNotTripBreaker(t *testing.T) {
 	AutoCleanHtaccess(cfg, []alert.Finding{f})
 	assertResponseFile(t, f.FilePath, []byte("ErrorDocument 404 https://malware.example/missing\n"))
 	assertOtherAccountCanRespond(t, cfg, homes)
+}
+
+// Refusal is accounting for the automatic breaker. Manual remediation shares
+// these checks, so operators must still see the refusing check's own message
+// on one line, without the classification leaking into it.
+func TestFileResponseRefusalKeepsOperatorMessage(t *testing.T) {
+	_, err := sanitizeFixPath("", nil)
+	if !errors.Is(err, errFileResponseRefused) || err.Error() != "file path is required" {
+		t.Errorf("path refusal = %q, refused=%v", err, errors.Is(err, errFileResponseRefused))
+	}
+	missing := fmt.Errorf("open /home/alice/public_html/x.php: %w", os.ErrNotExist)
+	err = fileResponseSourceError(missing)
+	if !errors.Is(err, errFileResponseRefused) || !errors.Is(err, os.ErrNotExist) || err.Error() != missing.Error() {
+		t.Errorf("source refusal = %q, refused=%v", err, errors.Is(err, errFileResponseRefused))
+	}
+	if err := fileResponseSourceError(os.ErrPermission); errors.Is(err, errFileResponseRefused) {
+		t.Errorf("permission failure classified as refusal: %q", err)
+	}
 }

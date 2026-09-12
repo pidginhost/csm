@@ -31,10 +31,10 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, meta
 		return fmt.Errorf("quarantine: fstat %s: %w", path, err)
 	}
 	if !sameFileIdentity(cur, originalInfo) {
-		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU): %w", path, errFileResponseRefused)
+		return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU)", path))
 	}
 	if !sameContentShape(cur, originalInfo) {
-		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused): %w", path, errFileResponseRefused)
+		return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path))
 	}
 	if !cur.Mode().IsRegular() {
 		return fmt.Errorf("quarantine: refusing non-regular file at %s (mode=%v)", path, cur.Mode())

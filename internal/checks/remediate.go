@@ -472,7 +472,7 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 		return "", nil, fmt.Errorf("file not found: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return "", nil, fmt.Errorf("symlinked paths are not eligible for automated remediation: %s: %w", cleanPath, errFileResponseRefused)
+		return "", nil, refuseFileResponse(fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", cleanPath))
 	}
 
 	resolved, err := filepath.EvalSymlinks(cleanPath)
@@ -484,7 +484,7 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 		return "", nil, err
 	}
 	if accountRoot := homeAccountRoot(cleanPath); accountRoot != "" && !isPathWithinOrEqual(resolved, accountRoot) {
-		return "", nil, fmt.Errorf("resolved path escapes account boundary: %s: %w", resolved, errFileResponseRefused)
+		return "", nil, refuseFileResponse(fmt.Errorf("resolved path escapes account boundary: %s", resolved))
 	}
 
 	resolvedInfo, err := osFS.Lstat(resolved)
@@ -492,7 +492,7 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 		return "", nil, fmt.Errorf("file not found: %w", err)
 	}
 	if resolvedInfo.Mode()&os.ModeSymlink != 0 {
-		return "", nil, fmt.Errorf("symlinked paths are not eligible for automated remediation: %s: %w", resolved, errFileResponseRefused)
+		return "", nil, refuseFileResponse(fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", resolved))
 	}
 
 	return resolved, resolvedInfo, nil
@@ -500,18 +500,18 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 
 func sanitizeFixPath(path string, allowedRoots []string) (string, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("file path is required: %w", errFileResponseRefused)
+		return "", refuseFileResponse(errors.New("file path is required"))
 	}
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("file path must be absolute: %w", errFileResponseRefused)
+		return "", refuseFileResponse(errors.New("file path must be absolute"))
 	}
 	for _, root := range allowedRoots {
 		if fixTargetDepthBelow(path, root) >= fixTargetMinDepth(root) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("file path is outside the allowed remediation roots: %s: %w", path, errFileResponseRefused)
+	return "", refuseFileResponse(fmt.Errorf("file path is outside the allowed remediation roots: %s", path))
 }
 
 // fixTargetDepthBelow returns how many path components path lies below

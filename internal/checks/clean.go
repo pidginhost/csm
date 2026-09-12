@@ -212,7 +212,7 @@ func openCleanTarget(path string) (*cleanTarget, error) {
 		return nil, fmt.Errorf("stat parent directory: %w", err)
 	}
 	if parentInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing symlinked parent directory: %w", errFileResponseRefused)
+		return nil, refuseFileResponse(errors.New("refusing symlinked parent directory"))
 	}
 
 	// Pin the immediate parent. A swap of that directory to a symlink
@@ -249,7 +249,7 @@ func openCleanTarget(path string) (*cleanTarget, error) {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("refusing non-regular file (mode=%v): %w", info.Mode(), errFileResponseRefused)
+		return nil, refuseFileResponse(fmt.Errorf("refusing non-regular file (mode=%v)", info.Mode()))
 	}
 
 	target := &cleanTarget{
@@ -276,7 +276,7 @@ func verifyCleanParentStillPinned(dirFD int, want os.FileInfo) error {
 		return fmt.Errorf("stat opened parent directory: %w", err)
 	}
 	if !sameUnixStatIdentity(want, got) {
-		return fmt.Errorf("parent directory changed during cleaning: %w", errFileResponseRefused)
+		return refuseFileResponse(errors.New("parent directory changed during cleaning"))
 	}
 	return nil
 }
@@ -385,10 +385,10 @@ func verifyCleanTargetUnchanged(target *cleanTarget) error {
 		return fmt.Errorf("stat target before rename: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("refusing non-regular target before rename (mode=%v): %w", info.Mode(), errFileResponseRefused)
+		return refuseFileResponse(fmt.Errorf("refusing non-regular target before rename (mode=%v)", info.Mode()))
 	}
 	if !sameFileIdentity(info, target.Info) || !sameCleanContentShape(info, target.Info) {
-		return fmt.Errorf("file changed during cleaning: %w", errFileResponseRefused)
+		return refuseFileResponse(errors.New("file changed during cleaning"))
 	}
 	return nil
 }

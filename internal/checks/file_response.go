@@ -39,9 +39,22 @@ var writeFileResponseState = atomicio.AtomicWriteJSON
 // but does not indicate a failed response mechanism.
 var errFileResponseRefused = errors.New("file response refused")
 
+// fileResponseRefusal classifies an error as a refusal for errors.Is while
+// keeping the refusing check's message. Manual remediation shares these
+// checks, so the breaker's accounting must not show up in operator text.
+type fileResponseRefusal struct{ err error }
+
+func (r fileResponseRefusal) Error() string { return r.err.Error() }
+
+func (r fileResponseRefusal) Unwrap() error { return r.err }
+
+func (fileResponseRefusal) Is(target error) bool { return target == errFileResponseRefused }
+
+func refuseFileResponse(err error) error { return fileResponseRefusal{err: err} }
+
 func fileResponseSourceError(err error) error {
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
-		return errors.Join(errFileResponseRefused, err)
+		return refuseFileResponse(err)
 	}
 	return err
 }
@@ -121,7 +134,7 @@ func runAutoFileResponse(cfg *config.Config, path string, info os.FileInfo, appl
 	current, err := os.Lstat(path)
 	err = fileResponseSourceError(err)
 	if err == nil && (!sameFileIdentity(info, current) || !sameContentShape(info, current)) {
-		err = errFileResponseRefused
+		err = refuseFileResponse(errors.New("file changed before automatic response"))
 	}
 	if err == nil {
 		err = apply()

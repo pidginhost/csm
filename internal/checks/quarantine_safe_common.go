@@ -73,7 +73,7 @@ func removeQuarantinedSource(path, qPath string, original os.FileInfo) error {
 		return fmt.Errorf("quarantine: stat source before unlink %s; recovery copy retained at %s: %w", path, qPath, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !sameFileIdentity(info, original) {
-		return fmt.Errorf("quarantine: source at %s was replaced before unlink; the detected content is kept at %s and the replacement was left in place: %w", path, qPath, errFileResponseRefused)
+		return refuseFileResponse(fmt.Errorf("quarantine: source at %s was replaced before unlink; the detected content is kept at %s and the replacement was left in place", path, qPath))
 	}
 	if !sameContentShape(info, original) {
 		// A copy made while the source changed may mix old and new bytes.
@@ -88,7 +88,7 @@ func removeQuarantinedSource(path, qPath string, original os.FileInfo) error {
 		if err := quarantinefs.SyncDir(filepath.Dir(qPath)); err != nil {
 			return errors.Join(cause, err)
 		}
-		return fmt.Errorf("%v: %w", cause, errFileResponseRefused)
+		return refuseFileResponse(cause)
 	}
 	if err := quarantineUnlinkSource(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("quarantine: unlink source %s; recovery copy retained at %s: %w", path, qPath, err)

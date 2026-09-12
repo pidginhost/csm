@@ -60,14 +60,14 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, meta
 		return fmt.Errorf("quarantine: fstat %s: %w", path, err)
 	}
 	if !sameFileIdentity(cur, originalInfo) {
-		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU): %w", path, errFileResponseRefused)
+		return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU)", path))
 	}
 	// Defence against inode reuse: on busy tmpfs / ext4 mounts the kernel
 	// can hand out the freed inode to whatever the attacker wrote next.
 	// A matching inode is necessary but not sufficient; also require the
 	// content shape (size + mtime) to match what the detector recorded.
 	if !sameContentShape(cur, originalInfo) {
-		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused): %w", path, errFileResponseRefused)
+		return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path))
 	}
 	// Refuse to quarantine a non-regular file (block, char, socket,
 	// FIFO). The detector only flags regular files, so a non-regular
