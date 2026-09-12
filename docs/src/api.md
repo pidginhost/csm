@@ -110,10 +110,13 @@ An absent group means there is no retained installation history, not proof of
 coverage. An `error` field reports unreadable history instead of clean counts.
 
 The first failed attempt increases `unverified`; repeated failures also produce
-an installation-specific Warning. When one cause stops more installations than
-the per-cause limit, the warnings collapse into a single finding that names the
-cause, the total and a sample, so a host-wide fault cannot spend the whole
-`alerts.max_per_hour` budget. These findings are separate from queue health:
+an installation-specific Warning. In host scans, when one cause stops more
+installations than the per-cause limit, the warnings collapse into a single
+finding that names the cause, the total and a sample, so a host-wide fault cannot spend the whole
+`alerts.max_per_hour` budget. The limit applies across accounts for each kind of
+verification and cause. Account scans keep installation-specific warnings.
+A summary has no installation path and names an account only when all affected
+installations share it. These findings are separate from queue health:
 a command that completed with a refusal did not lose queue work. Existing queue
 loss accounting remains responsible for interrupted or missing command work.
 

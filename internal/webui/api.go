@@ -1842,6 +1842,12 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 // by checking the message, details, and file path for /home/{user}/ patterns
 // or "Account: " / "user: " in the details field (used by login checks).
 func extractAccountFromFinding(f alert.Finding) string {
+	if f.FilePath == "" && (f.Check == "wp_core_unverified" || f.Check == "wp_plugin_inventory_unverified") {
+		// Collapsed coverage warnings carry an account only when every
+		// installation shares it. Their bounded path sample cannot establish
+		// ownership, even when it happens to show just one account.
+		return f.TenantID
+	}
 	for _, s := range []string{f.Message, f.Details, f.FilePath} {
 		if idx := strings.Index(s, "/home/"); idx >= 0 {
 			rest := s[idx+6:]

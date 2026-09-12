@@ -96,7 +96,10 @@ func wpVerificationFindings(ctx context.Context, db *store.DB, kind, owner strin
 	var findings []alert.Finding
 	for _, reason := range reasons {
 		group := byReason[reason]
-		if len(group) > wpVerificationCollapseCap {
+		// Only a host scan represents the whole cause. Account scans retain
+		// installation identities so a scoped result cannot replace or dedup
+		// against a host summary (or another account's summary).
+		if scope == "" && len(group) > wpVerificationCollapseCap {
 			findings = append(findings, wpVerificationCollapsedFinding(check, label, reason, group, rows))
 			continue
 		}

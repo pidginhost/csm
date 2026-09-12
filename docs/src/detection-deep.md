@@ -101,9 +101,13 @@ malware or integrity findings. A failed attempt first appears in status; repeate
 failed attempts in distinct scan cycles raise a Warning naming the installation,
 last attempt and a bounded reason category. A missing wp-cli or an unreachable
 checksum service stops every installation on the host at once, so when one reason
-covers more installations than the per-cause limit the warnings collapse into a
-single finding naming that reason, the total and a sample of the paths. Raw
-wp-cli output is never stored in this history. These warnings do not enter incidents or automatic remediation.
+covers more installations than the per-cause limit a host scan collapses the
+warnings into a single finding naming that reason, the total and a sample of the
+paths. The limit applies across accounts for each kind of verification and cause.
+Account scans keep installation-specific warnings. A host summary belongs to an
+account only when every affected installation shares it; sampled paths do not
+determine account attribution. Raw wp-cli output is never stored in this history.
+These warnings do not enter incidents or automatic remediation.
 The history survives restarts, and successful checks clear the warnings through
 the normal completed-scan merge. Overlapping scans preserve attempt order and
 failure streaks even when they finish out of order. New discovery alone does not
