@@ -1,10 +1,12 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 func critical(account, check, detail string, at time.Time) Event {
@@ -122,5 +124,79 @@ func TestSpreadSweepCountsPointsAtOrAboveEachThreshold(t *testing.T) {
 	}
 	if got := s.Points(); got != 7 {
 		t.Errorf("Points() = %d, want 7", got)
+	}
+}
+
+// The store carries a condition's first observation across re-reports. The
+// replay has to do the same or it measures a behaviour production no longer
+// has.
+func TestActiveSetCarriesFirstSeenAcrossRepeats(t *testing.T) {
+	base := time.Unix(1_770_000_000, 0)
+	set := NewActiveSet(0)
+	set.Admit(critical("a", "webshell", "same", base).Finding)
+	set.Admit(critical("a", "webshell", "same", base.Add(72*time.Hour)).Finding)
+
+	got := set.Findings()
+	if len(got) != 1 {
+		t.Fatalf("active set holds %d findings, want 1", len(got))
+	}
+	if !got[0].Timestamp.Equal(base.Add(72 * time.Hour)) {
+		t.Errorf("Timestamp = %v, want the latest report", got[0].Timestamp)
+	}
+	if !got[0].FirstSeen.Equal(base) {
+		t.Errorf("FirstSeen = %v, want the first observation %v", got[0].FirstSeen, base)
+	}
+}
+
+// Compare actual owner replacement with replay instead of testing two copies
+// of the timestamp rule independently: purge ordering can invalidate the rule.
+func TestActiveSetFirstSeenMatchesCompletedScans(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	set := NewActiveSet(0)
+	first := time.Unix(1_770_000_000, 0)
+	for _, offset := range []time.Duration{0, 72 * time.Hour, 73 * time.Hour} {
+		rows := []alert.Finding{
+			critical("a", "webshell", "same", first.Add(offset)).Finding,
+			critical("b", "webshell", "same", first.Add(offset)).Finding,
+			critical("c", "webshell", "same", first.Add(offset)).Finding,
+		}
+		for _, f := range rows {
+			set.Admit(f)
+		}
+		st.PurgeAndMergeFindings([]string{"webshell"}, rows)
+		if got, want := set.Findings(), st.LatestFindings(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("after %s: replay %+v differs from completed scan %+v", offset, got, want)
+		}
+		_, accounts := Derive(first.Add(offset), set.Snapshot(), time.Hour)
+		wantAccounts := 0
+		if offset == 0 {
+			wantAccounts = 3
+		}
+		if accounts != wantAccounts {
+			t.Fatalf("after %s: replay accounts = %d, want %d", offset, accounts, wantAccounts)
+		}
+	}
+}
+
+func TestActiveSetFirstSeenDoesNotChangeEvictionRecency(t *testing.T) {
+	first := time.Unix(1_770_000_000, 0)
+	for _, window := range []time.Duration{0, time.Hour} {
+		set := NewActiveSet(window)
+		set.cap = 1
+		freshReport := critical("a", "webshell", "longstanding", first).Finding
+		freshReport.FirstSeen = first.Add(-30 * 24 * time.Hour)
+		set.Admit(freshReport)
+		set.Admit(critical("b", "webshell", "recently observed", first.Add(-time.Minute)).Finding)
+		if got := set.Findings(); len(got) != 1 || got[0].Key() != freshReport.Key() || !got[0].FirstSeen.Equal(freshReport.FirstSeen) {
+			t.Fatalf("window %s: eviction ignored report recency: %+v", window, got)
+		}
 	}
 }

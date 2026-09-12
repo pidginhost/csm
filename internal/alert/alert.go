@@ -135,6 +135,14 @@ type Finding struct {
 	Process *processctx.ProcessContext `json:"process,omitempty"`
 
 	Timestamp time.Time `json:"timestamp"`
+	// FirstSeen is when this condition was first observed, as opposed to
+	// when it was last reported. The latest-state merge carries it across
+	// re-reports; a scan that finds the same condition again refreshes
+	// Timestamp but not this. Correlation reads it so a months-old finding
+	// re-emitted by every scan cannot keep re-entering a recent-activity
+	// window. Zero on findings that never went through the merge, and on
+	// rows stored before the field existed; callers fall back to Timestamp.
+	FirstSeen time.Time `json:"first_seen,omitzero"`
 
 	// Full-scan quarantine outcome (Phase 2). Set ONLY on findings produced by a
 	// `--full --quarantine` job; empty for all report-only findings so existing

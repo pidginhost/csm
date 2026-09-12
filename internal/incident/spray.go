@@ -25,6 +25,9 @@ type SpraySuppressionConfig struct {
 	// Comparison is case-insensitive. Any other value is ignored so an
 	// operator typo cannot accidentally engage blocking.
 	BlockAtSeverity string
+	// BlockExpiry is the operator's configured auto-response block duration,
+	// used as the first rung of the escalation ladder. Zero falls back to 24h.
+	BlockExpiry time.Duration
 }
 
 // IsZero reports whether the config is unset; the correlator treats a

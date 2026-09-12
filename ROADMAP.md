@@ -148,8 +148,8 @@ on real data. Decide it against recorded block streams before mapping.
 
 ## Cross-account correlation sees a tenth of the detectors
 
-**Status:** open; classification and calibration complete, identity gaps and
-re-report counting remain.
+**Status:** open; classification, calibration and re-report counting complete.
+The named identity gaps remain.
 
 Every registered check now carries a correlation class (security event,
 malware artifact, ignored with a reason, or derived), the coverage table in
@@ -187,6 +187,16 @@ audit log into a joinable stream (see
 recordings from production hosts are kept locally, outside the repository.
 Calibration can start from them.
 
+**What a recording is.** `scripts/finding-stream` records the *audit log*, which
+is the dispatch record: it holds what was alerted, after deduplication. The
+persisted latest-state set is different and larger, because every scan re-emits
+the findings it still sees and the merge refreshes their timestamps. During one
+sweep on a production host the audit log recorded 49 dispatched criticals while
+the active set carried 157 refreshed critical rows. A replay therefore
+understates how full the persisted window gets, and a percentage measured from
+a recording describes the replay, not the live active set. Directional
+comparisons between windows hold; absolute rates do not transfer.
+
 **Calibration result.** `scripts/correlation-calibrate` replays a recording
 through the production correlation. Against 100 days of one production host
 (301,860 timestamped rows, 29,533 eligible, 92.6% attributed) and two days of a
@@ -214,14 +224,19 @@ and the Critical-only limit stay: including High
 severities in the account count changed the firing count by one event in 100
 days, which does not justify widening what raises a Critical aggregate.
 
-What this calibration leaves open, with the numbers to size it: correlation
-still counts rows rather than distinct observations, so a long-lived finding
-re-reported on every scan keeps refreshing its timestamp and keeps its account
-inside the window. Counting an account once per first observation instead
-collapses the same 100 days from 27,357 rows to 213 events and the per-batch
-firings from 51 to 7. Doing that needs a first-seen timestamp that survives the
-latest-state merge, which replaces a stored finding wholesale today; that is a
-change to the finding record, not to correlation.
+Measured on the live host after the window shipped: of 81 accounts carrying a
+critical finding in the whole active set, 75 were still inside the one-hour
+window, and 20 rows reaching back to 2026-07-19 were excluded. The window drops
+genuinely stale evidence and lets the aggregate clear, but on a host whose
+scans restamp 157 critical rows at a time it does not make the aggregate
+actionable. That is the remaining defect, not a tuning question.
+
+That defect is now closed: a finding carries the time its condition was first
+observed, the latest-state merge keeps it across re-reports, and correlation
+judges window membership by it, including when a completed scan replaces its
+owned findings. The first observation is not retroactive: upgraded rows adopt
+their saved report time and age out one hour after it. The next completed scan
+clears expired aggregates without requiring the source findings to disappear.
 
 **Acceptance:** met for the threshold. Re-deriving it again, or changing the
 Critical-only limit, uses the same tool and the same recorded-stream evidence.

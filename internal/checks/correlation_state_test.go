@@ -80,6 +80,7 @@ func TestLatestStateAggregatesAcrossMerges(t *testing.T) {
 		rows := make(map[string]alert.Finding)
 		for _, f := range st.LatestFindings() {
 			f.Timestamp = f.Timestamp.UTC()
+			f.FirstSeen = f.FirstSeen.UTC()
 			rows[f.Key()] = f
 		}
 		return rows
@@ -116,6 +117,46 @@ func TestLatestStateAggregatesAcrossMerges(t *testing.T) {
 	StoreLatestScanFindings(st, purgeNamesFor("db_content"), []alert.Finding{stamped("db_rogue_admin", "alice", alert.Critical)})
 	if got := checksIn(st.LatestFindings()); got["coordinated_attack"] != 0 {
 		t.Fatalf("stale derived row survived a merge: %v", got)
+	}
+}
+
+func TestLatestStateRereportsDoNotRenewCorrelationWindow(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	dir := t.TempDir()
+	st := openStoreAt(t, dir)
+	t.Cleanup(func() { closeStore(t, st) })
+	first := time.Now().Add(-30 * 24 * time.Hour).UTC()
+	rows := []alert.Finding{
+		criticalAt("alice", "webshell", first),
+		criticalAt("bob", "webshell", first),
+		criticalAt("carol", "webshell", first),
+	}
+	StoreLatestScanFindings(st, purgeNamesFor("webshells"), rows)
+	for cycle := range 2 {
+		at := time.Now().UTC()
+		for i := range rows {
+			rows[i].Timestamp = at
+		}
+		StoreLatestScanFindings(st, purgeNamesFor("webshells"), rows)
+		got := st.LatestFindings()
+		if !reflect.DeepEqual(checksIn(got), map[string]int{"webshell": 3}) {
+			t.Fatalf("cycle %d: re-reports renewed an expired aggregate: %+v", cycle, got)
+		}
+		for _, f := range got {
+			if !f.FirstSeen.Equal(first) || !f.Timestamp.Equal(at) {
+				t.Fatalf("cycle %d: report or first observation changed: %+v", cycle, f)
+			}
+		}
+		if cycle == 0 {
+			closeStore(t, st)
+			st = openStoreAt(t, dir)
+		}
+	}
+	// Batch dispatch deliberately counts all qualifying rows, even when those
+	// same stored observations have aged out of persisted correlation.
+	batch := CorrelateBatchFindings(st.LatestFindings())
+	if batch.CriticalAccounts != 3 || !raised(batch, "coordinated_attack") || !raised(batch, "cross_account_malware") {
+		t.Fatalf("first observations incorrectly windowed batch dispatch: %+v", batch)
 	}
 }
 
