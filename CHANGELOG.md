@@ -13,13 +13,13 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Highlights
 
-- The audit log now records every observation, including repeats and findings kept out of notifications, so expect noticeably more audit records. Automatic firewall actions link back to the finding that caused them.
+- The audit log now records source observations that reach alert dispatch, including repeats and findings kept out of notifications, so expect more audit records when logging is enabled. Automatic firewall actions link back to the finding that caused them when its identity is available.
 - Automatic file quarantine and cleaning share host and account limits and pause after repeated failures. A clean that fails or finds nothing leaves the file for manual review.
-- Incident blocks are re-applied while an attack continues and escalate to longer and then permanent blocks. The incident view has a Block button for incidents with one source address.
-- The cross-account coordinated-attack alert only combines findings first seen in the last hour. Alerts that latched on old compromises clear on the next scan.
+- Incident blocks are re-applied while an attack continues and can escalate to permanent blocks. The incident view has a Block button for incidents with one source address.
+- Cross-account alerts in the current findings view now age out using the first recorded observation. Alerts supported only by older dated findings clear on the next scan; notification batches keep their existing grouping.
 - LiteSpeed Cache sites get a request filter for the role-simulation takeover, detection of code stored in plugin notices, and vulnerable-version alerts.
-- Credentials are redacted from audit records, stored finding history, attack events and their exports before they are written.
-- Real-time scan failures are now a separate finding from the scheduled coverage report. Update any filter or alert rule that matched the old shared finding.
+- New audit and finding-history records redact recognized credentials in messages and details, and attack events redact their messages before storage. Existing records and other finding fields are unchanged.
+- Real-time YARA scan failures are now a separate finding from the scheduled coverage report. Update any filter or alert rule that matched the old shared finding.
 - A scan that could not inspect a file or database no longer clears its earlier findings.
 
 ### Added
@@ -27,19 +27,19 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Automatic file quarantine and cleaning now share persistent host and account limits and pause after repeated failures. Cleaning that fails or finds nothing to remove, and whole-directory findings, leave the source for manual review, and a cleaner that finds nothing does not count toward the pause.
 - The incident view has a Block button for incidents with one unambiguous source address. It blocks permanently, records the block on the incident timeline, and stops the automatic hand-off from re-blocking an address an operator just handled.
 - A calibration tool replays a recorded finding stream through cross-account correlation and reports what each candidate threshold would have raised, so the thresholds can be re-derived from what hosts produced.
-- CSM now ships a request filter for the LiteSpeed Cache role-simulation takeover. Sites whose WordPress is too old for the fixed plugin line have no upgrade path, and ordinary crawling still works because the filter only covers privileged targets and writes.
+- CSM now ships a request filter for the LiteSpeed Cache role-simulation takeover. It protects sites that have not yet upgraded the plugin while preserving ordinary crawler reads because the filter only covers privileged targets and writes.
 - Code stored in a plugin's own status options, which WordPress prints in the dashboard as a notice, is now reported as a critical database finding. LiteSpeed Cache is covered first, since an unauthenticated request can write those rows on older versions.
-- The known-vulnerable plugin feed now covers the three LiteSpeed Cache issues behind that injection, so a site still running an affected version alerts even after its stored payload is removed.
+- The known-vulnerable plugin feed now covers LiteSpeed Cache notice injection, privilege escalation and session-cookie disclosure, so a site still running an affected version alerts even after its stored payload is removed.
 
 ### Changed
 
-- The audit log now records source observations as well as notification findings, including repeats of an earlier finding and findings filtered out of email and webhooks. Distinct observations keep separate records, and a replay of the same observation is written once per destination.
+- The audit log now records source observations that reach alert dispatch as well as notification findings, including repeats of an earlier finding and findings filtered out of email and webhooks. Distinct observations keep separate records; replay suppression is per destination and lasts only while its delivery history remains in memory, which resets on restart or audit reconfiguration.
 - Findings with no recorded first observation omit that date from JSON output.
 - Go dependencies and the pinned GitHub Actions are updated to their current releases.
 
 ### Security
 
-- An incident-driven firewall block is re-applied when the previous one expires and the attack is still going, escalating to longer and then permanent blocks. A block was previously requested once per incident while the block itself expired, so an attacker who kept going past the expiry was never blocked again.
+- An incident-driven firewall block is re-applied when the previous one expires and the attack is still going, eventually becoming permanent after repeated expiries. A block was previously requested once per incident while the block itself expired, so an attacker who kept going past the expiry was never blocked again.
 - Incident blocks keep their escalation across quiet periods and restarts, and closing an incident clears it even with a block request in flight. Manual block records validate the incident address, and refreshing a live block no longer skips an escalation step.
 - Findings are no longer cleared when a scan could not inspect their source. Incomplete, interrupted and timed-out scans, unexamined WordPress installations and database aliases with missing credentials keep earlier findings, even when new results fill the active list.
 - A failed database query no longer suppresses independent checks while other tables remain readable. Coverage warnings name the failed stage and error class without exposing database values.
@@ -50,14 +50,14 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - A client claiming to be a search crawler gets pending treatment only while its verification is admitted and inside its initial wait. Failed or unavailable verification used to renew that treatment on every retry, keeping a spoofed crawler on the challenge path instead of a block.
 - Automatic file response keeps full-file validation after partial real-time checks, and replacing a file with a special file can no longer stall response processing. Safety refusals, such as a replaced or vanished source, no longer count toward the failure pause.
 - WordPress database scan warnings escape account-controlled names so they cannot alter the diagnostic or terminal display.
-- Audit records, stored finding history and attack events redact recognized credentials before they are written, including the history the web UI shows and exports. Repeated and quoted password and token fields and cPanel login session identifiers are covered, and finding correlation and unrelated log evidence stay intact.
+- New audit and finding-history records redact recognized credentials in messages and details, and attack events redact their messages before storage, also protecting newly recorded history shown and exported by the web UI. Repeated and quoted password and token fields and cPanel login session identifiers are covered without changing correlation identities or unrelated log evidence; existing records and other finding fields are unchanged.
 
 ### Fixed
 
 #### Audit and evidence
 
-- Automatic firewall actions now link to their source findings in the audit log, including delayed retries, escalations, and failed or refused attempts.
-- Audit replays no longer duplicate records at healthy destinations, frequently replayed records stay deduplicated during busy periods, and simultaneous findings no longer hide each other.
+- Automatic firewall actions now link to their source findings in the audit log, including delayed retries, escalations, and failed or refused attempts. Older stored evidence without a source identity remains unlinked.
+- Recent audit replays no longer duplicate records at healthy destinations while their delivery history is retained, frequently replayed records stay deduplicated during busy periods, and simultaneous findings no longer hide each other.
 
 #### Scans and coverage
 
@@ -67,7 +67,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 #### Cross-account correlation
 
-- Cross-account correlation now judges an account by when its finding was first observed and only combines findings from the last hour, clearing the aggregate once that hour passes; attribution health uses the same window. The alert had no time bound and every scan refreshed old findings, so it latched on accounts with months-old compromises and never cleared.
+- Stored cross-account alerts and attribution health now use a recent-activity window based on when findings were first observed. The next scan clears alerts supported only by older dated findings; undated legacy findings still count, and notification batches keep their existing grouping.
 - Completed scans preserve the original observation when replacing a finding, so repeated reports cannot renew an expired correlation alert.
 
 #### WordPress
@@ -79,8 +79,8 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 #### Real-time detection
 
-- A real-time scan that cannot inspect a changed file is now its own finding, separate from the scheduled coverage report it used to share a name with. A scanning outage is no longer indistinguishable from the routine backlog of files past the scan size limit.
-- Shutting the daemon down no longer reports a real-time scanning failure.
+- A real-time YARA scan that cannot inspect a changed file is now its own finding, separate from the scheduled coverage report it used to share a name with. A scanning outage is no longer indistinguishable from the routine backlog of files past the scan size limit.
+- Shutting the daemon down no longer reports a real-time YARA scanning failure.
 - The dashboard shows real-time YARA scan failures in the filesystem monitor's last event instead of leaving that event missing or stale.
 - Real-time WordPress admin-creation detection now requires an administrator role token alongside the credential shape, matching the scheduled rule, and accepts the same whitespace. The user importer bundled in many themes and plugins was reported as critical on every plugin update that staged it.
 

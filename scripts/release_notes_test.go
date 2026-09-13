@@ -279,25 +279,23 @@ func TestReleaseNotesFailsOnAMissingVersion(t *testing.T) {
 	}
 }
 
-// looseEntries returns the line numbers of changelog entries separated from
-// the entry before them by a blank line. Markdown renders such a list as loose,
-// wrapping every entry in its own paragraph on the release page, and once one
-// section drifts every later entry copies its neighbours.
+// looseEntries reports list content following a blank line within a changelog
+// list. A blank before an indented continuation also makes the list loose,
+// wrapping every entry in its own paragraph on the release page.
 func looseEntries(body string) []int {
 	var loose []int
 	prevEntry, blank := false, false
 	for i, line := range strings.Split(body, "\n") {
+		indented := strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
 		switch {
 		case strings.TrimSpace(line) == "":
 			blank = true
 			continue
-		case strings.HasPrefix(line, "- "):
+		case strings.HasPrefix(line, "- ") || (prevEntry && indented):
 			if prevEntry && blank {
 				loose = append(loose, i+1)
 			}
 			prevEntry = true
-		case strings.HasPrefix(line, " "):
-			// A wrapped or indented sub-point continues the entry above it.
 		default:
 			prevEntry = false
 		}
@@ -326,6 +324,31 @@ func TestLooseEntriesFindsOnlyBlankSeparatedEntries(t *testing.T) {
 	got := fmt.Sprint(looseEntries(body))
 	if got != "[11]" {
 		t.Fatalf("want only line 11 reported, got %s", got)
+	}
+}
+
+func TestLooseEntriesWithContinuations(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"tight wrapped entry", "- First.\n  Continued.\n- Second.\n", "[]"},
+		{"tight tab continuation", "- First.\n\tContinued.\n- Second.\n", "[]"},
+		{"blank before wrapped text", "- First.\n\n  Continued.\n- Second.\n", "[3]"},
+		{"blank before tab continuation", "- First.\n\n\tContinued.\n- Second.\n", "[3]"},
+		{"blank after tab continuation", "- First.\n\tContinued.\n\n- Second.\n", "[4]"},
+		{"loose final entry", "- First.\n- Second.\n\n  Continued.\n", "[4]"},
+		{"blank before nested list", "- First.\n\n  - Nested.\n- Second.\n", "[3]"},
+		{"whitespace separator", "- First.\n \t\r\n  Continued.\n- Second.\n", "[3]"},
+		{"new subsection", "- First.\n  Continued.\n\n#### Next\n\n- Second.\n", "[]"},
+		{"trailing blanks", "- First.\n  Continued.\n\n", "[]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fmt.Sprint(looseEntries(tc.body)); got != tc.want {
+				t.Fatalf("loose lines = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
