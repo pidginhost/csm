@@ -122,3 +122,59 @@ func TestRunnerDiscardsScopesAfterTimeout(t *testing.T) {
 		t.Fatal("timed-out check published retirement scopes")
 	}
 }
+
+func TestDatabaseWhollyIncompleteScanRetainsFindingsAtCap(t *testing.T) {
+	for _, failure := range []string{"query", "config", "discovery"} {
+		t.Run(failure, func(t *testing.T) {
+			bodies := map[string]string{
+				"/home/alice/public_html/wp-config.php": databaseCoverageConfig("site"),
+			}
+			var discoveryErr error
+			if failure == "config" {
+				bodies["/home/alice/public_html/wp-config.php"] = "<?php\n"
+			}
+			if failure == "discovery" {
+				bodies = nil
+				discoveryErr = errors.New("discovery unavailable")
+			}
+			withDatabaseCoverageInstalls(t, bodies, discoveryErr)
+			mysqlclient.SetPerAccountQueryForTest(func(context.Context, mysqlclient.Creds, string, ...any) ([]string, error) {
+				return nil, errors.New("database unavailable")
+			})
+			t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+			st, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			old := []alert.Finding{
+				{Check: "db_post_injection", DedupKey: "scoped", CoverageScope: "unread", Severity: alert.Warning, Timestamp: time.Unix(100, 0)},
+				{Check: "db_post_injection", DedupKey: "legacy", Severity: alert.Warning, Timestamp: time.Unix(100, 0)},
+			}
+			st.PurgeAndMergeFindings(nil, old)
+			ctx, gaps := WithCoverageGaps(context.Background())
+			findings, purge := runParallelWithContext(ctx, &config.Config{}, nil, []namedCheck{
+				{name: "db_content", fn: CheckDatabaseContent},
+				{name: "other", fn: func(context.Context, *config.Config, *state.Store) []alert.Finding {
+					// Exceed the active-set cap with independent, higher-priority findings.
+					fresh := make([]alert.Finding, 16000)
+					for i := range fresh {
+						fresh[i] = alert.Finding{Check: "other", DedupKey: fmt.Sprint(i), Severity: alert.High}
+					}
+					return fresh
+				}},
+			}, "test", true)
+			StoreLatestScanFindingsWithCoverage(st, purge, findings, gaps.Snapshot())
+			retained := make(map[string]alert.Finding)
+			for _, f := range st.LatestFindings() {
+				retained[f.Key()] = f
+			}
+			for _, f := range old {
+				got, ok := retained[f.Key()]
+				if !ok || got.CoverageScope != f.CoverageScope || !got.FirstSeen.Equal(f.Timestamp) {
+					t.Errorf("incomplete scan lost prior finding %q or its observation: %+v", f.DedupKey, got)
+				}
+			}
+		})
+	}
+}

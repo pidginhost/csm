@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -34,9 +35,10 @@ type coveragePathCollector struct {
 // update made after the scanner read LatestFindings cannot be retired by a
 // stale carry-forward snapshot.
 type CoverageGaps struct {
-	mu              sync.Mutex
-	pathsByCheck    map[string]map[string]bool
-	completedScopes map[string]map[string]bool
+	mu               sync.Mutex
+	pathsByCheck     map[string]map[string]bool
+	completedScopes  map[string]map[string]bool
+	incompleteChecks map[string]bool
 }
 
 // Paths returns an isolated snapshot of the completed run's path gaps. Each
@@ -81,13 +83,14 @@ func coverageGapsFrom(ctx context.Context) *CoverageGaps {
 	return gaps
 }
 
-func (g *CoverageGaps) replace(pathsByCheck map[string]map[string]bool, completedScopes map[string]map[string]bool) {
+func (g *CoverageGaps) replace(pathsByCheck map[string]map[string]bool, completedScopes map[string]map[string]bool, incompleteChecks map[string]bool) {
 	if g == nil {
 		return
 	}
 	g.mu.Lock()
 	g.pathsByCheck = cloneCoverageGapPaths(pathsByCheck)
 	g.completedScopes = cloneCoverageGapPaths(completedScopes)
+	g.incompleteChecks = maps.Clone(incompleteChecks)
 	g.mu.Unlock()
 }
 
@@ -241,7 +244,11 @@ func (g *CoverageGaps) Snapshot() *state.ScanCoverage {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return &state.ScanCoverage{PreservePaths: cloneCoverageGapPaths(g.pathsByCheck), CompletedScopes: cloneCoverageGapPaths(g.completedScopes)}
+	return &state.ScanCoverage{
+		PreservePaths:    cloneCoverageGapPaths(g.pathsByCheck),
+		CompletedScopes:  cloneCoverageGapPaths(g.completedScopes),
+		IncompleteChecks: maps.Clone(g.incompleteChecks),
+	}
 }
 
 func recordCompletedCoverageScopes(ctx context.Context, owner string, scopes map[string]bool) {

@@ -918,7 +918,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	coverageGaps := coverageGapsFrom(parent)
 	// Clear a reused handle before work starts. An interrupted run must never
 	// expose the preceding run's path set as its own.
-	coverageGaps.replace(nil, nil)
+	coverageGaps.replace(nil, nil, nil)
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
 	// Logical owners hosted by checks in this set: a disabled owner purges
@@ -1246,7 +1246,18 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	for owner := range disabledOwnerSet {
 		purgeNames = append(purgeNames, logicalOwnerFindingNames[owner]...)
 	}
-	coverageGaps.replace(coverageGapPaths, completedScopeNames)
+	incompleteFindingNames := make(map[string]bool)
+	for _, owner := range incompleteRan {
+		names := append([]string{owner}, runnerFindingNames[owner]...)
+		names = append(names, logicalOwnerFindingNames[owner]...)
+		for _, name := range names {
+			incompleteFindingNames[name] = true
+		}
+		for _, name := range perRunFindingNames[owner] {
+			delete(incompleteFindingNames, name)
+		}
+	}
+	coverageGaps.replace(coverageGapPaths, completedScopeNames, incompleteFindingNames)
 	return findings, mergePerRunPurgeNames(purgeNames, incompleteRan)
 }
 

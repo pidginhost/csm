@@ -7,6 +7,9 @@ import "github.com/pidginhost/csm/internal/alert"
 type ScanCoverage struct {
 	PreservePaths   map[string]map[string]bool
 	CompletedScopes map[string]map[string]bool
+	// IncompleteChecks preserves unexamined findings at the active-set cap,
+	// including when the scanner could not complete any database scope.
+	IncompleteChecks map[string]bool
 }
 
 func (c *ScanCoverage) completed(f alert.Finding) bool {
@@ -16,5 +19,5 @@ func (c *ScanCoverage) completed(f alert.Finding) bool {
 // unexamined identifies retained state that must not be evicted to make room
 // for new findings from a completed scope in the same scanner.
 func (c *ScanCoverage) unexamined(f alert.Finding) bool {
-	return c != nil && c.CompletedScopes[f.Check] != nil && !c.completed(f)
+	return c != nil && (c.IncompleteChecks[f.Check] || c.CompletedScopes[f.Check] != nil) && !c.completed(f)
 }

@@ -74,6 +74,8 @@ undiscovered installations retain their findings in the same atomic store
 transaction. Older findings without a database scope stay until reobserved or
 until the whole scanner completes; CSM does not guess their database from
 message text. A partial multisite scan keeps findings for its entire network.
+Incomplete scans protect earlier findings from eviction when new results fill
+the active list, including when every database or discovery attempt fails.
 
 Query diagnostics include the detector stage, failure class and numeric MySQL
 error code. Repeated errors are counted together, with bounded detail when

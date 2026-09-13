@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Incomplete scans keep earlier findings when new results fill the active list, even if no database could be inspected.
+
 - Automatic firewall actions now link to their source findings in the audit log, including delayed retries and escalations. Failed and refused attempts keep the same attribution.
 
 - Claimed crawlers receive pending treatment only for admitted verification work within its initial waiting period. Failed or unavailable verification no longer renews that treatment on every retry.
