@@ -470,10 +470,14 @@ branches:
   than cPanel) the owner stays empty and the row is reported, not counted. A
   bare account name must resolve to a passwd home directly under an account
   root. Credential and bulk-service findings use the authenticated identity,
-  never the envelope sender. Sender-domain volume aggregates have no verified
-  owner and stay unattributed. Owner lookups run after tracker locks are
+  never the envelope sender. A sender-domain volume aggregate carries an
+  owner only when every counted arrival proves the same local account through
+  authentication or local submission. Remote ident usernames do not establish
+  local ownership. Mixed or unverified aggregates stay unattributed without
+  reducing the volume count. Owner lookups run after tracker locks are
   released. Mail hold and governor findings require a local mail-server
-  permission decision.
+  permission decision. The submission boundary follows
+  [Exim's reception log fields](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-log_files.html).
 - Process, login and crontab producers accept a system user as owner only
   when its home directory sits directly under an account root, so root,
   service users and unknown uids never become an account. Direct SMTP findings
@@ -482,10 +486,15 @@ branches:
   realtime file events, PHP shield events, self-deleting droppers) carry the
   judged file's path, which resolves as described above. The collapsed
   core-integrity finding has no single path and carries the install owner.
-- The periodic socket checks have no hosting owner, and the per-domain mail
-  volume aggregate is keyed by the attacker-controlled envelope sender. Both
-  are declared gaps in the registry; their unattributed Criticals reach only
-  the diagnostic count.
+- Socket checks resolve the kernel UID through the same passwd and direct
+  account-home validation. Bad-ASN events also retain that owner when realtime
+  process enrichment misses. Root, service and unknown UIDs stay unattributed.
+  An attributed socket or mail finding includes its owner in the message so
+  different accounts retain separate dispatch and audit identities.
+- A sender-domain mail aggregate with mixed or unverified submitters remains
+  a declared attribution gap. The owning account for a mailbox still requires
+  the cPanel domain table. Any unattributed qualifying finding reaches the
+  diagnostic count rather than contributing an invented account.
 
 ### Correlation policy table
 
@@ -515,9 +524,7 @@ Ignore reasons:
 
 Attribution gaps:
 
-- `envelope-sender`: volume aggregate keyed by the attacker-controlled envelope sender; no verified owner exists
-- `partial-socket-owner`: periodic evaluator supplies no tenant; realtime process enrichment can supply one but can miss
-- `socket-owner`: periodic socket finding has no hosting owner; an unattributed Critical is counted in diagnostics only
+- `envelope-sender`: sender-domain volume aggregate is unattributed when contributing submissions are unverified or belong to different accounts
 
 | Check | Class | Ignore reason | Attribution gap |
 | --- | --- | --- | --- |
@@ -535,13 +542,13 @@ Attribution gaps:
 | `auto_response` | ignored | response |  |
 | `auto_response_paused` | ignored | response |  |
 | `backdoor_binary` | malware artifact |  |  |
-| `backdoor_port` | security event |  | socket-owner |
-| `backdoor_port_outbound` | security event |  | socket-owner |
-| `bad_asn_outbound` | security event |  | partial-socket-owner |
+| `backdoor_port` | security event |  |  |
+| `backdoor_port_outbound` | security event |  |  |
+| `bad_asn_outbound` | security event |  |  |
 | `bpf_ringbuf_error` | ignored | self-health |  |
 | `bpf_unavailable` | ignored | self-health |  |
 | `bulk_password_change` | ignored | account-aggregate |  |
-| `c2_connection` | security event |  | socket-owner |
+| `c2_connection` | security event |  |  |
 | `cgi_backdoor_realtime` | security event |  |  |
 | `cgi_suspicious_location_realtime` | security event |  |  |
 | `challenge_route` | ignored | response |  |

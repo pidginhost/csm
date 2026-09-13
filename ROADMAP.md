@@ -138,7 +138,8 @@ Main-branch cloud integration is manual and is not a publication dependency.
 
 ## WAF block scoring needs recorded-stream evidence
 
-**Status:** open decision.
+**Status:** deferred pending representative replay evidence; keep the emitted
+WAF block names out of local reputation scoring for now.
 
 Whether the emitted ModSecurity block names (`modsec_block_realtime`,
 `modsec_block_escalation`, `modsec_csm_block_escalation`, `waf_attack_blocked`)
@@ -146,10 +147,20 @@ should map into the attack database is a reputation-scoring change, not a table
 fix. WAF blocks are high volume and the WAF-block score branch has never run
 on real data. Decide it against recorded block streams before mapping.
 
-## Cross-account correlation sees a tenth of the detectors
+The replayed audit sample is sparse and provides little escalation coverage.
+The candidate mappings do not raise new high-score sources in this sample,
+but it does not exercise the high-volume WAF score contribution.
+Realtime denies, periodic summaries and escalation findings can describe the
+same traffic. Counting all three as independent attacks would inflate scores;
+counting raw denies would also bypass the existing confidence and operator
+exclusion checks used for escalation. A scoring proposal needs a replay that
+preserves those controls and measures overlap with existing attack evidence.
 
-**Status:** open; classification, calibration and re-report counting complete.
-The named identity gaps remain.
+## Cross-account correlation still has identity gaps
+
+**Status:** partial; classification, calibration, re-report counting and socket
+ownership are complete. Mail aggregates with no single verified submitter and
+mailbox ownership outside cPanel remain unattributed.
 
 Every registered check now carries a correlation class (security event,
 malware artifact, ignored with a reason, or derived), the coverage table in
@@ -159,15 +170,21 @@ eligible producers supply the owning account when available, so a database
 compromise replicated across attributed accounts can raise the cross-account
 signal.
 
-What remains open:
+Current boundaries and remaining work:
 
 - The aggregate is still Critical-only and count-based: several corroborating
   High findings on one account never combine into anything.
-- Named identity gaps stay unattributed by design and reach only a
-  diagnostic count: the periodic socket checks (`backdoor_port`,
-  `backdoor_port_outbound`, `c2_connection`), the partially attributed
-  `bad_asn_outbound`, and the per-domain mail volume aggregate, which is keyed
-  by the attacker-controlled envelope sender. Two host-wide aggregates
+- Socket checks (`backdoor_port`, `backdoor_port_outbound`, `c2_connection`
+  and `bad_asn_outbound`) now resolve the kernel UID through the existing
+  passwd and account-home validation. The live bad-ASN path retains this
+  identity even when process enrichment misses. Root, service and unknown
+  UIDs stay unattributed, and findings from different accounts retain distinct
+  dispatch and audit identities.
+- The per-domain mail volume aggregate retains its existing counting scope.
+  It carries an owner only when every counted arrival proves the same
+  authenticated mailbox, authenticated hosting user or local submitting user.
+  A mixed or unverified aggregate stays unattributed; the envelope sender
+  alone never establishes ownership. Two host-wide aggregates
   (`admin_cross_account_overlap`, `bulk_password_change`) already summarise
   several accounts and are excluded as inputs.
 - Mailbox and domain identities need cPanel's domain-owner table. Those

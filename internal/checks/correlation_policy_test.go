@@ -160,11 +160,7 @@ func TestClassificationExamples(t *testing.T) {
 
 func TestAttributionGapsArePinned(t *testing.T) {
 	gaps := map[string]string{
-		"c2_connection":          gapSocketOwner,
-		"backdoor_port":          gapSocketOwner,
-		"backdoor_port_outbound": gapSocketOwner,
-		"bad_asn_outbound":       gapPartialSocketOwner,
-		"mail_per_account":       gapEnvelopeSender,
+		"mail_per_account": gapEnvelopeSender,
 	}
 	for _, c := range checkRegistry {
 		if want := gaps[c.Name]; c.CorrelationGap != want {
@@ -190,8 +186,8 @@ func TestValidateCorrelationPolicyRejects(t *testing.T) {
 		"reason on malware":  {Name: "d", Category: CategoryWeb, Correlation: CorrelationMalwareArtifact, CorrelationReason: reasonPosture},
 		"reason on derived":  {Name: "e", Category: CategoryWeb, Correlation: CorrelationDerived, CorrelationReason: reasonPosture},
 		"unknown enum":       {Name: "f", Category: CategoryWeb, Correlation: CorrelationClass(99)},
-		"gap on ignored":     {Name: "g", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture, CorrelationGap: gapSocketOwner},
-		"gap on derived":     {Name: "h", Category: CategoryWeb, Correlation: CorrelationDerived, CorrelationGap: gapSocketOwner},
+		"gap on ignored":     {Name: "g", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture, CorrelationGap: gapEnvelopeSender},
+		"gap on derived":     {Name: "h", Category: CategoryWeb, Correlation: CorrelationDerived, CorrelationGap: gapEnvelopeSender},
 		"unknown gap":        {Name: "i", Category: CategoryWeb, Correlation: CorrelationSecurityEvent, CorrelationGap: "made-up"},
 	}
 	for name, entry := range bad {
@@ -210,8 +206,8 @@ func TestValidateCorrelationPolicyRejects(t *testing.T) {
 	for i := range wrong {
 		switch wrong[i].Name {
 		case "webshell_realtime":
-			wrong[i].CorrelationGap = gapSocketOwner
-		case "c2_connection":
+			wrong[i].CorrelationGap = gapEnvelopeSender
+		case "mail_per_account":
 			wrong[i].CorrelationGap = ""
 		}
 	}
@@ -227,8 +223,6 @@ func TestValidateCorrelationPolicyRejects(t *testing.T) {
 // gap; it mirrors TestAttributionGapsArePinned for copied inputs.
 func checkRequiredGaps(entries []CheckInfo) error {
 	required := map[string]string{
-		"c2_connection": gapSocketOwner, "backdoor_port": gapSocketOwner,
-		"backdoor_port_outbound": gapSocketOwner, "bad_asn_outbound": gapPartialSocketOwner,
 		"mail_per_account": gapEnvelopeSender,
 	}
 	for _, c := range entries {

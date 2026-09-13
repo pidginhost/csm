@@ -104,6 +104,7 @@ func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev Conn
 		if lookup := checks.CurrentASNLookup(); lookup != nil {
 			asn, org := lookup(ev.DstIP.String())
 			if f, ok := checks.EvaluateBadASNOutbound(cfg, ev.DstIP, asn, org); ok {
+				checks.AttributeSocketOwner(&f, ev.UID)
 				f.Timestamp = now
 				out = append(out, f)
 			}

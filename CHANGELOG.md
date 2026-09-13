@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Socket and mail findings now keep verified account ownership through deduplication. Mixed or unverified mail remains unattributed, and mail authentication parsing rejects forged arrival fragments.
+
+- A WordPress verification test now waits for its pending-state assertion before releasing the download response.
+
 - `make test` works on Linux again and keeps test files on disk instead of the macOS-only temporary path.
 
 - Frequently replayed audit records stay deduplicated during busy periods, and simultaneous findings no longer hide each other. Failed crawler lookups release room for new verification, while database aliases with missing credentials keep earlier findings.
