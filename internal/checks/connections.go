@@ -193,6 +193,7 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 		if lookup := CurrentASNLookup(); lookup != nil && cfg.Detection.BadASNOutbound.Enabled {
 			asn, org := lookup(dstIP.String())
 			if f, ok := EvaluateBadASNOutbound(cfg, dstIP, asn, org); ok {
+				AttributeSocketOwner(&f, uidU32)
 				f.Timestamp = time.Now()
 				findings = append(findings, f)
 			}

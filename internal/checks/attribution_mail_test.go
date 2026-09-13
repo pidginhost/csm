@@ -167,18 +167,18 @@ func TestFTPLoginAfterBruteforceStampsOwner(t *testing.T) {
 
 func TestMailVolumeDoesNotTrustEnvelopeOwner(t *testing.T) {
 	withOwnerTable(t)
-	for _, fields := range []string{
-		"H=mail.example.org [203.0.113.5] P=esmtp",
-		"H=mail.example.org [203.0.113.5] P=esmtpsa A=dovecot_login:user@example.net",
+	for _, tc := range []struct{ fields, owner string }{
+		{"H=mail.example.org [203.0.113.5] P=esmtp", ""},
+		{"H=mail.example.org [203.0.113.5] P=esmtpsa A=dovecot_login:user@example.net", "bob"},
 	} {
-		line := "2026-09-08 10:00:00 1abc23-000456-AB <= user@example.com " + fields + " S=100\n"
+		line := "2026-09-08 10:00:00 1abc23-000456-AB <= user@example.com " + tc.fields + " S=100\n"
 		withMockOS(t, &mockOS{open: openTempLog(t, strings.Repeat(line, perAccountMailThreshold))})
 		findings := CheckMailPerAccount(context.Background(), &config.Config{}, nil)
 		if len(findings) != 1 || findings[0].Check != "mail_per_account" {
 			t.Fatalf("findings = %+v", findings)
 		}
-		if findings[0].TenantID != "" {
-			t.Errorf("sender-domain aggregate assigned to %q", findings[0].TenantID)
+		if findings[0].TenantID != tc.owner {
+			t.Errorf("owner %q, want submitter %q; envelope owner alice is never evidence", findings[0].TenantID, tc.owner)
 		}
 	}
 }

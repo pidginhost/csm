@@ -9,6 +9,12 @@ func TestClientIP(t *testing.T) {
 		name, line, want string
 	}{
 		{"h field client", "H=hostname [203.0.113.5]:12345", "203.0.113.5"},
+		{"h field before remote ident", "H=hostname [203.0.113.5]:12345 U=remote P=esmtp S=100", "203.0.113.5"},
+		{"h field fast open", "H=hostname [203.0.113.5]:12345 TFO P=esmtp S=100", "203.0.113.5"},
+		{"h field fast open data before remote ident", "H=hostname [203.0.113.5]:12345 TFO* U=remote P=esmtp S=100", "203.0.113.5"},
+		{"h field interface before remote ident", "H=hostname [2001:db8::5]:12345 I=[192.0.2.25]:25 TFO* U=remote P=esmtp S=100", "2001:db8::5"},
+		{"unprefixed peer before remote ident", "SMTP connection from hostname [203.0.113.5]:12345 U=remote", "203.0.113.5"},
+		{"unprefixed interface before remote ident", "SMTP connection from hostname [2001:db8::5]:12345 I=[192.0.2.25]:25 U=remote", "2001:db8::5"},
 		{"no brackets", "no brackets here", ""},
 		{"bracketed hostname", "[hostname.example.com]", ""},
 		{"short content", "[ab]", ""},
@@ -50,6 +56,11 @@ func TestClientIP(t *testing.T) {
 		{
 			"h field rejects junk helo that mimics a field boundary",
 			`x <= s@example.com H=(junk) [203.0.113.9]:25 P=fake (tail) [198.51.100.7]:5432 P=esmtpsa A=dovecot_login:user@example.com`,
+			"",
+		},
+		{
+			"h field rejects ident marker inside junk helo",
+			`H=(junk) [203.0.113.9]:25 U=fake (tail) [198.51.100.7]:5432 P=esmtp S=100`,
 			"",
 		},
 		{
@@ -153,5 +164,41 @@ func TestHFieldClientIPAndEndSkipsWholeHValue(t *testing.T) {
 func TestHFieldClientIPAndEndStopsAtNextField(t *testing.T) {
 	if ip, end := HFieldClientIPAndEnd(`nic.example P=esmtp T="Probe [203.0.113.44]"`); ip != "" || end != 0 {
 		t.Fatalf("got (%q, %d), want empty", ip, end)
+	}
+}
+
+// A remote ident marker before the chosen peer shows that greeting
+// delimiters hid the real peer. Peer-like text after the chosen peer is
+// message data and is covered by TestFailureDetailsCannotHidePeer.
+func TestHFieldClientIPAndEndRejectsPeerInIdent(t *testing.T) {
+	for _, s := range []string{
+		`(hello() [203.0.113.5]:2525 U=) [192.0.2.8] P=esmtp S=100`,
+		`(hello) ") [203.0.113.5]:2525 U=" [192.0.2.8] P=esmtp S=100`,
+		`(hello[) [203.0.113.5]:2525 U=) [192.0.2.8] P=esmtp S=100`,
+	} {
+		if ip, end := HFieldClientIPAndEnd(s); ip != "" || end != 0 {
+			t.Errorf("peer inside remote ident accepted: (%q, %d)", ip, end)
+		}
+		if ip := ClientIP("H=" + s); ip != "" {
+			t.Errorf("ClientIP accepted peer inside remote ident: %q", ip)
+		}
+	}
+}
+
+func TestClientIPRejectsPeerInUnprefixedIdent(t *testing.T) {
+	for _, marker := range []string{
+		"dovecot_login authenticator failed for ",
+		"TLS error on connection from ",
+		"SMTP connection from ",
+	} {
+		for _, peer := range []string{
+			`(hello() [203.0.113.5]:2525 U=) [192.0.2.8]`,
+			`(hello) ") [203.0.113.5]:2525 U=" [192.0.2.8]`,
+			`(hello[) [203.0.113.5]:2525 U=) [192.0.2.8]`,
+		} {
+			if ip := ClientIP(marker + peer + ": connection rejected"); ip != "" {
+				t.Errorf("ClientIP(%q) accepted peer inside remote ident: %q", marker+peer, ip)
+			}
+		}
 	}
 }

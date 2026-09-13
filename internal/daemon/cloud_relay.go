@@ -123,11 +123,11 @@ func isCloudProviderPTR(ptr string) bool {
 // The field often looks like "H=hostname.example (helo.string) [IP]:port"
 // — we want the PTR-derived hostname before the HELO-in-parens.
 func extractEximHostname(line string) string {
-	idx := strings.Index(line, " H=")
-	if idx < 0 {
+	idx, ok := eximlog.HFieldStart(line)
+	if !ok {
 		return ""
 	}
-	rest := line[idx+3:]
+	rest := line[idx:]
 	// Terminate at first space, tab, or opening paren (HELO string).
 	end := len(rest)
 	for i, r := range rest {

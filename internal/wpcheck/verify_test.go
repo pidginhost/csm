@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -235,12 +236,21 @@ func TestVerify_ResolvesStoredDigestAgainstOfficialChecksums(t *testing.T) {
 // comparison once the checksums are cached.
 func TestVerify_PendingDescriptionResolvesOnceChecksumsLand(t *testing.T) {
 	body := []byte("<?php return 2;\n")
-	servePackages(t, map[string][]byte{
-		"gtm-kit.2.18.1.zip": buildPluginZip(t, map[string][]byte{
-			"gtm-kit/gtm-kit.php": []byte(stagedPluginHeader),
-			"gtm-kit/inc/a.php":   body,
-		}),
-	}, nil)
+	archive := buildPluginZip(t, map[string][]byte{
+		"gtm-kit/gtm-kit.php": []byte(stagedPluginHeader),
+		"gtm-kit/inc/a.php":   body,
+	})
+	download := make(chan struct{})
+	release := sync.OnceFunc(func() { close(download) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-download
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(release)
+	withTestHTTPClient(t, srv)
+	httpClient.Transport = &rewriteTransport{target: srv.URL, inner: http.DefaultTransport}
 	staging := filepath.Join(t.TempDir(), "public_html", "wp-content", "upgrade", "gtm-kit.2.18.1", "gtm-kit")
 	writeStaged(t, filepath.Join(staging, "gtm-kit.php"), stagedPluginHeader)
 	path := filepath.Join(staging, "inc", "a.php")
@@ -255,6 +265,7 @@ func TestVerify_PendingDescriptionResolvesOnceChecksumsLand(t *testing.T) {
 	if got := c.Verify(v); got != VerdictPending {
 		t.Fatalf("Verify = %v, want Pending passed through before the fetch completes", got)
 	}
+	release()
 	waitVerdict(t, VerdictVerified, func() Verdict { return c.Verify(v) })
 }
 

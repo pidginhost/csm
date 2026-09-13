@@ -125,12 +125,12 @@ var attributionEvidence = map[string]string{
 	"password_hijack_confirmed":    "TestPasswordHijackFindingsCarryTenant",
 	"whm_password_change_noninfra": "TestPasswordHijackFindingsCarryTenant",
 	"direct_smtp_egress":           "TestDirectSMTPEgressCarriesTenant",
-	// Documented gaps (registry CorrelationGap). The sender aggregate is
-	// keyed by the attacker-controlled envelope sender, so it never carries
-	// an owner; TestMailPerAccountLeavesSenderAggregateUnattributed proves it.
-	"backdoor_port":          "gap:" + gapSocketOwner,
-	"backdoor_port_outbound": "gap:" + gapSocketOwner,
-	"bad_asn_outbound":       "gap:" + gapPartialSocketOwner,
+	// Socket UIDs provide ownership even when process enrichment misses.
+	// Mixed or unverified sender aggregates retain a documented gap;
+	// TestMailVolumeRequiresOneOwnerForEntireAggregate proves that boundary.
+	"backdoor_port":          "TestOutboundSocketFindingsStampOwner",
+	"backdoor_port_outbound": "TestOutboundSocketFindingsStampOwner",
+	"bad_asn_outbound":       "TestBadASNScanFindingsStampOwner",
 	"mail_per_account":       "gap:" + gapEnvelopeSender,
 }
 
@@ -204,8 +204,8 @@ func TestAttributionInventoryCoversNewlyEligible(t *testing.T) {
 	for k, v := range attributionEvidence {
 		wrongGap[k] = v
 	}
-	wrongGap["backdoor_port"] = "gap:" + gapPartialSocketOwner
-	wrongGap["suspicious_crontab"] = "gap:" + gapSocketOwner
+	wrongGap["backdoor_port"] = "gap:" + gapEnvelopeSender
+	wrongGap["suspicious_crontab"] = "gap:" + gapEnvelopeSender
 	if p := compareAttributionInventory(wrongGap, newly); len(p) != 2 {
 		t.Fatalf("misassigned gaps not diagnosed: %v", p)
 	}

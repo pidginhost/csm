@@ -164,7 +164,7 @@ func TestCorrelationDocumentation(t *testing.T) {
 
 func TestRenderCorrelationTableExactOutput(t *testing.T) {
 	rows := []CheckInfo{
-		{Name: "zeta", Category: CategoryWeb, Correlation: CorrelationSecurityEvent, CorrelationGap: gapSocketOwner},
+		{Name: "zeta", Category: CategoryWeb, Correlation: CorrelationSecurityEvent, CorrelationGap: gapEnvelopeSender},
 		{Name: "alpha", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
 		{Name: "mid", Category: CategoryWeb, Correlation: CorrelationDerived},
 		{Name: "malw", Category: CategoryWeb, Correlation: CorrelationMalwareArtifact},
@@ -181,14 +181,12 @@ func TestRenderCorrelationTableExactOutput(t *testing.T) {
 		"- `response`: record of an automatic action already taken; feeding it back would double count\n" +
 		"- `self-health`: CSM's own health, capacity or coverage state\n" +
 		"\nAttribution gaps:\n\n" +
-		"- `envelope-sender`: volume aggregate keyed by the attacker-controlled envelope sender; no verified owner exists\n" +
-		"- `partial-socket-owner`: periodic evaluator supplies no tenant; realtime process enrichment can supply one but can miss\n" +
-		"- `socket-owner`: periodic socket finding has no hosting owner; an unattributed Critical is counted in diagnostics only\n" +
+		"- `envelope-sender`: sender-domain volume aggregate is unattributed when contributing submissions are unverified or belong to different accounts\n" +
 		"\n| Check | Class | Ignore reason | Attribution gap |\n| --- | --- | --- | --- |\n" +
 		"| `alpha` | ignored | posture |  |\n" +
 		"| `malw` | malware artifact |  |  |\n" +
 		"| `mid` | derived |  |  |\n" +
-		"| `zeta` | security event |  | socket-owner |\n"
+		"| `zeta` | security event |  | envelope-sender |\n"
 	if got != want {
 		t.Fatalf("rendered table:\n%s\nwant:\n%s", got, want)
 	}

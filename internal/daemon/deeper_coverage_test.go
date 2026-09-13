@@ -548,7 +548,7 @@ func TestRateWindow_CountInWindowExcludesOld(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExtractAuthUser_DovecotPlain(t *testing.T) {
-	line := `2026-04-12 1abc23-000456-AB <= sender@example.com A=dovecot_plain:user@example.com S=1234`
+	line := `2026-04-12 10:00:00 1abc23-000456-AB <= sender@example.com A=dovecot_plain:user@example.com S=1234`
 	got := extractAuthUser(line)
 	if got != "user@example.com" {
 		t.Errorf("got %q, want user@example.com", got)
@@ -564,15 +564,15 @@ func TestExtractAuthUser_NoAcceptLine(t *testing.T) {
 }
 
 func TestExtractAuthUser_EndOfLine(t *testing.T) {
-	line := `2026-04-12 1abc23 <= sender@example.com A=dovecot_login:admin@test.com`
+	line := `2026-04-12 10:00:00 1abc23-000456-AB <= sender@example.com A=dovecot_login:admin@example.net`
 	got := extractAuthUser(line)
-	if got != "admin@test.com" {
-		t.Errorf("got %q, want admin@test.com", got)
+	if got != "admin@example.net" {
+		t.Errorf("got %q, want admin@example.net", got)
 	}
 }
 
 func TestExtractAuthUser_NoDovecotAuth(t *testing.T) {
-	line := `2026-04-12 1abc23 <= sender@example.com A=other_auth:user@example.com`
+	line := `2026-04-12 10:00:00 1abc23-000456-AB <= sender@example.com A=other_auth:user@example.com`
 	got := extractAuthUser(line)
 	if got != "" {
 		t.Errorf("non-dovecot auth should return empty, got %q", got)

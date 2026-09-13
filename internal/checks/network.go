@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -37,6 +38,16 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 		// State 01 = ESTABLISHED
 		if fields[3] != "01" {
 			continue
+		}
+		firstFinding := len(findings)
+		// Ownership belongs to this kernel row, not to a later PID lookup.
+		// Keep detections visible when an incomplete row has no usable UID.
+		var uid uint64
+		var uidKnown bool
+		if len(fields) >= 8 {
+			var err error
+			uid, err = strconv.ParseUint(fields[7], 10, 32)
+			uidKnown = err == nil
 		}
 
 		localAddr := fields[1]
@@ -85,21 +96,25 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 			2082: true, 2083: true, 2086: true, 2087: true, 2095: true, 2096: true,
 			3306: true, 4190: true,
 		}
-		if knownServicePorts[localPort] {
-			continue
-		}
-		for _, bp := range cfg.BackdoorPorts {
-			if remotePort == bp {
-				if isInfraIP(remoteIP, cfg.InfraIPs) {
-					continue
+		if !knownServicePorts[localPort] {
+			for _, bp := range cfg.BackdoorPorts {
+				if remotePort == bp {
+					if isInfraIP(remoteIP, cfg.InfraIPs) {
+						continue
+					}
+					findings = append(findings, alert.Finding{
+						Severity: alert.High,
+						Check:    "backdoor_port_outbound",
+						Message:  fmt.Sprintf("Outbound connection to backdoor port: %s:%d", remoteIP, remotePort),
+						Details:  fmt.Sprintf("Local port: %d", localPort),
+						SourceIP: remoteIP,
+					})
 				}
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "backdoor_port_outbound",
-					Message:  fmt.Sprintf("Outbound connection to backdoor port: %s:%d", remoteIP, remotePort),
-					Details:  fmt.Sprintf("Local port: %d", localPort),
-					SourceIP: remoteIP,
-				})
+			}
+		}
+		if uidKnown {
+			for i := firstFinding; i < len(findings); i++ {
+				AttributeSocketOwner(&findings[i], uint32(uid))
 			}
 		}
 	}

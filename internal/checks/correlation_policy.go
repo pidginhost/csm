@@ -50,16 +50,10 @@ var correlationReasonSentences = map[string]string{
 
 // Attribution gaps documented on eligible checks. A gap never changes
 // eligibility: an attributed Critical still counts.
-const (
-	gapSocketOwner        = "socket-owner"
-	gapPartialSocketOwner = "partial-socket-owner"
-	gapEnvelopeSender     = "envelope-sender"
-)
+const gapEnvelopeSender = "envelope-sender"
 
 var correlationGapSentences = map[string]string{
-	gapSocketOwner:        "periodic socket finding has no hosting owner; an unattributed Critical is counted in diagnostics only",
-	gapPartialSocketOwner: "periodic evaluator supplies no tenant; realtime process enrichment can supply one but can miss",
-	gapEnvelopeSender:     "volume aggregate keyed by the attacker-controlled envelope sender; no verified owner exists",
+	gapEnvelopeSender: "sender-domain volume aggregate is unattributed when contributing submissions are unverified or belong to different accounts",
 }
 
 // validateCorrelationPolicy returns the first policy violation in entries,

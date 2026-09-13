@@ -325,9 +325,9 @@ var checkRegistry = []CheckInfo{
 	{Name: "perf_wp_transients", Category: CategoryPerformance, Correlation: CorrelationIgnored, CorrelationReason: reasonPerformance},
 
 	// --- Network & Firewall ---------------------------------------------
-	{Name: "backdoor_port", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent, CorrelationGap: gapSocketOwner},
-	{Name: "backdoor_port_outbound", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent, CorrelationGap: gapSocketOwner},
-	{Name: "c2_connection", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent, CorrelationGap: gapSocketOwner},
+	{Name: "backdoor_port", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent},
+	{Name: "backdoor_port_outbound", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent},
+	{Name: "c2_connection", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent},
 	{Name: "direct_smtp_egress", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent},
 	{Name: "dns_connection", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "dns_zone_change", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
@@ -335,7 +335,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "firewall", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "firewall_ports", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "firewall_ipv6_unmanaged", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
-	{Name: "bad_asn_outbound", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent, CorrelationGap: gapPartialSocketOwner},
+	{Name: "bad_asn_outbound", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent},
 	{Name: "infra_ips_unresolvable", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "ip_reputation", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "reputation_quota_exhausted", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

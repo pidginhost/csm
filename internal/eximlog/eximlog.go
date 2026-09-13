@@ -43,36 +43,57 @@ func hFieldMarkerStart(line string, valueStart int) int {
 // genuine H= field that occurs earlier on the line.
 func unprefixedClientStart(line string) (start, markerStart int) {
 	markerStart = -1
-	t := strings.Index(line, " T=")
+	offset, fields := peerFields(line)
+	t := strings.Index(fields, " T=")
 	for _, marker := range []string{
 		"authenticator failed for ",
 		"TLS error on connection from ",
 		"SMTP connection from ",
 	} {
-		idx := strings.Index(line, marker)
+		idx := strings.Index(fields, marker)
 		if idx < 0 || (t >= 0 && t < idx) {
 			continue
 		}
-		if markerStart < 0 || idx < markerStart {
-			markerStart = idx
-			start = idx + len(marker)
+		if markerStart < 0 || offset+idx < markerStart {
+			markerStart = offset + idx
+			start = offset + idx + len(marker)
 		}
 	}
 	return start, markerStart
 }
 
+// peerFields bounds host-field searches to reception metadata on arrivals.
+// The sender, authentication and post-size fields can contain client data.
+// Other records are searched from the start.
+func peerFields(line string) (int, string) {
+	accept := strings.Index(line, " <= ")
+	if accept < 0 || !arrivalPrefix(line[:accept]) {
+		return 0, line
+	}
+	sender := accept + len(" <= ")
+	offset := sender + envelopeEnd(line[sender:])
+	fields := line[offset:]
+	for _, boundary := range []string{" A=", " S="} {
+		if end := strings.Index(fields, boundary); end >= 0 {
+			fields = fields[:end]
+		}
+	}
+	return offset, fields
+}
+
 // HFieldStart returns the offset just past the H= marker and true when the
 // line carries a real H= field. An H= that appears after T= is inside the
-// Subject and is ignored.
+// Subject and is ignored, as is one in an arrival's message data.
 func HFieldStart(line string) (int, bool) {
 	if strings.HasPrefix(line, "H=") {
 		return len("H="), true
 	}
-	if h := strings.Index(line, " H="); h >= 0 {
-		if t := strings.Index(line, " T="); t >= 0 && t < h {
+	offset, fields := peerFields(line)
+	if h := strings.Index(fields, " H="); h >= 0 {
+		if t := strings.Index(fields, " T="); t >= 0 && t < h {
 			return 0, false
 		}
-		return h + len(" H="), true
+		return offset + h + len(" H="), true
 	}
 	return 0, false
 }
@@ -89,6 +110,11 @@ func HFieldClientIP(s string) string {
 // candidate must be followed by a real H= boundary, and a second plausible
 // candidate makes the field ambiguous instead of letting junk HELO text win.
 func HFieldClientIPAndEnd(s string) (string, int) {
+	// Remote ident follows the peer. A U= marker before a candidate means
+	// greeting delimiters hid the real peer and ident boundary. Text after
+	// the peer is not checked this way: subjects, addresses and login names
+	// placed there by any sender must not remove the connecting address.
+	identStart := strings.Index(s, " U=")
 	parenDepth := 0
 	quoted := false
 	client := ""
@@ -103,6 +129,11 @@ func HFieldClientIPAndEnd(s string) (string, int) {
 				quoted = false
 			}
 			continue
+		}
+		// Authentication and later message fields can contain client data.
+		// Their address literals and delimiters do not describe the peer.
+		if parenDepth == 0 && (strings.HasPrefix(s[i:], " A=") || strings.HasPrefix(s[i:], " S=")) {
+			break
 		}
 		switch s[i] {
 		case '(':
@@ -125,7 +156,7 @@ func HFieldClientIPAndEnd(s string) (string, int) {
 				candidate := s[i+1 : i+1+end]
 				after := s[i+1+end+1:]
 				if net.ParseIP(candidate) != nil && hFieldClientIPTerminated(after) {
-					if client != "" {
+					if client != "" || (identStart >= 0 && identStart < i) {
 						return "", 0
 					}
 					client = candidate
@@ -164,6 +195,9 @@ func beginsNextField(s string) bool {
 
 func hFieldClientIPTerminated(s string) bool {
 	rest := withoutLoggedPort(s)
+	if after, ok := strings.CutPrefix(rest, " TFO"); ok {
+		rest = strings.TrimPrefix(after, "*")
+	}
 	return rest == "" || beginsNextField(rest) ||
 		strings.HasPrefix(rest, " authenticator failed") ||
 		strings.HasPrefix(rest, " rejected RCPT")
@@ -199,6 +233,8 @@ func withoutLoggedPort(s string) string {
 // one plausible peer or malformed parentheses are rejected; otherwise a junk
 // HELO could make CSM block an address supplied by the peer.
 func hostAndIdentClientIP(s string) string {
+	// host_and_ident writes remote U= after the peer, as in an H= record.
+	identStart := strings.Index(s, " U=")
 	parenDepth := 0
 	quoted := false
 	client := ""
@@ -234,8 +270,13 @@ func hostAndIdentClientIP(s string) string {
 				candidate := s[i+1 : i+1+end]
 				after := s[i+1+end+1:]
 				if net.ParseIP(candidate) != nil && hostAndIdentClientIPTerminated(after) {
-					if client != "" {
+					if client != "" || (identStart >= 0 && identStart < i) {
 						return ""
+					}
+					// Failure details, including the attempted login name,
+					// follow the peer and are not host information.
+					if failureDetailsFollow(after) {
+						return candidate
 					}
 					client = candidate
 				}
@@ -247,6 +288,33 @@ func hostAndIdentClientIP(s string) string {
 		return ""
 	}
 	return client
+}
+
+// failureDetailsFollow reports whether s, the text after a peer's closing
+// bracket, holds only the logged port, local interface and connection ID
+// before the ": " that starts failure details. Remote ident text can contain
+// that separator, so a U= field never qualifies.
+func failureDetailsFollow(s string) bool {
+	rest := withoutLoggedPort(s)
+	if strings.HasPrefix(rest, " I=[") {
+		end := strings.IndexByte(rest, ']')
+		if end < 0 || net.ParseIP(rest[len(" I=["):end]) == nil {
+			return false
+		}
+		rest = withoutLoggedPort(rest[end+1:])
+	}
+	if strings.HasPrefix(rest, " Ci=") {
+		digits := rest[len(" Ci="):]
+		n := 0
+		for n < len(digits) && digits[n] >= '0' && digits[n] <= '9' {
+			n++
+		}
+		if n == 0 {
+			return false
+		}
+		rest = digits[n:]
+	}
+	return strings.HasPrefix(rest, ": ")
 }
 
 func interfaceAddressAt(s string, bracket int) bool {
