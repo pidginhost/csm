@@ -1246,13 +1246,32 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	for owner := range disabledOwnerSet {
 		purgeNames = append(purgeNames, logicalOwnerFindingNames[owner]...)
 	}
+	// Selected checks that never completed (including timeouts, panics and
+	// throttle skips) did not examine their prior findings. Reuse the known
+	// completion sets to protect that state without authorizing any purge.
+	uncompletedOwners := make(map[string]bool)
+	for _, check := range enabledChecks {
+		uncompletedOwners[check.name] = true
+		for _, owner := range hostedOwners[check.name] {
+			uncompletedOwners[owner] = true
+		}
+	}
+	for _, check := range completedChecks {
+		delete(uncompletedOwners, check.name)
+	}
+	for _, owner := range completedOwners {
+		delete(uncompletedOwners, owner)
+	}
 	incompleteFindingNames := make(map[string]bool)
-	for _, owner := range incompleteRan {
+	for owner := range uncompletedOwners {
 		names := append([]string{owner}, runnerFindingNames[owner]...)
 		names = append(names, logicalOwnerFindingNames[owner]...)
 		for _, name := range names {
 			incompleteFindingNames[name] = true
 		}
+	}
+	// Only checks that returned replace their per-run coverage summaries.
+	for _, owner := range incompleteRan {
 		for _, name := range perRunFindingNames[owner] {
 			delete(incompleteFindingNames, name)
 		}

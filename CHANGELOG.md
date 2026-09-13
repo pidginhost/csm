@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Incomplete scans keep earlier findings when new results fill the active list, even if no database could be inspected.
+- Incomplete scans keep earlier findings when new results fill the active list, even if no database could be inspected. Timeouts and internal failures keep the same protection.
 
 - Automatic firewall actions now link to their source findings in the audit log, including delayed retries and escalations. Failed and refused attempts keep the same attribution.
 

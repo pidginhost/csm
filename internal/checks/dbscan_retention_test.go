@@ -178,3 +178,59 @@ func TestDatabaseWhollyIncompleteScanRetainsFindingsAtCap(t *testing.T) {
 		})
 	}
 }
+
+func TestInterruptedDatabaseScanRetainsFindingsAtCap(t *testing.T) {
+	for _, failure := range []string{"timeout", "panic"} {
+		t.Run(failure, func(t *testing.T) {
+			previous := timeoutForFunc
+			timeoutForFunc = func(name string) time.Duration {
+				if name == "db_content" {
+					return 25 * time.Millisecond
+				}
+				return previous(name)
+			}
+			t.Cleanup(func() { timeoutForFunc = previous })
+			st, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			old := []alert.Finding{
+				{Check: "db_post_injection", DedupKey: "scoped", CoverageScope: "unread", Severity: alert.Warning, Timestamp: time.Unix(100, 0)},
+				{Check: "db_post_injection", DedupKey: "legacy", Severity: alert.Warning, Timestamp: time.Unix(100, 0)},
+			}
+			st.PurgeAndMergeFindings(nil, old)
+			finished := make(chan struct{})
+			ctx, gaps := WithCoverageGaps(context.Background())
+			findings, purge := runParallelWithContext(ctx, &config.Config{}, nil, []namedCheck{
+				{name: "db_content", fn: func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+					defer close(finished)
+					if failure == "panic" {
+						panic("scanner failure")
+					}
+					<-ctx.Done()
+					return nil
+				}},
+				{name: "other", fn: func(context.Context, *config.Config, *state.Store) []alert.Finding {
+					fresh := make([]alert.Finding, 16000)
+					for i := range fresh {
+						fresh[i] = alert.Finding{Check: "other", DedupKey: fmt.Sprint(i), Severity: alert.High}
+					}
+					return fresh
+				}},
+			}, "test", true)
+			<-finished
+			StoreLatestScanFindingsWithCoverage(st, purge, findings, gaps.Snapshot())
+			retained := make(map[string]alert.Finding)
+			for _, f := range st.LatestFindings() {
+				retained[f.Key()] = f
+			}
+			for _, f := range old {
+				got, ok := retained[f.Key()]
+				if !ok || got.CoverageScope != f.CoverageScope || !got.FirstSeen.Equal(f.Timestamp) {
+					t.Errorf("interrupted scan lost prior finding %q or its observation: %+v", f.DedupKey, got)
+				}
+			}
+		})
+	}
+}
