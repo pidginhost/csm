@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 )
@@ -94,6 +95,48 @@ func systemdServiceUnitFor(binaryPath string, systemdVersion int) string {
 	}
 	out = append(out, pendingComments...)
 	return strings.Join(out, "\n")
+}
+
+// systemdExecDirectoryBases maps the exec-directory directives to the base
+// systemd creates their directories under before it sets up the namespace.
+var systemdExecDirectoryBases = map[string]string{
+	"RuntimeDirectory":       "/run",
+	"StateDirectory":         "/var/lib",
+	"CacheDirectory":         "/var/cache",
+	"LogsDirectory":          "/var/log",
+	"ConfigurationDirectory": "/etc",
+}
+
+// systemdUnitRequiredWritableDirs returns the ReadWritePaths entries without
+// the "-" tolerate-absent prefix that systemd does not create itself. Each one
+// must exist before the unit starts or namespace setup fails with
+// status=226/NAMESPACE.
+func systemdUnitRequiredWritableDirs(unit string) []string {
+	managed := make(map[string]bool)
+	var grants []string
+	for _, line := range strings.Split(unit, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		if key == "ReadWritePaths" {
+			grants = append(grants, strings.Fields(value)...)
+			continue
+		}
+		if base, ok := systemdExecDirectoryBases[key]; ok {
+			for _, name := range strings.Fields(value) {
+				managed[path.Join(base, name)] = true
+			}
+		}
+	}
+	var out []string
+	for _, grant := range grants {
+		if strings.HasPrefix(grant, "-") || managed[grant] {
+			continue
+		}
+		out = append(out, grant)
+	}
+	return out
 }
 
 func systemdServiceUnit(binaryPath string) string {
