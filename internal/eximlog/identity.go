@@ -52,6 +52,7 @@ func submissionFields(line string) (submitFields, bool) {
 	}
 	rest = rest[end:]
 	seen := map[string]bool{}
+metadata:
 	for rest != "" {
 		rest = strings.TrimLeft(rest, " \t\r\n")
 		// Exim writes submission metadata before the message size. Later
@@ -86,10 +87,16 @@ func submissionFields(line string) (submitFields, bool) {
 				if ok && (authenticator == "dovecot_login" || authenticator == "dovecot_plain") {
 					// smtp_mailauth can append an envelope identity after the
 					// authenticated identity. Only the second A= item is trusted.
-					out.auth, _, _ = strings.Cut(identity, ":")
+					auth, _, mailauth := strings.Cut(identity, ":")
+					out.auth = auth
 					if strings.Count(out.auth, "@") > 1 || strings.HasPrefix(out.auth, "@") ||
 						strings.HasSuffix(out.auth, "@") || strings.ContainsAny(out.auth, " \t\r\n\"\\") {
 						return submitFields{}, false
+					}
+					if mailauth {
+						// The optional envelope is client-supplied xtext,
+						// not additional submission metadata.
+						break metadata
 					}
 				}
 			case "U":

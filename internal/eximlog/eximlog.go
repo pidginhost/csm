@@ -43,14 +43,14 @@ func hFieldMarkerStart(line string, valueStart int) int {
 // genuine H= field that occurs earlier on the line.
 func unprefixedClientStart(line string) (start, markerStart int) {
 	markerStart = -1
-	offset := fieldsStart(line)
-	t := strings.Index(line[offset:], " T=")
+	offset, fields := peerFields(line)
+	t := strings.Index(fields, " T=")
 	for _, marker := range []string{
 		"authenticator failed for ",
 		"TLS error on connection from ",
 		"SMTP connection from ",
 	} {
-		idx := strings.Index(line[offset:], marker)
+		idx := strings.Index(fields, marker)
 		if idx < 0 || (t >= 0 && t < idx) {
 			continue
 		}
@@ -62,27 +62,33 @@ func unprefixedClientStart(line string) (start, markerStart int) {
 	return start, markerStart
 }
 
-// fieldsStart returns where logged fields begin. On an arrival record that
-// is after the envelope sender, whose quoted local part can contain text
-// resembling host fields. Other records are searched from the start.
-func fieldsStart(line string) int {
+// peerFields bounds host-field searches to reception metadata on arrivals.
+// The sender, authentication and post-size fields can contain client data.
+// Other records are searched from the start.
+func peerFields(line string) (int, string) {
 	accept := strings.Index(line, " <= ")
 	if accept < 0 || !arrivalPrefix(line[:accept]) {
-		return 0
+		return 0, line
 	}
 	sender := accept + len(" <= ")
-	return sender + envelopeEnd(line[sender:])
+	offset := sender + envelopeEnd(line[sender:])
+	fields := line[offset:]
+	for _, boundary := range []string{" A=", " S="} {
+		if end := strings.Index(fields, boundary); end >= 0 {
+			fields = fields[:end]
+		}
+	}
+	return offset, fields
 }
 
 // HFieldStart returns the offset just past the H= marker and true when the
 // line carries a real H= field. An H= that appears after T= is inside the
-// Subject and is ignored, as is one inside an arrival's envelope sender.
+// Subject and is ignored, as is one in an arrival's message data.
 func HFieldStart(line string) (int, bool) {
 	if strings.HasPrefix(line, "H=") {
 		return len("H="), true
 	}
-	offset := fieldsStart(line)
-	fields := line[offset:]
+	offset, fields := peerFields(line)
 	if h := strings.Index(fields, " H="); h >= 0 {
 		if t := strings.Index(fields, " T="); t >= 0 && t < h {
 			return 0, false
@@ -123,6 +129,11 @@ func HFieldClientIPAndEnd(s string) (string, int) {
 				quoted = false
 			}
 			continue
+		}
+		// Authentication and later message fields can contain client data.
+		// Their address literals and delimiters do not describe the peer.
+		if parenDepth == 0 && (strings.HasPrefix(s[i:], " A=") || strings.HasPrefix(s[i:], " S=")) {
+			break
 		}
 		switch s[i] {
 		case '(':
@@ -184,6 +195,9 @@ func beginsNextField(s string) bool {
 
 func hFieldClientIPTerminated(s string) bool {
 	rest := withoutLoggedPort(s)
+	if after, ok := strings.CutPrefix(rest, " TFO"); ok {
+		rest = strings.TrimPrefix(after, "*")
+	}
 	return rest == "" || beginsNextField(rest) ||
 		strings.HasPrefix(rest, " authenticator failed") ||
 		strings.HasPrefix(rest, " rejected RCPT")

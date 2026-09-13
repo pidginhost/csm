@@ -482,7 +482,12 @@ branches:
   permission decision. Submission identities are read only from reception
   metadata before the message size; message IDs, subjects, addresses and
   login names cannot supply, replace or remove an owner or connecting
-  address. The submission boundary follows
+  address. Address literals in message IDs and recipients remain message
+  data, and local arrivals do not acquire a peer from later metadata.
+  An optional MAIL AUTH value follows the authenticated identity and does
+  not change that identity or the peer.
+  TCP Fast Open connections retain the same peer and ownership checks.
+  The submission boundary follows
   [Exim's reception log fields](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-log_files.html)
   and assumes Exim's default greeting syntax check.
 - Process, login and crontab producers accept a system user as owner only

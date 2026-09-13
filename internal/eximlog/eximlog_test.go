@@ -10,6 +10,8 @@ func TestClientIP(t *testing.T) {
 	}{
 		{"h field client", "H=hostname [203.0.113.5]:12345", "203.0.113.5"},
 		{"h field before remote ident", "H=hostname [203.0.113.5]:12345 U=remote P=esmtp S=100", "203.0.113.5"},
+		{"h field fast open", "H=hostname [203.0.113.5]:12345 TFO P=esmtp S=100", "203.0.113.5"},
+		{"h field fast open data before remote ident", "H=hostname [203.0.113.5]:12345 TFO* U=remote P=esmtp S=100", "203.0.113.5"},
 		{"h field interface before remote ident", "H=hostname [2001:db8::5]:12345 I=[192.0.2.25]:25 TFO* U=remote P=esmtp S=100", "2001:db8::5"},
 		{"unprefixed peer before remote ident", "SMTP connection from hostname [203.0.113.5]:12345 U=remote", "203.0.113.5"},
 		{"unprefixed interface before remote ident", "SMTP connection from hostname [2001:db8::5]:12345 I=[192.0.2.25]:25 U=remote", "2001:db8::5"},

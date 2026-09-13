@@ -16,6 +16,7 @@ func TestMailVolumeAttributesVerifiedSubmitter(t *testing.T) {
 	withOwnerTable(t)
 	for _, tc := range []struct{ name, fields, owner string }{
 		{"authenticated mailbox", "H=mail.example.org [203.0.113.5] P=esmtpsa A=dovecot_login:user@example.net S=100", "bob"},
+		{"fast open authenticated mailbox", "H=mail.example.org [203.0.113.5]:2525 TFO* P=esmtpsa A=dovecot_login:user@example.net S=100", "bob"},
 		{"bare authenticated account", "H=mail.example.org [203.0.113.5] P=esmtpsa A=dovecot_plain:bob S=100", "bob"},
 		{"local submission", "U=bob P=local S=100", "bob"},
 		{"local message id with host text", `U=bob P=local S=100 id="note H=mail.example"@example.org`, "bob"},
@@ -27,6 +28,9 @@ func TestMailVolumeAttributesVerifiedSubmitter(t *testing.T) {
 		{"helo cannot hide remote ident", "H=(hello() [203.0.113.5] U=) [192.0.2.8] P=esmtpsa A=dovecot_login:user@example.net S=100 P=esmtp S=200", ""},
 		{"subject cannot hide submitter", `H=mail.example.org [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:user@example.net S=100 T="[192.0.2.8]:25 U=remote"`, "bob"},
 		{"recipient cannot hide submitter", `H=mail.example.org [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:user@example.net S=100 T="hello" for "[192.0.2.8]:25 U=remote"@example.org`, "bob"},
+		{"message id address literal", `H=mail.example.org [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:user@example.net S=100 id=notice@[192.0.2.1]`, "bob"},
+		{"optional mailauth data", `H=mail.example.org [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:user@example.net:notice@example.org U=remote S=100`, "bob"},
+		{"recipient address literal", `H=mail.example.org [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:user@example.net S=100 for recipient@[2001:db8::1]`, "bob"},
 		{"system submission", "U=nobody P=local S=100", ""},
 		{"unknown submission", "U=ghost P=local S=100", ""},
 		{"unknown mailbox", "H=mail.example.org [203.0.113.5] P=esmtpsa A=dovecot_login:user@example.org S=100", ""},

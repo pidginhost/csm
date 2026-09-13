@@ -8,6 +8,9 @@ import (
 func TestSubmitterUsesArrivalMetadata(t *testing.T) {
 	for _, tc := range []struct{ name, prefix, fields, want string }{
 		{"authenticated", "2026-01-01 10:00:00", "H=mail.example [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:bob@example.net S=100", "bob@example.net"},
+		{"fast open", "2026-01-01 10:00:00", "H=mail.example [203.0.113.5]:2525 TFO P=esmtpsa A=dovecot_login:bob@example.net S=100", "bob@example.net"},
+		{"fast open data", "2026-01-01 10:00:00", "H=mail.example [203.0.113.5]:2525 TFO* P=esmtpsa A=dovecot_login:bob@example.net S=100", "bob@example.net"},
+		{"fast open ident", "2026-01-01 10:00:00", "H=mail.example [203.0.113.5]:2525 TFO* U=remote P=esmtp S=100", ""},
 		{"apostrophe in mailbox", "2026-01-01 10:00:00", "H=mail.example [203.0.113.5] P=esmtpsa A=dovecot_login:o'brien@example.net S=100", "o'brien@example.net"},
 		{"local", "2026-01-01 10:00:00", "U=bob P=local S=100", "bob"},
 		{"milliseconds zone pid", "2026-01-01 10:00:00.123 +0200 [1234]", "U=bob P=local S=100", "bob"},
