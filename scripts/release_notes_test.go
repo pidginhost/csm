@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -275,5 +276,95 @@ func TestReleaseNotesFailsOnAMissingVersion(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "3.32.0") {
 		t.Fatalf("the failure must name the version it looked for, got %q", stderr)
+	}
+}
+
+// looseEntries reports list content following a blank line within a changelog
+// list. A blank before an indented continuation also makes the list loose,
+// wrapping every entry in its own paragraph on the release page.
+func looseEntries(body string) []int {
+	var loose []int
+	prevEntry, blank := false, false
+	for i, line := range strings.Split(body, "\n") {
+		indented := strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
+		switch {
+		case strings.TrimSpace(line) == "":
+			blank = true
+			continue
+		case strings.HasPrefix(line, "- ") || (prevEntry && indented):
+			if prevEntry && blank {
+				loose = append(loose, i+1)
+			}
+			prevEntry = true
+		default:
+			prevEntry = false
+		}
+		blank = false
+	}
+	return loose
+}
+
+func TestLooseEntriesFindsOnlyBlankSeparatedEntries(t *testing.T) {
+	body := `# Changelog
+
+## [3.38.0] - 2026-09-13
+
+### Added
+
+- A tight entry.
+- Another tight entry.
+  - an indented sub-point
+
+- A loose entry.
+
+### Fixed
+
+- The first entry under a new heading.
+`
+	got := fmt.Sprint(looseEntries(body))
+	if got != "[11]" {
+		t.Fatalf("want only line 11 reported, got %s", got)
+	}
+}
+
+func TestLooseEntriesWithContinuations(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"tight wrapped entry", "- First.\n  Continued.\n- Second.\n", "[]"},
+		{"tight tab continuation", "- First.\n\tContinued.\n- Second.\n", "[]"},
+		{"blank before wrapped text", "- First.\n\n  Continued.\n- Second.\n", "[3]"},
+		{"blank before tab continuation", "- First.\n\n\tContinued.\n- Second.\n", "[3]"},
+		{"blank after tab continuation", "- First.\n\tContinued.\n\n- Second.\n", "[4]"},
+		{"loose final entry", "- First.\n- Second.\n\n  Continued.\n", "[4]"},
+		{"blank before nested list", "- First.\n\n  - Nested.\n- Second.\n", "[3]"},
+		{"whitespace separator", "- First.\n \t\r\n  Continued.\n- Second.\n", "[3]"},
+		{"new subsection", "- First.\n  Continued.\n\n#### Next\n\n- Second.\n", "[]"},
+		{"trailing blanks", "- First.\n  Continued.\n\n", "[]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fmt.Sprint(looseEntries(tc.body)); got != tc.want {
+				t.Fatalf("loose lines = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestChangelogEntriesAreNotSeparatedByBlankLines(t *testing.T) {
+	root := repoRoot(t)
+	archives, err := filepath.Glob(filepath.Join(root, "docs", "changelog", "*.md"))
+	if err != nil {
+		t.Fatalf("glob changelog archives: %v", err)
+	}
+	for _, path := range append([]string{filepath.Join(root, "CHANGELOG.md")}, archives...) {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if loose := looseEntries(string(body)); len(loose) > 0 {
+			t.Errorf("%s: entries separated by a blank line at lines %v; keep a section's entries on consecutive lines", path, loose)
+		}
 	}
 }

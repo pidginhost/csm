@@ -167,6 +167,7 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 To cut a release:
 
 1. Move the `[Unreleased]` heading in `CHANGELOG.md` to the new version (e.g. `[2.4.2] - YYYY-MM-DD`), commit as `release: cut X.Y.Z`.
+   `CHANGELOG.md` holds one block of ten minor versions. The first release of a new block (3.40.0, 3.50.0, 4.0.0) moves the previous block and its link references to `docs/changelog/<first>-<last>.md` and adds that file to the archive list at the top of `CHANGELOG.md`.
 2. Tag and push:
    ```bash
    git tag vX.Y.Z
