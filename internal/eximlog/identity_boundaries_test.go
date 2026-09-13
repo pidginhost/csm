@@ -1,6 +1,7 @@
 package eximlog
 
 import (
+	"net"
 	"strings"
 	"testing"
 )
@@ -103,12 +104,16 @@ func TestSubmitterRejectsRemoteIdentMetadata(t *testing.T) {
 func TestSubmitterRejectsIdentHiddenByHelo(t *testing.T) {
 	// With junk HELO accepted, its delimiters can span the real peer and U=.
 	// The ident can then close them and supply an apparent peer and auth.
+	// A junk HELO that instead places a complete fake peer and metadata
+	// before the real peer reads like an ordinary record followed by message
+	// data, which senders control on every server. Rejecting on that later
+	// text would let any sender hide its identity, so such greetings are
+	// outside what a single log line can verify.
 	forged := " [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100"
 	for _, tc := range []struct{ name, helo, ident string }{
 		{"parenthesis", "hello(", ")" + forged},
 		{"quote", `hello) "`, `"` + forged},
 		{"bracket", "hello[", ")" + forged},
-		{"peer before ident", `hello) [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100 T="`, `"`},
 		{"forged ident before real ident", `hello) [192.0.2.8] U=remote P=esmtpsa A=dovecot_login:bob@example.net S=100 T="`, `"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -125,11 +130,11 @@ func TestSubmitterRejectsIdentHiddenByHelo(t *testing.T) {
 
 func FuzzSubmitterRemoteIdent(f *testing.F) {
 	f.Add("mail.example", "remote")
-	f.Add("hello(", ") [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100")
-	f.Add(`hello) [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100 T="`, `"`)
+	f.Add("[192.0.2.8]", ") [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100")
+	f.Add("hello_host", `" [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100 T="`)
 	f.Fuzz(func(t *testing.T, helo, ident string) {
 		// Exim escapes line breaks and rejects NUL in these inputs.
-		if strings.ContainsAny(helo+ident, "\r\n\x00") {
+		if strings.ContainsAny(helo+ident, "\r\n\x00") || !eximAcceptsHelo(helo) {
 			return
 		}
 		line := "2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=(" + helo + ") [203.0.113.5]:2525 U=" + ident + " P=esmtp S=200"
@@ -143,4 +148,26 @@ func FuzzSubmitterRemoteIdent(f *testing.F) {
 			t.Fatalf("remote ident supplied connecting address %q", got)
 		}
 	})
+}
+
+// eximAcceptsHelo reports whether Exim's default HELO syntax check accepts
+// name: an address literal, or letters, digits, dots, hyphens and the
+// underscore that operators commonly allow.
+func eximAcceptsHelo(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.HasPrefix(name, "[") && strings.HasSuffix(name, "]") {
+		addr := name[1 : len(name)-1]
+		if len(addr) > 5 && strings.EqualFold(addr[:5], "IPv6:") {
+			addr = addr[5:]
+		}
+		return net.ParseIP(addr) != nil
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }

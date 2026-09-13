@@ -472,17 +472,19 @@ branches:
   root. Credential and bulk-service findings use the authenticated identity,
   never the envelope sender. A sender-domain volume aggregate carries an
   owner only when every counted arrival proves the same local account through
-  authentication or local submission. Arrivals containing remote ident
-  usernames stay unattributed: that unquoted text can imitate later
-  authentication metadata. Records with ambiguous greetings also remain
-  unattributed and cannot supply a connecting address. Mixed or unverified
-  aggregates stay unattributed without reducing the volume count.
-  Owner lookups run after tracker locks are
+  authentication or local submission. Arrivals with a remote ident username
+  after the connecting address stay unattributed: that unquoted text can
+  imitate later authentication metadata. Records whose greeting hides the
+  connecting address also remain unattributed and supply no address. Mixed
+  or unverified aggregates stay unattributed without reducing the volume
+  count. Owner lookups run after tracker locks are
   released. Mail hold and governor findings require a local mail-server
   permission decision. Submission identities are read only from reception
-  metadata before the message size; message IDs, subjects and recipients
-  cannot supply or replace an owner. The submission boundary follows
-  [Exim's reception log fields](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-log_files.html).
+  metadata before the message size; message IDs, subjects, addresses and
+  login names cannot supply, replace or remove an owner or connecting
+  address. The submission boundary follows
+  [Exim's reception log fields](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-log_files.html)
+  and assumes Exim's default greeting syntax check.
 - Process, login and crontab producers accept a system user as owner only
   when its home directory sits directly under an account root, so root,
   service users and unknown uids never become an account. Direct SMTP findings

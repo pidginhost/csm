@@ -9,14 +9,13 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ## [Unreleased]
 
+### Security
+
+- Mail log parsing no longer takes an authenticated user from message IDs, delivery replies, quoted fields or records carrying a remote ident username.
+
 ### Fixed
 
-- Ambiguous mail greetings can no longer hide remote identity text to forge account ownership or a connecting address.
-- Mail records with ambiguous remote identity text no longer supply account ownership or authenticated activity.
-- Mail attribution ignores forged identities in message metadata and preserves verified submitters when envelope identities contain quoted text.
-- A firewall queue test now waits for the diagnostic write before checking failure accounting.
-- Socket and mail findings now keep verified account ownership through deduplication. Mixed or unverified mail remains unattributed, and mail authentication parsing rejects forged arrival fragments.
-- A WordPress verification test now waits for its pending-state assertion before releasing the download response.
+- Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.
 
 ## [3.38.0] - 2026-09-13
 

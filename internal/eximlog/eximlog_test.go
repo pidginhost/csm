@@ -165,15 +165,14 @@ func TestHFieldClientIPAndEndStopsAtNextField(t *testing.T) {
 	}
 }
 
+// A remote ident marker before the chosen peer shows that greeting
+// delimiters hid the real peer. Peer-like text after the chosen peer is
+// message data and is covered by TestFailureDetailsCannotHidePeer.
 func TestHFieldClientIPAndEndRejectsPeerInIdent(t *testing.T) {
 	for _, s := range []string{
 		`(hello() [203.0.113.5]:2525 U=) [192.0.2.8] P=esmtp S=100`,
 		`(hello) ") [203.0.113.5]:2525 U=" [192.0.2.8] P=esmtp S=100`,
 		`(hello[) [203.0.113.5]:2525 U=) [192.0.2.8] P=esmtp S=100`,
-		`(hello) [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100 T=") [203.0.113.5]:2525 U=" P=esmtp S=200`,
-		`(hello) [203.0.113.5] P=esmtpsa S=100 T=") [203.0.113.5]:2525 U=" P=esmtp S=200`,
-		`(hello) [192.0.2.8] U=remote P=esmtpsa S=100 T=") [203.0.113.5]:2525 U=" P=esmtp S=200`,
-		`(hello) [192.0.2.8] P=esmtpsa S=100 T=") [2001:db8::5]:2525 I=[192.0.2.25]:25 TFO* U=" P=esmtp S=200`,
 	} {
 		if ip, end := HFieldClientIPAndEnd(s); ip != "" || end != 0 {
 			t.Errorf("peer inside remote ident accepted: (%q, %d)", ip, end)
@@ -194,8 +193,6 @@ func TestClientIPRejectsPeerInUnprefixedIdent(t *testing.T) {
 			`(hello() [203.0.113.5]:2525 U=) [192.0.2.8]`,
 			`(hello) ") [203.0.113.5]:2525 U=" [192.0.2.8]`,
 			`(hello[) [203.0.113.5]:2525 U=) [192.0.2.8]`,
-			`(hello) [192.0.2.8]:25 P=fake T=") [203.0.113.5]:2525 U="`,
-			`(hello) [192.0.2.8]:25 U=remote P=fake T=") [203.0.113.5]:2525 U="`,
 		} {
 			if ip := ClientIP(marker + peer + ": connection rejected"); ip != "" {
 				t.Errorf("ClientIP(%q) accepted peer inside remote ident: %q", marker+peer, ip)
