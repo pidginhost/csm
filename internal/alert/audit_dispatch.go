@@ -46,11 +46,31 @@ type managedAuditSink struct {
 // a sink held by another dispatcher. Observers run outside the lock because
 // they can dispatch findings themselves.
 func emitAudit(cfg *config.Config, findings []Finding) {
+	emitAuditWithSources(cfg, findings, nil)
+}
+
+func emitAuditWithSources(cfg *config.Config, findings, sources []Finding) {
 	if cfg == nil {
 		return
 	}
 	for _, f := range findings {
 		notifyFindingObservers(f)
+	}
+	if len(sources) > 0 {
+		// Notification dedup uses condition keys. Audit joins need every
+		// distinct observation, including repeats with a new timestamp.
+		combined := make([]Finding, 0, len(sources)+len(findings))
+		seen := make(map[string]bool, len(sources)+len(findings))
+		for _, batch := range [][]Finding{sources, findings} {
+			for _, f := range batch {
+				id := FindingID(f)
+				if !seen[id] {
+					seen[id] = true
+					combined = append(combined, f)
+				}
+			}
+		}
+		findings = combined
 	}
 	auditMu.Lock()
 	defer auditMu.Unlock()

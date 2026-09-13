@@ -29,6 +29,7 @@ const DefaultNginxMapPath = "/var/cache/csm/challenge_ips.nginx.map"
 
 // challengeEntry stores the challenge metadata for a single IP.
 type challengeEntry struct {
+	FindingID     string
 	ExpiresAt     time.Time
 	Reason        string
 	NonEscalating bool
@@ -36,8 +37,9 @@ type challengeEntry struct {
 
 // ExpiredEntry is returned by ExpiredEntries for escalation.
 type ExpiredEntry struct {
-	IP     string
-	Reason string
+	FindingID string
+	IP        string
+	Reason    string
 }
 
 // IPList manages the set of IPs that should see challenge pages.
@@ -96,20 +98,27 @@ func (l *IPList) SetNginxMap(path string, reload func() error) {
 
 // Add marks an IP for challenge with the given reason.
 func (l *IPList) Add(ip string, reason string, duration time.Duration) {
-	l.add(ip, reason, duration, false)
+	l.add(ip, reason, duration, false, "")
 }
 
 // AddNonEscalating marks an IP for challenge without timeout-to-block escalation.
 func (l *IPList) AddNonEscalating(ip string, reason string, duration time.Duration) {
-	l.add(ip, reason, duration, true)
+	l.add(ip, reason, duration, true, "")
 }
 
-func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscalating bool) {
+// AddWithFindingID preserves the originating audit identity for timeout
+// escalation. It does not change challenge duration or escalation policy.
+func (l *IPList) AddWithFindingID(ip, reason string, duration time.Duration, findingID string) {
+	l.add(ip, reason, duration, false, findingID)
+}
+
+func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscalating bool, findingID string) {
 	l.mu.Lock()
 	l.ips[ip] = challengeEntry{
 		ExpiresAt:     time.Now().Add(duration),
 		Reason:        reason,
 		NonEscalating: nonEscalating,
+		FindingID:     findingID,
 	}
 	changed := l.flush()
 	gate := l.gate
@@ -175,7 +184,7 @@ func (l *IPList) ExpiredEntries() []ExpiredEntry {
 	for ip, entry := range l.ips {
 		if now.After(entry.ExpiresAt) {
 			if !entry.NonEscalating {
-				expired = append(expired, ExpiredEntry{IP: ip, Reason: entry.Reason})
+				expired = append(expired, ExpiredEntry{IP: ip, Reason: entry.Reason, FindingID: entry.FindingID})
 			}
 			delete(l.ips, ip)
 			removed = true

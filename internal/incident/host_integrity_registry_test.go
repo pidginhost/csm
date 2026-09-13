@@ -27,7 +27,7 @@ func TestBinaryConfigTamperOpensAndJoinsHostIncident(t *testing.T) {
 		AutoBlock: incident.IncidentAutoBlockConfig{
 			Enabled: true, BlockAtSeverity: "high",
 		},
-		OnIncidentBlock: func(_, _ string, _ time.Duration) bool { blocks++; return true },
+		OnIncidentBlock: func(_, _ string, _ time.Duration, _ string) bool { blocks++; return true },
 	})
 	f := alert.Finding{Check: "integrity", Severity: alert.Critical, Message: "Binary changed", Timestamp: time.Now()}
 	id, created, err := c.OnFinding(f)

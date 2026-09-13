@@ -295,7 +295,7 @@ func TestAsyncBotVerifier_CancelsInflightOnShutdown(t *testing.T) {
 	started := make(chan struct{})
 	res := &blockingResolver{started: started}
 	a := &AsyncBotVerifier{
-		inflight: make(map[string]struct{}),
+		inflight: make(map[string]time.Time),
 		ch:       make(chan verifyJob, 4),
 		stats:    queuehealth.New(4, time.Minute),
 		v:        map[string]*verifier{"googlebot": newVerifier(res, []string{"googlebot.com"})},
@@ -331,7 +331,7 @@ func TestAsyncBotVerifier_CancelsForwardLookupOnShutdown(t *testing.T) {
 		ptr:     "crawl-66-249-66-99.googlebot.com.",
 	}
 	a := &AsyncBotVerifier{
-		inflight: make(map[string]struct{}),
+		inflight: make(map[string]time.Time),
 		ch:       make(chan verifyJob, 4),
 		stats:    queuehealth.New(4, time.Minute),
 		v:        map[string]*verifier{"googlebot": newVerifier(res, []string{"googlebot.com"})},

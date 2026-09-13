@@ -72,7 +72,7 @@ func TestDatabaseScanIncompleteNamesInstallAndCause(t *testing.T) {
 		"missing_credentials=1 (example: /home/bob/public_html/wp-config.php)\n" +
 		"unreadable_config=1 (example: /home/alice/public_html/wp-config.php)\n" +
 		"unresolved_table_prefix=1 (example: /home/carol/public_html/wp-config.php)\n" +
-		"Findings from the previous complete scan are retained."
+		"Findings without complete database coverage are retained."
 	if details != want {
 		t.Errorf("details = %q, want %q", details, want)
 	}

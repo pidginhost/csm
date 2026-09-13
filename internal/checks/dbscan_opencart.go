@@ -48,14 +48,14 @@ import (
 
 type opencartCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx         context.Context
-	dbName      string
-	dbUser      string
-	dbPass      string
-	dbHost      string
-	dbPrefix    string
-	path        string
-	queryFailed *bool
+	ctx        context.Context
+	dbName     string
+	dbUser     string
+	dbPass     string
+	dbHost     string
+	dbPrefix   string
+	path       string
+	queryState *dbQueryState
 }
 
 func (c opencartCreds) asWPDBCreds() wpDBCreds {
@@ -67,7 +67,7 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 		tablePrefix: c.dbPrefix,
 		queryCtx:    c.ctx,
 		queryOwner:  "db_content_opencart",
-		queryFailed: c.queryFailed,
+		queryState:  c.queryState,
 	}
 }
 
@@ -94,7 +94,7 @@ func scanOpenCartInstall(ctx context.Context, path string, store *state.Store) [
 		return nil
 	}
 	creds.ctx = ctx
-	creds.queryFailed = new(bool)
+	creds.queryState = new(dbQueryState)
 	prefix := creds.dbPrefix
 	if prefix == "" {
 		prefix = "oc_"

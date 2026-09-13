@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // incompleteCheckCollector records owners whose coverage this run could not
@@ -22,17 +24,19 @@ type coverageGapsContextKey struct{}
 type coveragePathCollectorContextKey struct{}
 
 type coveragePathCollector struct {
-	mu           sync.Mutex
-	pathsByOwner map[string]map[string]bool
+	mu            sync.Mutex
+	pathsByOwner  map[string]map[string]bool
+	scopesByOwner map[string]map[string]bool
 }
 
-// CoverageGaps is the path-scoped part of a completed scan's coverage result.
+// CoverageGaps holds file gaps and completed database scopes for a scan.
 // The caller passes it to the atomic purge-and-merge operation so a concurrent
 // update made after the scanner read LatestFindings cannot be retired by a
 // stale carry-forward snapshot.
 type CoverageGaps struct {
-	mu           sync.Mutex
-	pathsByCheck map[string]map[string]bool
+	mu              sync.Mutex
+	pathsByCheck    map[string]map[string]bool
+	completedScopes map[string]map[string]bool
 }
 
 // Paths returns an isolated snapshot of the completed run's path gaps. Each
@@ -46,7 +50,7 @@ func (g *CoverageGaps) Paths() map[string]map[string]bool {
 	return cloneCoverageGapPaths(g.pathsByCheck)
 }
 
-// WithCoverageGaps requests an atomic path-preserving store operation from the
+// WithCoverageGaps requests an atomic coverage-aware store operation from the
 // caller. The runner publishes only its completed snapshot into the handle.
 func WithCoverageGaps(ctx context.Context) (context.Context, *CoverageGaps) {
 	if ctx == nil {
@@ -77,12 +81,13 @@ func coverageGapsFrom(ctx context.Context) *CoverageGaps {
 	return gaps
 }
 
-func (g *CoverageGaps) replace(pathsByCheck map[string]map[string]bool) {
+func (g *CoverageGaps) replace(pathsByCheck map[string]map[string]bool, completedScopes map[string]map[string]bool) {
 	if g == nil {
 		return
 	}
 	g.mu.Lock()
 	g.pathsByCheck = cloneCoverageGapPaths(pathsByCheck)
+	g.completedScopes = cloneCoverageGapPaths(completedScopes)
 	g.mu.Unlock()
 }
 
@@ -226,4 +231,47 @@ func (c *incompleteCheckCollector) contains(name string) bool {
 	defer c.mu.Unlock()
 	_, ok := c.names[name]
 	return ok
+}
+
+// Snapshot includes both file gaps and completed database scopes from the same
+// runner result. Callers must pass this snapshot to the atomic store operation.
+func (g *CoverageGaps) Snapshot() *state.ScanCoverage {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return &state.ScanCoverage{PreservePaths: cloneCoverageGapPaths(g.pathsByCheck), CompletedScopes: cloneCoverageGapPaths(g.completedScopes)}
+}
+
+func recordCompletedCoverageScopes(ctx context.Context, owner string, scopes map[string]bool) {
+	if ctx == nil {
+		return
+	}
+	collector, _ := ctx.Value(coveragePathCollectorContextKey{}).(*coveragePathCollector)
+	if collector == nil {
+		return
+	}
+	collector.mu.Lock()
+	defer collector.mu.Unlock()
+	if collector.scopesByOwner == nil {
+		collector.scopesByOwner = make(map[string]map[string]bool)
+	}
+	complete := make(map[string]bool)
+	for scope, covered := range scopes {
+		if covered && scope != "" {
+			complete[scope] = true
+		}
+	}
+	collector.scopesByOwner[owner] = complete
+}
+
+func (c *coveragePathCollector) completedScopes(owner string) map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]bool, len(c.scopesByOwner[owner]))
+	for scope := range c.scopesByOwner[owner] {
+		out[scope] = true
+	}
+	return out
 }

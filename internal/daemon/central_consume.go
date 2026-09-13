@@ -24,8 +24,9 @@ const (
 )
 
 type centralQueuedAction struct {
-	decision reporting.Decision
-	ip       string
+	findingID string
+	decision  reporting.Decision
+	ip        string
 }
 
 // documentationNets are reserved/non-routable ranges (RFC 5737 documentation,
@@ -136,7 +137,7 @@ func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporti
 	if dec == reporting.DecisionIgnore {
 		return centralQueuedAction{}, false
 	}
-	return centralQueuedAction{decision: dec, ip: ip}, true
+	return centralQueuedAction{decision: dec, ip: ip, findingID: alert.FindingID(f)}, true
 }
 
 func (d *Daemon) performCentralAction(a centralQueuedAction) error {
@@ -152,6 +153,7 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 			Reason:       "central-intel (locally corroborated)",
 			TTL:          centralBlockTTL,
 			Source:       checks.BlockSourceCentral,
+			FindingID:    a.findingID,
 		})
 		if err != nil {
 			return err

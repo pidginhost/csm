@@ -25,6 +25,9 @@ const (
 // Reason is the human evidence recorded in the threat DB, the tracker, and
 // findings.
 type ApplyBlockRequest struct {
+	// FindingID is the original audit identity, captured before display truncation.
+	// Empty means this decision has no originating finding.
+	FindingID    string
 	IP           string
 	EngineReason string
 	Reason       string
@@ -84,7 +87,7 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 // dispatching them.
 func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest, progress func(), observe func(error)) (ApplyBlockResult, error) {
 	progress()
-	outcome, err := callBlockIP(blocker, req.IP, req.EngineReason, req.TTL)
+	outcome, err := callBlockIP(blocker, req.IP, req.EngineReason, req.TTL, req.FindingID)
 	observe(err)
 	observeBlockOutcome(outcome, err, req.Source)
 	res := ApplyBlockResult{Outcome: outcome}
@@ -128,6 +131,7 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 
 	state.IPs = append(state.IPs, blockedIP{
 		IP:        req.IP,
+		FindingID: req.FindingID,
 		Reason:    req.Reason,
 		BlockedAt: time.Now(),
 		ExpiresAt: time.Now().Add(req.TTL),
@@ -162,7 +166,7 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 		if checkPermBlockEscalation(cfg.StatePath, req.IP, count, interval) {
 			permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
 			progress()
-			if promoteToPermanentBlock(blocker, req.IP, permReason) {
+			if promoteToPermanentBlock(blocker, req.IP, permReason, req.FindingID) {
 				res.Findings = append(res.Findings, alert.Finding{
 					Severity:  alert.Critical,
 					Check:     "auto_block",

@@ -92,8 +92,9 @@ type CorrelatorConfig struct {
 	// recorded the block: false means dry-run, transient failure, or an
 	// upstream gate refused, and the audit "credential_spray_block_requested"
 	// action is not appended in that case so operators cannot mistake a
-	// declined request for an enforced block.
-	OnSprayBlock func(ip, reason string, ttl time.Duration) bool
+	// declined request for an enforced block. findingID identifies the latest
+	// eligible source observation, or is empty for an older unlinked timeline.
+	OnSprayBlock func(ip, reason string, ttl time.Duration, findingID string) bool
 
 	// AutoBlock turns on the generic incident-driven firewall hand-off
 	// for non-spray kinds. Independent of SpraySuppression; applies when
@@ -115,7 +116,8 @@ type CorrelatorConfig struct {
 	// disabled, and failed attempts must return false so the correlator
 	// can retry on the next finding instead of permanently latching the
 	// incident. nil disables the path even when AutoBlock is configured.
-	OnIncidentBlock func(ip, reason string, ttl time.Duration) bool
+	// findingID carries the same source attribution as OnSprayBlock.
+	OnIncidentBlock func(ip, reason string, ttl time.Duration, findingID string) bool
 }
 
 // IncidentAutoBlockConfig drives the generic incident-driven firewall
@@ -694,7 +696,7 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	inc.Findings = appendCappedFingerprint(inc.Findings, f.Fingerprint())
 	ev := IncidentEvent{
-		Time:     f.Timestamp,
+		FindingID: alert.FindingID(f), Time: f.Timestamp,
 		Kind:     "finding",
 		Check:    f.Check,
 		Severity: f.Severity.String(),
@@ -1603,6 +1605,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
 	onBlock := c.cfg.OnIncidentBlock
+	findingID := incidentBlockFindingID(inc, ip)
 	return func() {
 		var live bool
 		callbackReturned := false
@@ -1640,7 +1643,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		if !valid {
 			return
 		}
-		live = onBlock(ip, reason, ttl)
+		live = onBlock(ip, reason, ttl, findingID)
 		callbackReturned = true
 	}
 }
@@ -1754,6 +1757,7 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
 	onSprayBlock := c.cfg.OnSprayBlock
+	findingID := incidentBlockFindingID(inc, ip)
 	incidentID := inc.ID
 	return func() {
 		var live bool
@@ -1793,7 +1797,24 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		if !valid {
 			return
 		}
-		live = onSprayBlock(ip, reason, ttl)
+		live = onSprayBlock(ip, reason, ttl, findingID)
 		callbackReturned = true
 	}
+}
+
+// incidentBlockFindingID selects the latest eligible observation for this
+// source while the incident lock is held. Older timelines without an audit
+// identity remain unlinked; display text cannot reconstruct the original ID.
+func incidentBlockFindingID(inc *Incident, ip string) string {
+	ip = normalizeIncidentRemoteIP(ip)
+	if ip == "" {
+		return ""
+	}
+	for i := len(inc.Timeline) - 1; i >= 0; i-- {
+		ev := inc.Timeline[i]
+		if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && !incidentEventAutoBlockExcluded(ev) {
+			return ev.FindingID
+		}
+	}
+	return ""
 }

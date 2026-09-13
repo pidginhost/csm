@@ -248,7 +248,7 @@ func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T
 		mu    sync.Mutex
 		calls []blockCall
 	)
-	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) (bool, error) {
+	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration, _ string) (bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, blockCall{ip: ip, reason: reason, timeout: timeout})
@@ -298,7 +298,7 @@ func TestIncidentCorrelatorSprayBlockerRequiresLiveOutcome(t *testing.T) {
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
 		calls++
 		return false, nil
 	})
@@ -336,7 +336,7 @@ func TestIncidentCorrelatorSprayBlockerSuppressesProtectedIPError(t *testing.T) 
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
 		calls++
 		return false, firewall.ErrIPProtected
 	})
@@ -376,7 +376,7 @@ func TestIncidentCorrelatorAutoBlockSuppressesProtectedIPError(t *testing.T) {
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
 		calls++
 		return false, firewall.ErrIPProtected
 	})

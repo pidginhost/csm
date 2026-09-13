@@ -70,6 +70,10 @@ type Finding struct {
 	Check       string   `json:"check"`
 	Message     string   `json:"message"`
 	Details     string   `json:"details,omitempty"`
+	// CoverageScope identifies a scanner-owned unit that can be retired after
+	// complete coverage. Empty legacy scopes require whole-check completion.
+	// It is opaque, contains no credentials, and does not change dedup identity.
+	CoverageScope string `json:"coverage_scope,omitempty"`
 	// DedupKey, when set, pins the finding's dedup identity (Key and
 	// Fingerprint) regardless of Message/Details content. For findings whose
 	// details embed volatile values (pids, byte counts) that would otherwise
@@ -791,17 +795,32 @@ func FillTimestamps(findings []Finding, now time.Time) {
 
 // Dispatch sends alerts via all configured channels without modifying findings.
 func Dispatch(cfg *config.Config, findings []Finding) error {
+	return DispatchWithSources(cfg, findings, nil)
+}
+
+// DispatchWithSources audits source observations even when notification policy
+// filters them out. Only findings reach notification channels and observers;
+// sources add audit records without changing alert or auto-response policy.
+// Both inputs remain caller-owned and must already carry the times used by
+// actions that reference them. Missing times are filled on copies for ad-hoc use.
+func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error {
 	// Deduplicate owns a copy, so stamping cannot race with callers sharing
 	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
-	FillTimestamps(findings, auditNow())
+	now := auditNow()
+	FillTimestamps(findings, now)
+	sources = append([]Finding(nil), sources...)
+	FillTimestamps(sources, now)
 
 	// Audit log captures every (deduplicated) finding before
 	// FilterBlockedAlerts and the rate limiter, so SIEMs see the
 	// complete picture even when email/webhook are throttled or
 	// when "this IP is already blocked" suppression hides a finding
 	// from the operator-facing channels.
-	emitAudit(cfg, findings)
+	emitAuditWithSources(cfg, findings, sources)
+	if len(findings) == 0 {
+		return nil
+	}
 
 	// Publish to passive observers (e.g. SSE subscribers) immediately after
 	// auditing, before rate-limit and webhook delivery, so subscribers see

@@ -70,16 +70,19 @@ bot. Googlebot, Bingbot, and Applebot also match a shipped IP-range snapshot
 first and fall back to reverse DNS; DuckDuckBot, Amazonbot, Facebook/Meta,
 Brave, and SERanking are rDNS-only.
 
-Reverse-DNS verification is asynchronous, so on the first request from a
-crawler IP (or right after an upgrade clears the verification cache) the
-result is not yet known. During that window a high-volume crawler that
-trips a flood or scanner-profile threshold is routed to the proof-of-work
-challenge rather than hard-blocked: a real crawler ignores the challenge
-but is recognized on the next pass once verification resolves, while a host
-merely spoofing a crawler User-Agent cannot solve it. Once verification
-fails outright, the spoofer is hard-blocked only after it reaches
-`http_ua_spoof_threshold`. When the challenge subsystem is disabled, the
-claimed bot is hard-blocked during the pending-verification window instead.
+Reverse-DNS verification is asynchronous. A newly admitted verification job
+receives a short, bounded pending window, including time spent waiting in the
+queue. High-volume traffic in that window can route to the proof-of-work
+challenge when it is enabled. A full queue, stopped worker, unsupported
+identity, or expired pending window uses the ordinary flood and scanner
+controls instead.
+
+DNS failures, missing reverse DNS, and failed cache writes do not prove a
+spoofed identity. They leave verification unresolved, delay retries, and do
+not renew pending treatment on each retry. Attempt history is bounded; when
+it is full, additional jobs can still verify without a pending exemption.
+A confirmed negative remains eligible for spoof detection. A cached positive
+receives the normal verified-crawler exemption.
 
 GPTBot, ChatGPT-User, OAI-SearchBot, PerplexityBot and ClaudeBot are recognized
 out of the box: their published IP ranges ship as an embedded snapshot and are

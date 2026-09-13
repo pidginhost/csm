@@ -37,7 +37,7 @@ func TestBlockSessionAttackerIPs_RoutesThroughRealBlocker(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	before := time.Now()
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1")
+	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", "")
 
 	if blocker.outcomeHits != 1 {
 		t.Fatalf("expected exactly one real firewall block call, got %d", blocker.outcomeHits)
@@ -79,7 +79,7 @@ func TestBlockSessionAttackerIPs_DryRunDoesNotFakeBlock(t *testing.T) {
 	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeDryRun}
 	swapBlocker(t, blocker)
 
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1")
+	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", "")
 
 	for _, a := range actions {
 		if strings.HasPrefix(a.Message, "AUTO-BLOCK:") && strings.Contains(a.Message, "blocked") {
@@ -97,7 +97,7 @@ func TestBlockSessionAttackerIPs_ReturnedActionsStayVolatile(t *testing.T) {
 	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive}
 	swapBlocker(t, blocker)
 
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1")
+	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", "")
 	if len(actions) == 0 {
 		t.Fatal("precondition: expected auto-block action")
 	}

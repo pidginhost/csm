@@ -1318,7 +1318,7 @@ func (c verifyingClassifier) VerificationPending(ipStr, ua string) bool {
 	if _, valid := c.cacheGet(ip, bot); valid {
 		return false
 	}
-	return true
+	return c.async.Pending(ip, bot)
 }
 
 var (

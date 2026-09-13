@@ -74,24 +74,24 @@ var (
 // asWPDBCreds) work uniformly.
 type drupalCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx         context.Context
-	dbName      string
-	dbUser      string
-	dbPass      string
-	dbHost      string
-	path        string
-	queryFailed *bool
+	ctx        context.Context
+	dbName     string
+	dbUser     string
+	dbPass     string
+	dbHost     string
+	path       string
+	queryState *dbQueryState
 }
 
 func (c drupalCreds) asWPDBCreds() wpDBCreds {
 	return wpDBCreds{
-		dbName:      c.dbName,
-		dbUser:      c.dbUser,
-		dbPass:      c.dbPass,
-		dbHost:      c.dbHost,
-		queryCtx:    c.ctx,
-		queryOwner:  "db_content_drupal",
-		queryFailed: c.queryFailed,
+		dbName:     c.dbName,
+		dbUser:     c.dbUser,
+		dbPass:     c.dbPass,
+		dbHost:     c.dbHost,
+		queryCtx:   c.ctx,
+		queryOwner: "db_content_drupal",
+		queryState: c.queryState,
 	}
 }
 
@@ -122,7 +122,7 @@ func scanDrupalInstall(ctx context.Context, path string, store *state.Store) []a
 		return nil
 	}
 	creds.ctx = ctx
-	creds.queryFailed = new(bool)
+	creds.queryState = new(dbQueryState)
 
 	var findings []alert.Finding
 	findings = append(findings, scanDrupalConfig(account, creds)...)

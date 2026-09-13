@@ -18,11 +18,12 @@ const cmsScanRowLimit = 200
 // One extra row distinguishes a complete result at the cap from a truncated
 // query. Failed or partial queries must not establish an administrator baseline.
 func runCMSQuery(creds wpDBCreds, query string) ([]string, bool) {
-	if creds.queryFailed == nil {
-		creds.queryFailed = new(bool)
+	if creds.queryState == nil {
+		creds.queryState = new(dbQueryState)
 	}
 	markIncomplete := func() {
-		*creds.queryFailed = true
+		creds.queryState.failed = true
+		creds.queryState.halted = true
 		markCheckIncomplete(creds.queryCtx, creds.queryCheck())
 	}
 	if creds.queryCtx != nil && creds.queryCtx.Err() != nil {
@@ -38,7 +39,7 @@ func runCMSQuery(creds wpDBCreds, query string) ([]string, bool) {
 		rows = rows[:cmsScanRowLimit]
 		markIncomplete()
 	}
-	return rows, !*creds.queryFailed
+	return rows, !creds.queryState.failed
 }
 
 // cmsDiscover globs every pattern under every account root and returns the

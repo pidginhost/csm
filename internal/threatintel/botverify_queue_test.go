@@ -154,7 +154,9 @@ func TestBotQueueDistinguishesFailuresFromVerificationResults(t *testing.T) {
 				for range 2 {
 					a.Enqueue(ip, tc.bot)
 					synctest.Wait()
-					time.Sleep(6 * time.Second)
+					// Exercise a real retry after both the DNS deadline and the
+					// unresolved-attempt cooldown, preserving the two-attempt counts.
+					time.Sleep(botVerifyTimeout + botVerifyRetryDelay + time.Second)
 					synctest.Wait()
 				}
 				close(stop)

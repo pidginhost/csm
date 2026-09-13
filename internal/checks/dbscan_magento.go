@@ -51,15 +51,15 @@ import (
 // which discovery path produced the creds (useful for messages).
 type magentoCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx         context.Context
-	dbName      string
-	dbUser      string
-	dbPass      string
-	dbHost      string
-	dbPrefix    string
-	version     string // "M1" | "M2"
-	path        string
-	queryFailed *bool
+	ctx        context.Context
+	dbName     string
+	dbUser     string
+	dbPass     string
+	dbHost     string
+	dbPrefix   string
+	version    string // "M1" | "M2"
+	path       string
+	queryState *dbQueryState
 }
 
 func (c magentoCreds) asWPDBCreds() wpDBCreds {
@@ -71,7 +71,7 @@ func (c magentoCreds) asWPDBCreds() wpDBCreds {
 		tablePrefix: c.dbPrefix,
 		queryCtx:    c.ctx,
 		queryOwner:  "db_content_magento",
-		queryFailed: c.queryFailed,
+		queryState:  c.queryState,
 	}
 }
 
@@ -126,7 +126,7 @@ var (
 // outside every account root is not stamped.
 func scanMagentoInstall(ctx context.Context, path, account string, creds magentoCreds, store *state.Store) []alert.Finding {
 	creds.ctx = ctx
-	creds.queryFailed = new(bool)
+	creds.queryState = new(dbQueryState)
 	findings := scanMagentoAll(store, account, creds)
 	if owner, ok := installOwner(path); ok {
 		findings = stampTenantIDIfEmpty(findings, owner)

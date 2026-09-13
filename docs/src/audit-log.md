@@ -1,9 +1,9 @@
 ## Audit Log
 
-CSM ships every deduplicated finding to one or more SIEM-friendly
-sinks before the operator-alert rate limiter runs, so Splunk, Loki,
-Elastic, and friends always see the complete picture even when
-email and webhook traffic is throttled.
+CSM ships source observations and notification findings to one or more
+SIEM-friendly sinks, deduplicated by observation identity within each batch.
+Audit records include sources suppressed by notification filtering or
+rate limits, so SIEM correlation can still identify the original observation.
 
 Two sink types ship today, both opt-in via `csm.yaml`. They can be
 enabled together or independently.
@@ -34,6 +34,22 @@ can pin on `v: 1` and ignore unknown keys.
 (timestamp, check, severity, message, file path). Two emits of the
 same finding produce the same ID, so downstream dedup works across
 re-runs.
+
+Firewall actions caused by a finding carry this same identity in the action
+log, including failed and refused attempts. The identity is captured before
+reason text is shortened and survives queued retries, challenge timeouts,
+central-intelligence decisions, and permanent-block promotion. Subnet and
+incident escalation link the latest known contributing finding. Older stored
+evidence without an identity and manual or maintenance operations remain
+unlinked; CSM does not reconstruct an identity from display text. Database
+session blocks link the original database finding, not a synthetic IP candidate.
+
+The daemon audits source observations even when they repeat an earlier finding
+or are filtered from operator notifications. Distinct observations keep their
+own identities; the same observation appears once within a dispatched batch.
+Notification suppression and downstream finding observers keep their existing
+behavior. Audit delivery still depends on the configured sink and scan findings
+reaching the dispatcher.
 
 The `ts` field records when CSM raised the finding, including process
 monitoring, automatic actions, scanner health, and mail relay storage errors.
@@ -183,8 +199,8 @@ Requires a running daemon.
 
 ### What gets logged
 
-Every finding the alert pipeline produces, after deduplication but
-before:
+Source observations and notification findings reaching the audit dispatcher,
+deduplicated by observation identity within each batch, before:
 
 - the per-account rate limiter (so audit signal is not lost when
   email and webhook are throttled);
@@ -224,7 +240,7 @@ that is read back and compared by the daemon itself, so they are not
 redacted.
 
 The audit log is not a replacement for `csm.history` (the bbolt
-history bucket). Only findings that pass through `alert.Dispatch()`
+history bucket). Only findings that pass through the audit dispatcher
 are emitted. Internal state changes -- daemon startup, reload events,
 config changes -- live in journald via `csm.service` and are not
 mirrored here.
