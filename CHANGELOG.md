@@ -9,6 +9,8 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ## [Unreleased]
 
+## [3.38.0] - 2026-09-13
+
 ### Highlights
 
 - The audit log now records every observation, including repeats and findings kept out of notifications, so expect noticeably more audit records. Automatic firewall actions link back to the finding that caused them.
