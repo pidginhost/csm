@@ -117,7 +117,8 @@ func isDNSNotFound(err error) bool {
 // hot path via store.DB.GetBotVerify with no goroutine.
 type AsyncBotVerifier struct {
 	mu       sync.Mutex
-	inflight map[string]struct{}
+	inflight map[string]time.Time
+	attempts map[string]botVerifyAttempt
 	ch       chan verifyJob
 	v        map[string]*verifier // bot identity -> verifier; guarded by mu
 	res      resolver             // retained so SetOperatorEntries can rebuild v
@@ -125,6 +126,17 @@ type AsyncBotVerifier struct {
 	stats    *queuehealth.Tracker
 	stop     <-chan struct{}
 	closed   bool
+}
+
+// Attempt history prevents each unresolved retry from renewing the initial
+// grace. It is bounded by queue capacity. New sources can replace the oldest
+// completed attempt after its initial cooldown, so repeated failures cannot
+// reserve every slot for the full cache TTL. A live job or newly granted grace
+// is never evicted; retries cannot slide that reservation indefinitely.
+type botVerifyAttempt struct {
+	retryAfter  time.Time
+	retainUntil time.Time
+	expiresAt   time.Time
 }
 
 type verifyJob struct {
@@ -156,7 +168,7 @@ var BotDomains = map[string][]string{
 func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error) *AsyncBotVerifier {
 	res := net.DefaultResolver
 	a := &AsyncBotVerifier{
-		inflight: make(map[string]struct{}),
+		inflight: make(map[string]time.Time),
 		ch:       make(chan verifyJob, 256),
 		v:        make(map[string]*verifier),
 		res:      res,
@@ -196,36 +208,106 @@ func (a *AsyncBotVerifier) SetOperatorEntries(entries []BotEntry) {
 	a.mu.Unlock()
 }
 
-// Enqueue queues a verification job. Drops the request on a full queue
-// (the scan path must never block on bot verification).
-func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) {
+// Enqueue reports whether a job is queued or already in flight. Unsupported
+// identities and unavailable capacity never receive pending treatment.
+func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 	key := bot + "|" + ip.String()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed {
 		a.stats.Lose(time.Now(), 1)
-		return
+		return false
 	}
 	select {
 	case <-a.stop:
 		a.stats.Lose(time.Now(), 1)
-		return
+		return false
 	default:
 	}
 	if _, ok := a.inflight[key]; ok {
-		return
+		return true
 	}
-	a.inflight[key] = struct{}{}
+	if ip == nil || a.v[bot] == nil {
+		return false
+	}
+	now := time.Now()
+	for attemptKey, previous := range a.attempts {
+		_, live := a.inflight[attemptKey]
+		if !live && !now.Before(previous.expiresAt) && !now.Before(previous.retryAfter) {
+			delete(a.attempts, attemptKey)
+		}
+	}
+	attempt, attempted := a.attempts[key]
+	if attempted && now.Before(attempt.retryAfter) {
+		return false
+	}
+	var replaceKey string
+	if !attempted && len(a.attempts) >= cap(a.ch) {
+		var oldest time.Time
+		for attemptKey, previous := range a.attempts {
+			if _, live := a.inflight[attemptKey]; live || now.Before(previous.retainUntil) {
+				continue
+			}
+			if replaceKey == "" || previous.expiresAt.Before(oldest) {
+				replaceKey = attemptKey
+				oldest = previous.expiresAt
+			}
+		}
+		if replaceKey == "" {
+			a.stats.Lose(now, 1)
+			return false
+		}
+	}
+	var pendingUntil time.Time
+	if !attempted {
+		pendingUntil = now.Add(botVerifyTimeout)
+	}
+	a.inflight[key] = pendingUntil
 	// The caller may reuse its IP buffer as soon as admission returns. The
 	// queued lookup and its dedup key must retain the same address.
 	job := verifyJob{IP: slices.Clone(ip), Bot: bot, ticket: a.stats.Begin(time.Now())}
 	select {
 	case a.ch <- job:
+		if !attempted {
+			if a.attempts == nil {
+				a.attempts = make(map[string]botVerifyAttempt)
+			}
+			delete(a.attempts, replaceKey)
+			a.attempts[key] = botVerifyAttempt{
+				retainUntil: now.Add(botVerifyRetryDelay),
+				expiresAt:   now.Add(botVerifyCacheTTL),
+			}
+		}
+		return true
 	default:
 		job.ticket.Reject(time.Now())
 		delete(a.inflight, key)
+		return false
 	}
 }
+
+// Pending is true only while an admitted job is live and its initial grace
+// has not expired. Queue wait counts against the same bound as a DNS lookup.
+func (a *AsyncBotVerifier) Pending(ip net.IP, bot string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.v[bot] == nil {
+		return false
+	}
+	select {
+	case <-a.stop:
+		return false
+	default:
+	}
+	until, ok := a.inflight[bot+"|"+ip.String()]
+	return ok && time.Now().Before(until)
+}
+
+const (
+	botVerifyTimeout    = 5 * time.Second
+	botVerifyRetryDelay = time.Minute
+	botVerifyCacheTTL   = 24 * time.Hour
+)
 
 func (a *AsyncBotVerifier) QueueStatuses(now time.Time) map[string]queuehealth.Status {
 	return map[string]queuehealth.Status{"requests": a.stats.Snapshot(now)}
@@ -261,7 +343,7 @@ func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
 		close(a.ch)
 		a.mu.Unlock()
 		for job := range a.ch {
-			a.finish(job, false)
+			a.finish(job, false, false)
 		}
 	}()
 
@@ -277,7 +359,7 @@ func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
 		case job := <-a.ch:
 			select {
 			case <-stopCh:
-				a.finish(job, false)
+				a.finish(job, false, false)
 				return
 			default:
 			}
@@ -292,8 +374,8 @@ func (a *AsyncBotVerifier) process(job verifyJob) {
 
 func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verifyJob) {
 	job.ticket.Start(time.Now())
-	completed := false
-	defer func() { a.finish(job, completed) }()
+	completed, cached := false, false
+	defer func() { a.finish(job, completed, cached) }()
 
 	a.mu.Lock()
 	v, ok := a.v[job.Bot]
@@ -302,7 +384,7 @@ func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verify
 		completed = true
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, botVerifyTimeout)
 	defer cancel()
 	result, err := v.verify(ctx, job.IP, job.Bot)
 	cancel()
@@ -314,13 +396,21 @@ func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verify
 		completed = true
 		return
 	}
-	completed = a.put(job.IP, job.Bot, result, time.Now().Add(24*time.Hour)) == nil
+	cached = a.put(job.IP, job.Bot, result, time.Now().Add(botVerifyCacheTTL)) == nil
+	completed = cached
 }
 
-func (a *AsyncBotVerifier) finish(job verifyJob, completed bool) {
+func (a *AsyncBotVerifier) finish(job verifyJob, completed, cached bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.inflight, job.Bot+"|"+job.IP.String())
+	key := job.Bot + "|" + job.IP.String()
+	delete(a.inflight, key)
+	if cached {
+		delete(a.attempts, key)
+	} else if attempt, tracked := a.attempts[key]; tracked {
+		attempt.retryAfter = time.Now().Add(botVerifyRetryDelay)
+		a.attempts[key] = attempt
+	}
 	if completed {
 		job.ticket.Finish(time.Now())
 	} else {

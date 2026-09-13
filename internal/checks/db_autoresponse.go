@@ -189,7 +189,7 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding 
 	// real auto-block path (dry-run, rate limits, and allowlists all apply).
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
 	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
-		fmt.Sprintf("active WP session on compromised site, DB: %s", dbName))...)
+		fmt.Sprintf("active WP session on compromised site, DB: %s", dbName), alert.FindingID(f))...)
 
 	// 2. Revoke sessions only for users with suspicious IPs.
 	// This preserves the site admin's session if they're on an infra IP.
@@ -239,7 +239,7 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
 	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
-		fmt.Sprintf("active session on hijacked site, DB: %s", dbName))...)
+		fmt.Sprintf("active session on hijacked site, DB: %s", dbName), alert.FindingID(f))...)
 
 	revoked := revokeCompromisedSessions(creds, prefix, cfg.InfraIPs)
 	if revoked > 0 {
@@ -267,7 +267,7 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 // once did -- never blocked anything, yet alert.FilterBlockedAlerts trusted it
 // as proof-of-block and suppressed the IP's reputation alert, so the address was
 // neither blocked nor surfaced.
-func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext string) []alert.Finding {
+func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext, findingID string) []alert.Finding {
 	if len(ips) == 0 {
 		return nil
 	}
@@ -281,7 +281,7 @@ func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext strin
 			Timestamp: time.Now(),
 		})
 	}
-	return AutoBlockIPs(cfg, findings)
+	return autoBlockIPs(cfg, findings, findingID)
 }
 
 // --- URL analysis ---

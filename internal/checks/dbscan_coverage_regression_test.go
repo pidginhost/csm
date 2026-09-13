@@ -13,7 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
-const databaseScanFallbackDetails = "A document-root record, wp-config.php file, or database query could not be read safely. Findings from the previous complete scan are retained."
+const databaseScanFallbackDetails = "A document-root record, wp-config.php file, or database query could not be read safely. Findings without complete database coverage are retained."
 
 func databaseCoverageConfig(db string) string {
 	return "<?php\ndefine('DB_NAME', '" + db + "');\ndefine('DB_USER', 'fixture');\n$table_prefix = 'wp_';\n"
@@ -105,7 +105,8 @@ func TestDatabaseCoverageMixedReadFailures(t *testing.T) {
 		"incomplete_content=1 (example: /home/carol/public_html/wp-config.php)\n" +
 		"missing_credentials=1 (example: /home/bob/public_html/wp-config.php)\n" +
 		"query_failed=2 (example: /home/alice/public_html/wp-config.php)\n" +
-		"Findings from the previous complete scan are retained."
+		"Query failures: stage=options class=unknown code=0 queries=1\n" +
+		"Findings without complete database coverage are retained."
 	if f.Details != want {
 		t.Errorf("details = %q, want %q", f.Details, want)
 	}

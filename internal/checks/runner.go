@@ -697,10 +697,16 @@ func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []a
 // contains the lexical and resolved aliases captured when each gap occurred;
 // the state store applies that frozen set under the same lock as the purge.
 func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, findings []alert.Finding, gapPaths map[string]map[string]bool) {
+	StoreLatestScanFindingsWithCoverage(st, purgeChecks, findings, &state.ScanCoverage{PreservePaths: gapPaths})
+}
+
+// StoreLatestScanFindingsWithCoverage retires only completed checks or scopes
+// and preserves current findings for file gaps in the same atomic operation.
+func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, findings []alert.Finding, coverage *state.ScanCoverage) {
 	if st == nil {
 		return
 	}
-	if len(purgeChecks) == 0 && len(findings) == 0 {
+	if len(purgeChecks) == 0 && len(findings) == 0 && (coverage == nil || len(coverage.CompletedScopes) == 0) {
 		return
 	}
 	// Cold detection runs commands; correlation under latestMu must only
@@ -708,10 +714,10 @@ func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, find
 	platform.Detect()
 	latestScanMergeMu.Lock()
 	now := time.Now()
-	st.PurgeAndMergeFindingsDerivedWithGaps(
+	st.PurgeAndMergeFindingsDerivedWithCoverage(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
-		gapPaths,
+		coverage,
 		DerivedCorrelationChecks(),
 		func(merged []alert.Finding) []alert.Finding {
 			res := defaultCorrelator.Correlate(merged, now)
@@ -912,7 +918,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	coverageGaps := coverageGapsFrom(parent)
 	// Clear a reused handle before work starts. An interrupted run must never
 	// expose the preceding run's path set as its own.
-	coverageGaps.replace(nil)
+	coverageGaps.replace(nil, nil, nil)
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
 	// Logical owners hosted by checks in this set: a disabled owner purges
@@ -961,6 +967,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// themselves incomplete; their per-run status finding names still purge.
 	incompleteRan := make([]string, 0)
 	coverageGapPaths := make(map[string]map[string]bool)
+	completedScopeNames := make(map[string]map[string]bool)
 	addCoverageGapPaths := func(owner string) {
 		paths := coveragePaths.gapPaths(owner)
 		if len(paths) == 0 {
@@ -1074,6 +1081,12 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
 				mu.Lock()
+				if scopes := coveragePaths.completedScopes(c.name); len(scopes) > 0 {
+					names := append([]string{c.name}, runnerFindingNames[c.name]...)
+					for _, name := range names {
+						completedScopeNames[name] = scopes
+					}
+				}
 				if !incompleteChecks.contains(c.name) {
 					completedChecks = append(completedChecks, c)
 					addCoverageGapPaths(c.name)
@@ -1233,7 +1246,37 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	for owner := range disabledOwnerSet {
 		purgeNames = append(purgeNames, logicalOwnerFindingNames[owner]...)
 	}
-	coverageGaps.replace(coverageGapPaths)
+	// Selected checks that never completed (including timeouts, panics and
+	// throttle skips) did not examine their prior findings. Reuse the known
+	// completion sets to protect that state without authorizing any purge.
+	uncompletedOwners := make(map[string]bool)
+	for _, check := range enabledChecks {
+		uncompletedOwners[check.name] = true
+		for _, owner := range hostedOwners[check.name] {
+			uncompletedOwners[owner] = true
+		}
+	}
+	for _, check := range completedChecks {
+		delete(uncompletedOwners, check.name)
+	}
+	for _, owner := range completedOwners {
+		delete(uncompletedOwners, owner)
+	}
+	incompleteFindingNames := make(map[string]bool)
+	for owner := range uncompletedOwners {
+		names := append([]string{owner}, runnerFindingNames[owner]...)
+		names = append(names, logicalOwnerFindingNames[owner]...)
+		for _, name := range names {
+			incompleteFindingNames[name] = true
+		}
+	}
+	// Only checks that returned replace their per-run coverage summaries.
+	for _, owner := range incompleteRan {
+		for _, name := range perRunFindingNames[owner] {
+			delete(incompleteFindingNames, name)
+		}
+	}
+	coverageGaps.replace(coverageGapPaths, completedScopeNames, incompleteFindingNames)
 	return findings, mergePerRunPurgeNames(purgeNames, incompleteRan)
 }
 

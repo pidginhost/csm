@@ -102,12 +102,15 @@ func TestIncidentBlockLadderSurvivesStoreAndRestore(t *testing.T) {
 					t.Fatalf("stored block state = %+v, want %+v", rows, inc.AutoBlock)
 				}
 				var calls []time.Duration
-				block := func(_, _ string, ttl time.Duration) bool { calls = append(calls, ttl); return true }
+				block := func(_, _ string, ttl time.Duration, _ string) bool { calls = append(calls, ttl); return true }
 				cfg := incident.CorrelatorConfig{Persist: db.SaveIncident, AutoBlock: incident.IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"}, OnIncidentBlock: block}
 				if spray {
 					cfg.SpraySuppression = incident.SpraySuppressionConfig{Enabled: true, DistinctMailboxes: 2, BlockAtSeverity: "high", PerCheck: map[string]bool{check: true}}
 					cfg.OnSprayBlock = block
-					cfg.OnIncidentBlock = func(string, string, time.Duration) bool { t.Error("spray reached generic hand-off"); return false }
+					cfg.OnIncidentBlock = func(string, string, time.Duration, string) bool {
+						t.Error("spray reached generic hand-off")
+						return false
+					}
 				}
 				c := incident.NewCorrelator(cfg)
 				c.Restore(rows)

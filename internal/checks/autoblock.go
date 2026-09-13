@@ -157,6 +157,7 @@ func getIPBlocker() IPBlocker {
 }
 
 type blockedIP struct {
+	FindingID string    `json:"finding_id,omitempty"`
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
 	BlockedAt time.Time `json:"blocked_at"`
@@ -164,10 +165,11 @@ type blockedIP struct {
 }
 
 type pendingIP struct {
-	IP       string         `json:"ip"`
-	Reason   string         `json:"reason"`
-	Check    string         `json:"check,omitempty"`
-	Severity alert.Severity `json:"severity,omitempty"`
+	FindingID string         `json:"finding_id,omitempty"`
+	IP        string         `json:"ip"`
+	Reason    string         `json:"reason"`
+	Check     string         `json:"check,omitempty"`
+	Severity  alert.Severity `json:"severity,omitempty"`
 	// QueuedAt is when the IP first entered the queue; it survives
 	// requeue cycles so age accumulates instead of resetting. Stamped on
 	// the first requeue for eligible entries with no timestamp.
@@ -267,6 +269,12 @@ func blockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
 
 // AutoBlockIPs processes all findings, including repeats, for IP blocking.
 func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+	return autoBlockIPs(cfg, findings, "")
+}
+
+// autoBlockIPs retains the observed source when database response converts one
+// finding into several session-IP candidates for the existing block policy.
+func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID string) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return nil
 	}
@@ -411,7 +419,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
-		if err := sb.BlockSubnet(cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry)); err != nil {
+		if err := callBlockSubnet(sb, cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry), alert.FindingID(f)); err != nil {
 			fmt.Fprintf(os.Stderr, "auto-block: error blocking subnet %s: %v\n", cidr, err)
 			continue
 		}
@@ -454,13 +462,18 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 		// A drained pending entry keeps its QueuedAt when the same IP
 		// recurs in fresh findings; the check, severity and reason are refreshed.
+		findingID := sourceFindingID
+		if findingID == "" {
+			findingID = alert.FindingID(f)
+		}
 		if existing, ok := ipsToBlock[ip]; ok {
 			existing.Reason = f.Message
 			existing.Check = f.Check
 			existing.Severity = f.Severity
+			existing.FindingID = findingID
 			ipsToBlock[ip] = existing
 		} else {
-			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity}
+			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID}
 			p.queueCandidate = work.candidate(p, nil)
 			ipsToBlock[ip] = p
 		}
@@ -503,7 +516,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 					break
 				}
 				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
-				if err := sb.BlockSubnet(cidr, reason, tempban); err != nil {
+				if err := callBlockSubnet(sb, cidr, reason, tempban, alert.FindingID(f)); err != nil {
 					fmt.Fprintf(os.Stderr, "auto-block: asn-crawl subnet %s: %v\n", cidr, err)
 					continue
 				}
@@ -565,6 +578,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			Reason:       cand.Reason,
 			TTL:          expiry,
 			Source:       BlockSourceScan,
+			FindingID:    cand.FindingID,
 		}, work.progress, func(err error) { work.candidateOutcome(cand.queueCandidate, err) })
 		if err != nil {
 			// Protected IPs (the server's own interface or infra_ips) are
@@ -638,6 +652,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		subnetExpiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
 		// Count blocked IPs per subnet (IPv4 /24, IPv6 /64).
 		subnetCounts := make(map[string]int)
+		subnetCauses := make(map[string]blockedIP)
 		subnetBlocked := make(map[string]bool)
 		for _, b := range state.IPs {
 			cidr := subnetEscalationCIDR(b.IP)
@@ -646,6 +661,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			// range cannot inadvertently auto-block that range as a subnet.
 			if cidr != "" && !cidrIntersectsDOSExempt(cfg, cidr) {
 				subnetCounts[cidr]++
+				prior := subnetCauses[cidr]
+				if b.FindingID != "" && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
+					subnetCauses[cidr] = b
+				}
 			}
 		}
 		for cidr, count := range subnetCounts {
@@ -675,7 +694,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 						continue
 					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
-					if err := sb.BlockSubnet(cidr, reason, subnetExpiry); err == nil {
+					if err := callBlockSubnet(sb, cidr, reason, subnetExpiry, subnetCauses[cidr].FindingID); err == nil {
 						subnetBlocked[cidr] = true
 						fmt.Fprintf(os.Stderr, "[%s] AUTO-NETBLOCK: %s blocked (%d IPs from same subnet)\n", time.Now().Format("2006-01-02 15:04:05"), cidr, count)
 						actions = append(actions, alert.Finding{
@@ -753,7 +772,12 @@ func blockedLiveOrCached(b IPBlocker, snap firewall.LiveBlockedSnapshot, useSnap
 // IPBlocker interface and assumes the call landed live (the behaviour
 // every IPBlocker had before BlockIPOutcome existed). This keeps tests
 // and any third-party implementations of IPBlocker working unchanged.
-func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewall.BlockOutcome, error) {
+func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration, findingID string) (firewall.BlockOutcome, error) {
+	if ob, ok := b.(interface {
+		BlockIPOutcomeWithFindingID(string, string, time.Duration, string) (firewall.BlockOutcome, error)
+	}); ok {
+		return ob.BlockIPOutcomeWithFindingID(ip, reason, timeout, findingID)
+	}
 	if ob, ok := b.(outcomeBlocker); ok {
 		return ob.BlockIPOutcome(ip, reason, timeout)
 	}
@@ -777,7 +801,16 @@ func shouldSkipAutoBlockForChallenge(cfg *config.Config, f alert.Finding) bool {
 // blocked in a way that trips skipExisting, so a fresh zero-timeout block on
 // them lands live; that fallback preserves pre-existing behaviour for tests
 // and third-party implementations.
-func promoteToPermanentBlock(b IPBlocker, ip, reason string) bool {
+func promoteToPermanentBlock(b IPBlocker, ip, reason, findingID string) bool {
+	if pp, ok := b.(interface {
+		PromoteToPermanentBlockWithFindingID(string, string, string) error
+	}); ok {
+		if err := pp.PromoteToPermanentBlockWithFindingID(ip, reason, findingID); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-block: permblock promotion of %s failed: %v\n", ip, err)
+			return false
+		}
+		return true
+	}
 	if pp, ok := b.(permanentPromoter); ok {
 		if err := pp.PromoteToPermanentBlock(ip, reason); err != nil {
 			fmt.Fprintf(os.Stderr, "auto-block: permblock promotion of %s failed: %v\n", ip, err)
@@ -785,7 +818,7 @@ func promoteToPermanentBlock(b IPBlocker, ip, reason string) bool {
 		}
 		return true
 	}
-	outcome, err := callBlockIP(b, ip, reason, 0)
+	outcome, err := callBlockIP(b, ip, reason, 0, findingID)
 	return err == nil && outcome == firewall.BlockOutcomeLive
 }
 
@@ -1284,4 +1317,15 @@ func extractCIDRFromFinding(f alert.Finding) string {
 		return ""
 	}
 	return ipnet.String()
+}
+
+// callBlockSubnet uses causal metadata when the engine supports it, preserving
+// the legacy interface for other blocker implementations.
+func callBlockSubnet(b subnetBlocker, cidr, reason string, timeout time.Duration, findingID string) error {
+	if sb, ok := b.(interface {
+		BlockSubnetWithFindingID(string, string, time.Duration, string) error
+	}); ok {
+		return sb.BlockSubnetWithFindingID(cidr, reason, timeout, findingID)
+	}
+	return b.BlockSubnet(cidr, reason, timeout)
 }

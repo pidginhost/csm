@@ -31,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `make test` works on Linux again and keeps test files on disk instead of the macOS-only temporary path.
+
+- Frequently replayed audit records stay deduplicated during busy periods, and simultaneous findings no longer hide each other. Failed crawler lookups release room for new verification, while database aliases with missing credentials keep earlier findings.
+
+- Audit replays no longer duplicate records at healthy destinations. Repeated verification failures and incomplete scans no longer pin or grow their retained state indefinitely.
+
+- Incomplete scans keep earlier findings when new results fill the active list, even if no database could be inspected. Timeouts and internal failures keep the same protection.
+
+- Automatic firewall actions now link to their source findings in the audit log, including delayed retries and escalations. Failed and refused attempts keep the same attribution.
+
+- Claimed crawlers receive pending treatment only for admitted verification work within its initial waiting period. Failed or unavailable verification no longer renews that treatment on every retry.
+
+- Completed database scans now clear resolved findings independently of failures in other installations. Unexamined installations keep their current findings.
+
+- A database query failure no longer suppresses independent checks when other tables remain readable. Coverage warnings identify the failed stage and error class without exposing database values.
+
 - Automatic file response keeps full-file validation after partial realtime checks. Safety refusals, such as a replaced or vanished source, no longer count toward the failure pause, and special-file replacements cannot stall response processing.
 
 - DNS and queue health tests no longer depend on external resolution or unrelated queue events. The roadmap drops an incorrect firewall audit path item, and file response docs clarify restart replay.

@@ -199,7 +199,7 @@ func TestIncidentSprayBlockRecordsEvidence(t *testing.T) {
 	cfg, blocker := applyWiringSetup(t)
 	d := New(cfg, nil, nil, "")
 
-	live, err := d.applyIncidentSprayBlock("203.0.113.72", "incident: account spray", time.Hour)
+	live, err := d.applyIncidentSprayBlock("203.0.113.72", "incident: account spray", time.Hour, "")
 	if err != nil {
 		t.Fatalf("applyIncidentSprayBlock: %v", err)
 	}

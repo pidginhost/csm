@@ -62,8 +62,8 @@ func TestDispatchStampsMissingTimestamps(t *testing.T) {
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 {
-		t.Fatalf("audit events = %d, want 4", len(got))
+	if len(got) != 3 {
+		t.Fatalf("audit events = %d, want two occurrences and one retained observation", len(got))
 	}
 	if !got[0].Timestamp.Equal(fixed) {
 		t.Errorf("audit ts for unstamped finding = %v, want %v", got[0].Timestamp, fixed)
@@ -74,8 +74,8 @@ func TestDispatchStampsMissingTimestamps(t *testing.T) {
 	if !got[2].Timestamp.Equal(second) || got[2].FindingID == got[0].FindingID {
 		t.Errorf("reused unstamped finding kept its first occurrence: %+v", got[2])
 	}
-	if !got[3].Timestamp.Equal(kept) || got[3].FindingID != got[1].FindingID {
-		t.Errorf("replayed stamped finding changed identity: %+v", got[3])
+	if got[1].FindingID != FindingID(findings[1]) {
+		t.Errorf("retained stamped finding changed identity: %+v", got[1])
 	}
 }
 

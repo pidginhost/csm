@@ -66,9 +66,31 @@ is reported separately in the details because additional installs may be
 missing from the total. With no attributed reasons, including when discovery
 stops before reaching any install, the generic three-cause sentence remains
 the fallback. Multisite safety limits keep their own account-specific warning
-and do not count again in the summary or hide unrelated failures. These
-findings carry no file path, so the whole scanner's prior findings are retained
-rather than only those for the affected installs.
+and do not count again in the summary or hide unrelated failures. Installation
+findings carry an opaque database scope; the host-wide coverage summary remains
+unscoped. A complete installation scan retires
+its resolved findings even when another installation fails. Failed or
+undiscovered installations retain their findings in the same atomic store
+transaction. Older findings without a database scope stay until reobserved or
+until the whole scanner completes; CSM does not guess their database from
+message text. A partial multisite scan keeps findings for its entire network.
+Incomplete or interrupted scans protect earlier findings from eviction when
+new results fill the active list, including when every database or discovery
+attempt fails, the scanner times out, or an internal panic stops execution.
+That protection applies to findings already in the active list. Newly detected
+conditions compete for the remaining space under the normal priority order,
+so repeatedly incomplete scans cannot grow the list beyond its cap. Retained
+findings can still refresh their details without losing their first observation.
+Credential aliases sharing a database scope must all complete before that scope
+can retire findings, regardless of scan order. This includes an alias whose
+database and table prefix are known but whose login credentials are missing.
+
+Query diagnostics include the detector stage, failure class and numeric MySQL
+error code. Repeated errors are counted together, with bounded detail when
+many causes occur. Raw SQL, server error messages and credentials are never
+included. Known statement errors, such as a missing table or column, leave
+the scan incomplete but allow independent detectors to continue. Connection,
+authentication and unknown failures stop further queries for that database.
 
 Coverage the scan could not reach is reported as `php_taint_scan_incomplete`, which names how many files were affected and why -- a per-file status such as a timeout or a worker failure, or a location the walk could not read at all, where the affected files cannot even be listed. Panics and timeouts are reported in a separate aggregate so hard analyzer failures remain visible beside routine coverage limits. A file that had a finding and later becomes unexaminable keeps its previous finding rather than having it cleared.
 
@@ -168,7 +190,8 @@ Database errors, discovery errors, and configuration or query limits keep the
 affected CMS check incomplete. Earlier findings remain until that CMS completes
 a scan; another CMS can still complete and clear its own resolved findings.
 Queries inspect at most 200 rows and request one extra row to detect overflow.
-An installation stops issuing queries after a failure or overflow. Administrator
+Known statement errors allow independent queries to continue; connection
+failures and overflow stop further queries for that installation. Administrator
 baselines and recorded IDs change only after a complete result; a successful
 empty administrator result also establishes a baseline. New IDs in a partial
 result can still be reported against an existing baseline.

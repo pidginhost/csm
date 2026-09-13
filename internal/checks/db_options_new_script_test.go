@@ -48,17 +48,17 @@ func TestNewExternalScriptHostsInOptionsReportedOnceAsWarning(t *testing.T) {
 func TestExternalScriptBaselineWaitsForSuccessfulQuery(t *testing.T) {
 	withFreshStore(t)
 	sdb := store.Global()
-	failed := false
+	failure := new(dbQueryState)
 	previous := runMySQLQuery
 	runMySQLQuery = func(_ wpDBCreds, query string) []string {
 		if strings.Contains(query, "option_value LIKE '%<script%src%'") {
-			failed = true
+			failure.failed = true
 		}
 		return nil
 	}
 	t.Cleanup(func() { runMySQLQuery = previous })
 
-	creds := wpDBCreds{dbName: "alice_wp", queryFailed: &failed}
+	creds := wpDBCreds{dbName: "alice_wp", queryState: failure}
 	_ = checkWPOptions("alice", creds, "wp_")
 	isNew, err := sdb.MarkExternalScriptSeen(externalScriptSiteKey(creds.dbName, "wp_"), "widget_text", "cdn.example", time.Now())
 	if err != nil {

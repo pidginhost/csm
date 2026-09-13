@@ -25,7 +25,12 @@ func firewallRecord(action, ip, reason, source string, duration time.Duration) a
 }
 
 func recordFirewallResult(action, ip, reason, source string, duration time.Duration, result actionlog.Result, err error) {
+	recordFirewallFindingResult(action, ip, reason, source, duration, result, err, "")
+}
+
+func recordFirewallFindingResult(action, ip, reason, source string, duration time.Duration, result actionlog.Result, err error, findingID string) {
 	rec := firewallRecord(action, ip, reason, source, duration)
+	rec.FindingID = findingID
 	rec.Result = result
 	if err != nil {
 		rec.Error = err.Error()
@@ -43,11 +48,12 @@ func recordFirewallFailure(action, ip, reason, source string, duration time.Dura
 	}
 }
 
-func recordBlockOutcome(ip, reason string, duration time.Duration, outcome BlockOutcome, err error, manual bool) {
+func recordBlockOutcome(ip, reason string, duration time.Duration, outcome BlockOutcome, err error, manual bool, findingID string) {
 	if !manual && outcome == BlockOutcomeNoop && err == nil {
 		return
 	}
 	rec := firewallRecord("block", ip, reason, InferProvenance("block", reason), duration)
+	rec.FindingID = findingID
 	rec.Op = "respond.block_ip"
 	if manual {
 		rec.Op = "operate.manual_firewall"

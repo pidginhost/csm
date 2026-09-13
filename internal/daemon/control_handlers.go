@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -213,7 +214,7 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, c.d.store, tier)
 	}
 
-	c.recordTierRunFindings(cfg, findings, purgeChecks, gaps.Paths(), !dryRun, args.Alerts)
+	c.recordTierRunFindings(cfg, findings, purgeChecks, gaps.Snapshot(), !dryRun, args.Alerts)
 
 	// Dry-run history + FindingList: the live path writes history via
 	// Daemon.runPeriodicChecks when the internal scanners fire; the
@@ -242,8 +243,8 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 // recordTierRunFindings persists a control-socket tier run's findings. Auto-fix
 // is gated on a live run so a dry run never edits a customer's wp-config.php,
 // and the alert push is gated separately on whether the caller asked for alerts.
-func (c *ControlListener) recordTierRunFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]map[string]bool, live, alerts bool) {
-	checks.StoreLatestScanFindingsWithGaps(c.d.store, purgeChecks, findings, gapPaths)
+func (c *ControlListener) recordTierRunFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, coverage *state.ScanCoverage, live, alerts bool) {
+	checks.StoreLatestScanFindingsWithCoverage(c.d.store, purgeChecks, findings, coverage)
 	if live {
 		c.d.applyWPCronAutoFix(cfg, findings)
 	}

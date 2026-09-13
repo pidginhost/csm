@@ -28,7 +28,7 @@ var (
 	// nil means "no blocker wired" (early startup or unit tests); the
 	// singleton then skips wiring OnSprayBlock and the spray detector
 	// stays detection-only even with BlockAtSeverity set.
-	incidentSprayBlocker func(ip, reason string, timeout time.Duration) (bool, error)
+	incidentSprayBlocker func(ip, reason string, timeout time.Duration, findingID string) (bool, error)
 )
 
 // autoResponseBlockExpiry is the operator's configured block duration, the
@@ -49,7 +49,7 @@ func autoResponseBlockExpiry(cfg *config.Config) time.Duration {
 // incident auto-block paths. Call once after the firewall engine is built
 // and before the first IncidentCorrelator() call.
 // Passing nil clears the binding.
-func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration) (bool, error)) {
+func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration, findingID string) (bool, error)) {
 	incidentSprayBlocker = fn
 }
 
@@ -108,8 +108,8 @@ func IncidentCorrelator() *incident.Correlator {
 		var spray incident.SpraySuppressionConfig
 		var autoBlock incident.IncidentAutoBlockConfig
 		var whitelisted func(string) bool
-		var onSprayBlock func(ip, reason string, ttl time.Duration) bool
-		var onIncidentBlock func(ip, reason string, ttl time.Duration) bool
+		var onSprayBlock func(ip, reason string, ttl time.Duration, findingID string) bool
+		var onIncidentBlock func(ip, reason string, ttl time.Duration, findingID string) bool
 		if cfg := globalCfgForIncidents(); cfg != nil {
 			spray = incident.SpraySuppressionConfig{
 				Enabled:            cfg.Incidents.SpraySuppression.Enabled,
@@ -128,14 +128,14 @@ func IncidentCorrelator() *incident.Correlator {
 			// the singleton.
 			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onSprayBlock = func(ip, reason string, ttl time.Duration) bool {
+				onSprayBlock = func(ip, reason string, ttl time.Duration, findingID string) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
 					// ttl comes from the correlator's escalation ladder; zero
 					// is a permanent block, which the engine understands.
-					live, err := blocker(ip, "CSM credential_spray: "+reason, ttl)
+					live, err := blocker(ip, "CSM credential_spray: "+reason, ttl, findingID)
 					if err != nil {
 						if !isProtectedIPRefusal(err) {
 							csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
@@ -161,12 +161,12 @@ func IncidentCorrelator() *incident.Correlator {
 			}
 			if autoBlock.Enabled && autoBlock.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onIncidentBlock = func(ip, reason string, ttl time.Duration) bool {
+				onIncidentBlock = func(ip, reason string, ttl time.Duration, findingID string) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
-					live, err := blocker(ip, "CSM incident: "+reason, ttl)
+					live, err := blocker(ip, "CSM incident: "+reason, ttl, findingID)
 					if err != nil {
 						// Own-interface / infra IPs are intentionally never
 						// blockable; the incident still opened, so the operator is

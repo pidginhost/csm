@@ -61,14 +61,14 @@ const joomlaSuperUserGroupID = 8
 // wp-config.php are not interchangeable.
 type jConfigCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx         context.Context
-	dbName      string
-	dbUser      string
-	dbPass      string
-	dbHost      string
-	dbPrefix    string
-	path        string
-	queryFailed *bool
+	ctx        context.Context
+	dbName     string
+	dbUser     string
+	dbPass     string
+	dbHost     string
+	dbPrefix   string
+	path       string
+	queryState *dbQueryState
 }
 
 // asWPDBCreds returns the equivalent wpDBCreds for runMySQLQuery
@@ -83,7 +83,7 @@ func (c jConfigCreds) asWPDBCreds() wpDBCreds {
 		tablePrefix: c.dbPrefix,
 		queryCtx:    c.ctx,
 		queryOwner:  "db_content_joomla",
-		queryFailed: c.queryFailed,
+		queryState:  c.queryState,
 	}
 }
 
@@ -134,7 +134,7 @@ func scanJoomlaInstall(ctx context.Context, path string, store *state.Store) []a
 		return nil
 	}
 	creds.ctx = ctx
-	creds.queryFailed = new(bool)
+	creds.queryState = new(dbQueryState)
 	prefix := creds.dbPrefix
 	if prefix == "" {
 		prefix = "jos_"

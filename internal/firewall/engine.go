@@ -2165,7 +2165,13 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 // Operator-initiated commands (csm firewall block, Web UI manual block) must
 // call BlockIPForce instead, which skips the dry-run gate unconditionally.
 func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration) (outcome BlockOutcome, resultErr error) {
-	defer func() { recordBlockOutcome(ip, reason, timeout, outcome, resultErr, false) }()
+	return e.BlockIPOutcomeWithFindingID(ip, reason, timeout, "")
+}
+
+// BlockIPOutcomeWithFindingID preserves the originating audit identity across
+// every automatic outcome without changing the block policy or result.
+func (e *Engine) BlockIPOutcomeWithFindingID(ip, reason string, timeout time.Duration, findingID string) (outcome BlockOutcome, resultErr error) {
+	defer func() { recordBlockOutcome(ip, reason, timeout, outcome, resultErr, false, findingID) }()
 
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
@@ -2254,7 +2260,7 @@ func (e *Engine) autoResponseDryRunEnabled() bool {
 // auto_response.dry_run gate. Use this for operator-initiated commands (CLI,
 // Web UI manual block) where the operator has explicitly decided to block.
 func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) (resultErr error) {
-	defer func() { recordBlockOutcome(ip, reason, timeout, BlockOutcomeLive, resultErr, true) }()
+	defer func() { recordBlockOutcome(ip, reason, timeout, BlockOutcomeLive, resultErr, true, "") }()
 
 	return e.blockIPLocked(ip, reason, timeout, false)
 }
@@ -2267,8 +2273,15 @@ func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) (
 // the block the operator wanted made permanent. Returns an error if the IP is
 // not currently blocked (nothing to promote).
 func (e *Engine) PromoteToPermanentBlock(ip, reason string) (resultErr error) {
+	return e.PromoteToPermanentBlockWithFindingID(ip, reason, "")
+}
+
+// PromoteToPermanentBlockWithFindingID ties escalation to its triggering
+// observation while preserving the existing permanent-block transaction.
+func (e *Engine) PromoteToPermanentBlockWithFindingID(ip, reason, findingID string) (resultErr error) {
+	source := InferProvenance("permblock", reason)
 	defer func() {
-		recordFirewallFailure("permblock", ip, reason, InferProvenance("permblock", reason), 0, resultErr)
+		recordFirewallFindingResult("permblock", ip, reason, source, 0, actionlog.Applied, resultErr, findingID)
 	}()
 
 	canonical, err := canonicalFirewallIP(ip)
@@ -2346,7 +2359,8 @@ func (e *Engine) PromoteToPermanentBlock(ip, reason string) (resultErr error) {
 		}
 		return fmt.Errorf("promoting %s: flush: %w", ip, err)
 	}
-	AppendAudit(e.statePath, "permblock", ip, reason, entry.Source, 0)
+	source = entry.Source
+	appendAudit(e.statePath, "permblock", ip, reason, entry.Source, 0)
 	return nil
 }
 
@@ -3563,8 +3577,14 @@ func (e *Engine) ValidateSubnetBlock(cidr string) error {
 // BlockSubnet adds a CIDR range to the blocked subnets set (IPv4 or IPv6).
 // timeout 0 = permanent block.
 func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) (resultErr error) {
+	return e.BlockSubnetWithFindingID(cidr, reason, timeout, "")
+}
+
+// BlockSubnetWithFindingID records a causal finding for an automatic subnet
+// decision. Manual and maintenance callers use BlockSubnet without one.
+func (e *Engine) BlockSubnetWithFindingID(cidr, reason string, timeout time.Duration, findingID string) (resultErr error) {
 	defer func() {
-		recordFirewallFailure("block_subnet", cidr, reason, InferProvenance("block_subnet", reason), timeout, resultErr)
+		recordFirewallFindingResult("block_subnet", cidr, reason, InferProvenance("block_subnet", reason), timeout, actionlog.Applied, resultErr, findingID)
 	}()
 
 	e.mu.Lock()
@@ -3574,6 +3594,7 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	if err != nil {
 		return err
 	}
+	cidr = network.String()
 	if alreadyBlocked {
 		// A prior write may be visible despite a durability error, before the
 		// kernel changed. Retrying must reconcile that saved intent as well.
@@ -3581,7 +3602,7 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 		if err := e.updateSubnetStateAndKernel(state, state); err != nil {
 			return err
 		}
-		AppendAudit(e.statePath, "block_subnet", network.String(), reason, InferProvenance("block_subnet", reason), timeout)
+		appendAudit(e.statePath, "block_subnet", network.String(), reason, InferProvenance("block_subnet", reason), timeout)
 		return nil
 	}
 
@@ -3606,7 +3627,7 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 		return err
 	}
 
-	AppendAudit(e.statePath, "block_subnet", network.String(), reason, entry.Source, timeout)
+	appendAudit(e.statePath, "block_subnet", network.String(), reason, entry.Source, timeout)
 	return nil
 }
 

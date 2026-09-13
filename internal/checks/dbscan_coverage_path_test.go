@@ -25,7 +25,7 @@ func TestDatabaseCoverageEscapesExamplePaths(t *testing.T) {
 			f := databaseCoverageSummary(t, CheckDatabaseContent(ctx, nil, nil))
 			want := "1 of 1 discovered installs could not be fully inspected.\n" +
 				"missing_credentials=1 (example: /home/alice/" + tt.want + "/wp-config.php)\n" +
-				"Findings from the previous complete scan are retained."
+				"Findings without complete database coverage are retained."
 			if f.Details != want {
 				t.Fatalf("account path changed the diagnostic structure: got %q, want %q", f.Details, want)
 			}

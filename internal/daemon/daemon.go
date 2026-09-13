@@ -894,8 +894,9 @@ func (d *Daemon) Run() error {
 		for _, f := range newFindings {
 			_, _, _ = co.OnFinding(f)
 		}
-		_ = alert.Dispatch(initialCfg, operatorAlertableFindings(newFindings))
 	}
+	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), newFindings...)
+	_ = alert.DispatchWithSources(initialCfg, operatorAlertableFindings(newFindings), initialAuditSources)
 
 	// Remove auto-fixed findings before storing to UI
 	if len(permFixedKeys) > 0 {
@@ -1487,6 +1488,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// them once here so history, incidents, the latest set and every alert
 	// sink see the same time.
 	alert.FillTimestamps(findings, time.Now())
+	auditSources := append([]alert.Finding(nil), findings...)
 	// Snapshot the live config once at the top of the batch. Every
 	// cfg.X read below picks up the last-reloaded value (ROADMAP
 	// item 7); taking one snapshot avoids the weirder case of a
@@ -1560,6 +1562,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	if len(newFindings) == 0 {
+		_ = alert.DispatchWithSources(cfg, nil, auditSources)
 		d.store.Update(findings)
 		return
 	}
@@ -1593,7 +1596,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// informational or fully automated (no human action needed).
 	// These are all visible in the web UI for forensics.
 	alertable := operatorAlertableFindings(newFindings)
-	if err := alert.Dispatch(cfg, alertable); err != nil {
+	auditSources = append(auditSources, newFindings...)
+	if err := alert.DispatchWithSources(cfg, alertable, auditSources); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -1612,11 +1616,11 @@ var autoFixWPCron = checks.AutoFixWPCron
 // they never page an operator; that is exactly why the WP-Cron auto-fix runs
 // here and not in dispatchBatch, which only ever sees what the channel carries.
 func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, label string) {
-	d.processScanFindingsWithGaps(cfg, findings, purgeChecks, nil, label)
+	d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, nil, label)
 }
 
-func (d *Daemon) processScanFindingsWithGaps(cfg *config.Config, findings []alert.Finding, purgeChecks []string, gapPaths map[string]map[string]bool, label string) {
-	checks.StoreLatestScanFindingsWithGaps(d.store, purgeChecks, findings, gapPaths)
+func (d *Daemon) processScanFindingsWithCoverage(cfg *config.Config, findings []alert.Finding, purgeChecks []string, coverage *state.ScanCoverage, label string) {
+	checks.StoreLatestScanFindingsWithCoverage(d.store, purgeChecks, findings, coverage)
 	d.applyWPCronAutoFix(cfg, findings)
 	d.enqueueScanAlerts(findings, label)
 }
@@ -1798,7 +1802,7 @@ func (d *Daemon) deepScanner() {
 			default:
 				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 			}
-			d.processScanFindingsWithGaps(cfg, findings, purgeChecks, gaps.Paths(), "deep")
+			d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, gaps.Snapshot(), "deep")
 		}
 	}
 }
@@ -1844,7 +1848,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 
 	scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 	findings, purgeChecks := checks.RunTierWithContext(scanCtx, cfg, d.store, tier)
-	d.processScanFindingsWithGaps(cfg, findings, purgeChecks, gaps.Paths(), "periodic")
+	d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, gaps.Snapshot(), "periodic")
 }
 
 func (d *Daemon) verifyPeriodicIntegritySnapshot(cfg *config.Config) (*config.Config, error) {
@@ -2808,6 +2812,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			Reason:       fmt.Sprintf("challenge timeout: %s", truncateStr(e.Reason, 100)),
 			TTL:          expiry,
 			Source:       checks.BlockSourceChallenge,
+			FindingID:    e.FindingID,
 		})
 		if err != nil {
 			// Own-interface / infra IPs are never blockable, and a host
@@ -2860,13 +2865,14 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 // applyIncidentSprayBlock is the incident correlator's firewall hand-off,
 // routed through the chokepoint so spray blocks leave evidence and reach
 // the digest.
-func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duration) (bool, error) {
+func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duration, findingID string) (bool, error) {
 	res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
 		IP:           ip,
 		EngineReason: reason,
 		Reason:       reason,
 		TTL:          timeout,
 		Source:       checks.BlockSourceIncident,
+		FindingID:    findingID,
 	})
 	if err != nil {
 		return false, err

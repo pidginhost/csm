@@ -947,7 +947,7 @@ func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Fin
 // derivedChecks with derive(merged): the correlation findings a tier cycle
 // rebuilds from the merged set. One file write per cycle instead of two.
 func (s *Store) PurgeAndMergeFindingsDerived(purgeChecks []string, findings []alert.Finding, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
-	s.purgeAndMergeFindingsDerived(purgeChecks, findings, nil, derivedChecks, derive)
+	s.PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks, findings, nil, derivedChecks, derive)
 }
 
 // PurgeAndMergeFindingsDerivedWithGaps preserves current findings for path
@@ -955,16 +955,18 @@ func (s *Store) PurgeAndMergeFindingsDerived(purgeChecks []string, findings []al
 // must supply both lexical and resolved aliases they accepted at scan time;
 // preservation is evaluated under latestMu without resolving them again.
 func (s *Store) PurgeAndMergeFindingsDerivedWithGaps(purgeChecks []string, findings []alert.Finding, preserveAliasesByCheck map[string]map[string]bool, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
-	s.purgeAndMergeFindingsDerived(purgeChecks, findings, preserveAliasesByCheck, derivedChecks, derive)
+	s.PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks, findings, &ScanCoverage{PreservePaths: preserveAliasesByCheck}, derivedChecks, derive)
 }
 
-func (s *Store) purgeAndMergeFindingsDerived(purgeChecks []string, findings []alert.Finding, preservePathsByCheck map[string]map[string]bool, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
+// PurgeAndMergeFindingsDerivedWithCoverage applies file gaps and completed
+// scanner scopes against current state in the same transaction as correlation.
+func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 
-	merged := purgeAndMergeLatest(s.latestFindings, purgeChecks, findings, preservePathsByCheck)
+	merged := purgeAndMergeLatestWithCoverage(s.latestFindings, purgeChecks, findings, coverage, true)
 	if derive != nil {
-		merged = purgeAndMergeLatest(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)), preservePathsByCheck)
+		merged = purgeAndMergeLatestWithCoverage(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)), coverage, false)
 	}
 	s.latestFindings = merged
 	s.latestScanTime = time.Now()
@@ -994,6 +996,14 @@ func earliestObservation(stored, reported alert.Finding) time.Time {
 // findings those runners produced), merges findings by key, and returns the
 // ordered, capped result.
 func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings []alert.Finding, preservePathsByCheck map[string]map[string]bool) []alert.Finding {
+	return purgeAndMergeLatestWithCoverage(current, purgeChecks, findings, &ScanCoverage{PreservePaths: preservePathsByCheck}, true)
+}
+
+func purgeAndMergeLatestWithCoverage(current []alert.Finding, purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, retireScopes bool) []alert.Finding {
+	if coverage == nil {
+		coverage = &ScanCoverage{}
+	}
+	preservePathsByCheck := coverage.PreservePaths
 	remove := make(map[string]bool, len(purgeChecks))
 	for _, c := range purgeChecks {
 		remove[c] = true
@@ -1023,6 +1033,7 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 		}
 	}
 	protectedKeys := make(map[string]struct{})
+	scopeProtectedKeys := make(map[string]struct{})
 	for _, f := range current {
 		key := f.Key()
 		observations[key] = earliestObservation(alert.Finding{}, f)
@@ -1034,9 +1045,12 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 		// replaces it below; a protected snapshot stays authoritative against a
 		// colliding finding from another path.
 		preserved := holdChecks[f.Check] || pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check])
-		if preserved ||
-			isAutomaticallyDemotedFinding(f) || !shouldPurgeLatestFinding(f, remove) {
+		retire := shouldPurgeLatestFinding(f, remove) || (retireScopes && coverage.completed(f))
+		if preserved || isAutomaticallyDemotedFinding(f) || !retire {
 			existing[key] = f
+			if coverage.unexamined(f) {
+				scopeProtectedKeys[key] = struct{}{}
+			}
 			if preserved {
 				protectedKeys[key] = struct{}{}
 			}
@@ -1065,6 +1079,13 @@ func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings
 		if pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
 			protectedKeys[key] = struct{}{}
 		}
+	}
+	// Protect only previously admitted unexamined findings. New partial
+	// detections compete for the remaining slots; protecting them too would
+	// let a persistently incomplete scanner grow the active set without bound.
+	// Refreshes of retained keys keep their protection and original first-seen.
+	for key := range scopeProtectedKeys {
+		protectedKeys[key] = struct{}{}
 	}
 	return orderAndCapLatestPreserving(existing, protectedKeys)
 }

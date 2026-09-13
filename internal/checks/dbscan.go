@@ -179,15 +179,15 @@ func spamCountLabel(n int, truncated bool) string {
 // keeps one example path per reason. Multisite limits have their own detailed
 // findings and are not counted again here.
 //
-// This records reasons for reporting only. Preservation still uses the
-// pathless whole-check marker: these findings carry no FilePath, so the
-// path-attributed gap mechanism cannot match them and would purge them
-// instead of retaining them.
+// The owner remains incomplete when any install fails. Independently
+// completed database scopes can still retire their own previous findings.
 type dbScanCoverage struct {
-	discovered          int
-	discoveryIncomplete bool
-	counts              map[string]int
-	examples            map[string]string
+	discovered           int
+	discoveryIncomplete  bool
+	counts               map[string]int
+	examples             map[string]string
+	queryFailures        map[string]int
+	queryFailureOverflow int
 }
 
 func (c *dbScanCoverage) record(reason, configPath string) {
@@ -235,6 +235,7 @@ func (c *dbScanCoverage) summary() string {
 		example = truncateDB(example[1:len(example)-1], 200)
 		fmt.Fprintf(&b, "%s=%d (example: %s)\n", reason, c.counts[reason], example)
 	}
+	b.WriteString(c.queryFailureSummary())
 	if c.discoveryIncomplete {
 		b.WriteString("Document-root discovery was incomplete; additional installs may be missing.\n")
 	}
@@ -265,6 +266,7 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 	// Cache the coverage outcome as well as the scan: aliases of an unreadable
 	// database are affected installs too, but must not repeat its queries.
 	seenDatabases := make(map[string]string, len(wpConfigs))
+	completedScopes := make(map[string]bool)
 	for _, wpConfig := range wpConfigs {
 		if ctx.Err() != nil {
 			return findings
@@ -277,6 +279,12 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 			continue
 		}
 		if creds.dbName == "" || creds.dbUser == "" {
+			// A missing login does not erase an otherwise known scope. Its
+			// healthy alias must not retire findings this install could not
+			// examine, regardless of which config discovery returned first.
+			if prefix, ok := resolveTablePrefix(creds); creds.dbName != "" && ok {
+				completedScopes[dbContentDedupKey(user, creds, prefix)] = false
+			}
 			coverage.record("missing_credentials", wpConfig)
 			markCheckIncomplete(ctx, "db_content")
 			continue
@@ -305,18 +313,31 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		// limits, which already emit a separate account-specific finding.
 		queryCtx, contentIncomplete := withIncompleteCheckCollector(ctx)
 		creds.queryCtx = queryCtx
-		queryFailed := false
-		creds.queryFailed = &queryFailed
+		creds.queryState = new(dbQueryState)
 		// Stamp each install's own slice before merging: the host-wide
 		// summary appended below must never inherit an owner.
 		installFindings := capPhantomAuthorFindings(wpInstallScanner(ctx, user, creds, prefix), maxPhantomAuthorsReported)
+		scope := dbContentDedupKey(user, creds, prefix)
+		multisiteLimited := false
+		for i := range installFindings {
+			installFindings[i].CoverageScope = scope
+			if installFindings[i].Check == "db_content_scan_incomplete" {
+				multisiteLimited = true
+			}
+		}
 		findings = append(findings, stampTenantIDIfEmpty(installFindings, owners[wpConfig])...)
 		var reason string
-		if queryFailed {
+		if creds.queryState.failed {
 			reason = "query_failed"
 		} else if contentIncomplete.contains("db_content") {
 			reason = "incomplete_content"
 		}
+		scopeComplete := reason == "" && !multisiteLimited
+		if prior, seen := completedScopes[scope]; seen {
+			scopeComplete = scopeComplete && prior
+		}
+		completedScopes[scope] = scopeComplete
+		coverage.recordQueryFailures(creds.queryState)
 		seenDatabases[databaseKey] = reason
 		if reason != "" {
 			coverage.record(reason, wpConfig)
@@ -324,6 +345,7 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		}
 	}
 
+	recordCompletedCoverageScopes(ctx, "db_content", completedScopes)
 	return appendDatabaseScanIncompleteFinding(ctx, findings, coverage)
 }
 
@@ -344,7 +366,7 @@ func scanWPInstall(ctx context.Context, user string, creds wpDBCreds, prefix str
 
 	// wp_users / wp_usermeta are network-wide in multisite, so
 	// the user-table scan runs once regardless of the layout.
-	installFindings = append(installFindings, checkWPUsers(user, creds, prefix)...)
+	installFindings = append(installFindings, checkWPUsers(user, creds.withQueryStage("users"), prefix)...)
 
 	// Multisite: enumerate active secondary blog IDs and scan
 	// each one's wp_<N>_options / wp_<N>_posts. Spam, archived,
@@ -362,17 +384,17 @@ func scanWPInstall(ctx context.Context, user string, creds wpDBCreds, prefix str
 // separate because multisite blogs share the network-wide users table.
 func scanWPBlog(user string, creds wpDBCreds, sitePrefix, usersPrefix string) []alert.Finding {
 	var findings []alert.Finding
-	findings = append(findings, checkWPOptions(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPPosts(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPStoredCode(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPSpamTaxonomy(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPHiddenLinks(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPCloakConfig(user, creds, sitePrefix)...)
+	findings = append(findings, checkWPOptions(user, creds.withQueryStage("options"), sitePrefix)...)
+	findings = append(findings, checkWPPosts(user, creds.withQueryStage("posts"), sitePrefix)...)
+	findings = append(findings, checkWPStoredCode(user, creds.withQueryStage("stored_code"), sitePrefix)...)
+	findings = append(findings, checkWPSpamTaxonomy(user, creds.withQueryStage("taxonomy"), sitePrefix)...)
+	findings = append(findings, checkWPHiddenLinks(user, creds.withQueryStage("hidden_links"), sitePrefix)...)
+	findings = append(findings, checkWPCloakConfig(user, creds.withQueryStage("cloak_config"), sitePrefix)...)
 	// Rate change rather than vocabulary: the next kit will use different
 	// words, but it will still publish a flood onto a long-quiet site.
-	findings = append(findings, checkWPPostVolumeBurst(user, creds, sitePrefix)...)
+	findings = append(findings, checkWPPostVolumeBurst(user, creds.withQueryStage("post_burst"), sitePrefix)...)
 	findings = append(findings,
-		checkWPPhantomAuthors(user, creds, sitePrefix, usersPrefix, maxPhantomAuthorsReported)...)
+		checkWPPhantomAuthors(user, creds.withQueryStage("phantom_authors"), sitePrefix, usersPrefix, maxPhantomAuthorsReported)...)
 	return findings
 }
 
@@ -411,7 +433,7 @@ func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.F
 // got far enough to attribute a cause, and falls back to the generic sentence
 // when no install-specific cause was recorded.
 func databaseScanIncompleteDetails(coverage *dbScanCoverage) string {
-	const retained = "Findings from the previous complete scan are retained."
+	const retained = "Findings without complete database coverage are retained."
 	if summary := coverage.summary(); summary != "" {
 		return summary + retained
 	}
@@ -432,7 +454,7 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 		"SELECT blog_id FROM %sblogs WHERE archived = 0 AND deleted = 0 AND spam = 0 AND blog_id != 1 ORDER BY blog_id LIMIT %d",
 		prefix, maxWPSecondaryBlogs+1,
 	)
-	rows := runMySQLQuery(creds, query)
+	rows := runMySQLQuery(creds.withQueryStage("multisite_discovery"), query)
 	var findings []alert.Finding
 	truncated := len(rows) > maxWPSecondaryBlogs
 	if truncated {
@@ -448,6 +470,8 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 		}
 		// Guard against any garbage in the row -- only digits.
 		if !isAllDigits(blogID) {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
 		sitePrefix := fmt.Sprintf("%s%s_", prefix, blogID)
@@ -499,10 +523,10 @@ type wpDBCreds struct {
 	// queryOwner identifies the CMS check whose coverage depends on a query.
 	// WordPress callers use the default owner when this is empty.
 	queryOwner string
-	// queryFailed is shared by the sequential queries for one install. Once a
-	// connection or query fails, later checks skip redundant retries and the
-	// host-wide scan can continue with the next install.
-	queryFailed *bool
+	// queryState is shared by the sequential queries for one install.
+	// Coverage failures and an unusable connection are tracked separately.
+	queryState *dbQueryState
+	queryStage string
 	// multisite is set when wp-config.php declares
 	// `define('MULTISITE', true)`. In multisite, the main blog
 	// (ID 1) keeps the unprefixed table names and secondary blogs
@@ -677,7 +701,7 @@ func extractPHPString(s string) string {
 // error (the legacy implementation swallowed errors the same way).
 // Var so tests can serve canned rows without a live database.
 var runMySQLQuery = func(creds wpDBCreds, query string) []string {
-	if creds.queryFailed != nil && *creds.queryFailed {
+	if creds.queryState != nil && creds.queryState.halted {
 		return nil
 	}
 	parent := creds.queryCtx
@@ -693,9 +717,7 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 		DBName:   creds.dbName,
 	}, query)
 	if err != nil {
-		if creds.queryFailed != nil {
-			*creds.queryFailed = true
-		}
+		creds.queryState.record(creds.queryStage, err)
 		markCheckIncomplete(creds.queryCtx, creds.queryCheck())
 		return nil
 	}
@@ -898,7 +920,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
 		})
 	}
-	queryComplete := creds.queryFailed == nil || !*creds.queryFailed
+	queryComplete := creds.queryState == nil || !creds.queryState.failed
 	if queryComplete {
 		if sdb := store.Global(); sdb != nil {
 			_ = sdb.FinishExternalScriptBaseline(externalScriptSiteKey(creds.dbName, prefix), time.Now())

@@ -128,7 +128,7 @@ func TestRecordTierRunFindingsAtomicallyPreservesYARAGap(t *testing.T) {
 		&config.Config{},
 		[]alert.Finding{first},
 		[]string{"yara_match_scheduled", "js_keylogger_dataflow"},
-		map[string]map[string]bool{"yara_match_scheduled": {path: true}},
+		&state.ScanCoverage{PreservePaths: map[string]map[string]bool{"yara_match_scheduled": {path: true}}},
 		false,
 		false,
 	)
