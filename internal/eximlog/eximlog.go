@@ -12,8 +12,24 @@ package eximlog
 
 import (
 	"net"
+	"regexp"
 	"strings"
 )
+
+// Exim places remote ident after the peer, optional local interface and
+// TCP Fast Open marker. Match this boundary without trusting HELO quoting.
+var identPeerPattern = regexp.MustCompile(`\[([0-9A-Fa-f:.]+)\](?::[0-9]+)?(?: I=\[[0-9A-Fa-f:.]+\](?::[0-9]+)?)?(?: TFO\*?)? U=`)
+
+func peerMatchesIdent(s string, clientEnd int) bool {
+	for _, match := range identPeerPattern.FindAllStringSubmatchIndex(s, -1) {
+		// The captured address ends just before the peer's closing bracket.
+		// A different offset is ambiguous even when the addresses are equal.
+		if net.ParseIP(s[match[2]:match[3]]) != nil && match[3]+1 != clientEnd {
+			return false
+		}
+	}
+	return true
+}
 
 // ClientIP returns the connecting client's IP from an Exim log line, or ""
 // when the line carries none. It reads either a real H= field or one of the
@@ -89,6 +105,9 @@ func HFieldClientIP(s string) string {
 // candidate must be followed by a real H= boundary, and a second plausible
 // candidate makes the field ambiguous instead of letting junk HELO text win.
 func HFieldClientIPAndEnd(s string) (string, int) {
+	// A peer must precede remote ident, even if junk HELO delimiters hide
+	// the U= marker inside a parenthesized, quoted or bracketed value.
+	identStart := strings.Index(s, " U=")
 	parenDepth := 0
 	quoted := false
 	client := ""
@@ -125,7 +144,7 @@ func HFieldClientIPAndEnd(s string) (string, int) {
 				candidate := s[i+1 : i+1+end]
 				after := s[i+1+end+1:]
 				if net.ParseIP(candidate) != nil && hFieldClientIPTerminated(after) {
-					if client != "" {
+					if client != "" || (identStart >= 0 && identStart < i) {
 						return "", 0
 					}
 					client = candidate
@@ -135,7 +154,7 @@ func HFieldClientIPAndEnd(s string) (string, int) {
 			i += end + 1
 		}
 	}
-	if parenDepth != 0 || quoted {
+	if parenDepth != 0 || quoted || (identStart >= 0 && !peerMatchesIdent(s, clientEnd)) {
 		return "", 0
 	}
 	return client, clientEnd
@@ -199,9 +218,12 @@ func withoutLoggedPort(s string) string {
 // one plausible peer or malformed parentheses are rejected; otherwise a junk
 // HELO could make CSM block an address supplied by the peer.
 func hostAndIdentClientIP(s string) string {
+	// host_and_ident writes the same unquoted remote U= as an H= record.
+	identStart := strings.Index(s, " U=")
 	parenDepth := 0
 	quoted := false
 	client := ""
+	clientEnd := 0
 	for i := 0; i < len(s); i++ {
 		if quoted {
 			if s[i] == '\\' && i+1 < len(s) {
@@ -234,16 +256,17 @@ func hostAndIdentClientIP(s string) string {
 				candidate := s[i+1 : i+1+end]
 				after := s[i+1+end+1:]
 				if net.ParseIP(candidate) != nil && hostAndIdentClientIPTerminated(after) {
-					if client != "" {
+					if client != "" || (identStart >= 0 && identStart < i) {
 						return ""
 					}
 					client = candidate
+					clientEnd = i + end + 2
 				}
 			}
 			i += end + 1
 		}
 	}
-	if parenDepth != 0 || quoted {
+	if parenDepth != 0 || quoted || (identStart >= 0 && !peerMatchesIdent(s, clientEnd)) {
 		return ""
 	}
 	return client

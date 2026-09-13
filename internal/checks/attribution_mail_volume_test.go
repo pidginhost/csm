@@ -24,6 +24,8 @@ func TestMailVolumeAttributesVerifiedSubmitter(t *testing.T) {
 		{"remote ident is not local", "H=mail.example.org [203.0.113.5] U=bob P=esmtp S=100", ""},
 		{"remote ident cannot forge auth", "H=mail.example.org [203.0.113.5] U=remote A=dovecot_login:user@example.net P=esmtp S=100", ""},
 		{"remote ident cannot forge reception metadata", "H=mail.example.org [203.0.113.5] U=remote P=esmtpsa A=dovecot_login:user@example.net S=100 P=esmtp S=200", ""},
+		{"helo cannot hide remote ident", "H=(hello() [203.0.113.5] U=) [192.0.2.8] P=esmtpsa A=dovecot_login:user@example.net S=100 P=esmtp S=200", ""},
+		{"helo cannot forge metadata before ident", `H=(hello) [192.0.2.8] P=esmtpsa A=dovecot_login:user@example.net S=100 T=") [203.0.113.5] U=" P=esmtp S=200`, ""},
 		{"system submission", "U=nobody P=local S=100", ""},
 		{"unknown submission", "U=ghost P=local S=100", ""},
 		{"unknown mailbox", "H=mail.example.org [203.0.113.5] P=esmtpsa A=dovecot_login:user@example.org S=100", ""},

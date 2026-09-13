@@ -1,6 +1,9 @@
 package eximlog
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSubmitterIgnoresMessageMetadata(t *testing.T) {
 	for _, tc := range []struct {
@@ -33,6 +36,13 @@ func TestSubmitterIgnoresMessageMetadata(t *testing.T) {
 			name:          "authenticated message id cannot cancel identity",
 			metadata:      "H=mail.example [203.0.113.5] P=esmtpsa A=dovecot_login:alice@example.com",
 			suffix:        `id=part." P=local "@example.org`,
+			submitter:     "alice@example.com",
+			authenticated: "alice@example.com",
+		},
+		{
+			name:          "authenticated subject ident text cannot cancel identity",
+			metadata:      "H=mail.example [203.0.113.5] P=esmtpsa A=dovecot_login:alice@example.com",
+			suffix:        `T="note U=bob [not-an-ip] U=remote"`,
 			submitter:     "alice@example.com",
 			authenticated: "alice@example.com",
 		},
@@ -88,4 +98,49 @@ func TestSubmitterRejectsRemoteIdentMetadata(t *testing.T) {
 			t.Errorf("AuthenticatedUser accepted ambiguous remote ident metadata: %q", got)
 		}
 	}
+}
+
+func TestSubmitterRejectsIdentHiddenByHelo(t *testing.T) {
+	// With junk HELO accepted, its delimiters can span the real peer and U=.
+	// The ident can then close them and supply an apparent peer and auth.
+	forged := " [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100"
+	for _, tc := range []struct{ name, helo, ident string }{
+		{"parenthesis", "hello(", ")" + forged},
+		{"quote", `hello) "`, `"` + forged},
+		{"bracket", "hello[", ")" + forged},
+		{"peer before ident", `hello) [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100 T="`, `"`},
+		{"forged ident before real ident", `hello) [192.0.2.8] U=remote P=esmtpsa A=dovecot_login:bob@example.net S=100 T="`, `"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := "2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=(" + tc.helo + ") [203.0.113.5]:2525 U=" + tc.ident + " P=esmtp S=200"
+			if got := Submitter(line); got != "" {
+				t.Errorf("Submitter accepted hidden remote ident: %q", got)
+			}
+			if got := AuthenticatedUser(line); got != "" {
+				t.Errorf("AuthenticatedUser accepted hidden remote ident: %q", got)
+			}
+		})
+	}
+}
+
+func FuzzSubmitterRemoteIdent(f *testing.F) {
+	f.Add("mail.example", "remote")
+	f.Add("hello(", ") [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100")
+	f.Add(`hello) [192.0.2.8] P=esmtpsa A=dovecot_login:bob@example.net S=100 T="`, `"`)
+	f.Fuzz(func(t *testing.T, helo, ident string) {
+		// Exim escapes line breaks and rejects NUL in these inputs.
+		if strings.ContainsAny(helo+ident, "\r\n\x00") {
+			return
+		}
+		line := "2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=(" + helo + ") [203.0.113.5]:2525 U=" + ident + " P=esmtp S=200"
+		if got := Submitter(line); got != "" {
+			t.Fatalf("remote ident supplied submitter %q", got)
+		}
+		if got := AuthenticatedUser(line); got != "" {
+			t.Fatalf("remote ident supplied authenticated user %q", got)
+		}
+		if got := ClientIP(line); got != "" && got != "203.0.113.5" {
+			t.Fatalf("remote ident supplied connecting address %q", got)
+		}
+	})
 }

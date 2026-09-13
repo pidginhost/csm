@@ -474,8 +474,10 @@ branches:
   owner only when every counted arrival proves the same local account through
   authentication or local submission. Arrivals containing remote ident
   usernames stay unattributed: that unquoted text can imitate later
-  authentication metadata. Mixed or unverified aggregates stay unattributed
-  without reducing the volume count. Owner lookups run after tracker locks are
+  authentication metadata. Records with ambiguous greetings also remain
+  unattributed and cannot supply a connecting address. Mixed or unverified
+  aggregates stay unattributed without reducing the volume count.
+  Owner lookups run after tracker locks are
   released. Mail hold and governor findings require a local mail-server
   permission decision. Submission identities are read only from reception
   metadata before the message size; message IDs, subjects and recipients
