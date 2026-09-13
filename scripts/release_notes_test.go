@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -275,5 +276,72 @@ func TestReleaseNotesFailsOnAMissingVersion(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "3.32.0") {
 		t.Fatalf("the failure must name the version it looked for, got %q", stderr)
+	}
+}
+
+// looseEntries returns the line numbers of changelog entries separated from
+// the entry before them by a blank line. Markdown renders such a list as loose,
+// wrapping every entry in its own paragraph on the release page, and once one
+// section drifts every later entry copies its neighbours.
+func looseEntries(body string) []int {
+	var loose []int
+	prevEntry, blank := false, false
+	for i, line := range strings.Split(body, "\n") {
+		switch {
+		case strings.TrimSpace(line) == "":
+			blank = true
+			continue
+		case strings.HasPrefix(line, "- "):
+			if prevEntry && blank {
+				loose = append(loose, i+1)
+			}
+			prevEntry = true
+		case strings.HasPrefix(line, " "):
+			// A wrapped or indented sub-point continues the entry above it.
+		default:
+			prevEntry = false
+		}
+		blank = false
+	}
+	return loose
+}
+
+func TestLooseEntriesFindsOnlyBlankSeparatedEntries(t *testing.T) {
+	body := `# Changelog
+
+## [3.38.0] - 2026-09-13
+
+### Added
+
+- A tight entry.
+- Another tight entry.
+  - an indented sub-point
+
+- A loose entry.
+
+### Fixed
+
+- The first entry under a new heading.
+`
+	got := fmt.Sprint(looseEntries(body))
+	if got != "[11]" {
+		t.Fatalf("want only line 11 reported, got %s", got)
+	}
+}
+
+func TestChangelogEntriesAreNotSeparatedByBlankLines(t *testing.T) {
+	root := repoRoot(t)
+	archives, err := filepath.Glob(filepath.Join(root, "docs", "changelog", "*.md"))
+	if err != nil {
+		t.Fatalf("glob changelog archives: %v", err)
+	}
+	for _, path := range append([]string{filepath.Join(root, "CHANGELOG.md")}, archives...) {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if loose := looseEntries(string(body)); len(loose) > 0 {
+			t.Errorf("%s: entries separated by a blank line at lines %v; keep a section's entries on consecutive lines", path, loose)
+		}
 	}
 }

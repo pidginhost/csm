@@ -10,91 +10,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Automatic file quarantine and cleaning now share persistent host and account limits and pause after repeated failures. Cleaning that fails or finds nothing to remove, and whole-directory findings, leave the source for manual review, and a cleaner that finds nothing does not count toward the pause.
-
 - The dashboard's browser sources now have unit tests, run through the Go suite on machines that have node.
-
 - The incident view has a Block button for incidents with one unambiguous source address. It blocks permanently, records the block on the incident timeline, and stops the automatic hand-off from re-blocking an address an operator just handled.
-
 - A calibration tool replays a recorded finding stream through cross-account correlation and reports what each candidate threshold would have raised, so the thresholds can be re-derived from what hosts produced.
-
 - CSM now ships a request filter for the LiteSpeed Cache role-simulation takeover. Sites whose WordPress is too old for the fixed plugin line have no upgrade path, and ordinary crawling still works because the filter only covers privileged targets and writes.
-
 - Code stored in a plugin's own status options, which WordPress prints in the dashboard as a notice, is now reported as a critical database finding. LiteSpeed Cache is covered first, since an unauthenticated request can write those rows on older versions.
-
 - The known-vulnerable plugin feed now covers the three LiteSpeed Cache issues behind that injection, so a site still running an affected version alerts even after its stored payload is removed.
 
 ### Changed
 
 - Go dependencies and the pinned GitHub Actions are updated to their current releases.
-
 - The README no longer shows the retired Go Report Card badge. It reports the Go version the project builds with instead.
 
 ### Fixed
 
 - `make test` works on Linux again and keeps test files on disk instead of the macOS-only temporary path.
-
 - Frequently replayed audit records stay deduplicated during busy periods, and simultaneous findings no longer hide each other. Failed crawler lookups release room for new verification, while database aliases with missing credentials keep earlier findings.
-
 - Audit replays no longer duplicate records at healthy destinations. Repeated verification failures and incomplete scans no longer pin or grow their retained state indefinitely.
-
 - Incomplete scans keep earlier findings when new results fill the active list, even if no database could be inspected. Timeouts and internal failures keep the same protection.
-
 - Automatic firewall actions now link to their source findings in the audit log, including delayed retries and escalations. Failed and refused attempts keep the same attribution.
-
 - Claimed crawlers receive pending treatment only for admitted verification work within its initial waiting period. Failed or unavailable verification no longer renews that treatment on every retry.
-
 - Completed database scans now clear resolved findings independently of failures in other installations. Unexamined installations keep their current findings.
-
 - A database query failure no longer suppresses independent checks when other tables remain readable. Coverage warnings identify the failed stage and error class without exposing database values.
-
 - Automatic file response keeps full-file validation after partial realtime checks. Safety refusals, such as a replaced or vanished source, no longer count toward the failure pause, and special-file replacements cannot stall response processing.
-
 - DNS and queue health tests no longer depend on external resolution or unrelated queue events. The roadmap drops an incorrect firewall audit path item, and file response docs clarify restart replay.
-
 - Automatic file responses no longer repeat during alert delivery or for duplicate detections of one file. Incomplete safety records now pause changes instead of losing accounting.
-
 - Account scans retain individual WordPress verification warnings, and host-wide warnings no longer appear to belong to the first sampled account.
-
 - WordPress installations whose core checks or plugin inventories repeatedly fail now produce a warning naming the installation and cause. A fault that stops many installations at once is reported as one warning instead of one per site. Successful checks clear the warning even when scans finish out of order, and status distinguishes completed checks from partial output.
-
 - WordPress database scan warnings now count config, query and content-read failures, name examples, and keep discovery gaps visible. Multisite safety-limit warnings no longer hide failures at other installs.
-
 - Cross-account correlation now judges an account by when its finding was first observed, not by when a scan last re-reported it. Every scan refreshes the report time of findings it still sees, so a months-old compromise kept re-entering the recent-activity window and the coordinated-attack alert named most of the accounts on the host.
-
 - Completed scans now preserve the original observation when replacing a finding, so repeated reports cannot renew an expired correlation alert. Findings with no recorded first observation omit that optional date from JSON output.
-
 - Cross-account correlation now only combines findings from the last hour of the stored finding set, and clears an aggregate on the next scan once that hour passes. It had no time bound at all, so the coordinated-attack alert latched on the first three accounts that ever carried a critical finding and never cleared. Attribution health reports the same window.
-
 - Real-time WordPress admin-creation detection now requires an administrator role token alongside the credential shape, matching the scheduled rule of the same name, and accepts the same whitespace. The importer bundled inside many themes and plugins creates users from an import form without touching a role, and was reported as critical on every plugin update that staged it.
-
 - The dashboard now shows real-time YARA scan failures in the filesystem monitor's last event, instead of leaving that event missing or stale.
-
 - A real-time scan that cannot inspect a changed file is now its own finding, separate from the scheduled coverage report it used to share a name with. A scanning outage is no longer indistinguishable from the routine backlog of files past the scan size limit.
-
 - Shutting the daemon down no longer reports a real-time scanning failure. A clean restart raised one every time.
-
 - Script URLs stored as JSON, where every slash is escaped, are now recognised. Injected loaders in options, posts and page-builder content were invisible to the database scan in that form.
-
 - A file too large to analyze is reported as a coverage gap only when its leading bytes could be source of that language. Large images, archives and compiled catalogs no longer arrive as PHP or JavaScript the scan failed to examine, while oversize JavaScript that embeds binary characters in a literal or comment stays visible along with any earlier finding for it.
-
 - A deep scan that has reached its time limit no longer opens further files while recording what it did not examine.
 
 ### Security
 
 - Incident blocks now retain their escalation across quiet periods and restarts, and closing an incident clears it even with a block request in flight. Manual block records validate the incident address, and refreshing a live block no longer skips an escalation step.
-
 - An incident-driven firewall block is re-applied when the previous one expires and the attack is still going, escalating from the configured expiry to seven days and then to a permanent block. A block was previously requested once per incident while the block itself expired after a day, so anyone who kept going past that was never blocked again; on a production host one address sprayed mail credentials for six days after its block lapsed, with the incident open throughout.
-
 - WordPress database scan warnings now escape account-controlled names so they cannot alter the diagnostic or terminal display.
-
 - The LiteSpeed Cache request filter now covers equivalent cookie and request forms while preserving ordinary crawler reads. Public links to administrative pages no longer cause false blocks.
-
 - Plugin notice scanning inspects longer stored messages and reports incomplete reads, preserving earlier findings when the full notice cannot be checked. Existing executable-markup checks now apply consistently to these notices.
-
 - Database cleanup refuses partial changes to plugin notices when executable content remains, including loaders on ordinary HTTPS hosts.
-
 - Audit records, stored finding history and attack events redact recognized credentials before they are written, including the history the web UI shows and exports. Session identifiers from cPanel login lines are covered.
-
 - Repeated and quoted password and token fields are now redacted consistently. Redaction keeps finding correlation and unrelated log evidence intact.
 
 ## [3.37.0] - 2026-09-11
@@ -113,103 +76,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - WordPress core checks now report waiting installations, stalled workers and failed work through status and doctor, including interrupted commands that return partial findings. Active commands and result handling remain visible after cancellation, and concurrent scans retain separate ownership.
-
 - Block digests now report buffered blocks, stalled preparation or delivery, and confirmed losses through status and doctor. Normal batching and disabled default destinations stay healthy; interrupted deliveries remain explicit.
-
 - Findings parked at shutdown now report stored backlog, stalled persistence or replay, and confirmed losses through status and doctor. Failed writes distinguish retained work from uncertain outcomes, including log text repaired during storage.
-
 - Queue health now reports pending attack record updates and deletions, including failed retries and interrupted writes. Repeated changes to one IP share pending work, while changes arriving during a write remain visible.
-
 - Attack event persistence now reports backlog, stalled writes and confirmed losses through status and doctor. Partial writes and uncertain completion remain visible after shutdown.
-
 - Production checks now enforce the reviewed queue inventory and reject missing or skipped health regressions, including shared reporting and recovery checks.
-
 - Production checks now verify PHP relay queue health during startup, shutdown and watcher attachment failures.
-
 - File mail sources now report unread bytes and stalled reads, including buffered and partial lines. Source changes retain known lost records and make uncertain backlog explicit.
-
 - Journal mail sources now report stalled reads and source failures through status and doctor. Unmeasurable backlog stays explicit, and switching to a working file source clears retired journal errors.
-
 - Health now reports deferred cleanup after firewall flushes, stalled cleanup and failed retries. Unreadable state is marked unknown until recovery establishes which work survived.
-
 - Health now reports pending automatic blocks, active candidates and retry failures. Counts distinguish confirmed losses from retries still available on disk.
-
 - Blocked automatic responses and firewall flushes now appear in health checks while they wait for shared state. The active operation remains visible through cleanup.
-
 - Incident persistence now reports queued writes, stalled writers and failures through status and doctor. Deferred bookkeeping remains visible until a later update or shutdown flush.
-
 - File-index scans now report waiting callers, stalled scans and failed work through status and doctor. Audit scans remain independent, and successful late baseline writes do not count as lost work.
-
 - Reputation checks now report waiting queries, stalled result handling and failed work through status and doctor. Reserved lookups stay visible while fallback scoring runs; cache failures retain the findings, and normal quota limits remain separate from queue failures.
-
 - WordPress plugin inventory now reports waiting sites, stalled workers and failed completion through status and doctor. Canceled commands stay visible until they return, and shared refreshes count each site once.
-
 - Mailbox password audits now report waiting work, stalled audits and failed completion through status and doctor. Canceled audits stay visible while they finish, and failed cache writes retain the confirmed findings.
-
 - PHP analysis now reports waiting requests, stalled worker communication and failed work through status and doctor. Cancellation keeps unfinished communication visible, and timeout evidence remains available during cleanup.
-
 - Email antivirus scans now report stalled engines, delayed results and failed work through status and doctor. Timed-out engines stay visible until they finish.
-
 - Full-scan jobs now report waiting work, stalled admission or persistence, and lost jobs through status and doctor. Working scans use check progress and deadlines so a long scan alone does not trigger a stall warning.
-
 - Scan health now includes checks waiting for a worker and stalled setup or result handling. Long-running checks keep their own deadlines without making a busy scan look stalled.
-
 - Host and account scans now report overdue checks and lost results through status and doctor. A timed-out scan keeps unfinished checks visible until they return.
-
 - Email password audits now report waiting callers, occupied verification slots and stalled work through status and doctor. Canceled scans keep unfinished verification visible until it returns.
-
 - Reverse DNS lookups now report occupied slots, stalled resolvers and lost results through status and doctor. Timed-out lookups remain visible until their resolver finishes.
-
 - Panel webhooks now report durable backlog, stalled delivery and lost findings through status and doctor. Retries and clean shutdown preserve queued findings; stopped queues refuse late submissions.
-
 - Live event streams now report backlog, stalled delivery and lost events through status and doctor. Closing a browser tab does not count as a delivery failure.
-
 - Action logging now reports occupied write slots, stalled writers and lost records through status and doctor. A timed-out caller does not hide a write still running.
-
 - Abuse reporting now exposes its durable backlog and delivery failures through status and doctor. Retried reports retain their waiting age without counting as lost.
-
 - Abuse reporting now reports memory backlog, stalled persistence and lost reports through status and doctor.
-
 - Bot verification now reports backlog, stalled work and lost requests through status and doctor. DNS and cache failures remain visible without changing bot classification.
-
 - Central threat-intelligence actions now report backlog, stalled work and failures through status and doctor. Shutdown accounts for abandoned actions and refuses late submissions.
-
 - Process file reads now report occupied slots, stalled work and lost results through status and doctor. Timed-out reads remain visible until the underlying operation returns.
-
 - Process context enrichment now reports backlog, stalled work and lost requests through status and doctor. Process disappearance and stale identities remain expected outcomes.
-
 - BPF verdict annotation now reports queued callbacks, stalled work and losses through status and doctor. Callback failures remain visible while findings continue without waiting for annotations.
-
 - PHP relay index persistence now reports queued writes, stalled batches and failed writes through status and doctor.
-
 - Forwarder and PHP relay notification queues now report pending work, stalled readers and known losses through status and doctor. PHP relay restarts preserve earlier failures.
-
 - Recovery scans now report queued directories, stalled work and failed attempts through status and doctor. Evicted, expired and unfinished shutdown work stays in the loss totals; successful scans at the recovery cutoff remain successful.
-
 - File and mail notification queues now report pending work, stalled readers and unread shutdown losses through status and doctor. Work already being processed stays visible after leaving the kernel queue.
-
 - Mail-log delivery now reports queued work, stalled consumers and lost records through status and doctor. Loss totals survive reader retries and changes between file and journal sources.
-
 - BPF kernel queues now report occupancy, stalled readers and lost events through status and doctor. Shutdown records the minimum known loss when kernel callbacks may still be finishing.
-
 - BPF event delivery now reports queue pressure, decoding failures and stalled consumers through status and doctor. Shutdown counts buffered events left unprocessed.
-
 - Status and doctor now report overdue dropper probes, delayed findings and abandoned work.
-
 - Status and doctor now expose delayed or dropped package verification work. Repeated retries retain their original waiting time, and a stalled verifier remains visible while it holds a batch.
-
 - Status and doctor now report delayed and dropped work in finding delivery and the realtime file and mail scanners. Sustained overload degrades health and raises a bounded notification even when the normal findings channel is full, with a recovery event once pressure clears. The startup hold does not count as delay.
 
 ### Security
 
 - WordPress integrity checks no longer treat command timeouts as successful verification.
-
 - Binary and configuration tamper findings now retain their host identity when joining incidents, even without account or IP attribution. Classification checks catch missing detector mappings before release.
-
 - Busy hosts with many open files no longer lose the PHP relay watcher to a polling crash.
-
 - Spool shutdown now prevents late scan responses from writing through a closed descriptor that the process has reused for an unrelated file.
-
 - Dropper monitoring now bounds findings awaiting aggregation and releases failed retry state, limiting memory growth during sustained file churn. Later observations preserve the retry limit when they strengthen a file's identity.
 
 ### Fixed
@@ -217,81 +133,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Queue health and doctor
 
 - Queue health no longer reports a stall from invalid kernel occupancy or work that is not yet eligible. Adopted panel webhooks retain their waiting age, and plugin commands with missing output count as incomplete work.
-
 - Attack event health now names an uncertain write ahead of a backlog, the way the record queue already did.
-
 - A burst of automatic responses writing to the action log no longer degrades health. Recording work is now reported as stalled on the same timescale as every other queue.
-
 - Doctor no longer prints a mail journal source or a released log file as an empty queue. Ages are now labelled by what they measure instead of all appearing as backlog.
-
 - Recovery scans no longer count files and directories that were removed before the scan ran as lost protection work. Bulk extraction, package restores and update temp trees stopped degrading health on every burst.
-
 - A single unreadable kernel queue measurement no longer degrades health and raises a notification. The reading has to stay unavailable for half a minute, a stopped reader is named instead of the artefacts it causes, and records the kernel already dropped are reported ahead of an unreadable depth.
-
 - Queues whose work is best effort no longer change the host status, the dashboard posture or the doctor exit status. A client that stops reading its event stream, an unreachable panel and expired process context reads now warn with the same evidence instead of reporting a protection failure.
-
 - A queue that repeatedly degrades and recovers no longer sends unbounded notification pairs. The five-minute bound now survives a recovery, and a recovery is reported only for a degradation that was announced.
-
 - BPF queue health no longer reports a permanent measurement failure when a reader consumes an event during shutdown.
-
 - Dropper queue health now times probes and finding delivery from their actual start, so earlier delays do not trigger a false stalled-worker warning.
-
 - Package verification saturation warnings now follow actual capacity use while work is running or being retried, without counting earlier metadata delays as time spent full.
 
 #### Automatic response and blocking
 
 - A failure while finishing an automatic response no longer leaves the state lock held, which stopped every later block, firewall flush and state write until a restart.
-
 - Cleanup loss counts now include newly blocked IPs after recovery from unreadable state. Old cleanup records retain their uncertain history without hiding new failures.
-
 - Queue health treats decisions withdrawn by the current blocking policy as expected refusals. Retry accounting keeps different kinds of evidence separate when recovering from a failed save.
-
 - Authenticated activity no longer raises threat scores through event volume or account counts, and remains visible in threat history and the dashboard. Retained audit incidents and outdated queued decisions no longer trigger blocks, and webmail challenges respect the login-blocking setting.
 - Successfully logging in, or using cPanel File Manager, no longer gets a customer's own address firewall-blocked. These events are reported only after authentication has already succeeded, so on shared hosting they fired on ordinary use of core features; one file upload was enough to block the account owner for 24 hours and to keep re-blocking them afterwards.
 - Those same events no longer count towards an address's threat score, and are no longer raised as Critical or High. They remain recorded, which is where their value is -- alongside other findings on the same account. Failed and repeated-attempt checks are unchanged and still block.
-
 - Failed firewall cleanup writes now appear in health checks even when diagnostic output is blocked. The failure remains counted once after cleanup finishes.
 
 #### Checks and scanning
 
 - WordPress installations that wp-cli refuses to read, such as a directory that is not an installation or one whose configuration fails to load, no longer count as lost protection work on every cycle. Interrupted and killed commands still do.
-
 - File scan health now counts failed content and executable metadata reads. Existing findings remain available, and files disappearing during metadata enumeration do not count as lost work.
-
 - Completed mailbox audits no longer count as lost when a deadline expires during final cleanup. Draining canceled work no longer holds up health snapshots while checking the scan context.
-
 - Recovered PHP analyzer failures now appear in queue health even when worker communication succeeds. Existing scan results and worker recovery behavior are unchanged.
-
 - Full scans left queued by a daemon restart now report interruption instead of waiting forever. A terminated scan worker refuses new jobs and accounts for abandoned requests.
-
 - Recovered file and mail scanner failures now count as lost work, so repeated panics degrade health even while workers continue scanning later events.
 
 #### Delivery and reporting
 
 - A stored report or panel finding with missing queue accounting is now delivered or counted, instead of stopping the worker that was processing it.
-
 - Abuse reports already acknowledged by a collector no longer count as lost if database cleanup fails and the queue later overflows.
-
 - Event streams now close when a flush fails, releasing their subscriber slot so clients can reconnect.
 
 #### Persistence and shutdown
 
 - Attack event health now counts buffered records lost during an interrupted write. Only complete records submitted to the writer can have an uncertain outcome.
-
 - Interrupted attack event writes now retain confirmed losses while cleanup finishes. Events whose write outcome is unknown remain separate from work that was never submitted.
-
 - An interrupted bulk incident write no longer leaves later writes blocked. Abandoned writes are counted while later incident updates can continue.
-
 - Abuse reporter shutdown now closes admission before persisting its remaining reports, so late submissions cannot be silently stranded. Persistence failures remain visible while unrelated reports continue to be saved.
-
 - Bot verification shutdown now accounts for abandoned requests and refuses later submissions. Queued requests retain their original address when a caller reuses its input buffer.
-
 - Process context workers now count discarded requests at shutdown and cannot restart after stopping. Active reads finish before shutdown returns.
-
 - Verdict annotation shutdown now refuses new work and accounts for abandoned callbacks. Failed callbacks release their pending state so later findings can retry.
-
 - PHP relay shutdown now drains accepted index writes and refuses later submissions. Flushes use bounded transactions, preserving unrelated batches when a write fails.
-
 - Finding loss totals now include every unsent finding in a batch canceled during shutdown.
 
 #### Build and CI
