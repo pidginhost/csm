@@ -93,7 +93,15 @@ build-pam:
 # fixtures are quarantined mid-run, which shows up as unrelated flaky failures.
 # Redirect Go's temp into a directory that can be excluded from scanning once,
 # instead of excluding the whole per-user temp.
+#
+# Linux uses /var/tmp: /tmp is often RAM-backed tmpfs, a path under /home looks
+# like an account home to the scanners, and a long path overflows the unix
+# socket names some tests bind inside their temp directory.
+ifeq ($(shell uname -s),Darwin)
 TEST_TMPDIR ?= /private/tmp/csm-gotest
+else
+TEST_TMPDIR ?= /var/tmp/csm-gotest
+endif
 
 test:
 	@mkdir -p $(TEST_TMPDIR)
