@@ -51,19 +51,25 @@ func submissionFields(line string) (submitFields, bool) {
 		return out, false
 	}
 	rest = rest[end:]
-	if hStart, ok := HFieldStart(rest); ok {
-		_, clientEnd := HFieldClientIPAndEnd(rest[hStart:])
-		if clientEnd == 0 {
-			return out, false
-		}
-		out.remote = true
-		rest = rest[hStart+clientEnd:]
-	}
 	seen := map[string]bool{}
 	for rest != "" {
 		rest = strings.TrimLeft(rest, " \t\r\n")
-		if rest == "" || strings.HasPrefix(rest, "T=") || strings.HasPrefix(rest, "for ") {
+		// Exim writes submission metadata before the message size. Later
+		// fields contain message data, including addr-spec message IDs with
+		// quoted words that can resemble authentication or local-user fields.
+		if rest == "" || strings.HasPrefix(rest, "S=") || strings.HasPrefix(rest, "T=") || strings.HasPrefix(rest, "for ") {
 			break
+		}
+		// Only a top-level host field establishes a network submission.
+		// Searching ahead would mistake H= inside message data for metadata.
+		if strings.HasPrefix(rest, "H=") {
+			_, clientEnd := HFieldClientIPAndEnd(rest[len("H="):])
+			if out.remote || clientEnd == 0 {
+				return submitFields{}, false
+			}
+			out.remote = true
+			rest = rest[len("H=")+clientEnd:]
+			continue
 		}
 		end := fieldEnd(rest)
 		field := rest[:end]
@@ -149,26 +155,26 @@ func envelopeEnd(s string) int {
 }
 
 // fieldEnd consumes quoted values together so their contents cannot
-// masquerade as authentication or local-user metadata.
+// masquerade as authentication or local-user metadata. Quotes can begin
+// within a value, including an optional mailbox appended to an A= field.
 func fieldEnd(s string) int {
 	eq := strings.IndexByte(s, '=')
-	space := strings.IndexAny(s, " \t\n")
-	if eq < 0 || (space >= 0 && eq > space) || eq+1 >= len(s) || (s[eq+1] != '\'' && s[eq+1] != '"') {
-		if space < 0 {
-			return len(s)
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		if quote != 0 {
+			switch {
+			case s[i] == '\\' && i+1 < len(s):
+				i++
+			case s[i] == quote:
+				quote = 0
+			}
+			continue
 		}
-		return space
-	}
-	quote := s[eq+1]
-	escaped := false
-	for i := eq + 2; i < len(s); i++ {
 		switch {
-		case escaped:
-			escaped = false
-		case s[i] == '\\':
-			escaped = true
-		case s[i] == quote:
-			return i + 1
+		case s[i] == '"' || (s[i] == '\'' && eq >= 0 && i == eq+1):
+			quote = s[i]
+		case s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n':
+			return i
 		}
 	}
 	return len(s)

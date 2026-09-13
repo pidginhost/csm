@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Mail attribution ignores forged identities in message metadata and preserves verified submitters when envelope identities contain quoted text.
+
+- A firewall queue test now waits for the diagnostic write before checking failure accounting.
+
 - Socket and mail findings now keep verified account ownership through deduplication. Mixed or unverified mail remains unattributed, and mail authentication parsing rejects forged arrival fragments.
 
 - A WordPress verification test now waits for its pending-state assertion before releasing the download response.

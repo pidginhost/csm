@@ -116,13 +116,14 @@ func TestAutoBlockQueueFlushWriteErrorBeforeBlockedLog(t *testing.T) {
 	}
 	// Require the actual flush to be blocked in its diagnostic,
 	// instead of inferring the failure from elapsed time after the read hook.
+	// A state-file write can have the same FD.Write frame before it fails.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		stack := make([]byte, 1<<20)
 		n := runtime.Stack(stack, true)
 		blocked := false
 		for _, g := range strings.Split(string(stack[:n]), "\n\n") {
-			if strings.Contains(g, ".FlushAutoBlockState(") && strings.Contains(g, "internal/poll.(*FD).Write(") {
+			if strings.Contains(g, ".FlushAutoBlockState(") && strings.Contains(g, ".logBlockStateFailure(") && strings.Contains(g, "internal/poll.(*FD).Write(") {
 				blocked = true
 				break
 			}

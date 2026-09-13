@@ -476,7 +476,9 @@ branches:
   local ownership. Mixed or unverified aggregates stay unattributed without
   reducing the volume count. Owner lookups run after tracker locks are
   released. Mail hold and governor findings require a local mail-server
-  permission decision. The submission boundary follows
+  permission decision. Submission identities are read only from reception
+  metadata before the message size; message IDs, subjects and recipients
+  cannot supply or replace an owner. The submission boundary follows
   [Exim's reception log fields](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-log_files.html).
 - Process, login and crontab producers accept a system user as owner only
   when its home directory sits directly under an account root, so root,
