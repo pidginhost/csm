@@ -696,11 +696,12 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	inc.Findings = appendCappedFingerprint(inc.Findings, f.Fingerprint())
 	ev := IncidentEvent{
-		FindingID: alert.FindingID(f), Time: f.Timestamp,
-		Kind:     "finding",
-		Check:    f.Check,
-		Severity: f.Severity.String(),
-		Message:  f.Message,
+		FindingID: alert.FindingID(f),
+		Time:      f.Timestamp,
+		Kind:      "finding",
+		Check:     f.Check,
+		Severity:  f.Severity.String(),
+		Message:   f.Message,
 	}
 	if f.Process != nil {
 		ev.PID = f.Process.PID
