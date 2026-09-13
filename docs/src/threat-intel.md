@@ -81,6 +81,8 @@ DNS failures, missing reverse DNS, and failed cache writes do not prove a
 spoofed identity. They leave verification unresolved, delay retries, and do
 not renew pending treatment on each retry. Attempt history is bounded; when
 it is full, additional jobs can still verify without a pending exemption.
+Entries expire relative to their first admission, even if failures keep
+retrying, so unresolved traffic cannot keep those slots occupied indefinitely.
 A confirmed negative remains eligible for spoof detection. A cached positive
 receives the normal verified-crawler exemption.
 

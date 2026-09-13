@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Audit replays no longer duplicate records at healthy destinations, and local audit files stop growing when due for rotation. Repeated verification failures and incomplete scans no longer pin or grow their retained state indefinitely.
+
 - Incomplete scans keep earlier findings when new results fill the active list, even if no database could be inspected. Timeouts and internal failures keep the same protection.
 
 - Automatic firewall actions now link to their source findings in the audit log, including delayed retries and escalations. Failed and refused attempts keep the same attribution.

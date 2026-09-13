@@ -113,3 +113,31 @@ func TestBotPendingEndsAfterStoredVerdict(t *testing.T) {
 		})
 	}
 }
+
+func TestBotFailedRetriesCannotPinGraceCapacity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := NewAsyncBotVerifier(nil)
+		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
+		for i := range cap(a.ch) {
+			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
+			a.Enqueue(ip, "googlebot")
+			a.process(<-a.ch)
+		}
+		// Active failures used to slide every occupied slot's expiry forever.
+		for range 23 {
+			time.Sleep(time.Hour)
+			for i := range cap(a.ch) {
+				ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
+				if !a.Enqueue(ip, "googlebot") {
+					t.Fatal("retry was not admitted")
+				}
+				a.process(<-a.ch)
+			}
+		}
+		time.Sleep(time.Hour + time.Second)
+		ip := net.ParseIP("192.0.2.10")
+		if !a.Enqueue(ip, "googlebot") || !a.Pending(ip, "googlebot") {
+			t.Fatal("failed retry traffic permanently denied a new crawler pending grace")
+		}
+	})
+}

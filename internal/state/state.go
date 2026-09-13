@@ -1076,15 +1076,14 @@ func purgeAndMergeLatestWithCoverage(current []alert.Finding, purgeChecks []stri
 		f.FirstSeen = earliestObservation(alert.Finding{FirstSeen: observations[key]}, f)
 		observations[key] = f.FirstSeen
 		existing[key] = f
-		if coverage.unexamined(f) {
-			scopeProtectedKeys[key] = struct{}{}
-		}
 		if pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
 			protectedKeys[key] = struct{}{}
 		}
 	}
-	// Protect unexamined scopes from eviction without preventing new partial
-	// detections from refreshing their current rows above.
+	// Protect only previously admitted unexamined findings. New partial
+	// detections compete for the remaining slots; protecting them too would
+	// let a persistently incomplete scanner grow the active set without bound.
+	// Refreshes of retained keys keep their protection and original first-seen.
 	for key := range scopeProtectedKeys {
 		protectedKeys[key] = struct{}{}
 	}

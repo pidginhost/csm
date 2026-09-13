@@ -130,7 +130,8 @@ type AsyncBotVerifier struct {
 
 // Attempt history prevents each unresolved retry from renewing the initial
 // grace. It is bounded by queue capacity; untracked jobs still verify, but
-// receive no pending exemption when the history is full.
+// receive no pending exemption when the history is full. Expiry is anchored
+// to admission, so repeated failures cannot pin all grace capacity forever.
 type botVerifyAttempt struct {
 	retryAfter time.Time
 	expiresAt  time.Time
@@ -228,16 +229,15 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 		return false
 	}
 	now := time.Now()
+	for attemptKey, previous := range a.attempts {
+		if !now.Before(previous.expiresAt) {
+			delete(a.attempts, attemptKey)
+		}
+	}
 	attempt, attempted := a.attempts[key]
 	if attempted && now.Before(attempt.retryAfter) {
 		return false
 	}
-	for key, previous := range a.attempts {
-		if !now.Before(previous.expiresAt) {
-			delete(a.attempts, key)
-		}
-	}
-	_, attempted = a.attempts[key]
 	var pendingUntil time.Time
 	if !attempted && len(a.attempts) < cap(a.ch) {
 		pendingUntil = now.Add(botVerifyTimeout)
@@ -248,7 +248,7 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 	job := verifyJob{IP: slices.Clone(ip), Bot: bot, ticket: a.stats.Begin(time.Now())}
 	select {
 	case a.ch <- job:
-		if attempted || len(a.attempts) < cap(a.ch) {
+		if !attempted && len(a.attempts) < cap(a.ch) {
 			if a.attempts == nil {
 				a.attempts = make(map[string]botVerifyAttempt)
 			}
@@ -383,9 +383,9 @@ func (a *AsyncBotVerifier) finish(job verifyJob, completed, cached bool) {
 	delete(a.inflight, key)
 	if cached {
 		delete(a.attempts, key)
-	} else if _, tracked := a.attempts[key]; tracked {
-		now := time.Now()
-		a.attempts[key] = botVerifyAttempt{retryAfter: now.Add(botVerifyRetryDelay), expiresAt: now.Add(botVerifyCacheTTL)}
+	} else if attempt, tracked := a.attempts[key]; tracked {
+		attempt.retryAfter = time.Now().Add(botVerifyRetryDelay)
+		a.attempts[key] = attempt
 	}
 	if completed {
 		job.ticket.Finish(time.Now())

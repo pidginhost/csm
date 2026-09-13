@@ -1,7 +1,8 @@
 ## Audit Log
 
 CSM ships source observations and notification findings to one or more
-SIEM-friendly sinks, deduplicated by observation identity within each batch.
+SIEM-friendly sinks, deduplicated by observation identity within each batch
+and against each destination's recent successful deliveries.
 Audit records include sources suppressed by notification filtering or
 rate limits, so SIEM correlation can still identify the original observation.
 
@@ -46,7 +47,12 @@ session blocks link the original database finding, not a synthetic IP candidate.
 
 The daemon audits source observations even when they repeat an earlier finding
 or are filtered from operator notifications. Distinct observations keep their
-own identities; the same observation appears once within a dispatched batch.
+own identities; recent replays of the same observation are suppressed per sink.
+Receipts are kept in bounded memory and survive temporary sink failures. A
+destination that missed a record can receive its replay without duplicating a
+healthy destination's record. Restarting or reconfiguring sinks clears receipts;
+observations older than the receipt cache can be emitted again, so collectors
+should still deduplicate by `finding_id` for longer retention.
 Notification suppression and downstream finding observers keep their existing
 behavior. Audit delivery still depends on the configured sink and scan findings
 reaching the dispatcher.
@@ -111,8 +117,13 @@ The default path is created with mode `0640` and the parent dir
 with `0750`. The packaged logrotate fragment uses `copytruncate`
 mode so the daemon's open file descriptor stays valid across
 rotation -- no SIGHUP needed. It rotates daily and keeps 14 compressed
-rotations. The 100 MB threshold permits early rotation when the host runs
-logrotate more often than daily; it does not cap growth between runs.
+rotations. The file sink enforces the same 100 MB size budget before each
+append, including when multiple local writers share the file. Once full, it
+rejects further records until logrotate truncates the live file. The existing
+dropped-event counter and degraded-sink metric expose those losses; syslog
+delivery continues independently. On busy hosts, configure a shorter
+time-based rotation interval and run logrotate at least that often; merely
+invoking the daily stanza more often cannot clear a file below its size trigger.
 Installation and upgrades refresh the fragment, including upgrades through
 `csm rehash`.
 

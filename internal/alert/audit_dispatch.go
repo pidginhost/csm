@@ -39,6 +39,30 @@ type managedAuditSink struct {
 	retryAt    time.Time
 	retryDelay time.Duration
 	failed     bool
+	// Keep successful observation IDs across batches and transient sink
+	// failures. Each destination owns its receipts so a failed destination
+	// can receive a replay without duplicating the healthy destination.
+	delivered map[string]struct{}
+	recent    []string
+	next      int
+}
+
+// Bound replay receipts independently of traffic volume. Evicted observations
+// can be emitted again; distinct observations are never dropped by this cache.
+const auditReceiptCap = 16384
+
+func (s *managedAuditSink) remember(id string) {
+	if s.delivered == nil {
+		s.delivered = make(map[string]struct{})
+	}
+	if len(s.recent) < auditReceiptCap {
+		s.recent = append(s.recent, id)
+	} else {
+		delete(s.delivered, s.recent[s.next])
+		s.recent[s.next] = id
+		s.next = (s.next + 1) % auditReceiptCap
+	}
+	s.delivered[id] = struct{}{}
 }
 
 // emitAudit records findings before email/webhook throttling. The manager lock
@@ -78,6 +102,9 @@ func emitAuditWithSources(cfg *config.Config, findings, sources []Finding) {
 	for _, f := range findings {
 		ev := NewAuditEvent(cfg.Hostname, f)
 		for _, s := range auditSinks {
+			if _, delivered := s.delivered[ev.FindingID]; delivered {
+				continue
+			}
 			if s.sink == nil {
 				auditEventsDropped.With(s.name).Inc()
 				continue
@@ -89,6 +116,7 @@ func emitAuditWithSources(cfg *config.Config, findings, sources []Finding) {
 				s.fail("emit", err)
 			} else {
 				s.retryDelay = 0
+				s.remember(ev.FindingID)
 			}
 		}
 	}

@@ -209,3 +209,68 @@ func TestJSONLSinkCreatesParentDir(t *testing.T) {
 		t.Errorf("parent dir not created: %v", statErr)
 	}
 }
+
+func TestJSONLSinkBoundsGrowthUntilLogrotate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	s := mustNewJSONLSink(t, path)
+	// Match the packaged logrotate size budget. Sparse allocation avoids
+	// writing a large fixture just to exercise the boundary.
+	const budget = 100 * 1024 * 1024
+	line, marshalErr := json.Marshal(sampleEvent(1))
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if err := os.Truncate(path, budget-int64(len(line))-1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Emit(sampleEvent(1)); err != nil {
+		t.Fatalf("record fitting the budget failed: %v", err)
+	}
+	for range 3 {
+		if err := s.Emit(sampleEvent(2)); err == nil {
+			t.Error("full audit file accepted another record")
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != budget {
+		t.Fatalf("audit file grew past its rotation budget: %d", info.Size())
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Emit(sampleEvent(3)); err != nil {
+		t.Fatalf("copytruncate did not restore audit delivery: %v", err)
+	}
+	if got := readJSONLines(t, path); len(got) != 1 || got[0]["finding_id"] != sampleEvent(3).FindingID {
+		t.Fatal("delivery after rotation lost the new record")
+	}
+}
+
+func TestJSONLSinkInstancesShareSizeBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	first := mustNewJSONLSink(t, path)
+	second := mustNewJSONLSink(t, path)
+	line, marshalErr := json.Marshal(sampleEvent(1))
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	const budget = 100 * 1024 * 1024
+	for range 20 {
+		if err := os.Truncate(path, budget-int64(len(line))-1); err != nil {
+			t.Fatal(err)
+		}
+		results := make(chan error, 2)
+		start := make(chan struct{})
+		for _, sink := range []*JSONLSink{first, second} {
+			go func() { <-start; results <- sink.Emit(sampleEvent(1)) }()
+		}
+		close(start)
+		a, b := <-results, <-results
+		if (a == nil) == (b == nil) {
+			t.Fatalf("shared budget admitted too many or no records: %v, %v", a, b)
+		}
+	}
+}

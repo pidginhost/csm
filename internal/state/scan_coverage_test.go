@@ -79,3 +79,40 @@ func TestScopedCoverageDoesNotEvictUnexaminedFindings(t *testing.T) {
 	}
 	t.Fatal("active-set cap retired an unexamined finding during scoped replacement")
 }
+
+func TestPartialCoverageCannotGrowActiveSetBeyondCap(t *testing.T) {
+	for _, derived := range []bool{false, true} {
+		t.Run(fmt.Sprint(derived), func(t *testing.T) {
+			s := openTestStore(t)
+			old := alert.Finding{Check: "db_post_injection", DedupKey: "old", Severity: alert.Warning, Timestamp: time.Unix(100, 0)}
+			s.PurgeAndMergeFindings(nil, []alert.Finding{old})
+			coverage := &ScanCoverage{IncompleteChecks: map[string]bool{"db_post_injection": true}}
+			for cycle := range 3 {
+				fresh := make([]alert.Finding, latestFindingsCap)
+				for i := range fresh {
+					fresh[i] = alert.Finding{Check: old.Check, DedupKey: fmt.Sprintf("%d/%d", cycle, i), CoverageScope: "partial", Severity: alert.High}
+				}
+				old.Details = fmt.Sprintf("refreshed %d", cycle)
+				fresh = append(fresh, old)
+				var derive func([]alert.Finding) []alert.Finding
+				if derived {
+					derive = func([]alert.Finding) []alert.Finding { return nil }
+				}
+				s.PurgeAndMergeFindingsDerivedWithCoverage(nil, fresh, coverage, nil, derive)
+				latest := s.LatestFindings()
+				if len(latest) > latestFindingsCap {
+					t.Fatalf("cycle %d grew active set to %d", cycle, len(latest))
+				}
+				found := false
+				for _, f := range latest {
+					if f.Key() == old.Key() {
+						found = f.Details == old.Details && f.FirstSeen.Equal(old.Timestamp)
+					}
+				}
+				if !found {
+					t.Fatal("bounded merge lost retained finding or its refresh")
+				}
+			}
+		})
+	}
+}

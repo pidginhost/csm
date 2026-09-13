@@ -71,6 +71,62 @@ func TestDatabaseCompletedInstallRetiresOnlyItsFindings(t *testing.T) {
 	}
 }
 
+func TestDatabaseFailingCredentialAliasPreventsRetirement(t *testing.T) {
+	for _, failedUser := range []string{"first", "second"} {
+		t.Run(failedUser, func(t *testing.T) {
+			withDatabaseCoverageInstalls(t, map[string]string{
+				"/home/alice/first/wp-config.php":  strings.ReplaceAll(databaseCoverageConfig("shared"), "'fixture'", "'first'"),
+				"/home/alice/second/wp-config.php": strings.ReplaceAll(databaseCoverageConfig("shared"), "'fixture'", "'second'"),
+			}, nil)
+			initial := true
+			queried := make(map[string]bool)
+			mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, creds mysqlclient.Creds, query string, _ ...any) ([]string, error) {
+				queried[creds.User] = true
+				if !initial && creds.User == failedUser {
+					return nil, errors.New("database unavailable")
+				}
+				if initial && strings.Contains(query, "FROM wp_terms") {
+					return []string{"1\tcategory\t1\thttps://example.com"}, nil
+				}
+				return databaseCoverageHealthyRows(query), nil
+			})
+			t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+			st, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			run := func() {
+				ctx, gaps := WithCoverageGaps(context.Background())
+				findings, purge := runParallelWithContext(ctx, &config.Config{}, nil, []namedCheck{{name: "db_content", fn: CheckDatabaseContent}}, "test", true)
+				StoreLatestScanFindingsWithCoverage(st, purge, findings, gaps.Snapshot())
+			}
+			run()
+			var old []alert.Finding
+			for _, f := range st.LatestFindings() {
+				if f.Check == "db_spam_taxonomy" {
+					old = append(old, f)
+				}
+			}
+			if len(old) != 1 || old[0].CoverageScope == "" {
+				t.Fatalf("credential aliases did not share one scoped finding: %+v", old)
+			}
+			initial = false
+			clear(queried)
+			run()
+			if !queried["first"] || !queried["second"] {
+				t.Fatal("credential aliases were incorrectly deduplicated before scanning")
+			}
+			for _, f := range st.LatestFindings() {
+				if f.Key() == old[0].Key() {
+					return
+				}
+			}
+			t.Fatal("a completed alias retired the failing alias's finding")
+		})
+	}
+}
+
 func TestDatabaseIncompleteMultisiteDoesNotPublishScope(t *testing.T) {
 	for _, kind := range []string{"limit", "malformed"} {
 		t.Run(kind, func(t *testing.T) {

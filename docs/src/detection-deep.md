@@ -77,6 +77,12 @@ message text. A partial multisite scan keeps findings for its entire network.
 Incomplete or interrupted scans protect earlier findings from eviction when
 new results fill the active list, including when every database or discovery
 attempt fails, the scanner times out, or an internal panic stops execution.
+That protection applies to findings already in the active list. Newly detected
+conditions compete for the remaining space under the normal priority order,
+so repeatedly incomplete scans cannot grow the list beyond its cap. Retained
+findings can still refresh their details without losing their first observation.
+Credential aliases sharing a database scope must all complete before that scope
+can retire findings, regardless of scan order.
 
 Query diagnostics include the detector stage, failure class and numeric MySQL
 error code. Repeated errors are counted together, with bounded detail when
