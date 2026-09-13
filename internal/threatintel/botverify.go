@@ -129,12 +129,14 @@ type AsyncBotVerifier struct {
 }
 
 // Attempt history prevents each unresolved retry from renewing the initial
-// grace. It is bounded by queue capacity; untracked jobs still verify, but
-// receive no pending exemption when the history is full. Expiry is anchored
-// to admission, so repeated failures cannot pin all grace capacity forever.
+// grace. It is bounded by queue capacity. New sources can replace the oldest
+// completed attempt after its initial cooldown, so repeated failures cannot
+// reserve every slot for the full cache TTL. A live job or newly granted grace
+// is never evicted; retries cannot slide that reservation indefinitely.
 type botVerifyAttempt struct {
-	retryAfter time.Time
-	expiresAt  time.Time
+	retryAfter  time.Time
+	retainUntil time.Time
+	expiresAt   time.Time
 }
 
 type verifyJob struct {
@@ -230,7 +232,8 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 	}
 	now := time.Now()
 	for attemptKey, previous := range a.attempts {
-		if !now.Before(previous.expiresAt) {
+		_, live := a.inflight[attemptKey]
+		if !live && !now.Before(previous.expiresAt) && !now.Before(previous.retryAfter) {
 			delete(a.attempts, attemptKey)
 		}
 	}
@@ -238,8 +241,25 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 	if attempted && now.Before(attempt.retryAfter) {
 		return false
 	}
+	var replaceKey string
+	if !attempted && len(a.attempts) >= cap(a.ch) {
+		var oldest time.Time
+		for attemptKey, previous := range a.attempts {
+			if _, live := a.inflight[attemptKey]; live || now.Before(previous.retainUntil) {
+				continue
+			}
+			if replaceKey == "" || previous.expiresAt.Before(oldest) {
+				replaceKey = attemptKey
+				oldest = previous.expiresAt
+			}
+		}
+		if replaceKey == "" {
+			a.stats.Lose(now, 1)
+			return false
+		}
+	}
 	var pendingUntil time.Time
-	if !attempted && len(a.attempts) < cap(a.ch) {
+	if !attempted {
 		pendingUntil = now.Add(botVerifyTimeout)
 	}
 	a.inflight[key] = pendingUntil
@@ -248,11 +268,15 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 	job := verifyJob{IP: slices.Clone(ip), Bot: bot, ticket: a.stats.Begin(time.Now())}
 	select {
 	case a.ch <- job:
-		if !attempted && len(a.attempts) < cap(a.ch) {
+		if !attempted {
 			if a.attempts == nil {
 				a.attempts = make(map[string]botVerifyAttempt)
 			}
-			a.attempts[key] = botVerifyAttempt{expiresAt: now.Add(botVerifyCacheTTL)}
+			delete(a.attempts, replaceKey)
+			a.attempts[key] = botVerifyAttempt{
+				retainUntil: now.Add(botVerifyRetryDelay),
+				expiresAt:   now.Add(botVerifyCacheTTL),
+			}
 		}
 		return true
 	default:

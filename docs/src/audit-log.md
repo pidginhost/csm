@@ -50,9 +50,15 @@ or are filtered from operator notifications. Distinct observations keep their
 own identities; recent replays of the same observation are suppressed per sink.
 Receipts are kept in bounded memory and survive temporary sink failures. A
 destination that missed a record can receive its replay without duplicating a
-healthy destination's record. Restarting or reconfiguring sinks clears receipts;
-observations older than the receipt cache can be emitted again, so collectors
-should still deduplicate by `finding_id` for longer retention.
+healthy destination's record. Replays refresh their receipt's position, keeping
+recently replayed observations ahead of inactive receipts.
+Receipt matching includes original details, scanner identity and source
+attribution; distinct findings can share a legacy `finding_id` and still need
+separate records.
+Process enrichment alone does not create a new observation. Restarting or
+reconfiguring sinks clears receipts; observations no longer in the receipt cache
+can be emitted again. The legacy `finding_id` remains an action correlation key;
+collectors must not treat it alone as a unique-record key.
 Notification suppression and downstream finding observers keep their existing
 behavior. Audit delivery still depends on the configured sink and scan findings
 reaching the dispatcher.

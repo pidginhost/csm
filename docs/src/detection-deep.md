@@ -82,7 +82,8 @@ conditions compete for the remaining space under the normal priority order,
 so repeatedly incomplete scans cannot grow the list beyond its cap. Retained
 findings can still refresh their details without losing their first observation.
 Credential aliases sharing a database scope must all complete before that scope
-can retire findings, regardless of scan order.
+can retire findings, regardless of scan order. This includes an alias whose
+database and table prefix are known but whose login credentials are missing.
 
 Query diagnostics include the detector stage, failure class and numeric MySQL
 error code. Repeated errors are counted together, with bounded detail when

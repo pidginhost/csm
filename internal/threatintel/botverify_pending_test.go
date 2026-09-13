@@ -59,11 +59,16 @@ func TestBotPendingHistoryIsBoundedWithoutRenewalOnChurn(t *testing.T) {
 		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
 		for i := range 2 * cap(a.ch) {
 			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
-			if !a.Enqueue(ip, "googlebot") {
-				t.Fatal("history capacity stopped DNS work")
+			if i >= cap(a.ch) {
+				// Every admitted job needs retained cooldown state. Otherwise
+				// overflow sources can retry failed DNS on every request.
+				if a.Enqueue(ip, "googlebot") || a.Pending(ip, "googlebot") {
+					t.Fatal("full cooling history admitted an untracked job")
+				}
+				continue
 			}
-			if i >= cap(a.ch) && a.Pending(ip, "googlebot") {
-				t.Fatal("full history granted untracked pending grace")
+			if !a.Enqueue(ip, "googlebot") {
+				t.Fatal("available history capacity stopped DNS work")
 			}
 			a.process(<-a.ch)
 			if len(a.attempts) > cap(a.ch) {
@@ -138,6 +143,74 @@ func TestBotFailedRetriesCannotPinGraceCapacity(t *testing.T) {
 		ip := net.ParseIP("192.0.2.10")
 		if !a.Enqueue(ip, "googlebot") || !a.Pending(ip, "googlebot") {
 			t.Fatal("failed retry traffic permanently denied a new crawler pending grace")
+		}
+	})
+}
+
+func TestBotPendingHistoryMakesRoomAfterCooldown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := NewAsyncBotVerifier(nil)
+		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
+		for i := range cap(a.ch) {
+			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
+			if !a.Enqueue(ip, "googlebot") {
+				t.Fatal("initial lookup was not admitted")
+			}
+			a.process(<-a.ch)
+		}
+		time.Sleep(botVerifyRetryDelay)
+		// Repeated failures must not renew every slot's protection just before
+		// an unfamiliar crawler arrives, indefinitely reserving all history.
+		for i := range cap(a.ch) {
+			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
+			if !a.Enqueue(ip, "googlebot") || a.Pending(ip, "googlebot") {
+				t.Fatal("failed retry changed the initial pending treatment")
+			}
+			a.process(<-a.ch)
+		}
+		ip := net.ParseIP("192.0.2.10")
+		if !a.Enqueue(ip, "googlebot") || !a.Pending(ip, "googlebot") {
+			t.Fatal("completed failures denied a new crawler pending grace after cooldown")
+		}
+		if len(a.attempts) > cap(a.ch) {
+			t.Fatal("making room grew attempt history beyond its bound")
+		}
+	})
+}
+
+func TestBotOverflowCannotBypassRetryCooldown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := NewAsyncBotVerifier(nil)
+		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
+		for i := range cap(a.ch) {
+			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
+			a.Enqueue(ip, "googlebot")
+			a.process(<-a.ch)
+		}
+		ip := net.ParseIP("192.0.2.10")
+		if a.Enqueue(ip, "googlebot") {
+			a.process(<-a.ch)
+		}
+		if a.Enqueue(ip, "googlebot") {
+			t.Fatal("full attempt history allowed an immediate failed DNS retry")
+		}
+	})
+}
+
+func TestBotHistoryExpiryPreservesLiveAndCoolingAttempts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := NewAsyncBotVerifier(nil)
+		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
+		ip := net.ParseIP("192.0.2.10")
+		a.Enqueue(ip, "googlebot")
+		job := <-a.ch
+		// A blocked worker can outlive the history TTL. Admission of other
+		// traffic must not remove the live job's retry protection.
+		time.Sleep(botVerifyCacheTTL + time.Second)
+		a.Enqueue(net.ParseIP("192.0.2.11"), "googlebot")
+		a.process(job)
+		if a.Enqueue(ip, "googlebot") {
+			t.Fatal("history expiry bypassed the completed job's retry cooldown")
 		}
 	})
 }

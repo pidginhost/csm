@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -42,27 +43,41 @@ type managedAuditSink struct {
 	// Keep successful observation IDs across batches and transient sink
 	// failures. Each destination owns its receipts so a failed destination
 	// can receive a replay without duplicating the healthy destination.
-	delivered map[string]struct{}
-	recent    []string
-	next      int
+	delivered map[[sha256.Size]byte]*list.Element
+	recent    list.List
 }
 
 // Bound replay receipts independently of traffic volume. Evicted observations
 // can be emitted again; distinct observations are never dropped by this cache.
 const auditReceiptCap = 16384
 
-func (s *managedAuditSink) remember(id string) {
+func (s *managedAuditSink) remember(id [sha256.Size]byte) {
 	if s.delivered == nil {
-		s.delivered = make(map[string]struct{})
+		s.delivered = make(map[[sha256.Size]byte]*list.Element)
 	}
-	if len(s.recent) < auditReceiptCap {
-		s.recent = append(s.recent, id)
-	} else {
-		delete(s.delivered, s.recent[s.next])
-		s.recent[s.next] = id
-		s.next = (s.next + 1) % auditReceiptCap
+	if s.recent.Len() == auditReceiptCap {
+		oldest := s.recent.Back()
+		delete(s.delivered, oldest.Value.([sha256.Size]byte))
+		s.recent.Remove(oldest)
 	}
-	s.delivered[id] = struct{}{}
+	s.delivered[id] = s.recent.PushFront(id)
+}
+
+// auditObservationKey distinguishes original evidence that the legacy action
+// ID omits. For example, a process scan can report several PIDs with the same
+// message and timestamp. Keep action IDs stable and hash scalar source evidence
+// before redaction, without retaining its raw text or mutable enrichment.
+func auditObservationKey(f Finding) [sha256.Size]byte {
+	var data []byte
+	for _, field := range []string{
+		f.Timestamp.UTC().Format(time.RFC3339Nano), f.Check, f.Severity.String(),
+		f.Message, f.FilePath, f.Details, strconv.Itoa(f.PID), f.SourceIP,
+		f.TenantID, f.Domain, f.Mailbox, f.DedupKey, f.CoverageScope,
+	} {
+		// Quote preserves boundaries and invalid UTF-8 from raw log input.
+		data = strconv.AppendQuote(data, field)
+	}
+	return sha256.Sum256(data)
 }
 
 // emitAudit records findings before email/webhook throttling. The manager lock
@@ -84,10 +99,10 @@ func emitAuditWithSources(cfg *config.Config, findings, sources []Finding) {
 		// Notification dedup uses condition keys. Audit joins need every
 		// distinct observation, including repeats with a new timestamp.
 		combined := make([]Finding, 0, len(sources)+len(findings))
-		seen := make(map[string]bool, len(sources)+len(findings))
+		seen := make(map[[sha256.Size]byte]bool, len(sources)+len(findings))
 		for _, batch := range [][]Finding{sources, findings} {
 			for _, f := range batch {
-				id := FindingID(f)
+				id := auditObservationKey(f)
 				if !seen[id] {
 					seen[id] = true
 					combined = append(combined, f)
@@ -101,8 +116,12 @@ func emitAuditWithSources(cfg *config.Config, findings, sources []Finding) {
 	ensureAuditSinksLocked(cfg)
 	for _, f := range findings {
 		ev := NewAuditEvent(cfg.Hostname, f)
+		id := auditObservationKey(f)
 		for _, s := range auditSinks {
-			if _, delivered := s.delivered[ev.FindingID]; delivered {
+			if receipt, delivered := s.delivered[id]; delivered {
+				// Retained findings can be replayed every scan amid realtime
+				// churn. Keep their receipts hot without growing the cache.
+				s.recent.MoveToFront(receipt)
 				continue
 			}
 			if s.sink == nil {
@@ -116,7 +135,7 @@ func emitAuditWithSources(cfg *config.Config, findings, sources []Finding) {
 				s.fail("emit", err)
 			} else {
 				s.retryDelay = 0
-				s.remember(ev.FindingID)
+				s.remember(id)
 			}
 		}
 	}

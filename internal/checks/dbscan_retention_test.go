@@ -161,6 +161,55 @@ func TestDatabaseIncompleteMultisiteDoesNotPublishScope(t *testing.T) {
 	}
 }
 
+func TestDatabaseMissingCredentialAliasPreventsRetirement(t *testing.T) {
+	for _, failedAlias := range []string{"first", "second"} {
+		t.Run(failedAlias, func(t *testing.T) {
+			bodies := map[string]string{
+				"/home/alice/first/wp-config.php":  databaseCoverageConfig("shared"),
+				"/home/alice/second/wp-config.php": databaseCoverageConfig("shared"),
+			}
+			withDatabaseCoverageInstalls(t, bodies, nil)
+			initial := true
+			mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
+				if initial && strings.Contains(query, "FROM wp_terms") {
+					return []string{"1\tcategory\t1\thttps://example.com"}, nil
+				}
+				return databaseCoverageHealthyRows(query), nil
+			})
+			t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+			st, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			run := func() {
+				ctx, gaps := WithCoverageGaps(context.Background())
+				findings, purge := runParallelWithContext(ctx, &config.Config{}, nil, []namedCheck{{name: "db_content", fn: CheckDatabaseContent}}, "test", true)
+				StoreLatestScanFindingsWithCoverage(st, purge, findings, gaps.Snapshot())
+			}
+			run()
+			var old []alert.Finding
+			for _, f := range st.LatestFindings() {
+				if f.Check == "db_spam_taxonomy" {
+					old = append(old, f)
+				}
+			}
+			if len(old) != 1 || old[0].CoverageScope == "" {
+				t.Fatalf("aliases did not share one scoped finding: %+v", old)
+			}
+			initial = false
+			bodies["/home/alice/"+failedAlias+"/wp-config.php"] = "<?php\ndefine('DB_NAME', 'shared');\n$table_prefix = 'wp_';\n"
+			run()
+			for _, f := range st.LatestFindings() {
+				if f.Key() == old[0].Key() {
+					return
+				}
+			}
+			t.Fatal("a completed alias retired a finding whose other alias has missing credentials")
+		})
+	}
+}
+
 func TestRunnerDiscardsScopesAfterTimeout(t *testing.T) {
 	previous := timeoutForFunc
 	timeoutForFunc = func(string) time.Duration { return 25 * time.Millisecond }

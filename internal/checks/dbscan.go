@@ -279,6 +279,12 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 			continue
 		}
 		if creds.dbName == "" || creds.dbUser == "" {
+			// A missing login does not erase an otherwise known scope. Its
+			// healthy alias must not retire findings this install could not
+			// examine, regardless of which config discovery returned first.
+			if prefix, ok := resolveTablePrefix(creds); creds.dbName != "" && ok {
+				completedScopes[dbContentDedupKey(user, creds, prefix)] = false
+			}
 			coverage.record("missing_credentials", wpConfig)
 			markCheckIncomplete(ctx, "db_content")
 			continue

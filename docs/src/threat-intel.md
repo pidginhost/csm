@@ -79,10 +79,14 @@ controls instead.
 
 DNS failures, missing reverse DNS, and failed cache writes do not prove a
 spoofed identity. They leave verification unresolved, delay retries, and do
-not renew pending treatment on each retry. Attempt history is bounded; when
-it is full, additional jobs can still verify without a pending exemption.
-Entries expire relative to their first admission, even if failures keep
-retrying, so unresolved traffic cannot keep those slots occupied indefinitely.
+not renew pending treatment on each retry. Attempt history is bounded. When
+it is full, new sources can replace completed entries after their initial
+cooldown; retries cannot extend that reservation. Live jobs and newly granted
+pending windows keep their history. If no entry can be replaced, admission is
+refused until capacity becomes available instead of running untracked lookups.
+Evicted or expired sources can receive another pending window, but the initial
+cooldown prevents continuous renewal under churn. Expiry preserves live jobs
+and their retry delay after completion.
 A confirmed negative remains eligible for spoof detection. A cached positive
 receives the normal verified-crawler exemption.
 

@@ -108,7 +108,7 @@ func TestAuditReplayReceiptsStayBoundedUnderFlood(t *testing.T) {
 	if sink.events.Load() != 2*auditReceiptCap {
 		t.Fatal("replay flood duplicated records or discarded distinct observations")
 	}
-	if len(auditSinks[0].delivered) > auditReceiptCap || len(auditSinks[0].recent) > auditReceiptCap {
+	if len(auditSinks[0].delivered) > auditReceiptCap || auditSinks[0].recent.Len() > auditReceiptCap {
 		t.Fatal("audit replay tracking grew beyond its bound")
 	}
 	// An evicted receipt can be delivered again; it must not suppress a record
@@ -116,5 +116,43 @@ func TestAuditReplayReceiptsStayBoundedUnderFlood(t *testing.T) {
 	emitAuditWithSources(cfg, nil, []Finding{{Check: "webshell_realtime", Message: "0", Timestamp: now}})
 	if sink.events.Load() != 2*auditReceiptCap+1 {
 		t.Fatal("full receipt cache stopped admitting observations")
+	}
+}
+
+func TestAuditReplayKeepsFrequentlyReplayedObservations(t *testing.T) {
+	isolateAuditManager(t)
+	sink := &managedTestSink{name: "jsonl"}
+	openJSONLAuditSink = func(string) (AuditSink, error) { return sink, nil }
+	cfg := cfgWithJSONLAudit(t, "unused")
+	now := time.Unix(100, 0)
+	retained := Finding{Check: "db_content", Message: "unexamined finding", Timestamp: now}
+	emitAuditWithSources(cfg, nil, []Finding{retained})
+	// Incomplete scans replay retained evidence while realtime events add new
+	// receipts. That traffic must not evict an observation replayed every batch.
+	for i := range 2 * auditReceiptCap {
+		fresh := Finding{Check: "webshell_realtime", Message: fmt.Sprint(i), Timestamp: now}
+		emitAuditWithSources(cfg, nil, []Finding{retained, fresh})
+	}
+	if got, want := sink.events.Load(), int32(2*auditReceiptCap+1); got != want {
+		t.Fatalf("frequently replayed observation duplicated during churn: events=%d, want=%d", got, want)
+	}
+}
+
+func TestAuditSourcesPreserveDistinctInvalidUTF8(t *testing.T) {
+	isolateAuditManager(t)
+	sink := &managedTestSink{name: "jsonl"}
+	openJSONLAuditSink = func(string) (AuditSink, error) { return sink, nil }
+	cfg := cfgWithJSONLAudit(t, "unused")
+	findings := []Finding{
+		{Check: "webshell_realtime", Message: "source \x80", Timestamp: time.Unix(100, 0)},
+		{Check: "webshell_realtime", Message: "source \x81", Timestamp: time.Unix(100, 0)},
+	}
+	for range 2 {
+		if err := DispatchWithSources(cfg, nil, findings); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := sink.events.Load(); got != 2 {
+		t.Fatalf("different source bytes were collapsed or replayed: events=%d, want=2", got)
 	}
 }

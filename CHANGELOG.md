@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Frequently replayed audit records stay deduplicated during busy periods, and simultaneous findings no longer hide each other. Failed crawler lookups release room for new verification, while database aliases with missing credentials keep earlier findings.
+
 - Audit replays no longer duplicate records at healthy destinations. Repeated verification failures and incomplete scans no longer pin or grow their retained state indefinitely.
 
 - Incomplete scans keep earlier findings when new results fill the active list, even if no database could be inspected. Timeouts and internal failures keep the same protection.
