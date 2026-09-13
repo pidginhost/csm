@@ -43,36 +43,51 @@ func hFieldMarkerStart(line string, valueStart int) int {
 // genuine H= field that occurs earlier on the line.
 func unprefixedClientStart(line string) (start, markerStart int) {
 	markerStart = -1
-	t := strings.Index(line, " T=")
+	offset := fieldsStart(line)
+	t := strings.Index(line[offset:], " T=")
 	for _, marker := range []string{
 		"authenticator failed for ",
 		"TLS error on connection from ",
 		"SMTP connection from ",
 	} {
-		idx := strings.Index(line, marker)
+		idx := strings.Index(line[offset:], marker)
 		if idx < 0 || (t >= 0 && t < idx) {
 			continue
 		}
-		if markerStart < 0 || idx < markerStart {
-			markerStart = idx
-			start = idx + len(marker)
+		if markerStart < 0 || offset+idx < markerStart {
+			markerStart = offset + idx
+			start = offset + idx + len(marker)
 		}
 	}
 	return start, markerStart
 }
 
+// fieldsStart returns where logged fields begin. On an arrival record that
+// is after the envelope sender, whose quoted local part can contain text
+// resembling host fields. Other records are searched from the start.
+func fieldsStart(line string) int {
+	accept := strings.Index(line, " <= ")
+	if accept < 0 || !arrivalPrefix(line[:accept]) {
+		return 0
+	}
+	sender := accept + len(" <= ")
+	return sender + envelopeEnd(line[sender:])
+}
+
 // HFieldStart returns the offset just past the H= marker and true when the
 // line carries a real H= field. An H= that appears after T= is inside the
-// Subject and is ignored.
+// Subject and is ignored, as is one inside an arrival's envelope sender.
 func HFieldStart(line string) (int, bool) {
 	if strings.HasPrefix(line, "H=") {
 		return len("H="), true
 	}
-	if h := strings.Index(line, " H="); h >= 0 {
-		if t := strings.Index(line, " T="); t >= 0 && t < h {
+	offset := fieldsStart(line)
+	fields := line[offset:]
+	if h := strings.Index(fields, " H="); h >= 0 {
+		if t := strings.Index(fields, " T="); t >= 0 && t < h {
 			return 0, false
 		}
-		return h + len(" H="), true
+		return offset + h + len(" H="), true
 	}
 	return 0, false
 }
@@ -244,6 +259,11 @@ func hostAndIdentClientIP(s string) string {
 					if client != "" || (identStart >= 0 && identStart < i) {
 						return ""
 					}
+					// Failure details, including the attempted login name,
+					// follow the peer and are not host information.
+					if failureDetailsFollow(after) {
+						return candidate
+					}
 					client = candidate
 				}
 			}
@@ -254,6 +274,33 @@ func hostAndIdentClientIP(s string) string {
 		return ""
 	}
 	return client
+}
+
+// failureDetailsFollow reports whether s, the text after a peer's closing
+// bracket, holds only the logged port, local interface and connection ID
+// before the ": " that starts failure details. Remote ident text can contain
+// that separator, so a U= field never qualifies.
+func failureDetailsFollow(s string) bool {
+	rest := withoutLoggedPort(s)
+	if strings.HasPrefix(rest, " I=[") {
+		end := strings.IndexByte(rest, ']')
+		if end < 0 || net.ParseIP(rest[len(" I=["):end]) == nil {
+			return false
+		}
+		rest = withoutLoggedPort(rest[end+1:])
+	}
+	if strings.HasPrefix(rest, " Ci=") {
+		digits := rest[len(" Ci="):]
+		n := 0
+		for n < len(digits) && digits[n] >= '0' && digits[n] <= '9' {
+			n++
+		}
+		if n == 0 {
+			return false
+		}
+		rest = digits[n:]
+	}
+	return strings.HasPrefix(rest, ": ")
 }
 
 func interfaceAddressAt(s string, bracket int) bool {

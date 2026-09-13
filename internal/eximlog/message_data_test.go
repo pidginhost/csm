@@ -79,3 +79,65 @@ func FuzzSubjectCannotHideArrivalIdentity(f *testing.F) {
 		}
 	})
 }
+
+// Exim prints the login name a client tried inside the failure details.
+// Unbalanced delimiters there must not remove the peer logged before them.
+func TestFailureLoginNameCannotHidePeer(t *testing.T) {
+	for _, name := range []string{"a(", "a)", "a[", "a]", `a"`, `a) "`, `a" (`} {
+		for _, host := range []string{
+			`dovecot_login authenticator failed for (helo.example) [203.0.113.5]:2525`,
+			`dovecot_login authenticator failed for H=mail.example (helo.example) [203.0.113.5]:2525 I=[192.0.2.25]:587`,
+			`dovecot_login authenticator failed for H=mail.example (helo.example) [2001:db8::5]:2525 I=[2001:db8::25]:587 Ci=4242`,
+		} {
+			line := "2026-01-01 10:00:00 " + host + ": 535 Incorrect authentication data (set_id=" + name + ")"
+			want := "203.0.113.5"
+			if strings.Contains(host, "2001:db8::5") {
+				want = "2001:db8::5"
+			}
+			if got := ClientIP(line); got != want {
+				t.Errorf("ClientIP(%q) = %q, want %s", line, got, want)
+			}
+		}
+	}
+}
+
+// A quoted envelope sender can contain field-like text. Host fields start
+// after it on an arrival record.
+func TestEnvelopeSenderCannotHideArrivalPeer(t *testing.T) {
+	for _, sender := range []string{
+		`"x H=(y) [192.0.2.1]:25 P=a"@example.com`,
+		`"x T=y H=z"@example.com`,
+		`"SMTP connection from [192.0.2.1]:25"@example.com`,
+		`"x H=(y"@example.com`,
+	} {
+		line := "2026-01-01 10:00:00 1abc23-000456-AB <= " + sender + ` H=mail.example (helo.example) [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:alice@example.com S=100 T="hello"`
+		if got := ClientIP(line); got != "203.0.113.5" {
+			t.Errorf("sender %s: ClientIP = %q, want 203.0.113.5", sender, got)
+		}
+		start, ok := HFieldStart(line)
+		if !ok || !strings.HasPrefix(line[start:], "mail.example ") {
+			t.Errorf("sender %s: HFieldStart = (%d, %v), want the arrival host field", sender, start, ok)
+		}
+		if got := AuthenticatedUser(line); got != "alice@example.com" {
+			t.Errorf("sender %s: AuthenticatedUser = %q, want alice@example.com", sender, got)
+		}
+	}
+}
+
+func FuzzFailureLoginNameCannotHidePeer(f *testing.F) {
+	for _, name := range append([]string{"a(", `a) "`}, peerLikeText...) {
+		f.Add(name)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		// Exim prints the login name with non-printing characters escaped.
+		for _, r := range name {
+			if r < 0x20 || r > 0x7e {
+				return
+			}
+		}
+		line := "2026-01-01 10:00:00 dovecot_login authenticator failed for (helo.example) [203.0.113.5]:2525: 535 Incorrect authentication data (set_id=" + name + ")"
+		if got := ClientIP(line); got != "203.0.113.5" {
+			t.Fatalf("login name %q changed client address to %q", name, got)
+		}
+	})
+}
