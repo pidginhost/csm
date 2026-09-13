@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Mail records with ambiguous remote identity text no longer supply account ownership or authenticated activity.
+
 - Mail attribution ignores forged identities in message metadata and preserves verified submitters when envelope identities contain quoted text.
 
 - A firewall queue test now waits for the diagnostic write before checking failure accounting.

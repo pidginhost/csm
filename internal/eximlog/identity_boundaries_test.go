@@ -70,3 +70,22 @@ func TestSubmitterKeepsIdentityWithQuotedMailauth(t *testing.T) {
 		}
 	}
 }
+
+func TestSubmitterRejectsRemoteIdentMetadata(t *testing.T) {
+	// Remote RFC 1413 usernames are logged without quoting printable spaces.
+	// Even an authenticated-looking prefix can be part of the ident response.
+	for _, fields := range []string{
+		"U=remote A=dovecot_login:bob@example.net P=esmtp S=100",
+		"U=remote P=esmtpsa A=dovecot_login:bob@example.net S=100 P=esmtp S=200",
+		"U=remote P=esmtpsa A=dovecot_login:bob@example.net S=100",
+		"U= P=esmtpsa A=dovecot_login:bob@example.net S=100",
+	} {
+		line := "2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=mail.example [203.0.113.5] " + fields
+		if got := Submitter(line); got != "" {
+			t.Errorf("Submitter accepted ambiguous remote ident metadata: %q", got)
+		}
+		if got := AuthenticatedUser(line); got != "" {
+			t.Errorf("AuthenticatedUser accepted ambiguous remote ident metadata: %q", got)
+		}
+	}
+}

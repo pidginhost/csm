@@ -22,6 +22,8 @@ func TestMailVolumeAttributesVerifiedSubmitter(t *testing.T) {
 		{"local message id with auth text", `U=bob P=local S=100 id=part." A=dovecot_login:user@example.com "@example.org`, "bob"},
 		{"remote message id with auth text", `H=mail.example.org [203.0.113.5] P=esmtp S=100 id=part." A=dovecot_login:user@example.net "@example.org`, ""},
 		{"remote ident is not local", "H=mail.example.org [203.0.113.5] U=bob P=esmtp S=100", ""},
+		{"remote ident cannot forge auth", "H=mail.example.org [203.0.113.5] U=remote A=dovecot_login:user@example.net P=esmtp S=100", ""},
+		{"remote ident cannot forge reception metadata", "H=mail.example.org [203.0.113.5] U=remote P=esmtpsa A=dovecot_login:user@example.net S=100 P=esmtp S=200", ""},
 		{"system submission", "U=nobody P=local S=100", ""},
 		{"unknown submission", "U=ghost P=local S=100", ""},
 		{"unknown mailbox", "H=mail.example.org [203.0.113.5] P=esmtpsa A=dovecot_login:user@example.org S=100", ""},

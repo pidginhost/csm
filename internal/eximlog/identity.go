@@ -17,9 +17,9 @@ func AuthenticatedUser(line string) string {
 }
 
 // Submitter returns an authenticated identity, or the local Exim caller on
-// a non-network P=local arrival. A remote U= is an RFC 1413 identity and is
-// never treated as a local account. The caller must resolve this identity
-// against the local account inventory before assigning a tenant.
+// a non-network P=local arrival. Records containing a remote U= identity
+// are ambiguous and cannot prove a submitter. The caller must resolve the
+// returned identity against the local inventory before assigning a tenant.
 func Submitter(line string) string {
 	fields, ok := submissionFields(line)
 	if !ok {
@@ -99,6 +99,13 @@ func submissionFields(line string) (submitFields, bool) {
 			}
 		}
 		rest = rest[end:]
+	}
+	// Exim appends remote RFC 1413 ident text without quoting spaces. It
+	// can therefore imitate all following metadata, including A= and S=.
+	// Neither an apparent authentication field nor its order proves an
+	// identity on such a record. Local U= still comes from the server.
+	if out.remote && seen["U"] {
+		return submitFields{}, false
 	}
 	return out, true
 }

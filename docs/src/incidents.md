@@ -472,9 +472,10 @@ branches:
   root. Credential and bulk-service findings use the authenticated identity,
   never the envelope sender. A sender-domain volume aggregate carries an
   owner only when every counted arrival proves the same local account through
-  authentication or local submission. Remote ident usernames do not establish
-  local ownership. Mixed or unverified aggregates stay unattributed without
-  reducing the volume count. Owner lookups run after tracker locks are
+  authentication or local submission. Arrivals containing remote ident
+  usernames stay unattributed: that unquoted text can imitate later
+  authentication metadata. Mixed or unverified aggregates stay unattributed
+  without reducing the volume count. Owner lookups run after tracker locks are
   released. Mail hold and governor findings require a local mail-server
   permission decision. Submission identities are read only from reception
   metadata before the message size; message IDs, subjects and recipients
