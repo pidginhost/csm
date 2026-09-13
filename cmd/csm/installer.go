@@ -1828,9 +1828,23 @@ return array(
 // systemdUnitPath is where the daemon's service unit is installed.
 var systemdUnitPath = "/etc/systemd/system/csm.service"
 
+// systemdSandboxRoot is the filesystem root the unit's writable grants
+// resolve against.
+var systemdSandboxRoot = "/"
+
 // writeSystemdServiceUnit replaces the service unit atomically: systemd
 // (daemon-reload, a concurrent systemctl) must never read a truncated or
 // half-written unit, which a plain in-place write exposed on every rehash.
+//
+// The grants the unit requires are created first: rehash refreshes the unit on
+// hosts that were installed before a grant existed, and systemd will not start
+// a unit whose unprefixed writable path is missing.
 func writeSystemdServiceUnit(content string) error {
+	for _, dir := range systemdUnitRequiredWritableDirs(content) {
+		path := filepath.Join(systemdSandboxRoot, dir)
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("creating sandbox grant %s: %w", dir, err)
+		}
+	}
 	return writeFileAtomic(systemdUnitPath, []byte(content), 0o644)
 }
