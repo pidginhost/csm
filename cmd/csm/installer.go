@@ -1836,24 +1836,12 @@ var systemdSandboxRoot = "/"
 // (daemon-reload, a concurrent systemctl) must never read a truncated or
 // half-written unit, which a plain in-place write exposed on every rehash.
 //
-// Required CSM grants are created and host grants checked first: rehash
-// refreshes the unit on hosts that were installed before a grant existed,
-// and systemd will not start a unit whose unprefixed writable path is missing.
+// The grants the unit requires are created first: rehash refreshes the unit on
+// hosts that were installed before a grant existed, and systemd will not start
+// a unit whose unprefixed writable path is missing.
 func writeSystemdServiceUnit(content string) error {
 	for _, dir := range systemdUnitRequiredWritableDirs(content) {
 		path := filepath.Join(systemdSandboxRoot, dir)
-		// Shared temporary directories belong to the host. Creating them
-		// with CSM's private mode would break other users and services.
-		if dir == "/tmp" || dir == "/var/tmp" {
-			info, err := os.Stat(path)
-			if err != nil {
-				return fmt.Errorf("checking host sandbox grant %s: %w", dir, err)
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("host sandbox grant %s is not a directory", dir)
-			}
-			continue
-		}
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return fmt.Errorf("creating sandbox grant %s: %w", dir, err)
 		}
