@@ -117,13 +117,11 @@ The default path is created with mode `0640` and the parent dir
 with `0750`. The packaged logrotate fragment uses `copytruncate`
 mode so the daemon's open file descriptor stays valid across
 rotation -- no SIGHUP needed. It rotates daily and keeps 14 compressed
-rotations. The file sink enforces the same 100 MB size budget before each
-append, including when multiple local writers share the file. Once full, it
-rejects further records until logrotate truncates the live file. The existing
-dropped-event counter and degraded-sink metric expose those losses; syslog
-delivery continues independently. On busy hosts, configure a shorter
-time-based rotation interval and run logrotate at least that often; merely
-invoking the daily stanza more often cannot clear a file below its size trigger.
+rotations. The 100 MB threshold permits early rotation when the host runs
+logrotate more often than daily; it does not cap growth between runs. The sink
+never drops records to stay under that size, because a detection flood would
+otherwise blind the audit trail until the next rotation. On busy hosts, run
+logrotate more often than daily so the size trigger can take effect.
 Installation and upgrades refresh the fragment, including upgrades through
 `csm rehash`.
 

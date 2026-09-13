@@ -7,13 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-
-	"golang.org/x/sys/unix"
 )
-
-// Match the packaged logrotate maxsize. Refuse further appends until rotation
-// rather than letting a realtime flood exhaust disk between logrotate runs.
-const maxJSONLAuditSize = 100 * 1024 * 1024
 
 // JSONLSink appends one JSON object per finding to a file. Designed
 // for SIEM ingest via standard log shippers (Vector, Filebeat,
@@ -65,20 +59,6 @@ func (s *JSONLSink) Emit(event AuditEvent) error {
 	defer s.mu.Unlock()
 	if s.f == nil {
 		return errors.New("jsonl sink: closed")
-	}
-	// Independent daemon/CLI sink instances can share this file. Hold the
-	// inode lock across the size check and append so they share one budget.
-	// copytruncate retains this inode and O_APPEND handles its new length.
-	if lockErr := unix.Flock(int(s.f.Fd()), unix.LOCK_EX); lockErr != nil { // #nosec G115 -- an open file descriptor fits in int on supported Unix hosts.
-		return fmt.Errorf("jsonl sink: lock: %w", lockErr)
-	}
-	defer func() { _ = unix.Flock(int(s.f.Fd()), unix.LOCK_UN) }() // #nosec G115 -- open file descriptor.
-	info, err := s.f.Stat()
-	if err != nil {
-		return fmt.Errorf("jsonl sink: stat: %w", err)
-	}
-	if int64(len(line)) > maxJSONLAuditSize-info.Size() {
-		return errors.New("jsonl sink: size budget reached; awaiting log rotation")
 	}
 	if _, err := s.f.Write(line); err != nil {
 		return fmt.Errorf("jsonl sink: write: %w", err)
