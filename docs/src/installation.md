@@ -163,6 +163,8 @@ The package uses FHS paths for config, state, drop-ins, and shipped profiles. Up
 
 The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions for the FHS directories. On upgrade, the package copies a real legacy main config into `/etc/csm/csm.yaml` when needed and points `/opt/csm/csm.yaml` at it. On first start the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/` (only when the new directory is empty), then continues using the FHS state path. See [Upgrading - FHS migration](upgrading.md#fhs-migration-state-config-drop-ins-and-profiles) for the manual-binary-swap case.
 
+When refreshing the service unit, install and `csm rehash` create missing required CSM sandbox directories without changing existing directory modes. They leave optional paths and systemd-managed directories uncreated. The host must already provide `/tmp` and `/var/tmp`; if either is missing or is not a directory, the refresh fails before replacing the unit so the host layout can be repaired.
+
 ## Post-install (all methods)
 
 RPM/DEB packages are the maintained installation path and include package-manager ownership, integration profiles, UI assets, rules, and the prebuilt PAM module. The standalone installer supplies the runtime assets but does not register them with a package manager. In either case, set infrastructure IPs and confirm the alert address before starting the daemon.
