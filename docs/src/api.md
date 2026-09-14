@@ -654,7 +654,8 @@ abandoned shutdown requests count as losses. Missing PTR records, unknown bot
 identities and definitive positive or negative answers remain expected
 outcomes. A source with a recorded missing PTR is not queued again until its
 one-hour suppression lapses; suppressed requests do not count as losses.
-Lapsed records prevent renewed pending grace without blocking DNS retries.
+For a day after the lookup, lapsed records prevent renewed pending grace
+without blocking DNS retries.
 Queue health does not turn a resolver failure into a spoof finding. Shutdown
 cancels DNS, waits for any active cache write and discards waiting work. Late submissions
 are refused, pending keys are released and loss totals remain available.

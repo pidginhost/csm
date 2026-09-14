@@ -42,7 +42,7 @@ func TestBotVerifierHonorsStoredNoPTRRecords(t *testing.T) {
 		_ = db.Close()
 	})
 	ip := net.ParseIP("192.0.2.40")
-	if err := db.PutBotVerifyUnverifiable(ip, "facebookbot", time.Now().Add(time.Hour)); err != nil {
+	if err := db.PutBotVerifyUnverifiable(ip, "facebookbot", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	d.startBotVerifier(db, nil)

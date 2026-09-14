@@ -89,8 +89,9 @@ another pending window, but the initial cooldown prevents continuous renewal
 under churn. Expiry preserves live jobs and their retry delay after completion.
 A missing PTR suppresses further DNS lookups for one fixed hour in the state
 database, including across restarts. Scans do not extend that hour. After it
-lapses, DNS retries resume, but the record remains as attempt history so a
-restart or in-memory eviction cannot grant fresh pending treatment. A definitive
+lapses, DNS retries resume, but the record remains as attempt history for a
+day, so a restart or in-memory eviction cannot grant fresh pending treatment.
+Records older than that are removed as new ones are written. A definitive
 verification result replaces that history. The record is not a verdict: it
 grants neither the verified-crawler exemption nor pending treatment, and it
 never counts as a spoof. `csm store reset-bot-verify` and a `verified_bots`

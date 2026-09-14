@@ -42,6 +42,7 @@ var bucketNames = []string{
 	"fw:rollback",
 	adminEmailsBucket,
 	"botverify",
+	botVerifyUnverifiableBucket,
 	prefsBucket,
 	"scan_jobs",
 	"scan_job_findings",

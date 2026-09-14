@@ -36,32 +36,53 @@ func (r *countingResolver) count() int {
 	return r.lookups
 }
 
-// memoryUnverifiable keeps no-PTR records the way the store does, on the
-// caller's clock, so fake time can drive expiry.
+// memoryUnverifiable keeps no-PTR records the way the store does, so fake
+// time can drive suppression, history and sweeps.
 type memoryUnverifiable struct {
-	mu      sync.Mutex
-	until   map[string]time.Time
-	failPut bool
+	mu       sync.Mutex
+	observed map[string]time.Time
+	failPut  bool
+	sweeps   int
 }
 
-func (m *memoryUnverifiable) PutBotVerifyUnverifiable(ip net.IP, bot string, expiresAt time.Time) error {
+func (m *memoryUnverifiable) PutBotVerifyUnverifiable(ip net.IP, bot string, observedAt time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failPut {
 		return errors.New("store unavailable")
 	}
-	if m.until == nil {
-		m.until = make(map[string]time.Time)
+	if m.observed == nil {
+		m.observed = make(map[string]time.Time)
 	}
-	m.until[bot+"|"+ip.String()] = expiresAt
+	m.observed[bot+"|"+ip.String()] = observedAt
 	return nil
 }
 
-func (m *memoryUnverifiable) BotVerifyUnverifiable(ip net.IP, bot string) (live, recorded bool) {
+func (m *memoryUnverifiable) BotVerifyUnverifiable(ip net.IP, bot string) (time.Time, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	until, ok := m.until[bot+"|"+ip.String()]
-	return ok && !time.Now().After(until), ok
+	observed, ok := m.observed[bot+"|"+ip.String()]
+	return observed, ok
+}
+
+func (m *memoryUnverifiable) SweepBotVerifyUnverifiable(cutoff time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sweeps++
+	n := 0
+	for key, observed := range m.observed {
+		if observed.Before(cutoff) {
+			delete(m.observed, key)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *memoryUnverifiable) len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.observed)
 }
 
 func TestBotNoPTRExpiredRecordCannotRenewGraceAfterRestart(t *testing.T) {
@@ -71,7 +92,7 @@ func TestBotNoPTRExpiredRecordCannotRenewGraceAfterRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	ip := net.ParseIP("192.0.2.31")
-	if err := db.PutBotVerifyUnverifiable(ip, "facebookbot", time.Now().Add(-time.Second)); err != nil {
+	if err := db.PutBotVerifyUnverifiable(ip, "facebookbot", time.Now().Add(-botVerifyUnverifiableTTL-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// Neither a new process nor repeated reads of a lapsed record may turn
@@ -122,17 +143,17 @@ type pausedUnverifiableRead struct {
 	read, release, written chan struct{}
 }
 
-func (m *pausedUnverifiableRead) BotVerifyUnverifiable(ip net.IP, bot string) (live, recorded bool) {
-	live, recorded = m.memoryUnverifiable.BotVerifyUnverifiable(ip, bot)
+func (m *pausedUnverifiableRead) BotVerifyUnverifiable(ip net.IP, bot string) (time.Time, bool) {
+	observed, ok := m.memoryUnverifiable.BotVerifyUnverifiable(ip, bot)
 	if m.read != nil {
 		close(m.read)
 		<-m.release
 	}
-	return live, recorded
+	return observed, ok
 }
 
-func (m *pausedUnverifiableRead) PutBotVerifyUnverifiable(ip net.IP, bot string, expiry time.Time) error {
-	err := m.memoryUnverifiable.PutBotVerifyUnverifiable(ip, bot, expiry)
+func (m *pausedUnverifiableRead) PutBotVerifyUnverifiable(ip net.IP, bot string, observedAt time.Time) error {
+	err := m.memoryUnverifiable.PutBotVerifyUnverifiable(ip, bot, observedAt)
 	close(m.written)
 	return err
 }
@@ -286,7 +307,7 @@ func BenchmarkBotNoPTRScan(b *testing.B) {
 	ips := make([]net.IP, 678)
 	for i := range ips {
 		ips[i] = net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
-		if err := db.PutBotVerifyUnverifiable(ips[i], "facebookbot", time.Now().Add(time.Hour)); err != nil {
+		if err := db.PutBotVerifyUnverifiable(ips[i], "facebookbot", time.Now()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -307,4 +328,45 @@ func BenchmarkBotNoPTRScan(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestBotNoPTRHistoryIsSweptOnceItCannotMatter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		records := &memoryUnverifiable{}
+		a := NewAsyncBotVerifier(nil, records)
+		a.v["facebookbot"] = newVerifier(&countingResolver{}, []string{"fbsv.net"})
+		noPTR := func(ip string) {
+			t.Helper()
+			if !a.Enqueue(net.ParseIP(ip), "facebookbot") {
+				t.Fatalf("claim from %s was not queued", ip)
+			}
+			a.process(<-a.ch)
+		}
+
+		noPTR("192.0.2.50")
+		// Sources that never return must not accumulate: once a record is
+		// past the retry history window it affects nothing and is removed.
+		time.Sleep(botVerifyCacheTTL + time.Second)
+		noPTR("192.0.2.51")
+		if _, ok := records.BotVerifyUnverifiable(net.ParseIP("192.0.2.50"), "facebookbot"); ok {
+			t.Fatal("record past the history window survived a later write")
+		}
+		if records.len() != 1 {
+			t.Fatalf("records = %d, want only the fresh one", records.len())
+		}
+
+		// Sweeping scans the bucket, so busy hours sweep once, not per result.
+		sweeps := records.sweeps
+		for i := range 20 {
+			noPTR(fmt.Sprintf("2001:db8:2::%x", i+1))
+		}
+		if records.sweeps != sweeps {
+			t.Errorf("sweeps ran %d more times within one hour", records.sweeps-sweeps)
+		}
+		time.Sleep(botVerifyUnverifiableTTL)
+		noPTR("192.0.2.52")
+		if records.sweeps != sweeps+1 {
+			t.Errorf("sweeps after an hour = %d, want %d", records.sweeps, sweeps+1)
+		}
+	})
 }

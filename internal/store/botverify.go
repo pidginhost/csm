@@ -62,20 +62,21 @@ func (db *DB) PutBotVerify(ip net.IP, bot string, verified bool, expiresAt time.
 }
 
 // botVerifyUnverifiableBucket holds sources whose claimed bot identity had no
-// PTR record. The value is only the expiry as unix nanos. It lives apart from
-// the verdict bucket because a missing PTR proves nothing about identity, and
-// a build that predates this bucket must never read it as a spoof verdict.
+// PTR record, keyed like the verdict cache. The value is the observation time
+// as unix nanos; the verifier derives retry suppression and history from it
+// and sweeps records that can no longer matter. It lives apart from the
+// verdict bucket because a missing PTR proves nothing about identity, and a
+// build that predates this bucket must never read it as a spoof verdict.
 const botVerifyUnverifiableBucket = "botverify_unverifiable"
 
-// PutBotVerifyUnverifiable records that ip had no PTR for bot until expiresAt,
-// so repeat claims wait for the record to lapse before querying DNS again.
-func (db *DB) PutBotVerifyUnverifiable(ip net.IP, bot string, expiresAt time.Time) error {
+// PutBotVerifyUnverifiable records that ip had no PTR for bot at observedAt.
+func (db *DB) PutBotVerifyUnverifiable(ip net.IP, bot string, observedAt time.Time) error {
 	key := botVerifyKey(ip, bot)
 	if key == nil {
 		return nil
 	}
 	var val [8]byte
-	binary.BigEndian.PutUint64(val[:], uint64(expiresAt.UnixNano())) // #nosec G115 -- unix nano stored as bit pattern; sign is irrelevant for expiry comparison
+	binary.BigEndian.PutUint64(val[:], uint64(observedAt.UnixNano())) // #nosec G115 -- unix nano stored as bit pattern; sign is irrelevant for time comparison
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(botVerifyUnverifiableBucket))
 		if err != nil {
@@ -85,29 +86,56 @@ func (db *DB) PutBotVerifyUnverifiable(ip net.IP, bot string, expiresAt time.Tim
 	})
 }
 
-// BotVerifyUnverifiable reports whether a no-PTR record still suppresses DNS
-// and whether the source has ever been recorded. Lapsed records keep attempt
-// history across restarts and in-memory eviction without extending suppression.
-// A definitive verdict or cache reset removes that history. Reads never write.
-func (db *DB) BotVerifyUnverifiable(ip net.IP, bot string) (live, recorded bool) {
+// BotVerifyUnverifiable returns when ip was recorded without a PTR for bot.
+// Reads never write, so they cannot extend a record or race a bucket reset.
+func (db *DB) BotVerifyUnverifiable(ip net.IP, bot string) (observedAt time.Time, ok bool) {
 	key := botVerifyKey(ip, bot)
 	if key == nil {
-		return false, false
+		return time.Time{}, false
 	}
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(botVerifyUnverifiableBucket))
 		if b == nil {
 			return nil
 		}
-		val := b.Get(key)
-		if len(val) != 8 {
-			return nil
+		if val := b.Get(key); len(val) == 8 {
+			observedAt, ok = unixNanoBits(val), true
 		}
-		recorded = true
-		live = !time.Now().After(unixNanoBits(val))
 		return nil
 	})
-	return live, recorded
+	return observedAt, ok
+}
+
+// SweepBotVerifyUnverifiable removes records observed before cutoff and
+// returns how many it removed.
+func (db *DB) SweepBotVerifyUnverifiable(cutoff time.Time) (int, error) {
+	removed := 0
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(botVerifyUnverifiableBucket))
+		if b == nil {
+			return nil
+		}
+		var stale [][]byte
+		if err := b.ForEach(func(k, v []byte) error {
+			if len(v) != 8 || unixNanoBits(v).Before(cutoff) {
+				stale = append(stale, append([]byte(nil), k...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range stale {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		removed = len(stale)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
 }
 
 func unixNanoBits(val []byte) time.Time {
@@ -186,8 +214,12 @@ func resetBotVerifyBuckets(tx *bolt.Tx) (int, error) {
 			}
 		}
 	}
-	_, err := tx.CreateBucket([]byte("botverify"))
-	return cleared, err
+	for _, name := range []string{"botverify", botVerifyUnverifiableBucket} {
+		if _, err := tx.CreateBucket([]byte(name)); err != nil {
+			return 0, err
+		}
+	}
+	return cleared, nil
 }
 
 // GetBotVerify returns (verified, valid). valid=false means no

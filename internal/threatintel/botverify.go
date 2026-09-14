@@ -127,9 +127,11 @@ type AsyncBotVerifier struct {
 	// scans, so repeat claims wait for the record to lapse instead of queuing
 	// the same lookup on every scan and crowding out crawlers not yet checked.
 	unverifiable UnverifiableRecords
-	stats        *queuehealth.Tracker
-	stop         <-chan struct{}
-	closed       bool
+	// unverifiableSwept is owned by the single worker that writes records.
+	unverifiableSwept time.Time
+	stats             *queuehealth.Tracker
+	stop              <-chan struct{}
+	closed            bool
 }
 
 // Attempt history prevents each unresolved retry from renewing the initial
@@ -167,12 +169,13 @@ var BotDomains = map[string][]string{
 	"seranking":     {"seranking.com"},
 }
 
-// UnverifiableRecords persists sources whose claimed bot identity had no PTR.
-// A live record suppresses DNS; even a lapsed record prevents fresh pending
-// grace. store.DB implements it.
+// UnverifiableRecords persists when a claimed bot identity had no PTR. The
+// verifier derives retry suppression and attempt history from that time and
+// sweeps records older than the history. store.DB implements it.
 type UnverifiableRecords interface {
-	PutBotVerifyUnverifiable(ip net.IP, bot string, expiresAt time.Time) error
-	BotVerifyUnverifiable(ip net.IP, bot string) (live, recorded bool)
+	PutBotVerifyUnverifiable(ip net.IP, bot string, observedAt time.Time) error
+	BotVerifyUnverifiable(ip net.IP, bot string) (observedAt time.Time, ok bool)
+	SweepBotVerifyUnverifiable(cutoff time.Time) (int, error)
 }
 
 // NewAsyncBotVerifier constructs an async verifier backed by the
@@ -233,10 +236,15 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 	// read must still be in flight when we decide whether to admit a retry.
 	var recorded bool
 	if a.unverifiable != nil {
-		var live bool
-		live, recorded = a.unverifiable.BotVerifyUnverifiable(ip, bot)
-		if live {
-			return false
+		if observed, ok := a.unverifiable.BotVerifyUnverifiable(ip, bot); ok {
+			now := time.Now()
+			if !now.After(observed.Add(botVerifyUnverifiableTTL)) {
+				return false
+			}
+			// A lapsed record still counts as an attempt for as long as
+			// in-memory history would, so a restart or eviction cannot
+			// grant fresh pending treatment.
+			recorded = now.Before(observed.Add(botVerifyCacheTTL))
 		}
 	}
 	if a.closed {
@@ -435,7 +443,19 @@ func (a *AsyncBotVerifier) recordUnverifiable(job verifyJob) bool {
 	if a.unverifiable == nil {
 		return true
 	}
-	return a.unverifiable.PutBotVerifyUnverifiable(job.IP, job.Bot, time.Now().Add(botVerifyUnverifiableTTL)) == nil
+	now := time.Now()
+	if a.unverifiable.PutBotVerifyUnverifiable(job.IP, job.Bot, now) != nil {
+		return false
+	}
+	// Records past the attempt history affect nothing. Sweeping after a write
+	// bounds the bucket by recent no-PTR volume; once an hour keeps the scan
+	// off the per-result path. A failed sweep is retried on the next write.
+	if now.Sub(a.unverifiableSwept) >= botVerifyUnverifiableTTL {
+		if _, err := a.unverifiable.SweepBotVerifyUnverifiable(now.Add(-botVerifyCacheTTL)); err == nil {
+			a.unverifiableSwept = now
+		}
+	}
+	return true
 }
 
 func (a *AsyncBotVerifier) finish(job verifyJob, completed, cached bool) {
