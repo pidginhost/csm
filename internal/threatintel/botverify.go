@@ -44,7 +44,7 @@ const LogicVersion = 5
 
 // ErrUnverifiable signals that the resolver returned no usable PTR for
 // the source IP, so the verifier cannot prove or disprove the claimed
-// bot identity. Callers treat this as fail-open: do not cache, do not
+// bot identity. Callers treat this as fail-open: do not cache a verdict or
 // flag as spoof. Genuine spoof signals -- PTR present but outside the
 // bot's domain suffix list, or forward-confirm mismatch -- still return
 // (false, nil).
@@ -56,7 +56,7 @@ var ErrUnverifiable = errors.New("bot verify: no PTR record for source IP")
 // forward-A fails to round-trip the IP), (false, ErrUnverifiable) when
 // the IP has no PTR at all, and (false, err) on context cancellation
 // or transient resolver failure. Both error paths cause the async
-// worker to skip the cache write so unverifiable IPs do not get pinned
+// worker to skip the verdict write so unverifiable IPs do not get pinned
 // as spoof for the TTL window.
 func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, error) {
 	names, err := v.res.LookupAddr(ctx, ip.String())
@@ -123,9 +123,16 @@ type AsyncBotVerifier struct {
 	v        map[string]*verifier // bot identity -> verifier; guarded by mu
 	res      resolver             // retained so SetOperatorEntries can rebuild v
 	put      func(net.IP, string, bool, time.Time) error
-	stats    *queuehealth.Tracker
-	stop     <-chan struct{}
-	closed   bool
+	// unverifiable holds no-PTR results. A missing PTR rarely changes between
+	// scans, so repeat claims wait for the record to lapse instead of queuing
+	// the same lookup on every scan and crowding out crawlers not yet checked.
+	unverifiable UnverifiableRecords
+	// unverifiableSwept tracks sweep attempts, including failures, and is
+	// owned by the single worker that writes records.
+	unverifiableSwept time.Time
+	stats             *queuehealth.Tracker
+	stop              <-chan struct{}
+	closed            bool
 }
 
 // Attempt history prevents each unresolved retry from renewing the initial
@@ -163,17 +170,28 @@ var BotDomains = map[string][]string{
 	"seranking":     {"seranking.com"},
 }
 
+// UnverifiableRecords persists when a claimed bot identity had no PTR. The
+// verifier derives retry suppression and attempt history from that time and
+// sweeps records older than the history. store.DB implements it.
+type UnverifiableRecords interface {
+	PutBotVerifyUnverifiable(ip net.IP, bot string, observedAt time.Time) error
+	BotVerifyUnverifiable(ip net.IP, bot string) (observedAt time.Time, ok bool)
+	SweepBotVerifyUnverifiable(cutoff time.Time) (int, error)
+}
+
 // NewAsyncBotVerifier constructs an async verifier backed by the
-// system resolver. put is store.DB.PutBotVerify or a test seam.
-func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error) *AsyncBotVerifier {
+// system resolver. put is store.DB.PutBotVerify or a test seam; records is
+// the store, or nil to keep no-PTR results in retry history only.
+func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error, records UnverifiableRecords) *AsyncBotVerifier {
 	res := net.DefaultResolver
 	a := &AsyncBotVerifier{
-		inflight: make(map[string]time.Time),
-		ch:       make(chan verifyJob, 256),
-		v:        make(map[string]*verifier),
-		res:      res,
-		put:      put,
-		stats:    queuehealth.New(256, time.Minute),
+		inflight:     make(map[string]time.Time),
+		ch:           make(chan verifyJob, 256),
+		v:            make(map[string]*verifier),
+		res:          res,
+		put:          put,
+		unverifiable: records,
+		stats:        queuehealth.New(256, time.Minute),
 	}
 	for bot, domains := range BotDomains {
 		a.v[bot] = newVerifier(res, domains)
@@ -209,11 +227,27 @@ func (a *AsyncBotVerifier) SetOperatorEntries(entries []BotEntry) {
 }
 
 // Enqueue reports whether a job is queued or already in flight. Unsupported
-// identities and unavailable capacity never receive pending treatment.
+// identities and unavailable capacity never receive pending treatment, and a
+// source with a live no-PTR record is not queued again until it lapses.
 func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 	key := bot + "|" + ip.String()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Serialize the record read with finish: a worker that writes after this
+	// read must still be in flight when we decide whether to admit a retry.
+	var recorded bool
+	if a.unverifiable != nil {
+		if observed, ok := a.unverifiable.BotVerifyUnverifiable(ip, bot); ok {
+			now := time.Now()
+			if !now.After(observed.Add(botVerifyUnverifiableTTL)) {
+				return false
+			}
+			// A lapsed record still counts as an attempt for as long as
+			// in-memory history would, so a restart or eviction cannot
+			// grant fresh pending treatment.
+			recorded = now.Before(observed.Add(botVerifyCacheTTL))
+		}
+	}
 	if a.closed {
 		a.stats.Lose(time.Now(), 1)
 		return false
@@ -259,7 +293,7 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 		}
 	}
 	var pendingUntil time.Time
-	if !attempted {
+	if !attempted && !recorded {
 		pendingUntil = now.Add(botVerifyTimeout)
 	}
 	a.inflight[key] = pendingUntil
@@ -307,6 +341,9 @@ const (
 	botVerifyTimeout    = 5 * time.Second
 	botVerifyRetryDelay = time.Minute
 	botVerifyCacheTTL   = 24 * time.Hour
+	// Shorter than a verdict: a crawler that gains a PTR is verified within
+	// the hour, while a stable no-PTR source costs one lookup per hour.
+	botVerifyUnverifiableTTL = time.Hour
 )
 
 func (a *AsyncBotVerifier) QueueStatuses(now time.Time) map[string]queuehealth.Status {
@@ -389,7 +426,7 @@ func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verify
 	result, err := v.verify(ctx, job.IP, job.Bot)
 	cancel()
 	if err != nil {
-		completed = errors.Is(err, ErrUnverifiable)
+		completed = errors.Is(err, ErrUnverifiable) && a.recordUnverifiable(job)
 		return
 	}
 	if a.put == nil {
@@ -398,6 +435,28 @@ func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verify
 	}
 	cached = a.put(job.IP, job.Bot, result, time.Now().Add(botVerifyCacheTTL)) == nil
 	completed = cached
+}
+
+// recordUnverifiable reports whether a no-PTR result is settled. It is not a
+// verdict, so a lapsed record prevents fresh pending grace while within the
+// history window. An unwritten record leaves the work unaccounted for.
+func (a *AsyncBotVerifier) recordUnverifiable(job verifyJob) bool {
+	if a.unverifiable == nil {
+		return true
+	}
+	now := time.Now()
+	if a.unverifiable.PutBotVerifyUnverifiable(job.IP, job.Bot, now) != nil {
+		return false
+	}
+	// Records past the attempt history affect nothing. Sweeping after a write
+	// bounds the bucket by recent no-PTR volume; once an hour keeps the scan
+	// off the per-result path. Failures also wait an hour, so a failing large
+	// transaction cannot hold up every subsequent result write.
+	if now.Sub(a.unverifiableSwept) >= botVerifyUnverifiableTTL {
+		a.unverifiableSwept = now
+		_, _ = a.unverifiable.SweepBotVerifyUnverifiable(now.Add(-botVerifyCacheTTL))
+	}
+	return true
 }
 
 func (a *AsyncBotVerifier) finish(job verifyJob, completed, cached bool) {

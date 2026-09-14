@@ -226,7 +226,7 @@ func TestAsyncBotVerifier_DoesNotCacheNoPTR(t *testing.T) {
 	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error {
 		puts++
 		return nil
-	})
+	}, nil)
 	a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
 
 	a.process(verifyJob{IP: net.ParseIP("203.0.113.10"), Bot: "googlebot"})
@@ -365,7 +365,7 @@ func TestAsyncBotVerifier_DoesNotCacheTransientErrors(t *testing.T) {
 	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error {
 		puts++
 		return nil
-	})
+	}, nil)
 	a.v["googlebot"] = newVerifier(&mockResolver{err: errors.New("temporary resolver failure")}, []string{"googlebot.com"})
 
 	a.process(verifyJob{IP: net.ParseIP("203.0.113.10"), Bot: "googlebot"})

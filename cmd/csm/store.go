@@ -319,7 +319,7 @@ func runStoreResetBotVerifyCLI() {
 		fmt.Fprintf(os.Stderr, "csm store reset-bot-verify: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("reset-bot-verify done: cleared %d cached PTR results\n", n)
+	fmt.Printf("reset-bot-verify done: cleared %d cached PTR results and missing-PTR records\n", n)
 }
 
 func printStoreResetBotVerifyUsage() {
@@ -328,10 +328,10 @@ func printStoreResetBotVerifyUsage() {
 Usage:
   csm store reset-bot-verify
 
-Removes every entry in the botverify bucket so the next scan re-runs
-reverse DNS verification for each crawler IP it sees. Useful after a
-verifier-logic upgrade that would invalidate prior negative cache
-entries (for example, adding a new bot domain suffix). Requires the
+Removes every cached result and missing-PTR record so the next scan
+re-runs reverse DNS verification for each crawler IP it sees. Useful
+after a verifier-logic upgrade that would invalidate prior negative
+cache entries (for example, adding a new bot domain suffix). Requires the
 daemon to be stopped (systemctl stop csm) because bbolt holds an
 exclusive file lock while the daemon runs.`)
 }

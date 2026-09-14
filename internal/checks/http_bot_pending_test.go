@@ -15,7 +15,7 @@ func TestBotPendingRequiresAdmittedLiveJob(t *testing.T) {
 	for _, kind := range []string{"never queued", "full", "stopped", "unsupported", "expired"} {
 		t.Run(kind, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				verifier := threatintel.NewAsyncBotVerifier(nil)
+				verifier := threatintel.NewAsyncBotVerifier(nil, nil)
 				classifier := newVerifyingClassifier(verifier, func(net.IP, string) (bool, bool) { return false, false })
 				ip, ua := "203.0.113.99", "Googlebot/2.1"
 				switch kind {

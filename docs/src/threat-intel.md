@@ -84,9 +84,19 @@ it is full, new sources can replace completed entries after their initial
 cooldown; retries cannot extend that reservation. Live jobs and newly granted
 pending windows keep their history. If no entry can be replaced, admission is
 refused until capacity becomes available instead of running untracked lookups.
-Evicted or expired sources can receive another pending window, but the initial
-cooldown prevents continuous renewal under churn. Expiry preserves live jobs
-and their retry delay after completion.
+Evicted or expired sources without a persisted missing-PTR record can receive
+another pending window, but the initial cooldown prevents continuous renewal
+under churn. Expiry preserves live jobs and their retry delay after completion.
+A missing PTR suppresses further DNS lookups for one fixed hour in the state
+database, including across restarts. Scans do not extend that hour. After it
+lapses, DNS retries resume, but the record remains as attempt history for a
+day, so a restart or in-memory eviction cannot grant fresh pending treatment.
+Records older than that are removed as new ones are written. Cleanup is
+attempted at most once an hour, including after a failed cleanup. A definitive
+verification result replaces that history. The record is not a verdict: it
+grants neither the verified-crawler exemption nor pending treatment, and it
+never counts as a spoof. `csm store reset-bot-verify` and a `verified_bots`
+change clear these records together with the cached results.
 A confirmed negative remains eligible for spoof detection. A cached positive
 receives the normal verified-crawler exemption.
 

@@ -31,7 +31,7 @@ func botQueueStatus(t *testing.T, a *AsyncBotVerifier) queuehealth.Status {
 
 func TestBotQueueMeasuresOverflowAndCoalescedAge(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		a := NewAsyncBotVerifier(nil)
+		a := NewAsyncBotVerifier(nil, nil)
 		for i := range 256 {
 			a.Enqueue(net.ParseIP(fmt.Sprintf("192.0.2.%d", i)), "googlebot")
 		}
@@ -80,7 +80,7 @@ func TestBotQueueShutdownRetainsRunningCacheWrite(t *testing.T) {
 			writes.Add(1)
 			<-release
 			return errors.New("cache unavailable")
-		})
+		}, nil)
 		a.v["googlebot"] = newVerifier(botQueueResolver{lookup: func(context.Context, string) ([]string, error) {
 			lookups.Add(1)
 			return []string{"crawler.example"}, nil
@@ -147,7 +147,7 @@ func TestBotQueueDistinguishesFailuresFromVerificationResults(t *testing.T) {
 				a := NewAsyncBotVerifier(func(_ net.IP, _ string, value bool, _ time.Time) error {
 					values = append(values, value)
 					return tc.putErr
-				})
+				}, nil)
 				a.v["googlebot"] = newVerifier(tc.res, []string{"googlebot.com"})
 				done := make(chan struct{})
 				go func() { defer close(done); a.Run(stop) }()
@@ -176,7 +176,7 @@ func TestBotQueueDistinguishesFailuresFromVerificationResults(t *testing.T) {
 }
 
 func TestBotQueuePanicSettlesOwnedAndAbandonedRequests(t *testing.T) {
-	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error { panic("cache failed") })
+	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error { panic("cache failed") }, nil)
 	a.v["googlebot"] = newVerifier(botQueueResolver{lookup: func(context.Context, string) ([]string, error) {
 		return []string{"crawler.example"}, nil
 	}}, []string{"googlebot.com"})
@@ -198,7 +198,7 @@ func TestBotQueuePanicSettlesOwnedAndAbandonedRequests(t *testing.T) {
 }
 
 func TestBotQueueRejectsAfterWorkerReturns(t *testing.T) {
-	a := NewAsyncBotVerifier(nil)
+	a := NewAsyncBotVerifier(nil, nil)
 	stop := make(chan struct{})
 	close(stop)
 	a.Run(stop)
@@ -219,7 +219,7 @@ func TestBotQueueOwnsAdmittedIP(t *testing.T) {
 		cached = ip.String()
 		close(stop)
 		return nil
-	})
+	}, nil)
 	a.v["googlebot"] = newVerifier(botQueueResolver{lookup: func(_ context.Context, ip string) ([]string, error) {
 		lookedUp = ip
 		return []string{"crawler.example"}, nil
@@ -238,7 +238,7 @@ func TestBotQueueOwnsAdmittedIP(t *testing.T) {
 }
 
 func TestBotQueueConcurrentShutdownConservesRequests(t *testing.T) {
-	a := NewAsyncBotVerifier(nil)
+	a := NewAsyncBotVerifier(nil, nil)
 	a.v["googlebot"] = newVerifier(&mockResolver{err: errors.New("resolver unavailable")}, []string{"googlebot.com"})
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() { defer close(done); a.Run(stop) }()

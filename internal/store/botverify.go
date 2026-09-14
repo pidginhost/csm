@@ -52,15 +52,101 @@ func (db *DB) PutBotVerify(ip net.IP, bot string, verified bool, expiresAt time.
 		if err != nil {
 			return err
 		}
+		if records := tx.Bucket([]byte(botVerifyUnverifiableBucket)); records != nil {
+			if err := records.Delete(key); err != nil {
+				return err
+			}
+		}
 		return b.Put(key, val[:])
 	})
 }
 
+// botVerifyUnverifiableBucket holds sources whose claimed bot identity had no
+// PTR record, keyed like the verdict cache. The value is the observation time
+// as unix nanos; the verifier derives retry suppression and history from it
+// and sweeps records that can no longer matter. It lives apart from the
+// verdict bucket because a missing PTR proves nothing about identity, and a
+// build that predates this bucket must never read it as a spoof verdict.
+const botVerifyUnverifiableBucket = "botverify_unverifiable"
+
+// PutBotVerifyUnverifiable records that ip had no PTR for bot at observedAt.
+func (db *DB) PutBotVerifyUnverifiable(ip net.IP, bot string, observedAt time.Time) error {
+	key := botVerifyKey(ip, bot)
+	if key == nil {
+		return nil
+	}
+	var val [8]byte
+	binary.BigEndian.PutUint64(val[:], uint64(observedAt.UnixNano())) // #nosec G115 -- unix nano stored as bit pattern; sign is irrelevant for time comparison
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte(botVerifyUnverifiableBucket))
+		if err != nil {
+			return err
+		}
+		return b.Put(key, val[:])
+	})
+}
+
+// BotVerifyUnverifiable returns when ip was recorded without a PTR for bot.
+// Reads never write, so they cannot extend a record or race a bucket reset.
+func (db *DB) BotVerifyUnverifiable(ip net.IP, bot string) (observedAt time.Time, ok bool) {
+	key := botVerifyKey(ip, bot)
+	if key == nil {
+		return time.Time{}, false
+	}
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(botVerifyUnverifiableBucket))
+		if b == nil {
+			return nil
+		}
+		if val := b.Get(key); len(val) == 8 {
+			observedAt, ok = unixNanoBits(val), true
+		}
+		return nil
+	})
+	return observedAt, ok
+}
+
+// SweepBotVerifyUnverifiable removes records observed before cutoff and
+// returns how many it removed.
+func (db *DB) SweepBotVerifyUnverifiable(cutoff time.Time) (int, error) {
+	removed := 0
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(botVerifyUnverifiableBucket))
+		if b == nil {
+			return nil
+		}
+		var stale [][]byte
+		if err := b.ForEach(func(k, v []byte) error {
+			if len(v) != 8 || unixNanoBits(v).Before(cutoff) {
+				stale = append(stale, append([]byte(nil), k...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range stale {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		removed = len(stale)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+func unixNanoBits(val []byte) time.Time {
+	return time.Unix(0, int64(binary.BigEndian.Uint64(val))) // #nosec G115 -- reinterpret stored bit pattern as signed nanos
+}
+
 // EnsureBotVerifyLogicVersion compares the stored cache logic version
 // with version and, on mismatch (or when no marker exists yet), drops
-// the entire botverify bucket and records the new version. The marker
-// lives in the "meta" bucket under botverify:logic_version. Returns
-// true when the bucket was dropped.
+// the botverify bucket and its missing-PTR records, then records the new
+// version. The marker lives in the "meta" bucket under
+// botverify:logic_version. Returns true when the bucket was dropped.
 //
 // Use this from daemon startup so that any change to the verifier
 // logic (BotDomains suffix list, ClaimedBotFromUA mapping, etc.)
@@ -81,13 +167,8 @@ func (db *DB) EnsureBotVerifyLogicVersion(version int) (bool, error) {
 		if stored == current {
 			return nil
 		}
-		if b := tx.Bucket([]byte("botverify")); b != nil {
-			if dErr := tx.DeleteBucket([]byte("botverify")); dErr != nil {
-				return dErr
-			}
-		}
-		if _, cErr := tx.CreateBucket([]byte("botverify")); cErr != nil {
-			return cErr
+		if _, dErr := resetBotVerifyBuckets(tx); dErr != nil {
+			return dErr
 		}
 		var buf [8]byte
 		binary.BigEndian.PutUint64(buf[:], current)
@@ -103,27 +184,40 @@ func (db *DB) EnsureBotVerifyLogicVersion(version int) (bool, error) {
 	return dropped, nil
 }
 
-// ResetBotVerify drops every cached PTR+forward-A result. Returns the
-// number of entries cleared. Use after a verifier-logic upgrade that
+// ResetBotVerify drops every cached PTR+forward-A result and no-PTR record.
+// Returns the number of entries cleared. Use after a verifier-logic upgrade that
 // would invalidate prior negative cache entries (e.g., a domain suffix
 // fix that turns prior false-spoof entries into positives). Safe to
 // call when the bucket is missing or empty.
 func (db *DB) ResetBotVerify() (int, error) {
 	var cleared int
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("botverify"))
-		if b == nil {
-			return nil
-		}
-		cleared = b.Stats().KeyN
-		if err := tx.DeleteBucket([]byte("botverify")); err != nil {
-			return err
-		}
-		_, err := tx.CreateBucket([]byte("botverify"))
+		var err error
+		cleared, err = resetBotVerifyBuckets(tx)
 		return err
 	})
 	if err != nil {
 		return 0, err
+	}
+	return cleared, nil
+}
+
+// resetBotVerifyBuckets empties the verdict cache and its no-PTR records
+// together, so no retry suppression outlives the rules that produced it.
+func resetBotVerifyBuckets(tx *bolt.Tx) (int, error) {
+	cleared := 0
+	for _, name := range []string{"botverify", botVerifyUnverifiableBucket} {
+		if b := tx.Bucket([]byte(name)); b != nil {
+			cleared += b.Stats().KeyN
+			if err := tx.DeleteBucket([]byte(name)); err != nil {
+				return 0, err
+			}
+		}
+	}
+	for _, name := range []string{"botverify", botVerifyUnverifiableBucket} {
+		if _, err := tx.CreateBucket([]byte(name)); err != nil {
+			return 0, err
+		}
 	}
 	return cleared, nil
 }
