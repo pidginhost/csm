@@ -759,7 +759,7 @@ modsec_error_log: ""                    # path to Apache/LiteSpeed error log for
 modsec:
   rules_file: ""                        # path to modsec2.user.conf
   overrides_file: ""                    # path to csm-overrides.conf
-  reload_command: ""                    # command to reload web server (e.g. "/usr/sbin/apachectl graceful")
+  reload_command: ""                    # command to reload web server (e.g. "/usr/sbin/apachectl graceful"); also activates CSM rule updates
 
 # --- Performance ---
 performance:

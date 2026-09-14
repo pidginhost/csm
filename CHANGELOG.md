@@ -14,6 +14,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Mail log parsing no longer takes an authenticated user from message IDs, delivery replies, quoted fields or records carrying a remote ident username.
 - Mail authentication failures and authenticated arrivals keep their verified user and connecting address when login names, addresses, message IDs or optional envelope identities contain text that resembles log fields, including on TCP Fast Open connections.
 - The WordPress user enumeration filter now also stops requests that name the users route in the query string or use alternate request spellings.
+- ModSecurity rule updates now take effect after an upgrade or install when a web server reload command is configured; previously they stayed inactive until the web server restarted for another reason. Expect one web server reload after upgrading.
 
 ### Fixed
 

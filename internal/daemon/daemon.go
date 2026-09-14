@@ -101,6 +101,7 @@ type Daemon struct {
 	stopCh           chan struct{}
 	scanCtx          context.Context
 	scanCancel       context.CancelFunc // cancels in-flight periodic scans on shutdown
+	modsecReload     checks.ModSecReloadReconciler
 	abuseReportStop  chan struct{}
 	abuseReportDone  chan struct{}
 	wg               sync.WaitGroup
@@ -1326,9 +1327,9 @@ func (d *Daemon) DroppedAlerts() int64 {
 
 func (d *Daemon) scanContext() context.Context {
 	if d.scanCtx != nil {
-		return d.scanCtx
+		return checks.WithModSecReload(d.scanCtx, &d.modsecReload)
 	}
-	return context.Background()
+	return checks.WithModSecReload(context.Background(), &d.modsecReload)
 }
 
 // FindingBus returns the per-daemon broadcast.Bus used by passive
@@ -3383,11 +3384,12 @@ func (d *Daemon) reloadSignatures() {
 	d.reportRealtimeRuleCoverage(yamlRuleCount(), yaraRules, yaraActive)
 }
 
-// ensureAuditdRules and deployHostConfigs are indirected so the observe-mode
-// gate around them can be tested without a host to write to.
+// The startup integrations are indirected so the observe-mode gate around them
+// can be tested without a host to write to or a web server to reload.
 var (
-	ensureAuditdRules = auditd.EnsureDeployed
-	deployHostConfigs = deployConfigs
+	ensureAuditdRules     = auditd.EnsureDeployed
+	deployHostConfigs     = deployConfigs
+	reconcileModSecReload = (*checks.ModSecReloadReconciler).Reconcile
 )
 
 // applyStartupIntegrations refreshes the host-side files CSM owns: the auditd
@@ -3411,6 +3413,9 @@ func (d *Daemon) applyStartupIntegrations() {
 		csmlog.Info("auditd rules redeployed (drift from embedded constant)")
 	}
 	deployHostConfigs()
+	if err := reconcileModSecReload(&d.modsecReload, d.cfg.ModSec.ReloadCommand); err != nil {
+		csmlog.Warn("CSM ModSecurity rule activation could not be confirmed", "err", err)
+	}
 }
 
 // deployConfigs writes embedded config files to their system locations on startup.
