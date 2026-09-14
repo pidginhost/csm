@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -31,10 +32,10 @@ func TestBotVerifyUnverifiableSurvivesReopenWithoutVerdict(t *testing.T) {
 	}
 
 	db = openBotVerifyTestDB(t, dir)
-	if !db.BotVerifyUnverifiable(ip, "facebookbot") {
+	if live, recorded := db.BotVerifyUnverifiable(ip, "facebookbot"); !live || !recorded {
 		t.Fatal("no-PTR record did not survive a restart")
 	}
-	if db.BotVerifyUnverifiable(ip, "amazonbot") {
+	if live, recorded := db.BotVerifyUnverifiable(ip, "amazonbot"); live || recorded {
 		t.Error("no-PTR record for one claimed identity applied to another")
 	}
 	// A missing PTR proves nothing about identity: the verdict cache must
@@ -62,7 +63,7 @@ func TestBotVerifyUnverifiableReadDoesNotExtendExpiry(t *testing.T) {
 	}
 	before := raw()
 	for range 3 {
-		if !db.BotVerifyUnverifiable(ip, "claudebot") {
+		if live, recorded := db.BotVerifyUnverifiable(ip, "claudebot"); !live || !recorded {
 			t.Fatal("live no-PTR record not reported")
 		}
 	}
@@ -71,14 +72,20 @@ func TestBotVerifyUnverifiableReadDoesNotExtendExpiry(t *testing.T) {
 	}
 }
 
-func TestBotVerifyUnverifiableExpiredRecordIsRemoved(t *testing.T) {
+func TestBotVerifyUnverifiableExpiredRecordRetainsHistory(t *testing.T) {
 	db := openBotVerifyTestDB(t, t.TempDir())
 	ip := net.ParseIP("198.51.100.20")
 	if err := db.PutBotVerifyUnverifiable(ip, "gptbot", time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if db.BotVerifyUnverifiable(ip, "gptbot") {
-		t.Fatal("expired no-PTR record still suppresses verification")
+	before := db.WriteTxID()
+	for range 2 {
+		if live, recorded := db.BotVerifyUnverifiable(ip, "gptbot"); live || !recorded {
+			t.Fatalf("expired record = (%t, %t), want (false, true)", live, recorded)
+		}
+	}
+	if after := db.WriteTxID(); after != before {
+		t.Fatal("reading lapsed history wrote to the store")
 	}
 	var left int
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
@@ -87,8 +94,8 @@ func TestBotVerifyUnverifiableExpiredRecordIsRemoved(t *testing.T) {
 		}
 		return nil
 	})
-	if left != 0 {
-		t.Errorf("expired no-PTR record left %d entries behind", left)
+	if left != 1 {
+		t.Errorf("expired no-PTR record retained %d history entries, want 1", left)
 	}
 }
 
@@ -110,13 +117,13 @@ func TestResetBotVerifyClearsUnverifiableRecords(t *testing.T) {
 	if n != 2 {
 		t.Errorf("ResetBotVerify cleared %d entries, want 2", n)
 	}
-	if db.BotVerifyUnverifiable(ip, "facebookbot") {
+	if live, recorded := db.BotVerifyUnverifiable(ip, "facebookbot"); live || recorded {
 		t.Error("reset left a no-PTR record suppressing verification")
 	}
 	if err := db.PutBotVerifyUnverifiable(ip, "facebookbot", exp); err != nil {
 		t.Fatalf("write after reset: %v", err)
 	}
-	if !db.BotVerifyUnverifiable(ip, "facebookbot") {
+	if live, recorded := db.BotVerifyUnverifiable(ip, "facebookbot"); !live || !recorded {
 		t.Error("write after reset did not land")
 	}
 }
@@ -134,14 +141,85 @@ func TestEnsureBotVerifyLogicVersionClearsUnverifiableRecords(t *testing.T) {
 	if dropped, err := db.EnsureBotVerifyLogicVersion(1); err != nil || dropped {
 		t.Fatalf("matching version: dropped=%v err=%v", dropped, err)
 	}
-	if !db.BotVerifyUnverifiable(ip, "facebookbot") {
+	if live, recorded := db.BotVerifyUnverifiable(ip, "facebookbot"); !live || !recorded {
 		t.Fatal("matching version cleared a no-PTR record")
 	}
 	// A verified_bots change can add suffixes or identities; start over.
 	if dropped, err := db.EnsureBotVerifyLogicVersion(2); err != nil || !dropped {
 		t.Fatalf("mismatched version: dropped=%v err=%v", dropped, err)
 	}
-	if db.BotVerifyUnverifiable(ip, "facebookbot") {
+	if live, recorded := db.BotVerifyUnverifiable(ip, "facebookbot"); live || recorded {
 		t.Error("version change left a no-PTR record suppressing verification")
+	}
+}
+
+func TestBotVerifyUnverifiableReadDuringReset(t *testing.T) {
+	db := openBotVerifyTestDB(t, t.TempDir())
+	ip := net.ParseIP("192.0.2.23")
+	if err := db.PutBotVerifyUnverifiable(ip, "facebookbot", time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// Hold the writer while the reader sees the old expired record. Committing
+	// a reset must not let expiry cleanup dereference the deleted bucket.
+	tx, err := db.bolt.Begin(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := resetBotVerifyBuckets(tx); err != nil {
+		t.Fatal(err)
+	}
+	before := db.bolt.Stats().TxN
+	result := make(chan any, 1)
+	go func() {
+		defer func() { result <- recover() }()
+		db.BotVerifyUnverifiable(ip, "facebookbot")
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for db.bolt.Stats().TxN == before {
+		if time.Now().After(deadline) {
+			t.Fatal("reader did not start")
+		}
+		runtime.Gosched()
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if panicValue := <-result; panicValue != nil {
+		t.Fatalf("record read panicked during reset: %v", panicValue)
+	}
+	if live, recorded := db.BotVerifyUnverifiable(ip, "facebookbot"); live || recorded {
+		t.Fatal("reset left retry suppression behind")
+	}
+}
+
+func TestBotVerifyVerdictReplacesUnverifiableRecord(t *testing.T) {
+	for _, verified := range []bool{false, true} {
+		db := openBotVerifyTestDB(t, t.TempDir())
+		ip := net.ParseIP("192.0.2.24")
+		expiry := time.Now().Add(time.Hour)
+		for _, bot := range []string{"facebookbot", "gptbot"} {
+			if err := db.PutBotVerifyUnverifiable(ip, bot, expiry); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.PutBotVerify(ip, "facebookbot", verified, expiry); err != nil {
+			t.Fatal(err)
+		}
+		if got, valid := db.GetBotVerify(ip, "facebookbot"); !valid || got != verified {
+			t.Fatalf("stored verdict = (%t, %t), want (%t, true)", got, valid, verified)
+		}
+		if err := db.bolt.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte(botVerifyUnverifiableBucket))
+			if b != nil && b.Get(botVerifyKey(ip, "facebookbot")) != nil {
+				t.Error("definitive verdict left stale no-PTR history")
+			}
+			if b == nil || b.Get(botVerifyKey(ip, "gptbot")) == nil {
+				t.Error("verdict cleared another bot identity's history")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -52,6 +52,11 @@ func (db *DB) PutBotVerify(ip net.IP, bot string, verified bool, expiresAt time.
 		if err != nil {
 			return err
 		}
+		if records := tx.Bucket([]byte(botVerifyUnverifiableBucket)); records != nil {
+			if err := records.Delete(key); err != nil {
+				return err
+			}
+		}
 		return b.Put(key, val[:])
 	})
 }
@@ -80,15 +85,15 @@ func (db *DB) PutBotVerifyUnverifiable(ip net.IP, bot string, expiresAt time.Tim
 	})
 }
 
-// BotVerifyUnverifiable reports whether a no-PTR record for ip and bot is
-// still live. Reads never extend it; an expired record is removed.
-func (db *DB) BotVerifyUnverifiable(ip net.IP, bot string) bool {
+// BotVerifyUnverifiable reports whether a no-PTR record still suppresses DNS
+// and whether the source has ever been recorded. Lapsed records keep attempt
+// history across restarts and in-memory eviction without extending suppression.
+// A definitive verdict or cache reset removes that history. Reads never write.
+func (db *DB) BotVerifyUnverifiable(ip net.IP, bot string) (live, recorded bool) {
 	key := botVerifyKey(ip, bot)
 	if key == nil {
-		return false
+		return false, false
 	}
-	var stored []byte
-	live := false
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(botVerifyUnverifiableBucket))
 		if b == nil {
@@ -98,21 +103,11 @@ func (db *DB) BotVerifyUnverifiable(ip net.IP, bot string) bool {
 		if len(val) != 8 {
 			return nil
 		}
-		stored = append([]byte(nil), val...)
+		recorded = true
 		live = !time.Now().After(unixNanoBits(val))
 		return nil
 	})
-	if live || stored == nil {
-		return live
-	}
-	_ = db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(botVerifyUnverifiableBucket))
-		if current := b.Get(key); bytes.Equal(current, stored) {
-			return b.Delete(key)
-		}
-		return nil
-	})
-	return false
+	return live, recorded
 }
 
 func unixNanoBits(val []byte) time.Time {
@@ -161,8 +156,8 @@ func (db *DB) EnsureBotVerifyLogicVersion(version int) (bool, error) {
 	return dropped, nil
 }
 
-// ResetBotVerify drops every cached PTR+forward-A result. Returns the
-// number of entries cleared. Use after a verifier-logic upgrade that
+// ResetBotVerify drops every cached PTR+forward-A result and no-PTR record.
+// Returns the number of entries cleared. Use after a verifier-logic upgrade that
 // would invalidate prior negative cache entries (e.g., a domain suffix
 // fix that turns prior false-spoof entries into positives). Safe to
 // call when the bucket is missing or empty.

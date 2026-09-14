@@ -44,7 +44,7 @@ const LogicVersion = 5
 
 // ErrUnverifiable signals that the resolver returned no usable PTR for
 // the source IP, so the verifier cannot prove or disprove the claimed
-// bot identity. Callers treat this as fail-open: do not cache, do not
+// bot identity. Callers treat this as fail-open: do not cache a verdict or
 // flag as spoof. Genuine spoof signals -- PTR present but outside the
 // bot's domain suffix list, or forward-confirm mismatch -- still return
 // (false, nil).
@@ -56,7 +56,7 @@ var ErrUnverifiable = errors.New("bot verify: no PTR record for source IP")
 // forward-A fails to round-trip the IP), (false, ErrUnverifiable) when
 // the IP has no PTR at all, and (false, err) on context cancellation
 // or transient resolver failure. Both error paths cause the async
-// worker to skip the cache write so unverifiable IPs do not get pinned
+// worker to skip the verdict write so unverifiable IPs do not get pinned
 // as spoof for the TTL window.
 func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, error) {
 	names, err := v.res.LookupAddr(ctx, ip.String())
@@ -168,10 +168,11 @@ var BotDomains = map[string][]string{
 }
 
 // UnverifiableRecords persists sources whose claimed bot identity had no PTR.
-// store.DB implements it.
+// A live record suppresses DNS; even a lapsed record prevents fresh pending
+// grace. store.DB implements it.
 type UnverifiableRecords interface {
 	PutBotVerifyUnverifiable(ip net.IP, bot string, expiresAt time.Time) error
-	BotVerifyUnverifiable(ip net.IP, bot string) bool
+	BotVerifyUnverifiable(ip net.IP, bot string) (live, recorded bool)
 }
 
 // NewAsyncBotVerifier constructs an async verifier backed by the
@@ -225,12 +226,19 @@ func (a *AsyncBotVerifier) SetOperatorEntries(entries []BotEntry) {
 // identities and unavailable capacity never receive pending treatment, and a
 // source with a live no-PTR record is not queued again until it lapses.
 func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
-	if a.unverifiable != nil && a.unverifiable.BotVerifyUnverifiable(ip, bot) {
-		return false
-	}
 	key := bot + "|" + ip.String()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Serialize the record read with finish: a worker that writes after this
+	// read must still be in flight when we decide whether to admit a retry.
+	var recorded bool
+	if a.unverifiable != nil {
+		var live bool
+		live, recorded = a.unverifiable.BotVerifyUnverifiable(ip, bot)
+		if live {
+			return false
+		}
+	}
 	if a.closed {
 		a.stats.Lose(time.Now(), 1)
 		return false
@@ -276,7 +284,7 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 		}
 	}
 	var pendingUntil time.Time
-	if !attempted {
+	if !attempted && !recorded {
 		pendingUntil = now.Add(botVerifyTimeout)
 	}
 	a.inflight[key] = pendingUntil
