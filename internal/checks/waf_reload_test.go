@@ -302,9 +302,9 @@ func TestReconcileModSecReloadMetadataFailureDoesNotRepeatReload(t *testing.T) {
 }
 
 func TestReconcileModSecReloadFindsFallbackSection(t *testing.T) {
-	reconciler := &ModSecReloadReconciler{}
 	for _, readErr := range []error{os.ErrNotExist, os.ErrPermission} {
 		t.Run(readErr.Error(), func(t *testing.T) {
+			reconciler := &ModSecReloadReconciler{}
 			withReconcileStore(t)
 			rec := withReloadRecorder(t, nil)
 			withMockOS(t, &mockOS{

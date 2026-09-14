@@ -83,9 +83,7 @@ func (r *ModSecReloadReconciler) reconcile(reloadCommand string) error {
 	if db == nil {
 		return nil
 	}
-	if r.db != db {
-		r.db, r.active, r.pending = db, "", false
-	}
+	r.db = db
 	digest, err := installedVPSectionDigest()
 	if err != nil {
 		return err
@@ -153,7 +151,7 @@ func installedVPSectionDigest() (string, error) {
 	if len(sums) == 0 {
 		return "", readErr
 	}
-	// Preserve the existing stored hash for hosts with a single section.
+	// The usual single section is identified by its own hash.
 	if len(sums) == sha256.Size {
 		return hex.EncodeToString(sums), nil
 	}
