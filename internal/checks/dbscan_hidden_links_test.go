@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -303,41 +302,6 @@ func TestCSSOffScreen_LengthSyntax(t *testing.T) {
 				t.Fatalf("offScreen(%q) = %t, want %t", tt.style, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestHiddenLinkCandidatePatternCoversParsedStyles(t *testing.T) {
-	candidate := regexp.MustCompilePOSIX(hiddenLinkCandidatePattern)
-	for _, style := range []string{
-		"display:none",
-		"display:/**/none",
-		"display:/* theme fallback */none",
-		"visibility: hidden!important",
-		"opacity:0.0",
-		"opacity:.0",
-		"opacity:-.0",
-		"opacity:-0.1",
-		"opacity:-10%",
-		"opacity:-1e400",
-		"opacity:.00",
-		"left:-100em",
-		"left:calc(-9999px)",
-		"MARGIN-LEFT: -9999PX",
-	} {
-		t.Run(style, func(t *testing.T) {
-			if !candidate.MatchString(strings.ToLower(style)) {
-				t.Fatalf("candidate query misses supported style %q", style)
-			}
-		})
-	}
-	for _, markup := range []string{
-		`<div style="display&#58;none">`,
-		`<div style="d&#105;splay:none">`,
-		`<div style="display:n&#111;ne">`,
-	} {
-		if !candidate.MatchString(strings.ToLower(markup)) {
-			t.Errorf("candidate query misses encoded style %q", markup)
-		}
 	}
 }
 
@@ -751,10 +715,10 @@ func TestCheckWPHiddenLinks_QueryIncludesEverySupportedStyle(t *testing.T) {
 				t.Errorf("query missing %q: %s", want, query)
 			}
 		}
-		// The prefilter runs against every published post of every install on
-		// the host, so it must read each column once.
+		// Only encoded styles use a guarded regex pass. Ordinary declarations
+		// must not spend the server's regex budget on every published post.
 		if got := strings.Count(query, "REGEXP"); got != 1 {
-			t.Errorf("query scans the column %d times, want 1: %s", got, query)
+			t.Errorf("query has %d regex passes, want the encoded-style pass: %s", got, query)
 		}
 	}
 }

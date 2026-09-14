@@ -61,30 +61,72 @@ const (
 	offScreenFontUnits = 100
 )
 
-// hiddenLinkCandidatePattern mirrors the CSS forms the parser understands.
-// Otherwise the database prefilter could discard a row before parsing it.
-const hiddenLinkCSSCommentPattern = `/[*]([^*]|[*]+[^*/])*[*]+/`
-const hiddenLinkCSSGapPattern = `([[:space:]]|` + hiddenLinkCSSCommentPattern + `)*`
-const hiddenLinkEncodedStylePattern = `style[[:space:]]*=[^>]*[&](#(x[0-9a-f]+|[0-9]+)|colon);?`
-const hiddenLinkCandidatePattern = `(display|visibility)` + hiddenLinkCSSGapPattern + `:` +
-	hiddenLinkCSSGapPattern + `(none|hidden|collapse)` +
-	`|opacity` + hiddenLinkCSSGapPattern + `:` + hiddenLinkCSSGapPattern +
-	`([+]?0+|[+]?[.]0+|-[0-9]+|-[.][0-9]+)([^0-9]|$)` +
-	`|(text-indent|left|top|right|bottom|margin-left|margin-top)` + hiddenLinkCSSGapPattern + `:` +
-	hiddenLinkCSSGapPattern + `(calc` + hiddenLinkCSSGapPattern + `[(]` + hiddenLinkCSSGapPattern + `)?` +
-	`-([0-9]|[.][0-9])|` + hiddenLinkEncodedStylePattern
-
-// hiddenLinkCandidateCondition builds the row prefilter. Both alternatives
-// live in one pattern so the column is scanned once: this runs against every
-// published post of every install on the host, and a second REGEXP pass over a
-// TEXT column doubles that for nothing.
-//
-// A CSS escape is a literal backslash in the stored markup, which needs two in
-// the regular expression. CHAR() builds them so the result does not depend on
-// MySQL's string-escape mode.
+// hiddenLinkCandidateCondition uses literal searches for CSS declarations.
+// ICU can exhaust its work budget even on ordinary large values. Compact CSS
+// whitespace for the common declarations; the Go CSS parser makes the verdict.
+// Only encoded styles need the guarded expression below. The existing row and
+// byte limits still bound what leaves the database.
 func hiddenLinkCandidateCondition(column string) string {
-	return fmt.Sprintf("LOWER(%s) REGEXP CONCAT('%s|style[[:space:]]*=[^>]*', CHAR(92), CHAR(92))",
-		column, hiddenLinkCandidatePattern)
+	lower := "LOWER(" + column + ")"
+	compact := "CONVERT(" + lower + " USING utf8mb4)"
+	// The value parser uses strings.TrimSpace, including Unicode separators.
+	// Hex literals carry UTF-8 whitespace without depending on SQL escape mode.
+	for _, space := range "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000" {
+		compact = fmt.Sprintf("REPLACE(%s, CONVERT(0x%x USING utf8mb4), '')", compact, string(space))
+	}
+	var alternatives []string
+	for _, declaration := range []struct {
+		property string
+		values   []string
+	}{
+		{"display", []string{"none"}},
+		{"visibility", []string{"hidden", "collapse"}},
+		{"opacity", []string{"0", "+0", ".0", "+.0", "-"}},
+		{"text-indent", []string{"-", "calc(-"}},
+		{"left", []string{"-", "calc(-"}},
+		{"top", []string{"-", "calc(-"}},
+		{"right", []string{"-", "calc(-"}},
+		{"bottom", []string{"-", "calc(-"}},
+	} {
+		var values []string
+		for _, value := range declaration.values {
+			values = append(values, fmt.Sprintf("LOCATE('%s:%s', %s) > 0",
+				declaration.property, value, compact))
+		}
+		// Comments may separate the property, colon and value. LIKE only has
+		// fixed literal pieces here; it does not invoke ICU or a regex budget.
+		// A negative value also covers a calc() whose argument starts negative.
+		commentValues := declaration.values
+		if declaration.property == "opacity" {
+			commentValues = []string{"0", "-"}
+		} else if len(commentValues) == 2 && commentValues[1] == "calc(-" {
+			commentValues = []string{"-"}
+		}
+		var comments []string
+		for _, value := range commentValues {
+			comments = append(comments, fmt.Sprintf("%s LIKE '%%%s%%:%%%s%%'", lower,
+				declaration.property, value))
+		}
+		values = append(values, fmt.Sprintf("(LOCATE('/*', %s) > 0 AND (%s))",
+			lower, strings.Join(comments, " OR ")))
+		alternatives = append(alternatives, fmt.Sprintf("(LOCATE('%s', %s) > 0 AND (%s))",
+			declaration.property, lower, strings.Join(values, " OR ")))
+	}
+	// Encodings can obscure every declaration token. Start at the encoding
+	// and search backwards to style=, stopping at the preceding tag delimiter.
+	// Searching forwards from every style= repeatedly traverses the same suffix
+	// when no encoding occurs before the next delimiter. Requiring this relation
+	// also keeps ordinary encoded page text out of the bounded candidate set.
+	// Numeric entities only need their first digit, as in the old prefix match.
+	// CHAR keeps CSS backslashes independent of NO_BACKSLASH_ESCAPES.
+	alternatives = append(alternatives, fmt.Sprintf(
+		"(CASE WHEN LOCATE('style', %s) > 0 AND "+
+			"(LOCATE('&#', %s) > 0 OR LOCATE('&colon', %s) > 0 OR LOCATE(CHAR(92), %s) > 0) "+
+			"THEN REVERSE(%s) REGEXP CONCAT('([0-9]#&|[0-9a-f]x#&|noloc&|', "+
+			"CHAR(92), CHAR(92), ')[^>]*=[[:space:]]*elyts') ELSE 0 END)",
+		lower, column, lower, column, lower))
+	return fmt.Sprintf("(LOCATE('style', %s) > 0 AND (%s))", lower,
+		strings.Join(alternatives, " OR "))
 }
 
 // hiddenLinkHit is what one row's markup revealed.

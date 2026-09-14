@@ -33,6 +33,7 @@ func TestDatabaseStatementFailureKeepsIndependentChecks(t *testing.T) {
 		{1139, "expression"},
 		{1267, "expression"},
 		{1271, "expression"},
+		{3699, "timeout"},
 	} {
 		t.Run(fmt.Sprint(tc.code), func(t *testing.T) {
 			withDatabaseCoverageInstalls(t, map[string]string{
@@ -110,6 +111,40 @@ func TestDatabaseConnectionFailureStopsRetriesAndNamesCause(t *testing.T) {
 				t.Fatal("coverage summary exposed raw server diagnostics")
 			}
 		})
+	}
+}
+
+func TestHiddenLinkTimeoutKeepsAdminChecks(t *testing.T) {
+	withDatabaseCoverageInstalls(t, map[string]string{
+		"/home/alice/public_html/wp-config.php": databaseCoverageConfig("fixture"),
+	}, nil)
+	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
+		if strings.Contains(query, "'site' AS kind") {
+			return nil, &mysql.MySQLError{Number: 3699, Message: "server-private-diagnostic"}
+		}
+		if strings.Contains(query, "SELECT u.ID, u.user_login") {
+			return []string{"9\tunexpected\tadmin@example.com\tNULL\tNULL"}, nil
+		}
+		return databaseCoverageHealthyRows(query), nil
+	})
+	t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	findings := CheckDatabaseContent(ctx, nil, nil)
+	found := false
+	for _, f := range findings {
+		found = found || f.Check == "db_rogue_admin"
+	}
+	if !found {
+		t.Fatal("hidden-link timeout suppressed the later admin detection")
+	}
+	if !incomplete.contains("db_content") {
+		t.Fatal("hidden-link timeout lost its coverage gap")
+	}
+	summary := databaseCoverageSummary(t, findings)
+	for _, want := range []string{"query_failed=1", "stage=hidden_links class=timeout code=3699"} {
+		if !strings.Contains(summary.Details, want) {
+			t.Errorf("coverage summary omits %q: %s", want, summary.Details)
+		}
 	}
 }
 

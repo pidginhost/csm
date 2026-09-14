@@ -61,6 +61,10 @@ func databaseQueryErrorClass(err error) (class string, code uint16, halt bool) {
 			return "permission", code, false
 		case 1139, 1267, 1271:
 			return "expression", code, false
+		case 3699:
+			// ICU stops this expression when its work budget is exhausted;
+			// the connection and independent statements remain usable.
+			return "timeout", code, false
 		case 1044, 1045:
 			return "authentication", code, true
 		case 1049:
