@@ -181,12 +181,15 @@ func TestObserveStartupRecoveryGate(t *testing.T) {
 
 func withIntegrationHooks(t *testing.T) (auditCalls, deployCalls *int) {
 	t.Helper()
-	origAudit, origDeploy := ensureAuditdRules, deployHostConfigs
-	t.Cleanup(func() { ensureAuditdRules, deployHostConfigs = origAudit, origDeploy })
+	origAudit, origDeploy, origReconcile := ensureAuditdRules, deployHostConfigs, reconcileModSecReload
+	t.Cleanup(func() {
+		ensureAuditdRules, deployHostConfigs, reconcileModSecReload = origAudit, origDeploy, origReconcile
+	})
 
 	audit, deploy := 0, 0
 	ensureAuditdRules = func() (bool, error) { audit++; return false, nil }
 	deployHostConfigs = func() { deploy++ }
+	reconcileModSecReload = func(string) error { return nil }
 	return &audit, &deploy
 }
 
@@ -219,5 +222,30 @@ func TestEnforceModeDeploysHostIntegrations(t *testing.T) {
 	}
 	if *deploy != 1 {
 		t.Errorf("host config deploy ran %d times, want 1", *deploy)
+	}
+}
+
+// An upgrade rewrites the ModSecurity section at startup, and the first deep
+// scan is an hour away, so startup must activate the section itself.
+func TestStartupActivatesModSecRulesOnlyWhenManagingHost(t *testing.T) {
+	withIntegrationHooks(t)
+	var commands []string
+	reconcileModSecReload = func(command string) error {
+		commands = append(commands, command)
+		return nil
+	}
+
+	observe := &config.Config{Mode: config.ModeObserve}
+	observe.ModSec.ReloadCommand = "systemctl reload lsws"
+	(&Daemon{cfg: observe}).applyStartupIntegrations()
+	if len(commands) != 0 {
+		t.Fatalf("observe mode reconciled ModSecurity rules: %q", commands)
+	}
+
+	enforce := &config.Config{Mode: config.ModeEnforce}
+	enforce.ModSec.ReloadCommand = "systemctl reload lsws"
+	(&Daemon{cfg: enforce}).applyStartupIntegrations()
+	if len(commands) != 1 || commands[0] != "systemctl reload lsws" {
+		t.Fatalf("startup reconcile commands = %q, want the configured command once", commands)
 	}
 }

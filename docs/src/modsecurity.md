@@ -42,6 +42,7 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **Disabled-scope detection** - reports domains and accounts with the engine switched off, covering both the userdata flag and the per-account and per-domain config includes used by Apache and LiteSpeed in the std and ssl trees
 - **WAF event log parsing** - correlates events by IP, URI, and rule ID
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
+- **Rule activation** - ModSecurity reads rules only when the web server starts or reloads. When CSM's rule section differs from the one active at the last reload, for example after an upgrade or `csm install`, CSM runs `modsec.reload_command` at daemon startup and during the WAF check. Without that command CSM logs a warning at startup and the new rules wait for the next web server restart; a failed reload raises a `waf_status` warning and is retried.
 
 The LiteSpeed Cache role-simulation filter covers privileged routes and writes,
 including WordPress REST method overrides, when requests carry simulation cookies

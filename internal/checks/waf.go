@@ -125,6 +125,20 @@ func CheckWAFStatus(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	// Only cPanel has the modsec user config dirs we write into.
 	if info.IsCPanel() && manageHost {
 		deployVirtualPatches()
+		reloadCommand := ""
+		if cfg != nil {
+			reloadCommand = cfg.ModSec.ReloadCommand
+		}
+		// Hosts without a reload command are warned at daemon startup; a
+		// finding here would repeat every scan with nothing CSM can verify.
+		if err := ReconcileModSecReload(reloadCommand); err != nil && !errors.Is(err, ErrModSecReloadNotConfigured) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "waf_status",
+				Message:  "Web server reload failed; updated CSM ModSecurity rules are not active",
+				Details:  err.Error(),
+			})
+		}
 	}
 
 	// --- Disabled ModSecurity scopes ---
@@ -860,12 +874,6 @@ const (
 // or rewrites its own marker-delimited section; every byte outside the
 // section is preserved verbatim.
 func deployVirtualPatches() {
-	// Possible modsec user config paths
-	destPaths := []string{
-		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
-		"/usr/local/apache/conf/modsec2.user.conf",
-	}
-
 	srcPath := "/opt/csm/configs/csm_modsec_custom.conf"
 	srcData, err := osFS.ReadFile(srcPath)
 	if err != nil {
@@ -873,7 +881,7 @@ func deployVirtualPatches() {
 	}
 	section := buildVPSection(srcData)
 
-	for _, dest := range destPaths {
+	for _, dest := range vpDestPaths {
 		dir := filepath.Dir(dest)
 		if _, err := osFS.Stat(dir); os.IsNotExist(err) {
 			continue

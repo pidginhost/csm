@@ -3383,11 +3383,12 @@ func (d *Daemon) reloadSignatures() {
 	d.reportRealtimeRuleCoverage(yamlRuleCount(), yaraRules, yaraActive)
 }
 
-// ensureAuditdRules and deployHostConfigs are indirected so the observe-mode
-// gate around them can be tested without a host to write to.
+// The startup integrations are indirected so the observe-mode gate around them
+// can be tested without a host to write to or a web server to reload.
 var (
-	ensureAuditdRules = auditd.EnsureDeployed
-	deployHostConfigs = deployConfigs
+	ensureAuditdRules     = auditd.EnsureDeployed
+	deployHostConfigs     = deployConfigs
+	reconcileModSecReload = checks.ReconcileModSecReload
 )
 
 // applyStartupIntegrations refreshes the host-side files CSM owns: the auditd
@@ -3411,6 +3412,9 @@ func (d *Daemon) applyStartupIntegrations() {
 		csmlog.Info("auditd rules redeployed (drift from embedded constant)")
 	}
 	deployHostConfigs()
+	if err := reconcileModSecReload(d.cfg.ModSec.ReloadCommand); err != nil {
+		csmlog.Warn("CSM ModSecurity rules not activated", "err", err)
+	}
 }
 
 // deployConfigs writes embedded config files to their system locations on startup.
