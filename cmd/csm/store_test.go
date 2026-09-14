@@ -64,6 +64,27 @@ func populateStore(t *testing.T, statePath string) int64 {
 	return sz
 }
 
+func TestMaybeCompactStateAtStartupCompactsSparseDB(t *testing.T) {
+	statePath := t.TempDir()
+	before := populateStore(t, statePath)
+	cfg := &config.Config{StatePath: statePath}
+	cfg.Retention.CompactMinSizeMB = 1
+	cfg.Retention.CompactFillRatio = 0.5
+
+	// Startup reads free space from a freshly opened db. If that reading
+	// were empty, auto-compaction would silently stop for every install.
+	res, err := maybeCompactStateAtStartup(cfg)
+	if err != nil {
+		t.Fatalf("maybeCompactStateAtStartup: %v", err)
+	}
+	if res == nil {
+		t.Fatalf("sparse %d-byte state db was not compacted at startup", before)
+	}
+	if res.DstSize >= before {
+		t.Fatalf("startup compaction did not shrink: before=%d after=%d", before, res.DstSize)
+	}
+}
+
 func TestRunStoreCompact_ShrinksFile(t *testing.T) {
 	statePath := t.TempDir()
 	srcSizeBefore := populateStore(t, statePath)
