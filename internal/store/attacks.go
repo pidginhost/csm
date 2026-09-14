@@ -55,6 +55,12 @@ func (db *DB) RecordAttackEvent(event AttackEvent, counter int) error {
 			return err
 		}
 
+		// Callers restart the counter for each batch. Reserve an unused
+		// primary key in this write transaction so an index never loses its event.
+		for primary.Get([]byte(key)) != nil {
+			counter++
+			key = TimeKey(event.Timestamp, counter)
+		}
 		if err := primary.Put([]byte(key), val); err != nil {
 			return err
 		}
@@ -148,7 +154,7 @@ func resolveIndexedAttackEvent(primary *bolt.Bucket, ip string, timeKey, indexVa
 	}
 	if len(indexValue) > 0 {
 		var ev AttackEvent
-		if json.Unmarshal(indexValue, &ev) == nil {
+		if json.Unmarshal(indexValue, &ev) == nil && ev.IP == ip {
 			return ev, true
 		}
 	}
