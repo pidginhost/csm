@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/store"
@@ -189,7 +190,7 @@ func withIntegrationHooks(t *testing.T) (auditCalls, deployCalls *int) {
 	audit, deploy := 0, 0
 	ensureAuditdRules = func() (bool, error) { audit++; return false, nil }
 	deployHostConfigs = func() { deploy++ }
-	reconcileModSecReload = func(string) error { return nil }
+	reconcileModSecReload = func(*checks.ModSecReloadReconciler, string) error { return nil }
 	return &audit, &deploy
 }
 
@@ -230,7 +231,7 @@ func TestEnforceModeDeploysHostIntegrations(t *testing.T) {
 func TestStartupActivatesModSecRulesOnlyWhenManagingHost(t *testing.T) {
 	withIntegrationHooks(t)
 	var commands []string
-	reconcileModSecReload = func(command string) error {
+	reconcileModSecReload = func(_ *checks.ModSecReloadReconciler, command string) error {
 		commands = append(commands, command)
 		return nil
 	}

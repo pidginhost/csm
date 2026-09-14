@@ -42,7 +42,12 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **Disabled-scope detection** - reports domains and accounts with the engine switched off, covering both the userdata flag and the per-account and per-domain config includes used by Apache and LiteSpeed in the std and ssl trees
 - **WAF event log parsing** - correlates events by IP, URI, and rule ID
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
-- **Rule activation** - ModSecurity reads rules only when the web server starts or reloads. When CSM's rule section differs from the one active at the last reload, for example after an upgrade or `csm install`, CSM runs `modsec.reload_command` at daemon startup and during the WAF check. Without that command CSM logs a warning at startup and the new rules wait for the next web server restart; a failed reload raises a `waf_status` warning and is retried.
+- **Rule activation** - ModSecurity reads rules only when the web server starts or reloads. When CSM's installed rule sections change, for example after an upgrade or `csm install`, the daemon runs `modsec.reload_command` at startup or during its WAF check. Standalone checks with the daemon stopped leave activation pending. Concurrent daemon scans share the activation record, so unchanged rules do not reload again. Reload failures raise a `waf_status` warning and are retried; if only saving the activation record fails, the running daemon retries that write without another reload. Without a command, CSM only warns at startup and leaves the rules pending, with no recurring finding.
+
+The reload command runs inside CSM's systemd sandbox. Use a service-manager
+command such as `systemctl reload lsws` for LiteSpeed, so the web server's service
+performs the reload. Direct reload scripts inherit CSM's filesystem restrictions
+and may fail. A LiteSpeed reload restarts workers and can briefly raise load.
 
 The LiteSpeed Cache role-simulation filter covers privileged routes and writes,
 including WordPress REST method overrides, when requests carry simulation cookies

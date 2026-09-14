@@ -3,8 +3,13 @@ package checks
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -50,15 +55,16 @@ func withReconcileStore(t *testing.T) *store.DB {
 }
 
 func TestReconcileModSecReloadActivatesNewSectionOnce(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
 	withReconcileStore(t)
 	dest := vpTestOperator + vpTestSection(vpTestSrcV2)
 	setupVPTestFS(t, vpTestSrcV2, &dest)
 	rec := withReloadRecorder(t, nil)
 
-	if err := ReconcileModSecReload("systemctl reload lsws"); err != nil {
+	if err := reconciler.Reconcile("systemctl reload lsws"); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
-	if err := ReconcileModSecReload("systemctl reload lsws"); err != nil {
+	if err := reconciler.Reconcile("systemctl reload lsws"); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
 	if len(rec.commands) != 1 || rec.commands[0] != "systemctl reload lsws" {
@@ -67,16 +73,17 @@ func TestReconcileModSecReloadActivatesNewSectionOnce(t *testing.T) {
 }
 
 func TestReconcileModSecReloadReloadsWhenSectionChanges(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
 	withReconcileStore(t)
 	dest := vpTestSection(vpTestSrcV1)
 	fs := setupVPTestFS(t, vpTestSrcV1, &dest)
 	rec := withReloadRecorder(t, nil)
 
-	if err := ReconcileModSecReload("apachectl graceful"); err != nil {
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
 		t.Fatal(err)
 	}
 	fs.files[vpTestDest] = vpTestSection(vpTestSrcV2)
-	if err := ReconcileModSecReload("apachectl graceful"); err != nil {
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.commands) != 2 {
@@ -86,16 +93,17 @@ func TestReconcileModSecReloadReloadsWhenSectionChanges(t *testing.T) {
 
 // Operator rules outside the section are the operator's to activate.
 func TestReconcileModSecReloadIgnoresOperatorBytes(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
 	withReconcileStore(t)
 	dest := vpTestSection(vpTestSrcV2)
 	fs := setupVPTestFS(t, vpTestSrcV2, &dest)
 	rec := withReloadRecorder(t, nil)
 
-	if err := ReconcileModSecReload("apachectl graceful"); err != nil {
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
 		t.Fatal(err)
 	}
 	fs.files[vpTestDest] = vpTestOperator + vpTestSection(vpTestSrcV2) + vpTestOperator
-	if err := ReconcileModSecReload("apachectl graceful"); err != nil {
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.commands) != 1 {
@@ -104,19 +112,20 @@ func TestReconcileModSecReloadIgnoresOperatorBytes(t *testing.T) {
 }
 
 func TestReconcileModSecReloadWithoutCommandStaysPending(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
 	withReconcileStore(t)
 	dest := vpTestSection(vpTestSrcV2)
 	setupVPTestFS(t, vpTestSrcV2, &dest)
 	rec := withReloadRecorder(t, nil)
 
-	if err := ReconcileModSecReload(""); !errors.Is(err, ErrModSecReloadNotConfigured) {
+	if err := reconciler.Reconcile(""); !errors.Is(err, ErrModSecReloadNotConfigured) {
 		t.Fatalf("err = %v, want ErrModSecReloadNotConfigured", err)
 	}
 	if len(rec.commands) != 0 {
 		t.Fatalf("ran %q without a configured command", rec.commands)
 	}
 	// Configuring the command later must still activate the pending section.
-	if err := ReconcileModSecReload("apachectl graceful"); err != nil {
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.commands) != 1 {
@@ -125,17 +134,18 @@ func TestReconcileModSecReloadWithoutCommandStaysPending(t *testing.T) {
 }
 
 func TestReconcileModSecReloadRetriesAfterFailure(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
 	withReconcileStore(t)
 	dest := vpTestSection(vpTestSrcV2)
 	setupVPTestFS(t, vpTestSrcV2, &dest)
 	rec := withReloadRecorder(t, errors.New("exit status 1"))
 
-	err := ReconcileModSecReload("systemctl reload lsws")
+	err := reconciler.Reconcile("systemctl reload lsws")
 	if err == nil || errors.Is(err, ErrModSecReloadNotConfigured) {
 		t.Fatalf("err = %v, want the reload failure", err)
 	}
 	rec.err = nil
-	if err := ReconcileModSecReload("systemctl reload lsws"); err != nil {
+	if err := reconciler.Reconcile("systemctl reload lsws"); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.commands) != 2 {
@@ -144,12 +154,13 @@ func TestReconcileModSecReloadRetriesAfterFailure(t *testing.T) {
 }
 
 func TestReconcileModSecReloadWithoutSectionDoesNothing(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
 	withReconcileStore(t)
 	dest := vpTestOperator
 	setupVPTestFS(t, vpTestSrcV2, &dest)
 	rec := withReloadRecorder(t, nil)
 
-	if err := ReconcileModSecReload("apachectl graceful"); err != nil {
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.commands) != 0 {
@@ -160,12 +171,13 @@ func TestReconcileModSecReloadWithoutSectionDoesNothing(t *testing.T) {
 // Without the state store there is no record of what was activated, so every
 // run would reload the web server.
 func TestReconcileModSecReloadWithoutStoreDoesNothing(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
 	store.SetGlobal(nil)
 	dest := vpTestSection(vpTestSrcV2)
 	setupVPTestFS(t, vpTestSrcV2, &dest)
 	rec := withReloadRecorder(t, nil)
 
-	if err := ReconcileModSecReload("apachectl graceful"); err != nil {
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.commands) != 0 {
@@ -173,7 +185,7 @@ func TestReconcileModSecReloadWithoutStoreDoesNothing(t *testing.T) {
 	}
 }
 
-func wafReloadCheckFixture(t *testing.T) {
+func wafReloadCheckFixture(t *testing.T) context.Context {
 	t.Helper()
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
@@ -192,21 +204,22 @@ func wafReloadCheckFixture(t *testing.T) {
 	})
 	withReconcileStore(t)
 	setupVPTestFS(t, vpTestSrcV2, nil)
+	return WithModSecReload(context.Background(), &ModSecReloadReconciler{})
 }
 
 func TestCheckWAFStatusReportsFailedModSecReload(t *testing.T) {
-	wafReloadCheckFixture(t)
+	ctx := wafReloadCheckFixture(t)
 	rec := withReloadRecorder(t, errors.New("exit status 1"))
 	cfg := &config.Config{}
 	cfg.ModSec.ReloadCommand = "systemctl reload lsws"
 
-	findings := CheckWAFStatus(context.Background(), cfg, nil)
+	findings := CheckWAFStatus(ctx, cfg, nil)
 
 	if len(rec.commands) != 1 {
 		t.Fatalf("reloads = %d, want the deployed section activated once", len(rec.commands))
 	}
 	for _, f := range findings {
-		if f.Check == "waf_status" && f.Severity == alert.Warning && strings.Contains(f.Message, "reload") {
+		if f.Check == "waf_status" && f.Severity == alert.Warning && strings.Contains(f.Message, "activation") {
 			return
 		}
 	}
@@ -214,14 +227,230 @@ func TestCheckWAFStatusReportsFailedModSecReload(t *testing.T) {
 }
 
 func TestCheckWAFStatusObserveModeDoesNotReload(t *testing.T) {
-	wafReloadCheckFixture(t)
+	ctx := wafReloadCheckFixture(t)
 	rec := withReloadRecorder(t, nil)
 	cfg := &config.Config{Mode: config.ModeObserve}
 	cfg.ModSec.ReloadCommand = "systemctl reload lsws"
 
-	CheckWAFStatus(context.Background(), cfg, nil)
+	CheckWAFStatus(ctx, cfg, nil)
 
 	if len(rec.commands) != 0 {
 		t.Fatalf("observe mode reloaded the web server: %q", rec.commands)
+	}
+}
+
+func TestCheckWAFStatusCLIWithStoreDoesNotReload(t *testing.T) {
+	wafReloadCheckFixture(t)
+	rec := withReloadRecorder(t, nil)
+	cfg := &config.Config{}
+	cfg.ModSec.ReloadCommand = "systemctl reload lsws"
+	CheckWAFStatus(context.Background(), cfg, nil)
+	if len(rec.commands) != 0 {
+		t.Fatalf("CLI check reloaded the web server: %q", rec.commands)
+	}
+}
+
+func TestReconcileModSecReloadConcurrentCallsReloadOnce(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
+	withReconcileStore(t)
+	dest := vpTestSection(vpTestSrcV2)
+	setupVPTestFS(t, vpTestSrcV2, &dest)
+	var calls atomic.Int32
+	old := modsecReloadRunner
+	modsecReloadRunner = func(string) (string, error) {
+		calls.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		return "", nil
+	}
+	t.Cleanup(func() { modsecReloadRunner = old })
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			if err := reconciler.Reconcile("systemctl reload lsws"); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("concurrent reloads = %d, want 1", got)
+	}
+}
+
+func TestReconcileModSecReloadMetadataFailureDoesNotRepeatReload(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
+	db := withReconcileStore(t)
+	dest := vpTestSection(vpTestSrcV2)
+	setupVPTestFS(t, vpTestSrcV2, &dest)
+	old := modsecReloadRunner
+	calls := 0
+	modsecReloadRunner = func(string) (string, error) {
+		calls++
+		// Lose the store after the web server accepted the reload.
+		_ = db.Close()
+		return "", nil
+	}
+	t.Cleanup(func() { modsecReloadRunner = old })
+	for range 2 {
+		if err := reconciler.Reconcile("systemctl reload lsws"); err == nil {
+			t.Fatal("lost metadata write was not reported")
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("reloads after metadata failure = %d, want 1", calls)
+	}
+}
+
+func TestReconcileModSecReloadFindsFallbackSection(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
+	for _, readErr := range []error{os.ErrNotExist, os.ErrPermission} {
+		t.Run(readErr.Error(), func(t *testing.T) {
+			withReconcileStore(t)
+			rec := withReloadRecorder(t, nil)
+			withMockOS(t, &mockOS{
+				stat: func(string) (os.FileInfo, error) { return nil, nil },
+				readFile: func(name string) ([]byte, error) {
+					if name == vpDestPaths[0] {
+						return nil, readErr
+					}
+					if name == vpDestPaths[1] {
+						return []byte(vpTestSection(vpTestSrcV2)), nil
+					}
+					return nil, os.ErrNotExist
+				},
+			})
+			if err := reconciler.Reconcile("apachectl graceful"); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.commands) != 1 {
+				t.Fatalf("fallback %s was not activated", filepath.Dir(vpDestPaths[1]))
+			}
+		})
+	}
+}
+
+func TestReconcileModSecReloadTracksFallbackChanges(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
+	withReconcileStore(t)
+	rec := withReloadRecorder(t, nil)
+	fallback := vpTestSection(vpTestSrcV1)
+	withMockOS(t, &mockOS{
+		stat: func(string) (os.FileInfo, error) { return nil, nil },
+		readFile: func(name string) ([]byte, error) {
+			if name == vpDestPaths[0] {
+				return []byte(vpTestSection(vpTestSrcV1)), nil
+			}
+			return []byte(fallback), nil
+		},
+	})
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
+		t.Fatal(err)
+	}
+	fallback = vpTestSection(vpTestSrcV2)
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.commands) != 2 {
+		t.Fatalf("reloads = %d, want fallback update activated", len(rec.commands))
+	}
+}
+
+func TestReconcileModSecReloadWhitespaceCommandStaysPending(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
+	db := withReconcileStore(t)
+	dest := vpTestSection(vpTestSrcV2)
+	setupVPTestFS(t, vpTestSrcV2, &dest)
+	rec := withReloadRecorder(t, nil)
+	if err := reconciler.Reconcile(" \t\n "); !errors.Is(err, ErrModSecReloadNotConfigured) {
+		t.Fatalf("whitespace command error = %v", err)
+	}
+	if len(rec.commands) != 0 || db.GetMetaString(modsecActiveSectionKey) != "" {
+		t.Fatal("empty shell command marked rules active")
+	}
+}
+
+func TestReconcileModSecReloadDoesNotTrustStaleMetadata(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
+	db := withReconcileStore(t)
+	dest := vpTestSection(vpTestSrcV1)
+	fs := setupVPTestFS(t, vpTestSrcV1, &dest)
+	rec := withReloadRecorder(t, nil)
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := db.GetMetaString(modsecActiveSectionKey)
+	fs.files[vpTestDest] = vpTestSection(vpTestSrcV2)
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce stale durable state after a successful activation. The next
+	// reconciliation must use what this daemon actually activated.
+	if err := db.SetMetaString(modsecActiveSectionKey, oldDigest); err != nil {
+		t.Fatal(err)
+	}
+	fs.files[vpTestDest] = vpTestSection(vpTestSrcV1)
+	if err := reconciler.Reconcile("apachectl graceful"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.commands) != 3 {
+		t.Fatalf("reloads = %d, reverted rules were not reactivated", len(rec.commands))
+	}
+}
+
+func TestReconcileModSecReloadStoreReadFailureDoesNotReload(t *testing.T) {
+	reconciler := &ModSecReloadReconciler{}
+	db := withReconcileStore(t)
+	dest := vpTestSection(vpTestSrcV2)
+	setupVPTestFS(t, vpTestSrcV2, &dest)
+	rec := withReloadRecorder(t, nil)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.Reconcile("apachectl graceful"); err == nil {
+		t.Fatal("unavailable activation metadata was not reported")
+	}
+	if len(rec.commands) != 0 {
+		t.Fatalf("unreadable activation metadata triggered %q", rec.commands)
+	}
+}
+
+func TestCheckWAFStatusRepeatedScansDoNotRepeatReload(t *testing.T) {
+	for _, command := range []string{"systemctl reload lsws", "", " \t\n"} {
+		t.Run(command, func(t *testing.T) {
+			ctx := wafReloadCheckFixture(t)
+			rec := withReloadRecorder(t, nil)
+			cfg := &config.Config{}
+			cfg.ModSec.ReloadCommand = command
+			for range 3 {
+				for _, f := range CheckWAFStatus(ctx, cfg, nil) {
+					if strings.Contains(f.Message, "activation") {
+						t.Fatalf("unexpected activation finding: %+v", f)
+					}
+				}
+			}
+			want := 0
+			if strings.TrimSpace(command) != "" {
+				want = 1
+			}
+			if len(rec.commands) != want {
+				t.Fatalf("reloads = %d, want %d", len(rec.commands), want)
+			}
+		})
+	}
+}
+
+func TestReconcileModSecReloadSurvivesDaemonRestart(t *testing.T) {
+	withReconcileStore(t)
+	dest := vpTestSection(vpTestSrcV2)
+	setupVPTestFS(t, vpTestSrcV2, &dest)
+	rec := withReloadRecorder(t, nil)
+	for range 2 {
+		reconciler := &ModSecReloadReconciler{}
+		if err := reconciler.Reconcile("apachectl graceful"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(rec.commands) != 1 {
+		t.Fatalf("daemon restart reloaded unchanged rules: %q", rec.commands)
 	}
 }
