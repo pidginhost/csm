@@ -513,3 +513,133 @@ func TestLiteSpeedSimulationRequestSemantics(t *testing.T) {
 		}
 	}
 }
+
+// Keep one deny ID: operators disable it and its hit history is HTTP-only.
+// Helper rules must only mark this transaction, never bypass other protections.
+func userEnumerationRules(t *testing.T) [][]string {
+	t.Helper()
+	conf := string(embeddedModSec)
+	const marker = "# --- Generic: Block REST API user enumeration"
+	start := strings.Index(conf, marker)
+	if start < 0 {
+		t.Fatal("user enumeration rule block missing")
+	}
+	block := conf[start:]
+	if next := strings.Index(block[len(marker):], "\n# --- "); next >= 0 {
+		block = block[:len(marker)+next]
+	}
+	block = strings.ReplaceAll(block, "\\\n", "")
+	rules := regexp.MustCompile(`(?m)^SecRule (?:"([^"]+)"|(\S+)) "([^"]+)"(?:\s+"([^"]+)")?`).FindAllStringSubmatch(block, -1)
+	if len(rules) != 5 {
+		t.Fatalf("got %d user enumeration rules, want three helpers and a two-link deny", len(rules))
+	}
+	for _, rule := range rules {
+		if rule[1] == "" {
+			rule[1] = rule[2]
+		}
+	}
+	return rules
+}
+
+func TestModSecUserEnumerationChainSyntax(t *testing.T) {
+	rules := userEnumerationRules(t)
+	for i, rule := range rules {
+		actions := strings.Split(strings.ReplaceAll(rule[4], " ", ""), ",")
+		want := []string{"t:none"}
+		switch i {
+		case 0, 1, 2:
+			want = append(want, "id:"+strconv.Itoa(900130+i), "phase:1", "pass", "nolog")
+			value := "1"
+			if i == 2 {
+				value = "0"
+			}
+			want = append(want, "setvar:tx.csm_wp_user_route="+value)
+			if i == 0 {
+				want = append(want, "t:urlDecode", "t:normalizePath")
+			}
+		case 3:
+			want = append(want, "id:900112", "phase:1", "deny", "status:403", "log",
+				"msg:'CSMVP:WordPressuserenumerationblocked'", "chain")
+		}
+		if len(actions) != len(want) {
+			t.Errorf("rule %d: actions %v, want only %v", i, actions, want)
+		}
+		for _, required := range want {
+			found := false
+			for _, action := range actions {
+				if action == required {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("rule %d missing %s", i, required)
+			}
+		}
+	}
+	if !strings.HasSuffix(strings.TrimSpace(rules[3][4]), "chain") {
+		t.Error("deny starter must continue to the Authorization guard")
+	}
+	if !strings.Contains(rules[3][4], "msg:'CSM VP: WordPress user enumeration blocked'") {
+		t.Error("rule message changed; the web UI and hit history describe the rule by it")
+	}
+}
+
+func TestModSecUserEnumerationRouteSemantics(t *testing.T) {
+	rules := userEnumerationRules(t)
+	if rules[0][1] != "REQUEST_FILENAME" {
+		t.Fatal("path matcher must inspect only the path")
+	}
+	const selector = `ARGS_GET:/^\x20*rest[._\x20\[]route$/`
+	if rules[1][1] != selector {
+		t.Fatalf("query selector = %q, want PHP-normalized rest_route names", rules[1][1])
+	}
+	for _, tc := range []struct {
+		value string
+		path  bool
+		query bool
+	}{
+		{"/wp-json/wp/v2/users", true, false},
+		{"/wp-json/wp/v2/users/", true, false},
+		{"/wp-json/wp/v2/users/1", true, false},
+		{"/wp-json/wp/v2/users/me/application-passwords", true, false},
+		{"/blog/wp-json/wp/v2/users", true, false},
+		{"/index.php/wp-json/wp/v2/users", true, false},
+		{"/WP-JSON/WP/V2/USERS", true, false},
+		{"/wp-json/wp/v2/users\\", true, false},
+		{"/wp/v2/users", false, true},
+		{"wp/v2/users", false, true},
+		{"/WP/V2/USERS", false, true},
+		{"wp/v2/users/2", false, true},
+		{"/wp/v2/users\\\\/", false, true},
+		{"/wp/v2/users\\guide", false, false},
+		{"/wp-json/wp/v2/users-guide", false, false},
+		{"/wp-json/wp/v2/usersx", false, false},
+		{"/wp-json/wp/v2/posts", false, false},
+		{"/docs/wp/v2/users", false, false},
+		{"/custom/../wp/v2/users", false, false},
+		{"%2Fwp%2Fv2%2Fusers", false, false},
+		{"/wp/v2/users%2Fguide", false, false},
+		{"/mywp/v2/users", false, false},
+		{"/shop/", false, false},
+	} {
+		for i, want := range []bool{tc.path, tc.query} {
+			routeRE := regexp.MustCompile(strings.TrimPrefix(rules[i][3], "@rx "))
+			if got := routeRE.MatchString(tc.value); got != want {
+				t.Errorf("matcher %d route %q matched = %v, want %v", i, tc.value, got, want)
+			}
+		}
+	}
+}
+
+func TestModSecUserEnumerationExemptsAuthenticatedRequests(t *testing.T) {
+	rules := userEnumerationRules(t)
+	if rules[2][1] != `REQUEST_COOKIES:/^wordpress_logged_in_/` || rules[2][3] != "@rx ^" {
+		t.Error("session helper must positively match cookie presence, including empty values")
+	}
+	if rules[3][1] != "TX:csm_wp_user_route" || rules[3][3] != "@eq 1" {
+		t.Error("deny must read the route flag after the session helper clears it")
+	}
+	if rules[4][1] != "&REQUEST_HEADERS:Authorization" || rules[4][3] != "@eq 0" {
+		t.Error("final deny link must require a missing Authorization header")
+	}
+}
