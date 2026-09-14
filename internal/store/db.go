@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -234,11 +235,34 @@ func (db *DB) HasBucket(name string) bool {
 	return found
 }
 
-// timeKeyFillPercent is the split point for buckets keyed by TimeKey. Their
-// keys arrive almost in order, so a split page is never written again; at
-// bbolt's default of 0.5 those pages stay half empty. 0.9 leaves room for the
-// occasional older timestamp without splitting a full page in two.
+// timeKeyFillPercent packs ordered appends and sorted bucket rebuilds. Use
+// the default split point for out-of-order inserts so both halves have room
+// to grow; a high split point otherwise leaves many nearly empty right pages.
 const timeKeyFillPercent = 0.9
+
+type timeKeyWriter struct {
+	bucket *bolt.Bucket
+	tail   []byte
+}
+
+func newTimeKeyWriter(b *bolt.Bucket) timeKeyWriter {
+	b.FillPercent = timeKeyFillPercent
+	tail, _ := b.Cursor().Last()
+	// Only inserts into existing pages need a balanced split. New tail keys
+	// may arrive in any order within this transaction: bbolt sorts at commit.
+	return timeKeyWriter{bucket: b, tail: bytes.Clone(tail)}
+}
+
+func (w timeKeyWriter) put(key, value []byte) error {
+	if w.bucket.FillPercent == timeKeyFillPercent {
+		if bytes.Compare(key, w.tail) <= 0 {
+			// Splits happen at commit, not Put. Once a transaction inserts
+			// an older key, later appends must not restore the high fill.
+			w.bucket.FillPercent = bolt.DefaultFillPercent
+		}
+	}
+	return w.bucket.Put(key, value)
+}
 
 // TimeKey produces a fixed-width 28-byte key for chronological ordering.
 // Format: YYYYMMDDHHmmssNNNNNNNNN-CCCC
