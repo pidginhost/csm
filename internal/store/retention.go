@@ -140,15 +140,10 @@ func CompactionDue(sizeBytes, freeBytes int64, minSizeMB int, fillRatio float64)
 // the file on delete, so a large FreeBytes relative to Size means the on-disk
 // file is mostly slack and is worth compacting.
 func (db *DB) FreeBytes() (int64, error) {
-	st := db.bolt.Stats()
-	pageSize := 0
-	if info := db.bolt.Info(); info != nil {
-		pageSize = info.PageSize
-	}
-	if pageSize <= 0 {
-		pageSize = os.Getpagesize()
-	}
-	return int64(st.FreePageN+st.PendingPageN) * int64(pageSize), nil
+	// FreeAlloc includes free and pending pages using the database's page
+	// size. Stats holds bbolt's statistics lock; Info reads the mmap without
+	// locking and can race with remapping while the live database grows.
+	return int64(db.bolt.Stats().FreeAlloc), nil
 }
 
 // CompactInto snapshots the live DB into a fresh bbolt file at dstPath
