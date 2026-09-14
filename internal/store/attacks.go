@@ -59,8 +59,10 @@ func (db *DB) RecordAttackEvent(event AttackEvent, counter int) error {
 			return err
 		}
 
+		// The index only needs the key; the event itself lives in the
+		// primary bucket.
 		secondaryKey := event.IP + "/" + key
-		if err := secondary.Put([]byte(secondaryKey), val); err != nil {
+		if err := secondary.Put([]byte(secondaryKey), []byte{}); err != nil {
 			return err
 		}
 
@@ -106,38 +108,51 @@ func (db *DB) RecordAttackEvent(event AttackEvent, counter int) error {
 }
 
 // QueryAttackEvents returns up to limit attack events for the given IP,
-// newest-first. It uses the secondary index bucket for efficient prefix-based
-// iteration.
+// newest-first. It walks the secondary index backwards from the end of the
+// IP's key range and resolves each entry in the primary bucket.
 func (db *DB) QueryAttackEvents(ip string, limit int) []AttackEvent {
 	var results []AttackEvent
 	prefix := []byte(ip + "/")
 
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("attacks:events:ip"))
-		c := b.Cursor()
+		primary := tx.Bucket([]byte("attacks:events"))
+		c := tx.Bucket([]byte("attacks:events:ip")).Cursor()
 
-		// Collect all events matching the prefix.
-		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
-			var ev AttackEvent
-			if err := json.Unmarshal(v, &ev); err == nil {
+		var v []byte
+		k, _ := c.Seek(append(append([]byte(nil), prefix...), 0xff))
+		if k == nil {
+			k, v = c.Last()
+		} else {
+			k, v = c.Prev()
+		}
+		for ; k != nil && bytes.HasPrefix(k, prefix) && len(results) < limit; k, v = c.Prev() {
+			if ev, ok := resolveIndexedAttackEvent(primary, ip, k[len(prefix):], v); ok {
 				results = append(results, ev)
 			}
 		}
-
 		return nil
 	})
 
-	// Reverse for newest-first order.
-	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
-		results[i], results[j] = results[j], results[i]
-	}
-
-	// Take up to limit.
-	if len(results) > limit {
-		results = results[:limit]
-	}
-
 	return results
+}
+
+// resolveIndexedAttackEvent reads the event an index entry points at. Index
+// entries written by earlier builds carry their own copy of the event, which
+// is used when the primary row is gone or now holds another address's event.
+func resolveIndexedAttackEvent(primary *bolt.Bucket, ip string, timeKey, indexValue []byte) (AttackEvent, bool) {
+	if raw := primary.Get(timeKey); raw != nil {
+		var ev AttackEvent
+		if json.Unmarshal(raw, &ev) == nil && ev.IP == ip {
+			return ev, true
+		}
+	}
+	if len(indexValue) > 0 {
+		var ev AttackEvent
+		if json.Unmarshal(indexValue, &ev) == nil {
+			return ev, true
+		}
+	}
+	return AttackEvent{}, false
 }
 
 // SaveIPRecord stores an IP record in the attacks:records bucket, keyed by IP.
