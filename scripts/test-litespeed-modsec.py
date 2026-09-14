@@ -56,8 +56,10 @@ def user_enumeration_cases():
         yield "anonymous " + uri, "GET", uri, "", {}, True
     for uri in ("/?rest_route=/wp/v2/users", "/?rest_route=wp/v2/users", "/?rest_route=%2Fwp%2Fv2%2Fusers", "/?rest_route=/wp/v2/users/1", "/?rest_route=/WP/V2/Users"):
         yield "anonymous query " + uri, "GET", uri, "", {}, True
-    for name in ("rest.route", "rest%20route", "+rest_route", "rest[route"):
+    for name in ("rest.route", "rest%20route", "+rest_route", "rest[route", "rest_route%00", "rest.route%00ignored"):
         yield "rest_route alias " + name, "GET", "/?" + name + "=/wp/v2/users", "", {}, True
+    for uri in ("/wp-json/wp/v2/users%5C", "/?rest_route=/wp/v2/users%5C", "/?rest_route=/wp/v2/users%5C%5C/"):
+        yield "trailing backslash " + uri, "GET", uri, "", {}, True
     yield "anonymous write", "POST", "/wp-json/wp/v2/users/me/application-passwords", "", {}, True
     # Only the logged-in cookie exempts: WordPress sets the others for visitors
     # and a cookie value is not a cookie name.
@@ -69,22 +71,54 @@ def user_enumeration_cases():
     yield "editor author list", "GET", "/wp-json/wp/v2/users?who=authors&per_page=100", SESSION, nonce, False
     yield "admin query route", "GET", "/?rest_route=/wp/v2/users/me", SESSION, nonce, False
     yield "application password client", "GET", "/wp-json/wp/v2/users/me", "", {"Authorization": "Basic YWRtaW46eHh4eA=="}, False
-    for uri in ("/", "/shop/", "/wp-json/wp/v2/posts", "/wp-json/wp/v2/users-guide", "/wp-json/wp/v2/usersx", "/?rest_route=/wp/v2/users-guide", "/?rest_route=/wp/v2/posts", "/?next=/wp-json/wp/v2/users", "/?redirect_to=/wp/v2/users", "/wp-login.php?redirect_to=%2Fwp-json%2Fwp%2Fv2%2Fusers"):
+    yield "session without nonce", "GET", "/wp-json/wp/v2/users", SESSION, {}, False
+    yield "empty session presence", "GET", "/wp-json/wp/v2/users", "wordpress_logged_in_fixture=", {}, False
+    # Exercise ModSecurity's parsing of separate Cookie fields, including a
+    # session after other fields. This probes the collection, not HTTP/2 framing
+    # or PHP's separate handling of repeated HTTP/1.1 headers.
+    for cookies in (("wp-settings-1=x", SESSION), (SESSION, "wp-settings-1=x"), ("a=b", "c=d", SESSION)):
+        yield "split session " + repr(cookies), "GET", "/wp-json/wp/v2/users", cookies, {}, False
+    yield "split visitor cookies", "GET", "/wp-json/wp/v2/users", ("a=b", "c=d"), {}, True
+    yield "anonymous after session", "GET", "/wp-json/wp/v2/users", "", {}, True
+    for uri in ("/", "/shop/", "/wp-json/wp/v2/posts", "/wp-json/wp/v2/users-guide", "/wp-json/wp/v2/usersx", "/?rest_route=/wp/v2/users-guide", "/?rest_route=/wp/v2/posts", "/?next=/wp-json/wp/v2/users", "/?redirect_to=/wp/v2/users", "/wp-login.php?redirect_to=%2Fwp-json%2Fwp%2Fv2%2Fusers", "/wp/v2/users", "/docs/wp/v2/users", "/?rest_route=/custom/wp/v2/users", "/?rest_route=/wp-json/wp/v2/users", "/?rest_route=/custom/../wp/v2/users", "/?rest_route=%252Fwp%252Fv2%252Fusers", "/?rest_route=/wp/v2/users%252Fguide", "/?rest_route=/wp/v2/users%5Cguide"):
         yield "unrelated " + uri, "GET", uri, "", {}, False
 
 
+def user_enumeration_disabled_cases():
+    # Removing the public deny ID must still disable both route forms, even
+    # when its non-disruptive helper rules remain installed.
+    for name, method, uri, cookie, headers, _ in user_enumeration_cases():
+        yield name, method, uri, cookie, headers, False
+
+
+def combined_cases():
+    # A session exemption must not disable the independent virtual patches.
+    for cookie in (SESSION, "wordpress_logged_in_fixture="):
+        for uri in ("/wp-json/wp/v2/users", "/?rest_route=/wp/v2/users"):
+            yield "session with weak simulation", "GET", uri, cookie + "; " + WEAK, {}, True
+    yield "visitor with strong simulation", "GET", "/wp-json/wp/v2/users", STRONG, {}, True
+    yield "session with strong simulation", "GET", "/wp-json/wp/v2/users", SESSION + "; " + STRONG, {}, False
+
+
+ENUM_HELPERS = ("900130", "900131", "900132")
 GROUPS = (
     ("role simulation", ("900128", "900129"), role_simulation_cases),
-    ("user enumeration", ("900112",), user_enumeration_cases),
+    ("user enumeration", ("900112", *ENUM_HELPERS), user_enumeration_cases),
+    ("user enumeration disabled", ENUM_HELPERS, user_enumeration_disabled_cases),
+    ("combined protections", ("900112", "900128", "900129", *ENUM_HELPERS), combined_cases),
 )
 
 
 def request(port, method, uri, cookie, headers):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        if cookie:
-            headers = {"Cookie": cookie, **headers}
-        conn.request(method, uri, headers=headers)
+        conn.putrequest(method, uri)
+        for value in cookie if isinstance(cookie, tuple) else (cookie,):
+            if value:
+                conn.putheader("Cookie", value)
+        for key, value in headers.items():
+            conn.putheader(key, value)
+        conn.endheaders()
         response = conn.getresponse()
         return response.status, response.read()
     finally:
@@ -116,6 +150,8 @@ echo json_encode([
     'hash_matches' => $hash == 'Ab3Xz9' || $hash == '123456',
     'method' => strtoupper($_GET['_method'] ?? $_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'] ?? $_SERVER['REQUEST_METHOD']),
     'rest_route' => $_GET['rest_route'] ?? null,
+    // rest_api_loaded() trims both slash forms before REST dispatch.
+    'trimmed_route' => rtrim($_GET['rest_route'] ?? '', "/\\\\"),
 ]);
 ''')
         apache_conf = base / "httpd.conf"
@@ -191,6 +227,10 @@ SecRuleRemoveById {' '.join(other_ids)}
                     probe_status, probe = request(port, "GET", uri.replace("users", "posts"), "", {})
                     if probe_status != 200 or json.loads(probe)["rest_route"] != "/wp/v2/posts":
                         failures.append(f"{name}: PHP does not read the parameter as rest_route")
+                if name.startswith("trailing backslash ") and "rest_route=" in uri:
+                    probe_status, probe = request(port, "GET", uri.replace("users", "posts"), "", {})
+                    if probe_status != 200 or json.loads(probe)["trimmed_route"] != "/wp/v2/posts":
+                        failures.append(f"{name}: WordPress does not trim the route to the collection")
             if failures:
                 print((base / "error.log").read_text()[-5000:])
             return count, failures
