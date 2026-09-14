@@ -649,9 +649,11 @@ preserve its loss count after shutdown. Logging does not reset loss totals.
 `bot_verification.requests` reports 256 waiting bot-identity requests and one
 running verification. Duplicate requests share their original waiting age.
 Running time includes DNS lookups and the cache write. Queue overflow, DNS
-timeouts or transient failures, failed cache writes and abandoned shutdown
-requests count as losses. Missing PTR records, unknown bot identities and
-definitive positive or negative answers remain expected outcomes; queue health
+timeouts or transient failures, failed cache or missing-PTR record writes and
+abandoned shutdown requests count as losses. Missing PTR records, unknown bot
+identities and definitive positive or negative answers remain expected
+outcomes, and a source with a recorded missing PTR is not queued again until
+the record lapses; queue health
 does not turn a resolver failure into a spoof finding. Shutdown cancels DNS,
 waits for any active cache write and discards waiting work. Late submissions
 are refused, pending keys are released and loss totals remain available.

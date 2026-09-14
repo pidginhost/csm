@@ -123,9 +123,13 @@ type AsyncBotVerifier struct {
 	v        map[string]*verifier // bot identity -> verifier; guarded by mu
 	res      resolver             // retained so SetOperatorEntries can rebuild v
 	put      func(net.IP, string, bool, time.Time) error
-	stats    *queuehealth.Tracker
-	stop     <-chan struct{}
-	closed   bool
+	// unverifiable holds no-PTR results. A missing PTR rarely changes between
+	// scans, so repeat claims wait for the record to lapse instead of queuing
+	// the same lookup on every scan and crowding out crawlers not yet checked.
+	unverifiable UnverifiableRecords
+	stats        *queuehealth.Tracker
+	stop         <-chan struct{}
+	closed       bool
 }
 
 // Attempt history prevents each unresolved retry from renewing the initial
@@ -163,17 +167,26 @@ var BotDomains = map[string][]string{
 	"seranking":     {"seranking.com"},
 }
 
+// UnverifiableRecords persists sources whose claimed bot identity had no PTR.
+// store.DB implements it.
+type UnverifiableRecords interface {
+	PutBotVerifyUnverifiable(ip net.IP, bot string, expiresAt time.Time) error
+	BotVerifyUnverifiable(ip net.IP, bot string) bool
+}
+
 // NewAsyncBotVerifier constructs an async verifier backed by the
-// system resolver. put is store.DB.PutBotVerify or a test seam.
-func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error) *AsyncBotVerifier {
+// system resolver. put is store.DB.PutBotVerify or a test seam; records is
+// the store, or nil to keep no-PTR results in retry history only.
+func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error, records UnverifiableRecords) *AsyncBotVerifier {
 	res := net.DefaultResolver
 	a := &AsyncBotVerifier{
-		inflight: make(map[string]time.Time),
-		ch:       make(chan verifyJob, 256),
-		v:        make(map[string]*verifier),
-		res:      res,
-		put:      put,
-		stats:    queuehealth.New(256, time.Minute),
+		inflight:     make(map[string]time.Time),
+		ch:           make(chan verifyJob, 256),
+		v:            make(map[string]*verifier),
+		res:          res,
+		put:          put,
+		unverifiable: records,
+		stats:        queuehealth.New(256, time.Minute),
 	}
 	for bot, domains := range BotDomains {
 		a.v[bot] = newVerifier(res, domains)
@@ -209,8 +222,12 @@ func (a *AsyncBotVerifier) SetOperatorEntries(entries []BotEntry) {
 }
 
 // Enqueue reports whether a job is queued or already in flight. Unsupported
-// identities and unavailable capacity never receive pending treatment.
+// identities and unavailable capacity never receive pending treatment, and a
+// source with a live no-PTR record is not queued again until it lapses.
 func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
+	if a.unverifiable != nil && a.unverifiable.BotVerifyUnverifiable(ip, bot) {
+		return false
+	}
 	key := bot + "|" + ip.String()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -307,6 +324,9 @@ const (
 	botVerifyTimeout    = 5 * time.Second
 	botVerifyRetryDelay = time.Minute
 	botVerifyCacheTTL   = 24 * time.Hour
+	// Shorter than a verdict: a crawler that gains a PTR is verified within
+	// the hour, while a stable no-PTR source costs one lookup per hour.
+	botVerifyUnverifiableTTL = time.Hour
 )
 
 func (a *AsyncBotVerifier) QueueStatuses(now time.Time) map[string]queuehealth.Status {
@@ -389,7 +409,7 @@ func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verify
 	result, err := v.verify(ctx, job.IP, job.Bot)
 	cancel()
 	if err != nil {
-		completed = errors.Is(err, ErrUnverifiable)
+		completed = errors.Is(err, ErrUnverifiable) && a.recordUnverifiable(job)
 		return
 	}
 	if a.put == nil {
@@ -398,6 +418,16 @@ func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verify
 	}
 	cached = a.put(job.IP, job.Bot, result, time.Now().Add(botVerifyCacheTTL)) == nil
 	completed = cached
+}
+
+// recordUnverifiable reports whether a no-PTR result is settled. It is not a
+// verdict, so retry history keeps the source and a lapsed record never grants
+// a fresh pending grace. An unwritten record leaves the work unaccounted for.
+func (a *AsyncBotVerifier) recordUnverifiable(job verifyJob) bool {
+	if a.unverifiable == nil {
+		return true
+	}
+	return a.unverifiable.PutBotVerifyUnverifiable(job.IP, job.Bot, time.Now().Add(botVerifyUnverifiableTTL)) == nil
 }
 
 func (a *AsyncBotVerifier) finish(job verifyJob, completed, cached bool) {

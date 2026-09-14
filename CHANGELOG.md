@@ -17,6 +17,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- Claimed crawlers without reverse DNS are no longer looked up again on every scan. Those repeats overflowed the bot verification queue on busy hosts, so genuine crawlers could miss verification and be handled as ordinary visitors.
 - The WordPress user enumeration filter no longer blocks signed-in users, so creating Application Passwords and loading author lists in the editor work again. Unrelated page paths and REST namespaces remain accessible.
 - Upgrading a standalone install no longer leaves the daemon unable to start when a directory its service sandbox needs was never created; the upgrade now creates it first.
 - Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.

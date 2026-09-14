@@ -87,6 +87,12 @@ refused until capacity becomes available instead of running untracked lookups.
 Evicted or expired sources can receive another pending window, but the initial
 cooldown prevents continuous renewal under churn. Expiry preserves live jobs
 and their retry delay after completion.
+A missing PTR record is remembered for one hour in the state database, so it
+survives restarts. Until it lapses, scans do not queue another lookup for that
+bot identity and address. The record is not a verdict: it grants neither the
+verified-crawler exemption nor pending treatment, and it never counts as a
+spoof. `csm store reset-bot-verify` and a `verified_bots` change clear these
+records together with the cached results.
 A confirmed negative remains eligible for spoof detection. A cached positive
 receives the normal verified-crawler exemption.
 

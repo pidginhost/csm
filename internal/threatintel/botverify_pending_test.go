@@ -22,7 +22,7 @@ func TestBotVerificationFailureCannotRenewPending(t *testing.T) {
 					res = &mockResolver{ptr: map[string][]string{ip.String(): {"crawler.example"}}}
 				}
 				writes := 0
-				a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error { writes++; return errors.New("cache unavailable") })
+				a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error { writes++; return errors.New("cache unavailable") }, nil)
 				a.v["googlebot"] = newVerifier(res, []string{"googlebot.com"})
 				if !a.Enqueue(ip, "googlebot") || !a.Pending(ip, "googlebot") {
 					t.Fatal("first job was not admitted as pending")
@@ -55,7 +55,7 @@ func TestBotVerificationFailureCannotRenewPending(t *testing.T) {
 
 func TestBotPendingHistoryIsBoundedWithoutRenewalOnChurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		a := NewAsyncBotVerifier(nil)
+		a := NewAsyncBotVerifier(nil, nil)
 		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
 		for i := range 2 * cap(a.ch) {
 			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
@@ -106,7 +106,7 @@ func TestBotPendingEndsAfterStoredVerdict(t *testing.T) {
 				}
 				stored = true
 				return nil
-			})
+			}, nil)
 			a.v["googlebot"] = newVerifier(res, []string{"googlebot.com"})
 			if !a.Enqueue(ip, "googlebot") || !a.Pending(ip, "googlebot") {
 				t.Fatal("job not pending after admission")
@@ -121,7 +121,7 @@ func TestBotPendingEndsAfterStoredVerdict(t *testing.T) {
 
 func TestBotFailedRetriesCannotPinGraceCapacity(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		a := NewAsyncBotVerifier(nil)
+		a := NewAsyncBotVerifier(nil, nil)
 		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
 		for i := range cap(a.ch) {
 			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
@@ -149,7 +149,7 @@ func TestBotFailedRetriesCannotPinGraceCapacity(t *testing.T) {
 
 func TestBotPendingHistoryMakesRoomAfterCooldown(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		a := NewAsyncBotVerifier(nil)
+		a := NewAsyncBotVerifier(nil, nil)
 		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
 		for i := range cap(a.ch) {
 			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
@@ -180,7 +180,7 @@ func TestBotPendingHistoryMakesRoomAfterCooldown(t *testing.T) {
 
 func TestBotOverflowCannotBypassRetryCooldown(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		a := NewAsyncBotVerifier(nil)
+		a := NewAsyncBotVerifier(nil, nil)
 		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
 		for i := range cap(a.ch) {
 			ip := net.ParseIP(fmt.Sprintf("2001:db8::%x", i+1))
@@ -199,7 +199,7 @@ func TestBotOverflowCannotBypassRetryCooldown(t *testing.T) {
 
 func TestBotHistoryExpiryPreservesLiveAndCoolingAttempts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		a := NewAsyncBotVerifier(nil)
+		a := NewAsyncBotVerifier(nil, nil)
 		a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
 		ip := net.ParseIP("192.0.2.10")
 		a.Enqueue(ip, "googlebot")
