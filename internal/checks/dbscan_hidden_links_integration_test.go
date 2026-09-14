@@ -18,7 +18,7 @@ import (
 
 // Run against disposable MySQL 8 or MariaDB with CSM_TEST_MYSQL_SOCKET set. Go's RE2
 // matcher cannot reproduce ICU's regex execution limit or SQL escape modes.
-func hiddenLinkMySQLConn(t *testing.T) (*sql.Conn, context.Context) {
+func hiddenLinkMySQLConn(t testing.TB) (*sql.Conn, context.Context) {
 	t.Helper()
 	socket := os.Getenv("CSM_TEST_MYSQL_SOCKET")
 	if socket == "" {
@@ -193,6 +193,8 @@ func TestHiddenLinkCandidateMySQL(t *testing.T) {
 				{"large article with trailing commented injection", "<style>/* theme */</style>" + hiddenLinkMySQLArticle(1<<20) + `<div style="display:/*x*/none">`, 1},
 				{"large article with trailing encoded injection", hiddenLinkMySQLArticle(1<<20) + `<div style="d&#105;splay:none">`, 1},
 				{"large article with leading injection", `<div style="left:-9999px">` + hiddenLinkMySQLArticle(1<<20), 1},
+				{"joined article with stylesheet comment", "<style>/* theme */</style>" + hiddenLinkMySQLArticle(maxHiddenLinkValueBytes-len("<style>/* theme */</style>")), 0},
+				{"joined article with trailing commented injection", hiddenLinkMySQLArticle(maxHiddenLinkValueBytes-128) + `<div style="display:/* x */none">`, 1},
 				{"injection outside sampled windows", hiddenLinkMySQLArticle(1<<18) + `<div style="left:-9999px">` + hiddenLinkMySQLArticle(1<<18), 0},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
@@ -275,24 +277,78 @@ func TestHiddenLinkCandidateMySQLParserWhitespace(t *testing.T) {
 	}
 }
 
+func TestHiddenLinkCandidateMySQLPreservesCommentBodies(t *testing.T) {
+	conn, ctx := hiddenLinkMySQLConn(t)
+	for _, mode := range []string{"", "NO_BACKSLASH_ESCAPES"} {
+		if _, err := conn.ExecContext(ctx, "SET SESSION sql_mode = ?", mode); err != nil {
+			t.Fatal(err)
+		}
+		for _, body := range []string{"* /", "*\t/", "*\u2009/", "*?/", "*calc(/"} {
+			t.Run(mode+fmt.Sprintf("/%x", body), func(t *testing.T) {
+				markup := `<div style="display:/* ` + body + ` */none"><a href="https://spam.example/">x</a></div>`
+				if hit := hiddenOffsiteLinks(markup, "shop.example"); len(hit.hosts) != 1 {
+					t.Fatal("fixture is not hidden by the CSS parser")
+				}
+				if got := hiddenLinkMySQLCandidate(t, conn, ctx, markup); got != 1 {
+					t.Fatal("normalization discarded a hidden commented declaration")
+				}
+			})
+		}
+	}
+}
+
+func TestHiddenLinkCandidateMySQLJoinedSamples(t *testing.T) {
+	conn, ctx := hiddenLinkMySQLConn(t)
+	for _, prefix := range []string{`<div sty`, `<div style="displa`, `<div style="display:/* theme `, `<div style="--label:`} {
+		t.Run(prefix, func(t *testing.T) {
+			var suffix string
+			switch prefix {
+			case `<div sty`:
+				suffix = `le="display:none">`
+			case `<div style="displa`:
+				suffix = `y:none">`
+			case `<div style="display:/* theme `:
+				suffix = ` */none">`
+			default:
+				suffix = strings.Repeat("x", 256) + `;d&#105;splay:none">`
+			}
+			markup := strings.Repeat("x", maxHiddenLinkSampleBytes-len(prefix)) + prefix + suffix +
+				`<a href="https://spam.example/">x</a></div>`
+			markup += strings.Repeat("x", maxHiddenLinkValueBytes-len(markup))
+			source := hiddenLinkSource{markup: markup[:maxHiddenLinkSampleBytes], tailMarkup: markup[maxHiddenLinkSampleBytes:], valueBytes: len(markup)}
+			if hit := hiddenOffsiteLinkSamples(source, []string{"shop.example"}); len(hit.hosts) != 1 {
+				t.Fatal("joined samples are not hidden by the CSS parser")
+			}
+			if got := hiddenLinkMySQLCandidate(t, conn, ctx, markup); got != 1 {
+				t.Fatal("SQL discarded a hidden declaration across the sample boundary")
+			}
+		})
+	}
+}
+
 func TestHiddenLinkCandidateMySQLLegacyCharset(t *testing.T) {
 	conn, ctx := hiddenLinkMySQLConn(t)
 	if _, err := conn.ExecContext(ctx, "ALTER TABLE csm_hidden_candidate CONVERT TO CHARACTER SET latin1"); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		markup string
-		want   int
-	}{
-		{`<div style="color:black">ordinary</div>`, 0},
-		{`<div style="display:none">`, 1},
-		{`<div style="left:&#45;9999px">`, 1},
-		{"<div style=\"opacity:\u00a00\">", 1},
-		{"<div style=\"opacity:/* theme */\u00a00\">", 1},
-		{`<div style="display:/*theme*/block">none</div>`, 0},
-	} {
-		if got := hiddenLinkMySQLCandidate(t, conn, ctx, tc.markup); got != tc.want {
-			t.Fatalf("latin1 candidate = %d, want %d", got, tc.want)
+	for _, mode := range []string{"", "NO_BACKSLASH_ESCAPES"} {
+		if _, err := conn.ExecContext(ctx, "SET SESSION sql_mode = ?", mode); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			markup string
+			want   int
+		}{
+			{`<div style="color:black">ordinary</div>`, 0},
+			{`<div style="display:none">`, 1},
+			{`<div style="left:&#45;9999px">`, 1},
+			{"<div style=\"opacity:\u00a00\">", 1},
+			{"<div style=\"opacity:/* theme */\u00a00\">", 1},
+			{`<div style="display:/*theme*/block">none</div>`, 0},
+		} {
+			if got := hiddenLinkMySQLCandidate(t, conn, ctx, tc.markup); got != tc.want {
+				t.Fatalf("latin1 candidate = %d, want %d", got, tc.want)
+			}
 		}
 	}
 }
@@ -348,6 +404,51 @@ func TestHiddenLinkCandidateMySQLRetrySelectionFitsRegexLimit(t *testing.T) {
 	}
 }
 
+// Exercise the pattern itself so SQL guards and successful prefix matches
+// cannot conceal its worst-case work on a fully parsed, joined value.
+func TestHiddenLinkCandidateMySQLRetryPatternBudget(t *testing.T) {
+	conn, ctx := hiddenLinkMySQLConn(t)
+	for _, size := range []int{maxHiddenLinkSampleBytes, maxHiddenLinkValueBytes} {
+		for _, unit := range []string{`\`, `\=elyt`, `\aaaa`, `\=ely=ely`, `\style=`, "=elyt", "x"} {
+			t.Run(fmt.Sprintf("%d/%s", size, unit), func(t *testing.T) {
+				subject := strings.Repeat(unit, size/len(unit)+1)[:size]
+				var got int
+				if err := conn.QueryRowContext(ctx, "SELECT ? REGEXP ?", subject, hiddenLinkRegexPattern()).Scan(&got); err != nil {
+					t.Fatalf("retry pattern exhausted its budget: %v", err)
+				}
+				if got != 0 {
+					t.Fatal("budget fixture matched before scanning its whole subject")
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkHiddenLinkCandidateMySQL(b *testing.B) {
+	conn, ctx := hiddenLinkMySQLConn(b)
+	batch := make([]any, 100)
+	for i := range batch {
+		batch[i] = hiddenLinkMySQLArticle(10 * 1024)
+	}
+	insert := "INSERT INTO csm_hidden_candidate VALUES " + strings.TrimSuffix(strings.Repeat("(?),", len(batch)), ",")
+	for rows := 0; rows < 5000; rows += len(batch) {
+		if _, err := conn.ExecContext(ctx, insert, batch...); err != nil {
+			b.Fatal(err)
+		}
+	}
+	query := "SELECT COUNT(*) FROM csm_hidden_candidate WHERE " + hiddenLinkCandidateCondition("markup", true)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var got int
+		if err := conn.QueryRowContext(ctx, query).Scan(&got); err != nil {
+			b.Fatal(err)
+		}
+		if got != 0 {
+			b.Fatalf("ordinary articles selected: %d", got)
+		}
+	}
+}
+
 // Content that exhausts commented-style matching must not hide a plain
 // declaration in the same install: the retry selects it and coverage stays
 // incomplete.
@@ -360,9 +461,10 @@ func TestHiddenLinkPostRowsMySQLRetriesAfterRegexTimeout(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, "CREATE TEMPORARY TABLE csm_retry_posts (ID bigint PRIMARY KEY, post_content longtext, post_status varchar(20), post_type varchar(20)) CHARACTER SET utf8mb4"); err != nil {
 		t.Fatal(err)
 	}
-	markup := `<div style="left:-9999px"><a href="https://spam.example/">x</a></div><script>/*` +
+	markup := `<div style="color:black"></div><script>/*` +
 		strings.Repeat("0-", maxHiddenLinkSampleBytes/2) + `*/</script>`
-	if _, err := conn.ExecContext(ctx, "INSERT INTO csm_retry_posts VALUES (1, ?, 'publish', 'post')", markup); err != nil {
+	injected := `<div style="left:-9999px"><a href="https://spam.example/">x</a></div>`
+	if _, err := conn.ExecContext(ctx, "INSERT INTO csm_retry_posts VALUES (1, ?, 'publish', 'post'), (2, ?, 'publish', 'post')", markup, injected); err != nil {
 		t.Fatal(err)
 	}
 	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
@@ -417,5 +519,40 @@ func TestHiddenLinkPostRowsMySQLRetriesAfterRegexTimeout(t *testing.T) {
 	}
 	if state.failures["stage=hidden_links class=timeout code=3699"] != 1 {
 		t.Fatalf("failures = %v, want one recorded regex timeout", state.failures)
+	}
+}
+
+// SQL candidates must include the forms accepted by the final Go parser.
+func TestHiddenLinkCandidateMySQLParserForms(t *testing.T) {
+	conn, ctx := hiddenLinkMySQLConn(t)
+	for _, mode := range []string{"", "NO_BACKSLASH_ESCAPES"} {
+		if _, err := conn.ExecContext(ctx, "SET SESSION sql_mode = ?", mode); err != nil {
+			t.Fatal(err)
+		}
+		for _, style := range []string{"display:none", "visibility:hidden", "visibility:collapse", "opacity:+.0", "opacity:-1e400", "left:calc(-9999px)", "margin-top:-100em"} {
+			for i := 0; i <= len(style); i++ {
+				for _, gap := range []string{"/**/", "/* * / */", "/* *calc(/ */", "\u2009", "\u0085", "\u000b"} {
+					mutated := style[:i] + gap + style[i:]
+					markup := `<div style="` + mutated + `"><a href="https://spam.example/">x</a></div>`
+					if len(hiddenOffsiteLinks(markup, "shop.example").hosts) == 0 {
+						continue
+					}
+					if hiddenLinkMySQLCandidate(t, conn, ctx, markup) != 1 {
+						t.Errorf("lost %q", mutated)
+					}
+				}
+			}
+			for i := 0; i < len(style); i++ {
+				for _, marker := range []string{fmt.Sprintf("&#%d;", style[i]), fmt.Sprintf("&#x%x;", style[i]), fmt.Sprintf(`\%x `, style[i])} {
+					markup := `<div STYLE="` + strings.ToUpper(style[:i]+marker+style[i+1:]) + `"><a href="https://spam.example/">x</a></div>`
+					if len(hiddenOffsiteLinks(markup, "shop.example").hosts) == 0 {
+						continue
+					}
+					if hiddenLinkMySQLCandidate(t, conn, ctx, markup) != 1 {
+						t.Errorf("lost %q", markup)
+					}
+				}
+			}
+		}
 	}
 }

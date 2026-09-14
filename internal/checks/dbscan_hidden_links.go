@@ -62,18 +62,19 @@ const (
 )
 
 // hiddenLinkCandidateCondition selects rows whose sampled markup may hide a
-// link. The Go parser reads only the first and last sample bytes of a value,
-// so SQL examines character windows of the same length: every sampled byte is
-// covered, and per-row work stays bounded however large the value is.
+// link. The Go parser joins the samples when they cover the whole value, so
+// SQL must examine that value together too. Larger values use separate end
+// windows. Character windows cover every sampled byte, with bounded work.
 //
 // commented adds matching for declarations split by CSS comments. That can
 // exhaust the server's regex work limit on dense content. The selection
 // without it stays well inside that limit for a sampled window, so callers
 // retry without it after a regex timeout.
 func hiddenLinkCandidateCondition(column string, commented bool) string {
-	return fmt.Sprintf("(%s OR (CHAR_LENGTH(%s) > %d AND %s))",
-		hiddenLinkWindowCondition(fmt.Sprintf("LEFT(%s, %d)", column, maxHiddenLinkSampleBytes), commented),
-		column, maxHiddenLinkSampleBytes,
+	head := fmt.Sprintf("LEFT(%s, CASE WHEN OCTET_LENGTH(%s) <= %d THEN %d ELSE %d END)",
+		column, column, maxHiddenLinkValueBytes, maxHiddenLinkValueBytes, maxHiddenLinkSampleBytes)
+	return fmt.Sprintf("(%s OR (OCTET_LENGTH(%s) > %d AND %s))",
+		hiddenLinkWindowCondition(head, commented), column, maxHiddenLinkValueBytes,
 		hiddenLinkWindowCondition(fmt.Sprintf("RIGHT(%s, %d)", column, maxHiddenLinkSampleBytes), commented))
 }
 
@@ -93,17 +94,23 @@ var hiddenLinkPlainDeclarations = []string{
 // stretch of text is traversed twice and encoded page text outside a style
 // attribute is not selected. A single alternative keeps the cost of each
 // backslash low enough for dense content.
-func hiddenLinkRegexPattern(commented bool) string {
-	pattern := `\\[^>\\]*=elyts`
-	if !commented {
-		return pattern
-	}
+func hiddenLinkRegexPattern() string {
+	return `\\[^>\\]*=elyts`
+}
+
+// hiddenLinkCommentPattern reads the unmodified ASCII-converted window.
+// Removing whitespace or calc( inside a comment can manufacture a closing
+// delimiter and lose a declaration that the CSS parser recognizes as hidden.
+func hiddenLinkCommentPattern() string {
 	// Reverse the whole comment grammar: a comment can contain /*, so its
 	// reversed body can contain */. A comment fallback must keep the
 	// declaration's tokens adjacent, or a visible declaration could join
 	// unrelated page text and exhaust the candidate limit.
-	gap := `(/[*]+([^*]*[^*/][*]+)*[^*]*[*]/)*`
-	return pattern + "|" + strings.Join([]string{
+	// ASCII conversion maps Unicode whitespace to ?, without joining comment
+	// body characters. Keep gaps outside the comment repetition unambiguous.
+	space := `[[:space:]?]*`
+	gap := space + `(/[*]+([^*]*[^*/][*]+)*[^*]*[*]/` + space + `)*`
+	return strings.Join([]string{
 		"enon" + gap + ":" + gap + "yalpsid",
 		"(neddih|espalloc)" + gap + ":" + gap + "ytilibisiv",
 		// Positive values with negative exponents can underflow to zero.
@@ -137,17 +144,18 @@ func hiddenLinkWindowCondition(window string, commented bool) string {
 		normalized = fmt.Sprintf("REPLACE(%s, '&#%c', %s)", normalized, digit, ascii(92))
 	}
 
-	// Only rows carrying an encoding or comment need the regex. Hex literals
+	// Only rows carrying an encoding or comment need a regex. Hex literals
 	// and CHAR keep backslashes independent of SQL escape modes.
 	encoded := fmt.Sprintf("LOCATE('&#', %[1]s) > 0 OR LOCATE('&colon', %[1]s) > 0 OR LOCATE(CHAR(92), %[1]s) > 0", lower)
-	pattern := fmt.Sprintf("CONVERT(0x%x USING ascii)", hiddenLinkRegexPattern(false))
+	pattern := fmt.Sprintf("CONVERT(0x%x USING ascii)", hiddenLinkRegexPattern())
+	selection := fmt.Sprintf("(CASE WHEN %s THEN REVERSE(%s) REGEXP %s ELSE LOCATE(%s, %s) > 0 END)",
+		encoded, normalized, pattern, ascii(92), normalized)
 	if commented {
-		encoded += fmt.Sprintf(" OR LOCATE('/*', %s) > 0", lower)
-		pattern = fmt.Sprintf("(CASE WHEN LOCATE('/*', %s) > 0 THEN CONVERT(0x%x USING ascii) ELSE %s END)",
-			lower, hiddenLinkRegexPattern(true), pattern)
+		selection = fmt.Sprintf("(CASE WHEN %s THEN 1 WHEN LOCATE('/*', %s) > 0 "+
+			"THEN REVERSE(CONVERT(LOWER(%s) USING ascii)) REGEXP CONVERT(0x%x USING ascii) ELSE 0 END)",
+			selection, lower, window, hiddenLinkCommentPattern())
 	}
-	return fmt.Sprintf("(LOCATE('style', %s) > 0 AND (CASE WHEN %s THEN REVERSE(%s) REGEXP %s ELSE LOCATE(%s, %s) > 0 END))",
-		lower, encoded, normalized, pattern, ascii(92), normalized)
+	return fmt.Sprintf("(LOCATE('style', %s) > 0 AND %s)", lower, selection)
 }
 
 // hiddenLinkHit is what one row's markup revealed.

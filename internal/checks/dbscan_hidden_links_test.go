@@ -715,13 +715,13 @@ func TestCheckWPHiddenLinks_QueryIncludesEverySupportedStyle(t *testing.T) {
 				t.Errorf("query missing %q: %s", want, query)
 			}
 		}
-		// Comments and encoded styles use one guarded regex pass per sampled
-		// window. Plain declarations must not spend the server's regex budget.
-		if got := strings.Count(query, "REGEXP"); got != 2 {
-			t.Errorf("query has %d regex passes, want one guarded pass per sample: %s", got, query)
+		// Encodings use normalized text; comments must retain their bodies.
+		// Both passes are guarded, and plain declarations bypass them.
+		if got := strings.Count(query, "REGEXP"); got != 4 {
+			t.Errorf("query has %d regex passes, want two guarded passes per sample: %s", got, query)
 		}
-		if got := strings.Count(query, "THEN REVERSE("); got != 2 {
-			t.Errorf("query has %d guarded regex subjects, want one per sample: %s", got, query)
+		if got := strings.Count(query, "THEN REVERSE("); got != 4 {
+			t.Errorf("query has %d guarded regex subjects, want two per sample: %s", got, query)
 		}
 	}
 }

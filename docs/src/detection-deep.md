@@ -64,10 +64,13 @@ unusable query results. A server regular-expression timeout is a statement-local
 failure: independent checks continue, while the failed check keeps coverage
 incomplete and preserves earlier findings. Hidden-link selection examines only
 the leading and trailing parts of each value that the parser reads, so large
-values cost no more than the parsed sample. Ordinary CSS declarations are
-matched with literal searches; a separate guarded expression handles commented
-and encoded styles without admitting unrelated page text. If the server stops
-that expression, the selection is repeated without commented styles, so plain
+values cost no more than the parsed sample. When the parser joins those parts
+into a complete value, selection examines them together too. Ordinary CSS
+declarations are matched with literal searches; guarded expressions handle
+commented and encoded styles without admitting unrelated page text. Comment
+bodies are preserved during matching so normalization cannot change their
+meaning. If the server stops a regular expression, the selection is repeated
+without commented styles, so plain
 and encoded styles stay covered while the coverage gap is still reported. Each
 install counts once; installs sharing a failed database count as affected without
 retrying its queries. Incomplete discovery
