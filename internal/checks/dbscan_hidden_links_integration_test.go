@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
 // Run against disposable MySQL 8 or MariaDB with CSM_TEST_MYSQL_SOCKET set. Go's RE2
@@ -64,10 +66,20 @@ func hiddenLinkMySQLCandidate(t *testing.T, conn *sql.Conn, ctx context.Context,
 		t.Fatal(err)
 	}
 	var got int
-	if err := conn.QueryRowContext(ctx, "SELECT "+hiddenLinkCandidateCondition("markup")+" FROM csm_hidden_candidate").Scan(&got); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT "+hiddenLinkCandidateCondition("markup", true)+" FROM csm_hidden_candidate").Scan(&got); err != nil {
 		t.Fatalf("candidate selection failed: %v", err)
 	}
 	return got
+}
+
+// hiddenLinkMySQLArticle is ordinary block-editor markup: prose, inline styles,
+// entities and escaped block attributes, with no hidden declaration.
+func hiddenLinkMySQLArticle(bytes int) string {
+	block := `<!-- wp:paragraph {"className":"is-style-lead \u0022x\u0022"} -->` +
+		`<p class="has-text-color" style="color:#333;margin-top:10px;padding:0 1em">` +
+		`Then the engineer went over the green lane and entered the garden near the entrance&#8217;s gate &amp; fence.</p>` +
+		"<!-- /wp:paragraph -->\n"
+	return strings.Repeat(block, bytes/len(block)+1)[:bytes]
 }
 
 func TestHiddenLinkPostRowsMySQLKeepsLateInjection(t *testing.T) {
@@ -177,6 +189,11 @@ func TestHiddenLinkCandidateMySQL(t *testing.T) {
 				{"CSS escape", `<div style="d\69splay:none">`, 1},
 				{"encoded trailing injection", strings.Repeat("<div style=color:black>text&#32;</div>", 1600) + `<div style="d&#105;splay:none">`, 1},
 				{"trailing injection", strings.Repeat("<div style=color:black>text</div>", 1600) + `<div style="left:-9999px">`, 1},
+				{"large article with stylesheet comment", "<style>/* theme */</style>" + hiddenLinkMySQLArticle(1<<20), 0},
+				{"large article with trailing commented injection", "<style>/* theme */</style>" + hiddenLinkMySQLArticle(1<<20) + `<div style="display:/*x*/none">`, 1},
+				{"large article with trailing encoded injection", hiddenLinkMySQLArticle(1<<20) + `<div style="d&#105;splay:none">`, 1},
+				{"large article with leading injection", `<div style="left:-9999px">` + hiddenLinkMySQLArticle(1<<20), 1},
+				{"injection outside sampled windows", hiddenLinkMySQLArticle(1<<18) + `<div style="left:-9999px">` + hiddenLinkMySQLArticle(1<<18), 0},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					got := hiddenLinkMySQLCandidate(t, conn, ctx, tc.markup)
@@ -306,5 +323,99 @@ func TestHiddenLinkCandidateMySQLEncodingRelation(t *testing.T) {
 		if got := hiddenLinkMySQLCandidate(t, conn, ctx, markup); got != 0 {
 			t.Fatalf("unsupported encoding became a candidate: %q", marker)
 		}
+	}
+}
+
+// The retry selection must fit the server's regex limit for any sampled
+// content, so plain and encoded styles stay covered when commented-style
+// matching is stopped.
+func TestHiddenLinkCandidateMySQLRetrySelectionFitsRegexLimit(t *testing.T) {
+	conn, ctx := hiddenLinkMySQLConn(t)
+	for _, unit := range []string{`\`, "&#1", "&#x1", "&colon", "?", "=", `style=\`, "/*", "*/", "0", "-", "e", "n", ">"} {
+		t.Run(unit, func(t *testing.T) {
+			markup := `<div style="color:black">/* x */` + strings.Repeat(unit, 2*maxHiddenLinkSampleBytes/len(unit))
+			if _, err := conn.ExecContext(ctx, "DELETE FROM csm_hidden_candidate"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.ExecContext(ctx, "INSERT INTO csm_hidden_candidate VALUES (?)", markup); err != nil {
+				t.Fatal(err)
+			}
+			var got int
+			if err := conn.QueryRowContext(ctx, "SELECT "+hiddenLinkCandidateCondition("markup", false)+" FROM csm_hidden_candidate").Scan(&got); err != nil {
+				t.Fatalf("retry selection failed: %v", err)
+			}
+		})
+	}
+}
+
+// Content that exhausts commented-style matching must not hide a plain
+// declaration in the same install: the retry selects it and coverage stays
+// incomplete.
+func TestHiddenLinkPostRowsMySQLRetriesAfterRegexTimeout(t *testing.T) {
+	conn, ctx := hiddenLinkMySQLConn(t)
+	var version string
+	if err := conn.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "CREATE TEMPORARY TABLE csm_retry_posts (ID bigint PRIMARY KEY, post_content longtext, post_status varchar(20), post_type varchar(20)) CHARACTER SET utf8mb4"); err != nil {
+		t.Fatal(err)
+	}
+	markup := `<div style="left:-9999px"><a href="https://spam.example/">x</a></div><script>/*` +
+		strings.Repeat("0-", maxHiddenLinkSampleBytes/2) + `*/</script>`
+	if _, err := conn.ExecContext(ctx, "INSERT INTO csm_retry_posts VALUES (1, ?, 'publish', 'post')", markup); err != nil {
+		t.Fatal(err)
+	}
+	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
+		rows, err := conn.QueryContext(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		columns, err := rows.Columns()
+		if err != nil {
+			return nil, err
+		}
+		escape := strings.NewReplacer("\\", "\\\\", "\t", "\\t", "\n", "\\n", "\r", "\\r", "\x00", "\\0")
+		var out []string
+		for rows.Next() {
+			values := make([]sql.RawBytes, len(columns))
+			dest := make([]any, len(columns))
+			for i := range values {
+				dest[i] = &values[i]
+			}
+			if err := rows.Scan(dest...); err != nil {
+				return nil, err
+			}
+			fields := make([]string, len(values))
+			for i, value := range values {
+				fields[i] = escape.Replace(string(value))
+			}
+			out = append(out, strings.Join(fields, "\t"))
+		}
+		return out, rows.Err()
+	})
+	t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+
+	scanCtx, incomplete := withIncompleteCheckCollector(ctx)
+	state := new(dbQueryState)
+	creds := wpDBCreds{queryCtx: scanCtx, queryState: state}.withQueryStage("hidden_links")
+	rows := hiddenLinkPostRows(creds, "csm_retry_")
+	if len(rows) != 1 {
+		t.Fatalf("plain declaration was not selected: got %d rows, failures %v", len(rows), state.failures)
+	}
+	if hit := hiddenOffsiteLinkSamples(rows[0], []string{"shop.example"}); !hit.offScreen {
+		t.Fatalf("plain declaration was not detected: %+v", hit)
+	}
+	if state.halted {
+		t.Fatal("regex timeout halted the install")
+	}
+	if strings.Contains(version, "MariaDB") {
+		return
+	}
+	if !state.failed || !incomplete.contains("db_content") {
+		t.Fatal("stopped commented-style matching did not leave coverage incomplete")
+	}
+	if state.failures["stage=hidden_links class=timeout code=3699"] != 1 {
+		t.Fatalf("failures = %v, want one recorded regex timeout", state.failures)
 	}
 }

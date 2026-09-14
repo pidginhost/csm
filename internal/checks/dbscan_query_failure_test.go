@@ -148,6 +148,60 @@ func TestHiddenLinkTimeoutKeepsAdminChecks(t *testing.T) {
 	}
 }
 
+// The server can stop commented-style selection at its regex work limit. That
+// must cost only commented styles: the retry still selects plain declarations,
+// and the recorded failure keeps coverage incomplete.
+func TestHiddenLinkRegexTimeoutRetriesPlainSelection(t *testing.T) {
+	withDatabaseCoverageInstalls(t, map[string]string{
+		"/home/alice/public_html/wp-config.php": databaseCoverageConfig("fixture"),
+	}, nil)
+	var optionQueries, postQueries []string
+	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
+		switch {
+		case strings.Contains(query, "'site' AS kind"):
+			optionQueries = append(optionQueries, query)
+			if len(optionQueries) == 1 {
+				return nil, &mysql.MySQLError{Number: 3699, Message: "server-private-diagnostic"}
+			}
+		case strings.Contains(query, "RIGHT(CAST(post_content AS BINARY)"):
+			postQueries = append(postQueries, query)
+			if len(postQueries) == 1 {
+				return nil, &mysql.MySQLError{Number: 3699, Message: "server-private-diagnostic"}
+			}
+			return []string{hiddenLinkPostBatchRow("9",
+				`<div style="left:-9999px"><a href="https://spam.example/">x</a></div>`)}, nil
+		}
+		return databaseCoverageHealthyRows(query), nil
+	})
+	t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	findings := CheckDatabaseContent(ctx, nil, nil)
+
+	for name, queries := range map[string][]string{"option_value": optionQueries, "post_content": postQueries} {
+		if len(queries) != 2 {
+			t.Fatalf("%s queries = %d, want one timed-out attempt and one retry", name, len(queries))
+		}
+		if !strings.Contains(queries[0], hiddenLinkCandidateCondition(name, true)) ||
+			!strings.Contains(queries[1], hiddenLinkCandidateCondition(name, false)) {
+			t.Fatalf("%s retry did not drop commented-style matching", name)
+		}
+	}
+	found := false
+	for _, f := range findings {
+		found = found || f.Check == "db_hidden_link_injection"
+	}
+	if !found {
+		t.Fatal("regex timeout suppressed a plain hidden-link detection")
+	}
+	if !incomplete.contains("db_content") {
+		t.Fatal("regex timeout lost its coverage gap")
+	}
+	summary := databaseCoverageSummary(t, findings)
+	if !strings.Contains(summary.Details, "stage=hidden_links class=timeout code=3699 queries=2") {
+		t.Errorf("coverage summary omits both timed-out selections: %s", summary.Details)
+	}
+}
+
 // Host-wide diagnostics must remain bounded even when every install returns
 // a different server error, without dropping the total failed-query count.
 func TestDatabaseQueryDiagnosticsBoundedAcrossInstalls(t *testing.T) {

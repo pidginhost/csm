@@ -62,10 +62,14 @@ control characters, non-ASCII bytes, quotes and backslashes, with the existing
 length limit applied after escaping. Content gaps include truncated or
 unusable query results. A server regular-expression timeout is a statement-local
 failure: independent checks continue, while the failed check keeps coverage
-incomplete and preserves earlier findings. Hidden-link selection matches ordinary
-CSS declarations with literal searches; a separate guarded expression handles
-commented and encoded styles without admitting unrelated page text. Each install
-counts once; installs sharing a failed database count as affected without
+incomplete and preserves earlier findings. Hidden-link selection examines only
+the leading and trailing parts of each value that the parser reads, so large
+values cost no more than the parsed sample. Ordinary CSS declarations are
+matched with literal searches; a separate guarded expression handles commented
+and encoded styles without admitting unrelated page text. If the server stops
+that expression, the selection is repeated without commented styles, so plain
+and encoded styles stay covered while the coverage gap is still reported. Each
+install counts once; installs sharing a failed database count as affected without
 retrying its queries. Incomplete discovery
 is reported separately in the details because additional installs may be
 missing from the total. With no attributed reasons, including when discovery

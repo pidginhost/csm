@@ -61,84 +61,93 @@ const (
 	offScreenFontUnits = 100
 )
 
-// hiddenLinkCandidateCondition uses literal searches for CSS declarations.
-// ICU can exhaust its work budget even on ordinary large values. Compact CSS
-// whitespace for the common declarations; the Go CSS parser makes the verdict.
-// Comments and encoded styles use a guarded expression. The existing row and
-// byte limits still bound what leaves the database.
-func hiddenLinkCandidateCondition(column string) string {
-	lower := "LOWER(" + column + ")"
-	compact := "CONVERT(" + lower + " USING utf8mb4)"
-	// The value parser uses strings.TrimSpace, including Unicode separators.
-	// Hex literals carry UTF-8 whitespace without depending on SQL escape mode.
-	const spaces = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
-	for _, space := range spaces {
-		compact = fmt.Sprintf("REPLACE(%s, CONVERT(0x%x USING utf8mb4), '')", compact, string(space))
+// hiddenLinkCandidateCondition selects rows whose sampled markup may hide a
+// link. The Go parser reads only the first and last sample bytes of a value,
+// so SQL examines character windows of the same length: every sampled byte is
+// covered, and per-row work stays bounded however large the value is.
+//
+// commented adds matching for declarations split by CSS comments. That can
+// exhaust the server's regex work limit on dense content. The selection
+// without it stays well inside that limit for a sampled window, so callers
+// retry without it after a regex timeout.
+func hiddenLinkCandidateCondition(column string, commented bool) string {
+	return fmt.Sprintf("(%s OR (CHAR_LENGTH(%s) > %d AND %s))",
+		hiddenLinkWindowCondition(fmt.Sprintf("LEFT(%s, %d)", column, maxHiddenLinkSampleBytes), commented),
+		column, maxHiddenLinkSampleBytes,
+		hiddenLinkWindowCondition(fmt.Sprintf("RIGHT(%s, %d)", column, maxHiddenLinkSampleBytes), commented))
+}
+
+// hiddenLinkPlainDeclarations are the declaration prefixes the parser can
+// hide or move off-screen, after whitespace and calc( are removed. Longer
+// property names such as margin-left end in one of these.
+var hiddenLinkPlainDeclarations = []string{
+	"display:none", "visibility:hidden", "visibility:collapse",
+	"opacity:0", "opacity:+0", "opacity:.0", "opacity:+.0", "opacity:-",
+	"text-indent:-", "left:-", "top:-", "right:-", "bottom:-",
+}
+
+// hiddenLinkRegexPattern is matched against the reversed, normalized window.
+// Encodings there are backslashes, and each plain declaration has become
+// style= followed by a backslash. From each backslash the pattern searches
+// back to style=, stopping at the preceding tag delimiter or backslash, so no
+// stretch of text is traversed twice and encoded page text outside a style
+// attribute is not selected. A single alternative keeps the cost of each
+// backslash low enough for dense content.
+func hiddenLinkRegexPattern(commented bool) string {
+	pattern := `\\[^>\\]*=elyts`
+	if !commented {
+		return pattern
 	}
-	var alternatives []string
-	for _, declaration := range []struct {
-		property string
-		values   []string
-	}{
-		{"display", []string{"none"}},
-		{"visibility", []string{"hidden", "collapse"}},
-		{"opacity", []string{"0", "+0", ".0", "+.0", "-"}},
-		{"text-indent", []string{"-", "calc(-"}},
-		{"left", []string{"-", "calc(-"}},
-		{"top", []string{"-", "calc(-"}},
-		{"right", []string{"-", "calc(-"}},
-		{"bottom", []string{"-", "calc(-"}},
-	} {
-		var values []string
-		for _, value := range declaration.values {
-			values = append(values, fmt.Sprintf("LOCATE('%s:%s', %s) > 0",
-				declaration.property, value, compact))
-		}
-		alternatives = append(alternatives, fmt.Sprintf("(LOCATE('%s', %s) > 0 AND (%s))",
-			declaration.property, lower, strings.Join(values, " OR ")))
-	}
-	// A comment fallback must keep the declaration's tokens adjacent. A
-	// row-wide LIKE can join a visible declaration to unrelated page text and
-	// exhaust the candidate limit. Reverse the whole comment grammar: a comment
-	// can contain /*, so its reversed body can contain */. Keep whitespace
-	// outside the comment repetition to avoid repartitioning whitespace runs.
-	space := "[" + spaces + "]*"
-	gap := space + "(/[*]+([^*]*[^*/][*]+)*[^*]*[*]/" + space + ")*"
-	commented := strings.Join([]string{
+	// Reverse the whole comment grammar: a comment can contain /*, so its
+	// reversed body can contain */. A comment fallback must keep the
+	// declaration's tokens adjacent, or a visible declaration could join
+	// unrelated page text and exhaust the candidate limit.
+	gap := `(/[*]+([^*]*[^*/][*]+)*[^*]*[*]/)*`
+	return pattern + "|" + strings.Join([]string{
 		"enon" + gap + ":" + gap + "yalpsid",
 		"(neddih|espalloc)" + gap + ":" + gap + "ytilibisiv",
 		// Positive values with negative exponents can underflow to zero.
 		"(-|0[.]?[+]?|-e[0-9_.]+[+]?)" + gap + ":" + gap + "yticapo",
 		"-" + gap + "([(]" + gap + "clac" + gap + ")?:" + gap + "(tnedni-txet|tfel|pot|thgir|mottob)",
 	}, "|")
-	// Encodings can obscure every declaration token. Start at the encoding
-	// and search backwards to style=, stopping at the preceding tag delimiter.
-	// Searching forwards from every style= repeatedly traverses the same suffix
-	// when no encoding occurs before the next delimiter. Requiring this relation
-	// also keeps ordinary encoded page text out of the bounded candidate set.
-	// Stop at the next encoding marker as well as at a tag delimiter. If the
-	// match could cross another marker, that nearer marker can make the same
-	// match. Normalize recognized entities to backslashes so a single excluded
-	// character stops each search. Other ampersands remain traversable.
-	// Numeric entities only need their first digit, as in the old prefix match.
-	// CHAR and hex literals keep backslashes independent of SQL escape modes.
-	encodedValue := "CONVERT(" + lower + " USING utf8mb4)"
-	for _, digit := range "0123456789abcdef" {
-		encodedValue = fmt.Sprintf("REPLACE(%s, '&#x%c', CHAR(92))", encodedValue, digit)
-		if digit <= '9' {
-			encodedValue = fmt.Sprintf("REPLACE(%s, '&#%c', CHAR(92))", encodedValue, digit)
-		}
+}
+
+// hiddenLinkWindowCondition selects one sample window. Literal replacements
+// do the bulk of the work because they carry no regex budget. The chain is
+// written in both branches of one CASE, so the server evaluates it once.
+func hiddenLinkWindowCondition(window string, commented bool) string {
+	ascii := func(code int) string { return fmt.Sprintf("CHAR(%d USING ascii)", code) }
+	lower := "CAST(LOWER(" + window + ") AS BINARY)"
+	// Conversion turns every other character into a question mark. Removing
+	// those and ASCII whitespace joins each declaration's tokens; the value
+	// parser trims Unicode whitespace, so every parsed form stays adjacent.
+	normalized := "CONVERT(LOWER(" + window + ") USING ascii)"
+	for _, code := range []int{'\t', '\n', '\v', '\f', '\r', ' ', '?'} {
+		normalized = fmt.Sprintf("REPLACE(%s, %s, '')", normalized, ascii(code))
 	}
-	encodedValue = "REPLACE(" + encodedValue + ", '&colon', CHAR(92))"
-	const encoded = `\\[^>\\]*=[[:space:]]*elyts`
-	alternatives = append(alternatives, fmt.Sprintf(
-		"(CASE WHEN LOCATE('style', %s) > 0 AND "+
-			"(LOCATE('&#', %s) > 0 OR LOCATE('&colon', %s) > 0 OR LOCATE(CHAR(92), %s) > 0 OR LOCATE('/*', %s) > 0) "+
-			"THEN REVERSE(%s) REGEXP (CASE WHEN LOCATE('/*', %s) > 0 "+
-			"THEN CONVERT(0x%x USING utf8mb4) ELSE CONVERT(0x%x USING utf8mb4) END) ELSE 0 END)",
-		lower, column, lower, column, column, encodedValue, column, encoded+"|"+commented, encoded))
-	return fmt.Sprintf("(LOCATE('style', %s) > 0 AND (%s))", lower,
-		strings.Join(alternatives, " OR "))
+	normalized = fmt.Sprintf("REPLACE(%s, 'calc(', '')", normalized)
+	// A plain declaration becomes a match the regex finds without searching.
+	matched := "CONCAT('style=', " + ascii(92) + ")"
+	for _, declaration := range hiddenLinkPlainDeclarations {
+		normalized = fmt.Sprintf("REPLACE(%s, '%s', %s)", normalized, declaration, matched)
+	}
+	// Numeric entities only need their first digit, as in the old prefix match.
+	normalized = fmt.Sprintf("REPLACE(REPLACE(%s, '&#x', '&#'), '&colon', %s)", normalized, ascii(92))
+	for _, digit := range "0123456789abcdef" {
+		normalized = fmt.Sprintf("REPLACE(%s, '&#%c', %s)", normalized, digit, ascii(92))
+	}
+
+	// Only rows carrying an encoding or comment need the regex. Hex literals
+	// and CHAR keep backslashes independent of SQL escape modes.
+	encoded := fmt.Sprintf("LOCATE('&#', %[1]s) > 0 OR LOCATE('&colon', %[1]s) > 0 OR LOCATE(CHAR(92), %[1]s) > 0", lower)
+	pattern := fmt.Sprintf("CONVERT(0x%x USING ascii)", hiddenLinkRegexPattern(false))
+	if commented {
+		encoded += fmt.Sprintf(" OR LOCATE('/*', %s) > 0", lower)
+		pattern = fmt.Sprintf("(CASE WHEN LOCATE('/*', %s) > 0 THEN CONVERT(0x%x USING ascii) ELSE %s END)",
+			lower, hiddenLinkRegexPattern(true), pattern)
+	}
+	return fmt.Sprintf("(LOCATE('style', %s) > 0 AND (CASE WHEN %s THEN REVERSE(%s) REGEXP %s ELSE LOCATE(%s, %s) > 0 END))",
+		lower, encoded, normalized, pattern, ascii(92), normalized)
 }
 
 // hiddenLinkHit is what one row's markup revealed.
@@ -690,23 +699,38 @@ func compactSortedStrings(values []string) []string {
 	return out
 }
 
+// runHiddenLinkCandidateQuery runs the statement built around a candidate
+// condition. A regex timeout stops only commented-style matching: the failure
+// stays recorded, so coverage remains incomplete, and the retry keeps plain
+// and encoded styles covered.
+func runHiddenLinkCandidateQuery(creds wpDBCreds, query func(commented bool) string) []string {
+	timeouts := creds.queryState.regexTimeoutCount()
+	rows := runMySQLQuery(creds, query(true))
+	if creds.queryState.regexTimeoutCount() == timeouts {
+		return rows
+	}
+	return runMySQLQuery(creds, query(false))
+}
+
 // hiddenLinkOptionRows reads the site address and the option rows worth
 // parsing in one round trip.
 func hiddenLinkOptionRows(creds wpDBCreds, prefix string) ([]string, []hiddenLinkSource) {
-	query := fmt.Sprintf(
-		"(SELECT 'site' AS kind, option_name, LEFT(CAST(option_value AS BINARY), %d), "+
-			"'', OCTET_LENGTH(option_value), 'site' FROM %soptions "+
-			"WHERE option_name IN ('siteurl', 'home') LIMIT 4) UNION ALL "+
-			"(SELECT 'opt', option_name, LEFT(CAST(option_value AS BINARY), %d), "+
-			"RIGHT(CAST(option_value AS BINARY), %d), OCTET_LENGTH(option_value), 'opt' FROM %soptions "+
-			"WHERE %s LIMIT %d)",
-		maxHiddenLinkSiteURLBytes, prefix, maxHiddenLinkSampleBytes, maxHiddenLinkSampleBytes, prefix,
-		hiddenLinkCandidateCondition("option_value"), maxHiddenLinkRows+1)
+	query := func(commented bool) string {
+		return fmt.Sprintf(
+			"(SELECT 'site' AS kind, option_name, LEFT(CAST(option_value AS BINARY), %d), "+
+				"'', OCTET_LENGTH(option_value), 'site' FROM %soptions "+
+				"WHERE option_name IN ('siteurl', 'home') LIMIT 4) UNION ALL "+
+				"(SELECT 'opt', option_name, LEFT(CAST(option_value AS BINARY), %d), "+
+				"RIGHT(CAST(option_value AS BINARY), %d), OCTET_LENGTH(option_value), 'opt' FROM %soptions "+
+				"WHERE %s LIMIT %d)",
+			maxHiddenLinkSiteURLBytes, prefix, maxHiddenLinkSampleBytes, maxHiddenLinkSampleBytes, prefix,
+			hiddenLinkCandidateCondition("option_value", commented), maxHiddenLinkRows+1)
+	}
 
 	var siteHosts []string
 	seenSiteHosts := make(map[string]bool)
 	var out []hiddenLinkSource
-	rows := runMySQLQuery(creds, query)
+	rows := runHiddenLinkCandidateQuery(creds, query)
 	optionRowsSeen := 0
 	truncated := false
 	for _, line := range rows {
@@ -775,15 +799,17 @@ func hiddenLinkOptionRows(creds wpDBCreds, prefix string) ([]string, []hiddenLin
 }
 
 func hiddenLinkPostRows(creds wpDBCreds, prefix string) []hiddenLinkSource {
-	query := fmt.Sprintf(
-		"SELECT ID, LEFT(CAST(post_content AS BINARY), %d), "+
-			"RIGHT(CAST(post_content AS BINARY), %d), OCTET_LENGTH(post_content), 'post' "+
-			"FROM %sposts WHERE post_status = 'publish' "+
-			"AND post_type NOT IN (%s) AND %s LIMIT %d",
-		maxHiddenLinkSampleBytes, maxHiddenLinkSampleBytes, prefix,
-		nonScannablePostTypesSQLList(), hiddenLinkCandidateCondition("post_content"), maxHiddenLinkRows+1)
+	query := func(commented bool) string {
+		return fmt.Sprintf(
+			"SELECT ID, LEFT(CAST(post_content AS BINARY), %d), "+
+				"RIGHT(CAST(post_content AS BINARY), %d), OCTET_LENGTH(post_content), 'post' "+
+				"FROM %sposts WHERE post_status = 'publish' "+
+				"AND post_type NOT IN (%s) AND %s LIMIT %d",
+			maxHiddenLinkSampleBytes, maxHiddenLinkSampleBytes, prefix,
+			nonScannablePostTypesSQLList(), hiddenLinkCandidateCondition("post_content", commented), maxHiddenLinkRows+1)
+	}
 
-	rows := runMySQLQuery(creds, query)
+	rows := runHiddenLinkCandidateQuery(creds, query)
 	if len(rows) > maxHiddenLinkRows {
 		markCheckIncomplete(creds.queryCtx, "db_content")
 		rows = rows[:maxHiddenLinkRows]

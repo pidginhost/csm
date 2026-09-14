@@ -15,13 +15,18 @@ import (
 
 const maxDatabaseQueryDiagnostics = 16
 
+// mysqlRegexTimeout is the server error for a regular expression that
+// exhausted its work limit.
+const mysqlRegexTimeout = 3699
+
 // dbQueryState separates incomplete coverage from an unusable connection.
 // Both prevent a clean baseline, but a statement-local failure must not stop
 // independent detectors from reading other tables in the same installation.
 type dbQueryState struct {
-	failed   bool
-	halted   bool
-	failures map[string]int
+	failed        bool
+	halted        bool
+	regexTimeouts int
+	failures      map[string]int
 }
 
 func (c wpDBCreds) withQueryStage(stage string) wpDBCreds {
@@ -36,6 +41,9 @@ func (s *dbQueryState) record(stage string, err error) {
 	class, code, halt := databaseQueryErrorClass(err)
 	s.failed = true
 	s.halted = s.halted || halt
+	if code == mysqlRegexTimeout {
+		s.regexTimeouts++
+	}
 	if stage == "" {
 		stage = "query"
 	}
@@ -46,6 +54,15 @@ func (s *dbQueryState) record(stage string, err error) {
 	// boundary. Server messages and SQL can contain account data or values.
 	key := fmt.Sprintf("stage=%s class=%s code=%d", stage, class, code)
 	s.failures[key]++
+}
+
+// regexTimeoutCount lets a caller tell whether its statement stopped at the
+// regex work limit. Paths without query state never retry.
+func (s *dbQueryState) regexTimeoutCount() int {
+	if s == nil {
+		return 0
+	}
+	return s.regexTimeouts
 }
 
 func databaseQueryErrorClass(err error) (class string, code uint16, halt bool) {
@@ -61,7 +78,7 @@ func databaseQueryErrorClass(err error) (class string, code uint16, halt bool) {
 			return "permission", code, false
 		case 1139, 1267, 1271:
 			return "expression", code, false
-		case 3699:
+		case mysqlRegexTimeout:
 			// ICU stops this expression when its work budget is exhausted;
 			// the connection and independent statements remain usable.
 			return "timeout", code, false
