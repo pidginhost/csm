@@ -19,6 +19,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- Database scans keep repeated encoded text and ordinary commented styles from interrupting hidden-link checks or crowding out later detections.
 - Database scans no longer exhaust the SQL regular-expression budget on ordinary styled content. A regular-expression timeout keeps later checks running and retains the incomplete coverage warning.
 - Claimed crawlers without reverse DNS are no longer looked up again on every scan. Those repeats overflowed the bot verification queue on busy hosts, so genuine crawlers could miss verification and be handled as ordinary visitors.
 - The WordPress user enumeration filter no longer blocks signed-in users, so creating Application Passwords and loading author lists in the editor work again. Unrelated page paths and REST namespaces remain accessible.

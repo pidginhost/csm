@@ -64,8 +64,9 @@ unusable query results. A server regular-expression timeout is a statement-local
 failure: independent checks continue, while the failed check keeps coverage
 incomplete and preserves earlier findings. Hidden-link selection matches ordinary
 CSS declarations with literal searches; a separate guarded expression handles
-encoded styles. Each install counts once; installs sharing a failed
-database count as affected without retrying its queries. Incomplete discovery
+commented and encoded styles without admitting unrelated page text. Each install
+counts once; installs sharing a failed database count as affected without
+retrying its queries. Incomplete discovery
 is reported separately in the details because additional installs may be
 missing from the total. With no attributed reasons, including when discovery
 stops before reaching any install, the generic three-cause sentence remains

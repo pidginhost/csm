@@ -64,14 +64,15 @@ const (
 // hiddenLinkCandidateCondition uses literal searches for CSS declarations.
 // ICU can exhaust its work budget even on ordinary large values. Compact CSS
 // whitespace for the common declarations; the Go CSS parser makes the verdict.
-// Only encoded styles need the guarded expression below. The existing row and
+// Comments and encoded styles use a guarded expression. The existing row and
 // byte limits still bound what leaves the database.
 func hiddenLinkCandidateCondition(column string) string {
 	lower := "LOWER(" + column + ")"
 	compact := "CONVERT(" + lower + " USING utf8mb4)"
 	// The value parser uses strings.TrimSpace, including Unicode separators.
 	// Hex literals carry UTF-8 whitespace without depending on SQL escape mode.
-	for _, space := range "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000" {
+	const spaces = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+	for _, space := range spaces {
 		compact = fmt.Sprintf("REPLACE(%s, CONVERT(0x%x USING utf8mb4), '')", compact, string(space))
 	}
 	var alternatives []string
@@ -93,38 +94,49 @@ func hiddenLinkCandidateCondition(column string) string {
 			values = append(values, fmt.Sprintf("LOCATE('%s:%s', %s) > 0",
 				declaration.property, value, compact))
 		}
-		// Comments may separate the property, colon and value. LIKE only has
-		// fixed literal pieces here; it does not invoke ICU or a regex budget.
-		// A negative value also covers a calc() whose argument starts negative.
-		commentValues := declaration.values
-		if declaration.property == "opacity" {
-			commentValues = []string{"0", "-"}
-		} else if len(commentValues) == 2 && commentValues[1] == "calc(-" {
-			commentValues = []string{"-"}
-		}
-		var comments []string
-		for _, value := range commentValues {
-			comments = append(comments, fmt.Sprintf("%s LIKE '%%%s%%:%%%s%%'", lower,
-				declaration.property, value))
-		}
-		values = append(values, fmt.Sprintf("(LOCATE('/*', %s) > 0 AND (%s))",
-			lower, strings.Join(comments, " OR ")))
 		alternatives = append(alternatives, fmt.Sprintf("(LOCATE('%s', %s) > 0 AND (%s))",
 			declaration.property, lower, strings.Join(values, " OR ")))
 	}
+	// A comment fallback must keep the declaration's tokens adjacent. A
+	// row-wide LIKE can join a visible declaration to unrelated page text and
+	// exhaust the candidate limit. Reverse the whole comment grammar: a comment
+	// can contain /*, so its reversed body can contain */. Keep whitespace
+	// outside the comment repetition to avoid repartitioning whitespace runs.
+	space := "[" + spaces + "]*"
+	gap := space + "(/[*]+([^*]*[^*/][*]+)*[^*]*[*]/" + space + ")*"
+	commented := strings.Join([]string{
+		"enon" + gap + ":" + gap + "yalpsid",
+		"(neddih|espalloc)" + gap + ":" + gap + "ytilibisiv",
+		// Positive values with negative exponents can underflow to zero.
+		"(-|0[.]?[+]?|-e[0-9_.]+[+]?)" + gap + ":" + gap + "yticapo",
+		"-" + gap + "([(]" + gap + "clac" + gap + ")?:" + gap + "(tnedni-txet|tfel|pot|thgir|mottob)",
+	}, "|")
 	// Encodings can obscure every declaration token. Start at the encoding
 	// and search backwards to style=, stopping at the preceding tag delimiter.
 	// Searching forwards from every style= repeatedly traverses the same suffix
 	// when no encoding occurs before the next delimiter. Requiring this relation
 	// also keeps ordinary encoded page text out of the bounded candidate set.
+	// Stop at the next encoding marker as well as at a tag delimiter. If the
+	// match could cross another marker, that nearer marker can make the same
+	// match. Normalize recognized entities to backslashes so a single excluded
+	// character stops each search. Other ampersands remain traversable.
 	// Numeric entities only need their first digit, as in the old prefix match.
-	// CHAR keeps CSS backslashes independent of NO_BACKSLASH_ESCAPES.
+	// CHAR and hex literals keep backslashes independent of SQL escape modes.
+	encodedValue := "CONVERT(" + lower + " USING utf8mb4)"
+	for _, digit := range "0123456789abcdef" {
+		encodedValue = fmt.Sprintf("REPLACE(%s, '&#x%c', CHAR(92))", encodedValue, digit)
+		if digit <= '9' {
+			encodedValue = fmt.Sprintf("REPLACE(%s, '&#%c', CHAR(92))", encodedValue, digit)
+		}
+	}
+	encodedValue = "REPLACE(" + encodedValue + ", '&colon', CHAR(92))"
+	const encoded = `\\[^>\\]*=[[:space:]]*elyts`
 	alternatives = append(alternatives, fmt.Sprintf(
 		"(CASE WHEN LOCATE('style', %s) > 0 AND "+
-			"(LOCATE('&#', %s) > 0 OR LOCATE('&colon', %s) > 0 OR LOCATE(CHAR(92), %s) > 0) "+
-			"THEN REVERSE(%s) REGEXP CONCAT('([0-9]#&|[0-9a-f]x#&|noloc&|', "+
-			"CHAR(92), CHAR(92), ')[^>]*=[[:space:]]*elyts') ELSE 0 END)",
-		lower, column, lower, column, lower))
+			"(LOCATE('&#', %s) > 0 OR LOCATE('&colon', %s) > 0 OR LOCATE(CHAR(92), %s) > 0 OR LOCATE('/*', %s) > 0) "+
+			"THEN REVERSE(%s) REGEXP (CASE WHEN LOCATE('/*', %s) > 0 "+
+			"THEN CONVERT(0x%x USING utf8mb4) ELSE CONVERT(0x%x USING utf8mb4) END) ELSE 0 END)",
+		lower, column, lower, column, column, encodedValue, column, encoded+"|"+commented, encoded))
 	return fmt.Sprintf("(LOCATE('style', %s) > 0 AND (%s))", lower,
 		strings.Join(alternatives, " OR "))
 }

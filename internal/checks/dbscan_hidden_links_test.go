@@ -715,10 +715,10 @@ func TestCheckWPHiddenLinks_QueryIncludesEverySupportedStyle(t *testing.T) {
 				t.Errorf("query missing %q: %s", want, query)
 			}
 		}
-		// Only encoded styles use a guarded regex pass. Ordinary declarations
+		// Comments and encoded styles use a guarded regex pass. Plain declarations
 		// must not spend the server's regex budget on every published post.
 		if got := strings.Count(query, "REGEXP"); got != 1 {
-			t.Errorf("query has %d regex passes, want the encoded-style pass: %s", got, query)
+			t.Errorf("query has %d regex passes, want the guarded fallback: %s", got, query)
 		}
 	}
 }

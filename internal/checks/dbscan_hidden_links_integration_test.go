@@ -103,6 +103,8 @@ func TestHiddenLinkPostRowsMySQLKeepsLateInjection(t *testing.T) {
 		`<div style="display:block">visible</div>`,
 		`<div style="left:0">the left side - ordinary layout</div>`,
 		`<div style="display:/*theme*/block;left:/*layout*/0">visible</div>`,
+		`<div style="display:/*theme*/block;left:/*layout*/0">none - visible</div>`,
+		`<div style="display:/*theme*/block;color:black">none</div>`,
 		`<div style="color:black">price &#36;10</div>`,
 		`<div style="color:black">path\name</div>`,
 		`{"style":"color:black","label":"&#32;"}`,
@@ -151,8 +153,21 @@ func TestHiddenLinkCandidateMySQL(t *testing.T) {
 				{"entities outside styles", strings.Repeat("<div style=color:black>text&#32;</div>", 1600), 0},
 				{"backslashes outside styles", strings.Repeat(`<div style=color:black>path\name</div>`, 1600), 0},
 				{"style text before entity", strings.Repeat("style=color:black;", 4096) + ">text&#32;", 0},
+				{"repeated entities in text", `<div style="color:black">` + strings.Repeat("text&#32;", 4096) + "</div>", 0},
+				{"repeated backslashes in text", `<div style="color:black">` + strings.Repeat(`path\name`, 4096) + "</div>", 0},
+				{"repeated named entities in text", `<div style="color:black">` + strings.Repeat("text&colon;", 4096) + "</div>", 0},
+				{"encoded attribute before style", `<div title="` + strings.Repeat("&#32;", 4096) + `" style="color:black">`, 0},
 				{"serialized style metadata", `{"style":"color:black","label":"&#32;"}`, 0},
 				{"CSS comments", "display" + strings.Repeat("/**/", 4096) + "block", 0},
+				{"commented visible display with text", `<div style="display:/*theme*/block;color:black">none</div>`, 0},
+				{"commented visible offset with text", `<div style="left:/*layout*/0">left - ordinary layout</div>`, 0},
+				{"commented visible opacity", `<div style="opacity:/*theme*/1;left:0">visible</div>`, 0},
+				{"repeated visible comments", strings.Repeat(`<div style="display:/*theme*/block">none</div>`, 1600), 0},
+				{"long comment before hidden value", `<div style="display:/*` + strings.Repeat("theme ", 4096) + `*/none">`, 1},
+				{"many comments before hidden value", `<div style="display:` + strings.Repeat("/**/", 4096) + `none">`, 1},
+				{"long gaps around comment", `<div style="display:` + strings.Repeat(" ", 4096) + "/**/" + strings.Repeat(" ", 4096) + `none">`, 1},
+				{"encoded style with many markers", `<div style="--label:` + strings.Repeat("&#32;", 4096) + `;d&#105;splay:none">`, 1},
+				{"encoded style with intervening ampersand", `<div style="--label:a&b;d&#105;splay:none">`, 1},
 				{"offscreen", `<div style="left:-9999px">`, 1},
 				{"commented hiding", `<div style="display:/* theme fallback */none">`, 1},
 				{"calc", `<div style="left:calc(-9999px)">`, 1},
@@ -185,6 +200,16 @@ func TestHiddenLinkCandidatePatternCoversParsedStyles(t *testing.T) {
 		"display:none",
 		"display:/**/none",
 		"display:/* theme fallback */none",
+		"display/**/:/**/none",
+		"display:/* outer /* inner */none",
+		"visibility:/* theme */collapse",
+		"opacity:/* theme */+0",
+		"opacity:/* theme */+.0",
+		"opacity:/* theme */-1",
+		"opacity:/* theme */1e-400",
+		"opacity:\u2009/* theme */\u20090",
+		"left:calc(/* layout */-9999px)",
+		"margin-top:/* layout */-9999px",
 		"visibility: hidden!important",
 		"opacity:0.0",
 		"opacity:.0",
@@ -198,7 +223,11 @@ func TestHiddenLinkCandidatePatternCoversParsedStyles(t *testing.T) {
 		"MARGIN-LEFT: -9999PX",
 	} {
 		t.Run(style, func(t *testing.T) {
-			if !candidate(`<div style="` + style + `">`) {
+			markup := `<div style="` + style + `"><a href="https://spam.example/">x</a></div>`
+			if hit := hiddenOffsiteLinks(markup, "shop.example"); len(hit.hosts) != 1 {
+				t.Fatal("fixture is not recognized by the existing CSS parser")
+			}
+			if !candidate(markup) {
 				t.Fatalf("candidate query misses supported style %q", style)
 			}
 		})
@@ -241,9 +270,41 @@ func TestHiddenLinkCandidateMySQLLegacyCharset(t *testing.T) {
 		{`<div style="color:black">ordinary</div>`, 0},
 		{`<div style="display:none">`, 1},
 		{`<div style="left:&#45;9999px">`, 1},
+		{"<div style=\"opacity:\u00a00\">", 1},
+		{"<div style=\"opacity:/* theme */\u00a00\">", 1},
+		{`<div style="display:/*theme*/block">none</div>`, 0},
 	} {
 		if got := hiddenLinkMySQLCandidate(t, conn, ctx, tc.markup); got != tc.want {
 			t.Fatalf("latin1 candidate = %d, want %d", got, tc.want)
+		}
+	}
+}
+
+func TestHiddenLinkCandidateMySQLEncodingRelation(t *testing.T) {
+	conn, ctx := hiddenLinkMySQLConn(t)
+	for _, marker := range []string{"&#0", "&#32;", "&#x0", "&#x20;", "&#XAf;", "&colon;", `\69`} {
+		t.Run(marker, func(t *testing.T) {
+			for _, tc := range []struct {
+				markup string
+				want   int
+			}{
+				{`<div style = "--label:` + marker + `">`, 1},
+				{`<div style="--label:a&b;` + marker + `">`, 1},
+				{`<div title="` + marker + `" style="color:black">`, 0},
+				{`<div style="color:black">` + marker + `</div>`, 0},
+				{`<div style="color:black">` + marker + `<div style="color:black">`, 0},
+				{`<div title="` + marker + `" style="--label:` + marker + `">`, 1},
+			} {
+				if got := hiddenLinkMySQLCandidate(t, conn, ctx, tc.markup); got != tc.want {
+					t.Fatalf("candidate = %d, want %d for %q", got, tc.want, tc.markup)
+				}
+			}
+		})
+	}
+	for _, marker := range []string{"&#q;", "&#xq;", "&comma;", "a&b"} {
+		markup := `<div style="--label:` + marker + `">`
+		if got := hiddenLinkMySQLCandidate(t, conn, ctx, markup); got != 0 {
+			t.Fatalf("unsupported encoding became a candidate: %q", marker)
 		}
 	}
 }
