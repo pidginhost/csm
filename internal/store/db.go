@@ -234,6 +234,12 @@ func (db *DB) HasBucket(name string) bool {
 	return found
 }
 
+// timeKeyFillPercent is the split point for buckets keyed by TimeKey. Their
+// keys arrive almost in order, so a split page is never written again; at
+// bbolt's default of 0.5 those pages stay half empty. 0.9 leaves room for the
+// occasional older timestamp without splitting a full page in two.
+const timeKeyFillPercent = 0.9
+
 // TimeKey produces a fixed-width 28-byte key for chronological ordering.
 // Format: YYYYMMDDHHmmssNNNNNNNNN-CCCC
 // Lexicographic order equals chronological order.

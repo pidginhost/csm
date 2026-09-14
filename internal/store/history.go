@@ -20,6 +20,7 @@ var maxHistoryEntries = 100_000
 func (db *DB) AppendHistory(findings []alert.Finding) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("history"))
+		b.FillPercent = timeKeyFillPercent
 
 		for i, f := range findings {
 			val, err := json.Marshal(alert.SanitizeFinding(f))

@@ -47,6 +47,7 @@ type IPRecord struct {
 func (db *DB) RecordAttackEvent(event AttackEvent, counter int) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		primary := tx.Bucket([]byte("attacks:events"))
+		primary.FillPercent = timeKeyFillPercent
 		secondary := tx.Bucket([]byte("attacks:events:ip"))
 
 		key := TimeKey(event.Timestamp, counter)
