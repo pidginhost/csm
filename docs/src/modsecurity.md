@@ -59,10 +59,10 @@ The WordPress user enumeration filter blocks anonymous requests for the REST
 users route, whether the route follows `wp-json/` in the path or starts at
 `wp/v2/users` in the `rest_route` query parameter, in any letter case. Other
 page paths and REST namespaces are left alone. Query values are matched as
-already decoded by the query parser. Requests that carry an `Authorization` header or
-a WordPress logged-in cookie pass, so admin screens, the editor and Application
-Password clients keep working. Both are presence checks: the filter turns away
-anonymous scanners, and WordPress still decides who is signed in.
+already decoded by the query parser. Requests that carry an `Authorization`
+header or a WordPress logged-in cookie pass, so admin screens, the editor and
+Application Password clients keep working. Both are presence checks: the filter
+turns away anonymous scanners, and WordPress still decides who is signed in.
 
 The filter runs in phase 1 and does not inspect request bodies. A route supplied
 only in a POST body, including with a REST method override, is outside its scope.

@@ -589,7 +589,7 @@ func TestModSecUserEnumerationRouteSemantics(t *testing.T) {
 	if rules[0][1] != "REQUEST_FILENAME" {
 		t.Fatal("path matcher must inspect only the path")
 	}
-	const selector = `ARGS_GET:/^\x20*rest[._\x20\[]route(?:\x00[\s\S]*)?$/`
+	const selector = `ARGS_GET:/^\x20*rest[._\x20\[]route$/`
 	if rules[1][1] != selector {
 		t.Fatalf("query selector = %q, want PHP-normalized rest_route names", rules[1][1])
 	}

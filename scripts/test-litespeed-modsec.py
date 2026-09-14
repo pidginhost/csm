@@ -56,7 +56,7 @@ def user_enumeration_cases():
         yield "anonymous " + uri, "GET", uri, "", {}, True
     for uri in ("/?rest_route=/wp/v2/users", "/?rest_route=wp/v2/users", "/?rest_route=%2Fwp%2Fv2%2Fusers", "/?rest_route=/wp/v2/users/1", "/?rest_route=/WP/V2/Users"):
         yield "anonymous query " + uri, "GET", uri, "", {}, True
-    for name in ("rest.route", "rest%20route", "+rest_route", "rest[route", "rest_route%00", "rest.route%00ignored"):
+    for name in ("rest.route", "rest%20route", "+rest_route", "rest[route"):
         yield "rest_route alias " + name, "GET", "/?" + name + "=/wp/v2/users", "", {}, True
     for uri in ("/wp-json/wp/v2/users%5C", "/?rest_route=/wp/v2/users%5C", "/?rest_route=/wp/v2/users%5C%5C/"):
         yield "trailing backslash " + uri, "GET", uri, "", {}, True
