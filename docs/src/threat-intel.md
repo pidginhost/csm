@@ -91,7 +91,8 @@ A missing PTR suppresses further DNS lookups for one fixed hour in the state
 database, including across restarts. Scans do not extend that hour. After it
 lapses, DNS retries resume, but the record remains as attempt history for a
 day, so a restart or in-memory eviction cannot grant fresh pending treatment.
-Records older than that are removed as new ones are written. A definitive
+Records older than that are removed as new ones are written. Cleanup is
+attempted at most once an hour, including after a failed cleanup. A definitive
 verification result replaces that history. The record is not a verdict: it
 grants neither the verified-crawler exemption nor pending treatment, and it
 never counts as a spoof. `csm store reset-bot-verify` and a `verified_bots`

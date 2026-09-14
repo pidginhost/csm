@@ -127,7 +127,8 @@ type AsyncBotVerifier struct {
 	// scans, so repeat claims wait for the record to lapse instead of queuing
 	// the same lookup on every scan and crowding out crawlers not yet checked.
 	unverifiable UnverifiableRecords
-	// unverifiableSwept is owned by the single worker that writes records.
+	// unverifiableSwept tracks sweep attempts, including failures, and is
+	// owned by the single worker that writes records.
 	unverifiableSwept time.Time
 	stats             *queuehealth.Tracker
 	stop              <-chan struct{}
@@ -437,8 +438,8 @@ func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verify
 }
 
 // recordUnverifiable reports whether a no-PTR result is settled. It is not a
-// verdict, so retry history keeps the source and a lapsed record never grants
-// a fresh pending grace. An unwritten record leaves the work unaccounted for.
+// verdict, so a lapsed record prevents fresh pending grace while within the
+// history window. An unwritten record leaves the work unaccounted for.
 func (a *AsyncBotVerifier) recordUnverifiable(job verifyJob) bool {
 	if a.unverifiable == nil {
 		return true
@@ -449,11 +450,11 @@ func (a *AsyncBotVerifier) recordUnverifiable(job verifyJob) bool {
 	}
 	// Records past the attempt history affect nothing. Sweeping after a write
 	// bounds the bucket by recent no-PTR volume; once an hour keeps the scan
-	// off the per-result path. A failed sweep is retried on the next write.
+	// off the per-result path. Failures also wait an hour, so a failing large
+	// transaction cannot hold up every subsequent result write.
 	if now.Sub(a.unverifiableSwept) >= botVerifyUnverifiableTTL {
-		if _, err := a.unverifiable.SweepBotVerifyUnverifiable(now.Add(-botVerifyCacheTTL)); err == nil {
-			a.unverifiableSwept = now
-		}
+		a.unverifiableSwept = now
+		_, _ = a.unverifiable.SweepBotVerifyUnverifiable(now.Add(-botVerifyCacheTTL))
 	}
 	return true
 }

@@ -39,10 +39,11 @@ func (r *countingResolver) count() int {
 // memoryUnverifiable keeps no-PTR records the way the store does, so fake
 // time can drive suppression, history and sweeps.
 type memoryUnverifiable struct {
-	mu       sync.Mutex
-	observed map[string]time.Time
-	failPut  bool
-	sweeps   int
+	mu        sync.Mutex
+	observed  map[string]time.Time
+	failPut   bool
+	failSweep bool
+	sweeps    int
 }
 
 func (m *memoryUnverifiable) PutBotVerifyUnverifiable(ip net.IP, bot string, observedAt time.Time) error {
@@ -69,6 +70,9 @@ func (m *memoryUnverifiable) SweepBotVerifyUnverifiable(cutoff time.Time) (int, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sweeps++
+	if m.failSweep {
+		return 0, errors.New("sweep unavailable")
+	}
 	n := 0
 	for key, observed := range m.observed {
 		if observed.Before(cutoff) {
@@ -277,7 +281,8 @@ func TestBotNoPTRRetriesAfterRecordLapsesWithoutPendingRenewal(t *testing.T) {
 func TestBotNoPTRRecordWriteFailureIsLostWork(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		res := &countingResolver{}
-		a := NewAsyncBotVerifier(nil, &memoryUnverifiable{failPut: true})
+		records := &memoryUnverifiable{failPut: true}
+		a := NewAsyncBotVerifier(nil, records)
 		a.v["gptbot"] = newVerifier(res, []string{"openai.com"})
 		ip := net.ParseIP("198.51.100.30")
 
@@ -287,6 +292,9 @@ func TestBotNoPTRRecordWriteFailureIsLostWork(t *testing.T) {
 		a.process(<-a.ch)
 		if status := botQueueStatus(t, a); status.DroppedTotal != 1 {
 			t.Fatalf("unrecorded no-PTR result dropped %d, want 1", status.DroppedTotal)
+		}
+		if records.sweeps != 0 {
+			t.Fatal("failed record write triggered a sweep")
 		}
 		// Nothing was persisted, so the normal retry cooldown governs.
 		time.Sleep(botVerifyRetryDelay + time.Second)
@@ -367,6 +375,120 @@ func TestBotNoPTRHistoryIsSweptOnceItCannotMatter(t *testing.T) {
 		noPTR("192.0.2.52")
 		if records.sweeps != sweeps+1 {
 			t.Errorf("sweeps after an hour = %d, want %d", records.sweeps, sweeps+1)
+		}
+	})
+}
+
+func TestBotNoPTRFailedSweepWaitsBeforeRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		records := &memoryUnverifiable{failSweep: true}
+		stale := net.ParseIP("192.0.2.60")
+		if err := records.PutBotVerifyUnverifiable(stale, "facebookbot", time.Now().Add(-2*botVerifyCacheTTL)); err != nil {
+			t.Fatal(err)
+		}
+		a := NewAsyncBotVerifier(nil, records)
+		a.v["facebookbot"] = newVerifier(&countingResolver{}, []string{"fbsv.net"})
+		noPTR := func(ip string) {
+			t.Helper()
+			addr := net.ParseIP(ip)
+			if !a.Enqueue(addr, "facebookbot") {
+				t.Fatalf("claim from %s was not queued", ip)
+			}
+			a.process(<-a.ch)
+			if a.Enqueue(addr, "facebookbot") || a.Pending(addr, "facebookbot") {
+				t.Fatal("sweep failure discarded successful retry suppression")
+			}
+			if status := botQueueStatus(t, a); status.DroppedTotal != 0 || status.Depth != 0 || status.InFlight != 0 {
+				t.Fatalf("sweep failure unsettled recorded work: %+v", status)
+			}
+		}
+		noPTR("192.0.2.61")
+		if records.sweeps != 1 {
+			t.Fatalf("initial sweep attempts = %d, want 1", records.sweeps)
+		}
+		for i := range 20 {
+			noPTR(fmt.Sprintf("2001:db8:3::%x", i+1))
+		}
+		time.Sleep(botVerifyUnverifiableTTL - time.Nanosecond)
+		noPTR("192.0.2.62")
+		if records.sweeps != 1 {
+			t.Fatalf("failed sweep retried within the hour: %d attempts", records.sweeps)
+		}
+		if _, ok := records.BotVerifyUnverifiable(stale, "facebookbot"); !ok {
+			t.Fatal("failed sweep removed history")
+		}
+		records.failSweep = false
+		time.Sleep(time.Nanosecond)
+		noPTR("192.0.2.63")
+		if records.sweeps != 2 {
+			t.Fatalf("sweep attempts after recovery = %d, want 2", records.sweeps)
+		}
+		if _, ok := records.BotVerifyUnverifiable(stale, "facebookbot"); ok {
+			t.Fatal("recovered sweep retained stale history")
+		}
+		if records.len() != 23 {
+			t.Fatalf("recovered sweep retained %d records, want 23 fresh records", records.len())
+		}
+	})
+}
+
+func TestBotNoPTRHistoryBoundaryWithAndWithoutSweep(t *testing.T) {
+	for _, age := range []time.Duration{botVerifyCacheTTL - time.Nanosecond, botVerifyCacheTTL, botVerifyCacheTTL + time.Nanosecond} {
+		for _, sweep := range []bool{false, true} {
+			t.Run(fmt.Sprintf("age=%s/sweep=%t", age, sweep), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					records := &memoryUnverifiable{}
+					ip := net.ParseIP("192.0.2.64")
+					if err := records.PutBotVerifyUnverifiable(ip, "facebookbot", time.Now().Add(-age)); err != nil {
+						t.Fatal(err)
+					}
+					if sweep {
+						if _, err := records.SweepBotVerifyUnverifiable(time.Now().Add(-botVerifyCacheTTL)); err != nil {
+							t.Fatal(err)
+						}
+					}
+					a := NewAsyncBotVerifier(nil, records)
+					if !a.Enqueue(ip, "facebookbot") {
+						t.Fatal("lapsed record prevented DNS retry")
+					}
+					if want := age >= botVerifyCacheTTL; a.Pending(ip, "facebookbot") != want {
+						t.Fatalf("pending = %t, want %t", a.Pending(ip, "facebookbot"), want)
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestBotNoPTRRecordVolumeIsBoundedByAdmission(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		records := &memoryUnverifiable{}
+		res := &countingResolver{}
+		a := NewAsyncBotVerifier(nil, records)
+		a.v["facebookbot"] = newVerifier(res, []string{"fbsv.net"})
+		// Even instantly completed lookups can add only one full history per
+		// cooldown. This limits the volume scanned by hourly retention.
+		for round := range 3 {
+			for i := range 2 * cap(a.ch) {
+				ip := net.ParseIP(fmt.Sprintf("2001:db8:%x::%x", round, i+1))
+				admitted := a.Enqueue(ip, "facebookbot")
+				if admitted != (i < cap(a.ch)) {
+					t.Fatalf("round %d source %d admission = %t", round, i, admitted)
+				}
+				if admitted {
+					a.process(<-a.ch)
+				}
+			}
+			if want := (round + 1) * cap(a.ch); records.len() != want || res.count() != want {
+				t.Fatalf("record/lookup counts = %d/%d, want %d", records.len(), res.count(), want)
+			}
+			if len(a.attempts) != cap(a.ch) {
+				t.Fatalf("attempt history size = %d, want %d", len(a.attempts), cap(a.ch))
+			}
+			time.Sleep(botVerifyRetryDelay)
+		}
+		if records.sweeps != 1 {
+			t.Fatalf("busy cooldowns triggered %d sweeps, want 1", records.sweeps)
 		}
 	})
 }

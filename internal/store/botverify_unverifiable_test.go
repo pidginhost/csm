@@ -140,6 +140,34 @@ func TestResetBotVerifyClearsUnverifiableRecords(t *testing.T) {
 	}
 }
 
+func TestBotVerifyBucketsExistAfterOpenAndReset(t *testing.T) {
+	db := openBotVerifyTestDB(t, t.TempDir())
+	for _, step := range []string{"open", "reset", "logic version"} {
+		t.Run(step, func(t *testing.T) {
+			switch step {
+			case "reset":
+				if _, err := db.ResetBotVerify(); err != nil {
+					t.Fatal(err)
+				}
+			case "logic version":
+				if _, err := db.EnsureBotVerifyLogicVersion(1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.bolt.View(func(tx *bolt.Tx) error {
+				for _, name := range []string{"botverify", botVerifyUnverifiableBucket} {
+					if tx.Bucket([]byte(name)) == nil {
+						t.Errorf("%s left bucket %s missing", step, name)
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestEnsureBotVerifyLogicVersionClearsUnverifiableRecords(t *testing.T) {
 	db := openBotVerifyTestDB(t, t.TempDir())
 	if _, err := db.EnsureBotVerifyLogicVersion(1); err != nil {
