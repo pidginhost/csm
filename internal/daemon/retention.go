@@ -106,10 +106,9 @@ func registerRetentionMetrics() {
 // no timer fires.
 //
 // Compaction is NOT triggered from here: reclaiming space safely requires
-// the daemon to close and reopen the bbolt handle under coordinated
-// exclusive access, which is the job of `csm store compact` with the
-// daemon stopped. This goroutine instead emits an info log when the file
-// crosses CompactMinSizeMB so operators know a compact is due.
+// exclusive access to the bbolt file, which only startup and `csm store
+// compact` with the daemon stopped have. This goroutine instead emits an info
+// log when the startup compaction rule says a restart would reclaim space.
 func (d *Daemon) retentionScanner() {
 	defer d.wg.Done()
 	registerRetentionMetrics()
@@ -168,20 +167,30 @@ func (d *Daemon) runRetentionTick() {
 		csmlog.Warn("retention sweep bucket error", "err", err)
 	}
 
-	// Size check: surface a human-readable hint when the file has grown past
-	// the configured floor. The daemon auto-compacts at the next startup
-	// (maybeCompactStateAtStartup), so a restart reclaims the space; `csm store
-	// compact` does it immediately with the daemon stopped.
-	if cfg != nil && cfg.Retention.CompactMinSizeMB > 0 && db != nil {
-		size, err := db.Size()
-		if err == nil {
-			minBytes := int64(cfg.Retention.CompactMinSizeMB) * 1024 * 1024
-			if size >= minBytes {
-				csmlog.Info("retention: state db is large; it will be auto-compacted on the next restart (or run `csm store compact` now with the daemon stopped)",
-					"size_bytes", size,
-					"min_bytes", minBytes,
-				)
-			}
-		}
+	// Compaction hint: the daemon auto-compacts at the next startup
+	// (maybeCompactStateAtStartup), and `csm store compact` does it now with
+	// the daemon stopped. Say so only when that startup check would act.
+	if size, free, due := compactionHintDue(db, cfg); due {
+		csmlog.Info("retention: state db is mostly free space; it will be auto-compacted on the next restart (or run `csm store compact` now with the daemon stopped)",
+			"size_bytes", size,
+			"free_bytes", free,
+		)
 	}
+}
+
+// compactionHintDue applies the startup compaction rule to the live db. A
+// large file whose pages are still in use is not compacted, so it gets no hint.
+func compactionHintDue(db *store.DB, cfg *config.Config) (size, free int64, due bool) {
+	if cfg == nil || db == nil {
+		return 0, 0, false
+	}
+	size, err := db.Size()
+	if err != nil {
+		return 0, 0, false
+	}
+	free, err = db.FreeBytes()
+	if err != nil {
+		return 0, 0, false
+	}
+	return size, free, store.CompactionDue(size, free, cfg.Retention.CompactMinSizeMB, cfg.Retention.CompactFillRatio)
 }

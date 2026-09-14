@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -159,5 +160,73 @@ func TestRunRetentionOnce_ZeroDaysSkipsThatBucket(t *testing.T) {
 	}
 	if db.HistoryCount() != 1 {
 		t.Errorf("HistoryCount = %d, want 1", db.HistoryCount())
+	}
+}
+
+// fillHistory writes padded history rows until the state db passes minBytes,
+// then optionally deletes them, leaving a file that is large but either
+// densely used or mostly free pages.
+func fillHistory(t *testing.T, db *store.DB, minBytes int64, deleteAll bool) {
+	t.Helper()
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for batch := 0; ; batch++ {
+		size, err := db.Size()
+		if err != nil {
+			t.Fatalf("Size: %v", err)
+		}
+		if size >= minBytes {
+			break
+		}
+		findings := make([]alert.Finding, 0, 500)
+		for i := range 500 {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "c",
+				Message:   strings.Repeat("x", 512),
+				Timestamp: base.Add(time.Duration(batch*500+i) * time.Second),
+			})
+		}
+		if err := db.AppendHistory(findings); err != nil {
+			t.Fatalf("AppendHistory: %v", err)
+		}
+	}
+	if deleteAll {
+		if _, err := db.SweepHistoryOlderThan(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("SweepHistoryOlderThan: %v", err)
+		}
+	}
+}
+
+func TestCompactionHintOnlyWhenRestartWouldCompact(t *testing.T) {
+	const mb = 1024 * 1024
+	for _, tc := range []struct {
+		name      string
+		deleteAll bool
+		minSizeMB int
+		want      bool
+	}{
+		// The startup compaction skips a file whose pages are still in use.
+		// Promising a compaction there misleads the operator on every tick.
+		{"large and densely used", false, 2, false},
+		{"large and mostly free", true, 2, true},
+		{"below the size floor", true, 64, false},
+		{"hint disabled", true, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+			fillHistory(t, db, 3*mb, tc.deleteAll)
+
+			cfg := retentionCfg(true, 0, 0, 0)
+			cfg.Retention.CompactMinSizeMB = tc.minSizeMB
+			if _, _, due := compactionHintDue(db, cfg); due != tc.want {
+				size, _ := db.Size()
+				free, _ := db.FreeBytes()
+				t.Fatalf("hint due = %v, want %v (size=%d free=%d)", due, tc.want, size, free)
+			}
+		})
 	}
 }

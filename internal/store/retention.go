@@ -113,6 +113,28 @@ func (db *DB) Size() (int64, error) {
 	return info.Size(), nil
 }
 
+// CompactionDue reports whether the state db is worth compacting: large enough
+// that the slack matters AND fragmented enough that a compaction would reclaim
+// a meaningful fraction. minSizeMB and fillRatio come from Retention config;
+// non-positive values disable the check. freeBytes above sizeBytes is clamped
+// (used=0) rather than producing a negative fill. Startup compaction and the
+// daemon's compaction hint share it so the hint never promises a compaction
+// the next start will skip.
+func CompactionDue(sizeBytes, freeBytes int64, minSizeMB int, fillRatio float64) bool {
+	if minSizeMB <= 0 || fillRatio <= 0 || sizeBytes <= 0 {
+		return false
+	}
+	if sizeBytes < int64(minSizeMB)*1024*1024 {
+		return false
+	}
+	used := sizeBytes - freeBytes
+	if used < 0 {
+		used = 0
+	}
+	fill := float64(used) / float64(sizeBytes)
+	return fill < fillRatio
+}
+
 // FreeBytes returns the number of bytes held by free and pending pages in the
 // bbolt freelist -- the space a compaction would reclaim. bbolt never shrinks
 // the file on delete, so a large FreeBytes relative to Size means the on-disk

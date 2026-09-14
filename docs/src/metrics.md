@@ -120,7 +120,8 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
   database (`/var/lib/csm/state/csm.db` by default). Retention sweeps
   bound logical growth. Startup compaction reclaims freelisted pages
   automatically when the file is large and mostly slack; `csm store
-  compact` does the same immediately with the daemon stopped.
+  compact` does the same immediately with the daemon stopped. The
+  retention sweep logs a restart hint only under that same condition.
 
 ### Fanotify realtime monitor
 
