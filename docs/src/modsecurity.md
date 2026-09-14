@@ -55,6 +55,13 @@ vulnerable plugin compares hashes loosely; padding or exponent notation must not
 turn a weak hash into an exempt one. These checks also keep public crawler reads
 allowed.
 
+The WordPress user enumeration filter blocks anonymous requests for the REST
+users route, whether the route is in the path or in the `rest_route` query
+parameter, in any letter case. Requests that carry an `Authorization` header or
+a WordPress logged-in cookie pass, so admin screens, the editor and Application
+Password clients keep working. Both are presence checks: the filter turns away
+anonymous scanners, and WordPress still decides who is signed in.
+
 For Apache ModSecurity v2 regression validation, run
 `python3 scripts/test-litespeed-modsec.py` in a disposable Debian Linux environment
 with `apache2`, `libapache2-mod-security2`, `libapache2-mod-php`, and `python3`

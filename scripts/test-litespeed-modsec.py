@@ -21,7 +21,7 @@ WEAK = "litespeed_role=1; litespeed_hash=Ab3Xz9"
 STRONG = "litespeed_role=1; litespeed_hash=" + "Ab3Xz9" * 5 + "a1"
 
 
-def cases():
+def role_simulation_cases():
     for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"):
         yield method + " users", method, "/wp-json/wp/v2/users", WEAK, {}, True
         yield method + " public", method, "/shop/", WEAK, {}, method not in ("GET", "HEAD")
@@ -48,24 +48,53 @@ def cases():
         yield "unrelated " + cookie, "POST", "/", cookie, {}, False
 
 
+SESSION = "wordpress_logged_in_0123456789abcdef=admin%7C1789000000%7Ctoken%7Chmac"
+
+
+def user_enumeration_cases():
+    for uri in ("/wp-json/wp/v2/users", "/wp-json/wp/v2/users/", "//wp-json/wp/v2/users/", "/wp-json/wp/v2/users/1", "/wp-json/wp/v2/users?per_page=100", "/WP-JSON/WP/V2/USERS", "/blog/wp-json/wp/v2/users", "/wp-json/wp/v2/%75sers"):
+        yield "anonymous " + uri, "GET", uri, "", {}, True
+    for uri in ("/?rest_route=/wp/v2/users", "/?rest_route=wp/v2/users", "/?rest_route=%2Fwp%2Fv2%2Fusers", "/?rest_route=/wp/v2/users/1", "/?rest_route=/WP/V2/Users"):
+        yield "anonymous query " + uri, "GET", uri, "", {}, True
+    for name in ("rest.route", "rest%20route", "+rest_route", "rest[route"):
+        yield "rest_route alias " + name, "GET", "/?" + name + "=/wp/v2/users", "", {}, True
+    yield "anonymous write", "POST", "/wp-json/wp/v2/users/me/application-passwords", "", {}, True
+    # Only the logged-in cookie exempts: WordPress sets the others for visitors
+    # and a cookie value is not a cookie name.
+    for cookie in ("wp-settings-1=libraryContent%3Dbrowse", "wordpress_test_cookie=WP%20Cookie%20check", "a=wordpress_logged_in_0123456789abcdef", "wordpress_sec_0123456789abcdef=x"):
+        yield "visitor cookie " + cookie, "GET", "/wp-json/wp/v2/users", cookie, {}, True
+    nonce = {"X-WP-Nonce": "0123456789"}
+    yield "admin application password", "POST", "/wp-json/wp/v2/users/me/application-passwords?_locale=user", SESSION, nonce, False
+    yield "admin profile", "GET", "/wp-json/wp/v2/users/me?context=edit&_locale=user", "wp-settings-1=x; " + SESSION + "; wp-settings-time-1=1", nonce, False
+    yield "editor author list", "GET", "/wp-json/wp/v2/users?who=authors&per_page=100", SESSION, nonce, False
+    yield "admin query route", "GET", "/?rest_route=/wp/v2/users/me", SESSION, nonce, False
+    yield "application password client", "GET", "/wp-json/wp/v2/users/me", "", {"Authorization": "Basic YWRtaW46eHh4eA=="}, False
+    for uri in ("/", "/shop/", "/wp-json/wp/v2/posts", "/wp-json/wp/v2/users-guide", "/wp-json/wp/v2/usersx", "/?rest_route=/wp/v2/users-guide", "/?rest_route=/wp/v2/posts", "/?next=/wp-json/wp/v2/users", "/?redirect_to=/wp/v2/users", "/wp-login.php?redirect_to=%2Fwp-json%2Fwp%2Fv2%2Fusers"):
+        yield "unrelated " + uri, "GET", uri, "", {}, False
+
+
+GROUPS = (
+    ("role simulation", ("900128", "900129"), role_simulation_cases),
+    ("user enumeration", ("900112",), user_enumeration_cases),
+)
+
+
 def request(port, method, uri, cookie, headers):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        conn.request(method, uri, headers={"Cookie": cookie, **headers})
+        if cookie:
+            headers = {"Cookie": cookie, **headers}
+        conn.request(method, uri, headers=headers)
         response = conn.getresponse()
         return response.status, response.read()
     finally:
         conn.close()
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--conf", type=Path, default=ROOT / "configs/csm_modsec_custom.conf")
-    args = parser.parse_args()
-    conf = args.conf.resolve()
+def run_group(conf, enabled, cases):
     # Parse the complete file before excluding unrelated denies, so a bad
     # directive anywhere still fails the configuration-load gate.
-    other_ids = [i for i in re.findall(r"\bid:(\d+)", conf.read_text()) if i not in ("900128", "900129")]
+    other_ids = [i for i in re.findall(r"\bid:(\d+)", conf.read_text()) if i not in enabled]
     modules = Path("/usr/lib/apache2/modules")
     php_module = next(modules.glob("libphp*.so"))
     with socket.socket() as sock:
@@ -86,6 +115,7 @@ echo json_encode([
     'user' => is_numeric($role) ? (int) $role : 0,
     'hash_matches' => $hash == 'Ab3Xz9' || $hash == '123456',
     'method' => strtoupper($_GET['_method'] ?? $_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'] ?? $_SERVER['REQUEST_METHOD']),
+    'rest_route' => $_GET['rest_route'] ?? null,
 ]);
 ''')
         apache_conf = base / "httpd.conf"
@@ -154,15 +184,34 @@ SecRuleRemoveById {' '.join(other_ids)}
                     parsed = json.loads(probe)
                     if parsed["user"] != 1 or not parsed["hash_matches"]:
                         failures.append(f"{name}: PHP does not accept the simulation fixture: {parsed}")
+                # WordPress reads rest_route through PHP, which folds these
+                # spellings into the canonical name. Probe a harmless route
+                # with the same parameter name to prove each alias is real.
+                if name.startswith("rest_route alias "):
+                    probe_status, probe = request(port, "GET", uri.replace("users", "posts"), "", {})
+                    if probe_status != 200 or json.loads(probe)["rest_route"] != "/wp/v2/posts":
+                        failures.append(f"{name}: PHP does not read the parameter as rest_route")
             if failures:
                 print((base / "error.log").read_text()[-5000:])
-            for failure in failures:
-                print("FAIL:", failure)
-            print(f"{count} ModSecurity request cases; {len(failures)} failures")
-            return bool(failures)
+            return count, failures
         finally:
             server.terminate()
             server.wait(timeout=5)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--conf", type=Path, default=ROOT / "configs/csm_modsec_custom.conf")
+    args = parser.parse_args()
+    conf = args.conf.resolve()
+    failed = False
+    for label, enabled, cases in GROUPS:
+        count, failures = run_group(conf, enabled, cases)
+        for failure in failures:
+            print(f"FAIL [{label}]:", failure)
+        print(f"{label}: {count} ModSecurity request cases; {len(failures)} failures")
+        failed = failed or bool(failures)
+    return failed
 
 
 if __name__ == "__main__":

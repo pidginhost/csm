@@ -513,3 +513,108 @@ func TestLiteSpeedSimulationRequestSemantics(t *testing.T) {
 		}
 	}
 }
+
+// WordPress authenticates its own admin screens with the logged-in cookie and
+// a nonce, never an Authorization header. Treating a missing header as an
+// anonymous client blocked administrators creating Application Passwords and
+// the editor loading its author list, while the query-string form of the same
+// route and upper-case spellings went through unfiltered.
+func userEnumerationChain(t *testing.T) [][]string {
+	t.Helper()
+	conf := string(embeddedModSec)
+	const marker = "# --- Generic: Block REST API user enumeration"
+	start := strings.Index(conf, marker)
+	if start < 0 {
+		t.Fatal("user enumeration rule block missing")
+	}
+	block := conf[start:]
+	if next := strings.Index(block[len(marker):], "\n# --- "); next >= 0 {
+		block = block[:len(marker)+next]
+	}
+	block = strings.ReplaceAll(block, "\\\n", "")
+	links := regexp.MustCompile(`(?m)^SecRule (?:"([^"]+)"|(\S+)) "([^"]+)"(?:\s+"([^"]+)")?`).FindAllStringSubmatch(block, -1)
+	if len(links) != 3 {
+		t.Fatalf("got %d user enumeration chain links, want 3", len(links))
+	}
+	for _, link := range links {
+		if link[1] == "" {
+			link[1] = link[2]
+		}
+	}
+	return links
+}
+
+func TestModSecUserEnumerationChainSyntax(t *testing.T) {
+	links := userEnumerationChain(t)
+	starter := strings.Split(strings.ReplaceAll(links[0][4], " ", ""), ",")
+	for _, required := range []string{"id:900112", "phase:1", "deny", "status:403", "log", "t:none", "t:urlDecode", "t:normalizePath"} {
+		found := false
+		for _, action := range starter {
+			if action == required {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("chain starter missing %s", required)
+		}
+	}
+	if !strings.Contains(links[0][4], "msg:'CSM VP: WordPress user enumeration blocked'") {
+		t.Error("rule message changed; the web UI and hit history describe the rule by it")
+	}
+	if links[1][4] == "" || !strings.HasSuffix(strings.TrimSpace(links[1][4]), "chain") {
+		t.Error("second link must continue the chain")
+	}
+	if starter[len(starter)-1] != "chain" {
+		t.Error("chain must be the last starter action")
+	}
+	if links[2][4] != "" {
+		t.Errorf("final link must not carry actions, got %q", links[2][4])
+	}
+}
+
+func TestModSecUserEnumerationRouteSemantics(t *testing.T) {
+	route := userEnumerationChain(t)[0]
+	// The same selector and transforms already match on LiteSpeed for the
+	// role-simulation patch; paths and PHP-normalized rest_route names are
+	// inspected separately so a redirect value is never read as a route.
+	if route[1] != `REQUEST_FILENAME|ARGS_GET:/^\x20*rest[._\x20\[]route$/` {
+		t.Fatalf("route selector = %q, must cover the path and rest_route query aliases", route[1])
+	}
+	routeRE := regexp.MustCompile(strings.TrimPrefix(route[3], "@rx "))
+	for _, tc := range []struct {
+		value string
+		match bool
+	}{
+		{"/wp-json/wp/v2/users", true},
+		{"/wp-json/wp/v2/users/", true},
+		{"/wp-json/wp/v2/users/1", true},
+		{"/wp-json/wp/v2/users/me/application-passwords", true},
+		{"/blog/wp-json/wp/v2/users", true},
+		{"/index.php/wp-json/wp/v2/users", true},
+		{"/WP-JSON/WP/V2/USERS", true},
+		{"/wp/v2/users", true},
+		{"wp/v2/users", true},
+		{"wp/v2/users/2", true},
+		{"/wp-json/wp/v2/users-guide", false},
+		{"/wp-json/wp/v2/usersx", false},
+		{"/wp-json/wp/v2/posts", false},
+		{"/mywp/v2/users", false},
+		{"/shop/", false},
+	} {
+		if got := routeRE.MatchString(tc.value); got != tc.match {
+			t.Errorf("route %q matched = %v, want %v", tc.value, got, tc.match)
+		}
+	}
+}
+
+func TestModSecUserEnumerationExemptsAuthenticatedRequests(t *testing.T) {
+	links := userEnumerationChain(t)
+	if links[1][1] != "&REQUEST_HEADERS:Authorization" || links[1][3] != "@eq 0" {
+		t.Errorf("header link = %s %q, want requests without Authorization", links[1][1], links[1][3])
+	}
+	// A negated match over REQUEST_COOKIES_NAMES is satisfied by any other
+	// cookie, so a logged-in browser would still be blocked. Count instead.
+	if links[2][1] != "&REQUEST_COOKIES:/^wordpress_logged_in_/" || links[2][3] != "@eq 0" {
+		t.Errorf("session link = %s %q, want requests without a logged-in cookie", links[2][1], links[2][3])
+	}
+}
