@@ -118,7 +118,7 @@ func TestApiEmailFlushBackscatterRouteRequiresCSRF(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/email/queue/flush-backscatter", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: tok})
+	req.AddCookie(testBrowserCookie(t, s, tok))
 	w := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(w, req)
 
@@ -137,7 +137,7 @@ func TestApiEmailFlushBackscatterRouteGetDoesNotFlush(t *testing.T) {
 	s.queueFlusher = flusher
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/email/queue/flush-backscatter", nil)
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: tok})
+	req.AddCookie(testBrowserCookie(t, s, tok))
 	w := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(w, req)
 

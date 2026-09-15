@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/pidginhost/csm/internal/session"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -1175,6 +1176,14 @@ func TestArchiveImportSkipsTransientStateFromOlderArchive(t *testing.T) {
 	if err := pendingDB.SaveFirewallRollback(FirewallRollback{PrevYAML: []byte("old"), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
+	manager, sessionErr := session.New(pendingDB, time.Hour, time.Minute)
+	if sessionErr != nil {
+		t.Fatal(sessionErr)
+	}
+	secret, _, sessionErr := manager.Create("operator", "legacy-session-fingerprint", "", "", "", time.Now())
+	if sessionErr != nil {
+		t.Fatal(sessionErr)
+	}
 	if err := pendingDB.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1217,6 +1226,13 @@ func TestArchiveImportSkipsTransientStateFromOlderArchive(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(restoredState, filepath.FromSlash(rel))); !os.IsNotExist(err) {
 			t.Fatalf("import restored transient state %q: %v", rel, err)
 		}
+	}
+	restoredBytes, readErr := os.ReadFile(filepath.Join(restoredState, "csm.db"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if bytes.Contains(restoredBytes, []byte(session.Hash(secret))) || bytes.Contains(restoredBytes, []byte("legacy-session-fingerprint")) {
+		t.Fatal("import restored browser session metadata")
 	}
 	restoredDB, openErr := Open(restoredState)
 	if openErr != nil {

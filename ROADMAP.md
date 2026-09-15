@@ -61,18 +61,18 @@ browser credential isolation. They complement the harm-based priorities above.
 The delivery order within this architecture work is below; it does not defer
 Priority 1 protection failures or Priority 2 precision and response defects:
 
-1. [Browser sessions](#browser-sessions-must-not-carry-the-admin-token) and a
-   narrow extraction of their HTTP/domain boundary. This can ship independently.
-2. A firewall block/unblock slice of the
+Browser sessions and their HTTP/domain boundary are implemented. Remaining work:
+
+1. A firewall block/unblock slice of the
    [durable action lifecycle](#action-log-covers-six-of-twenty-seven-host-changes),
    including storage measurements and an explicit state-owner contract. Complete
    [firewall state migration](#firewall-state-migration-to-bbolt) with recovery
    proof, then use that action contract for the first privileged-helper verbs.
-3. Expand helper coverage and action recovery by response family; extend the
+2. Expand helper coverage and action recovery by response family; extend the
    [existing jobs](#job-model-for-every-long-running-operation) as each long
    operation moves behind a service. Drop main-process privileges only when the
    required reads, descriptors and mutations have verified replacements.
-4. Improve correlation through the shared replay harness, then add outbound
+3. Improve correlation through the shared replay harness, then add outbound
    fleet ingest. Panel availability must never gate local protection.
 
 No mandatory local broker, database server or orchestration platform is added.
@@ -755,34 +755,17 @@ code that executes as root is small enough to be read in one sitting.
 
 **Size:** weeks, staged. The largest item on this list.
 
-## Browser sessions must not carry the admin token
+## Optional MFA for browser administrators
 
-**Status:** open. Confirmed in `internal/webui/server.go`.
+**Status:** open. Browser sessions, expiry and revocation are implemented.
 
-The login form sets the `csm_auth` cookie to the admin token itself, valid for
-24 hours. A read-scope token exists for the API, and the CSRF boundary for
-cookie sessions is in place, but the cookie is the long-lived credential, so
-it cannot be revoked without rotating the token, has no idle timeout, and is
-the same secret the API and the panel integrations use.
+Add optional WebAuthn for administrator logins with an explicit enrollment,
+recovery and credential-loss story. Reuse the existing session and named-token
+identity boundary; define how enrollment and recovery invalidate active sessions.
 
-**Acceptance:** login creates a random server-side session with a configurable
-lifetime and idle timeout; the identifier rotates after authentication and on
-any privilege change; sessions are listed and individually revocable,
-including remote logout of every session; API credentials never appear in a
-cookie; MFA with WebAuthn is optional for UI administrators and lands as a
-follow-up with its own recovery story. See [web UI](docs/src/webui.md).
-
-Preserve the existing HttpOnly, Secure, SameSite and CSRF protections and API
-token scopes. Reuse `webui.tokens` for login authentication; sessions are a
-separate credential lifecycle, not a second administrator identity store.
-Reject legacy token-valued cookies after cutover while retaining API bearer
-authentication. Define token-rotation/revocation effects and restart behavior;
-backup restore must invalidate sessions. Store only a verifier for the opaque
-session secret and keep it out of logs, URLs and exports intended for support.
-Test expiry, idle timeout, logout, revocation and concurrent session rotation,
-including persistence failure, alongside the existing authorization tests.
-
-**Size:** 2-3 days for sessions; MFA separate.
+**Acceptance:** enrollment, authentication, lost-device recovery and removal
+have tested authorization and session-revocation behavior; API token scopes
+remain unchanged. See [browser sessions](docs/src/webui.md#browser-sessions).
 
 ## Web UI module split
 
@@ -792,10 +775,9 @@ quarantines, blocks and rewrites configuration.
 Split the handlers by domain -- findings, incidents, firewall, quarantine,
 scans, mail, settings, health -- behind narrow interfaces, and keep the
 security-sensitive logic out of the handler files so it can be reviewed and
-tested on its own. Extract the authentication/session boundary with browser
-sessions; that release does not depend on extracting every mutation handler.
-Move each remaining domain with its action/job slice, and complete the split
-before the external review so the reviewer reads the boundary rather than the
+tested on its own. The authentication/session boundary is extracted and
+browser sessions are implemented. Move each remaining domain with its
+action/job slice, and complete the split before the external review so the reviewer reads the boundary rather than the
 handlers.
 
 Handlers authenticate, authorize, decode and validate request shape, call a
@@ -834,10 +816,10 @@ Commission a focused external review of: web UI and API, authentication and
 session handling, privileged filesystem operations, quarantine, the nftables
 response, process termination, installer and update verification, archive
 handling, symlink and TOCTOU behaviour, IPC boundaries, and the BPF and
-fanotify integration. Schedule it after the sessions item and the first stage
-of privilege separation have landed, otherwise it reports what this file
-already says. Publish a summary of findings and remediation, and repeat a
-focused review after each major architecture change.
+fanotify integration. Schedule it after the first stage of privilege
+separation has landed so the review covers the new security boundary.
+Browser sessions are already implemented. Publish a summary of findings and
+remediation, and repeat a focused review after each major architecture change.
 
 ## Decide the trust model for internal CI builds
 

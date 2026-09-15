@@ -158,6 +158,9 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	if err = snap.Close(); err != nil {
 		return nil, fmt.Errorf("closing bbolt snapshot: %w", err)
 	}
+	if err = DisarmBrowserSessionsSnapshot(snapPath); err != nil {
+		return nil, err
+	}
 	if err = DisarmFirewallRollbackSnapshot(snapPath); err != nil {
 		return nil, err
 	}
@@ -409,6 +412,9 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		}
 	}
 	if (only == "all" || only == "firewall") && stagedBbolt != "" {
+		if err := DisarmBrowserSessionsSnapshot(stagedBbolt); err != nil {
+			return nil, err
+		}
 		if err := DisarmFirewallRollbackSnapshot(stagedBbolt); err != nil {
 			return nil, err
 		}

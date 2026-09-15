@@ -15,7 +15,9 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/session"
 	"github.com/pidginhost/csm/internal/state"
+	sessionstore "github.com/pidginhost/csm/internal/store"
 )
 
 // --- parseDuration -----------------------------------------------------
@@ -500,6 +502,16 @@ func newTestServer(t *testing.T, token string) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	db, err := sessionstore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s.sessions, err = session.New(db, 24*time.Hour, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
 	return s
 }
@@ -534,7 +546,7 @@ func TestIsAuthenticatedBearerInvalid(t *testing.T) {
 func TestIsAuthenticatedCookieValid(t *testing.T) {
 	s := newTestServer(t, "cookie-token")
 	req := httptest.NewRequest("GET", "/", nil)
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "cookie-token"})
+	req.AddCookie(testBrowserCookie(t, s, "cookie-token"))
 	if !s.isAuthenticated(req) {
 		t.Error("valid cookie should authenticate")
 	}

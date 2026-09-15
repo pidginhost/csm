@@ -9,10 +9,30 @@ Machine-readable HTTPS API. All endpoints require token authentication. State-ch
 curl -H "Authorization: Bearer YOUR_TOKEN" https://server:9443/api/v1/status
 
 # Cookie-based (after login)
-curl -b "csm_auth=YOUR_TOKEN" https://server:9443/api/v1/status
+curl -b "csm_auth=SESSION_COOKIE_FROM_LOGIN" https://server:9443/api/v1/status
 ```
 
-Cookie-authenticated state-changing requests require the `X-CSRF-Token` header (obtained from the login response or page meta tag). Admin-scope Bearer requests are CSRF-exempt because the `Authorization` header is the write credential.
+Cookie-authenticated state-changing requests require the `X-CSRF-Token` header (obtained from the authenticated page meta tag). Admin-scope Bearer requests are CSRF-exempt because the `Authorization` header is the write credential.
+
+### Browser session management
+
+A successful browser login exchanges an admin token for an opaque session
+cookie. API tokens are never valid cookies. Sessions expire on idle or absolute
+deadlines and all end on daemon restart. The header's Sessions page provides
+the same management operations as these admin-only endpoints:
+
+| Method | Path | Result |
+| --- | --- | --- |
+| GET | `/api/v1/sessions` | `sessions` array with `id`, `name`, `created`, `last_seen`, `expires`, `remote_ip`, `user_agent`, `current` |
+| DELETE | `/api/v1/sessions/<id>` | Revoke that session; unknown IDs are an idempotent success |
+| DELETE | `/api/v1/sessions` | Revoke all browser sessions, including the caller's |
+
+Revocation returns `{"ok":true}` only after committing to the store. Failure
+returns 503; invalid session IDs return 404. Lists contain no credential hashes
+or session verifiers. Cookie-authenticated DELETE requests require CSRF; admin
+bearer callers are exempt. Read-scope bearers cannot list or revoke sessions.
+`POST /logout` requires authentication and CSRF for browser callers; it revokes
+the current session and clears the cookie. `GET /logout` cannot log users out.
 
 ### Token scopes
 

@@ -553,7 +553,9 @@ signatures:
 webui:
   enabled: true
   listen: "0.0.0.0:9443"               # address:port for HTTPS server
-  auth_token: ""                        # Bearer/cookie auth token (auto-generated on install)
+  auth_token: ""                        # API/login credential (auto-generated on install)
+  session_lifetime: "24h"               # browser absolute expiry; restart required
+  session_idle_timeout: "30m"           # browser idle expiry; restart required
   tokens: []                            # optional scoped tokens: name/token/scope (admin or read)
   metrics_token: ""                     # optional Bearer token for /metrics only
   tls_cert: ""                          # path to TLS certificate PEM file

@@ -2408,7 +2408,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 	s := newTestServer(t, tok)
 	mux := s.httpSrv.Handler
 
-	cookie := &http.Cookie{Name: "csm_auth", Value: tok}
+	cookie := testBrowserCookie(t, s, tok)
 
 	cases := []struct {
 		method string

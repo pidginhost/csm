@@ -16,6 +16,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Security
 
+- Browser logins now use revocable sessions with idle and absolute expiry instead of copying the administrator API credential into a cookie. Upgrades and daemon restarts require a fresh browser login; API credentials continue to work.
 - A claimed crawler without reverse DNS no longer regains the softer challenge treatment after a daemon restart or when retry history fills up.
 - Mail log parsing no longer takes an authenticated user from message IDs, delivery replies, quoted fields or records carrying a remote ident username.
 - Mail authentication failures and authenticated arrivals keep their verified user and connecting address when login names, addresses, message IDs or optional envelope identities contain text that resembles log fields, including on TCP Fast Open connections.

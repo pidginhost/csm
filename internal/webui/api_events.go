@@ -43,9 +43,20 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	shutdownDone := s.pruneDone
+	// The upstream middleware authenticates all subscribers. Only cookie
+	// sessions have revocation/idle state to recheck during a stream.
+	_, cookieErr := r.Cookie("csm_auth")
+	cookieStream := cookieErr == nil && !s.isBearerAuth(r)
 	streamStopped := func() bool {
 		if r.Context().Err() != nil {
 			return true
+		}
+		// Recheck session revocation/expiry before every event and heartbeat.
+		// A passive stream must not keep an idle browser session alive.
+		if cookieStream {
+			if _, ok := s.cookieSessionToken(r, "read", false); !ok {
+				return true
+			}
 		}
 		select {
 		case <-shutdownDone:
@@ -105,6 +116,9 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		case <-shutdownDone:
 			return
 		case <-keepalive.C:
+			if streamStopped() {
+				return
+			}
 			if err := writeFrame(": keepalive\n\n"); err != nil {
 				return
 			}
