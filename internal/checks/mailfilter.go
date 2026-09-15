@@ -76,10 +76,13 @@ type filterFinding struct {
 }
 
 // safePipeCommands are cPanel built-in pipe targets that are not attacker code.
+// cPanel writes Mailman list aliases as pipes to the 3rdparty mail binaries.
 var safePipeCommands = []string{
 	"/usr/local/cpanel/bin/autorespond",
 	"/usr/local/cpanel/bin/boxtrapper",
 	"/usr/local/cpanel/bin/mailman",
+	"/usr/local/cpanel/3rdparty/mailman/mail/mailman",
+	"/usr/local/cpanel/3rdparty/mailman/mail/wrapper",
 }
 
 // ---------------------------------------------------------------------------
@@ -704,7 +707,7 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 				// destructive action in the same rule.
 				retainsLocalCopy := hasLocalCopy || (delivery.unseen && !hasDevNull)
 				knownAllowed := !stealth || (delivery.knownSuppressible && !hasDevNull)
-				if knownAllowed && isKnownForwarder(mb.localPart, mb.domain, delivery.dest, known) {
+				if knownAllowed && IsKnownForwarder(mb.localPart, mb.domain, delivery.dest, known) {
 					continue
 				}
 				if stealth {

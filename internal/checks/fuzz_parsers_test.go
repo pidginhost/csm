@@ -175,6 +175,26 @@ func FuzzSplitValiasDests(f *testing.F) {
 	})
 }
 
+func FuzzParseValiasEntries(f *testing.F) {
+	for _, seed := range []string{
+		"bob@example.test: \"|/usr/local/cpanel/bin/autorespond bob@example.test /home/bob/.autorespond\"\n",
+		"list-admin@example.test: \"|/usr/local/cpanel/3rdparty/mailman/mail/wrapper mailowner list_example.test\"\n",
+		"*: :fail: No Such User Here\n# comment\nplain: a@example.test, \"|/tmp/run --to a,b\"\n",
+		"@: x\nbob@: y\n",
+		"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		entries, _ := ParseValiasEntries(strings.NewReader(input), "example.test")
+		for _, e := range entries {
+			if e.LocalPart == "" || e.Domain == "" || e.Dest == "" {
+				t.Fatalf("entry with empty field: %+v", e)
+			}
+		}
+	})
+}
+
 func FuzzFirstField(f *testing.F) {
 	f.Add("203.0.113.5 - - [14/Apr/2026:10:00:00 +0000] \"GET /\"")
 	f.Add("2001:db8::1 rest of line")

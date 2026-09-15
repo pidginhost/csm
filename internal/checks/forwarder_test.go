@@ -29,9 +29,9 @@ func TestParseValiasLine(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		localPart, dest := parseValiasLine(tt.line)
+		localPart, dest := splitValiasLine(tt.line)
 		if localPart != tt.localPart || dest != tt.dest {
-			t.Errorf("parseValiasLine(%q) = (%q, %q), want (%q, %q)",
+			t.Errorf("splitValiasLine(%q) = (%q, %q), want (%q, %q)",
 				tt.line, localPart, dest, tt.localPart, tt.dest)
 		}
 	}
@@ -49,9 +49,9 @@ func TestIsPipeForwarder(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := isPipeForwarder(tt.dest)
+		got := IsPipeForwarder(tt.dest)
 		if got != tt.pipe {
-			t.Errorf("isPipeForwarder(%q) = %v, want %v", tt.dest, got, tt.pipe)
+			t.Errorf("IsPipeForwarder(%q) = %v, want %v", tt.dest, got, tt.pipe)
 		}
 	}
 }
@@ -62,7 +62,7 @@ func TestIsDevNull(t *testing.T) {
 		devnull bool
 	}{
 		{"/dev/null", true},
-		{" /dev/null ", false}, // already trimmed by parseValiasLine
+		{" /dev/null ", false}, // already trimmed by ParseValiasEntries
 		{"user@example.com", false},
 		{"|/dev/null", false}, // pipe, not devnull
 	}
@@ -96,9 +96,9 @@ func TestIsExternalDest(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := isExternalDest(tt.dest, localDomains)
+		got := IsExternalDest(tt.dest, localDomains)
 		if got != tt.external {
-			t.Errorf("isExternalDest(%q) = %v, want %v", tt.dest, got, tt.external)
+			t.Errorf("IsExternalDest(%q) = %v, want %v", tt.dest, got, tt.external)
 		}
 	}
 }
@@ -176,11 +176,42 @@ func TestIsKnownForwarder(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := isKnownForwarder(tt.localPart, tt.domain, tt.dest, knownForwarders)
+		got := IsKnownForwarder(tt.localPart, tt.domain, tt.dest, knownForwarders)
 		if got != tt.known {
-			t.Errorf("isKnownForwarder(%q, %q, %q) = %v, want %v",
+			t.Errorf("IsKnownForwarder(%q, %q, %q) = %v, want %v",
 				tt.localPart, tt.domain, tt.dest, got, tt.known)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IsKnownForwarder edge cases
+// ---------------------------------------------------------------------------
+
+func TestIsKnownForwarderWatcher_Match(t *testing.T) {
+	known := []string{"info@example.com: admin@gmail.com"}
+	if !IsKnownForwarder("info", "example.com", "admin@gmail.com", known) {
+		t.Error("should match known forwarder")
+	}
+}
+
+func TestIsKnownForwarderWatcher_CaseInsensitive(t *testing.T) {
+	known := []string{"INFO@EXAMPLE.COM: ADMIN@GMAIL.COM"}
+	if !IsKnownForwarder("info", "example.com", "admin@gmail.com", known) {
+		t.Error("should match case-insensitively")
+	}
+}
+
+func TestIsKnownForwarderWatcher_NoMatch(t *testing.T) {
+	known := []string{"info@example.com: admin@gmail.com"}
+	if IsKnownForwarder("support", "example.com", "admin@gmail.com", known) {
+		t.Error("different local part should not match")
+	}
+}
+
+func TestIsKnownForwarderWatcher_EmptyList(t *testing.T) {
+	if IsKnownForwarder("info", "example.com", "admin@gmail.com", nil) {
+		t.Error("empty list should not match")
 	}
 }
 

@@ -973,38 +973,38 @@ func TestParseWPOrgPluginResponseMalformed(t *testing.T) {
 	}
 }
 
-// --- parseValiasLine / isPipeForwarder / isDevNullForwarder -----------
+// --- splitValiasLine / IsPipeForwarder / isDevNullForwarder -----------
 
 func TestParseValiasLineStandard(t *testing.T) {
-	local, dest := parseValiasLine("alice: alice@example.com")
+	local, dest := splitValiasLine("alice: alice@example.com")
 	if local != "alice" || dest != "alice@example.com" {
 		t.Errorf("got (%q, %q)", local, dest)
 	}
 }
 
 func TestParseValiasLineComment(t *testing.T) {
-	local, dest := parseValiasLine("# this is a comment")
+	local, dest := splitValiasLine("# this is a comment")
 	if local != "" || dest != "" {
 		t.Errorf("comment should return empty, got (%q, %q)", local, dest)
 	}
 }
 
 func TestParseValiasLineBlank(t *testing.T) {
-	local, dest := parseValiasLine("")
+	local, dest := splitValiasLine("")
 	if local != "" || dest != "" {
 		t.Errorf("blank should return empty, got (%q, %q)", local, dest)
 	}
 }
 
 func TestParseValiasLineNoColon(t *testing.T) {
-	local, dest := parseValiasLine("invalid line")
+	local, dest := splitValiasLine("invalid line")
 	if local != "" || dest != "" {
 		t.Errorf("no colon should return empty, got (%q, %q)", local, dest)
 	}
 }
 
 func TestIsPipeForwarderPipe(t *testing.T) {
-	if !isPipeForwarder("|/bin/sh attacker-script.sh") {
+	if !IsPipeForwarder("|/bin/sh attacker-script.sh") {
 		t.Error("pipe forwarder should be detected")
 	}
 }
@@ -1016,14 +1016,14 @@ func TestIsPipeForwarderSafeCpanel(t *testing.T) {
 		"|/usr/local/cpanel/bin/boxtrapper /home/user/boxtrapper",
 	}
 	for _, dest := range safe {
-		if isPipeForwarder(dest) {
+		if IsPipeForwarder(dest) {
 			t.Errorf("%q should be safe, not flagged", dest)
 		}
 	}
 }
 
 func TestIsPipeForwarderNotPipe(t *testing.T) {
-	if isPipeForwarder("alice@example.com") {
+	if IsPipeForwarder("alice@example.com") {
 		t.Error("email forwarder should not be flagged as pipe")
 	}
 }
@@ -1039,21 +1039,21 @@ func TestIsDevNullForwarder(t *testing.T) {
 
 func TestIsExternalDestExternal(t *testing.T) {
 	local := map[string]bool{"example.com": true}
-	if !isExternalDest("alice@external.com", local) {
+	if !IsExternalDest("alice@external.com", local) {
 		t.Error("external.com should be external")
 	}
 }
 
 func TestIsExternalDestLocal(t *testing.T) {
 	local := map[string]bool{"example.com": true}
-	if isExternalDest("alice@example.com", local) {
+	if IsExternalDest("alice@example.com", local) {
 		t.Error("local domain should not be external")
 	}
 }
 
 func TestIsExternalDestNoAtSign(t *testing.T) {
 	local := map[string]bool{"example.com": true}
-	if isExternalDest("not an email", local) {
+	if IsExternalDest("not an email", local) {
 		t.Error("malformed dest should not count as external")
 	}
 }

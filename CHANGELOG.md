@@ -15,6 +15,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Mail log parsing no longer takes an authenticated user from message IDs, delivery replies, quoted fields or records carrying a remote ident username.
 - Mail authentication failures and authenticated arrivals keep their verified user and connecting address when login names, addresses, message IDs or optional envelope identities contain text that resembles log fields, including on TCP Fast Open connections.
 - The WordPress user enumeration filter now also stops requests that name the users route in the query string or use alternate request spellings.
+- Real-time forwarder monitoring now sees pipe forwarders written in the quoted form cPanel uses, and a pipe counts as a cPanel built-in only when it runs that program.
 - ModSecurity rule updates now take effect after an upgrade or install when a web server reload command is configured; previously they stayed inactive until the web server restarted for another reason. Expect one web server reload after upgrading.
 
 ### Fixed
@@ -23,6 +24,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Claimed crawlers without reverse DNS are no longer looked up again on every scan. Those repeats overflowed the bot verification queue on busy hosts, so genuine crawlers could miss verification and be handled as ordinary visitors.
 - The WordPress user enumeration filter no longer blocks signed-in users, so creating Application Passwords and loading author lists in the editor work again. Unrelated page paths and REST namespaces remain accessible.
 - Upgrading a standalone install no longer leaves the daemon unable to start when a directory its service sandbox needs was never created; the upgrade now creates it first.
+- Mailing list aliases created by cPanel's Mailman are no longer reported as critical pipe forwarders, and autoresponder aliases are no longer reported as external forwarders. Forwarder alerts name the mailbox address once, and expected forwarders listed by full address are now recognized.
 - Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.
 
 ## [3.38.0] - 2026-09-13

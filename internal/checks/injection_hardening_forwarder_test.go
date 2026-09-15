@@ -649,31 +649,31 @@ func TestAuditMailDovecotTLS_NoDovecot(t *testing.T) {
 // ==========================================================================
 
 func TestIsPipeForwarderAutorespond(t *testing.T) {
-	if isPipeForwarder("|/usr/local/cpanel/bin/autorespond arg1") {
+	if IsPipeForwarder("|/usr/local/cpanel/bin/autorespond arg1") {
 		t.Error("autorespond should be safe")
 	}
 }
 
 func TestIsPipeForwarderBoxtrapper(t *testing.T) {
-	if isPipeForwarder("| /usr/local/cpanel/bin/boxtrapper deliver") {
+	if IsPipeForwarder("| /usr/local/cpanel/bin/boxtrapper deliver") {
 		t.Error("boxtrapper should be safe")
 	}
 }
 
 func TestIsPipeForwarderMailman(t *testing.T) {
-	if isPipeForwarder("|/usr/local/cpanel/bin/mailman list_post") {
+	if IsPipeForwarder("|/usr/local/cpanel/bin/mailman list_post") {
 		t.Error("mailman should be safe")
 	}
 }
 
 func TestIsExternalDest_AtSignAtEnd(t *testing.T) {
-	if isExternalDest("user@", map[string]bool{"example.com": true}) {
+	if IsExternalDest("user@", map[string]bool{"example.com": true}) {
 		t.Error("trailing @ should not be external")
 	}
 }
 
 func TestIsExternalDest_MultipleAtSigns(t *testing.T) {
-	if isExternalDest("user@sub@example.com", map[string]bool{"example.com": true}) {
+	if IsExternalDest("user@sub@example.com", map[string]bool{"example.com": true}) {
 		t.Error("last @ domain is local, should not be external")
 	}
 }
