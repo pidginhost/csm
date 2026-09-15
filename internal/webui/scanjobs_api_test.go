@@ -94,12 +94,12 @@ func readPost(s *Server, path string) *httptest.ResponseRecorder {
 
 // cookiePost issues a POST request authenticated via csm_auth cookie (not
 // bearer). The caller controls whether a CSRF header is set.
-func cookiePost(s *Server, adminTok, path string, withCSRF bool, bodyVal any) *httptest.ResponseRecorder {
+func cookiePost(t *testing.T, s *Server, adminTok, path string, withCSRF bool, bodyVal any) *httptest.ResponseRecorder {
 	body, _ := json.Marshal(bodyVal)
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: adminTok})
+	req.AddCookie(testBrowserCookie(t, s, adminTok))
 	if withCSRF {
 		req.Header.Set("X-CSRF-Token", s.csrfToken())
 	}
@@ -434,7 +434,7 @@ func TestScanJobsEnqueue_ReadTokenRejected(t *testing.T) {
 func TestScanJobsEnqueue_AdminCookieMissingCSRF_403(t *testing.T) {
 	s, adminTok, _, _ := newTestServerWithFakeScanJobs(t)
 
-	w := cookiePost(s, adminTok, "/api/v1/scan-jobs", false, map[string]any{
+	w := cookiePost(t, s, adminTok, "/api/v1/scan-jobs", false, map[string]any{
 		"scope":  "account",
 		"target": "203.0.113.example",
 	})

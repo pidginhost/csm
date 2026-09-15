@@ -121,7 +121,7 @@ func TestRequireCSRFDoesNotLetReadBearerBypassAdminCookie(t *testing.T) {
 	})))
 
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/prefs/user", nil)
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "admin-secret"})
+	req.AddCookie(testBrowserCookie(t, s, "admin-secret"))
 	req.Header.Set("Authorization", "Bearer read-secret")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
