@@ -60,7 +60,7 @@ func TestTimeKeyUnorderedFill(t *testing.T) {
 		for _, bucket := range []string{historyBucketName, attackEventsBucketName} {
 			orders := []string{"random", "reverse", "backfill"}
 			if bucket == historyBucketName {
-				orders = append(orders, "mixed")
+				orders = append(orders, "mixed", "mixed_large", "mixed_half")
 			}
 			for _, order := range orders {
 				t.Run(fmt.Sprintf("%d/%s/%s", pageSize, bucket, order), func(t *testing.T) {
@@ -94,6 +94,19 @@ func testTimeKeyUnorderedFill(t *testing.T, pageSize int, bucket, order string) 
 		for i := 19; i < count; i += 20 {
 			indexes[i] = count + i
 		}
+	case "mixed_large", "mixed_half":
+		// Delayed findings can dominate the bytes without being most of
+		// the keys. Also cover an even split of equally sized findings:
+		// neither workload should leave sparse pages across the backfill.
+		late := 8
+		if order == "mixed_half" {
+			late = 10
+		}
+		for i := range indexes {
+			if i%20 >= late {
+				indexes[i] = count + i
+			}
+		}
 	}
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	batchSize := 1
@@ -110,7 +123,14 @@ func testTimeKeyUnorderedFill(t *testing.T, pageSize int, bucket, order string) 
 			keys[i] = []byte(TimeKey(ts, i))
 			var err error
 			if bucket == historyBucketName {
-				findings[i] = alert.Finding{Timestamp: ts, Check: "log_auth", Severity: alert.Warning, Details: strings.Repeat("d", 180)}
+				detailsSize := 180
+				if order == "mixed_large" {
+					detailsSize = 0
+					if i < 8 {
+						detailsSize = 900
+					}
+				}
+				findings[i] = alert.Finding{Timestamp: ts, Check: "log_auth", Severity: alert.Warning, Details: strings.Repeat("d", detailsSize)}
 				values[i], err = json.Marshal(alert.SanitizeFinding(findings[i]))
 			} else {
 				event = AttackEvent{Timestamp: ts, IP: "192.0.2.1", AttackType: "brute_force", Message: strings.Repeat("d", 180)}

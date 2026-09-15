@@ -122,9 +122,11 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
   automatically when the file is large and mostly slack; `csm store
   compact` does the same immediately with the daemon stopped.
   History and attack-event writes pack pages densely when their timestamps
-  arrive in order, and fall back to balanced page splits for a write in which
-  most events are older than the newest stored one. Archive imports keep the
-  snapshot's page layout; compaction repacks an existing file.
+  arrive mostly in order. A write uses balanced page splits when events older
+  than the newest stored one are most of its records or at least half its
+  inserted data. Space savings depend on record sizes and arrival order.
+  Archive imports keep the snapshot's page layout; compaction repacks an
+  existing file.
 
 ### Fanotify realtime monitor
 
