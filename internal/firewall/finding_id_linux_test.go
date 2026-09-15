@@ -92,3 +92,19 @@ func TestFirewallFindingIDsStayLocalToEachOperation(t *testing.T) {
 		}
 	}
 }
+
+func TestFirewallMalformedBlockRetainsFindingID(t *testing.T) {
+	sink := withActionSink(t)
+	e := &Engine{}
+	const findingID = "malformed-block-finding"
+	if _, err := e.BlockIPOutcomeWithFindingID("invalid-address", "CSM auto-block: evidence", time.Minute, findingID); err == nil {
+		t.Fatal("malformed address accepted")
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("malformed block records = %d, want one failed action", len(sink.records))
+	}
+	record := sink.records[0]
+	if record.FindingID != findingID || record.Result != actionlog.Failed || record.Target != "invalid-address" || record.Error == "" {
+		t.Fatalf("malformed block lost failure evidence: %+v", record)
+	}
+}

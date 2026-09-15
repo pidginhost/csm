@@ -398,6 +398,7 @@ func (k engineActionKernel) ObserveFirewallAction(a FirewallAction) (ActionObser
 func (e *Engine) BlockIPRequest(req ActionRequest, budget *ScanAdmission) (BlockOutcome, error) {
 	canonical, err := canonicalFirewallIP(req.Target)
 	if err != nil {
+		recordBlockOutcome(req.Target, req.Reason, req.TTL, BlockOutcomeNoop, err, !req.Automatic, req.FindingID)
 		return BlockOutcomeNoop, err
 	}
 	req.Target = canonical
@@ -500,14 +501,19 @@ func requiredActionSets(a FirewallAction) []string {
 	if a.Request.Operation == "apply" {
 		return actionSetNames(true)
 	}
+	// A removal must prove the target set even when committed state already
+	// omits it. Otherwise an untracked live element is reported as removed.
+	blocked := a.Request.Operation == "unblock" || a.Request.Operation == "flush"
+	allowed := a.Request.Operation == "remove_allow"
+	subnets := a.Request.Operation == "unblock_subnet"
 	var names []string
-	if !reflect.DeepEqual(a.Before.Blocked, a.After.Blocked) {
+	if blocked || !reflect.DeepEqual(a.Before.Blocked, a.After.Blocked) {
 		names = append(names, "blocked_ips", "blocked_ips6")
 	}
-	if !reflect.DeepEqual(a.Before.Allowed, a.After.Allowed) {
+	if allowed || !reflect.DeepEqual(a.Before.Allowed, a.After.Allowed) {
 		names = append(names, "allowed_ips", "allowed_ips6")
 	}
-	if !reflect.DeepEqual(a.Before.BlockedNet, a.After.BlockedNet) {
+	if subnets || !reflect.DeepEqual(a.Before.BlockedNet, a.After.BlockedNet) {
 		names = append(names, "blocked_nets", "blocked_nets6")
 	}
 	return names

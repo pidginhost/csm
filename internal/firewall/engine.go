@@ -2453,11 +2453,16 @@ func (e *Engine) blockIPLockedRequest(ip string, reason string, timeout time.Dur
 		return BlockOutcomeNoop, readyErr
 	}
 
-	if enforceSoftAllow && e.operatorSoftAllowedLocked(ip) {
+	priorState := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return BlockOutcomeNoop, e.stateReadErr
+	}
+	// Safety, capacity, eviction and the resulting state share one snapshot.
+	if enforceSoftAllow && (ipSetIndexContains(e.allowedIPIndex, ip) || ipSetIndexContains(e.portAllowedIndex, ip)) {
 		return BlockOutcomeAllowlisted, nil
 	}
 
-	targetSet, key, alreadyBlocked, evictTempIP, err := e.blockIPTarget(ip, timeout, skipExisting)
+	targetSet, key, alreadyBlocked, evictTempIP, err := e.blockIPTargetFromState(ip, timeout, skipExisting, priorState)
 	if err != nil {
 		return BlockOutcomeNoop, err
 	}
@@ -2491,7 +2496,6 @@ func (e *Engine) blockIPLockedRequest(ip string, reason string, timeout time.Dur
 		}
 	}
 
-	priorState := e.loadStateFile()
 	// A forced block over an address that is already blocked changes the
 	// timeout (deny over an auto-block, tempban over a permanent deny).
 	// nf_tables treats NEWSETELEM without NLM_F_EXCL on an existing key as
@@ -2652,6 +2656,14 @@ func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting 
 }
 
 func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, string, error) {
+	state := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return nil, nil, false, "", e.stateReadErr
+	}
+	return e.blockIPTargetFromState(ip, timeout, skipExisting, state)
+}
+
+func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipExisting bool, st FirewallState) (*nftables.Set, []byte, bool, string, error) {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return nil, nil, false, "", fmt.Errorf("invalid IP: %s", ip)
@@ -2701,7 +2713,6 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 		return nil, nil, false, "", err
 	}
 
-	st := e.loadStateFile()
 	cachedBlockMissingLive := false
 	if skipExisting && firewallStateHasBlocked(st, ip) {
 		liveBlocked, liveErr := e.isBlockedLiveLocked(ip)
@@ -3547,6 +3558,14 @@ func (e *Engine) FlushBlocked() (resultErr error) {
 // daemon's own egress.
 // Must be called with e.mu held.
 func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
+	state := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return e.stateReadErr
+	}
+	return e.subnetSafetyGuardStateLocked(network, state)
+}
+
+func (e *Engine) subnetSafetyGuardStateLocked(network *net.IPNet, state FirewallState) error {
 	if ones, _ := network.Mask.Size(); ones == 0 {
 		return fmt.Errorf("refusing to block default route: %s", network.String())
 	}
@@ -3590,7 +3609,6 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 		}
 	}
 
-	state := e.loadStateFile()
 	for _, entry := range state.Allowed {
 		if ip := net.ParseIP(entry.IP); ip != nil && network.Contains(ip) {
 			return fmt.Errorf("refusing to block subnet %s: contains allowed IP %s", network.String(), entry.IP)
@@ -3622,16 +3640,18 @@ var protectedLocalRanges = func() []*net.IPNet {
 	return ranges
 }()
 
-func (e *Engine) subnetBlockPlanLocked(cidr string) (*net.IPNet, bool, error) {
+func (e *Engine) subnetBlockPlanLocked(cidr string, state FirewallState) (*net.IPNet, bool, error) {
 	_, network, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return nil, false, fmt.Errorf("invalid CIDR: %s", cidr)
 	}
-	if err := e.subnetSafetyGuardLocked(network); err != nil {
+	if err := e.subnetSafetyGuardStateLocked(network, state); err != nil {
 		return nil, false, err
 	}
-	if e.isSubnetBlockedStateLocked(network.String()) {
-		return network, true, nil
+	for _, entry := range state.BlockedNet {
+		if entry.CIDR == network.String() {
+			return network, true, nil
+		}
 	}
 
 	targetSet, _, _ := e.resolveSubnetSet(network)
@@ -3648,7 +3668,11 @@ func (e *Engine) ValidateSubnetBlock(cidr string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	_, _, err := e.subnetBlockPlanLocked(cidr)
+	state := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return e.stateReadErr
+	}
+	_, _, err := e.subnetBlockPlanLocked(cidr, state)
 	return err
 }
 
@@ -3697,7 +3721,11 @@ func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (r
 	if readyErr := e.lifecycleReadyLocked(); readyErr != nil {
 		return readyErr
 	}
-	network, alreadyBlocked, err := e.subnetBlockPlanLocked(cidr)
+	priorState := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return e.stateReadErr
+	}
+	network, alreadyBlocked, err := e.subnetBlockPlanLocked(cidr, priorState)
 	if err != nil {
 		return err
 	}
@@ -3708,8 +3736,7 @@ func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (r
 		}
 		// A prior write may be visible despite a durability error, before the
 		// kernel changed. Retrying must reconcile that saved intent as well.
-		state := e.loadStateFile()
-		if err := e.updateSubnetMutation(state, state, req, budget); err != nil {
+		if err := e.updateSubnetMutation(priorState, priorState, req, budget); err != nil {
 			return err
 		}
 		e.legacyFileAuditLocked("block_subnet", network.String(), reason, InferProvenance("block_subnet", reason), timeout)
@@ -3730,7 +3757,6 @@ func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (r
 	// seeds the next Apply, so a crash between the kernel add and a later
 	// state write would otherwise leave a kernel block that silently
 	// disappears on restart. On kernel failure the prior state is restored.
-	priorState := e.loadStateFile()
 	nextState := copyFirewallState(priorState)
 	addSubnetEntryIfMissingInState(&nextState, entry)
 	if err := e.updateSubnetMutation(priorState, nextState, req, budget); err != nil {
