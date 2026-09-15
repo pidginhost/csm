@@ -166,12 +166,67 @@ func FuzzSplitValiasDests(f *testing.F) {
 		`local@example.test,"|/usr/bin/handler --arg=a,b"`,
 		`"unterminated,attacker@external.test,|/tmp/run`,
 		`'quoted@example.test',plain@example.test`,
+		`"|\"/usr/local/cpanel/bin/autorespond\" \"a,b\"", "|/home/bob/relay"`,
 		"",
 	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
 		_ = splitValiasDests(input)
+		// A quoted command can contain commas and escaped quotes without
+		// inventing destinations or absorbing the next forwarder.
+		command := "|/home/bob/" + input + "/relay"
+		escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(command)
+		got := splitValiasDests(`"` + escaped + `", second@example.test`)
+		if len(got) != 2 || got[0] != command || got[1] != "second@example.test" {
+			t.Fatalf("quoted pipe did not round-trip: input=%q destinations=%q", command, got)
+		}
+	})
+}
+
+func FuzzFirstPipeCommandWord(f *testing.F) {
+	for _, seed := range []string{
+		"/usr/local/cpanel/bin/autorespond bob@example.test",
+		`"\x2fusr/local/cpanel/bin/autorespond"`,
+		`"\57usr/local/cpanel/bin/autorespond"`,
+		`"\0\x\777\b\f\n\r\t\v\"\\"`,
+		`/usr/local/cpanel/bin/auto'respond'`,
+		"\u00a0/usr/local/cpanel/bin/autorespond",
+		"|\x00",
+		"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		word := firstPipeCommandWord(input)
+		if strings.IndexByte(word, 0) >= 0 {
+			t.Fatalf("command word contains NUL: %q", word)
+		}
+		// A non-ASCII byte before an absolute path makes it a different,
+		// relative executable; it cannot identify a cPanel built-in.
+		if isSafePipe("|\u00a0" + input) {
+			t.Fatalf("relative executable treated as a built-in: %q", input)
+		}
+	})
+}
+
+func FuzzParseValiasEntries(f *testing.F) {
+	for _, seed := range []string{
+		"bob@example.test: \"|/usr/local/cpanel/bin/autorespond bob@example.test /home/bob/.autorespond\"\n",
+		"list-admin@example.test: \"|/usr/local/cpanel/3rdparty/mailman/mail/wrapper mailowner list_example.test\"\n",
+		"*: :fail: No Such User Here\n# comment\nplain: a@example.test, \"|/tmp/run --to a,b\"\n",
+		"@: x\nbob@: y\n",
+		"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		entries, _ := ParseValiasEntries(strings.NewReader(input), "example.test")
+		for _, e := range entries {
+			if e.LocalPart == "" || e.Domain == "" || e.Dest == "" {
+				t.Fatalf("entry with empty field: %+v", e)
+			}
+		}
 	})
 }
 

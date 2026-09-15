@@ -75,7 +75,7 @@ using the cPanel-preserved advanced-configuration include sections.
 New package tree `internal/mailfwd/`:
 
 - `inventory` -- enumerate forwarders cross-platform. cPanel: `/etc/valiases/*`
-  (reuse existing `parseValiasLine` / `isExternalDest` from
+  (reuse existing `ParseValiasEntries` / `IsExternalDest` from
   `internal/checks/forwarder.go` and `internal/daemon/forwarder_parse.go`).
   Non-cPanel: `/etc/aliases`, `~/.forward`, postfix `virtual`. Source selected
   via `internal/platform`. Returns a normalized `Forwarder` list.
@@ -188,10 +188,10 @@ Phase 3 -- Breadth:
 
 ## Existing code to reuse (do not reinvent)
 
-- `internal/checks/forwarder.go`: `parseValiasLine`, `isExternalDest`,
-  `isPipeForwarder`, `parseLocalDomainsContent`.
+- `internal/checks/forwarder.go`: `ParseValiasEntries`, `IsExternalDest`,
+  `IsPipeForwarder`, `parseLocalDomainsContent`.
 - `internal/daemon/forwarder_parse.go`: `parseValiasFileForFindings`,
-  `isKnownForwarderWatcher`; live `ForwarderWatcher`.
+  `checks.IsKnownForwarder`; live `ForwarderWatcher`.
 - `internal/webui/email_api.go`: `apiEmailStats`, `eximQueueSize`,
   `eximQueueDetails`, `topMailSenders`, quarantine list/action handlers.
 - `internal/webui/email_groups.go`: email-page grouping + sort.

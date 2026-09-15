@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,10 +16,11 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// parseValiasLine parses a valiases line "local_part: destination".
-// Returns empty strings for comments, blank lines, or malformed lines.
-func parseValiasLine(line string) (localPart, dest string) {
-	line = strings.TrimSpace(line)
+// splitValiasLine splits a valiases line "key: destinations" into its key
+// and raw, still-quoted destination list. Returns empty strings for
+// comments, blank lines, or malformed lines.
+func splitValiasLine(line string) (key, rawDest string) {
+	line = strings.Trim(line, " \t\r\n\v\f")
 	if line == "" || strings.HasPrefix(line, "#") {
 		return "", ""
 	}
@@ -26,18 +28,61 @@ func parseValiasLine(line string) (localPart, dest string) {
 	if idx < 0 {
 		return "", ""
 	}
-	localPart = strings.TrimSpace(line[:idx])
-	dest = unquoteValiasDest(strings.TrimSpace(line[idx+1:]))
-	return localPart, dest
+	return strings.TrimSpace(line[:idx]), strings.Trim(line[idx+1:], " \t\r\n\v\f")
+}
+
+// ValiasEntry is one destination of one valiases alias.
+type ValiasEntry struct {
+	LocalPart string
+	Domain    string
+	Dest      string
+}
+
+// ParseValiasEntries reads a valiases file for fileDomain and returns one
+// entry per destination. cPanel keys aliases by full address
+// ("bob@example.com"); a bare key ("bob", "*") belongs to fileDomain.
+func ParseValiasEntries(r io.Reader, fileDomain string) ([]ValiasEntry, error) {
+	var entries []ValiasEntry
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		key, rawDest := splitValiasLine(scanner.Text())
+		if key == "" || rawDest == "" {
+			continue
+		}
+		localPart, domain := key, fileDomain
+		if at := strings.LastIndexByte(key, '@'); at > 0 && at < len(key)-1 {
+			localPart, domain = key[:at], key[at+1:]
+		}
+		for _, d := range splitValiasDests(rawDest) {
+			if d == "" {
+				continue
+			}
+			entries = append(entries, ValiasEntry{LocalPart: localPart, Domain: domain, Dest: d})
+		}
+	}
+	return entries, scanner.Err()
 }
 
 // unquoteValiasDest strips one layer of matching double or single quotes.
 // cPanel writes pipe and command destinations quoted ("|/path args"), and
 // the pipe detector keys on the leading "|".
 func unquoteValiasDest(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.Trim(s, " \t\r\n\v\f")
 	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
-		return strings.TrimSpace(s[1 : len(s)-1])
+		quote := s[0]
+		s = strings.Trim(s[1:len(s)-1], " \t\r\n\v\f")
+		// The redirect router removes one backslash layer in double-quoted
+		// pipes/files before the pipe transport splits command arguments.
+		if quote == '"' && (strings.HasPrefix(s, "|") || strings.HasPrefix(s, "/")) {
+			var b strings.Builder
+			for i := 0; i < len(s); i++ {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+				}
+				b.WriteByte(s[i])
+			}
+			return b.String()
+		}
 	}
 	return s
 }
@@ -52,6 +97,12 @@ func splitValiasDests(dest string) []string {
 		c := dest[i]
 		switch {
 		case quote != 0:
+			if quote == '"' && c == '\\' && i+1 < len(dest) {
+				cur.WriteByte(c)
+				i++
+				cur.WriteByte(dest[i])
+				continue
+			}
 			if c == quote {
 				quote = 0
 			}
@@ -74,8 +125,8 @@ func splitValiasDests(dest string) []string {
 		parts := strings.Split(dest, ",")
 		out = out[:0]
 		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			part = strings.TrimSpace(strings.Trim(part, "\"'"))
+			part = strings.Trim(part, " \t\r\n\v\f")
+			part = strings.Trim(strings.Trim(part, "\"'"), " \t\r\n\v\f")
 			out = append(out, part)
 		}
 		return out
@@ -84,23 +135,10 @@ func splitValiasDests(dest string) []string {
 	return out
 }
 
-// isPipeForwarder returns true if the destination is a pipe forwarder,
-// excluding known-safe cPanel built-in pipes (autoresponder, BoxTrapper).
-func isPipeForwarder(dest string) bool {
-	if !strings.HasPrefix(dest, "|") {
-		return false
-	}
-	safe := []string{
-		"/usr/local/cpanel/bin/autorespond",
-		"/usr/local/cpanel/bin/boxtrapper",
-		"/usr/local/cpanel/bin/mailman",
-	}
-	for _, s := range safe {
-		if strings.Contains(dest, s) {
-			return false
-		}
-	}
-	return true
+// IsPipeForwarder returns true if the destination is a pipe forwarder,
+// excluding pipes whose executed command is a cPanel built-in.
+func IsPipeForwarder(dest string) bool {
+	return strings.HasPrefix(dest, "|") && !isSafePipe(dest)
 }
 
 // isDevNullForwarder returns true if the destination is /dev/null.
@@ -108,9 +146,13 @@ func isDevNullForwarder(dest string) bool {
 	return dest == "/dev/null"
 }
 
-// isExternalDest returns true if the destination is an email address
-// with a domain not in the local domains set.
-func isExternalDest(dest string, localDomains map[string]bool) bool {
+// IsExternalDest returns true if the destination is an email address
+// with a domain not in the local domains set. A pipe is a command, even when
+// its arguments contain an address.
+func IsExternalDest(dest string, localDomains map[string]bool) bool {
+	if strings.HasPrefix(dest, "|") {
+		return false
+	}
 	atIdx := strings.LastIndexByte(dest, '@')
 	if atIdx < 0 || atIdx >= len(dest)-1 {
 		return false
@@ -141,7 +183,7 @@ func parseVfilterExternalDests(content string, localDomains map[string]bool) []s
 			continue
 		}
 		dest := rest[:quoteEnd]
-		if isExternalDest(dest, localDomains) {
+		if IsExternalDest(dest, localDomains) {
 			external = append(external, dest)
 		}
 	}
@@ -181,8 +223,8 @@ func loadLocalDomains() map[string]bool {
 	return domains
 }
 
-// isKnownForwarder checks if a forwarder rule matches the known forwarders suppression list.
-func isKnownForwarder(localPart, domain, dest string, knownForwarders []string) bool {
+// IsKnownForwarder checks if a forwarder rule matches the known forwarders suppression list.
+func IsKnownForwarder(localPart, domain, dest string, knownForwarders []string) bool {
 	entry := fmt.Sprintf("%s@%s: %s", localPart, domain, dest)
 	for _, known := range knownForwarders {
 		if strings.EqualFold(strings.TrimSpace(known), entry) {
@@ -346,76 +388,63 @@ func auditValiasFileWithStatus(path, domain string, localDomains map[string]bool
 		}
 	}
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		localPart, dest := parseValiasLine(scanner.Text())
-		if localPart == "" || dest == "" {
+	entries, err := ParseValiasEntries(f, domain)
+	if err != nil {
+		complete = false
+	}
+	for _, e := range entries {
+		localPart, mailDomain, d := e.LocalPart, e.Domain, e.Dest
+
+		if IsKnownForwarder(localPart, mailDomain, d, cfg.EmailProtection.KnownForwarders) {
 			continue
 		}
 
-		// Check each destination (may be comma-separated; quoted items keep
-		// their commas and lose their quotes)
-		dests := splitValiasDests(dest)
-		for _, d := range dests {
-			if d == "" {
-				continue
-			}
+		newContext := ""
+		if isNew {
+			newContext = " (newly added)"
+		}
 
-			// Suppression check
-			if isKnownForwarder(localPart, domain, d, cfg.EmailProtection.KnownForwarders) {
-				continue
-			}
+		if IsPipeForwarder(d) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "email_pipe_forwarder",
+				Message:  fmt.Sprintf("Pipe forwarder detected: %s@%s -> %s%s", localPart, mailDomain, d, newContext),
+				Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: %s\nFile: %s\nPipe forwarders execute arbitrary commands on incoming mail.", mailDomain, localPart, d, path),
+				Domain:   domain,
+				TenantID: MailOwner(domain),
+			})
+			continue
+		}
 
-			newContext := ""
-			if isNew {
-				newContext = " (newly added)"
-			}
+		if isDevNullForwarder(d) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "email_suspicious_forwarder",
+				Message:  fmt.Sprintf("Mail blackhole: %s@%s -> /dev/null%s", localPart, mailDomain, newContext),
+				Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: /dev/null\nFile: %s\nAll mail to this address is silently discarded.", mailDomain, localPart, path),
+				Domain:   domain,
+				TenantID: MailOwner(domain),
+			})
+			continue
+		}
 
-			if isPipeForwarder(d) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "email_pipe_forwarder",
-					Message:  fmt.Sprintf("Pipe forwarder detected: %s@%s -> %s%s", localPart, domain, d, newContext),
-					Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: %s\nFile: %s\nPipe forwarders execute arbitrary commands on incoming mail.", domain, localPart, d, path),
-					Domain:   domain,
-					TenantID: MailOwner(domain),
-				})
-				continue
+		if IsExternalDest(d, localDomains) && isNew {
+			severity := alert.High
+			msg := fmt.Sprintf("External forwarder: %s@%s -> %s%s", localPart, mailDomain, d, newContext)
+			if localPart == "*" {
+				msg = fmt.Sprintf("Wildcard catch-all to external: *@%s -> %s%s", mailDomain, d, newContext)
 			}
-
-			if isDevNullForwarder(d) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "email_suspicious_forwarder",
-					Message:  fmt.Sprintf("Mail blackhole: %s@%s -> /dev/null%s", localPart, domain, newContext),
-					Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: /dev/null\nFile: %s\nAll mail to this address is silently discarded.", domain, localPart, path),
-					Domain:   domain,
-					TenantID: MailOwner(domain),
-				})
-				continue
-			}
-
-			if isExternalDest(d, localDomains) && isNew {
-				severity := alert.High
-				msg := fmt.Sprintf("External forwarder: %s@%s -> %s%s", localPart, domain, d, newContext)
-				if localPart == "*" {
-					msg = fmt.Sprintf("Wildcard catch-all to external: *@%s -> %s%s", domain, d, newContext)
-				}
-				findings = append(findings, alert.Finding{
-					Severity: severity,
-					Check:    "email_suspicious_forwarder",
-					Message:  msg,
-					Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: %s\nFile: %s", domain, localPart, d, path),
-					Domain:   domain,
-					TenantID: MailOwner(domain),
-				})
-			}
+			findings = append(findings, alert.Finding{
+				Severity: severity,
+				Check:    "email_suspicious_forwarder",
+				Message:  msg,
+				Details:  fmt.Sprintf("Domain: %s\nLocal part: %s\nDestination: %s\nFile: %s", mailDomain, localPart, d, path),
+				Domain:   domain,
+				TenantID: MailOwner(domain),
+			})
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		complete = false
-	}
 	if complete && db != nil {
 		if err := db.SetForwarderHash(hashKey, currentHash); err != nil {
 			complete = false
@@ -456,7 +485,7 @@ func auditVfilterFileWithStatus(path, domain string, localDomains map[string]boo
 
 	for _, dest := range externalDests {
 		// Suppression check - use "*" as localPart for vfilter entries
-		if isKnownForwarder("*", domain, dest, cfg.EmailProtection.KnownForwarders) {
+		if IsKnownForwarder("*", domain, dest, cfg.EmailProtection.KnownForwarders) {
 			continue
 		}
 

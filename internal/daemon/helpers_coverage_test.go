@@ -554,37 +554,6 @@ func TestSplitKV_OnlyIP(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isKnownForwarderWatcher
-// ---------------------------------------------------------------------------
-
-func TestIsKnownForwarderWatcher_Match(t *testing.T) {
-	known := []string{"info@example.com: admin@gmail.com"}
-	if !isKnownForwarderWatcher("info", "example.com", "admin@gmail.com", known) {
-		t.Error("should match known forwarder")
-	}
-}
-
-func TestIsKnownForwarderWatcher_CaseInsensitive(t *testing.T) {
-	known := []string{"INFO@EXAMPLE.COM: ADMIN@GMAIL.COM"}
-	if !isKnownForwarderWatcher("info", "example.com", "admin@gmail.com", known) {
-		t.Error("should match case-insensitively")
-	}
-}
-
-func TestIsKnownForwarderWatcher_NoMatch(t *testing.T) {
-	known := []string{"info@example.com: admin@gmail.com"}
-	if isKnownForwarderWatcher("support", "example.com", "admin@gmail.com", known) {
-		t.Error("different local part should not match")
-	}
-}
-
-func TestIsKnownForwarderWatcher_EmptyList(t *testing.T) {
-	if isKnownForwarderWatcher("info", "example.com", "admin@gmail.com", nil) {
-		t.Error("empty list should not match")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // isInfraIPDaemon edge cases
 // ---------------------------------------------------------------------------
 
