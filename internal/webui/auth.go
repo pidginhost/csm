@@ -218,6 +218,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	secret, record, err := s.sessions.Create(loginName, session.Hash(token), previous, clientIPKey(r.RemoteAddr), r.UserAgent(), s.sessionNow())
+	if errors.Is(err, session.ErrFull) {
+		// The Sessions page needs a login, so name the recovery paths here.
+		http.Error(w, "Browser session limit reached. Wait for idle sessions to expire, or revoke sessions with an admin API token.", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		http.Error(w, "Cannot create browser session", http.StatusServiceUnavailable)
 		return

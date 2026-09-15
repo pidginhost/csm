@@ -391,6 +391,29 @@ func TestBrowserSessionConfiguredPolicyAndRestart(t *testing.T) {
 	}
 }
 
+// At capacity the operator cannot reach the Sessions page, so the login
+// response itself must say why it failed and how to make room.
+func TestBrowserSessionLoginExplainsCapacity(t *testing.T) {
+	token := randomBrowserCredential()
+	s := newTestServerWithTemplates(t, token)
+	for range session.MaxSessions {
+		testBrowserCookie(t, s, token)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(url.Values{"token": {token}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	s.handleLogin(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("login at capacity returned %d, want 503", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "session limit") || !strings.Contains(body, "API") {
+		t.Fatalf("login at capacity did not explain recovery: %q", body)
+	}
+	if len(w.Result().Cookies()) != 0 {
+		t.Fatal("login at capacity issued a cookie")
+	}
+}
+
 // Login exchanges a credential the browser must already hold, so an origin
 // gate adds nothing there. It did lock out operators who reach the UI by an
 // unlisted address and could previously log in for read-only use. Logout and

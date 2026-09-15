@@ -95,8 +95,9 @@ issuing a replacement cookie or changing that session. Concurrent requests
 preserve the latest committed activity even when they arrive out of order.
 If the session store is unavailable, browser authentication fails closed; API bearer
 authentication remains independent. Session admission is bounded and refuses new
-logins at capacity instead of evicting active sessions; revoke unused sessions
-to make room. Expired sessions are removed during admission, and startup clears
+logins at capacity instead of evicting active sessions. The login response says
+so; wait for idle sessions to expire, or revoke sessions from a logged-in
+browser or with an admin API token (`DELETE /api/v1/sessions`). Expired sessions are removed during admission, and startup clears
 the session records. Backup exports exclude live session records, and full
 restores discard any session records from older archives.
 
