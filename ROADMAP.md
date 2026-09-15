@@ -38,13 +38,17 @@ by effort or tidiness:
 
 Keep the host agent autonomous and self-contained, with bbolt owned by one
 process. Privilege separation must preserve that ownership: the helper and
-online CLI clients use scoped requests, not independent database writers.
-Offline maintenance needs exclusive ownership. A local database replacement
+online CLI clients use scoped requests for reads and writes. They must not open
+the live database independently, even read-only: bbolt's writable owner holds
+an exclusive file lock. Offline maintenance needs exclusive ownership, with
+the daemon and helper quiesced before handoff. A local database replacement
 needs measured contention, query complexity or recovery requirements that the
 current design cannot meet. Both bbolt and SQLite WAL serialize writers; a
 switch alone does not remove that constraint. See the
 [bbolt transaction documentation](https://github.com/etcd-io/bbolt#transactions)
 and [SQLite WAL concurrency](https://www.sqlite.org/wal.html#concurrency).
+The separate-process lock behavior is described under
+[bbolt read-only mode](https://github.com/etcd-io/bbolt#read-only-mode).
 
 Use the existing store, action log, privileged-operation inventory, scan jobs
 and incident correlator as the starting points. Add domain interfaces as each
@@ -54,7 +58,8 @@ authoritative operational state by domain, with a rollback contract.
 
 The architectural priorities are privilege isolation, durable host actions and
 browser credential isolation. They complement the harm-based priorities above.
-The delivery order is:
+The delivery order within this architecture work is below; it does not defer
+Priority 1 protection failures or Priority 2 precision and response defects:
 
 1. [Browser sessions](#browser-sessions-must-not-carry-the-admin-token) and a
    narrow extraction of their HTTP/domain boundary. This can ship independently.
@@ -475,8 +480,14 @@ make the database and nftables one transaction.
 
 Inject a domain-owned firewall state interface into the engine. Reuse the
 existing blocked, allowed, subnet and per-port buckets behind it, without
-exposing bbolt transactions to firewall callers. Commit each logical state
-change together, then update the hot-path cache only from committed state.
+exposing bbolt transactions to firewall callers. The existing store schema and
+methods are not yet a lossless engine backend: subnet rows lack expiry and use
+a different creation-time field, while loaders hide read and decode failures.
+Extend the schema and error contract before cutover; preserve original times
+and explicit provenance instead of recreating them through add methods. A
+failed or corrupt read must not become a successful empty or partial ruleset.
+Commit each logical state change together, then update the hot-path cache only
+from committed state.
 Kernel application and recovery follow the durable action lifecycle above.
 
 Provide a one-shot migration through the owning daemon, or under an exclusive
@@ -488,7 +499,9 @@ restore the now-stale JSON. Keep desired configuration in YAML.
 
 **Acceptance:** preserve block expiry, provenance, operator exclusions, subnet
 and port semantics, cache consistency, startup reapplication and failed-write
-behavior. Test import retries, corrupt input, concurrent CLI/daemon requests,
+behavior. Round-trip every engine state field, including temporary subnet
+expiry and original timestamps. Test import retries, corrupt input and stored
+rows, read failures, concurrent CLI/daemon requests,
 crashes around commit and kernel application, upgrade/downgrade and backup
 restore. Existing exports disarm pending configuration rollback; preserve that
 property and define the treatment of new action intent. Migration must not
@@ -723,8 +736,15 @@ policy even if the main process is compromised. Do not expose arbitrary shell,
 command execution or unrestricted file-write RPCs. Bound request sizes and
 execution time; test unknown verbs, malformed requests, stale identities and
 unauthorized peers. Decide how the helper verifies persisted intent and safety
-admission without trusting caller-supplied approval or opening a second bbolt
-writer. Include socket ownership, helper restart, protocol compatibility and
+admission before shipping the first helper verbs. A record in a store writable
+by the main process is caller-controlled too; reading it back through RPC does
+not make it trusted approval. Define which process owns the store and how
+helper-enforced policy, budgets and replay protection survive a compromised
+caller and helper restart. If the main process remains the owner, its records
+are evidence only: it must not be able to reset or forge the helper's safety
+admission. Keep one owner per live database and protect admission authority
+from the caller. Test forged intent, replay and attempted budget reset as well
+as valid requests. Include socket ownership, protocol compatibility and
 unavailable-helper behavior in the first slice. Retain findings when mutation
 cannot safely proceed.
 
@@ -772,19 +792,22 @@ quarantines, blocks and rewrites configuration.
 Split the handlers by domain -- findings, incidents, firewall, quarantine,
 scans, mail, settings, health -- behind narrow interfaces, and keep the
 security-sensitive logic out of the handler files so it can be reviewed and
-tested on its own. Do this alongside the sessions item so the authentication
-path is not reworked twice, and before the external review so the reviewer
-reads the boundary rather than the handlers.
+tested on its own. Extract the authentication/session boundary with browser
+sessions; that release does not depend on extracting every mutation handler.
+Move each remaining domain with its action/job slice, and complete the split
+before the external review so the reviewer reads the boundary rather than the
+handlers.
 
 Handlers authenticate, authorize, decode and validate request shape, call a
 domain service, then encode the response. Services own policy and action/job
 submission and are shared with CLI and automatic callers. Extract only the
 boundary needed for each slice; file splitting alone does not reduce privilege.
 
-**Acceptance:** no handler performs a host mutation directly; each domain
-interface has its own tests; read-only authorization and CSRF checks survive
-extraction; HTTP, CLI and automatic paths cannot bypass service-level safety
-checks. Use the existing privilege inventory to check mutation coverage.
+**Acceptance per slice:** the extracted domain has interface tests; read-only
+authorization and CSRF checks survive extraction; HTTP, CLI and automatic paths
+cannot bypass its service-level safety checks. **Final acceptance:** no handler
+performs a host mutation directly. Use the existing privilege inventory to
+track remaining mutation coverage without gating sessions on the full split.
 
 ## Parser and input hardening
 

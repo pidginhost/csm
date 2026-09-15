@@ -12,6 +12,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 ### Changed
 
 - The engineering roadmap now defines staged work for durable actions, privilege isolation, browser sessions and storage recovery. It keeps the embedded database and chooses panel-side fleet correlation.
+- The architecture roadmap now requires lossless firewall migration and independently enforced helper admission. Browser sessions can ship before the remaining service extraction.
 
 ### Security
 
