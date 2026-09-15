@@ -935,7 +935,9 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		// the request's Host header. Reading r.Host would let a proxy
 		// attacker forge a Host that matches their forged Origin and
 		// trivially pass the equality check.
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/login" || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/sessions") {
+		// Browser logout and session revocation change server state like API
+		// writes. Login stays reachable: it already requires the credential.
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/sessions") {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
 				if !s.originAllowed(origin) {

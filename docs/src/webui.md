@@ -64,7 +64,9 @@ create browser sessions.
 Use **Sessions** in the header (`/sessions`) to see login names, client address,
 browser, creation time, last activity and absolute expiry. Revoke one session
 or log out every browser, including your own. These operations do not rotate
-API credentials. Logout uses a CSRF-protected POST.
+API credentials. Logout uses a CSRF-protected POST. Logout and revocation
+accept the same browser origins as API writes (`webui.allowed_origins`); the
+login form does not check the origin.
 
 ```yaml
 webui:

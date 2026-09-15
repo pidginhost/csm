@@ -391,6 +391,32 @@ func TestBrowserSessionConfiguredPolicyAndRestart(t *testing.T) {
 	}
 }
 
+// Login exchanges a credential the browser must already hold, so an origin
+// gate adds nothing there. It did lock out operators who reach the UI by an
+// unlisted address and could previously log in for read-only use. Logout and
+// session revocation change server state and follow the API origin policy.
+func TestBrowserSessionOriginPolicy(t *testing.T) {
+	s := newTestServer(t, randomBrowserCredential())
+	s.cfg.WebUI.Listen = ":9443"
+	s.cfg.Hostname = "myhost.example.com"
+	probe := func(path, origin string) int {
+		inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Origin", origin)
+		w := httptest.NewRecorder()
+		s.securityHeaders(inner).ServeHTTP(w, req)
+		return w.Code
+	}
+	if code := probe("/login", "https://203.0.113.10:9443"); code != http.StatusOK {
+		t.Fatalf("login from an unlisted origin blocked with %d", code)
+	}
+	for _, path := range []string{"/logout", "/sessions/revoke"} {
+		if code := probe(path, "https://evil.example.com"); code != http.StatusForbidden {
+			t.Fatalf("%s accepted a foreign origin with %d", path, code)
+		}
+	}
+}
+
 type failingBrowserSessionAccess struct {
 	session.Repository
 	failure error
