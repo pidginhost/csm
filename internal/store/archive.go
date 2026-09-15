@@ -429,10 +429,11 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 	if only == "all" {
 		// Older archives can list session buckets removed during sanitization.
 		// Read the staged snapshot before applying any files to the destination.
-		res.BucketsRestored, err = listSnapshotBuckets(stagedBbolt)
-		if err != nil {
-			return nil, err
+		restored, listErr := listSnapshotBuckets(stagedBbolt)
+		if listErr != nil {
+			return nil, listErr
 		}
+		res.BucketsRestored = restored
 	}
 
 	// Apply state files (always, unless caller filtered everything out).
