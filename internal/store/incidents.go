@@ -15,6 +15,10 @@ import (
 
 const incidentsBucket = "incidents"
 
+// Bound rows inspected as well as deleted: retained or corrupt rows must
+// not turn a sweep into one long transaction on bbolt's shared writer.
+const incidentCompactionBatchSize = 256
+
 // SaveIncident persists an incident, overwriting any prior record with
 // the same ID. Caller is responsible for setting UpdatedAt before
 // invoking; this method just writes.
@@ -97,40 +101,58 @@ func (db *DB) ListIncidentsByStatus(status incident.Status) ([]incident.Incident
 	return out, nil
 }
 
-// CompactIncidents removes resolved/dismissed incidents whose UpdatedAt
-// is older than now-retention. Open and Contained incidents are never
-// pruned regardless of age. Returns the number of records removed.
-func (db *DB) CompactIncidents(now time.Time, retention time.Duration) (int, error) {
-	cutoff := now.Add(-retention)
+// CompactIncidents removes resolved/dismissed incidents that have outlived
+// their retention. Open and Contained incidents are never pruned regardless
+// of age. Each transaction inspects a bounded batch, letting other store
+// writers run during a large backlog. On error the count includes only
+// committed deletions from preceding batches.
+func (db *DB) CompactIncidents(now time.Time, retention incident.ClosedRetention) (int, error) {
 	pruned := 0
+	var next []byte
+	for {
+		n, resume, err := db.compactIncidentsBatch(now, retention, next)
+		pruned += n
+		if err != nil || resume == nil {
+			return pruned, err
+		}
+		next = resume
+	}
+}
+
+// The resume key is inclusive and copied before the transaction ends.
+// Selection and deletion share a transaction so a concurrent operator
+// update cannot be deleted using a stale retention decision.
+func (db *DB) compactIncidentsBatch(now time.Time, retention incident.ClosedRetention, start []byte) (int, []byte, error) {
+	var next []byte
+	var toDelete [][]byte
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(incidentsBucket))
-		var toDelete [][]byte
-		err := b.ForEach(func(k, v []byte) error {
+		cursor := b.Cursor()
+		k, v := cursor.First()
+		if start != nil {
+			k, v = cursor.Seek(start)
+		}
+		for scanned := 0; k != nil && scanned < incidentCompactionBatchSize; scanned++ {
 			inc, ok := decodeIncidentRow(k, v)
-			if !ok {
-				return nil
-			}
-			if inc.Status != incident.StatusResolved && inc.Status != incident.StatusDismissed {
-				return nil
-			}
-			if inc.UpdatedAt.Before(cutoff) {
+			if ok && retention.Expired(inc, now) {
 				toDelete = append(toDelete, append([]byte(nil), k...))
 			}
-			return nil
-		})
-		if err != nil {
-			return err
+			k, v = cursor.Next()
+		}
+		if k != nil {
+			next = append([]byte(nil), k...)
 		}
 		for _, k := range toDelete {
 			if err := b.Delete(k); err != nil {
 				return err
 			}
-			pruned++
 		}
 		return nil
 	})
-	return pruned, err
+	if err != nil {
+		return 0, nil, err
+	}
+	return len(toDelete), next, nil
 }
 
 func decodeIncidentRow(k, v []byte) (incident.Incident, bool) {

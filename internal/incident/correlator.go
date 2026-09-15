@@ -972,6 +972,12 @@ func (c *Correlator) RecordOperatorBlock(id, ip string, ttl time.Duration) error
 		if ttl > 0 {
 			inc.AutoBlock.ExpiresAt = now.Add(ttl)
 		}
+	} else {
+		// A closed record now carries an operator decision and must keep
+		// that decision for the operator retention window.
+		inc.UpdatedAt = now
+		inc.ClosedAt = now
+		inc.ClosedBy = "operator"
 	}
 	inc.Actions = append(inc.Actions, IncidentAction{
 		Time:    now,
@@ -1010,7 +1016,7 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 	if !ok {
 		return ErrIncidentNotFound
 	}
-	if inc.Status == status {
+	if inc.Status == status && (incidentStatusActive(status) || inc.ClosedBy == "operator") {
 		return nil
 	}
 	now := c.now()
@@ -1025,14 +1031,10 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 	})
 	c.counters.statusChangedTotal.Add(1)
 	if status == StatusResolved || status == StatusDismissed {
-		// Operator close: record provenance so reporting can distinguish
-		// from CloseStale's "auto:stale" attribution. Only set if the
-		// caller has not already assigned a closed reason (e.g. CloseStale
-		// reuses SetStatus internally and presets these fields).
-		if inc.ClosedAt.IsZero() {
-			inc.ClosedAt = now
-			inc.ClosedBy = "operator"
-		}
+		// SetStatus is an operator decision, including confirmation or
+		// dismissal of a record the daemon already closed.
+		inc.ClosedAt = now
+		inc.ClosedBy = "operator"
 		// Closing ends the episode. A later recurrence is new activity and
 		// starts at the bottom of the escalation ladder, rather than jumping
 		// to a permanent block off the back of a long-closed incident.
@@ -1277,27 +1279,31 @@ func (c *Correlator) IncrementCompactedTotal(n int) {
 // retention from the in-memory map. Store compaction removes the durable
 // records; this keeps API/control snapshots from serving stale incidents
 // until the next daemon restart.
-func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration) int {
+func (c *Correlator) PruneClosedOlderThan(now time.Time, retention ClosedRetention) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cutoff := now.Add(-retention)
 	pruned := 0
 	var prunedIDs []string
+	prunedSet := make(map[string]struct{})
 	for id, inc := range c.incidents {
-		if inc.Status != StatusResolved && inc.Status != StatusDismissed {
-			continue
-		}
-		if !inc.UpdatedAt.Before(cutoff) {
+		if !retention.Expired(*inc, now) {
 			continue
 		}
 		delete(c.incidents, id)
 		delete(c.lastPersistAt, id)
 		c.persistence.discardDeferred(id)
-		c.unbindLocked(id)
+		prunedSet[id] = struct{}{}
 		if c.spray != nil {
 			prunedIDs = append(prunedIDs, id)
 		}
 		pruned++
+	}
+	// Walk the active index once. Scanning it for each expired record
+	// stalls all incident activity during a large retention backlog.
+	for key, id := range c.byKey {
+		if _, ok := prunedSet[id]; ok {
+			delete(c.byKey, key)
+		}
 	}
 	if c.spray != nil {
 		c.spray.UnbindIncidents(prunedIDs)
