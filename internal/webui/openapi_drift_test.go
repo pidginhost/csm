@@ -50,6 +50,7 @@ var openAPIMethods = map[string]struct{}{
 }
 
 var openAPIPrimaryMethodOverrides = map[string]string{
+	"/api/v1/sessions/": "delete", // Session ID prefix accepts revocation only.
 	// These CSRF-wrapped handlers use PUT for writes. Documenting POST points
 	// API clients at a method the handlers reject.
 	"/api/v1/prefs/user":  "put",

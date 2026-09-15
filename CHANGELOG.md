@@ -9,8 +9,14 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ## [Unreleased]
 
+### Changed
+
+- The engineering roadmap now defines staged work for durable actions, privilege isolation, browser sessions and storage recovery. It keeps the embedded database and chooses panel-side fleet correlation.
+- The architecture roadmap now requires lossless firewall migration and independently enforced helper admission. Browser sessions can ship before the remaining service extraction.
+
 ### Security
 
+- Browser logins now use revocable sessions with idle and absolute expiry instead of copying the administrator API credential into a cookie. Upgrades and daemon restarts require a fresh browser login; API credentials continue to work.
 - A claimed crawler without reverse DNS no longer regains the softer challenge treatment after a daemon restart or when retry history fills up.
 - Mail log parsing no longer takes an authenticated user from message IDs, delivery replies, quoted fields or records carrying a remote ident username.
 - Mail authentication failures and authenticated arrivals keep their verified user and connecting address when login names, addresses, message IDs or optional envelope identities contain text that resembles log fields, including on TCP Fast Open connections.
@@ -26,6 +32,10 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Upgrading a standalone install no longer leaves the daemon unable to start when a directory its service sandbox needs was never created; the upgrade now creates it first.
 - Mailing list aliases created by cPanel's Mailman are no longer reported as critical pipe forwarders, and autoresponder aliases are no longer reported as external forwarders. Forwarder alerts name the mailbox address once, and expected forwarders listed by full address are now recognized.
 - Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.
+- The finding history and attack event log no longer leave their database pages half empty, so they take about half the space in the state file on a typical host. Existing files shrink after the next compaction.
+- The per-address index of attack events no longer stores a second copy of every event, which cut its space in the state file to a fraction. Rows written by earlier releases are still read until they age out.
+- Attack events recorded at the same instant across separate batches no longer overwrite each other or disappear from address history. Address queries also skip older index copies that belong to a different address.
+- Incidents the daemon closes on its own are now kept for 7 days instead of 30, so busy hosts no longer hold tens of thousands of stale records in the state file. Incidents an operator closed or acted on keep 30 days, and large cleanups no longer pause incident processing.
 
 ## [3.38.0] - 2026-09-13
 

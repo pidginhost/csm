@@ -1,0 +1,38 @@
+{{define "title"}}Browser sessions{{end}}
+{{define "page"}}sessions{{end}}
+{{define "content"}}
+<div class="csm-page-header mb-3">
+  <h1 class="csm-page-header__title">Browser sessions</h1>
+  <p class="text-muted">Review administrator logins and revoke access from other browsers. Logging out does not rotate API credentials. Sessions end when the daemon restarts.</p>
+</div>
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-vcenter">
+      <thead><tr><th>Operator</th><th>Browser</th><th>Address</th><th>Created</th><th>Last activity</th><th>Expires</th><th>Action</th></tr></thead>
+      <tbody>
+      {{range .Sessions}}
+      <tr>
+        <td>{{.Name}}{{if .Current}} <span class="badge bg-blue-lt">Current</span>{{end}}</td>
+        <td>{{.UserAgent}}</td><td>{{.RemoteIP}}</td>
+        <td>{{formatTime .Created}}</td><td>{{formatTime .LastSeen}}</td><td>{{formatTime .Expires}}</td>
+        <td><form method="post" action="/sessions/revoke">
+          <input type="hidden" name="csrf_token" value="{{csrfToken}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button type="submit" class="btn btn-outline-danger btn-sm">Log out</button>
+        </form></td>
+      </tr>
+      {{else}}<tr><td colspan="7" class="text-muted">No active browser sessions.</td></tr>{{end}}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer">
+    <form method="post" action="/sessions/revoke">
+      <input type="hidden" name="csrf_token" value="{{csrfToken}}">
+      <input type="hidden" name="id" value="all">
+      <button type="submit" class="btn btn-danger">Log out all sessions</button>
+    </form>
+  </div>
+</div>
+{{end}}
+{{define "scripts"}}{{end}}
+{{template "layout" .}}

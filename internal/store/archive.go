@@ -135,7 +135,6 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	if opts.RulesPath != "" {
 		man.Contents = append(man.Contents, "rules")
 	}
-	man.BboltBuckets = listBuckets(db)
 
 	// Snapshot bbolt to a temp file in the same directory so we can hash it
 	// and stream it into the tar without holding a long bolt transaction.
@@ -158,7 +157,16 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	if err = snap.Close(); err != nil {
 		return nil, fmt.Errorf("closing bbolt snapshot: %w", err)
 	}
+	if err = DisarmBrowserSessionsSnapshot(snapPath); err != nil {
+		return nil, err
+	}
 	if err = DisarmFirewallRollbackSnapshot(snapPath); err != nil {
+		return nil, err
+	}
+	// Describe the sanitized snapshot, not the live database: a full import
+	// reports these buckets as restored.
+	man.BboltBuckets, err = listSnapshotBuckets(snapPath)
+	if err != nil {
 		return nil, err
 	}
 	man.BboltSHA256, err = sha256File(snapPath)
@@ -409,12 +417,24 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		}
 	}
 	if (only == "all" || only == "firewall") && stagedBbolt != "" {
+		if err := DisarmBrowserSessionsSnapshot(stagedBbolt); err != nil {
+			return nil, err
+		}
 		if err := DisarmFirewallRollbackSnapshot(stagedBbolt); err != nil {
 			return nil, err
 		}
 	}
 
 	res := &ImportResult{Manifest: man}
+	if only == "all" {
+		// Older archives can list session buckets removed during sanitization.
+		// Read the staged snapshot before applying any files to the destination.
+		restored, listErr := listSnapshotBuckets(stagedBbolt)
+		if listErr != nil {
+			return nil, listErr
+		}
+		res.BucketsRestored = restored
+	}
 
 	// Apply state files (always, unless caller filtered everything out).
 	if only == "all" || only == "baseline" {
@@ -457,8 +477,6 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		if err := atomicReplace(stagedBbolt, target); err != nil {
 			return nil, fmt.Errorf("restoring csm.db: %w", err)
 		}
-		// Report every bucket that came from the snapshot.
-		res.BucketsRestored = append([]string(nil), man.BboltBuckets...)
 	case "firewall":
 		restored, err := mergeBucketsFromSnapshot(stagedBbolt, opts.StatePath, isFirewallBucket)
 		if err != nil {
@@ -511,19 +529,29 @@ func platformMatches(a, b map[string]string) bool {
 	return true
 }
 
-// listBuckets returns the bucket names actually present in the running
-// DB (not the static bucketNames slice; callers may have been told via
-// migration that some are gone).
-func listBuckets(db *DB) []string {
+// listSnapshotBuckets returns the bucket names actually present in a
+// snapshot file (not the static bucketNames slice; migrations may have
+// removed some, and export sanitization removes others).
+func listSnapshotBuckets(path string) ([]string, error) {
+	snapshot, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second, ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("opening bbolt snapshot: %w", err)
+	}
 	out := []string{}
-	_ = db.bolt.View(func(tx *bolt.Tx) error {
+	err = snapshot.View(func(tx *bolt.Tx) error {
 		return tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
 			out = append(out, string(name))
 			return nil
 		})
 	})
+	if closeErr := snapshot.Close(); err == nil && closeErr != nil {
+		err = fmt.Errorf("closing bbolt snapshot: %w", closeErr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing bbolt snapshot buckets: %w", err)
+	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 func writeTarFile(tw *tar.Writer, name string, data []byte, modTime time.Time) error {

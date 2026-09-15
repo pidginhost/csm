@@ -200,9 +200,13 @@
                         <button id="theme-toggle" class="btn btn-ghost-secondary btn-sm" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">
                             <i class="ti ti-sun-moon"></i>
                         </button>
-                        <a href="/logout" class="btn btn-ghost-secondary btn-sm">
-                            <i class="ti ti-logout"></i> Logout
-                        </a>
+                        <a href="/sessions" class="btn btn-ghost-secondary btn-sm">Sessions</a>
+                        <form method="post" action="/logout">
+                            <input type="hidden" name="csrf_token" value="{{csrfToken}}">
+                            <button type="submit" class="btn btn-ghost-secondary btn-sm">
+                                <i class="ti ti-logout"></i> Logout
+                            </button>
+                        </form>
                     </div>
                 </div>
             </header>

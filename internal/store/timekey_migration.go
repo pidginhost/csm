@@ -171,6 +171,11 @@ func replaceBucketFromTemp(tx *bolt.Tx, name, tempName string) error {
 	if err != nil {
 		return err
 	}
+	if name == historyBucketName || name == attackEventsBucketName {
+		// The temporary bucket's cursor yields sorted keys even when
+		// canonicalizing mixed time zones changed their original order.
+		dst.FillPercent = timeKeyFillPercent
+	}
 	tmp := tx.Bucket([]byte(tempName))
 	if tmp != nil {
 		if err := tmp.ForEach(func(k, v []byte) error {

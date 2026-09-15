@@ -205,6 +205,21 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 - **Web UI:** Vanilla JS, no framework, no build step. Tabler CSS framework. Use `CSM.get()` / `CSM.post()` / `CSM.delete()` for API calls. Escape string-built markup with `CSM.esc()`; prefer DOM APIs for attacker-controlled values.
 - **Logging:** New code should use `internal/log` (wraps `log/slog`). Legacy `fmt.Fprintf(os.Stderr, "[%s] ...", ts())` call sites remain valid until migrated.
 
+### Attack event storage
+
+Attack events live in `attacks:events`; `attacks:events:ip` stores empty values
+under `<ip>/<TimeKey>` keys. The writer chooses an unused primary key inside
+the write transaction because batch counters can repeat for the same timestamp.
+Primary rows, index entries and the event count are updated atomically, including
+count-cap pruning.
+
+Address queries walk the index newest-first and resolve primary rows until the
+requested limit is met. Older index entries can still contain a full event copy;
+the reader falls back to that copy if the primary row is missing, malformed or
+belongs to another address. Both forms must match the requested address. The UTC
+time-key migration preserves index values verbatim, so readers must keep handling
+both forms until older entries age out.
+
 ## Structured Logging (slog)
 
 Legacy daemon call sites emit log lines via `fmt.Fprintf(os.Stderr, "[%s] ...", ts())`. The `internal/log` package provides a drop-in slog wrapper so operators can opt into JSON output for log-shipping pipelines (Loki, ELK, Datadog) without a big bang migration.
