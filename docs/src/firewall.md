@@ -33,6 +33,7 @@ uncertain commit; callers must reconcile stored state before retrying and must
 not assume rollback or confirmed durability. Legacy bucket edits invalidate a
 committed snapshot instead of silently changing its revision. The contract does
 not activate runtime cutover.
+
 Transactions remain private to the store so action admission can later share
 the state commit. Firewall storage metrics separate write wait from transaction
 duration and expose read time, pending writes, failures and snapshot batch size
