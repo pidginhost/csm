@@ -2,9 +2,11 @@ package store
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -157,6 +159,18 @@ func TestBrowserSessionExportDoesNotCopySessions(t *testing.T) {
 	snapshotBytes := archiveEntryBytes(t, archive, bboltSnapshotEntry)
 	if bytes.Contains(snapshotBytes, []byte(session.Hash(secret))) || bytes.Contains(snapshotBytes, []byte("credential-fingerprint")) {
 		t.Fatal("export retained session metadata in free pages")
+	}
+	// A full import reports the manifest's buckets as restored, so the
+	// manifest must describe the sanitized snapshot, not the live database.
+	var manifest Manifest
+	if err = json.Unmarshal(archiveEntryBytes(t, archive, manifestEntry), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(manifest.BboltBuckets, browserSessionsBucket) {
+		t.Fatal("export manifest lists browser sessions the snapshot does not contain")
+	}
+	if !slices.Contains(manifest.BboltBuckets, "history") {
+		t.Fatalf("export manifest lost snapshot buckets: %v", manifest.BboltBuckets)
 	}
 	snapshotDir := t.TempDir()
 	if err = os.WriteFile(filepath.Join(snapshotDir, "csm.db"), snapshotBytes, 0600); err != nil {
