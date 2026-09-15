@@ -290,7 +290,7 @@ func TestCompactIncidentsPrunesOldResolved(t *testing.T) {
 		}
 	}
 
-	pruned, err := db.CompactIncidents(now, 30*24*time.Hour)
+	pruned, err := db.CompactIncidents(now, incident.ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 30 * 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestCompactIncidentsSkipsCorruptRecord(t *testing.T) {
 
 	putRawIncidentRow(t, db, "inc_corrupt", []byte("{bad"))
 
-	pruned, err := db.CompactIncidents(now, 30*24*time.Hour)
+	pruned, err := db.CompactIncidents(now, incident.ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 30 * 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("compact must not fail on corrupt row: %v", err)
 	}
@@ -390,5 +390,52 @@ func TestCompactIncidentsSkipsCorruptRecord(t *testing.T) {
 		t.Fatalf("GetIncident: %v", err)
 	} else if ok {
 		t.Errorf("inc_stale should be gone")
+	}
+}
+
+func TestCompactIncidentsPrunesAutoClosedSooner(t *testing.T) {
+	db := newTestStore(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	day := 24 * time.Hour
+	closed := func(id, by string, age time.Duration) incident.Incident {
+		inc := sampleIncident(id)
+		inc.Status = incident.StatusResolved
+		inc.ClosedBy = by
+		inc.ClosedAt = now.Add(-age)
+		inc.UpdatedAt = now.Add(-age)
+		return inc
+	}
+	rows := []incident.Incident{
+		closed("inc_auto_8d", "auto:stale", 8*day),
+		closed("inc_age_cap_8d", "auto:age_cap", 8*day),
+		closed("inc_auto_6d", "auto:stale", 6*day),
+		closed("inc_operator_8d", "operator", 8*day),
+		closed("inc_unattributed_8d", "", 8*day),
+		closed("inc_operator_31d", "operator", 31*day),
+	}
+	for _, inc := range rows {
+		if err := db.SaveIncident(inc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruned, err := db.CompactIncidents(now, incident.ClosedRetention{Operator: 30 * day, Auto: 7 * day})
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if pruned != 3 {
+		t.Errorf("pruned %d rows, want 3", pruned)
+	}
+	for id, want := range map[string]bool{
+		"inc_auto_8d":         false,
+		"inc_age_cap_8d":      false,
+		"inc_auto_6d":         true,
+		"inc_operator_8d":     true,
+		"inc_unattributed_8d": true,
+		"inc_operator_31d":    false,
+	} {
+		if _, ok, _ := db.GetIncident(id); ok != want {
+			t.Errorf("%s present = %v, want %v", id, ok, want)
+		}
 	}
 }

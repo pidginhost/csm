@@ -7,6 +7,7 @@ package incident
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -21,6 +22,33 @@ const (
 	StatusResolved  Status = "resolved"
 	StatusDismissed Status = "dismissed"
 )
+
+// ClosedRetention is how long resolved and dismissed incidents are kept after
+// their last update. Operator applies to incidents an operator closed and to
+// rows closed before close attribution existed; Auto applies to incidents the
+// daemon closed on its own, which carry no operator decision worth keeping as
+// long.
+type ClosedRetention struct {
+	Operator time.Duration
+	Auto     time.Duration
+}
+
+// Expired reports whether a closed incident has outlived its retention.
+// Active incidents never expire here.
+func (r ClosedRetention) Expired(inc Incident, now time.Time) bool {
+	if inc.Status != StatusResolved && inc.Status != StatusDismissed {
+		return false
+	}
+	keep := r.Operator
+	if strings.HasPrefix(inc.ClosedBy, closedByAutoPrefix) {
+		keep = r.Auto
+	}
+	return inc.UpdatedAt.Before(now.Add(-keep))
+}
+
+// closedByAutoPrefix marks ClosedBy values the daemon writes when it closes
+// an incident itself ("auto:stale", "auto:age_cap", "auto:active_cap").
+const closedByAutoPrefix = "auto:"
 
 // Kind is the high-level taxonomy a correlator assigns at create time.
 // Stable strings; downstream tooling pins on these.

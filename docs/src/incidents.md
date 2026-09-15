@@ -44,8 +44,9 @@ notices remain informational, and both classes appear in the findings list.
 | `dismissed` | False positive. Future findings start a new incident.                  |
 
 Resolved and dismissed incidents are pruned 30 days after their last
-update. Open and contained incidents are never auto-pruned by the
-retention loop, but they may be auto-resolved by the per-kind idle
+update when an operator closed them, and 7 days after their last update
+when the daemon closed them (`closed_by` starting with `auto:`). Open and
+contained incidents are never auto-pruned by the retention loop, but they may be auto-resolved by the per-kind idle
 threshold described under "Auto-close" below.
 
 ## Auto-close
@@ -94,7 +95,7 @@ A host under sustained brute-force keeps a large open set mostly from the
 longer-lived kinds (`web_account_compromise` defaults to 168h). If the
 open-incident count is higher than you want to triage, shorten the
 relevant `by_kind` entry (e.g. `web_account_compromise: 72h`) rather than
-disabling auto-close. The closed records are retained 30 days regardless,
+disabling auto-close. The auto-resolved records are retained 7 days regardless,
 measured from when the incident resolves, so shortening the threshold also
 moves the eventual prune point earlier relative to the last finding.
 Auto-close still keeps a resolved record for follow-up instead of deleting

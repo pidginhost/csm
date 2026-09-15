@@ -1277,17 +1277,13 @@ func (c *Correlator) IncrementCompactedTotal(n int) {
 // retention from the in-memory map. Store compaction removes the durable
 // records; this keeps API/control snapshots from serving stale incidents
 // until the next daemon restart.
-func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration) int {
+func (c *Correlator) PruneClosedOlderThan(now time.Time, retention ClosedRetention) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cutoff := now.Add(-retention)
 	pruned := 0
 	var prunedIDs []string
 	for id, inc := range c.incidents {
-		if inc.Status != StatusResolved && inc.Status != StatusDismissed {
-			continue
-		}
-		if !inc.UpdatedAt.Before(cutoff) {
+		if !retention.Expired(*inc, now) {
 			continue
 		}
 		delete(c.incidents, id)

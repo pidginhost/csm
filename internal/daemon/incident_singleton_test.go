@@ -461,7 +461,7 @@ func TestRunIncidentCompactionPrunesStoreAndMemory(t *testing.T) {
 		_ = db.Close()
 	})
 
-	old := time.Now().Add(-(incidentRetentionPeriod + time.Hour))
+	old := time.Now().Add(-(incidentClosedRetention.Operator + time.Hour))
 	inc := incident.Incident{
 		ID:        "inc_old",
 		Status:    incident.StatusResolved,
@@ -487,6 +487,47 @@ func TestRunIncidentCompactionPrunesStoreAndMemory(t *testing.T) {
 		t.Fatalf("GetIncident: %v", err)
 	} else if ok {
 		t.Fatal("compacted incident still visible in store")
+	}
+}
+
+func TestRunIncidentCompactionKeepsAutoClosedForShorterPeriod(t *testing.T) {
+	resetIncidentForTest()
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prev := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		resetIncidentForTest()
+		store.SetGlobal(prev)
+		_ = db.Close()
+	})
+
+	past := time.Now().Add(-(incidentClosedRetention.Auto + time.Hour))
+	for _, inc := range []incident.Incident{
+		{ID: "inc_auto", Status: incident.StatusResolved, Severity: alert.High, Account: "alice", ClosedBy: "auto:stale", ClosedAt: past, CreatedAt: past, UpdatedAt: past},
+		{ID: "inc_operator", Status: incident.StatusResolved, Severity: alert.High, Account: "bob", ClosedBy: "operator", ClosedAt: past, CreatedAt: past, UpdatedAt: past},
+	} {
+		if err := db.SaveIncident(inc); err != nil {
+			t.Fatalf("SaveIncident: %v", err)
+		}
+	}
+
+	c := IncidentCorrelator()
+	runIncidentCompaction(c)
+
+	if _, ok := c.Get("inc_auto"); ok {
+		t.Error("auto-closed incident still in memory")
+	}
+	if _, ok, _ := db.GetIncident("inc_auto"); ok {
+		t.Error("auto-closed incident still in store")
+	}
+	if _, ok := c.Get("inc_operator"); !ok {
+		t.Error("operator-closed incident dropped from memory")
+	}
+	if _, ok, _ := db.GetIncident("inc_operator"); !ok {
+		t.Error("operator-closed incident dropped from store")
 	}
 }
 

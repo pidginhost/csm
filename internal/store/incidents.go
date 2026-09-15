@@ -97,11 +97,10 @@ func (db *DB) ListIncidentsByStatus(status incident.Status) ([]incident.Incident
 	return out, nil
 }
 
-// CompactIncidents removes resolved/dismissed incidents whose UpdatedAt
-// is older than now-retention. Open and Contained incidents are never
-// pruned regardless of age. Returns the number of records removed.
-func (db *DB) CompactIncidents(now time.Time, retention time.Duration) (int, error) {
-	cutoff := now.Add(-retention)
+// CompactIncidents removes resolved/dismissed incidents that have outlived
+// their retention. Open and Contained incidents are never pruned regardless
+// of age. Returns the number of records removed.
+func (db *DB) CompactIncidents(now time.Time, retention incident.ClosedRetention) (int, error) {
 	pruned := 0
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(incidentsBucket))
@@ -111,10 +110,7 @@ func (db *DB) CompactIncidents(now time.Time, retention time.Duration) (int, err
 			if !ok {
 				return nil
 			}
-			if inc.Status != incident.StatusResolved && inc.Status != incident.StatusDismissed {
-				return nil
-			}
-			if inc.UpdatedAt.Before(cutoff) {
+			if retention.Expired(inc, now) {
 				toDelete = append(toDelete, append([]byte(nil), k...))
 			}
 			return nil
