@@ -10,6 +10,7 @@ state/state.json
 graphify-out/
 
 # Internal planning / local-only files
+/CSM_ARCHITECTURE_PROPOSAL.md
 CLAUDE.md
 AGENTS.md
 docs/superpowers/
