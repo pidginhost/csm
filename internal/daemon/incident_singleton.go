@@ -422,17 +422,20 @@ func runIncidentCompaction(c *incident.Correlator) {
 	if db == nil {
 		return
 	}
-	now := time.Now()
-	pruned, err := db.CompactIncidents(now, incidentClosedRetention)
+	runIncidentCompactionWith(c, time.Now(), db.CompactIncidents)
+}
+
+func runIncidentCompactionWith(c *incident.Correlator, now time.Time, compact func(time.Time, incident.ClosedRetention) (int, error)) {
+	pruned, err := compact(now, incidentClosedRetention)
+	c.IncrementCompactedTotal(pruned)
 	if err != nil {
-		csmlog.Warn("incident retention compaction failed", "err", err)
+		csmlog.Warn("incident retention compaction failed", "pruned", pruned, "err", err)
 		return
 	}
 	_ = c.PruneClosedOlderThan(now, incidentClosedRetention)
 	_ = c.PruneStalePending(now)
 	_ = c.PruneStaleSpray(now)
 	if pruned > 0 {
-		c.IncrementCompactedTotal(pruned)
 		csmlog.Info("incident retention compaction", "pruned", pruned)
 	}
 }

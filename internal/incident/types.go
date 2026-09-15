@@ -40,10 +40,26 @@ func (r ClosedRetention) Expired(inc Incident, now time.Time) bool {
 		return false
 	}
 	keep := r.Operator
+	updated := inc.UpdatedAt
 	if strings.HasPrefix(inc.ClosedBy, closedByAutoPrefix) {
 		keep = r.Auto
+		// Older operator writers left automatic attribution on closed
+		// records. Preserve those decisions during the first upgraded sweep;
+		// a later automatic closure starts a new retention episode.
+		for i := len(inc.Actions) - 1; i >= 0; i-- {
+			action := inc.Actions[i]
+			if action.Action == "incident_auto_closed" {
+				break
+			}
+			if (action.Action == "incident_status_changed" || action.Action == "operator_block") && !action.Time.Before(inc.ClosedAt) {
+				keep = r.Operator
+				if action.Time.After(updated) {
+					updated = action.Time
+				}
+			}
+		}
 	}
-	return inc.UpdatedAt.Before(now.Add(-keep))
+	return updated.Before(now.Add(-keep))
 }
 
 // closedByAutoPrefix marks ClosedBy values the daemon writes when it closes
@@ -110,12 +126,11 @@ type Incident struct {
 	Actions        []IncidentAction `json:"actions,omitempty"`
 	CreatedAt      time.Time        `json:"created_at"`
 	UpdatedAt      time.Time        `json:"updated_at"`
-	// ClosedAt is set when an incident transitions out of Open/Contained.
-	// Populated by SetStatus and CloseStale; zero for active incidents so
-	// existing webhook/SIEM consumers see no diff (omitempty).
+	// ClosedAt records the latest closure or operator decision on a closed
+	// incident. Reopening clears it.
 	ClosedAt time.Time `json:"closed_at,omitempty"`
-	// ClosedBy attributes the close. "operator" for SetStatus calls,
-	// "auto:stale" for CloseStale. Empty for active incidents.
+	// ClosedBy is "operator" for manual decisions on closed incidents and
+	// "auto:<reason>" for daemon closures. Empty for active or legacy rows.
 	ClosedBy string `json:"closed_by,omitempty"`
 	// CompoundFlags carries sticky bits used by the timeline-aware
 	// reclassifier. Once set, they survive timeline trimming so an

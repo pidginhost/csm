@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -508,6 +510,8 @@ func TestRunIncidentCompactionKeepsAutoClosedForShorterPeriod(t *testing.T) {
 	for _, inc := range []incident.Incident{
 		{ID: "inc_auto", Status: incident.StatusResolved, Severity: alert.High, Account: "alice", ClosedBy: "auto:stale", ClosedAt: past, CreatedAt: past, UpdatedAt: past},
 		{ID: "inc_operator", Status: incident.StatusResolved, Severity: alert.High, Account: "bob", ClosedBy: "operator", ClosedAt: past, CreatedAt: past, UpdatedAt: past},
+		{ID: "inc_legacy", Status: incident.StatusResolved, UpdatedAt: past},
+		{ID: "inc_historical_operator", Status: incident.StatusDismissed, ClosedBy: "auto:stale", ClosedAt: past, UpdatedAt: past, Actions: []incident.IncidentAction{{Time: past, Action: "incident_status_changed"}}},
 	} {
 		if err := db.SaveIncident(inc); err != nil {
 			t.Fatalf("SaveIncident: %v", err)
@@ -523,11 +527,35 @@ func TestRunIncidentCompactionKeepsAutoClosedForShorterPeriod(t *testing.T) {
 	if _, ok, _ := db.GetIncident("inc_auto"); ok {
 		t.Error("auto-closed incident still in store")
 	}
-	if _, ok := c.Get("inc_operator"); !ok {
-		t.Error("operator-closed incident dropped from memory")
+	for _, id := range []string{"inc_operator", "inc_legacy", "inc_historical_operator"} {
+		if _, ok := c.Get(id); !ok {
+			t.Errorf("%s dropped from memory before 30 days", id)
+		}
+		if _, ok, err := db.GetIncident(id); err != nil || !ok {
+			t.Errorf("%s dropped from store before 30 days: found=%v err=%v", id, ok, err)
+		}
 	}
-	if _, ok, _ := db.GetIncident("inc_operator"); !ok {
-		t.Error("operator-closed incident dropped from store")
+}
+
+func TestIncidentCompactionCountsCommittedBatchesOnFailure(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	now := time.Now()
+	old := now.Add(-8 * 24 * time.Hour)
+	c.Restore([]incident.Incident{{ID: "inc_auto", Status: incident.StatusResolved, ClosedBy: "auto:stale", UpdatedAt: old}})
+	runIncidentCompactionWith(c, now, func(time.Time, incident.ClosedRetention) (int, error) {
+		return 256, errors.New("later batch failed")
+	})
+	reg := metrics.NewRegistry()
+	incident.RegisterMetrics(reg, c)
+	var out bytes.Buffer
+	if err := reg.WriteOpenMetrics(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "csm_incidents_compacted_total 256\n") {
+		t.Errorf("committed deletions lost from metrics: %s", out.String())
+	}
+	if _, ok := c.Get("inc_auto"); !ok {
+		t.Error("failed sweep pruned memory without completing store cleanup")
 	}
 }
 

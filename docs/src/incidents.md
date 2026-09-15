@@ -45,9 +45,20 @@ notices remain informational, and both classes appear in the findings list.
 
 Resolved and dismissed incidents are pruned 30 days after their last
 update when an operator closed them, and 7 days after their last update
-when the daemon closed them (`closed_by` starting with `auto:`). Open and
-contained incidents are never auto-pruned by the retention loop, but they may be auto-resolved by the per-kind idle
-threshold described under "Auto-close" below.
+when the daemon closed them (`closed_by` starting with `auto:`). Older records
+without close attribution keep the 30-day period. Confirming an automatic
+closure, changing a closed status, or recording a block on a closed incident
+gives that decision 30 days of retention. Recorded operator decisions on older rows with
+stale automatic attribution also keep this longer period. Reopening clears
+close attribution; the next closure determines retention again.
+
+Open and contained incidents are never auto-pruned by the retention loop, but
+they may be auto-resolved by the per-kind idle threshold described under
+"Auto-close" below. Retention sweeps use bounded transactions so a large
+backlog does not hold the store writer for the entire cleanup. Pruning frees
+space for reuse; it does not shrink the state file. Finding history has its
+own retention, so a retained incident can refer to findings already evicted
+from history.
 
 ## Auto-close
 
@@ -95,7 +106,7 @@ A host under sustained brute-force keeps a large open set mostly from the
 longer-lived kinds (`web_account_compromise` defaults to 168h). If the
 open-incident count is higher than you want to triage, shorten the
 relevant `by_kind` entry (e.g. `web_account_compromise: 72h`) rather than
-disabling auto-close. The auto-resolved records are retained 7 days regardless,
+disabling auto-close. Untouched auto-resolved records are retained 7 days,
 measured from when the incident resolves, so shortening the threshold also
 moves the eventual prune point earlier relative to the last finding.
 Auto-close still keeps a resolved record for follow-up instead of deleting
