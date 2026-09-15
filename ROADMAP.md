@@ -469,6 +469,11 @@ is specified.
 
 ## Firewall state migration to bbolt
 
+The lossless firewall state storage contract is implemented and tested
+independently of runtime callers. It preserves complete ordered state with
+revision checks and atomic replacement. Runtime cutover, durable actions,
+migration, restore and downgrade remain open.
+
 **Status:** partially prepared. Firewall buckets and store methods exist, and
 pending configuration rollback already uses bbolt. The engine still reads and
 writes its authoritative runtime state in `state.json`.
