@@ -297,6 +297,54 @@ func testAppendHistoryFillsLeafPages(t *testing.T, pageSize int, shuffled bool) 
 	}
 }
 
+// Busy hosts append batches in which a few findings carry a timestamp from
+// before the last stored row (log lines parsed late). One such finding must
+// not cost the whole batch the dense split.
+func TestAppendHistoryDelayedFindingKeepsPagesDense(t *testing.T) {
+	for _, pageSize := range []int{4096, 16384} {
+		t.Run(fmt.Sprint(pageSize), func(t *testing.T) {
+			db := openFillTestDB(t, pageSize)
+			prevMax := maxHistoryEntries
+			maxHistoryEntries = 1000
+			t.Cleanup(func() { maxHistoryEntries = prevMax })
+			base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+			details := strings.Repeat("d", 180)
+			n := 0
+			for batch := 0; batch < 150; batch++ {
+				findings := make([]alert.Finding, 0, 20)
+				for i := 0; i < 20; i++ {
+					ts := base.Add(time.Duration(n) * time.Second)
+					if i == 0 && batch > 0 {
+						ts = ts.Add(-45 * time.Second)
+					}
+					findings = append(findings, alert.Finding{
+						Severity:  alert.Warning,
+						Check:     "email_auth_failure_realtime",
+						Message:   fmt.Sprintf("authentication failure %d", n),
+						Details:   details,
+						Timestamp: ts,
+					})
+					n++
+				}
+				if err := db.AppendHistory(findings); err != nil {
+					t.Fatalf("AppendHistory: %v", err)
+				}
+			}
+
+			use, pages := leafUse(t, db, "history")
+			if pages < 10 {
+				t.Fatalf("history spans %d leaf pages; test needs a multi-page bucket", pages)
+			}
+			if use < minAppendLeafUse {
+				t.Errorf("history leaf pages %.0f%% used, want at least %.0f%%", use*100, minAppendLeafUse*100)
+			}
+			if _, total := db.ReadHistory(1, 0); total != maxHistoryEntries {
+				t.Errorf("history total = %d, want %d", total, maxHistoryEntries)
+			}
+		})
+	}
+}
+
 func TestRecordAttackEventFillsLeafPages(t *testing.T) {
 	for _, pageSize := range []int{4096, 16384} {
 		t.Run(fmt.Sprint(pageSize), func(t *testing.T) {

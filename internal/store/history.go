@@ -38,6 +38,8 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 			}
 		}
 
+		writer.settle()
+
 		if err := incrCounter(tx, "history:count", len(findings)); err != nil {
 			return err
 		}

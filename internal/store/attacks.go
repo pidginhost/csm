@@ -59,6 +59,7 @@ func (db *DB) RecordAttackEvent(event AttackEvent, counter int) error {
 		if err := writer.put([]byte(key), val); err != nil {
 			return err
 		}
+		writer.settle()
 
 		secondaryKey := event.IP + "/" + key
 		if err := secondary.Put([]byte(secondaryKey), val); err != nil {

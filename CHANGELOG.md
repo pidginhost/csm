@@ -24,7 +24,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - The WordPress user enumeration filter no longer blocks signed-in users, so creating Application Passwords and loading author lists in the editor work again. Unrelated page paths and REST namespaces remain accessible.
 - Upgrading a standalone install no longer leaves the daemon unable to start when a directory its service sandbox needs was never created; the upgrade now creates it first.
 - Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.
-- Finding history and attack event logs use less database space for chronological arrivals and avoid excessive growth when delayed events arrive. Existing files can reclaim unused space at the next compaction.
+- The finding history and attack event log no longer leave their database pages half empty, so they take roughly half the space in the state file. Existing files shrink after the next compaction.
 
 ## [3.38.0] - 2026-09-13
 

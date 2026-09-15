@@ -121,11 +121,10 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
   bound logical growth. Startup compaction reclaims freelisted pages
   automatically when the file is large and mostly slack; `csm store
   compact` does the same immediately with the daemon stopped.
-  Chronological history and attack-event writes pack pages more densely;
-  space savings depend on event sizes and arrival order. Full archive imports
-  preserve the snapshot's page layout; compaction repacks an existing file.
-  Delayed events use balanced page splits, but previously packed pages have
-  less spare room and may split sooner during a backfill.
+  History and attack-event writes pack pages densely when their timestamps
+  arrive in order, and fall back to balanced page splits for a write in which
+  most events are older than the newest stored one. Archive imports keep the
+  snapshot's page layout; compaction repacks an existing file.
 
 ### Fanotify realtime monitor
 

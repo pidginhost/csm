@@ -235,33 +235,43 @@ func (db *DB) HasBucket(name string) bool {
 	return found
 }
 
-// timeKeyFillPercent packs ordered appends and sorted bucket rebuilds. Use
-// the default split point for out-of-order inserts so both halves have room
-// to grow; a high split point otherwise leaves many nearly empty right pages.
+// timeKeyFillPercent is the split point for buckets keyed by TimeKey. Their
+// keys arrive almost in order, so a split tail page is never written again; at
+// bbolt's default of 0.5 those pages stay half empty.
 const timeKeyFillPercent = 0.9
 
+// timeKeyWriter picks the split point for one write transaction. bbolt applies
+// a bucket's FillPercent to every page it splits at commit, so the choice is
+// per transaction rather than per key. A few delayed keys cost less than half
+// empty tail pages; when most keys land before the stored tail, the balanced
+// default leaves room in the pages they split.
 type timeKeyWriter struct {
 	bucket *bolt.Bucket
 	tail   []byte
+	older  int
+	total  int
 }
 
-func newTimeKeyWriter(b *bolt.Bucket) timeKeyWriter {
-	b.FillPercent = timeKeyFillPercent
+func newTimeKeyWriter(b *bolt.Bucket) *timeKeyWriter {
 	tail, _ := b.Cursor().Last()
-	// Only inserts into existing pages need a balanced split. New tail keys
-	// may arrive in any order within this transaction: bbolt sorts at commit.
-	return timeKeyWriter{bucket: b, tail: bytes.Clone(tail)}
+	return &timeKeyWriter{bucket: b, tail: bytes.Clone(tail)}
 }
 
-func (w timeKeyWriter) put(key, value []byte) error {
-	if w.bucket.FillPercent == timeKeyFillPercent {
-		if bytes.Compare(key, w.tail) <= 0 {
-			// Splits happen at commit, not Put. Once a transaction inserts
-			// an older key, later appends must not restore the high fill.
-			w.bucket.FillPercent = bolt.DefaultFillPercent
-		}
+func (w *timeKeyWriter) put(key, value []byte) error {
+	w.total++
+	if w.tail != nil && bytes.Compare(key, w.tail) <= 0 {
+		w.older++
 	}
 	return w.bucket.Put(key, value)
+}
+
+// settle sets the split point once every key of the transaction is known. It
+// must run before the transaction commits.
+func (w *timeKeyWriter) settle() {
+	w.bucket.FillPercent = timeKeyFillPercent
+	if w.older*2 > w.total {
+		w.bucket.FillPercent = bolt.DefaultFillPercent
+	}
 }
 
 // TimeKey produces a fixed-width 28-byte key for chronological ordering.
