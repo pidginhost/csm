@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func TestParseValiasFileForFindings(t *testing.T) {
@@ -109,6 +111,8 @@ func TestParseValiasFileForFindings_CPanelBuiltinPipesIgnored(t *testing.T) {
 	content := `bob@example.com: "|/usr/local/cpanel/bin/autorespond bob@example.com /home/bob/.autorespond"
 list@example.com: "|/usr/local/cpanel/3rdparty/mailman/mail/mailman post list_example.com"
 list-admin@example.com: "|/usr/local/cpanel/3rdparty/mailman/mail/wrapper mailowner list_example.com"
+box@example.com: "|/usr/local/cpanel/bin/boxtrapper box@example.com"
+quoted@example.com: "|\"/usr/local/cpanel/bin/autorespond\" \"name, bob@example.com\" /home/bob/.autorespond"
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -116,6 +120,32 @@ list-admin@example.com: "|/usr/local/cpanel/3rdparty/mailman/mail/wrapper mailow
 
 	if findings := parseValiasFileForFindings(path, "example.com", map[string]bool{"example.com": true}, nil); len(findings) != 0 {
 		t.Fatalf("findings = %+v, want none for cPanel builtin pipes", findings)
+	}
+}
+
+func TestParseValiasFileForFindings_FirstSightKeepsDangerousDestinations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "example.com")
+	content := "bob@example.com: \"|\u00a0/usr/local/cpanel/bin/autorespond\", \"/dev/null\", external@example.net\n" +
+		"box@example.com: \"|/usr/local/cpanel/bin/boxtrapper box@example.com\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, includeExternal := range []bool{false, true} {
+		got := parseValiasFileForFindingsFiltered(path, "example.com", map[string]bool{"example.com": true}, nil, includeExternal)
+		wantCount := 2
+		if includeExternal {
+			wantCount++
+		}
+		if len(got) != wantCount {
+			t.Fatalf("includeExternal=%t: findings = %+v, want %d", includeExternal, got, wantCount)
+		}
+		if got[0].Check != "email_pipe_forwarder" || got[0].Severity != alert.Critical ||
+			got[1].Message != "Mail blackhole: bob@example.com -> /dev/null" || got[1].Severity != alert.High {
+			t.Fatalf("includeExternal=%t: wrong dangerous findings: %+v", includeExternal, got)
+		}
+		if includeExternal && got[2].Message != "External forwarder: bob@example.com -> external@example.net" {
+			t.Errorf("external finding = %+v", got[2])
+		}
 	}
 }
 

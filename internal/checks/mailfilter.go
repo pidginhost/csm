@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -588,28 +587,89 @@ func isSafePipe(cmd string) bool {
 }
 
 func firstPipeCommandWord(cmd string) string {
-	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(cmd), "|"))
+	// Exim's transport_set_up_command uses byte whitespace and only treats
+	// a quote at the start of an argument specially. Shell-style quote
+	// concatenation or Unicode trimming can turn a different path into a
+	// trusted executable here.
+	const whitespace = " \t\r\n\v\f"
+	s := strings.TrimLeft(strings.TrimPrefix(strings.TrimLeft(cmd, whitespace), "|"), whitespace)
+	if s == "" || strings.IndexByte(s, 0) >= 0 {
+		return ""
+	}
+	quote := s[0]
+	if quote != '\'' && quote != '"' {
+		if end := strings.IndexAny(s, whitespace); end >= 0 {
+			return s[:end]
+		}
+		return s
+	}
 	var b strings.Builder
-	var quote rune
-	for _, r := range s {
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-				continue
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if c == quote {
+			return b.String()
+		}
+		if quote == '"' && c == '\\' {
+			if i+1 == len(s) {
+				return ""
 			}
-			b.WriteRune(r)
-			continue
+			var consumed int
+			c, consumed = pipeCommandEscape(s[i+1:])
+			i += consumed
+			if c == 0 {
+				return ""
+			}
 		}
-		if r == '\'' || r == '"' {
-			quote = r
-			continue
+		b.WriteByte(c)
+	}
+	// Incomplete quoting is not evidence of a trusted command.
+	return ""
+}
+
+// pipeCommandEscape follows Exim's string_interpret_escape: up to three
+// octal digits, up to two hex digits, C control escapes, or a literal byte.
+// s begins immediately after the backslash and is nonempty.
+func pipeCommandEscape(s string) (byte, int) {
+	switch s[0] {
+	case 'b':
+		return '\b', 1
+	case 'f':
+		return '\f', 1
+	case 'n':
+		return '\n', 1
+	case 'r':
+		return '\r', 1
+	case 't':
+		return '\t', 1
+	case 'v':
+		return '\v', 1
+	}
+	base := byte(8)
+	start := 0
+	if s[0] == 'x' {
+		base, start = 16, 1
+	} else if s[0] < '0' || s[0] > '7' {
+		return s[0], 1
+	}
+	var value byte
+	i := start
+	for ; i < len(s) && i < 3; i++ {
+		c := s[i] | 0x20
+		var digit byte
+		switch {
+		case c >= '0' && c <= '9':
+			digit = c - '0'
+		case c >= 'a' && c <= 'f':
+			digit = c - 'a' + 10
+		default:
+			return value, i
 		}
-		if unicode.IsSpace(r) {
+		if digit >= base {
 			break
 		}
-		b.WriteRune(r)
+		value = value*base + digit
 	}
-	return b.String()
+	return value, i
 }
 
 // scoreFilterRules evaluates one mailbox's parsed filter rules and returns the

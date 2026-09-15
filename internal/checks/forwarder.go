@@ -20,7 +20,7 @@ import (
 // and raw, still-quoted destination list. Returns empty strings for
 // comments, blank lines, or malformed lines.
 func splitValiasLine(line string) (key, rawDest string) {
-	line = strings.TrimSpace(line)
+	line = strings.Trim(line, " \t\r\n\v\f")
 	if line == "" || strings.HasPrefix(line, "#") {
 		return "", ""
 	}
@@ -28,7 +28,7 @@ func splitValiasLine(line string) (key, rawDest string) {
 	if idx < 0 {
 		return "", ""
 	}
-	return strings.TrimSpace(line[:idx]), strings.TrimSpace(line[idx+1:])
+	return strings.TrimSpace(line[:idx]), strings.Trim(line[idx+1:], " \t\r\n\v\f")
 }
 
 // ValiasEntry is one destination of one valiases alias.
@@ -67,9 +67,22 @@ func ParseValiasEntries(r io.Reader, fileDomain string) ([]ValiasEntry, error) {
 // cPanel writes pipe and command destinations quoted ("|/path args"), and
 // the pipe detector keys on the leading "|".
 func unquoteValiasDest(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.Trim(s, " \t\r\n\v\f")
 	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
-		return strings.TrimSpace(s[1 : len(s)-1])
+		quote := s[0]
+		s = strings.Trim(s[1:len(s)-1], " \t\r\n\v\f")
+		// The redirect router removes one backslash layer in double-quoted
+		// pipes/files before the pipe transport splits command arguments.
+		if quote == '"' && (strings.HasPrefix(s, "|") || strings.HasPrefix(s, "/")) {
+			var b strings.Builder
+			for i := 0; i < len(s); i++ {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+				}
+				b.WriteByte(s[i])
+			}
+			return b.String()
+		}
 	}
 	return s
 }
@@ -84,6 +97,12 @@ func splitValiasDests(dest string) []string {
 		c := dest[i]
 		switch {
 		case quote != 0:
+			if quote == '"' && c == '\\' && i+1 < len(dest) {
+				cur.WriteByte(c)
+				i++
+				cur.WriteByte(dest[i])
+				continue
+			}
 			if c == quote {
 				quote = 0
 			}
@@ -106,8 +125,8 @@ func splitValiasDests(dest string) []string {
 		parts := strings.Split(dest, ",")
 		out = out[:0]
 		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			part = strings.TrimSpace(strings.Trim(part, "\"'"))
+			part = strings.Trim(part, " \t\r\n\v\f")
+			part = strings.Trim(strings.Trim(part, "\"'"), " \t\r\n\v\f")
 			out = append(out, part)
 		}
 		return out

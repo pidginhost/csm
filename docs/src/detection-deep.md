@@ -260,7 +260,7 @@ discovers WordPress installs only.
 |-------|-------------|
 | `email_weak_password` | Email accounts with weak passwords; in-process verification with [supported hash formats and cost limits](email-av.md#email-password-audit) |
 | `email_password_audit_incomplete` | Password verification was interrupted or encountered a hash outside the supported audit formats or limits |
-| `email_forwarder_audit` | Forwarders redirecting to external addresses, piping mail to a command, or discarding it. Pipes that run cPanel's autoresponder, BoxTrapper or Mailman list software are not reported. |
+| `email_forwarder_audit` | Forwarders redirecting to external addresses, piping mail to a command, or discarding it. Pipes that run cPanel's autoresponder, BoxTrapper or Mailman list software are not reported. Scheduled and real-time scans interpret command quoting and escaped destination quotes using Exim's rules. |
 | `email_mail_filters` | Exim mail filters and dovecot/Roundcube Sieve scripts that copy mail to an external address while keeping a local copy, forward externally, pipe to a command, or blackhole all mail. Sieve is what webmail-managed rules actually execute, so both are scanned. A forward that leaves the mailbox its own copy is what a webmail forward rule produces, so on its own it reports as a Warning for review; it is Critical when an independent forwarding layer on the same mailbox, mail the mailbox never receives, or the same destination across accounts corroborates it. |
 
 ## Performance
