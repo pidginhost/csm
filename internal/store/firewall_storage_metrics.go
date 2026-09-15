@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
@@ -19,7 +20,7 @@ var (
 	firewallPendingWrites    = metrics.NewGauge("csm_storage_firewall_pending_writes", "Firewall writes waiting or executing.")
 	firewallWriteFailures    = metrics.NewCounter("csm_storage_firewall_write_failures_total", "Firewall replacements returning errors, including admission refusals.")
 	firewallReadFailures     = metrics.NewCounter("csm_storage_firewall_read_failures_total", "Firewall reads returning errors.")
-	firewallCommitFailures   = metrics.NewCounter("csm_storage_firewall_commit_failures_total", "Firewall transactions accepted by the callback but failing to commit.")
+	firewallCommitFailures   = metrics.NewCounter("csm_storage_firewall_commit_failures_total", "Firewall transactions accepted by the callback without a confirmed commit.")
 	firewallConflicts        = metrics.NewCounter("csm_storage_firewall_conflicts_total", "Firewall replacements refused due to revision conflicts.")
 )
 
@@ -66,6 +67,9 @@ func (db *DB) updateFirewallSnapshot(rowCount int, fn func(*bolt.Tx) error) erro
 	}
 	if err != nil && accepted {
 		firewallCommitFailures.Inc()
+		// bbolt can return a sync error after publishing its new metadata.
+		// An accepted callback plus an error is not proof of rollback.
+		return fmt.Errorf("%w: %w", firewall.ErrStateCommitUncertain, err)
 	}
 	return err
 }

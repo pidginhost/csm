@@ -11,6 +11,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Changed
 
+- Firewall storage now distinguishes rejected writes from uncertain commits so recovery can inspect state before retrying.
 - Added an atomic firewall storage contract that preserves complete state and rejects stale or corrupt reads. Runtime firewall storage remains unchanged until action recovery and migration are ready.
 - The engineering roadmap now defines staged work for durable actions, privilege isolation, browser sessions and storage recovery. It keeps the embedded database and chooses panel-side fleet correlation.
 - The architecture roadmap now requires lossless firewall migration and independently enforced helper admission. Browser sessions can ship before the remaining service extraction.

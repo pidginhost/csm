@@ -3,6 +3,10 @@ package firewall
 import "errors"
 
 var (
+	// ErrStateCommitUncertain means the transaction body succeeded but storage
+	// did not acknowledge commit. The new revision may be visible; callers must
+	// reconcile before retrying and must not infer rollback or durable success.
+	ErrStateCommitUncertain = errors.New("firewall state commit outcome uncertain")
 	// ErrStateUninitialized means no complete snapshot has been committed.
 	ErrStateUninitialized = errors.New("firewall state is uninitialized")
 	// ErrStateConflict requires re-reading state before constructing another change.

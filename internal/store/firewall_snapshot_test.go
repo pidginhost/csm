@@ -352,7 +352,11 @@ func TestFirewallSnapshotRejectsMalformedMetadata(t *testing.T) {
 }
 
 func TestFirewallSnapshotRejectsUndecodableRowsWithMatchingDigest(t *testing.T) {
-	for _, raw := range []string{`{"port":"invalid"}`, `null`} {
+	for _, raw := range []string{
+		`{"port":"invalid"}`, `null`, "{\"reason\":\"\xff\"}",
+		`{"reason":"\ud800"}`, `{"reason":"\udfff"}`,
+		`{"reason":"\ud800\u0041"}`, `{"reason":"\ud800\\udc00"}`,
+	} {
 		t.Run(raw, func(t *testing.T) {
 			db := openSnapshotDB(t)
 			s := snapshotStore(t, db)
@@ -445,4 +449,64 @@ func TestFirewallSnapshotReadersSeeOneCommittedRevision(t *testing.T) {
 		t.Error(err)
 	}
 	assertFirewallSnapshot(t, s, stateFor(31), 31)
+}
+
+func TestFirewallSnapshotDecodesValidUnicode(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{`{"reason":"\ud83d\ude00"}`, "\U0001f600"},
+		{`{"reason":"\uD83D\uDE00"}`, "\U0001f600"},
+		{`{"reason":"\\ud800"}`, `\ud800`},
+		{`{"reason":"\\\ud83d\ude00"}`, "\\\U0001f600"},
+		{`{"reason":"\ufffd"}`, "\ufffd"},
+		{`{"reason":"\u0041"}`, "A"},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			got, err := decodeFirewallCollection[firewall.PortAllowEntry]([][]byte{[]byte(tc.raw)}, true)
+			if err != nil || len(got) != 1 || got[0].Reason != tc.want {
+				t.Fatalf("valid Unicode decode = %#v, %v; want reason %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestFirewallSnapshotLostCommitAcknowledgementIsUncertain(t *testing.T) {
+	db := openSnapshotDB(t)
+	s := snapshotStore(t, db)
+	if _, err := s.ReplaceFirewallState(0, completeFirewallState()); err != nil {
+		t.Fatal(err)
+	}
+	original := boltUpdate
+	t.Cleanup(func() { boltUpdate = original })
+	injected := errors.New("final metadata sync failed")
+	boltUpdate = func(b *bolt.DB, fn func(*bolt.Tx) error) error {
+		if err := b.Update(fn); err != nil {
+			return err
+		}
+		return injected
+	}
+	next := completeFirewallState()
+	next.Allowed[0].Reason = "new revision already visible"
+	revision, err := s.ReplaceFirewallState(1, next)
+	if revision != 0 || !errors.Is(err, injected) || !errors.Is(err, firewall.ErrStateCommitUncertain) {
+		t.Fatalf("unacknowledged commit = %d, %v; need uncertainty with original cause", revision, err)
+	}
+	assertFirewallSnapshot(t, s, next, 2)
+}
+
+func TestFirewallSnapshotRefusedWritesAreNotUncertain(t *testing.T) {
+	db := openSnapshotDB(t)
+	s := snapshotStore(t, db)
+	if _, err := s.ReplaceFirewallState(0, completeFirewallState()); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []uint64{0, 2} {
+		revision, err := s.ReplaceFirewallState(expected, firewall.FirewallState{})
+		if revision != 0 || !errors.Is(err, firewall.ErrStateConflict) || errors.Is(err, firewall.ErrStateCommitUncertain) {
+			t.Fatalf("revision refusal = %d, %v", revision, err)
+		}
+	}
+	assertFirewallSnapshot(t, s, completeFirewallState(), 1)
 }

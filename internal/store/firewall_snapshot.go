@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -291,6 +292,11 @@ func decodeFirewallCollection[T any](rows [][]byte, nonNil bool) ([]T, error) {
 	}
 	for _, row := range rows {
 		var entry T
+		// A matching checksum does not make malformed text decodable. JSON
+		// silently replaces invalid Unicode, which would alter stored evidence.
+		if !validFirewallJSONText(row) {
+			return nil, fmt.Errorf("%w: row is not valid Unicode", firewall.ErrStateCorrupt)
+		}
 		trimmed := bytes.TrimSpace(row)
 		if len(trimmed) == 0 || trimmed[0] != '{' {
 			return nil, fmt.Errorf("%w: row is not an object", firewall.ErrStateCorrupt)
@@ -301,6 +307,47 @@ func decodeFirewallCollection[T any](rows [][]byte, nonNil bool) ([]T, error) {
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// The JSON decoder checks syntax but accepts invalid UTF-8 and unpaired UTF-16
+// surrogate escapes. Check those first without rejecting literal backslashes
+// or valid surrogate pairs. Non-Unicode escapes are left to the JSON decoder.
+func validFirewallJSONText(raw []byte) bool {
+	if !utf8.Valid(raw) {
+		return false
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		i++
+		if i >= len(raw) {
+			return false
+		}
+		if raw[i] != 'u' {
+			continue
+		}
+		if i+4 >= len(raw) {
+			return false
+		}
+		code, err := strconv.ParseUint(string(raw[i+1:i+5]), 16, 16)
+		if err != nil || code >= 0xdc00 && code <= 0xdfff {
+			return false
+		}
+		i += 4
+		if code < 0xd800 || code > 0xdbff {
+			continue
+		}
+		if i+6 >= len(raw) || raw[i+1] != '\\' || raw[i+2] != 'u' {
+			return false
+		}
+		low, err := strconv.ParseUint(string(raw[i+3:i+7]), 16, 16)
+		if err != nil || low < 0xdc00 || low > 0xdfff {
+			return false
+		}
+		i += 6
+	}
+	return true
 }
 
 // encoding/json replaces invalid UTF-8 and rounds timezone offsets to minutes.

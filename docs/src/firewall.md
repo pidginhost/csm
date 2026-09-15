@@ -27,9 +27,12 @@ Firewall state storage provides complete snapshot reads and revision-checked
 replacement using the existing database. Reads preserve expired entries,
 original timestamps, explicit provenance, duplicate allow entries and collection
 order. An uninitialized store, corrupt data or a failed read returns an error
-without usable state. Failed or stale writes preserve the previous snapshot
-and revision. Legacy bucket edits invalidate a committed snapshot instead of
-silently changing its revision. The contract does not activate runtime cutover.
+without usable state. Rejected or rolled-back writes preserve the previous
+snapshot and revision. An error after the transaction body succeeds reports an
+uncertain commit; callers must reconcile stored state before retrying and must
+not assume rollback or confirmed durability. Legacy bucket edits invalidate a
+committed snapshot instead of silently changing its revision. The contract does
+not activate runtime cutover.
 Transactions remain private to the store so action admission can later share
 the state commit. Firewall storage metrics separate write wait from transaction
 duration and expose read time, pending writes, failures and snapshot batch size
