@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1201,6 +1202,7 @@ func TestArchiveImportSkipsTransientStateFromOlderArchive(t *testing.T) {
 				t.Fatal(err)
 			}
 			man.BboltSHA256 = hex.EncodeToString(pendingHash[:])
+			man.BboltBuckets = append(man.BboltBuckets, browserSessionsBucket)
 			encoded, marshalErr := json.Marshal(man)
 			if marshalErr != nil {
 				t.Fatal(marshalErr)
@@ -1219,8 +1221,15 @@ func TestArchiveImportSkipsTransientStateFromOlderArchive(t *testing.T) {
 	_ = db.Close()
 
 	restoredState := filepath.Join(t.TempDir(), "state")
-	if _, err := Import(ImportOptions{SrcPath: legacyArchive, StatePath: restoredState, Only: "all", CurrentPlatform: defaultPlatform()}); err != nil {
+	result, err := Import(ImportOptions{SrcPath: legacyArchive, StatePath: restoredState, Only: "all", CurrentPlatform: defaultPlatform()})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if slices.Contains(result.BucketsRestored, browserSessionsBucket) {
+		t.Error("import reported stripped browser sessions as restored")
+	}
+	if !slices.Contains(result.BucketsRestored, "history") {
+		t.Error("import omitted a restored bucket")
 	}
 	for _, rel := range []string{"firewall/confirm_pending", "exports/export-old/staged.csmbak"} {
 		if _, err := os.Stat(filepath.Join(restoredState, filepath.FromSlash(rel))); !os.IsNotExist(err) {

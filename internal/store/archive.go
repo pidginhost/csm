@@ -426,6 +426,14 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 	}
 
 	res := &ImportResult{Manifest: man}
+	if only == "all" {
+		// Older archives can list session buckets removed during sanitization.
+		// Read the staged snapshot before applying any files to the destination.
+		res.BucketsRestored, err = listSnapshotBuckets(stagedBbolt)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Apply state files (always, unless caller filtered everything out).
 	if only == "all" || only == "baseline" {
@@ -468,8 +476,6 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		if err := atomicReplace(stagedBbolt, target); err != nil {
 			return nil, fmt.Errorf("restoring csm.db: %w", err)
 		}
-		// Report every bucket that came from the snapshot.
-		res.BucketsRestored = append([]string(nil), man.BboltBuckets...)
 	case "firewall":
 		restored, err := mergeBucketsFromSnapshot(stagedBbolt, opts.StatePath, isFirewallBucket)
 		if err != nil {
