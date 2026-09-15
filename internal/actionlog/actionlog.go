@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -86,7 +87,13 @@ type Record struct {
 	ActorDetail string `json:"actor_detail,omitempty"`
 	// FindingID ties the action to the finding that caused it, using the same
 	// ID the SIEM audit log emits.
-	FindingID string `json:"finding_id,omitempty"`
+	FindingID  string `json:"finding_id,omitempty"`
+	IncidentID string `json:"incident_id,omitempty"`
+	// ActionID and ActionVersion identify a durable lifecycle event across retries.
+	ActionID      string `json:"action_id,omitempty"`
+	ActionVersion uint64 `json:"action_version,omitempty"`
+	// UndoOf links a typed undo to its original action.
+	UndoOf string `json:"undo_of,omitempty"`
 	// Target is what was acted on: a path, an address, a message ID.
 	Target  string `json:"target"`
 	Account string `json:"account,omitempty"`
@@ -158,6 +165,10 @@ func Write(r Record) {
 	if s == nil {
 		return
 	}
+	actionWrites.write(s, prepareRecord(r, h, a))
+}
+
+func prepareRecord(r Record, h string, a Actor) Record {
 	r.V = SchemaVersion
 	if r.Timestamp.IsZero() {
 		r.Timestamp = time.Now().UTC()
@@ -178,7 +189,45 @@ func Write(r Record) {
 		after := *r.After
 		r.After = &after
 	}
-	actionWrites.write(s, r)
+	return r
+}
+
+// ErrDurableUnavailable means no acknowledging sink is installed.
+var ErrDurableUnavailable = errors.New("durable action log sink unavailable")
+
+// ErrDurableUnacknowledged means delivery did not finish within the bounded
+// wait. The sink may still complete; retry using the same action identity.
+var ErrDurableUnacknowledged = errors.New("durable action log delivery unacknowledged")
+
+// WriteDurable acknowledges only a sink's durable write. Delivery is at least
+// once: a timeout can leave an append running after this call returns.
+func WriteDurable(r Record) error {
+	mu.RLock()
+	s, h, a := sink, host, byActor
+	mu.RUnlock()
+	durable, ok := s.(interface{ WriteDurable(Record) error })
+	if !ok {
+		return ErrDurableUnavailable
+	}
+	acknowledgement := make(chan error, 1)
+	actionWrites.write(durableWriteAdapter{write: durable.WriteDurable, acknowledgement: acknowledgement}, prepareRecord(r, h, a))
+	select {
+	case err := <-acknowledgement:
+		return err
+	default:
+		return ErrDurableUnacknowledged
+	}
+}
+
+type durableWriteAdapter struct {
+	write           func(Record) error
+	acknowledgement chan<- error
+}
+
+func (s durableWriteAdapter) Write(r Record) error {
+	err := s.write(r)
+	s.acknowledgement <- err
+	return err
 }
 
 // maxFileSize is the rotation threshold, matching the firewall and web UI
@@ -187,10 +236,11 @@ const maxFileSize = 10 * 1024 * 1024
 
 // FileSink appends JSON lines to a file, rotating it once at the threshold.
 type FileSink struct {
-	resolve func() string
-	mu      sync.Mutex
-	path    string
-	onErr   func(error)
+	resolve  func() string
+	mu       sync.Mutex
+	path     string
+	onErr    func(error)
+	syncFile func(*os.File) error
 }
 
 // NewFileSink returns a sink writing to the file resolve names. The path is
@@ -214,7 +264,7 @@ func (f *FileSink) logPath() string {
 func DefaultPath(logDir string) string { return filepath.Join(logDir, "actions.jsonl") }
 
 func (f *FileSink) Write(r Record) error {
-	err := f.write(r)
+	err := f.write(r, false)
 	// Reporting outside the file lock lets a callback inspect or replace the
 	// sink without deadlocking a completed action.
 	if err != nil {
@@ -223,7 +273,24 @@ func (f *FileSink) Write(r Record) error {
 	return err
 }
 
-func (f *FileSink) write(r Record) error {
+// WriteDurable appends and syncs the record and its directory entries while
+// holding the same cross-process lock as ordinary writes and rotation.
+func (f *FileSink) WriteDurable(r Record) error {
+	err := f.write(r, true)
+	if err != nil {
+		f.report(err)
+	}
+	return err
+}
+
+func (f *FileSink) sync(file *os.File) error {
+	if f.syncFile != nil {
+		return f.syncFile(file)
+	}
+	return file.Sync()
+}
+
+func (f *FileSink) write(r Record, durable bool) error {
 	// Cleaning explanations and command errors may contain attacker-controlled
 	// content. Keep individual lines readable by the bounded history reader.
 	r.Reason = boundedDetail(r.Reason)
@@ -269,7 +336,48 @@ func (f *FileSink) write(r Record) error {
 		_ = fh.Close()
 		return err
 	}
-	return fh.Close()
+	if durable {
+		if err := f.sync(fh); err != nil {
+			_ = fh.Close()
+			return err
+		}
+	}
+	if err := fh.Close(); err != nil {
+		return err
+	}
+	if durable {
+		return f.syncDirectories(filepath.Dir(path))
+	}
+	return nil
+}
+
+// Sync the whole ancestor chain because MkdirAll may have created multiple
+// directories, and a retry must also acknowledge earlier uncertain creation.
+func (f *FileSink) syncDirectories(dir string) error {
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	for {
+		// #nosec G304 -- operator-configured log directory, opened only for syncing.
+		directory, err := os.Open(absolute)
+		if err != nil {
+			return err
+		}
+		syncErr := f.sync(directory)
+		closeErr := directory.Close()
+		if syncErr != nil {
+			return syncErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		parent := filepath.Dir(absolute)
+		if parent == absolute {
+			return nil
+		}
+		absolute = parent
+	}
 }
 
 func boundedDetail(value string) string {

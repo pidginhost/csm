@@ -23,6 +23,10 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 
 ## Storage contract preparation
 
+The durable firewall action service is implemented and tested through engine injection. Production activation, reader cutover, migration, restore, downgrade and operator recovery interfaces remain open.
+
+Firewall actions record the actor, source, linked finding or incident, and complete before and after state before changing the kernel. Pending intent is separate from committed state. Recovery verifies target identity and expiry before recording an outcome; it does not blindly replay a mutation. Repeated request IDs reuse the original action and admission accounting. Audit delivery retries use the same action ID. Typed undo checks that the affected targets still match the recorded result.
+
 Firewall state storage provides complete snapshot reads and revision-checked
 replacement using the existing database. Reads preserve expired entries,
 original timestamps, explicit provenance, duplicate allow entries and collection
@@ -34,8 +38,7 @@ not assume rollback or confirmed durability. Legacy bucket edits invalidate a
 committed snapshot instead of silently changing its revision. The contract does
 not activate runtime cutover.
 
-Transactions remain private to the store so action admission can later share
-the state commit. Firewall storage metrics separate write wait from transaction
+Firewall storage metrics separate write wait from transaction
 duration and expose read time, pending writes, failures and snapshot batch size
 using fixed labels. Repeatable benchmarks exercise competing writers and local
 snapshot copying. Backup restore and downgrade compatibility require the later

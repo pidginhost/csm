@@ -14,6 +14,9 @@ import (
 func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.lifecycleReadyLocked(); err != nil {
+		return err
+	}
 
 	// Both sets are created together by createSets, but ConnectExisting
 	// loads them independently, so one can be present while the other is

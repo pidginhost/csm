@@ -90,6 +90,9 @@ func (db *DB) ReplaceFirewallState(expectedRevision uint64, state firewall.Firew
 		return 0, err
 	}
 	err = db.updateFirewallSnapshot(len(state.Blocked)+len(state.BlockedNet)+len(state.Allowed)+len(state.PortAllowed), func(tx *bolt.Tx) error {
+		if pendingErr := refusePendingFirewallActions(tx); pendingErr != nil {
+			return pendingErr
+		}
 		return replaceFirewallSnapshot(tx, expectedRevision, meta, rows, encoded)
 	})
 	if err != nil {

@@ -412,6 +412,74 @@ func TestIncidentCorrelatorAutoBlockSuppressesProtectedIPError(t *testing.T) {
 	}
 }
 
+func TestIncidentCorrelatorKeepsVerifiedContainmentWhenAuditPending(t *testing.T) {
+	for _, route := range []string{"spray", "incident"} {
+		for _, result := range []struct {
+			name string
+			live bool
+			err  error
+			want bool
+		}{
+			{name: "verified", live: true, err: firewall.ErrActionAuditPending, want: true},
+			{name: "unknown", live: true, err: firewall.ErrActionUnknown},
+			{name: "no_new_effect", err: firewall.ErrActionAuditPending},
+		} {
+			t.Run(route+"/"+result.name, func(t *testing.T) {
+				resetIncidentForTest()
+				t.Cleanup(resetIncidentForTest)
+				cfg := &config.Config{}
+				cfg.AutoResponse.Enabled = true
+				cfg.AutoResponse.BlockIPs = true
+				cfg.AutoResponse.BlockExpiry = "15m"
+				action := "incident_block_requested"
+				kind := incident.KindWebAttack
+				if route == "spray" {
+					cfg.Incidents.SpraySuppression.Enabled = true
+					cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
+					cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
+					cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+					cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
+					action, kind = "credential_spray_block_requested", incident.KindCredentialSpray
+				} else {
+					cfg.Incidents.AutoBlock.Enabled = true
+					cfg.Incidents.AutoBlock.BlockAtSeverity = "critical"
+				}
+				SetIncidentConfigSource(func() *config.Config { return cfg })
+				SetIncidentSprayBlocker(func(string, string, time.Duration, string) (bool, error) {
+					return result.live, result.err
+				})
+				finishLog := captureCSMLog(t)
+				t.Cleanup(func() { _ = finishLog() })
+				c := IncidentCorrelator()
+				if route == "spray" {
+					feedSpray(t, c, "192.0.2.83", 3)
+				} else {
+					if _, _, err := c.OnFinding(alert.Finding{Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "192.0.2.84", Timestamp: time.Now()}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				found := false
+				for _, inc := range c.Snapshot() {
+					if inc.Kind != kind {
+						continue
+					}
+					found = true
+					if got := incidentHasAction(inc, action); got != result.want {
+						t.Fatalf("containment action recorded=%t, want %t: %+v", got, result.want, inc.Actions)
+					}
+				}
+				if !found {
+					t.Fatal("triggering incident missing")
+				}
+				out := finishLog()
+				if !strings.Contains(out, result.err.Error()) || result.want && strings.Contains(out, "block failed") {
+					t.Fatalf("outcome degradation was not reported accurately: %q", out)
+				}
+			})
+		}
+	}
+}
+
 func snapshotHasIncidentKind(snapshot []incident.Incident, kind incident.Kind) bool {
 	for _, inc := range snapshot {
 		if inc.Kind == kind {
