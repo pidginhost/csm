@@ -204,9 +204,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previous := ""
-	if _, ok := s.cookieTokenWithScope(r, "admin"); ok {
-		c, _ := r.Cookie("csm_auth")
-		previous = c.Value
+	if c, err := r.Cookie("csm_auth"); err == nil {
+		// Reauthentication already proved the new login credential. Look up
+		// the old session without touching it, and retain storage errors so
+		// a failed lookup cannot silently turn rotation into a fresh login.
+		_, err := s.sessions.Access(c.Value, s.sessionNow(), false)
+		if err != nil && !errors.Is(err, session.ErrInvalid) {
+			http.Error(w, "Session store unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err == nil {
+			previous = c.Value
+		}
 	}
 	secret, record, err := s.sessions.Create(loginName, session.Hash(token), previous, clientIPKey(r.RemoteAddr), r.UserAgent(), s.sessionNow())
 	if err != nil {

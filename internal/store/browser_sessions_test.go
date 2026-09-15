@@ -321,3 +321,116 @@ func TestBrowserSessionConcurrentRotationHasOneSuccessor(t *testing.T) {
 		t.Fatal("original session survived rotation")
 	}
 }
+
+func TestBrowserSessionOutOfOrderActivity(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	manager, err := session.New(db, time.Hour, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	secret, _, err := manager.Create("operator", "credential-fingerprint", "", "", "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := now.Add(time.Minute)
+	if _, err = manager.Access(secret, later, true); err != nil {
+		t.Fatal(err)
+	}
+	// Requests sample their clocks before entering the store. A delayed
+	// request must accept a more recent committed touch without undoing it.
+	earlier := later.Add(-time.Millisecond)
+	if _, err = manager.Access(secret, earlier, true); err != nil {
+		t.Errorf("older request rejected after concurrent activity: %v", err)
+	}
+	listed, err := manager.List(earlier)
+	if err != nil || len(listed) != 1 {
+		t.Errorf("older listing lost active session: count=%d err=%v", len(listed), err)
+	}
+	if _, _, err = manager.Create("operator", "credential-fingerprint", "", "", "", earlier); err != nil {
+		t.Fatal(err)
+	}
+	record, err := manager.Access(secret, later, false)
+	if err != nil {
+		t.Fatalf("concurrent login deleted active session: %v", err)
+	}
+	if !record.LastSeen.Equal(later) {
+		t.Fatal("older request moved activity backwards")
+	}
+}
+
+func TestBrowserSessionConcurrentTouchKeepsLatestActivity(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	manager, err := session.New(db, time.Hour, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	secret, _, err := manager.Create("operator", "credential-fingerprint", "", "", "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := boltUpdate
+	t.Cleanup(func() { boltUpdate = original })
+	earlier, later := now.Add(time.Minute), now.Add(2*time.Minute)
+	// Commit the newer request after the older request's read but before
+	// its write transaction. This deterministically exercises the race.
+	boltUpdate = func(b *bolt.DB, fn func(*bolt.Tx) error) error {
+		boltUpdate = original
+		if _, err = manager.Access(secret, later, true); err != nil {
+			t.Fatal(err)
+		}
+		return original(b, fn)
+	}
+	if _, err = manager.Access(secret, earlier, true); err != nil {
+		t.Fatalf("concurrent touch rejected: %v", err)
+	}
+	record, err := manager.Access(secret, later, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.LastSeen.Equal(later) {
+		t.Fatal("delayed touch overwrote more recent activity")
+	}
+	if _, err = manager.Access(secret, later.Add(10*time.Minute), false); !errors.Is(err, session.ErrInvalid) {
+		t.Fatal("idle deadline no longer enforced")
+	}
+}
+
+func TestBrowserSessionRotationAfterExpiredRecord(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	now := time.Now().UTC()
+	// Order the expired record immediately before the session to rotate.
+	for _, rec := range []session.Record{
+		{ID: "expired", Verifier: "a", Credential: "fingerprint", Created: now, LastSeen: now, Expires: now.Add(time.Minute)},
+		{ID: "previous", Verifier: "b", Credential: "fingerprint", Created: now, LastSeen: now, Expires: now.Add(time.Hour)},
+	} {
+		if err = db.ReplaceBrowserSession(rec, "", now, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	later := now.Add(2 * time.Minute)
+	replacement := session.Record{ID: "replacement", Verifier: "c", Credential: "fingerprint", Created: later, LastSeen: later, Expires: later.Add(time.Hour)}
+	if err = db.ReplaceBrowserSession(replacement, "b", later, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AccessBrowserSession("b", later, time.Hour, false); !errors.Is(err, session.ErrInvalid) {
+		t.Fatal("rotation retained the old session after pruning an expired neighbor")
+	}
+	records, err := db.ListBrowserSessions(later, time.Hour)
+	if err != nil || len(records) != 1 || records[0].ID != "replacement" {
+		t.Fatalf("rotation did not leave exactly the successor: count=%d err=%v", len(records), err)
+	}
+}

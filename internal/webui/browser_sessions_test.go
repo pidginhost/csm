@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
@@ -387,5 +388,49 @@ func TestBrowserSessionConfiguredPolicyAndRestart(t *testing.T) {
 	t.Cleanup(func() { _ = restarted.Shutdown(context.Background()) })
 	if _, err = restarted.sessions.Access(cookie.Value, now, false); err == nil {
 		t.Fatal("server restart retained session")
+	}
+}
+
+type failingBrowserSessionAccess struct {
+	session.Repository
+	failure error
+}
+
+func (repo *failingBrowserSessionAccess) AccessBrowserSession(key string, now time.Time, idle time.Duration, touch bool) (session.Record, error) {
+	if repo.failure != nil {
+		return session.Record{}, repo.failure
+	}
+	return repo.Repository.AccessBrowserSession(key, now, idle, touch)
+}
+
+func TestBrowserSessionLoginFailsClosedOnAccessError(t *testing.T) {
+	token := randomBrowserCredential()
+	s := newTestServerWithTemplates(t, token)
+	db, err := sessionstore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := &failingBrowserSessionAccess{Repository: db}
+	s.sessions, err = session.New(repo, time.Hour, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := loginBrowser(t, s, token, nil)
+	repo.failure = errors.New("session read failed")
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(url.Values{"token": {token}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.handleLogin(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("login with failed session lookup returned %d, want 503", w.Code)
+	}
+	if len(w.Result().Cookies()) != 0 {
+		t.Error("failed session lookup replaced the browser cookie")
+	}
+	records, err := s.sessions.List(s.sessionNow())
+	if err != nil || len(records) != 1 {
+		t.Errorf("failed rotation created another session: count=%d err=%v", len(records), err)
 	}
 }

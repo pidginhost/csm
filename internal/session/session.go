@@ -34,8 +34,10 @@ type Record struct {
 }
 
 func (r Record) Valid(now time.Time, idle time.Duration) bool {
+	// Requests sample now before entering the repository. A newer request
+	// may have already committed activity by the time this one reads it.
 	return r.ID != "" && r.Verifier != "" && r.Credential != "" &&
-		!r.Created.IsZero() && !now.Before(r.LastSeen) && !r.LastSeen.Before(r.Created) &&
+		!r.Created.IsZero() && !r.LastSeen.Before(r.Created) &&
 		now.Before(r.Expires) && now.Before(r.LastSeen.Add(idle))
 }
 

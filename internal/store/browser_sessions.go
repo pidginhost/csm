@@ -98,6 +98,12 @@ func (db *DB) AccessBrowserSession(key string, now time.Time, idle time.Duration
 		if readErr != nil {
 			return readErr
 		}
+		// Another request may have touched the session since our read.
+		// Preserve its newer activity and the existing write interval.
+		if now.Sub(current.LastSeen) < interval {
+			rec = current
+			return nil
+		}
 		current.LastSeen = now
 		raw, marshalErr := json.Marshal(current)
 		if marshalErr != nil {

@@ -88,7 +88,10 @@ login credential, so a new session does not reset them.
 
 The local transactional store keeps session verifiers, never raw cookie secrets.
 Failed persistence cannot issue a login or claim successful revocation. If the
-session store is unavailable, browser authentication fails closed; API bearer
+previous session cannot be read during reauthentication, login fails without
+issuing a replacement cookie or changing that session. Concurrent requests
+preserve the latest committed activity even when they arrive out of order.
+If the session store is unavailable, browser authentication fails closed; API bearer
 authentication remains independent. Session admission is bounded and refuses new
 logins at capacity instead of evicting active sessions; revoke unused sessions
 to make room. Expired sessions are removed during admission, and startup clears
