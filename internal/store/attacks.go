@@ -47,6 +47,7 @@ type IPRecord struct {
 func (db *DB) RecordAttackEvent(event AttackEvent, counter int) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		primary := tx.Bucket([]byte("attacks:events"))
+		writer := newTimeKeyWriter(primary)
 		secondary := tx.Bucket([]byte("attacks:events:ip"))
 
 		key := TimeKey(event.Timestamp, counter)
@@ -55,9 +56,10 @@ func (db *DB) RecordAttackEvent(event AttackEvent, counter int) error {
 			return err
 		}
 
-		if err := primary.Put([]byte(key), val); err != nil {
+		if err := writer.put([]byte(key), val); err != nil {
 			return err
 		}
+		writer.settle()
 
 		secondaryKey := event.IP + "/" + key
 		if err := secondary.Put([]byte(secondaryKey), val); err != nil {
