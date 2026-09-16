@@ -177,7 +177,7 @@ func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
 		Check:   "db_siteurl_hijack",
 		Details: "Database: db1\nsiteurl = http://evil",
 	}
-	actions := handleSiteurlHijack(cfg, f)
+	actions := handleSiteurlHijack(cfg, f, true)
 
 	if blocker.outcomeHits == 0 {
 		t.Fatal("attacker session IP was never sent to the firewall engine")

@@ -32,9 +32,11 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Email attachment scanning no longer blocks later mail opens behind a saturated scanner, and overload handling preserves the configured delivery policy. Late quarantine leaves messages being delivered or awaiting delivery recovery untouched, and alerts distinguish deferred mail from mail allowed without a completed scan.
 - Real-time forwarder monitoring now sees pipe forwarders written in the quoted form cPanel uses, and a pipe counts as a cPanel built-in only when it runs that program. Scheduled and real-time checks follow the mail server's command quoting rules.
 - ModSecurity rule updates now take effect after an upgrade or install when a web server reload command is configured; previously they stayed inactive until the web server restarted for another reason. Expect one web server reload after upgrading.
+- Suppression rules no longer stop IP blocking, challenges, attack scoring, incident blocks or central threat responses; they still mute alerts and file, process, account and database remediation. A rule that muted a whole brute-force check left every attacker it reported unblocked; use an allowlist entry to exempt an address.
 
 ### Fixed
 
+- Suppression rules now also mute matching cross-account correlation alerts. Duplicate findings in a startup scan no longer inflate incident evidence or trigger premature blocks.
 - The rule performance gate now tolerates isolated cold or stalled scans while still rejecting consistently slow rules. Its CI checks cover both performance and finding attribution.
 - Disabling every signature now clears the loaded rules on reload, and the self-test reports the resulting misses. Configuration validation also recognizes disabled rules with invalid expressions and counts repeated names once.
 - Rule names listed under signature settings are now switched off everywhere CSM loads rules, including isolated scanning workers using custom configuration paths. Validation and loading agree on names, and self-tests measure the remaining coverage.

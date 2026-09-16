@@ -804,6 +804,17 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 // Both inputs remain caller-owned and must already carry the times used by
 // actions that reference them. Missing times are filled on copies for ad-hoc use.
 func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error {
+	return dispatchWithSources(cfg, findings, sources, findings)
+}
+
+// DispatchWithEnforcement offers central IP enforcement its own finding set
+// instead of the notification set. Suppression rules mute notifications but
+// must not exempt an attacker from central challenges and blocks.
+func DispatchWithEnforcement(cfg *config.Config, findings, sources, enforcement []Finding) error {
+	return dispatchWithSources(cfg, findings, sources, enforcement)
+}
+
+func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Finding) error {
 	// Deduplicate owns a copy, so stamping cannot race with callers sharing
 	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
@@ -818,6 +829,13 @@ func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error 
 	// when "this IP is already blocked" suppression hides a finding
 	// from the operator-facing channels.
 	emitAuditWithSources(cfg, findings, sources)
+	// The central-intel consumer escalates findings whose IP is in the
+	// verified central scored-set.
+	enforcement = Deduplicate(enforcement)
+	FillTimestamps(enforcement, now)
+	for _, f := range enforcement {
+		callCentralHook(f)
+	}
 	if len(findings) == 0 {
 		return nil
 	}
@@ -832,12 +850,9 @@ func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error 
 	}
 
 	// Offer every finding to the abuse reporter (it gates and minimizes
-	// internally, queueing only confirmed-abuse findings for the drain loop)
-	// and to the central-intel consumer (it escalates findings whose IP is in
-	// the verified central scored-set).
+	// internally, queueing only confirmed-abuse findings for the drain loop).
 	for _, f := range findings {
 		callReportHook(f)
-		callCentralHook(f)
 	}
 
 	var errs []error

@@ -756,7 +756,7 @@ func TestHandleMaliciousOption_SkipsCSMBackupOption(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Database: testdb\nOption: csm_backup_siteurl_1234567890",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should skip csm_backup_ options, got %d actions", len(actions))
 	}
@@ -771,7 +771,7 @@ func TestHandleMaliciousOption_EmptyDBName(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Option: siteurl",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil for empty DB, got %d actions", len(actions))
 	}
@@ -786,7 +786,7 @@ func TestHandleMaliciousOption_InvalidOptionInDetails(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Database: testdb\nOption: '; DROP TABLE;",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should skip invalid option name, got %d actions", len(actions))
 	}
@@ -807,7 +807,7 @@ func TestHandleMaliciousOption_NoCredsForDB(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Database: nonexistent_db\nOption: siteurl",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil for missing creds, got %d actions", len(actions))
 	}
@@ -866,7 +866,7 @@ $table_prefix = 'wp_';
 		Check:   "db_options_injection",
 		Details: "Database: cleandb\nOption: blogname",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil when no malicious URL, got %d actions", len(actions))
 	}
@@ -882,7 +882,7 @@ func TestHandleSiteurlHijack_EmptyDB(t *testing.T) {
 		Check:   "db_siteurl_hijack",
 		Details: "Something without DB line",
 	}
-	actions := handleSiteurlHijack(cfg, f)
+	actions := handleSiteurlHijack(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil for empty DB, got %d actions", len(actions))
 	}
@@ -899,7 +899,7 @@ func TestHandleSiteurlHijack_NoCreds(t *testing.T) {
 		Check:   "db_siteurl_hijack",
 		Details: "Database: nosuchdb\nSiteURL changed to phishing",
 	}
-	actions := handleSiteurlHijack(cfg, f)
+	actions := handleSiteurlHijack(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil when no creds found, got %d actions", len(actions))
 	}
