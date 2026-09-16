@@ -575,6 +575,12 @@ email_av:
   quarantine_infected: true             # quarantine emails with infected attachments
   scan_concurrency: 4                   # parallel scan workers
   fail_mode: "open"                     # behavior when a scan cannot complete: "open" (default) delivers; "tempfail" defers so Exim retries
+  # A message is never held longer than a fixed budget while its attachments
+  # are scanned, because the mail server stays suspended for that whole time.
+  # When the budget runs out the message is released ("open") or deferred
+  # ("tempfail"), the scan finishes afterwards, and anything infected found
+  # after release is still quarantined. If budgets keep running out, scanning
+  # stops holding mail for a cooldown and raises email_av_hold_bypass.
   # Password-protected archive attachments are outside fail_mode. Their members
   # cannot be read without the password, so no retry ever makes them scannable
   # and "tempfail" would defer the message until it bounced. CSM delivers them

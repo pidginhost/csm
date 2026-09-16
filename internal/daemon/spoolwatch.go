@@ -119,9 +119,12 @@ type SpoolWatcher struct {
 	// queue overflow means opens were let through without a scan verdict, so
 	// mail may have been delivered unscanned. overflowMu rate-limits the
 	// operator finding so a storm does not flood the alert channel.
-	queueOverflows    int64 // atomic
-	overflowMu        sync.Mutex
-	lastOverflowAt    time.Time
+	queueOverflows int64 // atomic
+	overflowMu     sync.Mutex
+	lastOverflowAt time.Time
+	// holds tracks hold-budget expiries and decides when to stop holding mail.
+	holds holdWatchdog
+
 	queueHealthOnce   sync.Once
 	scannerHealth     *queuehealth.Tracker
 	kernelQueueHealth *queuehealth.Tracker
@@ -134,6 +137,22 @@ type spoolEvent struct {
 	fd          int // fanotify event fd (for permission response)
 	pid         int32
 	needResp    bool // true if permission event requiring response
+	// guard bounds how long this open stays suspended. Nil for events built
+	// outside dispatchEvent, which answer directly from needResp.
+	guard *holdGuard
+}
+
+// finish hands the kernel a verdict for this event, once, and closes the
+// event fd. The guard may already have answered when the scan outran the
+// hold budget; then this verdict only affects quarantine, not delivery.
+func (evt spoolEvent) finish(sw *SpoolWatcher, response uint32) {
+	switch {
+	case evt.guard != nil:
+		evt.guard.respond(response)
+	case evt.needResp:
+		spoolWriteResponse(sw, int32(evt.fd), response) // #nosec G115 -- POSIX fd fits in int32.
+	}
+	_ = unix.Close(evt.fd)
 }
 
 // NewSpoolWatcher creates a dedicated fanotify instance for Exim spool scanning.
@@ -425,10 +444,14 @@ func (sw *SpoolWatcher) dispatchEvent(fd int32, pid int32) {
 		return
 	}
 
-	// Send to scan workers - blocks if pool is full.
-	// This is intentional: backpressure on Exim's delivery runner
-	// is the correct behavior per the spec. Exim is designed to
-	// handle delivery delays; unscanned delivery is not acceptable.
+	// While the scanner is behind, release opens instead of queueing them.
+	if sw.dispatchBypass(fd, sw.permissionMode) {
+		return
+	}
+
+	// Hand to a scan worker. The kernel keeps the opener suspended meanwhile,
+	// so the guard's budget starts here: time spent queued counts against the
+	// same deadline as time spent scanning.
 	sw.initQueueHealth()
 	evt := spoolEvent{
 		queueTicket: sw.scannerHealth.Begin(time.Now()),
@@ -436,16 +459,23 @@ func (sw *SpoolWatcher) dispatchEvent(fd int32, pid int32) {
 		fd:          int(fd),
 		pid:         pid,
 		needResp:    sw.permissionMode,
+		guard:       sw.newHoldGuard(fd, sw.permissionMode),
 	}
+	waitForWorker := time.NewTimer(spoolHoldBudget)
+	defer waitForWorker.Stop()
 	select {
 	case sw.scanCh <- evt:
 		// Worker will handle response and fd close
 	case <-sw.stopCh:
 		// Shutting down - allow and close
 		evt.queueTicket.Reject(time.Now())
-		if sw.permissionMode {
-			sw.writeResponse(fd, FAN_ALLOW)
-		}
+		evt.finish(sw, FAN_ALLOW)
+	case <-waitForWorker.C:
+		// Every worker is still busy a full budget later. Blocking here also
+		// blocks the fanotify reader, which overflows the kernel queue and
+		// lets opens through unscanned anyway, so release this one and say so.
+		evt.queueTicket.Reject(time.Now())
+		evt.guard.expire()
 		_ = unix.Close(int(fd))
 	}
 }
@@ -525,11 +555,13 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	// Only overridden to FAN_DENY when policy requires deferral or quarantine.
 	response := uint32(FAN_ALLOW)
 	defer func() {
-		if evt.needResp {
-			// #nosec G115 -- evt.fd is a POSIX fd; fits in int32.
-			sw.writeResponse(int32(evt.fd), response)
+		released := evt.guard != nil && evt.guard.timedOut()
+		evt.finish(sw, response)
+		if released && response == FAN_DENY {
+			sw.emitFinding("email_av_late_verdict", alert.Warning,
+				fmt.Sprintf("Message %s was released before its scan finished (hold budget %s) and the scan then asked to stop delivery. Quarantine still ran, but a copy may already have been delivered.",
+					strings.TrimSuffix(filepath.Base(evt.path), "-D"), spoolHoldBudget))
 		}
-		_ = unix.Close(evt.fd)
 	}()
 
 	// Derive message ID: strip -D suffix and directory
