@@ -636,8 +636,8 @@ Attribution gaps:
 | `email_auth_failure_realtime` | ignored | attacker-side |  |
 | `email_av_degraded` | ignored | self-health |  |
 | `email_av_encrypted_archive` | ignored | self-health |  |
-| `email_av_hold_bypass` | ignored | self-health | Scan cooldown; new opens follow the configured failure policy without scanning. |
-| `email_av_late_verdict` | ignored | self-health | An open was allowed before a later scan requested stopping delivery. |
+| `email_av_hold_bypass` | ignored | self-health |  |
+| `email_av_late_verdict` | ignored | self-health |  |
 | `email_av_parse_error` | ignored | self-health |  |
 | `email_av_quarantine_error` | ignored | self-health |  |
 | `email_av_queue_overflow` | ignored | self-health |  |
