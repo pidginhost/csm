@@ -9,15 +9,21 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ## [Unreleased]
 
+## [3.39.0] - 2026-09-16
+
+### Highlights
+
+- Suppression rules now mute alerts and remediation only. IP blocking, challenges, incident blocks and central threat responses ignore them, so a host that muted a brute-force check this way starts blocking those attackers after upgrading. Allowlist an address to exempt it, and use the email disabled-checks setting to keep a check out of email.
+- Browser logins now use revocable sessions. Upgrading and restarting the daemon require a fresh browser login; API credentials keep working.
+- Firewall actions survive interruptions and can be undone; `csm firewall actions` lists outcomes the daemon could not settle.
+- ModSecurity rule updates take effect after upgrading when a web server reload command is configured. Expect one web server reload.
+- Email attachment scanning no longer holds mail behind a saturated scanner.
+- The state file takes about half the space after the next compaction, and incidents the daemon closes on its own are kept for 7 days instead of 30.
+- `csm doctor` and the components view now fail when the YARA-X scanning worker cannot start.
+
 ### Added
 
 - Firewall actions now retain durable intent, admission accounting, verification results, and retryable audit delivery. Recovery and typed undo preserve action identity, plan against one safety snapshot, verify removals against live state, and refuse conflicting changes while an outcome is uncertain. Proven outcomes are kept for undo under the findings-history retention setting, with a hard size and count bound that applies even when retention sweeps are off. Applying an action writes only the firewall entries that change, in one atomic update whatever its size. Recovery runs before the daemon applies the firewall and again on the maintenance tick, stays available after a failed startup, and `csm firewall actions` shows what it could not settle so an operator can record the outcome by hand.
-- Added an atomic firewall storage contract that preserves complete state, rejects stale or corrupt reads and reports uncertain commits so recovery can inspect state before retrying. Runtime firewall storage remains unchanged until action recovery and migration are ready.
-
-### Changed
-
-- The engineering roadmap now defines staged work for durable actions, privilege isolation, browser sessions and storage recovery. It keeps the embedded database and chooses panel-side fleet correlation.
-- The architecture roadmap now requires lossless firewall migration and independently enforced helper admission. Browser sessions can ship before the remaining service extraction.
 
 ### Security
 
@@ -36,23 +42,36 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
-- The scanning worker keeps the daemon's configuration directory across restarts, even when it is absent, instead of falling back to unrelated configuration. Explicit operator overrides still reject missing directories.
-- `csm doctor` and the components view now fail when the YARA-X scanning worker cannot start, instead of reporting an overall OK while malware scanning is off. Hosts without a conf.d directory start the worker normally.
-- Suppression rules now also mute matching cross-account correlation alerts. Duplicate findings in a startup scan no longer inflate incident evidence or trigger premature blocks.
-- The rule performance gate now tolerates isolated cold or stalled scans while still rejecting consistently slow rules. Its CI checks cover both performance and finding attribution.
-- Disabling every signature now clears the loaded rules on reload, and the self-test reports the resulting misses. Configuration validation also recognizes disabled rules with invalid expressions and counts repeated names once.
-- Rule names listed under signature settings are now switched off everywhere CSM loads rules, including isolated scanning workers using custom configuration paths. Validation and loading agree on names, and self-tests measure the remaining coverage.
+#### Detection and rules
+
+- Rule names listed under signature settings are now switched off everywhere CSM loads rules, including isolated scanning workers. Disabling every signature clears the loaded rules on reload, validation recognizes disabled rules with invalid expressions and counts repeated names once, and self-tests report the remaining coverage.
+- Commercially obfuscated plugin code no longer triggers a dropper alert solely for scrambled control flow or long embedded assets. Scans apply the same rule, so such a file no longer lands in the operator queue either.
 - Database scans no longer exhaust the SQL regular-expression budget or slow down on large styled content. If the server still stops a regular expression, plain hidden styles stay covered, later checks keep running, and coverage stays marked incomplete.
+- `csm doctor` and the components view now fail when the YARA-X scanning worker cannot start, instead of reporting an overall OK while malware scanning is off.
+
+#### Alerts and incidents
+
+- Suppression rules now also mute matching cross-account correlation alerts. Duplicate findings in a startup scan no longer inflate incident evidence or trigger premature blocks.
+- Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.
+
+#### Web traffic
+
 - Claimed crawlers without reverse DNS are no longer looked up again on every scan. Those repeats overflowed the bot verification queue on busy hosts, so genuine crawlers could miss verification and be handled as ordinary visitors.
 - The WordPress user enumeration filter no longer blocks signed-in users, so creating Application Passwords and loading author lists in the editor work again. Unrelated page paths and REST namespaces remain accessible.
-- Upgrading a standalone install no longer leaves the daemon unable to start when a directory its service sandbox needs was never created; the upgrade now creates it first.
+
+#### Mail
+
 - Mailing list aliases created by cPanel's Mailman are no longer reported as critical pipe forwarders, and autoresponder aliases are no longer reported as external forwarders. Forwarder alerts name the mailbox address once, and expected forwarders listed by full address are now recognized.
-- Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.
-- The finding history and attack event log no longer leave their database pages half empty, so they take about half the space in the state file on a typical host. Existing files shrink after the next compaction.
-- The per-address index of attack events no longer stores a second copy of every event, which cut its space in the state file to a fraction. Rows written by earlier releases are still read until they age out.
+
+#### State database
+
+- The finding history and attack event log no longer leave their database pages half empty, and the per-address attack index no longer stores a second copy of every event, so they take much less space in the state file. Existing files shrink after the next compaction; rows written by earlier releases are still read until they age out.
 - Attack events recorded at the same instant across separate batches no longer overwrite each other or disappear from address history. Address queries also skip older index copies that belong to a different address.
 - Incidents the daemon closes on its own are now kept for 7 days instead of 30, so busy hosts no longer hold tens of thousands of stale records in the state file. Incidents an operator closed or acted on keep 30 days, and large cleanups no longer pause incident processing.
-- Commercially obfuscated plugin code no longer triggers a dropper alert solely for scrambled control flow or long embedded assets. Scans apply the same rule, so such a file no longer lands in the operator queue either.
+
+#### Upgrades
+
+- Upgrading a standalone install no longer leaves the daemon unable to start when a directory its service sandbox needs was never created; the upgrade now creates it first.
 
 ## [3.38.0] - 2026-09-13
 
