@@ -96,6 +96,7 @@ func assertFDClosed(t *testing.T, fd int, label string) {
 // Foreign-pid -D opens must still be enqueued for scanning: the self-pid filter
 // is specific, not a blanket skip.
 func TestSpoolWatcherDispatchEventForeignPIDEnqueues(t *testing.T) {
+	responses := captureResponses(t)
 	dir := t.TempDir()
 	bodyPath := filepath.Join(dir, "1frgn0-0000000ABCd-2Y-D")
 	if err := os.WriteFile(bodyPath, []byte("body"), 0o600); err != nil {
@@ -107,6 +108,7 @@ func TestSpoolWatcherDispatchEventForeignPIDEnqueues(t *testing.T) {
 	}
 
 	sw := &SpoolWatcher{
+		cfg:            &config.Config{},
 		permissionMode: true,
 		selfPID:        111111,
 		scanCh:         make(chan spoolEvent, 4),
@@ -127,7 +129,11 @@ func TestSpoolWatcherDispatchEventForeignPIDEnqueues(t *testing.T) {
 		if !strings.HasSuffix(e.path, "-D") {
 			t.Errorf("enqueued path = %q, want a -D suffix", e.path)
 		}
-		_ = unix.Close(e.fd) // a real worker would close it
+		e.finish(sw, FAN_ALLOW)
+		e.guard.expire()
+		if got := responses(); len(got) != 1 || got[0].fd != int32(evtFd) || got[0].response != FAN_ALLOW {
+			t.Errorf("worker completion did not retire the guard: %+v", got)
+		}
 	default:
 		_ = unix.Close(evtFd)
 		t.Fatal("foreign-pid -D event must be enqueued for scanning")

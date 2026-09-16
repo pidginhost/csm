@@ -38,12 +38,14 @@ var spoolWriteResponse = (*SpoolWatcher).writeResponse
 // holdGuard owns the verdict for one suspended open. Whoever gets there first
 // wins -- the scan, or the budget timer -- and the kernel is answered once.
 type holdGuard struct {
-	sw       *SpoolWatcher
-	fd       int32
-	needResp bool
-	once     sync.Once
-	timer    *time.Timer
-	expired  atomic.Bool
+	sw             *SpoolWatcher
+	fd             int32
+	needResp       bool
+	once           sync.Once
+	closeOnce      sync.Once
+	timer          *time.Timer
+	expired        atomic.Bool
+	timeoutVerdict uint32 // read only after respond has joined once
 }
 
 // newHoldGuard arms the budget timer for a suspended open. Outside permission
@@ -67,31 +69,39 @@ func (sw *SpoolWatcher) timeoutResponse() uint32 {
 }
 
 func (g *holdGuard) expire() {
-	fired := false
-	g.once.Do(func() {
-		fired = true
-		g.expired.Store(true)
-		spoolWriteResponse(g.sw, g.fd, g.sw.timeoutResponse())
-	})
-	if fired {
-		g.sw.noteHoldExpiry(time.Now())
+	if !g.needResp {
+		return
 	}
+	g.once.Do(func() {
+		g.timeoutVerdict = g.sw.timeoutResponse()
+		g.expired.Store(true)
+		spoolWriteResponse(g.sw, g.fd, g.timeoutVerdict)
+		// Keep all callback work inside once so finishing an event also joins
+		// its timer before the watcher or test hooks can be torn down.
+		g.sw.noteHoldExpiry(time.Now())
+	})
 }
 
 // respond hands the kernel the scan's verdict, unless the budget already
 // answered for this event.
 func (g *holdGuard) respond(response uint32) {
+	if g.timer != nil {
+		g.timer.Stop()
+	}
 	if !g.needResp {
-		if g.timer != nil {
-			g.timer.Stop()
-		}
 		return
 	}
 	g.once.Do(func() {
-		if g.timer != nil {
-			g.timer.Stop()
-		}
 		spoolWriteResponse(g.sw, g.fd, response)
+	})
+}
+
+func (g *holdGuard) finish(response uint32) {
+	g.closeOnce.Do(func() {
+		// once waits for a timer's in-progress write before the fd can be
+		// closed and recycled. Panic cleanup may finish the same event again.
+		g.respond(response)
+		_ = unix.Close(int(g.fd))
 	})
 }
 
@@ -136,18 +146,23 @@ func (w *holdWatchdog) bypassing(now time.Time) bool {
 	return now.Before(w.bypassUntil)
 }
 
-// noteHoldExpiry records an expiry and reports the first one of a burst.
+// noteHoldExpiry records an exhausted deadline or admission capacity and
+// reports the first transition into bypass.
 func (sw *SpoolWatcher) noteHoldExpiry(now time.Time) {
 	if !sw.holds.recordExpiry(now) {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[%s] spool watcher: scan verdicts repeatedly exceeded the hold budget - releasing mail unheld for %s\n", ts(), spoolBypassCooldown)
+	action := "allowed without scanning"
+	if sw.timeoutResponse() == FAN_DENY {
+		action = "deferred without scanning (tempfail mode)"
+	}
+	fmt.Fprintf(os.Stderr, "[%s] spool watcher: scan capacity or hold budget repeatedly exhausted - mail %s for %s\n", ts(), action, spoolBypassCooldown)
 	sw.emitFinding("email_av_hold_bypass", alert.Critical,
-		fmt.Sprintf("Email AV scanning fell behind mail delivery: verdicts exceeded the %s hold budget %d times within %s. Messages are being released before the scan finishes for the next %s so mail keeps flowing; infected attachments found after release are still quarantined. Investigate scanner load.",
-			spoolHoldBudget, spoolHoldExpiryThreshold, spoolHoldExpiryWindow, spoolBypassCooldown))
+		fmt.Sprintf("Email AV scanning fell behind mail delivery: scan capacity or the %s hold budget was exhausted %d times within %s. New messages are %s for the next %s; these messages are not queued for a later scan. Scans already running continue. Investigate scanner load.",
+			spoolHoldBudget, spoolHoldExpiryThreshold, spoolHoldExpiryWindow, action, spoolBypassCooldown))
 }
 
-// dispatchBypass releases an open immediately while bypassing, without
+// dispatchBypass answers an open immediately while bypassing, without
 // queueing it. Queueing is what left Exim waiting behind a saturated scanner.
 // Reports whether it handled the event.
 func (sw *SpoolWatcher) dispatchBypass(fd int32, needResp bool) bool {
@@ -155,8 +170,10 @@ func (sw *SpoolWatcher) dispatchBypass(fd int32, needResp bool) bool {
 		return false
 	}
 	if needResp && sw.permissionMode {
-		spoolWriteResponse(sw, fd, FAN_ALLOW)
+		spoolWriteResponse(sw, fd, sw.timeoutResponse())
 	}
 	_ = unix.Close(int(fd))
+	sw.initQueueHealth()
+	sw.scannerHealth.Lose(time.Now(), 1)
 	return true
 }

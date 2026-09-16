@@ -217,13 +217,15 @@ func TestDispatchInBypassAnswersWithoutQueueing(t *testing.T) {
 		sw.holds.recordExpiry(now)
 	}
 
-	if handled := sw.dispatchBypass(21, true); !handled {
+	fd := openSpoolFD(t)
+	if handled := sw.dispatchBypass(fd, true); !handled {
 		t.Fatal("dispatchBypass did not handle the event while bypassing")
 	}
 	got := responses()
-	if len(got) != 1 || got[0].fd != 21 || got[0].response != FAN_ALLOW {
-		t.Fatalf("responses = %+v, want fd 21 allowed immediately", got)
+	if len(got) != 1 || got[0].fd != fd || got[0].response != FAN_ALLOW {
+		t.Fatalf("responses = %+v, want fd %d allowed immediately", got, fd)
 	}
+	assertFDClosed(t, int(fd), "bypassed event")
 	if len(sw.scanCh) != 0 {
 		t.Fatalf("event was queued while bypassing: depth %d", len(sw.scanCh))
 	}
