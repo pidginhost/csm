@@ -65,3 +65,6 @@ docs/book/
 /*.alerts
 
 /production-results/
+
+# Go test binaries left behind by profiling runs.
+*.test

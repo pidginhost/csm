@@ -38,6 +38,13 @@ Hourly scan counters keep only the newest windows. Scan admission refuses
 pruned windows after a backward clock correction, preserving budget safety.
 Deleting an outcome ends the undo window for that action.
 
+Applying an action writes only the entries that change, so the kernel write
+for one block does not grow with the size of the blocked set. Large removals
+use bounded messages within the same atomic update. Ranged sets are written
+whole because their start and end markers move together. If the kernel already
+expired an entry the action meant to remove, the set is rewritten instead, and
+both paths end at the same state.
+
 Firewall state storage provides complete snapshot reads and revision-checked
 replacement using the existing database. Reads preserve expired entries,
 original timestamps, explicit provenance, duplicate allow entries and collection

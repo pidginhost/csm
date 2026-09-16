@@ -277,11 +277,29 @@ func (k engineActionKernel) ApplyFirewallAction(a FirewallAction) error {
 		defer func() { k.e.conn = priorConn }()
 		return k.e.applyRulesetLocked(a.Ruleset.Marker)
 	}
+	if err := k.applyActionSets(a, true); err != nil {
+		if !isNftNotFound(err) {
+			return err
+		}
+		// The kernel expires timed elements on its own, so a delete can name an
+		// element that is already gone. That batch changed nothing, so rewrite
+		// the complete set instead of reporting an uncertain outcome.
+		return k.applyActionSets(a, false)
+	}
+	return nil
+}
+
+// applyActionSets writes the intended effect of one action. A whole-set rewrite
+// costs one message per retained element, which on a busy host is most of the
+// work a single block does, so unchanged elements are left alone where the set
+// allows it.
+func (k engineActionKernel) applyActionSets(a FirewallAction, delta bool) error {
 	conn, connErr := newLifecycleConn(k.e)
 	if connErr != nil {
 		return connErr
 	}
-	for _, state := range a.KernelAfter {
+	now := time.Now()
+	for i, state := range a.KernelAfter {
 		if !state.Exists {
 			continue
 		}
@@ -289,13 +307,82 @@ func (k engineActionKernel) ApplyFirewallAction(a FirewallAction) error {
 		if set == nil {
 			return fmt.Errorf("firewall recovery set unavailable: %s", state.Name)
 		}
-		elems := actionElements(state.Elements, time.Now())
-		conn.FlushSet(set)
-		if err := addElementsChunked(conn, set, elems); err != nil {
+		if !delta || i >= len(a.KernelBefore) || !deltaApplicable(a.KernelBefore[i], state) {
+			conn.FlushSet(set)
+			if err := addElementsChunked(conn, set, actionElements(state.Elements, now)); err != nil {
+				return err
+			}
+			continue
+		}
+		add, remove := actionElementDelta(a.KernelBefore[i], state, now)
+		// Each element list has a uint16 netlink attribute length. Bound
+		// deletion messages too, while keeping all chunks in one transaction.
+		for offset := 0; offset < len(remove); offset += 1000 {
+			end := min(offset+1000, len(remove))
+			if err := conn.SetDeleteElements(set, remove[offset:end]); err != nil {
+				return err
+			}
+		}
+		if err := addElementsChunked(conn, set, add); err != nil {
 			return err
 		}
 	}
 	return conn.Flush()
+}
+
+// deltaApplicable reports whether a set can be changed element by element.
+// Interval sets carry paired start and end markers whose union changes shape
+// when any member changes, so those are always rewritten whole.
+func deltaApplicable(before, after ActionSet) bool {
+	if !before.Exists || before.Name != after.Name {
+		return false
+	}
+	for _, set := range []ActionSet{before, after} {
+		for _, elem := range set.Elements {
+			if elem.End {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func actionElementKey(elem ActionElement) string {
+	return fmt.Sprintf("%x/%t", elem.Key, elem.End)
+}
+
+// actionElementDelta returns the elements to add and to remove so the live set
+// matches the intended effect. An element whose comment or expiry changed is
+// removed and re-added in the same batch, which nftables applies atomically.
+func actionElementDelta(before, after ActionSet, now time.Time) (add, remove []nftables.SetElement) {
+	live := make(map[string]ActionElement, len(before.Elements))
+	for _, elem := range before.Elements {
+		live[actionElementKey(elem)] = elem
+	}
+	intended := make(map[string]ActionElement, len(after.Elements))
+	for _, elem := range actionElements(after.Elements, now) {
+		entry := ActionElement{Key: elem.Key, End: elem.IntervalEnd, Comment: elem.Comment}
+		if elem.Timeout > 0 {
+			entry.ExpiresAt = now.Add(elem.Timeout)
+		}
+		key := actionElementKey(entry)
+		intended[key] = entry
+		prior, held := live[key]
+		if held && prior.Comment == entry.Comment && prior.ExpiresAt.Equal(entry.ExpiresAt) {
+			continue
+		}
+		if held {
+			remove = append(remove, nftables.SetElement{Key: prior.Key, IntervalEnd: prior.End})
+		}
+		add = append(add, elem)
+	}
+	for _, elem := range before.Elements {
+		if _, wanted := intended[actionElementKey(elem)]; wanted {
+			continue
+		}
+		remove = append(remove, nftables.SetElement{Key: elem.Key, IntervalEnd: elem.End})
+	}
+	return add, remove
 }
 func actionElements(entries []ActionElement, now time.Time) []nftables.SetElement {
 	var out []nftables.SetElement

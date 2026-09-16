@@ -11,7 +11,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Added
 
-- Firewall actions now retain durable intent, admission accounting, verification results, and retryable audit delivery. Recovery and typed undo preserve action identity, plan against one safety snapshot, verify removals against live state, and refuse conflicting changes while an outcome is uncertain. Proven outcomes are kept for undo under the findings-history retention setting, with a hard size and count bound that applies even when retention sweeps are off.
+- Firewall actions now retain durable intent, admission accounting, verification results, and retryable audit delivery. Recovery and typed undo preserve action identity, plan against one safety snapshot, verify removals against live state, and refuse conflicting changes while an outcome is uncertain. Proven outcomes are kept for undo under the findings-history retention setting, with a hard size and count bound that applies even when retention sweeps are off. Applying an action writes only the firewall entries that change, in one atomic update whatever its size.
 - Added an atomic firewall storage contract that preserves complete state, rejects stale or corrupt reads and reports uncertain commits so recovery can inspect state before retrying. Runtime firewall storage remains unchanged until action recovery and migration are ready.
 
 ### Changed
@@ -30,7 +30,6 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
-- Firewall history retention now counts audit evidence, covers existing journals, and preserves unrelated audit records. Pruned scan charges cannot be reused after a backward clock correction.
 - Database scans no longer exhaust the SQL regular-expression budget or slow down on large styled content. If the server still stops a regular expression, plain hidden styles stay covered, later checks keep running, and coverage stays marked incomplete.
 - Claimed crawlers without reverse DNS are no longer looked up again on every scan. Those repeats overflowed the bot verification queue on busy hosts, so genuine crawlers could miss verification and be handled as ordinary visitors.
 - The WordPress user enumeration filter no longer blocks signed-in users, so creating Application Passwords and loading author lists in the editor work again. Unrelated page paths and REST namespaces remain accessible.
