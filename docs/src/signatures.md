@@ -68,6 +68,18 @@ interpolation analysis.
 Shared positive and benign fixtures check both engines. Generated socket and
 funchand wrappers and ordinary legacy callbacks stay silent under these rules.
 
+The PHP goto-obfuscation rule requires three independent signals in both
+engines: a PHP opening tag, at least nine jumps to digit-bearing generated
+labels or eleven to alphabetic labels, and a decode call, execution call,
+dynamic include, or request input. Fixed-path bootstrap includes do not supply
+this evidence. Variable and array callback calls count even when the function
+name is constructed and the argument is a literal. Comments between a callable
+and its opening parenthesis do not hide the call. Line breaks and keyword case do not
+change the label counts. Long encoded strings and data URIs alone are not
+execution evidence. These are source-text heuristics, not PHP dataflow analysis;
+they cannot resolve arbitrary dynamically generated code or distinguish every
+benign use of these operations.
+
 ### Legacy callback parser follow-up
 
 The callback signature does not inspect quoted function bodies. Doing so needs
