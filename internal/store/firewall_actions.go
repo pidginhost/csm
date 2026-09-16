@@ -20,6 +20,7 @@ const firewallBudgetBucket = "fw:scan_budget"
 const firewallAuditBucket = "fw:action_audit"
 const firewallActionIndexBucket = "fw:action_index"
 const firewallBudgetIndexBucket = "fw:budget_index"
+const firewallScanWindowLayout = "2006-01-02T15"
 
 var _ firewall.ActionStore = (*DB)(nil)
 
@@ -50,7 +51,7 @@ func validateFirewallAdmission(a firewall.FirewallAction) error {
 		if a.Request.Source != "scan" || a.Budget.Limit <= 0 {
 			return errors.New("invalid firewall scan admission")
 		}
-		if _, err := time.Parse("2006-01-02T15", a.Budget.Window); err != nil {
+		if _, err := time.Parse(firewallScanWindowLayout, a.Budget.Window); err != nil {
 			return errors.New("invalid firewall scan window")
 		}
 	}
@@ -130,16 +131,16 @@ func readFirewallAction(tx *bolt.Tx, id string) (firewall.FirewallAction, error)
 	return a, err
 }
 
-func writeFirewallAction(tx *bolt.Tx, a firewall.FirewallAction) error {
+func writeFirewallAction(tx *bolt.Tx, a firewall.FirewallAction) (int, error) {
 	raw, err := encodeFirewallJournal(a)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	b, err := tx.CreateBucketIfNotExists([]byte(firewallActionsBucket))
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return b.Put([]byte(a.Request.ID), raw)
+	return len(raw), b.Put([]byte(a.Request.ID), raw)
 }
 
 // Only outstanding work is indexed. Retained history is validated when read for
@@ -159,7 +160,7 @@ func readFirewallJournalIndex(tx *bolt.Tx) (firewallJournalIndex, error) {
 	var index firewallJournalIndex
 	b := tx.Bucket([]byte(firewallActionIndexBucket))
 	if b == nil {
-		for _, name := range []string{firewallActionsBucket, firewallAuditBucket, firewallBudgetBucket, firewallBudgetIndexBucket} {
+		for _, name := range []string{firewallActionsBucket, firewallAuditBucket, firewallBudgetBucket, firewallBudgetIndexBucket, firewallActionHistoryBucket} {
 			if tx.Bucket([]byte(name)) != nil {
 				return index, firewall.ErrStateCorrupt
 			}
@@ -248,7 +249,7 @@ func readFirewallBudgetInventory(tx *bolt.Tx) (firewallBudgetInventory, error) {
 	var inventory firewallBudgetInventory
 	b := tx.Bucket([]byte(firewallBudgetIndexBucket))
 	if b == nil {
-		for _, name := range []string{firewallActionsBucket, firewallAuditBucket, firewallBudgetBucket, firewallActionIndexBucket} {
+		for _, name := range []string{firewallActionsBucket, firewallAuditBucket, firewallBudgetBucket, firewallActionIndexBucket, firewallActionHistoryBucket} {
 			if tx.Bucket([]byte(name)) != nil {
 				return inventory, firewall.ErrStateCorrupt
 			}
@@ -263,7 +264,7 @@ func readFirewallBudgetInventory(tx *bolt.Tx) (firewallBudgetInventory, error) {
 		return firewallBudgetInventory{}, firewall.ErrStateCorrupt
 	}
 	for i, window := range inventory.Windows {
-		if _, err := time.Parse("2006-01-02T15", window); err != nil {
+		if _, err := time.Parse(firewallScanWindowLayout, window); err != nil {
 			return firewallBudgetInventory{}, firewall.ErrStateCorrupt
 		}
 		if i > 0 && inventory.Windows[i-1] >= window {
@@ -323,7 +324,7 @@ func readFirewallScanBudgetCount(tx *bolt.Tx, window string, inventory firewallB
 	if json.Unmarshal(payload, &budget) != nil || budget.Window != window || budget.Count == nil || *budget.Count <= 0 {
 		return 0, firewall.ErrStateCorrupt
 	}
-	if _, err := time.Parse("2006-01-02T15", budget.Window); err != nil {
+	if _, err := time.Parse(firewallScanWindowLayout, budget.Window); err != nil {
 		return 0, firewall.ErrStateCorrupt
 	}
 	return *budget.Count, nil
@@ -435,13 +436,16 @@ func (db *DB) AdmitFirewallAction(in firewall.FirewallAction) (result firewall.F
 				if inventoryErr := writeFirewallBudgetInventory(tx, inventory); inventoryErr != nil {
 					return inventoryErr
 				}
+				if _, pruneErr := pruneFirewallScanBudgetWindows(tx, inventory); pruneErr != nil {
+					return pruneErr
+				}
 			}
 		}
 		in.Phase = "planned"
 		in.UpdatedAt = in.CreatedAt
 		in.Detail = ""
 		in.AuditVersion, in.AuditAck = 1, 0
-		if writeErr := writeFirewallAction(tx, in); writeErr != nil {
+		if _, writeErr := writeFirewallAction(tx, in); writeErr != nil {
 			return writeErr
 		}
 		index.PendingID = in.Request.ID
@@ -677,8 +681,9 @@ func (db *DB) TransitionFirewallAction(id, phase, detail string, at time.Time) (
 			return err
 		}
 		a.AuditVersion++
-		if err := writeFirewallAction(tx, a); err != nil {
-			return err
+		size, writeErr := writeFirewallAction(tx, a)
+		if writeErr != nil {
+			return writeErr
 		}
 		if err := writeFirewallAuditEvent(tx, a); err != nil {
 			return err
@@ -691,6 +696,14 @@ func (db *DB) TransitionFirewallAction(id, phase, detail string, at time.Time) (
 		}
 		if err := writeFirewallJournalIndex(tx, index); err != nil {
 			return err
+		}
+		if !firewallActionPending(a.Phase) {
+			if err := recordFirewallActionHistory(tx, a, size); err != nil {
+				return err
+			}
+			if err := pruneFirewallActionHistory(tx, index); err != nil {
+				return err
+			}
 		}
 		result = a
 		return nil
@@ -755,10 +768,17 @@ func (db *DB) AcknowledgeFirewallAudit(id string, version uint64) (err error) {
 			return err
 		}
 		a.AuditAck = max(a.AuditAck, version)
-		if err := writeFirewallAction(tx, a); err != nil {
+		size, writeErr := writeFirewallAction(tx, a)
+		if writeErr != nil {
+			return writeErr
+		}
+		if err := updateFirewallActionHistorySize(tx, a, size); err != nil {
 			return err
 		}
 		index.Audit = append(index.Audit[:position], index.Audit[position+1:]...)
-		return writeFirewallJournalIndex(tx, index)
+		if err := writeFirewallJournalIndex(tx, index); err != nil {
+			return err
+		}
+		return pruneFirewallActionHistory(tx, index)
 	})
 }

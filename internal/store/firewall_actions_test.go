@@ -1047,7 +1047,7 @@ func BenchmarkFirewallJournalTerminalHistory(b *testing.B) {
 						return encodeErr
 					}
 					old.AuditAck = old.AuditVersion
-					if writeErr := writeFirewallAction(tx, old); writeErr != nil {
+					if _, writeErr := writeFirewallAction(tx, old); writeErr != nil {
 						return writeErr
 					}
 					eventRaw, encodeErr := encodeFirewallJournal(firewallAuditEvent{Action: actionRaw, Acknowledged: true})
