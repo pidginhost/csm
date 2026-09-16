@@ -73,6 +73,9 @@ func TestFPFlood_PhpGoto_RequiresRealPhpOpenTag(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		php = append(php, []byte("goto x7Fa2b; x7Fa2b: ")...)
 	}
+	// The sink is what separates obfuscated malware from an obfuscated
+	// vendor library; this case is about the open tag, so carry one.
+	php = append(php, []byte("eval($_POST['x']);")...)
 	if !hasYaraRule(s.ScanBytes(php), "php_goto_obfuscation") {
 		t.Error("php_goto_obfuscation regression: short PHP open tag was not accepted")
 	}

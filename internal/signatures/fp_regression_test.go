@@ -1106,3 +1106,47 @@ foreach ($users as $u) { echo $u['slug'] . ':' . $u['password_hash'] . "\n"; }
 		t.Error("exploit_wp_rest_api regression: wp-json/wp/v2/users password-leak probe was not detected")
 	}
 }
+
+// Commercial PHP obfuscators scramble control flow with goto labels and no
+// payload: no decode step, no execution sink, no request input. Malware that
+// hides behind the same scrambling still has to decode or execute something,
+// so goto density alone cannot carry a critical verdict.
+
+func TestPhpGotoObfuscation_VendorObfuscatedLoader(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Minified to one line the way a commercial obfuscator emits it: the
+	// scrambling is real, the payload is ordinary plugin bootstrapping.
+	legit := []byte(`<?php
+namespace Vendor\Addons; defined('ABSPATH') || die; final class AddonsLoader {
+private $kZVIK = array('module_a' => '1.5.1', 'module_b' => '2.0');
+public function load() { goto kZVIK; KjJOO: $this->register(); goto OYsQS; kZVIK: $this->boot(); goto xE0Vh; xE0Vh: $this->hooks(); goto uMMnr; uMMnr: $this->assets(); goto HJ9Pd; HJ9Pd: $this->notices(); goto SNlYf; SNlYf: $this->modal(); goto v4G86; v4G86: $this->helpers(); goto Qd12X; Qd12X: $this->updater(); goto Bn77p; Bn77p: $this->keys(); goto Tr4Kq; Tr4Kq: $this->status(); goto Lm90z; Lm90z: $this->cache(); goto Ww3Jc; Ww3Jc: $this->menu(); goto OYsQS; OYsQS: return $this; }
+}`)
+
+	for _, m := range scanner.ScanContent(legit, ".php") {
+		if m.RuleName == "php_goto_obfuscation" {
+			t.Error("php_goto_obfuscation FP: vendor-obfuscated plugin loader has no decode or execution sink")
+		}
+	}
+}
+
+func TestPhpGotoObfuscation_DropperWithSink(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	var mal []byte
+	mal = append(mal, []byte("<?php ")...)
+	for i := 0; i < 12; i++ {
+		mal = append(mal, []byte("goto x7Fa2b; x7Fa2b: ")...)
+	}
+	mal = append(mal, []byte("$p = base64_decode($_POST['c']);")...)
+
+	found := false
+	for _, m := range scanner.ScanContent(mal, ".php") {
+		if m.RuleName == "php_goto_obfuscation" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("php_goto_obfuscation regression: goto-scrambled dropper with a decode sink not detected")
+	}
+}

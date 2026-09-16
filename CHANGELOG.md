@@ -36,6 +36,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - The per-address index of attack events no longer stores a second copy of every event, which cut its space in the state file to a fraction. Rows written by earlier releases are still read until they age out.
 - Attack events recorded at the same instant across separate batches no longer overwrite each other or disappear from address history. Address queries also skip older index copies that belong to a different address.
 - Incidents the daemon closes on its own are now kept for 7 days instead of 30, so busy hosts no longer hold tens of thousands of stale records in the state file. Incidents an operator closed or acted on keep 30 days, and large cleanups no longer pause incident processing.
+- Commercially obfuscated plugin code is no longer quarantined as a dropper. Scrambled control flow now has to come with a decode step, an execution call, request input or an encoded payload before a signature treats the file as malicious.
 
 ## [3.38.0] - 2026-09-13
 
