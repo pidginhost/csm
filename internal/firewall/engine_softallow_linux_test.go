@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -154,5 +155,36 @@ func TestIsAllowed_ReadsState(t *testing.T) {
 	}
 	if e.IsAllowed("203.0.113.51") {
 		t.Error("IsAllowed must not report an unrelated IP as allowed")
+	}
+}
+
+// A range that becomes verified only after the earlier gates ran still skips
+// the block, and the skip stays visible in the daemon log like every other
+// soft-allow refusal.
+func TestBlockIPOutcome_LateVerifiedRangeIsLogged(t *testing.T) {
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return false },
+	}
+	checks := 0
+	e.SetSoftAllowChecker(func(string) bool {
+		checks++
+		return checks > 2
+	})
+
+	var outcome BlockOutcome
+	var err error
+	logged := captureStderr(t, func() {
+		outcome, err = e.BlockIPOutcome("198.51.100.11", "auto", time.Hour)
+	})
+	if err != nil {
+		t.Fatalf("BlockIPOutcome returned error: %v", err)
+	}
+	if outcome != BlockOutcomeAllowlisted {
+		t.Fatalf("outcome = %q, want %q (late verified-bot IP must not be auto-blocked)", outcome, BlockOutcomeAllowlisted)
+	}
+	if !strings.Contains(logged, "198.51.100.11 is allowlisted or a verified bot") {
+		t.Fatalf("stderr = %q, want the soft-allow skip recorded", logged)
 	}
 }

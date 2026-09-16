@@ -2274,6 +2274,7 @@ func (e *Engine) blockIPOutcomeRequest(req ActionRequest, budget *ScanAdmission)
 		return BlockOutcomeDryRun, nil
 	}
 	if e.autoBlockVerifiedRange(ip) {
+		e.logAutoBlockSoftAllowed(ip)
 		return BlockOutcomeAllowlisted, nil
 	}
 	lockedOutcome, err := e.blockIPLockedRequest(ip, reason, timeout, true, true, req, budget)
