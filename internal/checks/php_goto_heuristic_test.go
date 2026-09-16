@@ -2,8 +2,13 @@ package checks
 
 import (
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/signatures"
+	"gopkg.in/yaml.v3"
 )
 
 func hasGotoIndicator(res phpAnalysisResult) bool {
@@ -13,6 +18,62 @@ func hasGotoIndicator(res phpAnalysisResult) bool {
 		}
 	}
 	return false
+}
+
+func TestGotoEvidenceMatchesShippedSignature(t *testing.T) {
+	data, err := os.ReadFile("../../configs/malware.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rules signatures.RuleFile
+	if err := yaml.Unmarshal(data, &rules); err != nil {
+		t.Fatal(err)
+	}
+	var evidence *regexp.Regexp
+	for _, rule := range rules.Rules {
+		if rule.Name == "php_goto_obfuscation" {
+			if len(rule.Regexes) != 3 {
+				t.Fatal("expected PHP context, density and evidence expressions")
+			}
+			evidence = regexp.MustCompile("(?i)" + rule.Regexes[2])
+		}
+	}
+	if evidence == nil {
+		t.Fatal("missing goto signature")
+	}
+	if reGotoExecSink.String() != evidence.String() {
+		t.Error("Go goto evidence expression drifted from the shipped signature")
+	}
+	for _, tc := range []struct {
+		payload string
+		want    bool
+	}{
+		{`eval /* dispatch */ ($x);`, true},
+		{"eval // dispatch\n($x);", true},
+		{"eval # dispatch\n($x);", true},
+		{`($f)('probe');`, true},
+		{`$f[0]('probe');`, true},
+		{`$f /* dispatch */ ('probe');`, true},
+		{`require_once /* payload */ ($file);`, true},
+		{`$x = $_POST['x'];`, true},
+		{`$x = $_post['x'];`, false},
+		{`$x = $_Post['x'];`, false},
+		{`call_user_func($cfg['bootstrap']);`, false},
+		{`CALL_USER_FUNC /* dispatch */ ($cfg['bootstrap']);`, false},
+		{`call_user_func_array($cfg['bootstrap'], []);`, false},
+	} {
+		t.Run(tc.payload, func(t *testing.T) {
+			if got := evidence.MatchString(tc.payload); got != tc.want {
+				t.Fatalf("signature evidence = %t, want %t", got, tc.want)
+			}
+			for _, label := range []string{"x0A9k", "stage_alpha"} {
+				content := "<?php " + strings.Repeat("goto "+label+"; ", 14) + tc.payload
+				if got := hasGotoIndicator(analyzePHPCode("/sample.php", content, true)); got != tc.want {
+					t.Errorf("label %s: goto indicator = %t, want %t", label, got, tc.want)
+				}
+			}
+		})
+	}
 }
 
 // WordPress core's HTML API implements the HTML5 spec's insertion modes as a
@@ -43,17 +104,39 @@ func TestAnalyzePHPCodeIgnoresStateMachineGotos(t *testing.T) {
 	}
 }
 
-// Machine-generated labels are the actual obfuscator signature.
+// Machine-generated labels plus a sink are the actual obfuscator signature.
+//
+// Label shape alone is not, which is the correction this test carries:
+// commercial obfuscators sold to plugin vendors emit exactly these labels
+// and ship no payload, so a plugin bought off a marketplace looked the same
+// as a dropper. The sink is what separates them.
 func TestAnalyzePHPCodeFlagsGeneratedGotoLabels(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("<?php\n")
 	for i := 0; i < 14; i++ {
 		fmt.Fprintf(&b, "  goto x%dA9k;\n", i)
 	}
+	b.WriteString("  eval($_POST['x']);\n")
 
 	res := analyzePHPCode("/home/acct/public_html/shell.php", b.String(), true)
 	if !hasGotoIndicator(res) {
 		t.Errorf("machine-generated goto labels not reported: %v", res.indicators)
+	}
+}
+
+// A vendor loader scrambled by a commercial obfuscator: generated labels,
+// its own callables, nothing to decode or execute.
+func TestAnalyzePHPCodeIgnoresGeneratedGotosWithoutSink(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("<?php\n")
+	for i := 0; i < 14; i++ {
+		fmt.Fprintf(&b, "  goto x%dA9k; x%dA9k: $this->step();\n", i, i)
+	}
+	b.WriteString("  $boot = call_user_func($cfg['bootstrap']);\n")
+
+	res := analyzePHPCode("/home/acct/public_html/wp-content/plugins/vendor/loader.php", b.String(), true)
+	if hasGotoIndicator(res) {
+		t.Errorf("vendor-obfuscated loader reported as obfuscation: %v", res.indicators)
 	}
 }
 

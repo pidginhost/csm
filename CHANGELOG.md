@@ -16,6 +16,9 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Security
 
+- Obfuscated malware remains detectable when execution is indirect, with consistent real-time, scheduled and content checks.
+- Disabling a signature no longer risks removing neighboring detections from the same rule file.
+- Detection self-tests now stop when the host configuration cannot be read instead of overstating available coverage.
 - Browser logins now use revocable sessions with idle and absolute expiry instead of copying the administrator API credential into a cookie. Upgrades and daemon restarts require a fresh browser login; API credentials continue to work.
 - A claimed crawler without reverse DNS no longer regains the softer challenge treatment after a daemon restart or when retry history fills up.
 - Mail log parsing no longer takes an authenticated user from message IDs, delivery replies, quoted fields or records carrying a remote ident username.
@@ -26,6 +29,8 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- Disabling every signature now clears the loaded rules on reload, and the self-test reports the resulting misses. Configuration validation also recognizes disabled rules with invalid expressions and counts repeated names once.
+- Rule names listed under signature settings are now switched off everywhere CSM loads rules, including isolated scanning workers using custom configuration paths. Validation and loading agree on names, and self-tests measure the remaining coverage.
 - Database scans no longer exhaust the SQL regular-expression budget or slow down on large styled content. If the server still stops a regular expression, plain hidden styles stay covered, later checks keep running, and coverage stays marked incomplete.
 - Claimed crawlers without reverse DNS are no longer looked up again on every scan. Those repeats overflowed the bot verification queue on busy hosts, so genuine crawlers could miss verification and be handled as ordinary visitors.
 - The WordPress user enumeration filter no longer blocks signed-in users, so creating Application Passwords and loading author lists in the editor work again. Unrelated page paths and REST namespaces remain accessible.
@@ -36,6 +41,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - The per-address index of attack events no longer stores a second copy of every event, which cut its space in the state file to a fraction. Rows written by earlier releases are still read until they age out.
 - Attack events recorded at the same instant across separate batches no longer overwrite each other or disappear from address history. Address queries also skip older index copies that belong to a different address.
 - Incidents the daemon closes on its own are now kept for 7 days instead of 30, so busy hosts no longer hold tens of thousands of stale records in the state file. Incidents an operator closed or acted on keep 30 days, and large cleanups no longer pause incident processing.
+- Commercially obfuscated plugin code no longer triggers a dropper alert solely for scrambled control flow or long embedded assets. Scans apply the same rule, so such a file no longer lands in the operator queue either.
 
 ## [3.38.0] - 2026-09-13
 

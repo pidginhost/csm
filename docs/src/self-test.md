@@ -16,6 +16,12 @@ loads, scan errors, invalid samples and an empty bundle fail the run. A build
 without YARA-X can pass its realtime checks, but explicitly reports that YARA
 coverage was not tested.
 
+The command uses the configured rules directory and disabled-rule list for
+both engines. Disabling a detection can turn a sample into `MISSED`. A missing
+or unreadable configuration fails the command rather than measuring a full
+packaged ruleset that the host may not run. Pass `--config` and `--config-dir`
+when the daemon uses custom paths.
+
 ## What the bundle contains
 
 Adversarial samples and benign controls, in one list. The controls are the half
@@ -45,6 +51,10 @@ function; the test suite checks that it is callable without running its payload.
 The summary counts missed samples, false positives, closed gaps and errors
 separately. A skipped engine has no sample results; JSON reports the reason in
 its `skipped` field.
+
+If configuration disables every rule in an engine, the command still measures
+its samples, reports zero loaded rules and the resulting misses, and exits with
+failure. Missing or malformed rule files remain load errors.
 
 ## Known gaps are recorded, not hidden
 

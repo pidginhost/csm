@@ -366,7 +366,7 @@ func runDaemon() {
 
 	// Initialize signature scanner. A corrupt rules file that disables
 	// detection must be loud, not silently swallowed by best-effort load.
-	scanner := signatures.Init(cfg.Signatures.RulesDir)
+	scanner := signatures.Init(cfg.Signatures.RulesDir, cfg.Signatures.DisabledRules...)
 	if err := scanner.LoadError(); err != nil {
 		fmt.Fprintf(os.Stderr, "[WARN] signature rules failed to load cleanly: %v\n", err)
 	}
@@ -436,32 +436,15 @@ func runYaraWorker() {
 		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", err)
 	}
 
-	socketPath := "/var/run/csm/yara-worker.sock"
-	rulesDir := ""
-
-	args := os.Args[2:]
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--socket":
-			if i+1 < len(args) {
-				socketPath = args[i+1]
-				i++
-			}
-		case "--rules-dir":
-			if i+1 < len(args) {
-				rulesDir = args[i+1]
-				i++
-			}
-		}
+	workerCfg, err := yaraWorkerConfig(os.Args[2:], cfg.Signatures.DisabledRules)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "yara-worker:", err)
+		os.Exit(1)
 	}
-
-	err := yaraworker.Run(context.Background(), yaraworker.Config{
-		SocketPath: socketPath,
-		RulesDir:   rulesDir,
-		ErrorLog: func(err error) {
-			fmt.Fprintln(os.Stderr, "yara-worker:", err)
-		},
-	})
+	workerCfg.ErrorLog = func(err error) {
+		fmt.Fprintln(os.Stderr, "yara-worker:", err)
+	}
+	err = yaraworker.Run(context.Background(), workerCfg)
 	obs.Flush()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yara-worker:", err)
@@ -981,6 +964,7 @@ func runValidate() {
 	}
 
 	printResults(config.Validate(cfg))
+	printResults(validateDisabledRules(cfg.Signatures.RulesDir, cfg.Signatures.DisabledRules))
 
 	if deep {
 		fmt.Println("---")

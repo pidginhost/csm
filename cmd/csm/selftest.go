@@ -35,15 +35,20 @@ func runSelfTest() {
 		}
 	}
 
-	// Fall back to the packaged rules directory so the command still answers
-	// on a host whose config is missing or broken, which is exactly when an
-	// operator wants to know whether detection works.
-	rulesDir := packagedRulesDir
-	if cfg, err := tryLoadConfigLite(); err == nil && cfg != nil && cfg.Signatures.RulesDir != "" {
-		rulesDir = cfg.Signatures.RulesDir
+	// Without the operator config we cannot know which rules are disabled.
+	// Falling back to a full packaged ruleset would overstate host coverage.
+	cfg, err := tryLoadConfigLite()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading self-test config: %v\n", err)
+		os.Exit(1)
 	}
+	rulesDir := cfg.Signatures.RulesDir
+	if rulesDir == "" {
+		rulesDir = packagedRulesDir
+	}
+	disabledRules := cfg.Signatures.DisabledRules
 
-	runs, err := selfTestRuns(rulesDir)
+	runs, err := selfTestRuns(rulesDir, disabledRules...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
@@ -61,12 +66,12 @@ func runSelfTest() {
 
 // selfTestRuns measures every rule set this build has. A build without YARA-X
 // explicitly reports YARA-X as skipped so partial coverage stays visible.
-func selfTestRuns(rulesDir string) ([]engineRun, error) {
-	scanner := signatures.NewScanner(rulesDir)
+func selfTestRuns(rulesDir string, disabled ...string) ([]engineRun, error) {
+	scanner := signatures.NewScanner(rulesDir, disabled...)
 	if loadErr := scanner.LoadError(); loadErr != nil {
 		return nil, fmt.Errorf("loading realtime rules: %w", loadErr)
 	}
-	if scanner.RuleCount() == 0 {
+	if scanner.RuleCount() == 0 && scanner.DisabledRuleCount() == 0 {
 		return nil, fmt.Errorf("no signature rules loaded from %q; run `csm update-rules` or check signatures.rules_dir", rulesDir)
 	}
 
@@ -90,11 +95,11 @@ func selfTestRuns(rulesDir string) ([]engineRun, error) {
 			Skipped: "YARA-X is not compiled into this build; YARA coverage was not tested",
 		}), nil
 	}
-	yaraScanner, err := yara.NewScanner(rulesDir)
+	yaraScanner, err := yara.NewScanner(rulesDir, disabled...)
 	if err != nil {
 		return nil, fmt.Errorf("loading YARA rules: %w", err)
 	}
-	if yaraScanner.RuleCount() == 0 {
+	if yaraScanner.RuleCount() == 0 && yaraScanner.DisabledRuleCount() == 0 {
 		return nil, fmt.Errorf("no YARA rules loaded from %q; run `csm update-rules` or check signatures.rules_dir", rulesDir)
 	}
 	yaraResults := selftest.Run(selftest.Yara, func(content []byte, _ string) ([]string, error) {

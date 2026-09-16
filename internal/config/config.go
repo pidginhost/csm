@@ -1012,7 +1012,11 @@ type Config struct {
 			UpdateInterval string `yaml:"update_interval"` // default: "168h" (weekly)
 			DownloadURL    string `yaml:"download_url"`    // signed ZIP URL/template; supports {tier} and {version}
 		} `yaml:"yara_forge"`
-		DisabledRules []string `yaml:"disabled_rules"` // YARA rule names to exclude from Forge downloads
+		// DisabledRules names rules to switch off: they are stripped from
+		// YARA-Forge downloads, skipped when the shipped .yml rules load,
+		// and stripped before the shipped .yar rules compile. `csm validate`
+		// warns about a name that matches no rule.
+		DisabledRules []string `yaml:"disabled_rules"`
 		// YaraWorkerEnabled is a tri-state: nil means "use system default"
 		// (default-on, per ROADMAP item 2 follow-up), *true means explicit on,
 		// *false means explicit off. Callers must nil-check before dereferencing;

@@ -10,9 +10,9 @@ var (
 // Init initializes the global scanner with rules from the given directory.
 // Safe to call multiple times - only the first call takes effect.
 // Call Reload() on the returned scanner to reload rules (e.g., on SIGHUP).
-func Init(rulesDir string) *Scanner {
+func Init(rulesDir string, disabled ...string) *Scanner {
 	globalOnce.Do(func() {
-		globalScanner = NewScanner(rulesDir)
+		globalScanner = NewScanner(rulesDir, disabled...)
 	})
 	return globalScanner
 }
