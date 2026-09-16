@@ -335,6 +335,22 @@ mdbook serve              # local preview at http://localhost:3000
 
 ## Clean application corpus
 
+The same job measures the shipped rules against long uninterrupted base64,
+hex and word runs, dense variable calls, and PDF-shaped streams. It discards
+one warm-up and scores the fastest of two further scans against a 5-second
+per-file budget. Each attempt has a 10-second engine timeout; a timeout never
+counts as a completed scan, and a cold timeout alone cannot fail the gate.
+Both scored attempts timing out fails it. The job shares the heavy-test
+resource group to avoid competing with other heavy tests in this project.
+
+A rule with no literal atom to match on can still pass match tests while
+stalling mail delivery. Investigate slow rules with `yr scan --profiling`.
+Run the gate and its fixture/timing checks locally with YARA-X installed:
+
+```bash
+CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go test -count=1 -v -tags yara ./internal/yara -run 'TestShippedRulesScanWithinBudget|TestRuleScanBudget'
+```
+
 Every pipeline runs the required [clean-corpus gate](clean-corpus.md) in the production YARA-X builder image. Package publication and GitHub releases depend on its success.
 
 See [cPanel release tests](cpanel-release-tests.md) for the required image, upgrade baseline, release dependencies and retained evidence.

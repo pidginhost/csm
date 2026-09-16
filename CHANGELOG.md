@@ -35,6 +35,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- The rule performance gate now tolerates isolated cold or stalled scans while still rejecting consistently slow rules. Its CI checks cover both performance and finding attribution.
 - Disabling every signature now clears the loaded rules on reload, and the self-test reports the resulting misses. Configuration validation also recognizes disabled rules with invalid expressions and counts repeated names once.
 - Rule names listed under signature settings are now switched off everywhere CSM loads rules, including isolated scanning workers using custom configuration paths. Validation and loading agree on names, and self-tests measure the remaining coverage.
 - Database scans no longer exhaust the SQL regular-expression budget or slow down on large styled content. If the server still stops a regular expression, plain hidden styles stay covered, later checks keep running, and coverage stays marked incomplete.
