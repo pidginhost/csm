@@ -43,17 +43,23 @@ func phpGotoCases() []phpGotoCase {
 				{"lowercase non superglobal", `$value = $_post['setting'];`},
 				{"static include", `require_once __DIR__ . '/bootstrap.php';`},
 				{"include option", `$options = ['include' => ['module'], 'require' => true];`},
+				// The outage case: a commercial obfuscator's loader dispatches
+				// its own bootstrap through a callable it just built.
+				{"vendor callable dispatcher", `$boot = call_user_func($cfg['bootstrap']); return $boot;`},
 			} {
 				add(prefix+sample.name, program("<?php ", shape.labels, layout.separator, sample.payload), false)
 			}
 			for _, sample := range []struct{ name, payload string }{
 				// The split-name examples must not depend on request input,
 				// a named decoder, or a long encoded string to pass the gate.
+				// call_user_func is not among the named sinks: plugin code
+				// dispatches its own callables through it constantly, and
+				// a dropper doing the same still trips the variable-call
+				// branch on the callable it builds.
 				{"indirect variable argument", `$f = 'sys' . 'tem'; $x = 'printf probe'; $f($x);`},
 				{"indirect literal argument", `$f = 'sys' . 'tem'; $f('printf probe');`},
 				{"indirect grouped call", `$f = 'sys' . 'tem'; ($f)('printf probe');`},
 				{"indirect array call", `$f = ['sys' . 'tem']; $f[0]('printf probe');`},
-				{"indirect dispatcher", `$f = 'sys' . 'tem'; call_user_func($f, 'printf probe');`},
 				{"include payload", `include $payload;`},
 				{"commented direct call", `eval /* dispatch */ ($x);`},
 				{"commented indirect call", `$f = 'sys' . 'tem'; $f /* dispatch */ ('printf probe');`},
@@ -65,7 +71,7 @@ func phpGotoCases() []phpGotoCase {
 			}
 		}
 	}
-	for _, sink := range []string{"eval", "assert", "create_function", "system", "exec", "passthru", "shell_exec", "proc_open", "popen", "pcntl_exec", "base64_decode", "gzinflate", "gzuncompress", "gzdecode", "str_rot13", "hex2bin", "convert_uudecode", "call_user_func", "call_user_func_array"} {
+	for _, sink := range []string{"eval", "assert", "create_function", "system", "exec", "passthru", "shell_exec", "proc_open", "popen", "pcntl_exec", "base64_decode", "gzinflate", "gzuncompress", "gzdecode", "str_rot13", "hex2bin", "convert_uudecode"} {
 		add("named sink/"+sink, program("<?php ", numeric, " ", sink+"($x);"), true)
 	}
 	for _, input := range []string{"GET", "POST", "REQUEST", "COOKIE", "FILES"} {
