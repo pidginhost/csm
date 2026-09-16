@@ -32,6 +32,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Email attachment scanning no longer blocks later mail opens behind a saturated scanner, and overload handling preserves the configured delivery policy. Late quarantine leaves messages being delivered or awaiting delivery recovery untouched, and alerts distinguish deferred mail from mail allowed without a completed scan.
 - Real-time forwarder monitoring now sees pipe forwarders written in the quoted form cPanel uses, and a pipe counts as a cPanel built-in only when it runs that program. Scheduled and real-time checks follow the mail server's command quoting rules.
 - ModSecurity rule updates now take effect after an upgrade or install when a web server reload command is configured; previously they stayed inactive until the web server restarted for another reason. Expect one web server reload after upgrading.
+- Suppression rules no longer stop IP blocking, challenges or attack scoring. A rule that muted a whole brute-force check left every attacker it reported unblocked; use an allowlist entry to exempt an address.
 
 ### Fixed
 

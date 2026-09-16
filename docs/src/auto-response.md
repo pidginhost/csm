@@ -267,7 +267,7 @@ Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved e
 
 ## Findings that always trigger IP block
 
-When `auto_response.block_ips: true` and the firewall is enabled, qualifying findings in this list block the source IP. Per-row severity and challenge exceptions apply. The dry-run gate still applies if `dry_run: true`.
+When `auto_response.block_ips: true` and the firewall is enabled, qualifying findings in this list block the source IP. Per-row severity and challenge exceptions apply. The dry-run gate still applies if `dry_run: true`. Suppression rules do not stop these blocks; allowlist an address to exempt it.
 
 | Finding | Description |
 |---------|-------------|

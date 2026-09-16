@@ -320,6 +320,8 @@ Create suppression rules to silence known false positives:
 - From the **Rules** page: manage suppression rules directly
 - Via API: `POST /api/v1/suppressions`
 
+A suppression rule hides matching findings from the Findings page, stops their email and webhook alerts, and stops file, process and account remediation for them. It does not stop IP blocking, challenge routing or attack scoring: a rule that mutes a whole check would otherwise leave every attacker that check reports unblocked. To exempt an address that was blocked by mistake, allowlist it from the Threat page or with `csm firewall allow`.
+
 To suppress email alerts for specific checks while keeping them visible in the web UI, use `disabled_checks` in your config:
 
 ```yaml
