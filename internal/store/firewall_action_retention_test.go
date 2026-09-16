@@ -343,3 +343,171 @@ func TestFirewallActionHistoryCorruptionFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestFirewallActionCapDeletesEveryAuditVersion(t *testing.T) {
+	db := openSnapshotDB(t)
+	in := admissionFixture()
+	in.Before, in.After = firewall.FirewallState{}, firewall.FirewallState{}
+	in.Budget = nil
+	if _, err := db.ReplaceFirewallState(0, in.Before); err != nil {
+		t.Fatal(err)
+	}
+	previous := firewallActionRetention
+	t.Cleanup(func() { firewallActionRetention = previous })
+	firewallActionRetention.Actions = 1
+	for i := range 2 {
+		in.Request.ID = fmt.Sprintf("versions-%d", i)
+		if _, _, err := db.AdmitFirewallAction(in); err != nil {
+			t.Fatal(err)
+		}
+		for j := range 12 {
+			if _, err := db.TransitionFirewallAction(in.Request.ID, "unknown", fmt.Sprintf("uncertainty-%d", j), in.CreatedAt); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := db.TransitionFirewallAction(in.Request.ID, "failed", "", in.CreatedAt); err != nil {
+			t.Fatal(err)
+		}
+		in.Revision++
+	}
+	// The last acknowledgement of the older action triggers pruning in the
+	// same transaction that rewrites its audit leaf.
+	acknowledgeAllFirewallAudit(t, db)
+	if firewallActionExists(t, db, "versions-0") {
+		t.Fatal("older outcome survived the cap")
+	}
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(firewallAuditBucket)).ForEach(func(key, _ []byte) error {
+			if strings.HasPrefix(string(key), "versions-0\x00") {
+				return errors.New("pruned action left an audit version behind")
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFirewallActionSweepPreservesAuditForPrefixIDs(t *testing.T) {
+	db := openSnapshotDB(t)
+	if _, err := db.ReplaceFirewallState(0, firewall.FirewallState{}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 2, 3, 4, 0, 0, 0, time.UTC)
+	terminalActionFixture(t, db, "prefix", at, "")
+	acknowledgeAllFirewallAudit(t, db)
+	// IDs are valid UTF-8 and may contain the audit key's separator.
+	terminalActionFixture(t, db, "prefix\x00child", at, "")
+	terminalActionFixture(t, db, "prefix\x00other", at, "")
+	if _, err := db.SweepFirewallActionsOlderThan(at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := db.FirewallAuditPending()
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("pending audit after prefix deletion = %d, %v", len(pending), err)
+	}
+}
+
+func TestFirewallActionHistoryByteCapIncludesAuditEvidence(t *testing.T) {
+	db := openSnapshotDB(t)
+	if _, err := db.ReplaceFirewallState(0, firewall.FirewallState{}); err != nil {
+		t.Fatal(err)
+	}
+	previous := firewallActionRetention
+	t.Cleanup(func() { firewallActionRetention = previous })
+	at := time.Date(2026, 2, 3, 4, 0, 0, 0, time.UTC)
+	terminalActionFixture(t, db, "older", at, strings.Repeat("e", 4096))
+	acknowledgeAllFirewallAudit(t, db)
+	terminalActionFixture(t, db, "newer", at.Add(time.Minute), "")
+	// Fit both action rows, but not their duplicate evidence in the audit rows.
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(firewallActionsBucket))
+		firewallActionRetention.Bytes = uint64(len(b.Get([]byte("older"))) + len(b.Get([]byte("newer"))) + 100)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acknowledgeAllFirewallAudit(t, db)
+	if firewallActionExists(t, db, "older") {
+		t.Fatal("audit evidence did not count toward the byte cap")
+	}
+	if !firewallActionExists(t, db, "newer") {
+		t.Fatal("newest outcome must survive the byte cap")
+	}
+}
+
+func TestFirewallScanBudgetPruningCannotResetAdmission(t *testing.T) {
+	for _, sweep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sweep=%v", sweep), func(t *testing.T) {
+			db := openSnapshotDB(t)
+			in := admissionFixture()
+			if _, err := db.ReplaceFirewallState(0, in.Before); err != nil {
+				t.Fatal(err)
+			}
+			previous := firewallActionRetention
+			t.Cleanup(func() { firewallActionRetention = previous })
+			firewallActionRetention.BudgetWindows = 2
+			for i := range 3 {
+				in.Request.ID = fmt.Sprintf("charge-%d", i)
+				in.Budget.Window = in.CreatedAt.Add(time.Duration(i) * time.Hour).Format(firewallScanWindowLayout)
+				if _, _, err := db.AdmitFirewallAction(in); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.TransitionFirewallAction(in.Request.ID, "failed", "", in.CreatedAt); err != nil {
+					t.Fatal(err)
+				}
+				acknowledgeAllFirewallAudit(t, db)
+				in.Revision++
+				if sweep {
+					if _, err := db.SweepFirewallActionsOlderThan(in.CreatedAt.Add(time.Hour)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			// A clock correction must not reopen a previously exhausted hour.
+			in.Request.ID = "clock-rollback"
+			in.Budget.Window = in.CreatedAt.Format(firewallScanWindowLayout)
+			if _, fresh, err := db.AdmitFirewallAction(in); !errors.Is(err, firewall.ErrScanBudget) || fresh {
+				t.Fatalf("admission after pruning charged hour = fresh %v, %v", fresh, err)
+			}
+		})
+	}
+}
+
+func TestFirewallActionRetentionIndexesExistingOutcomes(t *testing.T) {
+	for _, sweep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sweep=%v", sweep), func(t *testing.T) {
+			db := openSnapshotDB(t)
+			if _, err := db.ReplaceFirewallState(0, firewall.FirewallState{}); err != nil {
+				t.Fatal(err)
+			}
+			previous := firewallActionRetention
+			t.Cleanup(func() { firewallActionRetention = previous })
+			at := time.Date(2026, 2, 3, 4, 0, 0, 0, time.UTC)
+			terminalActionFixture(t, db, "legacy-delivered", at, "")
+			acknowledgeAllFirewallAudit(t, db)
+			terminalActionFixture(t, db, "legacy-undelivered", at, "")
+			// The journal before retention had action and audit rows, but no
+			// outcome history index.
+			if err := db.bolt.Update(func(tx *bolt.Tx) error {
+				return tx.DeleteBucket([]byte(firewallActionHistoryBucket))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if sweep {
+				if _, err := db.SweepFirewallActionsOlderThan(at.Add(time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				firewallActionRetention.Actions = 1
+				terminalActionFixture(t, db, "new-outcome", at.Add(time.Minute), "")
+			}
+			if firewallActionExists(t, db, "legacy-delivered") {
+				t.Fatal("existing delivered outcome escaped retention")
+			}
+			if !firewallActionExists(t, db, "legacy-undelivered") {
+				t.Fatal("existing undelivered outcome was pruned")
+			}
+		})
+	}
+}

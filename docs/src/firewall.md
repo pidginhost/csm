@@ -30,10 +30,13 @@ Firewall actions record the actor, source, linked finding or incident, and compl
 Proven outcomes are retained for undo and review, bounded two ways. The
 retention sweep drops delivered outcomes older than the findings-history
 setting, and a hard cap on retained outcomes and on their total size applies
-even when sweeps stay off. Pending actions and outcomes whose audit has not
-been delivered are never dropped. Hourly scan counters keep only the newest
-windows, because admission reads the current one. Deleting an outcome ends the
-undo window for that action.
+even when sweeps stay off. The size cap includes retained audit evidence.
+Existing journals are indexed on their first retention operation. Pending
+actions and outcomes whose audit has not been delivered are never dropped.
+The newest outcome also survives the hard cap even if it alone exceeds it.
+Hourly scan counters keep only the newest windows. Scan admission refuses
+pruned windows after a backward clock correction, preserving budget safety.
+Deleting an outcome ends the undo window for that action.
 
 Firewall state storage provides complete snapshot reads and revision-checked
 replacement using the existing database. Reads preserve expired entries,

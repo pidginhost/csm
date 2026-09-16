@@ -243,6 +243,9 @@ type firewallScanBudget struct {
 type firewallBudgetInventory struct {
 	Initialized bool     `json:"initialized"`
 	Windows     []string `json:"windows"`
+	// PrunedThrough prevents discarded charges from reopening after a clock
+	// correction. Omitted in journals written before budget retention.
+	PrunedThrough string `json:"pruned_through,omitempty"`
 }
 
 func readFirewallBudgetInventory(tx *bolt.Tx) (firewallBudgetInventory, error) {
@@ -263,7 +266,15 @@ func readFirewallBudgetInventory(tx *bolt.Tx) (firewallBudgetInventory, error) {
 	if json.Unmarshal(payload, &inventory) != nil || !inventory.Initialized || inventory.Windows == nil {
 		return firewallBudgetInventory{}, firewall.ErrStateCorrupt
 	}
+	if inventory.PrunedThrough != "" {
+		if _, err := time.Parse(firewallScanWindowLayout, inventory.PrunedThrough); err != nil {
+			return firewallBudgetInventory{}, firewall.ErrStateCorrupt
+		}
+	}
 	for i, window := range inventory.Windows {
+		if window <= inventory.PrunedThrough {
+			return firewallBudgetInventory{}, firewall.ErrStateCorrupt
+		}
 		if _, err := time.Parse(firewallScanWindowLayout, window); err != nil {
 			return firewallBudgetInventory{}, firewall.ErrStateCorrupt
 		}
@@ -411,6 +422,9 @@ func (db *DB) AdmitFirewallAction(in firewall.FirewallAction) (result firewall.F
 			inventory, inventoryErr := readFirewallBudgetInventory(tx)
 			if inventoryErr != nil {
 				return inventoryErr
+			}
+			if in.Budget.Window <= inventory.PrunedThrough {
+				return firewall.ErrScanBudget
 			}
 			count, budgetErr := readFirewallScanBudgetCount(tx, in.Budget.Window, inventory)
 			if budgetErr != nil {

@@ -71,18 +71,61 @@ func readFirewallActionHistory(tx *bolt.Tx) ([]firewallActionHistoryEntry, uint6
 		if actions == nil || actions.Get([]byte(id)) == nil {
 			return nil, 0, fmt.Errorf("%w: firewall action history without record", firewall.ErrStateCorrupt)
 		}
-		size := binary.BigEndian.Uint64(raw)
+		// The index stores the action row size. Audit rows are counted live
+		// so existing indexes also include every retained evidence copy.
+		size := binary.BigEndian.Uint64(raw) + firewallActionAuditSize(tx, id)
 		total += size
 		entries = append(entries, firewallActionHistoryEntry{key: bytes.Clone(key), id: id, size: size})
 	}
 	return entries, total, nil
 }
 
-func recordFirewallActionHistory(tx *bolt.Tx, a firewall.FirewallAction, size int) error {
-	b, err := tx.CreateBucketIfNotExists([]byte(firewallActionHistoryBucket))
-	if err != nil {
+// Older journals predate the outcome index. Build it atomically before the
+// first retention operation, including undelivered outcomes for later pruning.
+func initializeFirewallActionHistory(tx *bolt.Tx) error {
+	if tx.Bucket([]byte(firewallActionHistoryBucket)) != nil {
+		return nil
+	}
+	actions := tx.Bucket([]byte(firewallActionsBucket))
+	if actions == nil {
+		return nil
+	}
+	if _, err := tx.CreateBucketIfNotExists([]byte(firewallActionHistoryBucket)); err != nil {
 		return err
 	}
+	return actions.ForEach(func(key, raw []byte) error {
+		a, err := readFirewallAction(tx, string(key))
+		if err != nil {
+			return err
+		}
+		if firewallActionPending(a.Phase) {
+			return nil
+		}
+		return recordFirewallActionHistory(tx, a, len(raw))
+	})
+}
+
+// Audit keys have a fixed-width version suffix. A prefix alone also matches
+// other valid request IDs containing NUL, so match the complete key length.
+func firewallActionAuditSize(tx *bolt.Tx, id string) uint64 {
+	var size uint64
+	if b := tx.Bucket([]byte(firewallAuditBucket)); b != nil {
+		prefix := append([]byte(id), 0)
+		cursor := b.Cursor()
+		for key, raw := cursor.Seek(prefix); key != nil && bytes.HasPrefix(key, prefix); key, raw = cursor.Next() {
+			if len(key) == len(prefix)+20 {
+				size += uint64(len(raw))
+			}
+		}
+	}
+	return size
+}
+
+func recordFirewallActionHistory(tx *bolt.Tx, a firewall.FirewallAction, size int) error {
+	if err := initializeFirewallActionHistory(tx); err != nil {
+		return err
+	}
+	b := tx.Bucket([]byte(firewallActionHistoryBucket))
 	var encoded [8]byte
 	binary.BigEndian.PutUint64(encoded[:], uint64(size)) // #nosec G115 -- a stored record length is never negative.
 	return b.Put(firewallActionHistoryKey(a.UpdatedAt, a.Request.ID), encoded[:])
@@ -91,6 +134,9 @@ func recordFirewallActionHistory(tx *bolt.Tx, a firewall.FirewallAction, size in
 // updateFirewallActionHistorySize keeps byte accounting honest after an
 // acknowledgement rewrites a retained record.
 func updateFirewallActionHistorySize(tx *bolt.Tx, a firewall.FirewallAction, size int) error {
+	if err := initializeFirewallActionHistory(tx); err != nil {
+		return err
+	}
 	b := tx.Bucket([]byte(firewallActionHistoryBucket))
 	if b == nil {
 		return nil
@@ -119,6 +165,9 @@ func deleteFirewallAction(tx *bolt.Tx, entry firewallActionHistoryEntry) error {
 		prefix := append([]byte(entry.id), 0)
 		cursor := b.Cursor()
 		for key, _ := cursor.Seek(prefix); key != nil && bytes.HasPrefix(key, prefix); key, _ = cursor.Next() {
+			if len(key) != len(prefix)+20 {
+				continue
+			}
 			if err := cursor.Delete(); err != nil {
 				return err
 			}
@@ -136,6 +185,9 @@ func deleteFirewallAction(tx *bolt.Tx, entry firewallActionHistoryEntry) error {
 // transaction that recorded the newest outcome. The newest record and any
 // record with undelivered audit are kept whatever the caps say.
 func pruneFirewallActionHistory(tx *bolt.Tx, index firewallJournalIndex) error {
+	if err := initializeFirewallActionHistory(tx); err != nil {
+		return err
+	}
 	entries, total, err := readFirewallActionHistory(tx)
 	if err != nil {
 		return err
@@ -169,6 +221,9 @@ func (db *DB) SweepFirewallActionsOlderThan(cutoff time.Time) (int, error) {
 		index, err := readFirewallJournalIndex(tx)
 		if err != nil {
 			return err
+		}
+		if initErr := initializeFirewallActionHistory(tx); initErr != nil {
+			return initErr
 		}
 		entries, _, err := readFirewallActionHistory(tx)
 		if err != nil {
@@ -214,6 +269,7 @@ func sweepFirewallScanBudget(tx *bolt.Tx, cutoff time.Time) error {
 		if err := deleteFirewallScanBudgetWindow(tx, window); err != nil {
 			return err
 		}
+		inventory.PrunedThrough = max(inventory.PrunedThrough, window)
 	}
 	if len(keep) == len(inventory.Windows) {
 		return nil
@@ -231,7 +287,8 @@ func deleteFirewallScanBudgetWindow(tx *bolt.Tx, window string) error {
 }
 
 // pruneFirewallScanBudgetWindows keeps the newest windows only. The current
-// window is always among them, and older windows are never read again.
+// window may move backwards after a clock correction. Keep a durable boundary
+// so admission refuses discarded windows instead of resetting their charges.
 func pruneFirewallScanBudgetWindows(tx *bolt.Tx, inventory firewallBudgetInventory) (firewallBudgetInventory, error) {
 	if len(inventory.Windows) <= firewallActionRetention.BudgetWindows {
 		return inventory, nil
@@ -242,6 +299,7 @@ func pruneFirewallScanBudgetWindows(tx *bolt.Tx, inventory firewallBudgetInvento
 			return inventory, err
 		}
 	}
+	inventory.PrunedThrough = max(inventory.PrunedThrough, inventory.Windows[excess-1])
 	inventory.Windows = append(inventory.Windows[:0:0], inventory.Windows[excess:]...)
 	return inventory, writeFirewallBudgetInventory(tx, inventory)
 }
