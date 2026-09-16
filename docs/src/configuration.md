@@ -534,7 +534,7 @@ signatures:
     tier: "core"                        # "core", "extended", "full" (default: "core")
     update_interval: "168h"             # how often to check for updates (default: weekly)
     download_url: ""                    # signed ZIP URL/template; supports {tier} and {version}
-  disabled_rules: []                    # YARA rule names to exclude from Forge downloads
+  disabled_rules: []                    # rule names to switch off, in Forge and in the shipped rules
   # yara_worker_enabled: true           # tri-state: omit for the default (on), `false` to explicitly disable
 
 # signatures.signing_key is mandatory whenever either signatures.update_url

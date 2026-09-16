@@ -54,7 +54,7 @@ func yaraWorkerOn(cfg *config.Config) bool {
 // — severity no longer needs the in-process *yara_x.Rules object.
 func (d *Daemon) initYaraBackend() error {
 	if !yaraWorkerOn(d.cfg) {
-		if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir); yaraScanner != nil {
+		if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir, d.cfg.Signatures.DisabledRules...); yaraScanner != nil {
 			fmt.Fprintf(os.Stderr, "[%s] YARA-X scanner active: %d rule file(s)\n", ts(), yaraScanner.RuleCount())
 		}
 		return nil

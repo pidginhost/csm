@@ -216,7 +216,7 @@ signatures:
     tier: "core"              # core (5K rules, low FP), extended (10K), full (12K)
     update_interval: "168h"   # weekly
     download_url: "https://mirrors.pidginhost.com/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip"
-  disabled_rules:             # rule names to exclude from Forge downloads
+  disabled_rules:             # rule names to switch off, in Forge and in the shipped rules
     - SUSP_Example_Rule
 ```
 
@@ -260,14 +260,26 @@ Custom rules in `malware.yar` are never overwritten by the Forge fetcher.
 
 ### Disabling Rules
 
-If a Forge rule produces false positives, add its name to `disabled_rules` in the config and reload:
+If a rule produces false positives, add its name to `disabled_rules` in the config and reload:
 
 ```yaml
 signatures:
   disabled_rules:
     - SUSP_XOR_Encoded_URL
-    - HKTL_Mimikatz_Strings
+    - php_goto_obfuscation
 ```
+
+The list covers every rule CSM loads, not only YARA Forge: Forge rules are
+stripped from the download, rules shipped in `malware.yml` are skipped when
+the real-time engine loads them, and rules shipped in `malware.yar` are
+stripped before the scheduled engine compiles them. The self-test measures
+the ruleset that is left, so disabling a rule shows up as the coverage it
+costs.
+
+`csm validate` warns about a name that matches no rule, because a typo here
+otherwise reads as "that rule is off" while the rule keeps firing. Disabling
+a rule is a last resort and a standing gap in coverage; prefer fixing the
+rule.
 
 After editing, send SIGHUP or restart the daemon to apply.
 

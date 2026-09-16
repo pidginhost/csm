@@ -21,16 +21,26 @@ type Scanner struct {
 	rules     *yara_x.Rules
 	rulesDir  string
 	ruleCount int
+	disabled  []string
 }
 
 // NewScanner creates a YARA-X scanner by compiling all .yar/.yara files
-// in the given directory.
-func NewScanner(rulesDir string) (*Scanner, error) {
-	s := &Scanner{rulesDir: rulesDir}
+// in the given directory. Rule names in disabled are stripped before
+// compilation, alongside the built-in suppressions.
+func NewScanner(rulesDir string, disabled ...string) (*Scanner, error) {
+	s := &Scanner{rulesDir: rulesDir, disabled: disabled}
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// DisabledRules returns the operator-configured rule names this scanner
+// strips before compiling.
+func (s *Scanner) DisabledRules() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.disabled...)
 }
 
 // Reload recompiles all YARA rules from the rules directory.
@@ -81,8 +91,10 @@ func (s *Scanner) Reload() error {
 		}
 
 		// Strip at compile time, not only at download time: a tier already on
-		// disk would otherwise keep firing until the next weekly update.
-		if err := compiler.AddSource(string(StripRules(data, SuppressedRuleNames()))); err != nil {
+		// disk would otherwise keep firing until the next weekly update. The
+		// operator's own list rides along, so switching off a shipped rule
+		// does not mean editing rule files on a production host.
+		if err := compiler.AddSource(string(StripRules(data, s.strippedRuleNames()))); err != nil {
 			return fmt.Errorf("compiling %s: %w", path, err)
 		}
 	}
@@ -295,4 +307,24 @@ func TestCompile(source string) error {
 		return fmt.Errorf("no rules compiled from source")
 	}
 	return nil
+}
+
+// strippedRuleNames merges the built-in suppressions with the operator's
+// disabled list, dropping blanks and duplicates.
+func (s *Scanner) strippedRuleNames() []string {
+	builtin := SuppressedRuleNames()
+	seen := make(map[string]struct{}, len(builtin)+len(s.disabled))
+	out := make([]string, 0, len(builtin)+len(s.disabled))
+	for _, name := range append(builtin, s.disabled...) {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }

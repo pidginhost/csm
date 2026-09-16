@@ -366,7 +366,7 @@ func runDaemon() {
 
 	// Initialize signature scanner. A corrupt rules file that disables
 	// detection must be loud, not silently swallowed by best-effort load.
-	scanner := signatures.Init(cfg.Signatures.RulesDir)
+	scanner := signatures.Init(cfg.Signatures.RulesDir, cfg.Signatures.DisabledRules...)
 	if err := scanner.LoadError(); err != nil {
 		fmt.Fprintf(os.Stderr, "[WARN] signature rules failed to load cleanly: %v\n", err)
 	}
@@ -456,8 +456,9 @@ func runYaraWorker() {
 	}
 
 	err := yaraworker.Run(context.Background(), yaraworker.Config{
-		SocketPath: socketPath,
-		RulesDir:   rulesDir,
+		SocketPath:    socketPath,
+		RulesDir:      rulesDir,
+		DisabledRules: cfg.Signatures.DisabledRules,
 		ErrorLog: func(err error) {
 			fmt.Fprintln(os.Stderr, "yara-worker:", err)
 		},
@@ -981,6 +982,7 @@ func runValidate() {
 	}
 
 	printResults(config.Validate(cfg))
+	printResults(validateDisabledRules(cfg.Signatures.RulesDir, cfg.Signatures.DisabledRules))
 
 	if deep {
 		fmt.Println("---")

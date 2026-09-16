@@ -13,12 +13,12 @@ var (
 
 // Init initializes the global YARA-X scanner.
 // Returns nil scanner if YARA-X is not compiled in or no rules found.
-func Init(rulesDir string) *Scanner {
+func Init(rulesDir string, disabled ...string) *Scanner {
 	if !Available() {
 		return nil
 	}
 	globalOnce.Do(func() {
-		s, err := NewScanner(rulesDir)
+		s, err := NewScanner(rulesDir, disabled...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "yara: init error: %v\n", err)
 			return
