@@ -559,8 +559,13 @@ func (s *Supervisor) spawnAndWaitReady() error {
 	if s.cfg.ConfigFile != "" {
 		args = append(args, "--config", s.cfg.ConfigFile)
 	}
+	// The daemon loads a missing conf.d as no fragments, but the worker
+	// refuses an explicit --config-dir that does not exist. Checked on every
+	// start so a directory created or removed after boot is followed.
 	if s.cfg.ConfigDir != "" {
-		args = append(args, "--config-dir", s.cfg.ConfigDir)
+		if _, err := os.Stat(s.cfg.ConfigDir); !errors.Is(err, os.ErrNotExist) {
+			args = append(args, "--config-dir", s.cfg.ConfigDir)
+		}
 	}
 	disabled, _ := json.Marshal(s.cfg.DisabledRules) // []string cannot fail to encode.
 	args = append(args, "--disabled-rules", string(disabled))
