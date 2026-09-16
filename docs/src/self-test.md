@@ -52,6 +52,10 @@ The summary counts missed samples, false positives, closed gaps and errors
 separately. A skipped engine has no sample results; JSON reports the reason in
 its `skipped` field.
 
+If configuration disables every rule in an engine, the command still measures
+its samples, reports zero loaded rules and the resulting misses, and exits with
+failure. Missing or malformed rule files remain load errors.
+
 ## Known gaps are recorded, not hidden
 
 A gap is a measurement, and the test suite fails when one closes as well as

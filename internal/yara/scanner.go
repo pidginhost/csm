@@ -17,11 +17,12 @@ import (
 
 // Scanner wraps YARA-X for malware file scanning.
 type Scanner struct {
-	mu        sync.RWMutex
-	rules     *yara_x.Rules
-	rulesDir  string
-	ruleCount int
-	disabled  []string
+	mu            sync.RWMutex
+	rules         *yara_x.Rules
+	rulesDir      string
+	ruleCount     int
+	disabled      []string
+	disabledCount int
 }
 
 // NewScanner creates a YARA-X scanner by compiling all .yar/.yara files
@@ -41,6 +42,14 @@ func (s *Scanner) DisabledRules() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]string(nil), s.disabled...)
+}
+
+// DisabledRuleCount counts rules omitted from the installed ruleset by config
+// or built-in suppressions.
+func (s *Scanner) DisabledRuleCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.disabledCount
 }
 
 // Reload recompiles all YARA rules from the rules directory.
@@ -73,6 +82,8 @@ func (s *Scanner) Reload() error {
 	}
 
 	fileCount := 0
+	disabledCount := 0
+	disabled := s.strippedRuleNames()
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() {
@@ -94,7 +105,9 @@ func (s *Scanner) Reload() error {
 		// disk would otherwise keep firing until the next weekly update. The
 		// operator's own list rides along, so switching off a shipped rule
 		// does not mean editing rule files on a production host.
-		if err := compiler.AddSource(string(StripRules(data, s.strippedRuleNames()))); err != nil {
+		filtered, removed := stripRules(data, disabled)
+		disabledCount += removed
+		if err := compiler.AddSource(string(filtered)); err != nil {
 			return fmt.Errorf("compiling %s: %w", path, err)
 		}
 	}
@@ -110,13 +123,14 @@ func (s *Scanner) Reload() error {
 	}
 
 	rules := compiler.Build()
-	if rules.Count() == 0 {
+	if rules.Count() == 0 && disabledCount == 0 {
 		return fmt.Errorf("no YARA rules compiled from %s", s.rulesDir)
 	}
 
 	s.mu.Lock()
 	s.rules = rules
 	s.ruleCount = rules.Count()
+	s.disabledCount = disabledCount
 	s.mu.Unlock()
 
 	fmt.Fprintf(os.Stderr, "yara: compiled %d rules from %d file(s) in %s\n", s.ruleCount, fileCount, s.rulesDir)

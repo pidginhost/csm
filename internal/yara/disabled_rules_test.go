@@ -8,6 +8,47 @@ import (
 	"testing"
 )
 
+func TestDisabledRulesCanEmptyRuleset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yar")
+	write := func(source string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const disabled = "rule drop { condition: true }"
+	write(disabled)
+	if _, err := NewScanner(dir, "drop"); err != nil {
+		t.Errorf("intentionally empty ruleset failed to load: %v", err)
+	}
+	write(disabled + " rule keep { condition: true }")
+	s, err := NewScanner(dir, "drop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.ScanBytes([]byte("needle")); len(got) != 1 || got[0].RuleName != "keep" {
+		t.Fatalf("control scan = %v, want keep", got)
+	}
+	write(disabled + " rule broken { condition:")
+	if err := s.Reload(); err == nil {
+		t.Fatal("a disabled rule hid an enabled rule's compilation failure")
+	}
+	if got := s.ScanBytes([]byte("needle")); len(got) != 1 || got[0].RuleName != "keep" {
+		t.Fatalf("failed reload lost the last working ruleset: %v", got)
+	}
+	write(disabled)
+	if err := s.Reload(); err != nil {
+		t.Errorf("intentionally empty reload failed: %v", err)
+	}
+	if got := s.ScanBytes([]byte("needle")); len(got) != 0 || s.RuleCount() != 0 {
+		t.Errorf("empty reload retained stale rules: %v", got)
+	}
+	if s.DisabledRuleCount() != 1 {
+		t.Errorf("disabled count = %d, want 1", s.DisabledRuleCount())
+	}
+}
+
 func TestDisabledRulePreservesCompiledNeighbors(t *testing.T) {
 	dir := t.TempDir()
 	source := `global private rule drop {

@@ -60,6 +60,7 @@ type Scanner struct {
 	// typo here reads as "the rule is off" while it keeps firing.
 	disabled          []string
 	disabledUnmatched []string
+	disabledCount     int
 }
 
 // NewScanner creates a scanner that loads rules from the given directory.
@@ -72,6 +73,7 @@ type Scanner struct {
 // production host.
 func NewScanner(rulesDir string, disabled ...string) *Scanner {
 	s := &Scanner{rulesDir: rulesDir, disabled: normalizeDisabled(disabled)}
+	s.disabledUnmatched = append([]string(nil), s.disabled...)
 	_ = s.Reload() // best-effort load on init; error retained via LoadError()
 	return s
 }
@@ -107,12 +109,19 @@ func (s *Scanner) DisabledRules() []string {
 }
 
 // DisabledRulesWithoutMatch returns the configured names that matched no rule
-// in the loaded ruleset. Config validation surfaces these: silently accepting
+// in the last load attempt. Config validation surfaces these: silently accepting
 // a name nobody recognises is how an operator ends up believing a rule is off.
 func (s *Scanner) DisabledRulesWithoutMatch() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]string(nil), s.disabledUnmatched...)
+}
+
+// DisabledRuleCount counts rules omitted from the installed ruleset by config.
+func (s *Scanner) DisabledRuleCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.disabledCount
 }
 
 // LoadError returns the error from the most recent Reload, or nil if the last
@@ -146,6 +155,7 @@ func (s *Scanner) Reload() error {
 	var allRules []Rule
 	maxVersion := 0
 	fileCount := 0
+	disabledCount := 0
 	disabled := make(map[string]struct{}, len(s.disabled))
 	for _, name := range s.disabled {
 		disabled[name] = struct{}{}
@@ -191,6 +201,7 @@ func (s *Scanner) Reload() error {
 			rule := &rf.Rules[i]
 			if _, off := disabled[strings.ToLower(rule.Name)]; off {
 				disabledSeen[strings.ToLower(rule.Name)] = struct{}{}
+				disabledCount++
 				continue
 			}
 			if err := rule.compile(); err != nil {
@@ -221,19 +232,22 @@ func (s *Scanner) Reload() error {
 		return nil
 	}
 
-	// Nothing usable parsed. Preserve any previously-installed rules rather
-	// than wiping detection because the operator broke the only file.
-	if len(allRules) == 0 {
-		err := errors.Join(append(loadErrs, fmt.Errorf("no signature rules loaded from %s", s.rulesDir))...)
-		s.setLoadErr(err)
-		return err
-	}
-
 	var unmatched []string
 	for _, name := range s.disabled {
 		if _, seen := disabledSeen[name]; !seen {
 			unmatched = append(unmatched, name)
 		}
+	}
+	// Keep the old set on failure, but publish a clean load that config
+	// intentionally emptied. Retaining old rules in that case scans a set
+	// that is no longer on disk.
+	if len(allRules) == 0 && (disabledCount == 0 || len(loadErrs) > 0) {
+		err := errors.Join(append(loadErrs, fmt.Errorf("no signature rules loaded from %s", s.rulesDir))...)
+		s.mu.Lock()
+		s.loadErr = err
+		s.disabledUnmatched = unmatched
+		s.mu.Unlock()
+		return err
 	}
 
 	s.mu.Lock()
@@ -241,6 +255,7 @@ func (s *Scanner) Reload() error {
 	s.version = maxVersion
 	s.loadErr = errors.Join(loadErrs...)
 	s.disabledUnmatched = unmatched
+	s.disabledCount = disabledCount
 	s.mu.Unlock()
 
 	if len(disabledSeen) > 0 {

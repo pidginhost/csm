@@ -46,6 +46,17 @@ func TestRunHonorsDisabledRulesAfterCompileRecovery(t *testing.T) {
 			t.Fatalf("scan after reload %d: %+v, %v", i, matches, err)
 		}
 	}
+	if err := os.WriteFile(rulePath, []byte("rule drop { condition: true }"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.Reload(yaraipc.ReloadArgs{})
+	if err != nil || result.RuleCount != 0 || result.CompileError != "" {
+		t.Fatalf("fully disabled reload: %+v, %v", result, err)
+	}
+	matches, err := c.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("probe")})
+	if err != nil || len(matches.Matches) != 0 {
+		t.Fatalf("fully disabled worker retained stale rules: %+v, %v", matches, err)
+	}
 }
 
 // End-to-end recovery against the real YARA-X engine: a worker that boots with

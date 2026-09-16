@@ -8,6 +8,33 @@ import (
 	"testing"
 )
 
+func TestValidateDisabledRulesRecognizesUncompilableRule(t *testing.T) {
+	dir := t.TempDir()
+	data := "rules:\n  - name: broken\n    regexes: ['[']\n  - name: keep\n    patterns: [needle]\n"
+	if err := os.WriteFile(filepath.Join(dir, "rules.yml"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	results := validateDisabledRules(dir, []string{"broken", " BROKEN "})
+	if len(results) != 1 || results[0].Level != "ok" || results[0].Message != "1 rule(s) disabled" {
+		t.Fatalf("disabled invalid regex should be recognized once: %+v", results)
+	}
+}
+
+func TestValidateDisabledRulesWithoutReadableRules(t *testing.T) {
+	for _, contents := range []string{"", "rules: ["} {
+		dir := t.TempDir()
+		if contents != "" {
+			if err := os.WriteFile(filepath.Join(dir, "rules.yml"), []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		results := validateDisabledRules(dir, []string{"unknown"})
+		if len(results) != 1 || results[0].Level != "warn" || !strings.Contains(results[0].Message, "unknown") {
+			t.Fatalf("unreadable rules should not validate a name: %+v", results)
+		}
+	}
+}
+
 func TestDisabledRuleValidationUsesSourceDeclarations(t *testing.T) {
 	dir := t.TempDir()
 	source := "/*\nrule fake { condition: true }\n*/\nglobal private\trule\tactual { condition: true } rule next { condition: true }"

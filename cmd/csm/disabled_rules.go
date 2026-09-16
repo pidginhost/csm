@@ -21,8 +21,17 @@ func validateDisabledRules(rulesDir string, disabled []string) []config.Validati
 	}
 
 	known := make(map[string]struct{})
-	for _, name := range signatures.NewScanner(rulesDir).RuleNames() {
-		known[strings.ToLower(name)] = struct{}{}
+	// Ask the loader which configured names it found before compilation.
+	// A disabled rule may itself contain the regex error being worked around.
+	scanner := signatures.NewScanner(rulesDir, disabled...)
+	unmatched := make(map[string]bool)
+	for _, name := range scanner.DisabledRulesWithoutMatch() {
+		unmatched[name] = true
+	}
+	for _, name := range scanner.DisabledRules() {
+		if !unmatched[name] {
+			known[name] = struct{}{}
+		}
 	}
 	for _, name := range yaraRuleNamesIn(rulesDir) {
 		known[strings.ToLower(name)] = struct{}{}
@@ -35,12 +44,15 @@ func validateDisabledRules(rulesDir string, disabled []string) []config.Validati
 
 	var unknown []string
 	matched := 0
+	seen := make(map[string]bool)
 	for _, name := range disabled {
 		trimmed := strings.TrimSpace(name)
-		if trimmed == "" {
+		normalized := strings.ToLower(trimmed)
+		if trimmed == "" || seen[normalized] {
 			continue
 		}
-		if _, ok := known[strings.ToLower(trimmed)]; ok {
+		seen[normalized] = true
+		if _, ok := known[normalized]; ok {
 			matched++
 			continue
 		}

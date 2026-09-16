@@ -285,10 +285,17 @@ rules, including when declarations share a line or literals contain braces.
 The YARA worker receives the daemon's effective disabled list and configuration
 paths; rule reloads and worker crash recovery retain that list.
 
+A valid ruleset whose rules are all disabled loads as an empty set, including
+on reload; stale rules are not retained. The self-test reports the resulting
+misses. An empty or invalid replacement still reports a load error.
+
 `csm validate` warns about a name that matches no rule, because a typo here
 otherwise reads as "that rule is off" while the rule keeps firing. Disabling
 a rule is a last resort and a standing gap in coverage; prefer fixing the
 rule.
+
+Validation recognizes a disabled YAML rule even if its regular expression is
+invalid, and counts repeated names only once.
 
 Signature settings require a daemon restart. SIGHUP does not apply a changed
 disabled list; rule-file reloads keep the current list.

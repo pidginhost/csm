@@ -45,8 +45,15 @@ func SuppressedRuleNames() []string {
 // Unknown names are ignored so a suppression list may name rules that a given
 // tier does not ship.
 func StripRules(content []byte, names []string) []byte {
+	filtered, _ := stripRules(content, names)
+	return filtered
+}
+
+// stripRules also counts removed declarations so a deliberately empty set
+// remains distinguishable from a missing or empty rule file.
+func stripRules(content []byte, names []string) ([]byte, int) {
 	if len(names) == 0 {
-		return content
+		return content, 0
 	}
 
 	drop := make(map[string]bool, len(names))
@@ -56,21 +63,23 @@ func StripRules(content []byte, names []string) []byte {
 		}
 	}
 	if len(drop) == 0 {
-		return content
+		return content, 0
 	}
 
 	var result []byte
 	kept := 0
+	removed := 0
 	for _, rule := range sourceRules(content) {
 		if drop[strings.ToLower(rule.name)] {
+			removed++
 			result = append(result, content[kept:rule.start]...)
 			kept = rule.end
 		}
 	}
 	if kept == 0 {
-		return content
+		return content, 0
 	}
-	return append(result, content[kept:]...)
+	return append(result, content[kept:]...), removed
 }
 
 type sourceRule struct {

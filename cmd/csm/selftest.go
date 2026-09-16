@@ -71,7 +71,7 @@ func selfTestRuns(rulesDir string, disabled ...string) ([]engineRun, error) {
 	if loadErr := scanner.LoadError(); loadErr != nil {
 		return nil, fmt.Errorf("loading realtime rules: %w", loadErr)
 	}
-	if scanner.RuleCount() == 0 {
+	if scanner.RuleCount() == 0 && scanner.DisabledRuleCount() == 0 {
 		return nil, fmt.Errorf("no signature rules loaded from %q; run `csm update-rules` or check signatures.rules_dir", rulesDir)
 	}
 
@@ -99,7 +99,7 @@ func selfTestRuns(rulesDir string, disabled ...string) ([]engineRun, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading YARA rules: %w", err)
 	}
-	if yaraScanner.RuleCount() == 0 {
+	if yaraScanner.RuleCount() == 0 && yaraScanner.DisabledRuleCount() == 0 {
 		return nil, fmt.Errorf("no YARA rules loaded from %q; run `csm update-rules` or check signatures.rules_dir", rulesDir)
 	}
 	yaraResults := selftest.Run(selftest.Yara, func(content []byte, _ string) ([]string, error) {

@@ -8,7 +8,43 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/selftest"
+	"github.com/pidginhost/csm/internal/signatures"
+	"github.com/pidginhost/csm/internal/yara"
 )
+
+func TestSelfTestMeasuresFullyDisabledRuleset(t *testing.T) {
+	disabled := signatures.NewScanner("../../configs").RuleNames()
+	disabled = append(disabled, yaraRuleNamesIn("../../configs")...)
+	runs, err := selfTestRuns("../../configs", disabled...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("got %d engines, want both measured or skipped", len(runs))
+	}
+	if runs[0].Engine != selftest.Realtime || runs[1].Engine != selftest.Yara {
+		t.Fatal("expected realtime and YARA engines")
+	}
+	for _, run := range runs {
+		if run.Engine == selftest.Yara && !yara.Available() {
+			if run.Skipped == "" {
+				t.Fatal("absent YARA engine must be reported as skipped")
+			}
+			continue
+		}
+		if run.Skipped != "" || len(run.Results) != len(selftest.Samples()) {
+			t.Fatalf("%s did not measure every sample", run.Engine)
+		}
+		for _, result := range run.Results {
+			if result.Detected || result.Error != "" || len(result.Rules) != 0 {
+				t.Errorf("%s: expected a completed scan with no matches: %+v", run.Engine, result)
+			}
+		}
+		if run.RuleCount != 0 || run.Summary.Detected != 0 || run.Summary.Missed == 0 || !run.Summary.Failed() {
+			t.Errorf("%s did not measure disabled coverage: %+v", run.Engine, run)
+		}
+	}
+}
 
 func TestSelfTestRejectsUnreadableConfig(t *testing.T) {
 	if path := os.Getenv("CSM_SELFTEST_CONFIG_PROBE"); path != "" {
