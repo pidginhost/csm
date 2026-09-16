@@ -417,8 +417,9 @@ are still absent, and for those the daemon log is the only record:
 The wiring pattern is settled: record at the operation chokepoint, not at the
 entry point, so a CLI-driven and an automatic call produce the same record.
 
-There is no stable `action_id` or transactional action lifecycle. A JSONL
-outcome is evidence, not durable intent: it cannot alone distinguish a refused
+The durable firewall action service is implemented and tested through engine injection. Production activation, reader cutover, migration, restore, downgrade and operator recovery interfaces remain open.
+
+A JSONL outcome is evidence, not durable intent: it cannot alone distinguish a refused
 request from a mutation applied just before a crash. Existing rollback paths
 are useful, but some effects, including process termination, cannot be undone.
 
@@ -468,6 +469,12 @@ lifecycle, recovery and undo work; estimate each slice after its failure model
 is specified.
 
 ## Firewall state migration to bbolt
+
+The lossless firewall state storage contract is implemented and tested
+independently of runtime callers. It preserves complete ordered state with
+revision checks and atomic replacement.
+
+The durable firewall action service is implemented and tested through engine injection. Production activation, reader cutover, migration, restore, downgrade and operator recovery interfaces remain open.
 
 **Status:** partially prepared. Firewall buckets and store methods exist, and
 pending configuration rollback already uses bbolt. The engine still reads and

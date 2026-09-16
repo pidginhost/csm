@@ -13,15 +13,16 @@ import (
 // RetentionResult reports how many entries each sweep removed in a single
 // RunRetentionOnce invocation.
 type RetentionResult struct {
-	History      int
-	AttackEvents int
-	Reputation   int
-	Errors       []error
+	History         int
+	AttackEvents    int
+	Reputation      int
+	FirewallActions int
+	Errors          []error
 }
 
 // Deleted returns the total number of entries deleted across all sweeps.
 func (r RetentionResult) Deleted() int {
-	return r.History + r.AttackEvents + r.Reputation
+	return r.History + r.AttackEvents + r.Reputation + r.FirewallActions
 }
 
 // bucketMap describes which config knob drives which bucket sweep. Keeping
@@ -32,6 +33,8 @@ func (r RetentionResult) Deleted() int {
 //   - HistoryDays    → `history` bucket (the finding archive every scan appends to)
 //   - FindingsDays   → `attacks:events` bucket (per-attack event trail feeding scoring)
 //   - ReputationDays → `reputation` bucket (AbuseIPDB / local lookup cache, keyed by IP)
+//   - HistoryDays    → `fw:actions` journal (proven firewall outcomes; this is
+//     also how far back a durable action can be undone)
 //
 // Blocked IPs are deliberately NOT on a TTL: `fw:blocked` is pruned when
 // an operator or auto-response unblocks an IP, and temp-ban expiry is
@@ -57,6 +60,14 @@ func RunRetentionOnce(db *store.DB, cfg *config.Config, now time.Time) Retention
 			result.Errors = append(result.Errors, err)
 		}
 		result.History = n
+	}
+	if cfg.Retention.HistoryDays > 0 {
+		cutoff := now.Add(-time.Duration(cfg.Retention.HistoryDays) * 24 * time.Hour)
+		n, err := db.SweepFirewallActionsOlderThan(cutoff)
+		if err != nil {
+			result.Errors = append(result.Errors, err)
+		}
+		result.FirewallActions = n
 	}
 	if cfg.Retention.FindingsDays > 0 {
 		cutoff := now.Add(-time.Duration(cfg.Retention.FindingsDays) * 24 * time.Hour)

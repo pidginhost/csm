@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -140,6 +142,10 @@ func IncidentCorrelator() *incident.Correlator {
 					// is a permanent block, which the engine understands.
 					live, err := blocker(ip, "CSM credential_spray: "+reason, ttl, findingID)
 					if err != nil {
+						if live && errors.Is(err, firewall.ErrActionAuditPending) {
+							csmlog.Warn("credential_spray block audit delivery pending", "ip", ip, "err", err)
+							return true
+						}
 						if !isProtectedIPRefusal(err) {
 							csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
 						}
@@ -171,6 +177,10 @@ func IncidentCorrelator() *incident.Correlator {
 					}
 					live, err := blocker(ip, "CSM incident: "+reason, ttl, findingID)
 					if err != nil {
+						if live && errors.Is(err, firewall.ErrActionAuditPending) {
+							csmlog.Warn("incident auto-block audit delivery pending", "ip", ip, "err", err)
+							return true
+						}
 						// Own-interface / infra IPs are intentionally never
 						// blockable; the incident still opened, so the operator is
 						// alerted to activity attributed to a protected address

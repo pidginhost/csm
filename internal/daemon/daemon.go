@@ -79,16 +79,19 @@ type Daemon struct {
 	ipList           *challenge.IPList
 	challengeGate    challenge.PortGate
 	fwEngine         *firewall.Engine
-	fwStartupError   string     // finalized before status servers start
-	baselineMu       sync.Mutex // serialises CmdBaseline handler runs
-	geoipDB          *geoip.DB
-	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
-	version          string
-	blockDigest      *blockdigest.Collector
-	alertCh          chan alert.Finding
-	alertQueue       *queuehealth.Tracker
-	queueSourcesMu   sync.RWMutex
-	queueSources     map[string]queueSource
+	// fwActions retains the durable-action boundary even after failed startup,
+	// so pending actions remain recoverable while the firewall is unmanaged.
+	fwActions      firewallActionBoundary
+	fwStartupError string     // finalized before status servers start
+	baselineMu     sync.Mutex // serialises CmdBaseline handler runs
+	geoipDB        *geoip.DB
+	geoipMu        sync.Mutex // protects geoipDB for publishGeoIP
+	version        string
+	blockDigest    *blockdigest.Collector
+	alertCh        chan alert.Finding
+	alertQueue     *queuehealth.Tracker
+	queueSourcesMu sync.RWMutex
+	queueSources   map[string]queueSource
 	// alertHold, while open, keeps the dispatcher draining alertCh into its
 	// batch without dispatching, so realtime producers (which never block)
 	// lose nothing during the synchronous startup baseline. The ingest queue
@@ -518,6 +521,10 @@ func firewallMetricsRuleCounts() firewall.RuleCounts {
 
 func (d *Daemon) setFirewallEngine(engine *firewall.Engine) {
 	d.fwEngine = engine
+	d.fwActions = nil
+	if boundary, ok := any(engine).(firewallActionBoundary); ok {
+		d.fwActions = boundary
+	}
 	setFirewallMetricsEngine(engine)
 }
 
@@ -1881,6 +1888,9 @@ func (d *Daemon) heartbeat() {
 		case <-ticker.C:
 			alert.SendHeartbeat(d.currentCfg())
 			d.hijackDetector.Cleanup()
+			// Failed startup can leave only the recovery boundary available.
+			// Settle pending outcomes before attempting cleanup mutations.
+			recoverFirewallActions(d.fwActions)
 			// Clean expired temporary allows
 			if d.fwEngine != nil {
 				d.fwEngine.CleanExpiredAllows()
@@ -2815,6 +2825,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			Source:       checks.BlockSourceChallenge,
 			FindingID:    e.FindingID,
 		})
+		recorded = append(recorded, res.Findings...)
 		if err != nil {
 			// Own-interface / infra IPs are never blockable, and a host
 			// without a firewall engine cannot escalate; both are expected
@@ -2822,11 +2833,12 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) {
 				fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
 			}
-			continue
+			if res.Outcome != firewall.BlockOutcomeLive || !errors.Is(err, firewall.ErrActionAuditPending) {
+				continue
+			}
 		}
 		observeChallengeEscalated(res.Outcome)
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, res.Outcome))
-		recorded = append(recorded, res.Findings...)
 	}
 	d.recordAppliedBlocks(recorded)
 }
@@ -2875,11 +2887,9 @@ func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duratio
 		Source:       checks.BlockSourceIncident,
 		FindingID:    findingID,
 	})
-	if err != nil {
-		return false, err
-	}
 	d.recordAppliedBlocks(res.Findings)
-	return res.Outcome == firewall.BlockOutcomeLive, nil
+	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))
+	return live, err
 }
 
 var (

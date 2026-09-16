@@ -349,3 +349,17 @@ func TestRecordAppliedBlocksPersistsBeforeDispatchFailure(t *testing.T) {
 		t.Fatalf("dispatch failure not logged: %q", stderr)
 	}
 }
+
+func TestCentralVerifiedAuditFailureRetainsEvidence(t *testing.T) {
+	d, db, dispatched := lifecycleAuditDaemon(t, firewall.BlockOutcomeLive, firewall.ErrActionAuditPending)
+	err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: "203.0.113.81"})
+	if !errors.Is(err, firewall.ErrActionAuditPending) {
+		t.Fatalf("audit degradation hidden: %v", err)
+	}
+	if _, total := db.ReadHistory(10, 0); total != 1 {
+		t.Fatalf("verified central block history=%d", total)
+	}
+	if *dispatched != 1 || d.blockDigest.Drain().Total != 1 {
+		t.Fatal("verified central block lost dispatch/digest")
+	}
+}

@@ -21,6 +21,65 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **Audit trail** - JSONL log with 10MB rotation
 - **State persistence** with atomic writes
 
+## Storage contract preparation
+
+The durable firewall action service is implemented and tested through engine injection. Production activation, reader cutover, migration, restore, downgrade and operator recovery interfaces remain open.
+
+Firewall actions record the actor, source, linked finding or incident, and complete before and after state before changing the kernel. Pending intent is separate from committed state. Recovery verifies target identity and expiry before recording an outcome; it does not blindly replay a mutation. Repeated request IDs reuse the original action and admission accounting. Audit delivery retries use the same action ID. Typed undo checks that the affected targets still match the recorded result.
+
+Proven outcomes are retained for undo and review, bounded two ways. The
+retention sweep drops delivered outcomes older than the findings-history
+setting, and a hard cap on retained outcomes and on their total size applies
+even when sweeps stay off. The size cap includes retained audit evidence.
+Existing journals are indexed on their first retention operation. Pending
+actions and outcomes whose audit has not been delivered are never dropped.
+The newest outcome also survives the hard cap even if it alone exceeds it.
+Hourly scan counters keep only the newest windows. Scan admission refuses
+pruned windows after a backward clock correction, preserving budget safety.
+Deleting an outcome ends the undo window for that action.
+
+When an action cannot be proven, for example because the kernel did not answer
+in time, its outcome stays uncertain and the engine refuses further firewall
+changes rather than guess. The daemon retries recovery at startup and on its
+maintenance tick, which settles the outcome as soon as the kernel can answer.
+`csm firewall actions` shows what is waiting and why. If the kernel can never
+prove it, an operator inspects the host and records the answer with
+`csm firewall actions resolve`, which takes `applied` or `rejected` and an
+optional note. Kernel evidence wins over the operator: if recovery can prove
+the outcome at that moment, the proven one is recorded and the operator's
+answer is not used. The decision and its note reach the action log.
+
+Startup recovery runs before applying the firewall. If startup fails, pending
+actions remain available for automatic recovery and operator resolution. After
+resolving them, restart the daemon to retry firewall setup. A storage error
+while saving kernel evidence stops resolution; it never permits an operator
+assertion to replace that evidence. Failure to refresh committed state is also
+reported, even when the outcome was saved.
+
+Applying an action writes only the entries that change, so the kernel write
+for one block does not grow with the size of the blocked set. Large removals
+use bounded messages within the same atomic update. Ranged sets are written
+whole because their start and end markers move together. If the kernel already
+expired an entry the action meant to remove, the set is rewritten instead, and
+both paths end at the same state.
+
+Firewall state storage provides complete snapshot reads and revision-checked
+replacement using the existing database. Reads preserve expired entries,
+original timestamps, explicit provenance, duplicate allow entries and collection
+order. An uninitialized store, corrupt data or a failed read returns an error
+without usable state. Rejected or rolled-back writes preserve the previous
+snapshot and revision. An error after the transaction body succeeds reports an
+uncertain commit; callers must reconcile stored state before retrying and must
+not assume rollback or confirmed durability. Legacy bucket edits invalidate a
+committed snapshot instead of silently changing its revision. The contract does
+not activate runtime cutover.
+
+Firewall storage metrics separate write wait from transaction
+duration and expose read time, pending writes, failures and snapshot batch size
+using fixed labels. Repeatable benchmarks exercise competing writers and local
+snapshot copying. Backup restore and downgrade compatibility require the later
+migration stage.
+
 ## Mutation failures
 
 Subnet blocks refuse ranges overlapping loopback or link-local scopes, plus

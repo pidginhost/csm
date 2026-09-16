@@ -836,7 +836,9 @@ disabled_checks: []                     # e.g. [waf_status, waf_rules, waf_detec
 retention:
   enabled: false                        # opt-in; when true, a daily sweep prunes old entries
   findings_days: 90                     # keep active findings this long (0 disables the findings sweep)
-  history_days: 30                      # keep findings-history entries this long
+  history_days: 30                      # keep findings-history entries and proven firewall
+                                        # outcomes this long; it also sets how far back a
+                                        # durable firewall action can be undone
   reputation_days: 180                  # keep IP reputation/attack entries this long
   sweep_interval: "24h"                 # how often the retention goroutine runs
   compact_min_size_mb: 128              # startup compaction floor; 0 disables auto-compaction

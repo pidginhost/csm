@@ -118,7 +118,11 @@ func (e *Engine) replaceBlockedSubnetSets(entries []SubnetEntry) error {
 	return nil
 }
 
-func (e *Engine) updateSubnetStateAndKernel(prior, next FirewallState) error {
+func (e *Engine) updateSubnetMutation(prior, next FirewallState, req ActionRequest, budget *ScanAdmission) error {
+	if e.lifecycle != nil {
+		return e.runDurableLocked(req, budget, next)
+	}
+
 	if err := e.persistFirewallIntent(prior, next); err != nil {
 		return fmt.Errorf("persisting subnet change: %w", err)
 	}

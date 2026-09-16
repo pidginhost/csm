@@ -55,6 +55,10 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleFirewallPorts(req.Args)
 	case control.CmdFirewallGrep:
 		result, err = c.handleFirewallGrep(req.Args)
+	case control.CmdFirewallActions:
+		result, err = c.handleFirewallActions(req.Args)
+	case control.CmdFirewallActionResolve:
+		result, err = c.handleFirewallActionResolve(req.Args)
 	case control.CmdFirewallAudit:
 		result, err = c.handleFirewallAudit(req.Args)
 	case control.CmdFirewallBlock:

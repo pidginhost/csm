@@ -67,6 +67,8 @@ func runFirewall() {
 		fwAllowFile()
 	case "audit":
 		fwAudit()
+	case "actions":
+		fwActions()
 	case "profile":
 		fwProfile()
 	case "update-geoip":
@@ -109,6 +111,8 @@ Commands:
   deny-file <path>                    Bulk block IPs from file (one per line)
   allow-file <path>                 Bulk allow IPs from file (one per line)
   audit [limit]                     Show recent firewall audit log (default: 50)
+  actions [resolve <id> applied|rejected [note]]
+                                    Show firewall actions awaiting recovery, or record an outcome
   profile save <name>               Save current firewall config as named profile
   profile list                      List saved profiles
   profile restore <name>            Restore firewall config from profile
@@ -1159,6 +1163,52 @@ func runThreatForget(args []string) (string, error) {
 		res.IP = ip
 	}
 	return threatForgetOutput(res), nil
+}
+
+// runFirewallActions lists the durable actions recovery could not settle and
+// records the outcome an operator established by hand. An uncertain action
+// blocks every firewall mutation, so this is the way back to a working engine.
+func runFirewallActions(args []string) (string, error) {
+	if len(args) == 0 {
+		raw, err := sendControl(control.CmdFirewallActions, nil)
+		if err != nil {
+			return "", err
+		}
+		var res control.FirewallListResult
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return "", fmt.Errorf("unexpected daemon reply: %w", err)
+		}
+		return strings.Join(res.Lines, "\n"), nil
+	}
+	if args[0] != "resolve" {
+		return "", fmt.Errorf("usage: csm firewall actions [resolve <id> applied|rejected [note]]")
+	}
+	if len(args) < 3 {
+		return "", fmt.Errorf("usage: csm firewall actions resolve <id> applied|rejected [note]")
+	}
+	if args[2] != "applied" && args[2] != "rejected" {
+		return "", fmt.Errorf("outcome must be applied or rejected, not %q", args[2])
+	}
+	raw, err := sendControl(control.CmdFirewallActionResolve, control.FirewallActionResolveArgs{
+		ID: args[1], Outcome: args[2], Note: strings.Join(args[3:], " "),
+	})
+	if err != nil {
+		return "", err
+	}
+	var res control.FirewallAckResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", fmt.Errorf("unexpected daemon reply: %w", err)
+	}
+	return res.Message, nil
+}
+
+func fwActions() {
+	out, err := runFirewallActions(fwArgs())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(out)
 }
 
 // isHelpRequest reports whether the operator asked for usage rather than
