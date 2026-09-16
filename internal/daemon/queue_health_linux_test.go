@@ -125,12 +125,8 @@ func TestSpoolQueueHealthAccountsForPanicAndCanceledAdmission(t *testing.T) {
 	previousHandler := spoolEventHandler
 	t.Cleanup(func() { spoolEventHandler = previousHandler })
 	processed := 0
-	spoolEventHandler = func(_ *SpoolWatcher, event spoolEvent) {
-		defer func() {
-			if closeErr := unix.Close(event.fd); closeErr != nil {
-				t.Error(closeErr)
-			}
-		}()
+	spoolEventHandler = func(sw *SpoolWatcher, event spoolEvent) {
+		defer event.finish(sw, FAN_ALLOW)
 		processed++
 		running := d.QueueStatuses()["spool.scanner"]
 		if running.Depth != 0 || running.InFlight != 1 {

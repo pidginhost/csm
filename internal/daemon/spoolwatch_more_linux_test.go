@@ -481,9 +481,9 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineSucceeds(t *testing.T) {
 	orch := emailav.NewOrchestrator([]emailav.Scanner{alwaysInfectedScanner{}}, 5*time.Second)
 
 	// Need a valid event fd that gets closed via defer.
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(filepath.Join(dir, msgID+"-D"), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 	// Need writable sw.fd because needResp=true triggers writeResponse.
 	var respPipe [2]int
@@ -628,9 +628,9 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineErrorTempfail(t *testing.
 	// fails on Linux, so QuarantineMessage returns an error.
 	quar := emailav.NewQuarantine("/dev/null/csm-quar-impossible")
 
-	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	tmpFd, err := unix.Open(filepath.Join(dir, msgID+"-D"), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Skipf("open dir: %v", err)
+		t.Fatalf("open body: %v", err)
 	}
 
 	var respPipe [2]int
