@@ -13,13 +13,13 @@ require (
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.20.0
 	github.com/mdlayher/netlink v1.11.2
-	github.com/oschwald/maxminddb-golang/v2 v2.5.0
+	github.com/oschwald/maxminddb-golang/v2 v2.6.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/tdewolff/parse/v2 v2.8.16
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/net v0.58.0
+	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
-	golang.org/x/text v0.41.0
+	golang.org/x/text v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -32,6 +32,6 @@ require (
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
