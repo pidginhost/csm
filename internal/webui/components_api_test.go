@@ -239,3 +239,11 @@ func TestAPIComponents_NoProviderReturnsEmptyArray(t *testing.T) {
 		t.Errorf("expected empty array, got %+v", rows)
 	}
 }
+
+func TestAPIComponents_YaraWorkerHasFriendlyLabel(t *testing.T) {
+	s := componentsTestServer(t, map[string]bool{"yara_worker": false}, nil, nil)
+	rows := decodeComponentRows(t, s)
+	if len(rows) != 1 || rows[0].Status != "degraded" || rows[0].Label != "YARA-X worker" {
+		t.Fatalf("yara_worker row = %+v, want degraded with friendly label", rows)
+	}
+}

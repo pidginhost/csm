@@ -39,6 +39,9 @@ func yaraWorkerOn(cfg *config.Config) bool {
 	return *cfg.Signatures.YaraWorkerEnabled
 }
 
+// yaraWorkerWatcher names the YARA-X worker in the watcher status map.
+const yaraWorkerWatcher = "yara_worker"
+
 // initYaraBackend wires up either the out-of-process YARA-X supervisor
 // (default, per ROADMAP item 2 follow-up) or the in-process scanner
 // (when config.Signatures.YaraWorkerEnabled is explicitly *false).
@@ -86,6 +89,9 @@ func (d *Daemon) initYaraBackend() error {
 	// leaving an orphaned worker attempt outside shutdown ownership.
 	d.yaraSup = sup
 	if err := sup.Start(context.Background()); err != nil {
+		// Every YARA scan is off until the worker starts, so report it where
+		// doctor and the status API look for components that failed to attach.
+		d.MarkWatcher(yaraWorkerWatcher, false)
 		// A boot-time start failure must not disable YARA for the daemon's
 		// whole lifetime. Retry in the background with backoff and raise a
 		// finding once the failure looks persistent, mirroring the
@@ -105,6 +111,7 @@ func (d *Daemon) initYaraBackend() error {
 // of masquerading as a healthy zero-rule host.
 func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
 	yara.SetActive(sup)
+	d.MarkWatcher(yaraWorkerWatcher, true)
 
 	// Expose the supervisor's cumulative restart count to Prometheus.
 	// Registered once per process; subsequent calls re-point nothing

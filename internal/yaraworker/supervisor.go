@@ -559,9 +559,9 @@ func (s *Supervisor) spawnAndWaitReady() error {
 	if s.cfg.ConfigFile != "" {
 		args = append(args, "--config", s.cfg.ConfigFile)
 	}
-	if s.cfg.ConfigDir != "" {
-		args = append(args, "--config-dir", s.cfg.ConfigDir)
-	}
+	// Preserve the daemon's selection even when it is empty or missing.
+	// Omitting it would re-enable the worker's environment/default lookup.
+	args = append(args, "--inherited-config-dir", s.cfg.ConfigDir)
 	disabled, _ := json.Marshal(s.cfg.DisabledRules) // []string cannot fail to encode.
 	args = append(args, "--disabled-rules", string(disabled))
 	args = append(args, s.cfg.ExtraArgs...)
