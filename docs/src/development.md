@@ -335,6 +335,12 @@ mdbook serve              # local preview at http://localhost:3000
 
 ## Clean application corpus
 
+The same job measures how long the shipped rules take on content built to
+starve a missing prefilter atom, and fails when a scan exceeds its per-file
+budget. A rule with no literal atom to match on still detects what it should,
+so review and match tests pass; the cost shows up only as scan time, and on a
+mail spool that becomes delayed delivery.
+
 Every pipeline runs the required [clean-corpus gate](clean-corpus.md) in the production YARA-X builder image. Package publication and GitHub releases depend on its success.
 
 See [cPanel release tests](cpanel-release-tests.md) for the required image, upgrade baseline, release dependencies and retained evidence.
