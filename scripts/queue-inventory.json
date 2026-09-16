@@ -2,6 +2,18 @@
   "version": 1,
   "allocations": [
     {
+      "id": "internal/actionlog/actionlog.go::WriteDurable::acknowledgement::channel::1",
+      "path": "internal/actionlog/actionlog.go",
+      "owner": "WriteDurable",
+      "target": "acknowledgement",
+      "kind": "channel",
+      "source": "make(chan error, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Carries one durable-write outcome back to the caller. The buffer keeps the sink's send from blocking after the caller has stopped waiting, so the write retains ownership of the record either way.",
+      "queue": "actionlog"
+    },
+    {
       "id": "internal/actionlog/write_queue.go::*writePool.write::done::channel::1",
       "path": "internal/actionlog/write_queue.go",
       "owner": "*writePool.write",
