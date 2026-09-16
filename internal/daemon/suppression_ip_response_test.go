@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/reporting"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -44,6 +46,8 @@ func (r *webhookRecorder) delivered(marker string) bool {
 
 func suppressionResponseSetup(t *testing.T) (*config.Config, *applyWiringBlocker, *webhookRecorder) {
 	t.Helper()
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
 	previousActive := config.Active()
 	config.SetActive(nil)
 	t.Cleanup(func() { config.SetActive(previousActive) })
@@ -72,6 +76,237 @@ func suppressionResponseSetup(t *testing.T) (*config.Config, *applyWiringBlocker
 	cfg.Alerts.Webhook.URL = srv.URL
 	cfg.Alerts.Webhook.Type = "generic"
 	return cfg, blocker, rec
+}
+
+func runSuppressionBatch(t *testing.T, d *Daemon, path string, findings []alert.Finding) {
+	t.Helper()
+	switch path {
+	case "startup":
+		d.respondToInitialScan(d.currentCfg(), findings)
+	case "dispatch":
+		d.dispatchBatch(findings)
+	case "control":
+		c := &ControlListener{d: d}
+		c.recordTierRunFindings(d.currentCfg(), findings, nil, nil, true, true)
+		d.dispatchBatch(drainAlertCh(d))
+	case "replay":
+		if err := d.store.AppendPendingFindings(findings); err != nil {
+			t.Fatal(err)
+		}
+		d.replayPendingFindings()
+	default:
+		t.Fatalf("unknown dispatch path %q", path)
+	}
+}
+
+func TestSuppressedFindingsStillDriveIncidentBlocks(t *testing.T) {
+	for _, path := range []string{"dispatch", "startup", "control", "replay"} {
+		for _, spray := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/spray=%t", path, spray), func(t *testing.T) {
+				cfg, blocker, rec := suppressionResponseSetup(t)
+				cfg.Incidents.AutoBlock.Enabled = !spray
+				cfg.Incidents.AutoBlock.BlockAtSeverity = "high"
+				cfg.Incidents.SpraySuppression.Enabled = spray
+				cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
+				cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
+				cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+				cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
+				SetIncidentConfigSource(func() *config.Config { return cfg })
+				check := "api_auth_failure_realtime"
+				if spray {
+					check = "email_auth_failure_realtime"
+				}
+				d := suppressionTestDaemon(t, cfg, checkWideSuppression(check))
+				SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+				count := 1
+				if spray {
+					count = 3
+				}
+				var findings []alert.Finding
+				for i := range count {
+					findings = append(findings, alert.Finding{
+						Check: check, Severity: alert.High,
+						SourceIP: "192.0.2.40", Mailbox: fmt.Sprintf("user%d@example.com", i),
+						Message: fmt.Sprintf("authentication failure for user%d", i),
+						Details: suppressedDetailsMarker, Timestamp: time.Now(),
+					})
+				}
+				runSuppressionBatch(t, d, path, findings)
+				if got := blockedIPs(blocker); len(got) != 1 || got[0] != "192.0.2.40" {
+					t.Fatalf("suppression prevented incident block: %v", got)
+				}
+				prefix := "CSM incident:"
+				if spray {
+					prefix = "CSM credential_spray:"
+				}
+				if !strings.HasPrefix(blocker.calls[0].reason, prefix) {
+					t.Fatalf("wrong enforcement path: %q", blocker.calls[0].reason)
+				}
+				if rec.delivered(suppressedDetailsMarker) {
+					t.Fatal("incident enforcement leaked the suppressed source alert")
+				}
+			})
+		}
+	}
+}
+
+func TestSuppressionDoesNotGateCentralEnforcement(t *testing.T) {
+	for _, path := range []string{"dispatch", "startup", "control", "replay"} {
+		for _, suppressed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/suppressed=%t", path, suppressed), func(t *testing.T) {
+				cfg, _, rec := suppressionResponseSetup(t)
+				cfg.AutoResponse.BlockIPs = false
+				var rules []state.SuppressionRule
+				if suppressed {
+					rules = checkWideSuppression("smtp_bruteforce")
+				}
+				d := suppressionTestDaemon(t, cfg, rules)
+				d.ipList = challenge.NewIPList(t.TempDir())
+				previous := alert.CentralHook
+				var calls int
+				alert.SetCentralHook(func(f alert.Finding) {
+					if f.Check != "smtp_bruteforce" {
+						return
+					}
+					calls++
+					if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionChallenge, ip: f.SourceIP}); err != nil {
+						t.Error(err)
+					}
+				})
+				t.Cleanup(func() { alert.SetCentralHook(previous) })
+				f := smtpBruteForceFinding("192.0.2.41")
+				runSuppressionBatch(t, d, path, []alert.Finding{f, f})
+				if calls != 1 || !d.ipList.Contains(f.SourceIP) {
+					t.Fatalf("central enforcement got %d observations; challenge=%t", calls, d.ipList.Contains(f.SourceIP))
+				}
+				if rec.delivered(suppressedDetailsMarker) == suppressed {
+					t.Fatalf("source notification did not respect suppression=%t", suppressed)
+				}
+			})
+		}
+	}
+}
+
+func TestSuppressedIPActionsStaySilent(t *testing.T) {
+	for _, path := range []string{"dispatch", "startup", "control", "replay", "incident", "central"} {
+		t.Run(path, func(t *testing.T) {
+			cfg, blocker, rec := suppressionResponseSetup(t)
+			rules := append(checkWideSuppression("smtp_bruteforce"), checkWideSuppression("auto_block")...)
+			d := suppressionTestDaemon(t, cfg, rules)
+			f := smtpBruteForceFinding("192.0.2.42")
+			switch path {
+			case "incident":
+				if _, err := d.applyIncidentSprayBlock(f.SourceIP, "test incident", time.Hour, alert.FindingID(f)); err != nil {
+					t.Fatal(err)
+				}
+			case "central":
+				if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: f.SourceIP}); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				runSuppressionBatch(t, d, path, []alert.Finding{f})
+			}
+			if got := blockedIPs(blocker); len(got) != 1 || got[0] != f.SourceIP {
+				t.Fatalf("suppression prevented block: %v", got)
+			}
+			if rec.delivered("AUTO-BLOCK") || rec.delivered(suppressedDetailsMarker) {
+				t.Fatal("suppressed action or source reached webhook")
+			}
+		})
+	}
+}
+
+func TestSuppressionKeepsPHPFreezeGated(t *testing.T) {
+	for _, suppressed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("suppressed=%t", suppressed), func(t *testing.T) {
+			cfg, _, rec := suppressionResponseSetup(t)
+			cfg.AutoResponse.PHPRelay.Freeze = boolPtr(true)
+			cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 60
+			var rules []state.SuppressionRule
+			if suppressed {
+				rules = checkWideSuppression("email_php_relay_abuse")
+			}
+			d := suppressionTestDaemon(t, cfg, rules)
+			psw := newPerScriptWindow()
+			psw.getOrCreate("k:/p").recordActive("11abcdefghij1234", time.Now())
+			var args [][]string
+			d.autoFreezer = newAutoFreezer(psw, cfg, t.TempDir(), "/usr/sbin/exim",
+				&fakeRunner{onRun: func() {}, recordArgs: &args}, &fakeAuditor{}, nil, neverDryRun)
+			d.dispatchBatch([]alert.Finding{{
+				Check: "email_php_relay_abuse", Path: "header", ScriptKey: "k:/p",
+				Severity: alert.Critical, Message: "PHP relay abuse", Details: suppressedDetailsMarker,
+			}})
+			want := 1
+			if suppressed {
+				want = 0
+			}
+			if len(args) != want {
+				t.Fatalf("freeze calls=%d, want %d", len(args), want)
+			}
+			if rec.delivered(suppressedDetailsMarker) == suppressed {
+				t.Fatalf("source notification did not respect suppression=%t", suppressed)
+			}
+		})
+	}
+}
+
+func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
+	cfg, blocker, rec := suppressionResponseSetup(t)
+	d := suppressionTestDaemon(t, cfg, checkWideSuppression("db_siteurl_hijack"))
+	previous := autoRespondDBMalware
+	t.Cleanup(func() { autoRespondDBMalware = previous })
+	var observed, edits int
+	autoRespondDBMalware = func(cfg *config.Config, findings []alert.Finding, canRemediate func(alert.Finding) bool) []alert.Finding {
+		var actions []alert.Finding
+		for _, f := range findings {
+			if f.Check != "db_siteurl_hijack" {
+				continue
+			}
+			observed++
+			if canRemediate(f) {
+				edits++
+			}
+			actions = append(actions, checks.AutoBlockIPs(cfg, []alert.Finding{{
+				Check: "local_threat_score", Severity: alert.Critical,
+				Message: "attacker session IP 192.0.2.43", SourceIP: "192.0.2.43",
+			}})...)
+		}
+		return actions
+	}
+	d.dispatchBatch([]alert.Finding{{Check: "db_siteurl_hijack", Severity: alert.Critical, Details: suppressedDetailsMarker}})
+	if observed != 1 || edits != 0 {
+		t.Fatalf("database observations=%d edits=%d; want 1/0", observed, edits)
+	}
+	if got := blockedIPs(blocker); len(got) != 1 || got[0] != "192.0.2.43" {
+		t.Fatalf("session source was not blocked: %v", got)
+	}
+	if rec.delivered(suppressedDetailsMarker) {
+		t.Fatal("suppressed database source leaked to webhook")
+	}
+}
+
+func TestIncidentEnforcementCountsEachObservationOnce(t *testing.T) {
+	cfg, blocker, _ := suppressionResponseSetup(t)
+	resetIncidentForTestWithThreshold(2)
+	cfg.Incidents.AutoBlock.Enabled = true
+	cfg.Incidents.AutoBlock.BlockAtSeverity = "high"
+	SetIncidentConfigSource(func() *config.Config { return cfg })
+	d := suppressionTestDaemon(t, cfg, nil)
+	SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+	f := alert.Finding{Check: "api_auth_failure_realtime", Severity: alert.High, SourceIP: "192.0.2.44", Message: "authentication failure", Timestamp: time.Now()}
+	d.dispatchBatch([]alert.Finding{f, f})
+	if len(blocker.calls) != 0 || len(IncidentCorrelator().Snapshot()) != 0 {
+		t.Fatal("one source counted twice through the alert and enforcement paths")
+	}
+	f.Timestamp = f.Timestamp.Add(time.Second)
+	d.dispatchBatch([]alert.Finding{f})
+	if got := blockedIPs(blocker); len(got) != 1 || got[0] != f.SourceIP {
+		t.Fatalf("repeat observation did not drive incident enforcement: %v", got)
+	}
+	incidents := IncidentCorrelator().Snapshot()
+	if len(incidents) != 1 || len(incidents[0].Findings) != 2 {
+		t.Fatalf("incident did not retain exactly two observations: %+v", incidents)
+	}
 }
 
 func suppressionTestDaemon(t *testing.T, cfg *config.Config, rules []state.SuppressionRule) *Daemon {

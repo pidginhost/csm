@@ -269,6 +269,8 @@ Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved e
 
 When `auto_response.block_ips: true` and the firewall is enabled, qualifying findings in this list block the source IP. Per-row severity and challenge exceptions apply. The dry-run gate still applies if `dry_run: true`. Suppression rules do not stop these blocks; allowlist an address to exempt it.
 
+Suppression rules also leave incident auto-blocking, credential-spray containment and central threat responses active. With database response enabled, suppression stops database cleanup and session revocation while keeping session IP blocking eligible. Suppress the action's own check type to mute its notification; this does not disable enforcement.
+
 | Finding | Description |
 |---------|-------------|
 | `wp_login_bruteforce` | WordPress login flood via wp-login.php |

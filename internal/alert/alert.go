@@ -804,6 +804,17 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 // Both inputs remain caller-owned and must already carry the times used by
 // actions that reference them. Missing times are filled on copies for ad-hoc use.
 func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error {
+	return dispatchWithSources(cfg, findings, sources, false)
+}
+
+// DispatchWithEnforcement also offers source observations to central IP
+// enforcement. Suppressed sources stay off notification channels and passive
+// observers, while their IPs remain eligible for challenges and blocks.
+func DispatchWithEnforcement(cfg *config.Config, findings, sources []Finding) error {
+	return dispatchWithSources(cfg, findings, sources, true)
+}
+
+func dispatchWithSources(cfg *config.Config, findings, sources []Finding, enforceSources bool) error {
 	// Deduplicate owns a copy, so stamping cannot race with callers sharing
 	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
@@ -818,6 +829,11 @@ func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error 
 	// when "this IP is already blocked" suppression hides a finding
 	// from the operator-facing channels.
 	emitAuditWithSources(cfg, findings, sources)
+	if enforceSources {
+		for _, f := range Deduplicate(append(sources, findings...)) {
+			callCentralHook(f)
+		}
+	}
 	if len(findings) == 0 {
 		return nil
 	}
@@ -837,7 +853,9 @@ func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error 
 	// the verified central scored-set).
 	for _, f := range findings {
 		callReportHook(f)
-		callCentralHook(f)
+		if !enforceSources {
+			callCentralHook(f)
+		}
 	}
 
 	var errs []error

@@ -1504,12 +1504,12 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	// Filter through state - only new findings get alerted and logged
-	newFindings := d.store.FilterNew(findings)
+	unfilteredNew := d.store.FilterNew(findings)
 
 	// Filter out suppressed findings - prevents email/webhook alerts for
 	// paths the admin has explicitly suppressed (e.g. false positives).
 	// Suppressions are stored in state/suppressions.json, not in rule files.
-	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
+	newFindings := filterUnsuppressedFindings(d.store, unfilteredNew, suppressions)
 
 	// Append auto-response actions to new findings for alerting
 	newFindings = append(newFindings, blockActions...)
@@ -1526,34 +1526,37 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		}
 	}
 
-	if len(newFindings) == 0 {
-		_ = alert.DispatchWithSources(cfg, nil, auditSources)
-		d.store.Update(findings)
-		return
+	if len(newFindings) > 0 {
+		// Log to history
+		d.store.AppendHistory(newFindings)
 	}
-
-	// Log to history
-	d.store.AppendHistory(newFindings)
 	d.observeBlocks(blockActions)
-
-	// Kill, quarantine, and DB cleanup only run on NEW findings
-	killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
-	quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
-	dbCleanActions := checks.AutoRespondDBMalware(cfg, newFindings)
-	newFindings = append(newFindings, killActions...)
-	newFindings = append(newFindings, quarantineActions...)
-	newFindings = append(newFindings, dbCleanActions...)
-
-	// Correlation
+	if len(newFindings) > 0 {
+		// Kill and quarantine only run on new, unsuppressed findings.
+		killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
+		quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
+		newFindings = append(newFindings, killActions...)
+		newFindings = append(newFindings, quarantineActions...)
+	}
+	// Database response also discovers attacker session IPs. Suppressions
+	// stop SQL writes and session revocation, but not those IP blocks.
+	dbActions := autoRespondDBMalware(cfg, unfilteredNew, func(f alert.Finding) bool {
+		return !d.store.IsSuppressed(f, suppressions)
+	})
+	newFindings = append(newFindings, dbActions...)
 	newFindings = expandWithCorrelation(newFindings, time.Now())
 
+	// Incident correlation can block IPs, so it must see suppressed and repeat
+	// sources too. Merge by finding key to count alertable sources only once.
 	co := IncidentCorrelator()
-	for _, f := range newFindings {
+	for _, f := range alert.Deduplicate(append(append([]alert.Finding(nil), findings...), newFindings...)) {
 		_, _, _ = co.OnFinding(f)
 	}
+	auditSources = append(auditSources, newFindings...)
+	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 
 	// Broadcast findings (no-op; dashboard uses polling)
-	if d.webServer != nil {
+	if d.webServer != nil && len(newFindings) > 0 {
 		d.webServer.Broadcast(newFindings)
 	}
 
@@ -1561,8 +1564,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// informational or fully automated (no human action needed).
 	// These are all visible in the web UI for forensics.
 	alertable := operatorAlertableFindings(newFindings)
-	auditSources = append(auditSources, newFindings...)
-	if err := alert.DispatchWithSources(cfg, alertable, auditSources); err != nil {
+	if err := alert.DispatchWithEnforcement(cfg, alertable, auditSources); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -1606,19 +1608,23 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 		// just on subsequent ticks. Otherwise three account compromises
 		// landing in the first scan slip past with no synthetic alert.
 		newFindings = expandWithCorrelation(newFindings, time.Now())
-		co := IncidentCorrelator()
-		for _, f := range newFindings {
-			_, _, _ = co.OnFinding(f)
-		}
 	}
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), newFindings...)
-	_ = alert.DispatchWithSources(cfg, operatorAlertableFindings(newFindings), initialAuditSources)
+	co := IncidentCorrelator()
+	for _, f := range alert.Deduplicate(initialAuditSources) {
+		_, _, _ = co.OnFinding(f)
+	}
+	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
+	_ = alert.DispatchWithEnforcement(cfg, operatorAlertableFindings(newFindings), initialAuditSources)
 	return newFindings, permFixedKeys
 }
 
 // autoFixWPCron lets daemon wiring tests avoid real wp-config.php and crontab
 // edits; the checks package covers those side effects directly.
 var autoFixWPCron = checks.AutoFixWPCron
+
+// Database wiring tests exercise suppression policy without a live MySQL host.
+var autoRespondDBMalware = checks.AutoRespondDBMalwareWithPolicy
 
 // processScanFindings handles the output of a deep or periodic scan: it persists
 // the findings to the latest-findings surface, runs the auto-responses that act
@@ -2873,7 +2879,11 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 	if d.store != nil {
 		d.store.AppendHistory(findings)
 	}
-	if err := alert.Dispatch(d.currentCfg(), findings); err != nil {
+	alertable := findings
+	if d.store != nil {
+		alertable = filterUnsuppressedFindings(d.store, findings, d.store.LoadSuppressions())
+	}
+	if err := alert.DispatchWithEnforcement(d.currentCfg(), alertable, findings); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Applied-block alert dispatch error: %v\n", ts(), err)
 	}
 }
