@@ -146,6 +146,12 @@ func (l *Lifecycle) Resolve(id, outcome, detail string, kernel ActionKernel) (Fi
 	if proven.Phase == "verified" || proven.Phase == "failed" {
 		return proven, errors.Join(ignoreActionResult(reconcileErr), l.deliverAudit())
 	}
+	// Only a durably recorded unknown permits an operator assertion. A
+	// failed transition can mean the kernel proved the opposite outcome;
+	// a storage error is not permission to replace that evidence.
+	if proven.Phase != "unknown" {
+		return proven, reconcileErr
+	}
 	result, err := l.Store.TransitionFirewallAction(id, outcome, detail, time.Now())
 	if err != nil {
 		return FirewallAction{}, fmt.Errorf("%w: operator outcome persistence: %w", ErrActionUnknown, err)

@@ -79,8 +79,8 @@ type Daemon struct {
 	ipList           *challenge.IPList
 	challengeGate    challenge.PortGate
 	fwEngine         *firewall.Engine
-	// fwActions is the same engine seen through its durable-action boundary,
-	// or nil on a platform or build whose engine has none.
+	// fwActions retains the durable-action boundary even after failed startup,
+	// so pending actions remain recoverable while the firewall is unmanaged.
 	fwActions      firewallActionBoundary
 	fwStartupError string     // finalized before status servers start
 	baselineMu     sync.Mutex // serialises CmdBaseline handler runs
@@ -1888,11 +1888,11 @@ func (d *Daemon) heartbeat() {
 		case <-ticker.C:
 			alert.SendHeartbeat(d.currentCfg())
 			d.hijackDetector.Cleanup()
+			// Failed startup can leave only the recovery boundary available.
+			// Settle pending outcomes before attempting cleanup mutations.
+			recoverFirewallActions(d.fwActions)
 			// Clean expired temporary allows
 			if d.fwEngine != nil {
-				// Settle uncertain outcomes first: while one is open the
-				// engine refuses every mutation, cleanup included.
-				recoverFirewallActions(d.fwActions)
 				d.fwEngine.CleanExpiredAllows()
 				d.fwEngine.CleanExpiredSubnets()
 			}

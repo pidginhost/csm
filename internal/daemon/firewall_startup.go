@@ -89,9 +89,6 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 	engine.SetShutdownContext(verdictCtx)
 
 	d.setFirewallEngine(engine)
-	// A crash can leave an action whose outcome nothing has proven yet, and
-	// that blocks new mutations until it is settled.
-	recoverFirewallActions(d.fwActions)
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
@@ -183,6 +180,11 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	// first nftables transaction. initMailRanges() runs before startFirewall()
 	// so ProviderNets() always returns the cached or embedded snapshot here.
 	engine.SetDOSExemptProviderNets(mailranges.ProviderNets())
+
+	// Apply is itself a mutation and refuses pending actions. Recover first,
+	// retaining the boundary for operator resolution even if Apply fails.
+	d.fwActions, _ = any(engine).(firewallActionBoundary)
+	recoverFirewallActions(d.fwActions)
 
 	if err := ops.apply(engine); err != nil {
 		return nil, fmt.Errorf("applying firewall: %w", err)

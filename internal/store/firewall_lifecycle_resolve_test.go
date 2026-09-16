@@ -6,11 +6,45 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	bolt "go.etcd.io/bbolt"
 )
 
 type lifecycleResolver interface {
 	lifecycleRunner
 	Resolve(string, string, string, firewall.ActionKernel) (firewall.FirewallAction, error)
+}
+
+func TestFirewallLifecycleResolveStopsOnPersistenceFailure(t *testing.T) {
+	for _, evidence := range []string{"applied", "rejected", "unavailable"} {
+		t.Run(evidence, func(t *testing.T) {
+			db := openSnapshotDB(t)
+			l := resolverFor(t, db, func(firewall.FirewallAction) error { return nil })
+			a, k := strandedAction(t, db, l)
+			outcome := "failed"
+			if evidence != "unavailable" {
+				k.observeFail = nil
+			}
+			if evidence == "rejected" {
+				k.state = a.Before
+				outcome = "verified"
+			}
+			failure := errors.New("outcome write unavailable")
+			previous := boltUpdate
+			t.Cleanup(func() { boltUpdate = previous })
+			boltUpdate = func(db *bolt.DB, fn func(*bolt.Tx) error) error {
+				boltUpdate = previous
+				return failure
+			}
+			if _, err := l.Resolve(a.Request.ID, outcome, "operator cli", k); !errors.Is(err, failure) {
+				t.Errorf("resolve = %v, want persistence error", err)
+			}
+			stored, err := db.ReadFirewallAction(a.Request.ID)
+			if err != nil || stored.Phase != "unknown" {
+				t.Fatalf("resolution replaced evidence after a failed write: phase=%s err=%v", stored.Phase, err)
+			}
+			assertFirewallSnapshot(t, db, a.Before, 1)
+		})
+	}
 }
 
 func resolverFor(t *testing.T, db *DB, audit func(firewall.FirewallAction) error) lifecycleResolver {

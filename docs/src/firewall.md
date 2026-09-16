@@ -49,6 +49,13 @@ optional note. Kernel evidence wins over the operator: if recovery can prove
 the outcome at that moment, the proven one is recorded and the operator's
 answer is not used. The decision and its note reach the action log.
 
+Startup recovery runs before applying the firewall. If startup fails, pending
+actions remain available for automatic recovery and operator resolution. After
+resolving them, restart the daemon to retry firewall setup. A storage error
+while saving kernel evidence stops resolution; it never permits an operator
+assertion to replace that evidence. Failure to refresh committed state is also
+reported, even when the outcome was saved.
+
 Applying an action writes only the entries that change, so the kernel write
 for one block does not grow with the size of the blocked set. Large removals
 use bounded messages within the same atomic update. Ranged sets are written

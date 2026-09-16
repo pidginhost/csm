@@ -104,10 +104,11 @@ func (e *Engine) ResolveAction(id, outcome, detail string) (FirewallAction, erro
 		return FirewallAction{}, errors.New("firewall lifecycle unavailable")
 	}
 	a, err := e.lifecycle.Resolve(id, outcome, detail, engineActionKernel{e})
-	if state, _, readErr := e.readCommittedStateLocked(); readErr == nil {
+	state, _, readErr := e.readCommittedStateLocked()
+	if readErr == nil {
 		e.installCommittedCache(state)
 	}
-	return a, durableActionOutcome(a, err)
+	return a, errors.Join(durableActionOutcome(a, err), readErr)
 }
 
 func (e *Engine) UndoAction(req ActionRequest) (FirewallAction, error) {
