@@ -285,23 +285,37 @@ func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
 	}
 }
 
-func TestIncidentEnforcementCountsEachObservationOnce(t *testing.T) {
+// Incidents see each new observation once, suppressed or not. A repeat of an
+// already-recorded finding is not new evidence: scan findings recur every cycle
+// and would otherwise keep their incidents open indefinitely.
+func TestIncidentsSeeEachNewObservationOnce(t *testing.T) {
 	cfg, blocker, _ := suppressionResponseSetup(t)
 	resetIncidentForTestWithThreshold(2)
 	cfg.Incidents.AutoBlock.Enabled = true
 	cfg.Incidents.AutoBlock.BlockAtSeverity = "high"
 	SetIncidentConfigSource(func() *config.Config { return cfg })
-	d := suppressionTestDaemon(t, cfg, nil)
+	d := suppressionTestDaemon(t, cfg, checkWideSuppression("api_auth_failure_realtime"))
 	SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
 	f := alert.Finding{Check: "api_auth_failure_realtime", Severity: alert.High, SourceIP: "192.0.2.44", Message: "authentication failure", Timestamp: time.Now()}
 	d.dispatchBatch([]alert.Finding{f, f})
-	if len(blocker.calls) != 0 || len(IncidentCorrelator().Snapshot()) != 0 {
-		t.Fatal("one source counted twice through the alert and enforcement paths")
+	if len(blocker.calls) != 0 {
+		t.Fatalf("one source counted twice in a batch: %v", blockedIPs(blocker))
 	}
-	f.Timestamp = f.Timestamp.Add(time.Second)
-	d.dispatchBatch([]alert.Finding{f})
+	repeat := f
+	repeat.Timestamp = f.Timestamp.Add(time.Second)
+	// An unrelated new finding keeps the batch from returning before
+	// incident correlation, so only the repeat filter can drop the repeat.
+	unrelated := alert.Finding{Check: "api_auth_failure_realtime", Severity: alert.High, SourceIP: "192.0.2.45", Message: "authentication failure from an unrelated client", Timestamp: repeat.Timestamp}
+	d.dispatchBatch([]alert.Finding{repeat, unrelated})
+	if len(blocker.calls) != 0 {
+		t.Fatalf("repeat of a recorded finding was counted again: %v", blockedIPs(blocker))
+	}
+	next := f
+	next.Message = "authentication failure for a second API user"
+	next.Timestamp = f.Timestamp.Add(2 * time.Second)
+	d.dispatchBatch([]alert.Finding{next})
 	if got := blockedIPs(blocker); len(got) != 1 || got[0] != f.SourceIP {
-		t.Fatalf("repeat observation did not drive incident enforcement: %v", got)
+		t.Fatalf("second new suppressed observation did not drive incident enforcement: %v", got)
 	}
 	incidents := IncidentCorrelator().Snapshot()
 	if len(incidents) != 1 || len(incidents[0].Findings) != 2 {

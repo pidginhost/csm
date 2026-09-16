@@ -111,8 +111,15 @@ func TestAutomaticBlockSourcesRemainAuditable(t *testing.T) {
 			if kind == "same key" {
 				wantNotified = 1
 			}
-			if enforcementSources != 1 {
-				t.Errorf("central enforcement sources=%d, want 1 regardless of notification policy", enforcementSources)
+			// Central enforcement sees every new source, including checks kept
+			// off operator notifications; repeats of recorded findings are not
+			// new evidence.
+			wantEnforced := 0
+			if kind == "operator filtered" || kind == "same key" {
+				wantEnforced = 1
+			}
+			if enforcementSources != wantEnforced {
+				t.Errorf("central enforcement sources=%d, want %d", enforcementSources, wantEnforced)
 			}
 			if observedSources != wantNotified {
 				t.Errorf("audit changed observer suppression: sources=%d, want %d", observedSources, wantNotified)
