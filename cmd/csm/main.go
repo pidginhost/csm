@@ -431,15 +431,13 @@ func runYaraWorker() {
 	// The worker is a separate process that hosts YARA-X for the
 	// supervisor. Use the supervisor's config so both agree on the
 	// Sentry DSN and tags; failures to init are non-fatal.
-	cfg := loadConfigLite()
-	if err := obs.Init(cfg, Version, BuildHash); err != nil {
-		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", err)
-	}
-
-	workerCfg, err := yaraWorkerConfig(os.Args[2:], cfg.Signatures.DisabledRules)
+	workerCfg, cfg, err := yaraWorkerConfig(os.Args[2:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yara-worker:", err)
 		os.Exit(1)
+	}
+	if initErr := obs.Init(cfg, Version, BuildHash); initErr != nil {
+		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", initErr)
 	}
 	workerCfg.ErrorLog = func(err error) {
 		fmt.Fprintln(os.Stderr, "yara-worker:", err)

@@ -36,6 +36,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- The scanning worker keeps the daemon's configuration directory across restarts, even when it is absent, instead of falling back to unrelated configuration. Explicit operator overrides still reject missing directories.
 - `csm doctor` and the components view now fail when the YARA-X scanning worker cannot start, instead of reporting an overall OK while malware scanning is off. Hosts without a conf.d directory start the worker normally.
 - Suppression rules now also mute matching cross-account correlation alerts. Duplicate findings in a startup scan no longer inflate incident evidence or trigger premature blocks.
 - The rule performance gate now tolerates isolated cold or stalled scans while still rejecting consistently slow rules. Its CI checks cover both performance and finding attribution.

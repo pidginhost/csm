@@ -1,14 +1,18 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
 // recordYaraWorkerArgs starts the backend against a helper that records its
@@ -48,7 +52,7 @@ func TestYaraWorkerInheritsEffectiveRuleConfiguration(t *testing.T) {
 
 	values := recordYaraWorkerArgs(t, cfg)
 
-	for flag, want := range map[string]string{"--config": cfg.ConfigFile, "--config-dir": cfg.ConfigDir, "--rules-dir": cfg.Signatures.RulesDir} {
+	for flag, want := range map[string]string{"--config": cfg.ConfigFile, "--inherited-config-dir": cfg.ConfigDir, "--rules-dir": cfg.Signatures.RulesDir} {
 		if values[flag] != want {
 			t.Errorf("%s = %q, want %q", flag, values[flag], want)
 		}
@@ -63,9 +67,9 @@ func TestYaraWorkerInheritsEffectiveRuleConfiguration(t *testing.T) {
 }
 
 // The daemon treats a missing conf.d as "no fragments", but the worker treats
-// an explicit --config-dir that does not exist as a fatal error. Forwarding the
-// daemon's missing default directory kept the worker from ever starting.
-func TestYaraWorkerOmitsMissingConfigDir(t *testing.T) {
+// an explicit --config-dir that does not exist as a fatal error. The internal
+// handoff must preserve the path without turning it into an operator override.
+func TestYaraWorkerInheritsMissingConfigDir(t *testing.T) {
 	cfg := &config.Config{ConfigFile: "/custom/csm.yaml", ConfigDir: filepath.Join(t.TempDir(), "conf.d")}
 	cfg.Signatures.RulesDir = "/custom/rules"
 
@@ -73,6 +77,9 @@ func TestYaraWorkerOmitsMissingConfigDir(t *testing.T) {
 
 	if got, ok := values["--config-dir"]; ok {
 		t.Fatalf("worker was given missing conf.d %q", got)
+	}
+	if got := values["--inherited-config-dir"]; got != cfg.ConfigDir {
+		t.Fatalf("inherited directory = %q, want %q", got, cfg.ConfigDir)
 	}
 	if values["--config"] != cfg.ConfigFile {
 		t.Fatalf("--config = %q, want %q", values["--config"], cfg.ConfigFile)
@@ -91,19 +98,59 @@ func TestYaraWorkerStartReportsWatcherState(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Daemon{cfg: cfg, binaryPath: worker, stopCh: make(chan struct{})}
-	close(d.stopCh)
+	t.Cleanup(func() {
+		close(d.stopCh)
+		d.stopYaraBackend()
+	})
 	if err := d.initYaraBackend(); err == nil {
 		t.Fatal("failing worker unexpectedly started")
 	}
-	defer d.stopYaraBackend()
 
 	attached, recorded := d.WatcherStatuses()[yaraWorkerWatcher]
 	if !recorded || attached {
 		t.Fatalf("failed worker start recorded=%t attached=%t, want recorded failure", recorded, attached)
 	}
-
-	d.activateYaraBackend(d.yaraSup)
-	if !d.WatcherStatuses()[yaraWorkerWatcher] {
-		t.Fatal("activated worker was not recorded as attached")
+	snapshot := health.Snapshot{StartedAt: time.Now(), StoreHealthy: true, Watchers: d.WatcherStatuses()}
+	if got := snapshot.OverallStatus(); got != "degraded" {
+		t.Fatalf("failed worker health = %q, want degraded", got)
 	}
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CSM_DAEMON_TEST_EXECUTABLE", executable)
+	t.Setenv("CSM_DAEMON_TEST_YARA_WORKER", "1")
+	if err := os.WriteFile(worker+".ready", []byte("#!/bin/sh\nexec \"$CSM_DAEMON_TEST_EXECUTABLE\" -test.run=^TestYaraWorkerReadyProcess$ -- \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(worker+".ready", worker); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !d.WatcherStatuses()[yaraWorkerWatcher] && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !d.WatcherStatuses()[yaraWorkerWatcher] || d.yaraSup.ChildPID() == 0 {
+		t.Fatal("worker retry did not recover watcher state")
+	}
+	snapshot.Watchers = d.WatcherStatuses()
+	if got := snapshot.OverallStatus(); got != "ok" {
+		t.Fatalf("recovered worker health = %q, want ok", got)
+	}
+}
+
+func TestYaraWorkerReadyProcess(t *testing.T) {
+	if os.Getenv("CSM_DAEMON_TEST_YARA_WORKER") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg == "--socket" && i+1 < len(os.Args) {
+			if err := yaraworker.Run(context.Background(), yaraworker.Config{SocketPath: os.Args[i+1]}); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatal("missing worker socket")
 }
