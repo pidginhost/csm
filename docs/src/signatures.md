@@ -85,6 +85,9 @@ rule: generated goto labels and descriptive goto labels both need a decode
 call, execution call, dynamic include, or request input before they count as
 an obfuscation indicator. `call_user_func` is deliberately not evidence in
 either place, because plugin loaders dispatch their own callables through it.
+The content heuristic uses the signature's evidence expression, including
+comment-separated calls, grouped and array callbacks, and case-sensitive PHP
+superglobal names. A regression check guards against expression drift.
 
 ### Legacy callback parser follow-up
 
@@ -260,7 +263,7 @@ Custom rules in `malware.yar` are never overwritten by the Forge fetcher.
 
 ### Disabling Rules
 
-If a rule produces false positives, add its name to `disabled_rules` in the config and reload:
+If a rule produces false positives, add its name to `disabled_rules` in the config and restart the daemon:
 
 ```yaml
 signatures:
@@ -276,12 +279,19 @@ stripped before the scheduled engine compiles them. The self-test measures
 the ruleset that is left, so disabling a rule shows up as the coverage it
 costs.
 
+Names are matched in full, ignoring surrounding whitespace and letter case;
+prefixes and substrings do not match. Removing a YARA rule preserves neighboring
+rules, including when declarations share a line or literals contain braces.
+The YARA worker receives the daemon's effective disabled list and configuration
+paths; rule reloads and worker crash recovery retain that list.
+
 `csm validate` warns about a name that matches no rule, because a typo here
 otherwise reads as "that rule is off" while the rule keeps firing. Disabling
 a rule is a last resort and a standing gap in coverage; prefer fixing the
 rule.
 
-After editing, send SIGHUP or restart the daemon to apply.
+Signature settings require a daemon restart. SIGHUP does not apply a changed
+disabled list; rule-file reloads keep the current list.
 
 ## How Rules Avoid False Positives
 

@@ -51,7 +51,7 @@ func StripRules(content []byte, names []string) []byte {
 
 	drop := make(map[string]bool, len(names))
 	for _, name := range names {
-		if name != "" {
+		if name = strings.ToLower(strings.TrimSpace(name)); name != "" {
 			drop[name] = true
 		}
 	}
@@ -59,50 +59,177 @@ func StripRules(content []byte, names []string) []byte {
 		return content
 	}
 
-	lines := strings.Split(string(content), "\n")
-	result := make([]string, 0, len(lines))
-	skipping := false
-	sawOpen := false
-	braceDepth := 0
-
-	countBraces := func(s string) {
-		for _, ch := range s {
-			switch ch {
-			case '{':
-				braceDepth++
-				sawOpen = true
-			case '}':
-				braceDepth--
-			}
+	var result []byte
+	kept := 0
+	for _, rule := range sourceRules(content) {
+		if drop[strings.ToLower(rule.name)] {
+			result = append(result, content[kept:rule.start]...)
+			kept = rule.end
 		}
 	}
+	if kept == 0 {
+		return content
+	}
+	return append(result, content[kept:]...)
+}
 
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+type sourceRule struct {
+	name       string
+	start, end int
+}
 
-		if !skipping {
-			name := RuleNameFromLine(trimmed)
-			if name == "" || !drop[name] {
-				result = append(result, line)
+// RuleNames returns declarations outside comments and literals. Validation
+// uses the same boundaries as stripping, including modifiers and compact files.
+func RuleNames(content []byte) []string {
+	var names []string
+	for _, rule := range sourceRules(content) {
+		names = append(names, rule.name)
+	}
+	return names
+}
+
+// sourceRules locates complete rule bodies without interpreting conditions.
+// Counting source braces or removing whole lines can silently erase a neighbor:
+// braces also occur in strings, comments, regexes and hex patterns.
+func sourceRules(content []byte) []sourceRule {
+	var rules []sourceRule
+	start := -1
+	for pos := 0; pos < len(content); {
+		token, from, end := yaraToken(content, pos)
+		pos = end
+		if token == "private" || token == "global" {
+			if start < 0 {
+				start = from
+			}
+			continue
+		}
+		if token != "rule" {
+			start = -1
+			continue
+		}
+		if start < 0 {
+			start = from
+		}
+		name, _, next := yaraToken(content, pos)
+		pos = next
+		if !yaraIdentifier(name) {
+			break
+		}
+		token, _, pos = yaraToken(content, pos)
+		if token == ":" {
+			token, _, pos = yaraToken(content, pos)
+			if !yaraIdentifier(token) {
+				break
+			}
+			for yaraIdentifier(token) {
+				token, _, pos = yaraToken(content, pos)
+			}
+		}
+		if token != "{" {
+			break
+		}
+		depth := 1
+		for pos < len(content) && depth > 0 {
+			token, _, pos = yaraToken(content, pos)
+			switch token {
+			case "{":
+				depth++
+			case "}":
+				depth--
+			}
+		}
+		// Leave malformed source intact so compilation still reports it.
+		if depth != 0 {
+			break
+		}
+		rules = append(rules, sourceRule{name: name, start: start, end: pos})
+		start = -1
+	}
+	return rules
+}
+
+// yaraToken skips trivia and consumes quoted/regex literals as single tokens.
+// YARA uses backslash for division, so slash always starts a regex or comment.
+func yaraToken(src []byte, pos int) (token string, start, end int) {
+	for pos < len(src) {
+		switch src[pos] {
+		case ' ', '\t', '\r', '\n', '\f', '\v':
+			pos++
+			continue
+		case '/':
+			if pos+1 < len(src) && src[pos+1] == '/' {
+				pos += 2
+				for pos < len(src) && src[pos] != '\n' && src[pos] != '\r' {
+					pos++
+				}
 				continue
 			}
-			skipping = true
-			sawOpen = false
-			braceDepth = 0
+			if pos+1 < len(src) && src[pos+1] == '*' {
+				pos += 2
+				for pos+1 < len(src) && (src[pos] != '*' || src[pos+1] != '/') {
+					pos++
+				}
+				pos = min(pos+2, len(src))
+				continue
+			}
 		}
-
-		countBraces(trimmed)
-		// YARA Forge writes the rule header and its opening brace on separate
-		// lines. Ending the skip on depth<=0 before the body ever opened left
-		// the body behind and broke compilation of the whole tier.
-		if sawOpen && braceDepth <= 0 {
-			skipping = false
-			sawOpen = false
-			braceDepth = 0
+		break
+	}
+	start = pos
+	if pos == len(src) {
+		return "", pos, pos
+	}
+	ch := src[pos]
+	pos++
+	if ch == '"' || ch == '/' {
+		inClass := false
+		for pos < len(src) {
+			c := src[pos]
+			pos++
+			if c == '\\' {
+				pos = min(pos+1, len(src))
+				continue
+			}
+			if ch == '/' {
+				switch c {
+				case '[':
+					inClass = true
+				case ']':
+					inClass = false
+				}
+			}
+			if c == ch && !inClass {
+				break
+			}
+		}
+		return string(src[start:pos]), start, pos
+	}
+	if yaraIdent(ch) {
+		for pos < len(src) && yaraIdent(src[pos]) {
+			pos++
 		}
 	}
+	return string(src[start:pos]), start, pos
+}
 
-	return []byte(strings.Join(result, "\n"))
+func yaraIdent(ch byte) bool {
+	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_'
+}
+
+func yaraIdentifier(token string) bool {
+	// A following declaration must not become part of a malformed tag list.
+	if token == "rule" || token == "private" || token == "global" {
+		return false
+	}
+	if token == "" || token[0] >= '0' && token[0] <= '9' {
+		return false
+	}
+	for i := range len(token) {
+		if !yaraIdent(token[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // RuleNameFromLine returns the rule name declared on a source line, or "" when

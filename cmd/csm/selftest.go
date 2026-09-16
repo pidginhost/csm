@@ -35,21 +35,18 @@ func runSelfTest() {
 		}
 	}
 
-	// Fall back to the packaged rules directory so the command still answers
-	// on a host whose config is missing or broken, which is exactly when an
-	// operator wants to know whether detection works.
-	rulesDir := packagedRulesDir
-	var disabledRules []string
-	if cfg, err := tryLoadConfigLite(); err == nil && cfg != nil {
-		if cfg.Signatures.RulesDir != "" {
-			rulesDir = cfg.Signatures.RulesDir
-		}
-		// Measure what this host actually runs. A rule the operator
-		// switched off is missing coverage, and reporting it as present
-		// is how a self-test reassures someone about detection they do
-		// not have.
-		disabledRules = cfg.Signatures.DisabledRules
+	// Without the operator config we cannot know which rules are disabled.
+	// Falling back to a full packaged ruleset would overstate host coverage.
+	cfg, err := tryLoadConfigLite()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading self-test config: %v\n", err)
+		os.Exit(1)
 	}
+	rulesDir := cfg.Signatures.RulesDir
+	if rulesDir == "" {
+		rulesDir = packagedRulesDir
+	}
+	disabledRules := cfg.Signatures.DisabledRules
 
 	runs, err := selfTestRuns(rulesDir, disabledRules...)
 	if err != nil {

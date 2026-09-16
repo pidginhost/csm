@@ -67,21 +67,22 @@ func validateDisabledRules(rulesDir string, disabled []string) []config.Validati
 // without needing the YARA engine, so validation answers the same on a build
 // without it.
 func yaraRuleNamesIn(rulesDir string) []string {
+	entries, err := os.ReadDir(rulesDir)
+	if err != nil {
+		return nil
+	}
 	var names []string
-	for _, pattern := range []string{"*.yar", "*.yara"} {
-		matches, _ := filepath.Glob(filepath.Join(rulesDir, pattern))
-		for _, path := range matches {
-			// #nosec G304 -- Glob supplies paths under the operator-configured rules dir.
-			data, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			for _, line := range strings.Split(string(data), "\n") {
-				if name := yara.RuleNameFromLine(strings.TrimSpace(line)); name != "" {
-					names = append(names, name)
-				}
-			}
+	for _, entry := range entries {
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if entry.IsDir() || (ext != ".yar" && ext != ".yara") {
+			continue
 		}
+		// #nosec G304 -- ReadDir supplies a basename under the configured rules dir.
+		data, err := os.ReadFile(filepath.Join(rulesDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		names = append(names, yara.RuleNames(data)...)
 	}
 	return names
 }

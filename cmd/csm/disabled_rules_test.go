@@ -3,9 +3,31 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestDisabledRuleValidationUsesSourceDeclarations(t *testing.T) {
+	dir := t.TempDir()
+	source := "/*\nrule fake { condition: true }\n*/\nglobal private\trule\tactual { condition: true } rule next { condition: true }"
+	if err := os.WriteFile(filepath.Join(dir, "rules.yar"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := yaraRuleNamesIn(dir); !reflect.DeepEqual(got, []string{"actual", "next"}) {
+		t.Fatalf("known names = %v, want actual and next", got)
+	}
+}
+
+func TestDisabledRuleValidationAcceptsMixedCaseExtension(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "rules.YARA"), []byte("rule actual { condition: true }"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := yaraRuleNamesIn(dir); !reflect.DeepEqual(got, []string{"actual"}) {
+		t.Fatalf("known names = %v, want actual", got)
+	}
+}
 
 // A name nobody recognises reads as "that rule is off" while the rule keeps
 // firing, so validation has to say so.

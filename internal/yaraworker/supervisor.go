@@ -2,6 +2,7 @@ package yaraworker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +32,11 @@ type SupervisorConfig struct {
 	BinaryPath string
 	SocketPath string
 	RulesDir   string
+	ConfigFile string
+	ConfigDir  string
+	// Carry the effective list across crashes, even if config on disk changed
+	// while the daemon is waiting for a restart to apply those changes.
+	DisabledRules []string
 
 	StartTimeout       time.Duration
 	MinRestartInterval time.Duration
@@ -131,6 +137,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 	if cfg.ClientTimeout == 0 {
 		cfg.ClientTimeout = 30 * time.Second
 	}
+	cfg.DisabledRules = append([]string(nil), cfg.DisabledRules...)
 	return &Supervisor{cfg: cfg}, nil
 }
 
@@ -549,6 +556,14 @@ func (s *Supervisor) spawnAndWaitReady() error {
 		"--socket", s.cfg.SocketPath,
 		"--rules-dir", s.cfg.RulesDir,
 	}
+	if s.cfg.ConfigFile != "" {
+		args = append(args, "--config", s.cfg.ConfigFile)
+	}
+	if s.cfg.ConfigDir != "" {
+		args = append(args, "--config-dir", s.cfg.ConfigDir)
+	}
+	disabled, _ := json.Marshal(s.cfg.DisabledRules) // []string cannot fail to encode.
+	args = append(args, "--disabled-rules", string(disabled))
 	args = append(args, s.cfg.ExtraArgs...)
 
 	// #nosec G204 -- BinaryPath is supervisor-operator-configured (see

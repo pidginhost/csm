@@ -98,12 +98,11 @@ var reGotoLabel = regexp.MustCompile(`(?i)\bgoto\s+([A-Za-z_][A-Za-z0-9_]{0,63})
 
 // reGotoExecSink is the evidence half of the goto heuristic, kept in step with
 // the php_goto_obfuscation signature in configs/. call_user_func is absent on
-// purpose: plugin loaders dispatch their own callables through it, and a
-// dropper that builds a callable still trips the variable-call branch.
-var reGotoExecSink = regexp.MustCompile(`(?i)\b(eval|assert|create_function|system|exec|passthru|shell_exec|proc_open|popen|pcntl_exec|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|hex2bin|convert_uudecode)\s*\(` +
-	`|\$_(GET|POST|REQUEST|COOKIE|FILES)\b` +
-	`|\$[A-Za-z_][A-Za-z0-9_]*\s*\(` +
-	`|\b(include|require)(_once)?\b\s*\(?\s*\$`)
+// purpose: plugin loaders dispatch their own callables through it.
+var reGotoExecSink = regexp.MustCompile(`(?i)\b(?:eval|assert|create_function|system|exec|passthru|shell_exec|proc_open|popen|pcntl_exec|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|hex2bin|convert_uudecode)(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\r\n]*[\r\n]|#[^\r\n]*[\r\n])*\(` +
+	`|(?-i:\$_(?:GET|POST|REQUEST|COOKIE|FILES)\b)` +
+	`|\$[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^\]\r\n]+\])*(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\r\n]*[\r\n]|#[^\r\n]*[\r\n])*(?:\)(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\r\n]*[\r\n]|#[^\r\n]*[\r\n])*)?\(` +
+	`|\b(?:include|require)(?:_once)?\b(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\r\n]*[\r\n]|#[^\r\n]*[\r\n])*(?:\(\s*)?\$`)
 
 // gotoLabelIsGenerated reports whether a goto label looks machine-generated.
 // Digits are the strongest tell (lbl0, x9k, a1); anything shorter than four
