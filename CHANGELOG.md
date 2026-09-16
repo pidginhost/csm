@@ -11,7 +11,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Added
 
-- Firewall actions now retain durable intent, admission accounting, verification results, and retryable audit delivery. Recovery and typed undo preserve action identity, plan against one safety snapshot, verify removals against live state, and refuse conflicting changes while an outcome is uncertain. Proven outcomes are kept for undo under the findings-history retention setting, with a hard size and count bound that applies even when retention sweeps are off. Applying an action writes only the firewall entries that change, in one atomic update whatever its size.
+- Firewall actions now retain durable intent, admission accounting, verification results, and retryable audit delivery. Recovery and typed undo preserve action identity, plan against one safety snapshot, verify removals against live state, and refuse conflicting changes while an outcome is uncertain. Proven outcomes are kept for undo under the findings-history retention setting, with a hard size and count bound that applies even when retention sweeps are off. Applying an action writes only the firewall entries that change, in one atomic update whatever its size. Recovery runs at daemon startup and on the maintenance tick, and `csm firewall actions` shows what it could not settle so an operator can record the outcome by hand.
 - Added an atomic firewall storage contract that preserves complete state, rejects stale or corrupt reads and reports uncertain commits so recovery can inspect state before retrying. Runtime firewall storage remains unchanged until action recovery and migration are ready.
 
 ### Changed

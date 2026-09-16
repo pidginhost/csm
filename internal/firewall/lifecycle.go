@@ -120,6 +120,48 @@ func (l *Lifecycle) Recover(kernel ActionKernel) error {
 	failures = append(failures, l.deliverAudit())
 	return errors.Join(failures...)
 }
+
+// Resolve records the outcome an operator established by hand for an action
+// the kernel could not prove. It is the only way out of an uncertain outcome,
+// which otherwise refuses every later mutation. Kernel evidence still wins: a
+// proven outcome is recorded instead of the asserted one, and a settled action
+// is never rewritten. Detail names who decided, and reaches the audit trail.
+func (l *Lifecycle) Resolve(id, outcome, detail string, kernel ActionKernel) (FirewallAction, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if outcome != "verified" && outcome != "failed" {
+		return FirewallAction{}, fmt.Errorf("firewall action outcome must be verified or failed, not %q", outcome)
+	}
+	if detail == "" {
+		return FirewallAction{}, errors.New("firewall action resolution must record who decided")
+	}
+	a, err := l.Store.ReadFirewallAction(id)
+	if err != nil {
+		return FirewallAction{}, err
+	}
+	if a.Phase != "unknown" {
+		return FirewallAction{}, fmt.Errorf("%w: action %s is %s, not uncertain", ErrStateConflict, id, a.Phase)
+	}
+	proven, reconcileErr := l.reconcile(a, kernel, nil)
+	if proven.Phase == "verified" || proven.Phase == "failed" {
+		return proven, errors.Join(ignoreActionResult(reconcileErr), l.deliverAudit())
+	}
+	result, err := l.Store.TransitionFirewallAction(id, outcome, detail, time.Now())
+	if err != nil {
+		return FirewallAction{}, fmt.Errorf("%w: operator outcome persistence: %w", ErrActionUnknown, err)
+	}
+	return result, l.deliverAudit()
+}
+
+// A resolution reports what the outcome turned out to be. A proven rejection
+// is a complete answer to the operator's question, not a failure to answer it.
+func ignoreActionResult(err error) error {
+	if errors.Is(err, ErrActionFailed) {
+		return nil
+	}
+	return err
+}
+
 func (l *Lifecycle) DeliverAudit() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

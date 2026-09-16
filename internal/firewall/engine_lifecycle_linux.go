@@ -81,6 +81,35 @@ func (e *Engine) RecoverActions() error {
 	}
 	return errors.Join(recoverErr, readErr)
 }
+
+// PendingActions reports the actions recovery could not settle. While any
+// exists the engine refuses new mutations, so this is what an operator needs
+// to see before deciding anything.
+func (e *Engine) PendingActions() ([]FirewallAction, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.lifecycle == nil {
+		return nil, errors.New("firewall lifecycle unavailable")
+	}
+	return e.lifecycle.Store.PendingFirewallActions()
+}
+
+// ResolveAction records an outcome an operator established by hand for an
+// action the kernel cannot prove. The committed cache follows the outcome,
+// whether it came from the operator or from the kernel proving it after all.
+func (e *Engine) ResolveAction(id, outcome, detail string) (FirewallAction, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.lifecycle == nil {
+		return FirewallAction{}, errors.New("firewall lifecycle unavailable")
+	}
+	a, err := e.lifecycle.Resolve(id, outcome, detail, engineActionKernel{e})
+	if state, _, readErr := e.readCommittedStateLocked(); readErr == nil {
+		e.installCommittedCache(state)
+	}
+	return a, durableActionOutcome(a, err)
+}
+
 func (e *Engine) UndoAction(req ActionRequest) (FirewallAction, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

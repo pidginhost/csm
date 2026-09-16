@@ -38,6 +38,17 @@ Hourly scan counters keep only the newest windows. Scan admission refuses
 pruned windows after a backward clock correction, preserving budget safety.
 Deleting an outcome ends the undo window for that action.
 
+When an action cannot be proven, for example because the kernel did not answer
+in time, its outcome stays uncertain and the engine refuses further firewall
+changes rather than guess. The daemon retries recovery at startup and on its
+maintenance tick, which settles the outcome as soon as the kernel can answer.
+`csm firewall actions` shows what is waiting and why. If the kernel can never
+prove it, an operator inspects the host and records the answer with
+`csm firewall actions resolve`, which takes `applied` or `rejected` and an
+optional note. Kernel evidence wins over the operator: if recovery can prove
+the outcome at that moment, the proven one is recorded and the operator's
+answer is not used. The decision and its note reach the action log.
+
 Applying an action writes only the entries that change, so the kernel write
 for one block does not grow with the size of the blocked set. Large removals
 use bounded messages within the same atomic update. Ranged sets are written

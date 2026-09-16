@@ -89,6 +89,9 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 	engine.SetShutdownContext(verdictCtx)
 
 	d.setFirewallEngine(engine)
+	// A crash can leave an action whose outcome nothing has proven yet, and
+	// that blocks new mutations until it is settled.
+	recoverFirewallActions(d.fwActions)
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)

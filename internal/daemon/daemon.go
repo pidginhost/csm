@@ -79,16 +79,19 @@ type Daemon struct {
 	ipList           *challenge.IPList
 	challengeGate    challenge.PortGate
 	fwEngine         *firewall.Engine
-	fwStartupError   string     // finalized before status servers start
-	baselineMu       sync.Mutex // serialises CmdBaseline handler runs
-	geoipDB          *geoip.DB
-	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
-	version          string
-	blockDigest      *blockdigest.Collector
-	alertCh          chan alert.Finding
-	alertQueue       *queuehealth.Tracker
-	queueSourcesMu   sync.RWMutex
-	queueSources     map[string]queueSource
+	// fwActions is the same engine seen through its durable-action boundary,
+	// or nil on a platform or build whose engine has none.
+	fwActions      firewallActionBoundary
+	fwStartupError string     // finalized before status servers start
+	baselineMu     sync.Mutex // serialises CmdBaseline handler runs
+	geoipDB        *geoip.DB
+	geoipMu        sync.Mutex // protects geoipDB for publishGeoIP
+	version        string
+	blockDigest    *blockdigest.Collector
+	alertCh        chan alert.Finding
+	alertQueue     *queuehealth.Tracker
+	queueSourcesMu sync.RWMutex
+	queueSources   map[string]queueSource
 	// alertHold, while open, keeps the dispatcher draining alertCh into its
 	// batch without dispatching, so realtime producers (which never block)
 	// lose nothing during the synchronous startup baseline. The ingest queue
@@ -518,6 +521,10 @@ func firewallMetricsRuleCounts() firewall.RuleCounts {
 
 func (d *Daemon) setFirewallEngine(engine *firewall.Engine) {
 	d.fwEngine = engine
+	d.fwActions = nil
+	if boundary, ok := any(engine).(firewallActionBoundary); ok {
+		d.fwActions = boundary
+	}
 	setFirewallMetricsEngine(engine)
 }
 
@@ -1883,6 +1890,9 @@ func (d *Daemon) heartbeat() {
 			d.hijackDetector.Cleanup()
 			// Clean expired temporary allows
 			if d.fwEngine != nil {
+				// Settle uncertain outcomes first: while one is open the
+				// engine refuses every mutation, cleanup included.
+				recoverFirewallActions(d.fwActions)
 				d.fwEngine.CleanExpiredAllows()
 				d.fwEngine.CleanExpiredSubnets()
 			}
