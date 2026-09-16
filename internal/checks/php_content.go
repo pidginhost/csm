@@ -96,7 +96,14 @@ var reVarVarCall = regexp.MustCompile(`(?:\$\$\w+|\$\{[^}]{1,64}\})\s*\(`)
 // HTML5 insertion-mode labels must not count.
 var reGotoLabel = regexp.MustCompile(`(?i)\bgoto\s+([A-Za-z_][A-Za-z0-9_]{0,63})\s*;`)
 
-var reGotoExecSink = regexp.MustCompile(`(?i)\b(eval|assert|system|passthru|shell_exec|base64_decode|gzinflate)\s*\(`)
+// reGotoExecSink is the evidence half of the goto heuristic, kept in step with
+// the php_goto_obfuscation signature in configs/. call_user_func is absent on
+// purpose: plugin loaders dispatch their own callables through it, and a
+// dropper that builds a callable still trips the variable-call branch.
+var reGotoExecSink = regexp.MustCompile(`(?i)\b(eval|assert|create_function|system|exec|passthru|shell_exec|proc_open|popen|pcntl_exec|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|hex2bin|convert_uudecode)\s*\(` +
+	`|\$_(GET|POST|REQUEST|COOKIE|FILES)\b` +
+	`|\$[A-Za-z_][A-Za-z0-9_]*\s*\(` +
+	`|\b(include|require)(_once)?\b\s*\(?\s*\$`)
 
 // gotoLabelIsGenerated reports whether a goto label looks machine-generated.
 // Digits are the strongest tell (lbl0, x9k, a1); anything shorter than four
@@ -2360,8 +2367,14 @@ func analyzePHPCode(path, content string, readOK bool) phpAnalysisResult {
 	// and names every label after its spec section, so a plain count reports
 	// authentic core on every site of every account. A descriptive label is
 	// evidence against obfuscation: an obfuscator emits generated labels
-	// precisely because they carry no meaning. This mirrors the split the
-	// php_goto_obfuscation YARA rule already makes.
+	// precisely because they carry no meaning.
+	//
+	// Label shape is not enough on its own either. Commercial obfuscators
+	// sold to plugin vendors emit the same generated labels, and their
+	// output carries no payload: a paid-for plugin looked exactly like a
+	// dropper. Malware still has to decode, execute, or read request input
+	// somewhere, so both branches want a sink. This mirrors the evidence
+	// the php_goto_obfuscation signature requires.
 	var generatedGotos, alphaGotos int
 	for _, m := range reGotoLabel.FindAllStringSubmatch(content, -1) {
 		if gotoLabelIsGenerated(m[1]) {
@@ -2371,7 +2384,7 @@ func analyzePHPCode(path, content string, readOK bool) phpAnalysisResult {
 		}
 	}
 	switch {
-	case generatedGotos > 8:
+	case generatedGotos > 8 && reGotoExecSink.MatchString(content):
 		indicators = append(indicators, fmt.Sprintf("goto obfuscation (%d generated labels)", generatedGotos))
 	case alphaGotos > 10 && reGotoExecSink.MatchString(content):
 		indicators = append(indicators, fmt.Sprintf("goto obfuscation (%d labels reaching an execution sink)", alphaGotos))

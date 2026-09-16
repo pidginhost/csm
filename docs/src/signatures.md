@@ -80,6 +80,12 @@ execution evidence. These are source-text heuristics, not PHP dataflow analysis;
 they cannot resolve arbitrary dynamically generated code or distinguish every
 benign use of these operations.
 
+The PHP content heuristic that runs during scans applies the same evidence
+rule: generated goto labels and descriptive goto labels both need a decode
+call, execution call, dynamic include, or request input before they count as
+an obfuscation indicator. `call_user_func` is deliberately not evidence in
+either place, because plugin loaders dispatch their own callables through it.
+
 ### Legacy callback parser follow-up
 
 The callback signature does not inspect quoted function bodies. Doing so needs
