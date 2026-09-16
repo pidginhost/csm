@@ -1556,9 +1556,12 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	responseFindings = append(responseFindings, newFindings[uncorrelated:]...)
 
 	co := IncidentCorrelator()
-	for _, f := range responseFindings {
+	for _, f := range alert.Deduplicate(responseFindings) {
 		_, _, _ = co.OnFinding(f)
 	}
+	// Derived findings may themselves be suppressed. Keep them in the
+	// response set while applying their rules before notification fanout.
+	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 
 	// Broadcast findings (no-op; dashboard uses polling)
 	if d.webServer != nil {
@@ -1621,10 +1624,11 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 		newFindings = expandWithCorrelation(newFindings, time.Now())
 		responseFindings = append(responseFindings, newFindings[uncorrelated:]...)
 		co := IncidentCorrelator()
-		for _, f := range responseFindings {
+		for _, f := range alert.Deduplicate(responseFindings) {
 			_, _, _ = co.OnFinding(f)
 		}
 	}
+	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
 	_ = alert.DispatchWithEnforcement(cfg, operatorAlertableFindings(newFindings), initialAuditSources, responseFindings)
 	return newFindings, permFixedKeys

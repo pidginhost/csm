@@ -36,6 +36,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- Suppression rules now also mute matching cross-account correlation alerts. Duplicate findings in a startup scan no longer inflate incident evidence or trigger premature blocks.
 - The rule performance gate now tolerates isolated cold or stalled scans while still rejecting consistently slow rules. Its CI checks cover both performance and finding attribution.
 - Disabling every signature now clears the loaded rules on reload, and the self-test reports the resulting misses. Configuration validation also recognizes disabled rules with invalid expressions and counts repeated names once.
 - Rule names listed under signature settings are now switched off everywhere CSM loads rules, including isolated scanning workers using custom configuration paths. Validation and loading agree on names, and self-tests measure the remaining coverage.
