@@ -324,7 +324,7 @@ func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor ti
 		Severity:  alert.Critical,
 		Check:     "yara_worker_crashed",
 		Timestamp: now,
-		Message:   fmt.Sprintf("YARA-X worker crashed (exit=%d signal=%v after %s); supervisor restarted it, real-time scanning recovered.", exitCode, sig, ranFor.Round(time.Millisecond)),
+		Message:   fmt.Sprintf("YARA-X worker crashed (exit=%d signal=%v after %s); YARA scanning is offline until the supervisor restarts it and the new worker stays up.", exitCode, sig, ranFor.Round(time.Millisecond)),
 	}
 	alert.TryEnqueue(d.alertCh, finding)
 }

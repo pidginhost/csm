@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -128,4 +129,29 @@ func TestOnYaraWorkerRestartDropsWhenAlertChFull(t *testing.T) {
 
 	// Must not panic or block.
 	d.onYaraWorkerRestart(1, syscall.SIGKILL, time.Millisecond)
+}
+
+// The finding is raised when the worker exits, before the supervisor has
+// restarted anything. Claiming recovery told operators scanning was back
+// while it was still offline, including through a crash loop.
+func TestOnYaraWorkerRestartMessageDoesNotClaimRecovery(t *testing.T) {
+	d := newDaemonForYaraBackendTest(t)
+
+	d.onYaraWorkerRestart(139, syscall.SIGSEGV, 5*time.Second)
+
+	select {
+	case f := <-d.alertCh:
+		for _, claim := range []string{"restarted it", "recovered"} {
+			if strings.Contains(f.Message, claim) {
+				t.Errorf("message claims %q before any restart: %s", claim, f.Message)
+			}
+		}
+		for _, want := range []string{"exit=139", "signal=segmentation fault", "after 5s", "offline", "stays up"} {
+			if !strings.Contains(f.Message, want) {
+				t.Errorf("message missing %q: %s", want, f.Message)
+			}
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no finding emitted on crash")
+	}
 }
