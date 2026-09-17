@@ -471,6 +471,45 @@ func TestDropperUploadExecutionProbeCopy(t *testing.T) {
 	}
 }
 
+func TestDropperUploadExecutionProbeEventOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		masks []uint64
+	}{
+		{"create then close", []uint64{FAN_CREATE, FAN_CLOSE_WRITE}},
+		{"close then late create", []uint64{FAN_CLOSE_WRITE, FAN_CREATE}},
+		{"create then combined close", []uint64{FAN_CREATE, FAN_CREATE | FAN_CLOSE_WRITE}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, body := range rssslProbeBodies {
+				docroot := t.TempDir()
+				path := filepath.Join(docroot, "wp-content", "uploads", "code-execution.php")
+				writeWPInstallFile(t, path, body)
+				f, err := os.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = f.Close() }()
+				r := newWPInstallRun(t, docroot)
+				for _, mask := range tc.masks {
+					if c := r.fm.observeDropperCandidate(fileEvent{
+						path: path, fd: int(f.Fd()), pid: 4242, mask: mask,
+					}, ""); c == nil {
+						t.Fatal("probe event was not observed")
+					}
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				r.probeAndFlush()
+				if len(*r.alerts) != 0 {
+					t.Fatalf("completed upload execution probe raised %+v", *r.alerts)
+				}
+			}
+		})
+	}
+}
+
 func TestDropperUploadExecutionProbeNameStillCritical(t *testing.T) {
 	for name, writes := range map[string][]string{
 		"payload":                {testDropperPHP},

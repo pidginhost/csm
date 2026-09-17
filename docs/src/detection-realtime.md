@@ -53,6 +53,11 @@ directory, repeated after the normal alert cooldown if activity continues.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
+Completed upload execution probes remain tracked until the deletion check so
+combined or out-of-order create and close-write events preserve completion
+evidence. A probe without a completed write, or with earlier unsafe or
+uncertain content, remains reportable.
+
 Both the real-time and the scheduled WordPress admin-creation signature
 require an administrator role token plus literal or request-derived
 credentials, and both accept the same ASCII whitespace, including the vertical

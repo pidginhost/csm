@@ -72,11 +72,12 @@ func (e *dropperEngine) admit(c dropperCandidate) bool {
 	if !shouldTrackDropper(c, e.selfPID, e.ttl) {
 		return false
 	}
-	// A file whose whole content carries no executable statement, or is a
-	// known capability test script, cannot be a dropper payload.
+	// Retain known executable probes until assessment: a late CREATE must
+	// merge with their completed CLOSE_WRITE instead of becoming a new pending
+	// write. Inert files still avoid consuming tracker capacity.
 	// ContentSuspicious wins: a realtime content or signature hit already
 	// found structure, and no later heuristic may demote that.
-	if !c.WritePending && !c.ContentSuspicious && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
+	if !c.WritePending && !c.ContentSuspicious && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
 		return false
 	}
 	return e.tr.Observe(c)

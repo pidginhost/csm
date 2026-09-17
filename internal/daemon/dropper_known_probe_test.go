@@ -35,11 +35,14 @@ func TestDropperUploadExecutionProbeIsNotADropper(t *testing.T) {
 	for _, body := range rssslProbeBodies {
 		c := knownProbeTestCandidate(body)
 		e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
-		if e.admit(c) {
-			t.Fatalf("upload execution test script admitted: %q", body)
+		if !e.admit(c) {
+			t.Fatal("completed upload execution probe was not retained for late create events")
 		}
-		owned := ownDropperCandidate(c)
-		if got := assessDropper(owned, dropperProbe{Conclusive: true}); got != dropperBenign {
+		due := e.tr.Due(c.Observed.Add(time.Hour))
+		if len(due) != 1 {
+			t.Fatalf("got %d candidates, want one completed probe", len(due))
+		}
+		if got := assessDropper(due[0], dropperProbe{Conclusive: true}); got != dropperBenign {
 			t.Fatalf("deleted upload execution test script = %v, want benign", got)
 		}
 	}
@@ -74,6 +77,7 @@ func TestDropperUploadExecutionProbeLookalikesStillReported(t *testing.T) {
 			c.Size = int64(len(c.Head))
 		}},
 		{"executable mode", func(c *dropperCandidate) { c.Mode = 0o100755 }},
+		{"write not closed", func(c *dropperCandidate) { c.WritePending = true }},
 		{"raced read", func(c *dropperCandidate) { c.ContentUnsettled = true }},
 		{"earlier code", func(c *dropperCandidate) { c.ContentMayExecute = true }},
 		{"content verdict", func(c *dropperCandidate) { c.ContentSuspicious = true }},
