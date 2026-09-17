@@ -731,7 +731,7 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 				}
 			}
 			if !present {
-				st.RearmFindings([]string{summary.Key()})
+				st.RearmDismissedFindings([]string{summary.Key()})
 			}
 		}
 	}
