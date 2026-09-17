@@ -2,6 +2,23 @@
 
 Deep checks run every 60 minutes and cover thorough filesystem, CMS, email, and database scans.
 
+## Scan coverage alerts
+
+PHP, JavaScript, YARA, host-wide WordPress database coverage, and unfinished email
+password verification warnings keep one alert identity while their counts change.
+They follow the daily reminder window unless acknowledged. When the owning scan
+returns without that condition, its acknowledgment clears, so a later recurrence
+can alert again. An unrelated scan, throttled check, timeout, or cancellation does
+not prove recovery. Disabling a scanner clears its current coverage condition.
+Existing per-install database limit acknowledgments are kept
+when a partial scan cannot inspect those installations.
+
+PHP analyzer crashes and stalls are tracked by the failing file paths, contents,
+and failure statuses, including files outside the displayed examples. Different
+failing inputs can therefore alert even after an earlier failure was dismissed.
+Check crash alerts ignore stack-trace churn, keep account scans separate by
+account, and re-arm after the same check returns successfully.
+
 ## Filesystem
 
 | Check | Description |

@@ -1,8 +1,11 @@
 package checks
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"hash"
 	"os"
 	"sort"
 	"strings"
@@ -57,6 +60,8 @@ type phpTaintGapCollector struct {
 	example        map[string]string
 	recordCoverage func([]string)
 	resolveAliases func(string) ([]string, bool)
+	defeatInputs   [][sha256.Size]byte
+	defeatOverflow hash.Hash
 	// unknown counts walk failures whose affected paths cannot be enumerated
 	// (an unreadable directory, a failed Lstat that may hide one). They are
 	// kept apart from paths because carry-forward needs exact paths, but they
@@ -81,6 +86,24 @@ func newPHPTaintGapCollector() *phpTaintGapCollector {
 }
 
 func (g *phpTaintGapCollector) record(path, status string) {
+	g.recordSnapshot(path, status, "")
+}
+
+func (g *phpTaintGapCollector) recordSnapshot(path, status, contentSHA256 string) {
+	if isPHPTaintAnalyzerDefeatStatus(status) {
+		identity := sha256.Sum256([]byte(path + "\x00" + status + "\x00" + contentSHA256))
+		if len(g.defeatInputs) < maxPHPTaintGapPaths {
+			g.defeatInputs = append(g.defeatInputs, identity)
+		} else {
+			// Beyond the memory bound, retain all evidence in a streaming
+			// digest. Order changes may re-alert in this extreme case, but
+			// a dismissal must never hide failures beyond the retained set.
+			if g.defeatOverflow == nil {
+				g.defeatOverflow = sha256.New()
+			}
+			_, _ = g.defeatOverflow.Write(identity[:])
+		}
+	}
 	aliases, retained := g.aliasesByPath[path]
 	if !retained {
 		if len(g.paths) < maxPHPTaintGapPaths {
@@ -209,8 +232,12 @@ func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRang
 		parts = append(parts, fmt.Sprintf("exact paths retained for only the first %d", maxPHPTaintGapPaths))
 	}
 	message := fmt.Sprintf("PHP taint deep scan could not analyze %d file(s)", total)
+	// Routine coverage loss is one host condition. Analyzer defeats are
+	// input-specific so dismissing one cannot hide different failing files.
+	dedupKey := "coverage_gap"
 	if analyzerDefeat {
 		message = fmt.Sprintf("PHP taint deep scan was defeated by %d file(s) that crashed or stalled the analyzer", total)
+		dedupKey = g.analyzerDefeatDedupKey()
 	} else if total == 0 {
 		message = fmt.Sprintf("PHP taint deep scan could not cover %d location(s)", g.unknown)
 	}
@@ -219,7 +246,25 @@ func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRang
 		Check:    "php_taint_scan_incomplete",
 		Message:  message,
 		Details:  strings.Join(parts, "; "),
+		DedupKey: dedupKey,
 	}
+}
+
+func (g *phpTaintGapCollector) analyzerDefeatDedupKey() string {
+	// Hash every full input identity, not just sanitized display examples.
+	// Sorting keeps ordinary traversal-order changes out of the alert key.
+	sort.Slice(g.defeatInputs, func(i, j int) bool {
+		return bytes.Compare(g.defeatInputs[i][:], g.defeatInputs[j][:]) < 0
+	})
+	digest := sha256.New()
+	for _, identity := range g.defeatInputs {
+		_, _ = digest.Write(identity[:])
+	}
+	if g.defeatOverflow != nil {
+		_, _ = digest.Write([]byte("overflow:"))
+		_, _ = digest.Write(g.defeatOverflow.Sum(nil))
+	}
+	return fmt.Sprintf("analyzer_defeat:%x", digest.Sum(nil))
 }
 
 // carryForwardPHPTaintFindings keeps at most one prior state finding for each
@@ -268,7 +313,7 @@ func analyzePHPTaintSnapshot(ctx context.Context, path, contentSHA256 string, da
 	case phptaint.StatusNotCandidate:
 		return nil
 	default:
-		gaps.record(path, report.Status.String())
+		gaps.recordSnapshot(path, report.Status.String(), contentSHA256)
 		return nil
 	}
 }

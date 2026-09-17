@@ -158,6 +158,9 @@ func (g *jsTaintGapCollector) finding() alert.Finding {
 		Check:    "js_taint_scan_incomplete",
 		Message:  message,
 		Details:  strings.Join(parts, "; "),
+		// One host-wide condition: counts and examples vary per cycle and
+		// must not re-alert while coverage stays degraded.
+		DedupKey: "coverage_gap",
 	}
 }
 

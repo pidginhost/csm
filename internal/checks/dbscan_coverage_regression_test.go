@@ -55,7 +55,7 @@ func databaseCoverageSummary(t *testing.T, findings []alert.Finding) alert.Findi
 	t.Helper()
 	var summaries []alert.Finding
 	for _, f := range findings {
-		if f.Check == "db_content_scan_incomplete" && f.DedupKey == "" {
+		if f.Check == "db_content_scan_incomplete" && f.DedupKey == dbContentHostCoverageDedupKey {
 			summaries = append(summaries, f)
 		}
 	}
@@ -201,7 +201,7 @@ func TestDatabaseCoverageMultisiteLimit(t *testing.T) {
 			}
 			limits := 0
 			for _, f := range findings {
-				if f.Check == "db_content_scan_incomplete" && f.DedupKey != "" {
+				if f.Check == "db_content_scan_incomplete" && f.DedupKey != dbContentHostCoverageDedupKey {
 					limits++
 					if f.TenantID != "alice" || !strings.Contains(f.Message, fmt.Sprintf("%d-site safety limit (account: alice)", maxWPSecondaryBlogs)) {
 						t.Errorf("multisite warning lost its account or limit: %+v", f)

@@ -713,6 +713,29 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 	// read cached platform roots.
 	platform.Detect()
 	latestScanMergeMu.Lock()
+	var healthChecks []string
+	for _, check := range purgeChecks {
+		switch check {
+		case "php_taint_scan_incomplete", "js_taint_scan_incomplete", "yara_scan_incomplete",
+			"email_password_audit_incomplete":
+			healthChecks = append(healthChecks, check)
+		case "db_content_scan_incomplete":
+			// Only the host summary is a per-run condition. A partial run
+			// cannot resolve the existing per-install multisite limit.
+			summary := alert.Finding{Check: check, DedupKey: dbContentHostCoverageDedupKey}
+			present := false
+			for _, f := range findings {
+				if f.Key() == summary.Key() {
+					present = true
+					break
+				}
+			}
+			if !present {
+				st.RearmDismissedFindings([]string{summary.Key()})
+			}
+		}
+	}
+	st.RearmAbsentDedupFindings(healthChecks, findings)
 	now := time.Now()
 	st.PurgeAndMergeFindingsDerivedWithCoverage(
 		latestPurgeWithVolatile(purgeChecks),
@@ -963,6 +986,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	completedChecks := make([]namedCheck, 0, len(enabledChecks))
 	completedOwners := make([]string, 0)
 	completedThrottled := make([]string, 0)
+	recoveredPanicKeys := make([]string, 0)
 	// incompleteRan collects checks that returned within budget but marked
 	// themselves incomplete; their per-run status finding names still purge.
 	incompleteRan := make([]string, 0)
@@ -1047,11 +1071,15 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 					}
 					observeCheckDuration(c.name, tier, time.Since(start))
 					mu.Lock()
+					// The stack trace carries goroutine ids and addresses that
+					// differ on every run; a check that panics each cycle is
+					// one ongoing condition.
 					findings = append(findings, alert.Finding{
 						Severity:  alert.High,
 						Check:     "check_panic",
 						Message:   fmt.Sprintf("Check '%s' stopped after an internal panic", c.name),
 						Details:   outcome.panicErr,
+						DedupKey:  "check:" + c.name,
 						Timestamp: time.Now(),
 					})
 					mu.Unlock()
@@ -1081,6 +1109,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
 				mu.Lock()
+				recoveredPanicKeys = append(recoveredPanicKeys, (alert.Finding{Check: "check_panic", DedupKey: "check:" + c.name}).Key())
 				if scopes := coveragePaths.completedScopes(c.name); len(scopes) > 0 {
 					names := append([]string{c.name}, runnerFindingNames[c.name]...)
 					for _, name := range names {
@@ -1151,6 +1180,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 
 	for _, name := range completedThrottled {
 		store.MarkThrottledRan(name)
+	}
+	if store != nil {
+		store.RearmFindings(recoveredPanicKeys)
 	}
 
 	purgeChecks := make([]namedCheck, 0, len(disabledChecks)+len(completedChecks))

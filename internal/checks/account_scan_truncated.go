@@ -120,12 +120,15 @@ func (c *accountScanTruncationCollector) findings(now time.Time) []alert.Finding
 				scope = fmt.Sprintf("account %s", account)
 				tenantID = account
 			}
+			// The skipped count moves with every file added or removed; the
+			// condition is this scope hitting this cap.
 			findings = append(findings, alert.Finding{
 				Severity:  alert.Warning,
 				Check:     "account_scan_truncated",
 				TenantID:  tenantID,
 				Message:   fmt.Sprintf("Account scan truncated for %s: %d file(s) skipped past cap of %d", scope, dropped, cap),
 				Details:   "Raise thresholds.account_scan_max_files if recent detection coverage matters more than scan duration.",
+				DedupKey:  fmt.Sprintf("scope=%q cap=%d", account, cap),
 				Timestamp: now,
 			})
 		}

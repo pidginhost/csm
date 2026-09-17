@@ -382,6 +382,8 @@ mailboxes:
 			Check:    "email_password_audit_incomplete",
 			Message:  "Email password audit did not complete",
 			Details:  fmt.Sprintf("Mailboxes with an unfinished verification: %d. Unsupported, malformed, or over-budget hashes remain unaudited and are retried. See the email password audit documentation for supported formats and limits.", incomplete),
+			// The unfinished-mailbox count in Details is not the condition.
+			DedupKey: "unfinished_verification",
 		})
 		return findings
 	}

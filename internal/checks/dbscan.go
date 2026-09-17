@@ -408,6 +408,12 @@ func wpConfigUser(path string) string {
 	return extractUser(path)
 }
 
+// dbContentHostCoverageDedupKey is the identity of the host-wide coverage
+// summary. Its Details carry per-reason counts and examples that shift between
+// cycles while the same degradation persists. The multisite limit warning keeps
+// its own per-install identity.
+const dbContentHostCoverageDedupKey = "install_coverage"
+
 func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.Finding, coverage *dbScanCoverage) []alert.Finding {
 	if !checkMarkedIncomplete(ctx, "db_content") {
 		return findings
@@ -426,6 +432,7 @@ func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.F
 		Check:    "db_content_scan_incomplete",
 		Message:  "WordPress database scan could not inspect every discovered install",
 		Details:  databaseScanIncompleteDetails(coverage),
+		DedupKey: dbContentHostCoverageDedupKey,
 	})
 }
 
