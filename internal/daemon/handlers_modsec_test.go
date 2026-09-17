@@ -3,7 +3,6 @@ package daemon
 import (
 	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -136,8 +135,7 @@ func TestParseModSecLogLine_InfraIPSkipped(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func resetModSecState() {
-	modsecDedup = sync.Map{}
-	modsecBlockCount = sync.Map{}
+	resetModSecCounters()
 }
 
 func TestModSecDedup(t *testing.T) {

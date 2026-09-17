@@ -113,7 +113,7 @@ alerts:
   heartbeat:
     enabled: false
     url: ""                             # healthchecks.io, cronitor, dead man's switch
-  max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses. Code default 30; the shipped csm.yaml template sets 10
+  max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses and is not counted. Code default 30; the shipped csm.yaml template sets 10
   block_digest:
     enabled: false                      # send per-country rollups for auto-blocked IPs
     countries: []                       # empty = trusted countries, then all countries

@@ -884,40 +884,35 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 		webhookFindings = findings
 	}
 
+	// Only routine findings spend the hourly budget. Urgent ones always go
+	// out, but they never carry routine findings from the same batch past the
+	// cap with them.
+	var reservation *rateLimitReservation
+	if hasRoutineFinding(emailFindings) || hasRoutineFinding(webhookFindings) {
+		var ok bool
+		reservation, ok = reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
+		if ok {
+			defer releaseRateLimit(reservation)
+		} else {
+			fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
+			emailFindings = urgentFindings(emailFindings)
+			webhookFindings = urgentFindings(webhookFindings)
+		}
+	}
+
 	if len(emailFindings) == 0 && len(webhookFindings) == 0 {
 		return formatDispatchErrors(errs)
 	}
 
-	// Critical realtime findings always get through. Reputation delivery is
-	// also check-keyed: its surface-based severity is presentation metadata and
-	// must not make sightings that previously bypassed this gate disappear.
-	bypassRateLimit := false
-	for _, f := range findings {
-		if f.Severity == Critical || f.Check == "ip_reputation" {
-			bypassRateLimit = true
-			break
-		}
-	}
-	var reservation *rateLimitReservation
-	if !bypassRateLimit {
-		var ok bool
-		reservation, ok = reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
-			return formatDispatchErrors(errs)
-		}
-		defer releaseRateLimit(reservation)
-	}
-
-	dispatched := false
+	routineDispatched := false
 
 	if len(emailFindings) > 0 {
 		subject := buildSubject(cfg.Hostname, emailFindings)
 		body := FormatAlert(cfg.Hostname, emailFindings)
 		if err := SendEmail(cfg, subject, body); err != nil {
 			addDispatchError(&errs, fmt.Errorf("email: %w", err))
-		} else {
-			dispatched = true
+		} else if hasRoutineFinding(emailFindings) {
+			routineDispatched = true
 		}
 	}
 
@@ -926,20 +921,45 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 		body := FormatAlert(cfg.Hostname, webhookFindings)
 		if err := SendWebhook(cfg, subject, body); err != nil {
 			addDispatchError(&errs, fmt.Errorf("webhook: %w", err))
-		} else {
-			dispatched = true
+		} else if hasRoutineFinding(webhookFindings) {
+			routineDispatched = true
 		}
 	}
 
-	// Commit the rate-limit slot only after at least one channel
-	// accepted the message. Without this, a failed send burned the
-	// budget; the next non-critical alert was then throttled with no
-	// operator-facing trace.
-	if dispatched {
+	// An urgent-only email can succeed while the webhook carrying the routine
+	// findings fails. Spend the slot only if routine findings were delivered.
+	if routineDispatched && reservation != nil {
 		commitRateLimit(cfg.StatePath, reservation)
 	}
 
 	return formatDispatchErrors(errs)
+}
+
+// bypassesRateLimit reports whether a finding is delivered regardless of the
+// hourly budget. Reputation delivery is check-keyed: its surface-based severity
+// is presentation metadata and must not make sightings that previously
+// bypassed the budget disappear.
+func bypassesRateLimit(f Finding) bool {
+	return f.Severity == Critical || f.Check == "ip_reputation"
+}
+
+func hasRoutineFinding(findings []Finding) bool {
+	for _, f := range findings {
+		if !bypassesRateLimit(f) {
+			return true
+		}
+	}
+	return false
+}
+
+func urgentFindings(findings []Finding) []Finding {
+	var out []Finding
+	for _, f := range findings {
+		if bypassesRateLimit(f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // SendHeartbeat pings a dead man's switch URL.
