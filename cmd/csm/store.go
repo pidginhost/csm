@@ -122,26 +122,6 @@ func compactOpenStore(db *store.DB, opts StoreCompactOptions) (*StoreCompactResu
 	return result, nil
 }
 
-// shouldCompactState reports whether the bbolt state db is worth compacting at
-// startup: large enough that the slack matters AND fragmented enough that a
-// compaction would reclaim a meaningful fraction. minSizeMB and fillRatio come
-// from Retention config; non-positive values disable the check. freeBytes
-// above sizeBytes is clamped (used=0) rather than producing a negative fill.
-func shouldCompactState(sizeBytes, freeBytes int64, minSizeMB int, fillRatio float64) bool {
-	if minSizeMB <= 0 || fillRatio <= 0 || sizeBytes <= 0 {
-		return false
-	}
-	if sizeBytes < int64(minSizeMB)*1024*1024 {
-		return false
-	}
-	used := sizeBytes - freeBytes
-	if used < 0 {
-		used = 0
-	}
-	fill := float64(used) / float64(sizeBytes)
-	return fill < fillRatio
-}
-
 func openStateDBForCompaction(statePath string) (*store.DB, bool, error) {
 	if statePath == "" {
 		return nil, false, errors.New("state path is empty")
@@ -188,7 +168,7 @@ func maybeCompactStateAtStartup(cfg *config.Config) (*StoreCompactResult, error)
 		_ = db.Close()
 		return nil, err
 	}
-	if !shouldCompactState(size, free, cfg.Retention.CompactMinSizeMB, cfg.Retention.CompactFillRatio) {
+	if !store.CompactionDue(size, free, cfg.Retention.CompactMinSizeMB, cfg.Retention.CompactFillRatio) {
 		if err := db.Close(); err != nil {
 			return nil, err
 		}

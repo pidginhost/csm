@@ -120,7 +120,11 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
   database (`/var/lib/csm/state/csm.db` by default). Retention sweeps
   bound logical growth. Startup compaction reclaims freelisted pages
   automatically when the file is large and mostly slack; `csm store
-  compact` does the same immediately with the daemon stopped.
+  compact` does the same immediately with the daemon stopped. The
+  retention sweep logs a restart hint only under that same condition. It
+  includes deleted pages still held by active readers, which become
+  reclaimable when the daemon stops. Later writes can change whether
+  compaction is due at startup.
   History and attack-event writes pack pages densely when their timestamps
   arrive mostly in order. A write uses balanced page splits when events older
   than the newest stored one are most of its records or at least half its
