@@ -31,7 +31,12 @@ moved the tree into place. A file the official package does not ship gets its
 own warning, naming the installed path when it still exists. Themes, packages
 not published on wordpress.org, a full verification queue, and a package whose
 checksums do not arrive within 60 seconds raise one warning per staging
-directory, repeated after the normal alert cooldown if activity continues.
+directory. WordPress picks a new staging directory for every upload, so these
+warnings are identified by site, package type, name, version and reason, and a
+per-file warning by its place in the package and its digest. Uploading the same
+release to the same site again is a repeat and follows the normal 24-hour
+reminder; a different version, site or reason alerts at once. Content findings
+inside staging keep their own per-file identity and alert every time.
 
 **Detects:**
 - Webshell creation (PHP files in web directories)
