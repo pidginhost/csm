@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -88,61 +89,75 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	// When suppress_blocked_alerts is on, the operator doesn't want to be
 	// notified about IPs that are already dealt with - they only want alerts
 	// that require human action.
+	policy := currentIPResponsePolicy()
 	var filtered []Finding
 	for _, f := range findings {
-		if f.Check == "ip_reputation" || f.Check == "local_threat_score" {
-			// Suppression keys on the actual block state, never on
-			// auto-response intent: an enabled block_ips used to drop every
-			// reputation finding here, which hid exactly the IPs auto-block
-			// did NOT handle (dry-run, rate-limited queue drops,
-			// verdict-allowed). Same-batch AUTO-BLOCK findings already feed
-			// blockedIPs above, so an IP blocked this cycle stays suppressed.
-			// Check if the finding's IP is already blocked. Structured
-			// SourceIP wins when present; older findings fall back to the
-			// message token. The address is compared canonically:
-			// substring matching used to let a blocked 1.2.3.4 suppress a
-			// finding about the unrelated 1.2.3.45. A finding with no
-			// parseable IP is never suppressed (fail open to alerting).
-			isBlocked := false
-			findingIP := suppressionIPFromFinding(f)
-			if findingIP != nil && canonicalBlocked[findingIP.String()] {
-				isBlocked = true
-			}
-			// Also suppress if the IP falls within a freshly-blocked subnet.
-			// AUTO-BLOCK-SUBNET: findings from the same batch must silence
-			// per-IP reputation alerts for addresses inside that /24.
-			if !isBlocked && findingIP != nil {
-				for _, subnet := range blockedSubnets {
-					if subnet.Contains(findingIP) {
-						isBlocked = true
-						break
-					}
-				}
-			}
-			// A challenge-routed IP counts as handled only while this
-			// finding remains challenge-eligible. Critical ip_reputation
-			// means a browserless mail/SSH/FTP sighting and must stay visible
-			// until a same-batch AUTO-BLOCK (or live block state above) proves
-			// that the hard block landed. Otherwise an old challenge entry can
-			// hide the exact finding that is supposed to escalate it.
-			if !isBlocked && findingIP != nil && challengeHandlesFinding(f) {
-				if canonicalChallenged[findingIP.String()] {
-					isBlocked = true
-				} else if ChallengedIPFunc != nil && ChallengedIPFunc(findingIP.String()) {
-					isBlocked = true
-				}
-			}
-			if isBlocked {
-				continue
-			}
-		}
 		if f.Check == "auto_block" || f.Check == "challenge_route" {
+			continue
+		}
+		// Suppression keys on the actual block state, never on
+		// auto-response intent: an enabled block_ips used to drop every
+		// reputation finding here, which hid exactly the IPs auto-block
+		// did NOT handle (dry-run, rate-limited queue drops,
+		// verdict-allowed). Same-batch AUTO-BLOCK findings already feed
+		// blockedIPs above, so an IP blocked this cycle stays suppressed.
+		// Structured SourceIP wins when present; older findings fall
+		// back to the message token. The address is compared
+		// canonically: substring matching used to let a blocked 1.2.3.4
+		// suppress a finding about the unrelated 1.2.3.45. A finding
+		// with no parseable IP is never suppressed (fail open to
+		// alerting).
+		findingIP := suppressionIPFromFinding(f)
+		if findingIP != nil && ipBlocked(findingIP, canonicalBlocked, blockedSubnets) &&
+			ipResponseAnswers(policy, cfg, f, true) {
+			continue
+		}
+		// A challenge counts only for findings a challenge answers.
+		// Critical ip_reputation is a browserless mail/SSH/FTP sighting
+		// and must stay visible until a hard block lands; otherwise an
+		// old challenge entry hides the exact finding that is supposed
+		// to escalate it.
+		if findingIP != nil && ipResponseAnswers(policy, cfg, f, false) &&
+			ipChallenged(findingIP, canonicalChallenged) {
 			continue
 		}
 		filtered = append(filtered, f)
 	}
 
 	return filtered
+}
+
+func ipBlocked(ip net.IP, blocked map[string]bool, subnets []*net.IPNet) bool {
+	if blocked[ip.String()] {
+		return true
+	}
+	// AUTO-BLOCK-SUBNET: findings from the same batch silence per-IP
+	// findings for addresses inside that /24.
+	for _, subnet := range subnets {
+		if subnet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func ipChallenged(ip net.IP, challenged map[string]bool) bool {
+	if challenged[ip.String()] {
+		return true
+	}
+	return ChallengedIPFunc != nil && ChallengedIPFunc(ip.String())
+}
+
+// ipResponseAnswers reports whether a block (blocked) or a challenge answers
+// the finding. With no policy wired it keeps the reputation-only rule.
+func ipResponseAnswers(policy IPResponsePolicy, cfg *config.Config, f Finding, blocked bool) bool {
+	if policy != nil {
+		return policy(cfg, f, blocked)
+	}
+	if f.Check != "ip_reputation" && f.Check != "local_threat_score" {
+		return false
+	}
+	return blocked || challengeHandlesFinding(f)
 }
 
 // challengeHandlesFinding mirrors the only finding-level exception to the
@@ -372,4 +387,33 @@ func loadBlockFile(statePath string, sections blockFileSection) (blockFile, bool
 	}
 
 	return bf, true
+}
+
+// IPResponsePolicy reports whether an IP disposition on a finding's source
+// fully answers the finding, so suppress_blocked_alerts may drop it. blocked
+// is true for a firewall block and false for a challenge.
+type IPResponsePolicy func(cfg *config.Config, f Finding, blocked bool) bool
+
+var (
+	ipResponsePolicyMu sync.RWMutex
+	ipResponsePolicy   IPResponsePolicy
+)
+
+// SetIPResponsePolicy installs or clears the policy FilterBlockedAlerts
+// consults and returns the previous one. The check classification lives in
+// the checks package, which imports this one, so the daemon wires it at
+// startup.
+func SetIPResponsePolicy(p IPResponsePolicy) IPResponsePolicy {
+	ipResponsePolicyMu.Lock()
+	defer ipResponsePolicyMu.Unlock()
+	previous := ipResponsePolicy
+	ipResponsePolicy = p
+	return previous
+}
+
+func currentIPResponsePolicy() IPResponsePolicy {
+	ipResponsePolicyMu.RLock()
+	p := ipResponsePolicy
+	ipResponsePolicyMu.RUnlock()
+	return p
 }

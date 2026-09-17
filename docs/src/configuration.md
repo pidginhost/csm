@@ -333,7 +333,7 @@ suppressions:
     - "*/vendor/*"
   suppress_webmail_alerts: true         # don't alert on webmail logins
   suppress_cpanel_login_alerts: false   # don't alert on cPanel direct logins
-  suppress_blocked_alerts: true         # don't alert on IPs that were auto-blocked
+  suppress_blocked_alerts: true         # don't alert on attacks from IPs already blocked or challenged
   trusted_countries: ["RO"]             # requires a loaded GeoLite2-City database; download credentials alone do not supply country data
 
 # --- Auto-Response ---
