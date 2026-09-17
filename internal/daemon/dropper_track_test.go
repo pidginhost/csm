@@ -462,6 +462,77 @@ func TestWPUpgradeRenameCandidates(t *testing.T) {
 	}
 }
 
+func TestWPUpgradeInstallDestinations(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want []string
+	}{
+		{
+			"package tree keeps plugin and theme destinations",
+			"/home/alice/public_html/wp-content/upgrade/hello-dolly-a1b2/hello-dolly/hello.php",
+			[]string{
+				"/home/alice/public_html/wp-content/plugins/hello-dolly/hello.php",
+				"/home/alice/public_html/wp-content/themes/hello-dolly/hello.php",
+			},
+		},
+		{
+			"core language pack unpacks flat",
+			"/home/alice/public_html/wp-content/upgrade/wordpress-7.1-ro_ro/admin-ro_RO.l10n.php",
+			[]string{
+				"/home/alice/public_html/wp-content/languages/admin-ro_RO.l10n.php",
+				"/home/alice/public_html/wp-content/languages/plugins/admin-ro_RO.l10n.php",
+				"/home/alice/public_html/wp-content/languages/themes/admin-ro_RO.l10n.php",
+			},
+		},
+		{
+			"plugin language pack below docroot",
+			"/home/alice/public_html/shop/wp-content/upgrade/wordpress-seo-28.5-ro_ro/wordpress-seo-ro_RO.l10n.php",
+			[]string{
+				"/home/alice/public_html/shop/wp-content/languages/wordpress-seo-ro_RO.l10n.php",
+				"/home/alice/public_html/shop/wp-content/languages/plugins/wordpress-seo-ro_RO.l10n.php",
+				"/home/alice/public_html/shop/wp-content/languages/themes/wordpress-seo-ro_RO.l10n.php",
+			},
+		},
+		{
+			"core update version probe",
+			"/home/alice/public_html/wp-content/upgrade/version-current.php",
+			[]string{"/home/alice/public_html/wp-includes/version.php"},
+		},
+		{
+			"other loose upgrade file",
+			"/home/alice/public_html/wp-content/upgrade/loose.php",
+			nil,
+		},
+		{
+			"flat traversal component",
+			"/home/alice/public_html/wp-content/upgrade/../evil.php",
+			nil,
+		},
+		{
+			"not under upgrade dir",
+			"/home/alice/public_html/wp-content/languages/admin-ro_RO.l10n.php",
+			nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wpUpgradeInstallDestinations(tc.path, "/home/alice/public_html")
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("destination[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+	if got := wpUpgradeInstallDestinations("/home/bob/public_html/wp-content/upgrade/version-current.php", "/home/alice/public_html"); got != nil {
+		t.Fatalf("destination outside docroot = %v, want nil", got)
+	}
+}
+
 func TestWPUpgradeRenameCandidatesRejectsUnrelatedRoot(t *testing.T) {
 	path := "/home/bob/public_html/wp-content/upgrade/x/y/file.php"
 	if got := wpUpgradeRenameCandidates(path, "/home/alice/public_html"); got != nil {
@@ -631,6 +702,36 @@ func TestAssessDropper(t *testing.T) {
 		{"vanished wp upgrade stage demoted", func(c *dropperCandidate) {
 			c.Path = "/home/alice/public_html/wp-content/upgrade/x/y/file.php"
 		}, dropperProbe{Conclusive: true}, dropperDemotedWPUpgrade},
+		{"language pack copied into languages dir", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/wp-content/upgrade/wordpress-seo-28.5-ro_ro/wordpress-seo-ro_RO.l10n.php"
+		}, dropperProbe{
+			Conclusive:   true,
+			RenamedTo:    "/home/alice/public_html/wp-content/languages/plugins/wordpress-seo-ro_RO.l10n.php",
+			RenameTarget: copiedFileStateAt(freshDropperCandidate(now), "/home/alice/public_html/wp-content/languages/plugins/wordpress-seo-ro_RO.l10n.php"),
+		}, dropperBenign},
+		{"core version probe matches installed version file", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/wp-content/upgrade/version-current.php"
+		}, dropperProbe{
+			Conclusive:   true,
+			RenamedTo:    "/home/alice/public_html/wp-includes/version.php",
+			RenameTarget: copiedFileStateAt(freshDropperCandidate(now), "/home/alice/public_html/wp-includes/version.php"),
+		}, dropperBenign},
+		{"flat upgrade dropper with different installed copy", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/wp-content/upgrade/wordpress-seo-28.5-ro_ro/wordpress-seo-ro_RO.l10n.php"
+		}, dropperProbe{
+			Conclusive: true,
+			RenamedTo:  "/home/alice/public_html/wp-content/languages/plugins/wordpress-seo-ro_RO.l10n.php",
+			RenameTarget: &dropperFileState{
+				Path:   "/home/alice/public_html/wp-content/languages/plugins/wordpress-seo-ro_RO.l10n.php",
+				Device: 41, Inode: 9001, Size: 1621, Digest: sha256.Sum256([]byte("other")), DigestKnown: true,
+			},
+		}, dropperSuspect},
+		{"vanished flat upgrade dropper stays critical", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/wp-content/upgrade/wordpress-seo-28.5-ro_ro/shell.php"
+		}, dropperProbe{Conclusive: true}, dropperSuspect},
+		{"vanished version probe without installed copy stays critical", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/wp-content/upgrade/version-current.php"
+		}, dropperProbe{Conclusive: true}, dropperSuspect},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -659,6 +760,15 @@ func candidateFileStateAt(c dropperCandidate, path string) *dropperFileState {
 		BirthKnown:  c.BirthKnown,
 		Digest:      c.Digest,
 		DigestKnown: c.DigestKnown,
+	}
+}
+
+// copiedFileStateAt is a copy-delete destination: another inode holding the
+// candidate's exact bytes.
+func copiedFileStateAt(c dropperCandidate, path string) *dropperFileState {
+	return &dropperFileState{
+		Path: path, Device: c.Device, Inode: c.Inode + 1000, Size: c.Size,
+		Digest: c.Digest, DigestKnown: c.DigestKnown,
 	}
 }
 

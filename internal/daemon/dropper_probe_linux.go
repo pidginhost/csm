@@ -58,10 +58,11 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 }
 
 // dropperFindRenameTarget snapshots the install destinations WordPress and the
-// atomic-write helper may move a staged file to. A matching destination wins;
-// otherwise the first regular destination is returned as replacement evidence.
+// atomic-write helper may move or copy a staged file to. A matching destination
+// wins; otherwise the first regular destination is returned as replacement
+// evidence.
 func dropperFindRenameTarget(c dropperCandidate) (string, dropperFileState, bool, error) {
-	targets := wpUpgradeRenameCandidates(c.Path, c.Docroot)
+	targets := wpUpgradeInstallDestinations(c.Path, c.Docroot)
 	if atomic := atomicWriteRenameCandidate(c.Path); atomic != "" {
 		targets = append(targets, atomic)
 	}
@@ -70,7 +71,12 @@ func dropperFindRenameTarget(c dropperCandidate) (string, dropperFileState, bool
 	var transientErr error
 	for _, target := range targets {
 		state, err := statPathToFileState(target, false)
-		if errors.Is(err, unix.ENOENT) {
+		// A missing entry, a non-directory component or a symlink loop all mean
+		// no file lives at this destination. Only other errors leave the move
+		// unproven; counting these as inconclusive would let anything able to
+		// break one install path turn a vanished dropper into retries that end
+		// in a silently dropped candidate.
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
 			continue
 		}
 		if err != nil {

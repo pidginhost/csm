@@ -223,7 +223,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	// FAN_CREATE with the final bytes, so create-only snapshots keep identity
 	// and a bounded head without hashing the same file twice.
 	needsDigest := atomicWriteRenameCandidate(c.Path) != "" ||
-		len(wpUpgradeRenameCandidates(c.Path, c.Docroot)) > 0
+		len(wpUpgradeInstallDestinations(c.Path, c.Docroot)) > 0
 	if needsDigest && (event.mask&FAN_CREATE == 0 || event.mask&FAN_CLOSE_WRITE != 0) {
 		c.Digest, c.DigestKnown = digestFromFD(event.fd, st.Size)
 	}

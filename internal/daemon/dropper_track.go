@@ -546,6 +546,26 @@ func looksLikeCompiledTemplate(head []byte) bool {
 	return false
 }
 
+// wpUpgradeStagedPath splits a clean absolute path under
+// <wpRoot>/wp-content/upgrade/ into the WordPress root and the part below
+// upgrade/. The root must be the configured docroot or inside it.
+func wpUpgradeStagedPath(path, configuredDocroot string) (wpRoot, rest string, ok bool) {
+	const marker = "/wp-content/upgrade/"
+	if !filepath.IsAbs(path) || !filepath.IsAbs(configuredDocroot) ||
+		filepath.Clean(path) != path || filepath.Clean(configuredDocroot) != configuredDocroot {
+		return "", "", false
+	}
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return "", "", false
+	}
+	wpRoot = path[:idx]
+	if wpRoot != configuredDocroot && !strings.HasPrefix(wpRoot, configuredDocroot+string(filepath.Separator)) {
+		return "", "", false
+	}
+	return wpRoot, path[idx+len(marker):], true
+}
+
 // wpUpgradeRenameCandidates maps a path inside a WordPress upgrade staging
 // dir (wp-content/upgrade/<staging>/<package>/<rest>) to the destinations
 // WordPress moves it to on success: the plugin and theme dirs, or the
@@ -553,25 +573,16 @@ func looksLikeCompiledTemplate(head []byte) bool {
 // so a successful rename-based install makes the staged path vanish; the
 // probe checks these destinations before calling it a self-deleting drop.
 func wpUpgradeRenameCandidates(path, configuredDocroot string) []string {
-	const marker = "/wp-content/upgrade/"
-	if !filepath.IsAbs(path) || !filepath.IsAbs(configuredDocroot) ||
-		filepath.Clean(path) != path || filepath.Clean(configuredDocroot) != configuredDocroot {
+	wpRoot, rest, ok := wpUpgradeStagedPath(path, configuredDocroot)
+	if !ok {
 		return nil
 	}
-	idx := strings.Index(path, marker)
-	if idx < 0 {
-		return nil
-	}
-	wpRoot := path[:idx]
-	if wpRoot != configuredDocroot && !strings.HasPrefix(wpRoot, configuredDocroot+string(filepath.Separator)) {
-		return nil
-	}
-	rest := path[idx+len(marker):]
 	parts := strings.SplitN(rest, "/", 3)
 	if len(parts) < 3 || parts[1] == "" || parts[1] == "." || parts[1] == ".." ||
 		parts[2] == "" || filepath.Clean(parts[2]) != parts[2] {
-		// A file directly under upgrade/<staging>/ has no package dir and
-		// therefore no predictable install destination.
+		// A file directly under upgrade/<staging>/ has no package dir to
+		// move. The flat language-pack copy is handled by
+		// wpUpgradeInstallDestinations.
 		return nil
 	}
 	pkg, tail := parts[1], parts[2]
@@ -584,11 +595,51 @@ func wpUpgradeRenameCandidates(path, configuredDocroot string) []string {
 	}
 }
 
+// wpUpgradeInstallDestinations lists every place the WordPress updater puts
+// the bytes of a file it wrote under wp-content/upgrade/ before removing it:
+// the package-tree moves above, plus two copy-then-delete steps that leave no
+// package directory behind. Language packs unzip flat into
+// upgrade/<working>/ and are copied into wp-content/languages/ (plugins/ and
+// themes/ for those pack types). A core update copies the staged
+// wp-includes/version.php to upgrade/version-current.php, reads it, deletes
+// it, and later installs the same file as wp-includes/version.php.
+//
+// These paths only say where to look. A vanished file is cleared only when a
+// destination holds its exact bytes (same inode, or same size and full
+// SHA-256), so its content still sits on disk where every scan covers it. An
+// attacker who drops and deletes a file in the same places without leaving an
+// identical copy at the destination is still reported at full severity: the
+// new shapes deliberately do not join the structural demotion that the
+// package-tree shape gets in assessDropper.
+func wpUpgradeInstallDestinations(path, configuredDocroot string) []string {
+	if dests := wpUpgradeRenameCandidates(path, configuredDocroot); dests != nil {
+		return dests
+	}
+	wpRoot, rest, ok := wpUpgradeStagedPath(path, configuredDocroot)
+	if !ok {
+		return nil
+	}
+	parts := strings.Split(rest, "/")
+	switch {
+	case len(parts) == 1 && parts[0] == "version-current.php":
+		return []string{filepath.Join(wpRoot, "wp-includes", "version.php")}
+	case len(parts) == 2:
+		// Clean already rejected empty, "." and ".." components.
+		languages := filepath.Join(wpRoot, "wp-content", "languages")
+		return []string{
+			filepath.Join(languages, parts[1]),
+			filepath.Join(languages, "plugins", parts[1]),
+			filepath.Join(languages, "themes", parts[1]),
+		}
+	}
+	return nil
+}
+
 func dropperRenameTargetAllowed(c dropperCandidate, target string) bool {
 	if atomicTarget := atomicWriteRenameCandidate(c.Path); atomicTarget != "" && target == atomicTarget {
 		return true
 	}
-	for _, candidate := range wpUpgradeRenameCandidates(c.Path, c.Docroot) {
+	for _, candidate := range wpUpgradeInstallDestinations(c.Path, c.Docroot) {
 		if target == candidate {
 			return true
 		}
