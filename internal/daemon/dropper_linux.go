@@ -217,7 +217,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	}
 	var stable bool
 	c.Head, c.Size, stable = readDropperHead(event.fd, st, readFromFd)
-	c.ContentMayExecute = !stable
+	c.ContentUnsettled = !stable
 	// Copy exceptions must check even CREATE snapshots: a benign CLOSE_WRITE
 	// cannot erase an earlier payload. Blank snapshots carry no such evidence.
 	wpCopy := len(wpUpgradeCopyDestinations(c.Path, c.Docroot)) > 0

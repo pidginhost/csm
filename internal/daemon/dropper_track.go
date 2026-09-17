@@ -43,8 +43,13 @@ type dropperCandidate struct {
 	// Sticky across refreshes: truncating a previously executable snapshot
 	// must not turn its later deletion into a harmless empty guard.
 	ContentMayExecute bool
-	Digest            [32]byte
-	DigestKnown       bool
+	// ContentUnsettled marks retained bytes read while another writer changed
+	// the file. It describes only that snapshot. Every writer's close delivers
+	// its own snapshot, so a later complete read of the same file replaces
+	// this one; code seen in any snapshot stays in ContentMayExecute.
+	ContentUnsettled bool
+	Digest           [32]byte
+	DigestKnown      bool
 	// WPInstallData proves the complete, stable snapshot used for Digest was
 	// a translation return literal or version assignments, with no payload.
 	WPInstallData bool
@@ -181,6 +186,7 @@ func candidateKey(c dropperCandidate) dropperCandidateKey {
 }
 
 func ownDropperCandidate(c dropperCandidate) dropperCandidate {
+	// Torn bytes that already look like code are evidence, not noise.
 	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsInert(c)
 	if len(c.Head) > dropperTrackedHeadMax {
 		c.Head = c.Head[:dropperTrackedHeadMax]
@@ -510,7 +516,7 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if c.ContentSuspicious {
 		return dropperSuspect
 	}
-	if !c.WritePending && !c.ContentMayExecute && dropperCandidateIsInert(c) {
+	if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
 		return dropperBenign
 	}
 	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {

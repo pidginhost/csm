@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -329,4 +330,140 @@ func TestDropperInertPHPDataFileSignatureWins(t *testing.T) {
 	if len(due) != 1 || !due[0].ContentSuspicious || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
 		t.Fatalf("signature did not override the PHP exemption: %+v", due)
 	}
+}
+
+// wafAttackDataBody is shaped like a WAF attack log: a terminator header, a
+// signature and a binary row table the PHP compiler never reaches.
+var wafAttackDataBody = "<?php exit('Access denied'); __halt_compiler(); ?>\nwfWAF" +
+	strings.Repeat("\x00\x01\x7f\xfe", 512)
+
+// observeDuringConcurrentWrite keeps a second writer resizing path while the
+// analyzer snapshots it, the way concurrent requests append rows to a shared
+// WAF log while another request closes its handle. It returns once a snapshot
+// raced that writer and the writer has stopped.
+func observeDuringConcurrentWrite(t *testing.T, r *wpInstallRun, path string, body string) {
+	t.Helper()
+	w, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		chunk := []byte("\x00\x02\x7f\xfd")
+		for {
+			select {
+			case <-stop:
+				done <- w.Truncate(int64(len(body)))
+				return
+			default:
+			}
+			if _, err := w.WriteAt(chunk, int64(len(body))); err != nil {
+				done <- err
+				return
+			}
+			if err := w.Truncate(int64(len(body))); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	raced := false
+	deadline := time.Now().Add(10 * time.Second)
+	for !raced && time.Now().Before(deadline) {
+		r.observeCloseWrite(t, path)
+		raced = r.fm.dropper.tr.trackedCount() == 1
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !raced {
+		t.Fatal("no snapshot raced the concurrent writer")
+	}
+}
+
+func (r *wpInstallRun) observeCloseWrite(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	r.fm.observeDropperCandidate(fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, "pid=4242 cmd=lsphp uid=1000")
+}
+
+func replaceAtomically(t *testing.T, path, body string) {
+	t.Helper()
+	tmp := filepath.Join(filepath.Dir(path), "attack.tmp.example")
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A snapshot that raced another writer proves nothing about the bytes, but
+// that writer's own close delivers a complete snapshot. When that snapshot is
+// a data file, the later atomic replacement of the log is not a dropper.
+func TestDropperWAFLogSettledAfterConcurrentWrite(t *testing.T) {
+	docroot := t.TempDir()
+	path := filepath.Join(docroot, "wp-content", "wflogs", "attack-data.php")
+	writeWPInstallFile(t, path, wafAttackDataBody)
+	r := newWPInstallRun(t, docroot)
+	r.observeCloseWrite(t, path)
+	if r.fm.dropper.tr.trackedCount() != 0 {
+		t.Fatal("test must start from a data file the inert gate exempts")
+	}
+	observeDuringConcurrentWrite(t, r, path, wafAttackDataBody)
+	r.observeCloseWrite(t, path)
+	replaceAtomically(t, path, wafAttackDataBody)
+	r.probeAndFlush()
+	if len(*r.alerts) != 0 {
+		t.Fatalf("settled WAF log replacement raised %+v, want no finding", *r.alerts)
+	}
+}
+
+// Without a later complete snapshot the raced bytes stay unknown.
+func TestDropperWAFLogRacedSnapshotAloneStillReported(t *testing.T) {
+	for _, replaced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replaced=%v", replaced), func(t *testing.T) {
+			docroot := t.TempDir()
+			path := filepath.Join(docroot, "wp-content", "wflogs", "attack-data.php")
+			writeWPInstallFile(t, path, wafAttackDataBody)
+			r := newWPInstallRun(t, docroot)
+			observeDuringConcurrentWrite(t, r, path, wafAttackDataBody)
+			want := alert.Critical
+			if replaced {
+				replaceAtomically(t, path, wafAttackDataBody)
+				want = alert.Warning
+			} else if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			if got := *r.alerts; len(got) != 1 || got[0].sev != want || got[0].path != path {
+				t.Fatalf("raced snapshot findings = %+v, want one %v", got, want)
+			}
+		})
+	}
+}
+
+// Code seen in any snapshot outlives a later complete data snapshot.
+func TestDropperWAFLogNameWithCodeStillCritical(t *testing.T) {
+	docroot := t.TempDir()
+	path := filepath.Join(docroot, "wp-content", "wflogs", "attack-data.php")
+	writeWPInstallFile(t, path, testDropperPHP)
+	r := newWPInstallRun(t, docroot)
+	r.observeCloseWrite(t, path)
+	if err := os.WriteFile(path, []byte(wafAttackDataBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.observeCloseWrite(t, path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	assertSingleCriticalDropper(t, *r.alerts, path)
 }

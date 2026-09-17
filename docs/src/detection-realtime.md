@@ -72,7 +72,10 @@ Complete blank files are excluded from dropper alerts after a close-write
 observation. Metadata-only changes during the read, such as an unlink, are
 retried only while content metadata, executable mode and the retained bytes
 remain unchanged. An observed write stays inconclusive even if a subsequent
-read could catch a quiet interval.
+read could catch a quiet interval. Every writer delivers its own close-write
+when it finishes, so a complete read from a later close-write of the same file
+replaces an inconclusive one. A read taken earlier than the inconclusive one
+does not, and code seen in any read is never forgotten.
 
 PHP files are also excluded when their first statement stops the interpreter
 (`exit`, `die`, or `__halt_compiler`, with at most a plain literal argument and
