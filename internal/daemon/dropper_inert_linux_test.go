@@ -405,24 +405,41 @@ func replaceAtomically(t *testing.T, path, body string) {
 	}
 }
 
-// A snapshot that raced another writer proves nothing about the bytes, but
-// that writer's own close delivers a complete snapshot. When that snapshot is
-// a data file, the later atomic replacement of the log is not a dropper.
-func TestDropperWAFLogSettledAfterConcurrentWrite(t *testing.T) {
-	docroot := t.TempDir()
-	path := filepath.Join(docroot, "wp-content", "wflogs", "attack-data.php")
-	writeWPInstallFile(t, path, wafAttackDataBody)
-	r := newWPInstallRun(t, docroot)
-	r.observeCloseWrite(t, path)
-	if r.fm.dropper.tr.trackedCount() != 0 {
-		t.Fatal("test must start from a data file the inert gate exempts")
-	}
-	observeDuringConcurrentWrite(t, r, path, wafAttackDataBody)
-	r.observeCloseWrite(t, path)
-	replaceAtomically(t, path, wafAttackDataBody)
-	r.probeAndFlush()
-	if len(*r.alerts) != 0 {
-		t.Fatalf("settled WAF log replacement raised %+v, want no finding", *r.alerts)
+// Code can run between a raced read and a complete harmless rewrite. The
+// later close cannot rule that out, even when the retained bytes look inert.
+func TestDropperWAFLogRewriteAfterConcurrentWriteStillReported(t *testing.T) {
+	for _, replaced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replaced=%v", replaced), func(t *testing.T) {
+			docroot := t.TempDir()
+			path := filepath.Join(docroot, "wp-content", "wflogs", "attack-data.php")
+			writeWPInstallFile(t, path, wafAttackDataBody)
+			r := newWPInstallRun(t, docroot)
+			r.observeCloseWrite(t, path)
+			if r.fm.dropper.tr.trackedCount() != 0 {
+				t.Fatal("test must start from an exempt data file")
+			}
+			observeDuringConcurrentWrite(t, r, path, wafAttackDataBody)
+			// Delayed close-write analysis can read only the restored header,
+			// even if an earlier write exposed code.
+			if err := os.WriteFile(path, []byte(testDropperPHP), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(wafAttackDataBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r.observeCloseWrite(t, path)
+			want := alert.Critical
+			if replaced {
+				replaceAtomically(t, path, wafAttackDataBody)
+				want = alert.Warning
+			} else if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			if got := *r.alerts; len(got) != 1 || got[0].sev != want || got[0].path != path {
+				t.Fatalf("raced rewrite findings = %+v, want one %v", got, want)
+			}
+		})
 	}
 }
 

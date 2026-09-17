@@ -64,6 +64,11 @@ func TestDropperUploadExecutionProbeLookalikesStillReported(t *testing.T) {
 			c.Size = int64(len(c.Head))
 		}},
 		{"prefix of larger file", func(c *dropperCandidate) { c.Size += 4096 }},
+		{"trailing newline", func(c *dropperCandidate) {
+			c.Head = append(c.Head, '\n')
+			c.Size = int64(len(c.Head))
+		}},
+		{"partial read", func(c *dropperCandidate) { c.Head = c.Head[:len(c.Head)-1] }},
 		{"CRLF variant", func(c *dropperCandidate) {
 			c.Head = []byte(strings.ReplaceAll(probe, "\n", "\r\n"))
 			c.Size = int64(len(c.Head))

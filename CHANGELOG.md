@@ -13,6 +13,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 - A self-deleting file in WordPress update staging can no longer escape its alert by breaking the location where an installed copy of it would be looked for.
 - Translation files with concealed executable content no longer qualify as harmless data.
+- Self-deleting file detection retains uncertainty from concurrent writes, and WordPress checksum lookups have bounded background work and retries.
 
 ### Fixed
 
@@ -25,7 +26,6 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Suppressing alerts for blocked addresses now also covers brute force, scanner and other attack alerts whose source was blocked or challenged, not only reputation alerts. Compromise evidence, successful logins, suspicious mail and attacks spread across many addresses still alert.
 - PHP Shield no longer reports a webshell command parameter when a scanner probes a missing script and the site's verified, unmodified front controller answers instead. Modified or unverified scripts still alert, and quieted probes stay in the local event archive.
 - WordPress translation and core updates no longer raise critical self-deleting file alerts when the updater copies a staged file into place and removes the original, including when file events arrive out of order. Only complete translation or version data qualifies, and a file removed from the same staging paths without an identical installed copy is still reported.
-- A firewall log read while other requests were still writing it no longer raises a self-deleting file warning once a later complete read shows it holds only data.
 - The upload execution test script Really Simple Security creates and deletes no longer raises a critical self-deleting file alert, while any other content under that name still does.
 - A WordPress core update that stops after reading its new version file no longer raises a critical self-deleting file alert when that file matches the official release it names, while an unverified file is still reported.
 

@@ -44,10 +44,8 @@ type dropperCandidate struct {
 	// Sticky across refreshes: truncating a previously executable snapshot
 	// must not turn its later deletion into a harmless empty guard.
 	ContentMayExecute bool
-	// ContentUnsettled marks retained bytes read while another writer changed
-	// the file. It describes only that snapshot. Every writer's close delivers
-	// its own snapshot, so a later complete read of the same file replaces
-	// this one; code seen in any snapshot stays in ContentMayExecute.
+	// ContentUnsettled is sticky: a later harmless snapshot cannot rule out
+	// code that ran while an earlier read raced a writer.
 	ContentUnsettled bool
 	Digest           [32]byte
 	DigestKnown      bool
@@ -212,6 +210,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.PHPExecutable = prev.PHPExecutable || next.PHPExecutable
 	merged.ContentSuspicious = prev.ContentSuspicious || next.ContentSuspicious
 	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
+	merged.ContentUnsettled = prev.ContentUnsettled || next.ContentUnsettled
 	merged.WPInstallUnsafe = prev.WPInstallUnsafe || next.WPInstallUnsafe
 	// CREATE may reach an analyzer after CLOSE_WRITE for the same inode.
 	merged.WritePending = prev.WritePending && next.WritePending

@@ -35,7 +35,7 @@ directory, repeated after the normal alert cooldown if activity continues.
 
 **Detects:**
 - Webshell creation (PHP files in web directories)
-- Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. A file whose exact bytes WordPress moved or copied into place before removing the original is not reported: plugin, theme and core packages, language packs, and the version file a core update reads first. Language-pack and version-probe copies also require a complete, stable data-only snapshot with no suspicious content or earlier unsafe write. A core update that stops after reading its version file leaves the old release installed, so no installed copy matches; that version file is not reported when its bytes equal the wordpress.org checksum for the release and locale it declares. The checksum download starts when the file appears, and a file still unverified at the deletion probe is reported. Other executable files do not qualify for this copy exception. The script Really Simple Security copies into uploads to test whether PHP runs there, then deletes, is not reported when its content is byte for byte the shipped script; any other content under that name is. A file removed from staging without an identical installed copy is still reported. Upgrade staging, atomic-save temp files, template compile caches, a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`. Candidate tracking and findings held for aggregation each accept up to 16,384 entries; additional work is refused without evicting older evidence. Status and doctor report refusals, exhausted probes, overdue work and stalled processing through [protection queue health](api.md#protection-queue-health).
+- Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. A file whose exact bytes WordPress moved or copied into place before removing the original is not reported: plugin, theme and core packages, language packs, and the version file a core update reads first. Language-pack and version-probe copies also require a complete, stable data-only snapshot with no suspicious content or earlier unsafe write. A core update that stops after reading its version file leaves the old release installed, so no installed copy matches; that version file is not reported when its bytes equal the wordpress.org checksum for the release and locale it declares. Checksum downloads start in the background when capacity permits, and a file still unverified at the deletion probe is reported. Other executable files do not qualify for this copy exception. The script Really Simple Security copies into uploads to test whether PHP runs there, then deletes, is not reported when its content is byte for byte the shipped script; any other content under that name is. Other files removed from staging without an identical installed copy are still reported. Upgrade staging, atomic-save temp files, template compile caches, a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`. Candidate tracking and findings held for aggregation each accept up to 16,384 entries; additional work is refused without evicting older evidence. Status and doctor report refusals, exhausted probes, overdue work and stalled processing through [protection queue health](api.md#protection-queue-health).
 - Dropper admission and pending findings follow the live `suppressions.ignore_paths` list after reload. Intentionally suppressed candidates consume no tracker capacity; losses of eligible candidates still raise the capacity warning.
 - PHP in uploads, languages, upgrade directories
 - PHP in `.ssh`, `.cpanel`, mail directories (critical escalation)
@@ -72,10 +72,18 @@ Complete blank files are excluded from dropper alerts after a close-write
 observation. Metadata-only changes during the read, such as an unlink, are
 retried only while content metadata, executable mode and the retained bytes
 remain unchanged. An observed write stays inconclusive even if a subsequent
-read could catch a quiet interval. Every writer delivers its own close-write
-when it finishes, so a complete read from a later close-write of the same file
-replaces an inconclusive one. A read taken earlier than the inconclusive one
-does not, and code seen in any read is never forgotten.
+read could catch a quiet interval. A later complete close-write snapshot
+cannot rule out code that ran during an earlier unstable read. That
+uncertainty and code seen in any read remain attached to the tracked file.
+Concurrent firewall-log writes can therefore still produce a warning when
+the log is replaced, or a critical finding when it is deleted.
+
+Core-release checksum downloads are non-blocking and bounded, including
+their retry timers. Repeated misses and streams of distinct release names
+share an admission budget. When that budget is exhausted, cached checksums
+remain usable; an uncached file stays unverified and receives the normal
+dropper assessment. A later observation can request checksums again after
+the budget recovers.
 
 PHP files are also excluded when their first statement stops the interpreter
 (`exit`, `die`, or `__halt_compiler`, with at most a plain literal argument and

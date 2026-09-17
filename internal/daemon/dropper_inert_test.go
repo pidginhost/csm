@@ -333,8 +333,8 @@ func TestDropperInertPHPDataFileGateDoesNotCoverExecutables(t *testing.T) {
 	}
 }
 
-// A raced snapshot is settled only by bytes read after it. Refreshes can reach
-// the tracker out of order, so an older complete read must not replace it.
+// A stable read cannot prove what ran during an earlier raced read. Keep
+// uncertainty regardless of the order analyzer workers deliver snapshots.
 func TestDropperInertUnsettledSnapshotOrdering(t *testing.T) {
 	base := time.Unix(1_770_000_000, 0)
 	data := dropperCandidate{
@@ -359,11 +359,12 @@ func TestDropperInertUnsettledSnapshotOrdering(t *testing.T) {
 		delivered []snapshot
 		want      dropperVerdict
 	}{
-		{"complete read after race", []snapshot{{true, 0}, {false, time.Second}}, dropperBenign},
+		{"complete read after race", []snapshot{{true, 0}, {false, time.Second}}, dropperDemotedReplaced},
 		{"race after complete read", []snapshot{{false, 0}, {true, time.Second}}, dropperDemotedReplaced},
 		{"older complete read delivered late", []snapshot{{true, time.Second}, {false, 0}}, dropperDemotedReplaced},
-		{"older race delivered late", []snapshot{{false, time.Second}, {true, 0}}, dropperBenign},
-		{"race between complete reads", []snapshot{{false, 0}, {true, time.Second}, {false, 2 * time.Second}}, dropperBenign},
+		{"older race delivered late", []snapshot{{false, time.Second}, {true, 0}}, dropperDemotedReplaced},
+		{"race between complete reads", []snapshot{{false, 0}, {true, time.Second}, {false, 2 * time.Second}}, dropperDemotedReplaced},
+		{"late intermediate read", []snapshot{{false, 0}, {true, 2 * time.Second}, {false, time.Second}}, dropperDemotedReplaced},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tr := newDropperTracker(dropperTestTTL)
@@ -378,6 +379,9 @@ func TestDropperInertUnsettledSnapshotOrdering(t *testing.T) {
 			due := tr.Due(base.Add(time.Hour))
 			if len(due) != 1 {
 				t.Fatalf("got %d candidates, want 1", len(due))
+			}
+			if got := assessDropper(due[0], dropperProbe{Conclusive: true}); got != dropperSuspect {
+				t.Fatalf("raced file deletion = %v, want suspect", got)
 			}
 			successor := dropperFileState{Path: data.Path, Device: data.Device, Inode: data.Inode + 1,
 				IsRegular: true, BirthKnown: true, Birth: base.Add(time.Hour)}
