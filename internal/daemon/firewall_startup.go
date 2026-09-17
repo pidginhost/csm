@@ -181,6 +181,11 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	// so ProviderNets() always returns the cached or embedded snapshot here.
 	engine.SetDOSExemptProviderNets(mailranges.ProviderNets())
 
+	// Apply is itself a mutation and refuses pending actions. Recover first,
+	// retaining the boundary for operator resolution even if Apply fails.
+	d.fwActions, _ = any(engine).(firewallActionBoundary)
+	recoverFirewallActions(d.fwActions)
+
 	if err := ops.apply(engine); err != nil {
 		return nil, fmt.Errorf("applying firewall: %w", err)
 	}

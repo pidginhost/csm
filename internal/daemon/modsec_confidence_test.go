@@ -101,7 +101,7 @@ func TestClassifyModSecConfidence(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := classifyModSecConfidence(tt.ruleNum, tt.msg, tt.tags)
+			got := classifyModSecConfidence(tt.ruleNum, tt.msg, tt.tags, "")
 			if got != tt.want {
 				t.Fatalf("classifyModSecConfidence(%d, %q, %q) = %v, want %v",
 					tt.ruleNum, tt.msg, tt.tags, got, tt.want)
@@ -128,7 +128,7 @@ func TestClassifyModSecKnownLowRules(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.msg, func(t *testing.T) {
-			got := classifyModSecConfidence(tt.ruleNum, tt.msg, "")
+			got := classifyModSecConfidence(tt.ruleNum, tt.msg, "", "")
 			if got != modsecConfLow {
 				t.Fatalf("classifyModSecConfidence(%d, %q, \"\") = %v, want %v",
 					tt.ruleNum, tt.msg, got, modsecConfLow)

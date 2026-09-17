@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,10 +34,9 @@ type modsecDenyEvent struct {
 type modsecIPCounter struct {
 	mu              sync.Mutex
 	events          []modsecDenyEvent
-	escalated       bool         // latched once escalation fires; reset when the window drains
-	lastEscalated   time.Time    // lets a sustained source refresh an expired firewall block
-	lowBurstEmitted bool         // latched once the low-confidence burst finding fires
-	gapEmitted      map[int]bool // rule IDs that already raised a classifier-gap this window
+	escalated       bool      // latched once escalation fires; reset when the window drains
+	lastEscalated   time.Time // lets a sustained source refresh an expired firewall block
+	lowBurstEmitted bool      // latched once the low-confidence burst finding fires
 }
 
 // modsecEscalationOutcome reports what a single recorded event should produce.
@@ -58,11 +58,21 @@ var (
 	modsecBlockCount sync.Map // key: IP → value: *modsecIPCounter
 )
 
+// Classifier gaps describe the confidence table, not a source, so they are
+// tracked per rule ID for the whole host.
+var (
+	modsecGapMu       sync.Mutex
+	modsecGapReported = map[int]time.Time{}
+)
+
 const (
 	modsecDedupTTL              = 60 * time.Second
 	modsecEvictInterval         = 10 * time.Minute
 	modsecDefaultEscalationWin  = 10 * time.Minute
 	modsecDefaultEscalationHits = 3
+	// modsecClassifierGapInterval is how long one unknown rule stays quiet after
+	// its classifier-gap finding before an unresolved gap is reported again.
+	modsecClassifierGapInterval = 24 * time.Hour
 )
 
 // modsecEscalationParams returns the operator-tuned (hits, window) pair,
@@ -186,7 +196,7 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	if n, err := strconv.Atoi(ruleID); err == nil {
 		ruleNum = n
 	}
-	conf := classifyModSecConfidence(ruleNum, msg, extractAllModSecFields(line, `[tag "`, `"]`))
+	conf := classifyModSecConfidence(ruleNum, msg, extractAllModSecFields(line, `[tag "`, `"]`), extractModSecRuleFile(line))
 
 	// Determine severity from confidence. Individual low-confidence and unknown
 	// blocks stay Warning so the confidence-gated escalation path remains the
@@ -304,6 +314,22 @@ func extractModSecField(line, start, end string) string {
 	return rest[:endIdx]
 }
 
+// extractModSecRuleFile returns the base name of the rule file that matched.
+// Apache writes it as [file "..."]; LiteSpeed as "at [path:line]".
+func extractModSecRuleFile(line string) string {
+	path := extractModSecField(line, `[file "`, `"]`)
+	if path == "" {
+		path = extractModSecField(line, "] at [", "]")
+		if idx := strings.LastIndex(path, ":"); idx > 0 {
+			path = path[:idx]
+		}
+	}
+	if path == "" {
+		return ""
+	}
+	return filepath.Base(path)
+}
+
 // extractAllModSecFields returns every value delimited by start/end, joined by
 // a space. ModSecurity lines carry repeated [tag "..."] fields; the confidence
 // classifier needs all of them, not just the first.
@@ -410,7 +436,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// (low). See docs/superpowers/specs/2026-06-27-modsec-escalation-fp-options.md.
 	msg := extractModSecField(line, `[msg "`, `"]`)
 	tags := extractAllModSecFields(line, `[tag "`, `"]`)
-	conf := classifyModSecConfidence(ruleNum, msg, tags)
+	conf := classifyModSecConfidence(ruleNum, msg, tags, extractModSecRuleFile(line))
 
 	// Operator override (Rules page): exclude a rule ID from escalation. Coarse
 	// and dual-use-unsafe on its own; the classifier is the primary control.
@@ -494,9 +520,9 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 //     low-confidence-only denies reach the lowConfHits backstop.
 //   - lowConfBurst (non-actioned visibility) fires when the hit count is reached
 //     with only low-confidence evidence and the backstop is not yet met.
-//   - classifierGap (non-actioned visibility) fires once per unknown rule ID per
-//     window so new vendor packs are noticed instead of silently taking the
-//     low-confidence path.
+//   - classifierGap (non-actioned visibility) fires once per unknown rule ID
+//     host-wide per modsecClassifierGapInterval so new vendor packs are noticed
+//     instead of silently taking the low-confidence path.
 //
 // Repeating one high-confidence rule still escalates: diversity is never
 // required when high-confidence evidence is present. hits/lowConfHits/window are
@@ -527,7 +553,6 @@ func recordModSecEventWithRearm(ip string, now time.Time, rule int, conf modsecC
 		ctr.escalated = false
 		ctr.lastEscalated = time.Time{}
 		ctr.lowBurstEmitted = false
-		ctr.gapEmitted = nil
 	} else {
 		before := summarizeModSecEvents(ctr.events)
 		normalBefore, backstopBefore := modsecTriggerStates(before, hits, lowConfHits)
@@ -543,15 +568,8 @@ func recordModSecEventWithRearm(ip string, now time.Time, rule int, conf modsecC
 
 	var out modsecEscalationOutcome
 
-	// Classifier gap: a new unknown rule, reported once per window.
 	if conf == modsecConfUnknown {
-		if ctr.gapEmitted == nil {
-			ctr.gapEmitted = make(map[int]bool)
-		}
-		if !ctr.gapEmitted[rule] {
-			ctr.gapEmitted[rule] = true
-			out.classifierGap = true
-		}
+		out.classifierGap = claimModSecClassifierGap(rule, now)
 	}
 
 	normalFire, backstopFire := modsecTriggerStates(summary, hits, lowConfHits)
@@ -690,7 +708,6 @@ func evictModSecStateWithLowConf(now time.Time, hits, lowConfHits int, window ti
 			ctr.lastEscalated = time.Time{}
 		}
 		if empty {
-			ctr.gapEmitted = nil
 			ctr.lastEscalated = time.Time{}
 			ctr.lowBurstEmitted = false
 		}
@@ -701,4 +718,25 @@ func evictModSecStateWithLowConf(now time.Time, hits, lowConfHits int, window ti
 		}
 		return true
 	})
+
+	modsecGapMu.Lock()
+	for rule, reported := range modsecGapReported {
+		if now.Sub(reported) >= modsecClassifierGapInterval {
+			delete(modsecGapReported, rule)
+		}
+	}
+	modsecGapMu.Unlock()
+}
+
+// claimModSecClassifierGap reports whether this hit of an unknown rule should
+// raise the classifier-gap finding: the first hit host-wide, then again once
+// per modsecClassifierGapInterval while the rule stays unclassified.
+func claimModSecClassifierGap(rule int, now time.Time) bool {
+	modsecGapMu.Lock()
+	defer modsecGapMu.Unlock()
+	if reported, ok := modsecGapReported[rule]; ok && now.Sub(reported) < modsecClassifierGapInterval {
+		return false
+	}
+	modsecGapReported[rule] = now
+	return true
 }

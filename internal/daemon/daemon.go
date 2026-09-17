@@ -79,16 +79,19 @@ type Daemon struct {
 	ipList           *challenge.IPList
 	challengeGate    challenge.PortGate
 	fwEngine         *firewall.Engine
-	fwStartupError   string     // finalized before status servers start
-	baselineMu       sync.Mutex // serialises CmdBaseline handler runs
-	geoipDB          *geoip.DB
-	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
-	version          string
-	blockDigest      *blockdigest.Collector
-	alertCh          chan alert.Finding
-	alertQueue       *queuehealth.Tracker
-	queueSourcesMu   sync.RWMutex
-	queueSources     map[string]queueSource
+	// fwActions retains the durable-action boundary even after failed startup,
+	// so pending actions remain recoverable while the firewall is unmanaged.
+	fwActions      firewallActionBoundary
+	fwStartupError string     // finalized before status servers start
+	baselineMu     sync.Mutex // serialises CmdBaseline handler runs
+	geoipDB        *geoip.DB
+	geoipMu        sync.Mutex // protects geoipDB for publishGeoIP
+	version        string
+	blockDigest    *blockdigest.Collector
+	alertCh        chan alert.Finding
+	alertQueue     *queuehealth.Tracker
+	queueSourcesMu sync.RWMutex
+	queueSources   map[string]queueSource
 	// alertHold, while open, keeps the dispatcher draining alertCh into its
 	// batch without dispatching, so realtime producers (which never block)
 	// lose nothing during the synchronous startup baseline. The ingest queue
@@ -518,6 +521,10 @@ func firewallMetricsRuleCounts() firewall.RuleCounts {
 
 func (d *Daemon) setFirewallEngine(engine *firewall.Engine) {
 	d.fwEngine = engine
+	d.fwActions = nil
+	if boundary, ok := any(engine).(firewallActionBoundary); ok {
+		d.fwActions = boundary
+	}
 	setFirewallMetricsEngine(engine)
 }
 
@@ -856,48 +863,7 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	d.store.AppendHistory(initialFindings)
-	newFindings := d.store.FilterNew(initialFindings)
-	suppressions := d.store.LoadSuppressions()
-	initialAutoResponseFindings := initialFindings
-	if len(suppressions) > 0 {
-		initialAutoResponseFindings = filterUnsuppressedFindings(d.store, initialFindings, suppressions)
-		newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
-	}
-
-	// Permission auto-fix runs on ALL findings (not just new) because
-	// it's safe/idempotent and should fix baseline findings too.
-	permActions, permFixedKeys := checks.AutoFixPermissions(initialCfg, initialAutoResponseFindings)
-
-	// Challenge routing runs on ALL findings unconditionally when enabled, so an
-	// eligible IP is on the challenge list before AutoBlockIPs (below, guarded by
-	// newFindings) checks membership. Not folded into ChallengeThenBlock here:
-	// challenge must route even with no new findings (re-establishing challenges
-	// on restart) while the block stage stays gated on new findings.
-	challengeActions := checks.ChallengeRouteIPs(initialCfg, initialAutoResponseFindings)
-
-	// Other auto-response only on new findings
-	if len(newFindings) > 0 {
-		killActions := checks.AutoKillProcesses(d.scanContext(), initialCfg, newFindings)
-		quarantineActions := checks.AutoQuarantineFiles(initialCfg, newFindings)
-		blockActions := checks.AutoBlockIPs(initialCfg, initialAutoResponseFindings)
-		d.observeBlocks(blockActions)
-		newFindings = append(newFindings, killActions...)
-		newFindings = append(newFindings, quarantineActions...)
-		newFindings = append(newFindings, permActions...)
-		newFindings = append(newFindings, challengeActions...)
-		newFindings = append(newFindings, blockActions...)
-		// Cross-account correlation runs on the initial batch too, not
-		// just on subsequent ticks. Otherwise three account compromises
-		// landing in the first scan slip past with no synthetic alert.
-		newFindings = expandWithCorrelation(newFindings, time.Now())
-		co := IncidentCorrelator()
-		for _, f := range newFindings {
-			_, _, _ = co.OnFinding(f)
-		}
-	}
-	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), newFindings...)
-	_ = alert.DispatchWithSources(initialCfg, operatorAlertableFindings(newFindings), initialAuditSources)
+	newFindings, permFixedKeys := d.respondToInitialScan(initialCfg, initialFindings)
 
 	// Remove auto-fixed findings before storing to UI
 	if len(permFixedKeys) > 0 {
@@ -1499,16 +1465,13 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	findings = alert.Deduplicate(findings)
 	suppressions := d.store.LoadSuppressions()
-	autoResponseFindings := findings
-	if len(suppressions) > 0 {
-		autoResponseFindings = filterUnsuppressedFindings(d.store, findings, suppressions)
-	}
+	remediableFindings := filterUnsuppressedFindings(d.store, findings, suppressions)
 
 	// Record ALL findings in attack database (before filtering -
 	// repeated attacks from the same IP must still be counted even if
-	// the alert is suppressed by FilterNew).
+	// the alert is suppressed by FilterNew or a suppression rule).
 	if adb := attackdb.Global(); adb != nil {
-		for _, f := range autoResponseFindings {
+		for _, f := range findings {
 			adb.RecordFinding(f)
 		}
 	}
@@ -1520,8 +1483,11 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	// Challenge routing runs FIRST - claims eligible IPs before hard-blocking.
 	// One ordered helper guarantees that ordering on every auto-response path.
-	challengeActions, blockActions := checks.ChallengeThenBlock(cfg, autoResponseFindings)
-	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, autoResponseFindings)
+	// Suppression rules do not gate IP responses: they mute a check, and a
+	// check-wide rule would otherwise leave every attacker it reports
+	// unblocked. An IP false positive belongs on the allowlist.
+	challengeActions, blockActions := checks.ChallengeThenBlock(cfg, findings)
+	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, remediableFindings)
 
 	// Mark auto-blocked IPs in attack database
 	if adb := attackdb.Global(); adb != nil {
@@ -1538,55 +1504,64 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	// Filter through state - only new findings get alerted and logged
-	newFindings := d.store.FilterNew(findings)
+	unfilteredNew := d.store.FilterNew(findings)
 
-	// Filter out suppressed findings - prevents email/webhook alerts for
-	// paths the admin has explicitly suppressed (e.g. false positives).
+	// responseFindings is every new observation and action, suppressed or not:
+	// incidents and central enforcement act on it. newFindings drops what
+	// suppression rules match, which mutes notifications and remediation.
 	// Suppressions are stored in state/suppressions.json, not in rule files.
-	if len(suppressions) > 0 {
-		newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
-	}
-
-	// Append auto-response actions to new findings for alerting
-	newFindings = append(newFindings, blockActions...)
-	newFindings = append(newFindings, challengeActions...)
-	newFindings = append(newFindings, permActions...)
+	responseFindings := append([]alert.Finding(nil), unfilteredNew...)
+	responseFindings = append(responseFindings, blockActions...)
+	responseFindings = append(responseFindings, challengeActions...)
+	responseFindings = append(responseFindings, permActions...)
 
 	// PHP-relay AutoFreeze: emit any new findings produced by post-emit
 	// freeze decisions back into the dispatched batch so operators see
 	// the action outcome alongside the original finding. Nil-guard for
 	// non-cPanel / non-linux hosts where wiring is skipped.
 	if d.autoFreezer != nil {
-		if freezeFindings := d.autoFreezer.Apply(autoResponseFindings); len(freezeFindings) > 0 {
-			newFindings = append(newFindings, freezeFindings...)
+		if freezeFindings := d.autoFreezer.Apply(remediableFindings); len(freezeFindings) > 0 {
+			responseFindings = append(responseFindings, freezeFindings...)
 		}
 	}
 
-	if len(newFindings) == 0 {
+	if len(responseFindings) == 0 {
 		_ = alert.DispatchWithSources(cfg, nil, auditSources)
 		d.store.Update(findings)
 		return
 	}
 
-	// Log to history
+	// Copy: with no rules the filter returns its input, and both slices grow.
+	newFindings := append([]alert.Finding(nil), filterUnsuppressedFindings(d.store, responseFindings, suppressions)...)
 	d.store.AppendHistory(newFindings)
 	d.observeBlocks(blockActions)
 
-	// Kill, quarantine, and DB cleanup only run on NEW findings
+	// Kill and quarantine only run on new, unsuppressed findings.
 	killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
-	dbCleanActions := checks.AutoRespondDBMalware(cfg, newFindings)
-	newFindings = append(newFindings, killActions...)
-	newFindings = append(newFindings, quarantineActions...)
-	newFindings = append(newFindings, dbCleanActions...)
+	// Database response also discovers attacker session IPs. Suppressions
+	// stop SQL writes and session revocation, but not those IP blocks.
+	dbActions := autoRespondDBMalware(cfg, unfilteredNew, func(f alert.Finding) bool {
+		return !d.store.IsSuppressed(f, suppressions)
+	})
+	for _, actions := range [][]alert.Finding{killActions, quarantineActions, dbActions} {
+		responseFindings = append(responseFindings, actions...)
+		newFindings = append(newFindings, filterUnsuppressedFindings(d.store, actions, suppressions)...)
+	}
 
-	// Correlation
+	// Correlation derives notifications, so it reads only unsuppressed
+	// findings; its derived findings still reach incidents and enforcement.
+	uncorrelated := len(newFindings)
 	newFindings = expandWithCorrelation(newFindings, time.Now())
+	responseFindings = append(responseFindings, newFindings[uncorrelated:]...)
 
 	co := IncidentCorrelator()
-	for _, f := range newFindings {
+	for _, f := range alert.Deduplicate(responseFindings) {
 		_, _, _ = co.OnFinding(f)
 	}
+	// Derived findings may themselves be suppressed. Keep them in the
+	// response set while applying their rules before notification fanout.
+	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 
 	// Broadcast findings (no-op; dashboard uses polling)
 	if d.webServer != nil {
@@ -1597,8 +1572,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// informational or fully automated (no human action needed).
 	// These are all visible in the web UI for forensics.
 	alertable := operatorAlertableFindings(newFindings)
-	auditSources = append(auditSources, newFindings...)
-	if err := alert.DispatchWithSources(cfg, alertable, auditSources); err != nil {
+	auditSources = append(auditSources, responseFindings...)
+	if err := alert.DispatchWithEnforcement(cfg, alertable, auditSources, responseFindings); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -1606,9 +1581,65 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.store.MarkAlerted(newFindings)
 }
 
+// respondToInitialScan records the baseline scan, runs its auto-response and
+// dispatches the resulting alerts. It returns the alerted findings and the keys
+// of findings the permission auto-fix repaired.
+func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []alert.Finding) ([]alert.Finding, []string) {
+	d.store.AppendHistory(initialFindings)
+	unfilteredNew := d.store.FilterNew(initialFindings)
+	suppressions := d.store.LoadSuppressions()
+	// Copy: with no rules the filter returns its input, and newFindings grows.
+	newFindings := append([]alert.Finding(nil), filterUnsuppressedFindings(d.store, unfilteredNew, suppressions)...)
+
+	// Permission auto-fix runs on ALL findings (not just new) because
+	// it's safe/idempotent and should fix baseline findings too.
+	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, filterUnsuppressedFindings(d.store, initialFindings, suppressions))
+
+	// Challenge routing runs on ALL findings unconditionally when enabled, so an
+	// eligible IP is on the challenge list before AutoBlockIPs (below, guarded by
+	// new findings) checks membership. Not folded into ChallengeThenBlock here:
+	// challenge must route even with no new findings (re-establishing challenges
+	// on restart) while the block stage stays gated on new findings. As in
+	// dispatchBatch, suppression rules do not gate IP responses.
+	challengeActions := checks.ChallengeRouteIPs(cfg, initialFindings)
+
+	// Other auto-response only on new findings. As in dispatchBatch,
+	// responseFindings keeps suppressed observations for incidents and
+	// central enforcement while newFindings carries what may notify.
+	var responseFindings []alert.Finding
+	if len(unfilteredNew) > 0 {
+		killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
+		quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
+		blockActions := checks.AutoBlockIPs(cfg, initialFindings)
+		d.observeBlocks(blockActions)
+		responseFindings = append(responseFindings, unfilteredNew...)
+		for _, actions := range [][]alert.Finding{killActions, quarantineActions, permActions, challengeActions, blockActions} {
+			responseFindings = append(responseFindings, actions...)
+			newFindings = append(newFindings, filterUnsuppressedFindings(d.store, actions, suppressions)...)
+		}
+		// Cross-account correlation runs on the initial batch too, not
+		// just on subsequent ticks. Otherwise three account compromises
+		// landing in the first scan slip past with no synthetic alert.
+		uncorrelated := len(newFindings)
+		newFindings = expandWithCorrelation(newFindings, time.Now())
+		responseFindings = append(responseFindings, newFindings[uncorrelated:]...)
+		co := IncidentCorrelator()
+		for _, f := range alert.Deduplicate(responseFindings) {
+			_, _, _ = co.OnFinding(f)
+		}
+	}
+	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
+	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
+	_ = alert.DispatchWithEnforcement(cfg, operatorAlertableFindings(newFindings), initialAuditSources, responseFindings)
+	return newFindings, permFixedKeys
+}
+
 // autoFixWPCron lets daemon wiring tests avoid real wp-config.php and crontab
 // edits; the checks package covers those side effects directly.
 var autoFixWPCron = checks.AutoFixWPCron
+
+// Database wiring tests exercise suppression policy without a live MySQL host.
+var autoRespondDBMalware = checks.AutoRespondDBMalwareWithPolicy
 
 // processScanFindings handles the output of a deep or periodic scan: it persists
 // the findings to the latest-findings surface, runs the auto-responses that act
@@ -1881,6 +1912,9 @@ func (d *Daemon) heartbeat() {
 		case <-ticker.C:
 			alert.SendHeartbeat(d.currentCfg())
 			d.hijackDetector.Cleanup()
+			// Failed startup can leave only the recovery boundary available.
+			// Settle pending outcomes before attempting cleanup mutations.
+			recoverFirewallActions(d.fwActions)
 			// Clean expired temporary allows
 			if d.fwEngine != nil {
 				d.fwEngine.CleanExpiredAllows()
@@ -2815,6 +2849,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			Source:       checks.BlockSourceChallenge,
 			FindingID:    e.FindingID,
 		})
+		recorded = append(recorded, res.Findings...)
 		if err != nil {
 			// Own-interface / infra IPs are never blockable, and a host
 			// without a firewall engine cannot escalate; both are expected
@@ -2822,11 +2857,12 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) {
 				fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
 			}
-			continue
+			if res.Outcome != firewall.BlockOutcomeLive || !errors.Is(err, firewall.ErrActionAuditPending) {
+				continue
+			}
 		}
 		observeChallengeEscalated(res.Outcome)
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, res.Outcome))
-		recorded = append(recorded, res.Findings...)
 	}
 	d.recordAppliedBlocks(recorded)
 }
@@ -2858,7 +2894,11 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 	if d.store != nil {
 		d.store.AppendHistory(findings)
 	}
-	if err := alert.Dispatch(d.currentCfg(), findings); err != nil {
+	alertable := findings
+	if d.store != nil {
+		alertable = filterUnsuppressedFindings(d.store, findings, d.store.LoadSuppressions())
+	}
+	if err := alert.DispatchWithEnforcement(d.currentCfg(), alertable, findings, findings); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Applied-block alert dispatch error: %v\n", ts(), err)
 	}
 }
@@ -2875,11 +2915,9 @@ func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duratio
 		Source:       checks.BlockSourceIncident,
 		FindingID:    findingID,
 	})
-	if err != nil {
-		return false, err
-	}
 	d.recordAppliedBlocks(res.Findings)
-	return res.Outcome == firewall.BlockOutcomeLive, nil
+	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))
+	return live, err
 }
 
 var (

@@ -597,7 +597,7 @@ func printJSONTo(w io.Writer, raw json.RawMessage) {
 // runScanLegacy is the original in-process `csm scan <user> [--alert]` path.
 func runScanLegacy(f scanFlags) {
 	cfg := loadConfigLite()
-	signatures.Init(cfg.Signatures.RulesDir)
+	signatures.Init(cfg.Signatures.RulesDir, cfg.Signatures.DisabledRules...)
 
 	st, err := state.Open(cfg.StatePath)
 	if err != nil {

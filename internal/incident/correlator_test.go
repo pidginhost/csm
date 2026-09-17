@@ -974,7 +974,7 @@ func TestCorrelatorPruneClosedOlderThanRemovesMemoryEntries(t *testing.T) {
 	})
 	c.lastPersistAt["inc_old_closed"] = old
 
-	pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour)
+	pruned := c.PruneClosedOlderThan(now, ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 30 * 24 * time.Hour})
 	if pruned != 1 {
 		t.Fatalf("PruneClosedOlderThan pruned %d, want 1", pruned)
 	}
@@ -1052,7 +1052,7 @@ func TestCorrelatorPruneClosedUnbindsSpray(t *testing.T) {
 		t.Fatalf("setup: spray binding for %s = %q, want inc_spray_closed_b", ip2, got)
 	}
 
-	if pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour); pruned != 2 {
+	if pruned := c.PruneClosedOlderThan(now, ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 30 * 24 * time.Hour}); pruned != 2 {
 		t.Fatalf("PruneClosedOlderThan pruned %d, want 2", pruned)
 	}
 	if got := c.spray.IncidentForIP(ip1); got != "" {
@@ -1340,5 +1340,25 @@ func TestCorrelatorOpenCountsBySeverity(t *testing.T) {
 	}
 	if got["warning"] != 1 {
 		t.Errorf("warning: want 1, got %d", got["warning"])
+	}
+}
+
+func TestCorrelatorPruneClosedOlderThanPrunesAutoClosedSooner(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	eightDays := now.Add(-8 * 24 * time.Hour)
+	c := newTestCorrelator()
+	c.Restore([]Incident{
+		{ID: "inc_auto", Status: StatusResolved, Severity: alert.High, Account: "alice", ClosedBy: "auto:stale", ClosedAt: eightDays, CreatedAt: eightDays, UpdatedAt: eightDays},
+		{ID: "inc_operator", Status: StatusDismissed, Severity: alert.High, Account: "bob", ClosedBy: "operator", ClosedAt: eightDays, CreatedAt: eightDays, UpdatedAt: eightDays},
+	})
+
+	if pruned := c.PruneClosedOlderThan(now, ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 7 * 24 * time.Hour}); pruned != 1 {
+		t.Fatalf("PruneClosedOlderThan pruned %d, want 1", pruned)
+	}
+	if _, ok := c.Get("inc_auto"); ok {
+		t.Error("auto-closed incident past its retention still present")
+	}
+	if _, ok := c.Get("inc_operator"); !ok {
+		t.Error("operator-closed incident pruned before its retention")
 	}
 }

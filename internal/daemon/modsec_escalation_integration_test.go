@@ -1,8 +1,12 @@
 package daemon
 
 import (
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/store"
@@ -128,5 +132,96 @@ func TestParseModSec_StoreNoEscalateSuppresses(t *testing.T) {
 		"SQL Injection Attack Detected", "attack-sqli")
 	if modsecFindingChecks(cfg, []string{line, line, line, line})["modsec_block_escalation"] {
 		t.Fatal("store-backed no-escalate rule must suppress escalation")
+	}
+}
+
+func TestParseModSec_ExcludedRuleDoesNotClaimClassifierGap(t *testing.T) {
+	resetModSecState()
+	t.Cleanup(resetModSecState)
+	sdb, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := store.Global()
+	store.SetGlobal(sdb)
+	t.Cleanup(func() {
+		store.SetGlobal(prev)
+		_ = sdb.Close()
+	})
+	if err := sdb.AddModSecNoEscalateRule(211999); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	line := modsecApacheLine("203.0.113.45", "211999", "Unknown vendor rule", "")
+	findings := parseModSecLogLineDeduped(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "modsec_block_realtime" {
+		t.Fatalf("excluded rule findings = %v, want only the base deny", findings)
+	}
+	if err := sdb.RemoveModSecNoEscalateRule(211999); err != nil {
+		t.Fatal(err)
+	}
+	// The base deny is still deduped, but the previously excluded rule must
+	// report its gap immediately once escalation is enabled again.
+	findings = parseModSecLogLineDeduped(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "modsec_classifier_gap" {
+		t.Fatalf("re-enabled rule findings = %v, want only the classifier gap", findings)
+	}
+}
+
+func TestParseModSec_ClassifierGapReminderSurvivesDedup(t *testing.T) {
+	resetModSecState()
+	t.Cleanup(resetModSecState)
+	cfg := &config.Config{}
+	line := modsecApacheLine("203.0.113.46", "211999", "Unknown vendor rule", "")
+	findings := parseModSecLogLineDeduped(line, cfg)
+	if len(findings) != 2 || findings[0].Check != "modsec_classifier_gap" || findings[1].Check != "modsec_block_realtime" {
+		t.Fatalf("first hit findings = %v, want gap and base deny", findings)
+	}
+	modsecGapMu.Lock()
+	modsecGapReported[211999] = time.Now().Add(-modsecClassifierGapInterval)
+	modsecGapMu.Unlock()
+	findings = parseModSecLogLineDeduped(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "modsec_classifier_gap" {
+		t.Fatalf("deduped reminder findings = %v, want only the classifier gap", findings)
+	}
+	findings = parseModSecLogLineDeduped(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "modsec_block_escalation" {
+		t.Fatalf("third deny findings = %v, want only escalation", findings)
+	}
+}
+
+func TestParseModSec_ConcurrentClassifierGapDoesNotSuppressEscalation(t *testing.T) {
+	resetModSecState()
+	t.Cleanup(resetModSecState)
+	const sources = 16
+	cfg := &config.Config{}
+	var gaps, escalations atomic.Int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range sources {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			line := modsecApacheLine(fmt.Sprintf("203.0.113.%d", i+80), "211999", "Unknown vendor rule", "")
+			for range modsecDefaultEscalationHits {
+				for _, finding := range parseModSecLogLineDeduped(line, cfg) {
+					switch finding.Check {
+					case "modsec_classifier_gap":
+						gaps.Add(1)
+					case "modsec_block_escalation":
+						escalations.Add(1)
+					}
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if n := gaps.Load(); n != 1 {
+		t.Errorf("classifier gaps across %d concurrent sources = %d, want 1", sources, n)
+	}
+	if n := escalations.Load(); n != sources {
+		t.Errorf("escalations = %d, want %d", n, sources)
 	}
 }

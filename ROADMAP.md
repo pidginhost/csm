@@ -34,6 +34,51 @@ by effort or tidiness:
    while it waits.
 7. **Performance budgets and debt.**
 
+## Architecture direction
+
+Keep the host agent autonomous and self-contained, with bbolt owned by one
+process. Privilege separation must preserve that ownership: the helper and
+online CLI clients use scoped requests for reads and writes. They must not open
+the live database independently, even read-only: bbolt's writable owner holds
+an exclusive file lock. Offline maintenance needs exclusive ownership, with
+the daemon and helper quiesced before handoff. A local database replacement
+needs measured contention, query complexity or recovery requirements that the
+current design cannot meet. Both bbolt and SQLite WAL serialize writers; a
+switch alone does not remove that constraint. See the
+[bbolt transaction documentation](https://github.com/etcd-io/bbolt#transactions)
+and [SQLite WAL concurrency](https://www.sqlite.org/wal.html#concurrency).
+The separate-process lock behavior is described under
+[bbolt read-only mode](https://github.com/etcd-io/bbolt#read-only-mode).
+
+Use the existing store, action log, privileged-operation inventory, scan jobs
+and incident correlator as the starting points. Add domain interfaces as each
+slice needs them; a package renaming campaign or a generic bucket/key API is
+not a prerequisite. Keep operator configuration in YAML and migrate remaining
+authoritative operational state by domain, with a rollback contract.
+
+The architectural priorities are privilege isolation, durable host actions and
+browser credential isolation. They complement the harm-based priorities above.
+The delivery order within this architecture work is below; it does not defer
+Priority 1 protection failures or Priority 2 precision and response defects:
+
+Browser sessions and their HTTP/domain boundary are implemented. Remaining work:
+
+1. A firewall block/unblock slice of the
+   [durable action lifecycle](#action-log-covers-six-of-twenty-seven-host-changes),
+   including storage measurements and an explicit state-owner contract. Complete
+   [firewall state migration](#firewall-state-migration-to-bbolt) with recovery
+   proof, then use that action contract for the first privileged-helper verbs.
+2. Expand helper coverage and action recovery by response family; extend the
+   [existing jobs](#job-model-for-every-long-running-operation) as each long
+   operation moves behind a service. Drop main-process privileges only when the
+   required reads, descriptors and mutations have verified replacements.
+3. Improve correlation through the shared replay harness, then add outbound
+   fleet ingest. Panel availability must never gate local protection.
+
+No mandatory local broker, database server or orchestration platform is added.
+The fleet service owns its database choice separately; this roadmap does not
+select or build a central database stack.
+
 ## This cycle
 
 A product review in September 2026 returned a list of hardening themes. They
@@ -329,10 +374,10 @@ entries), and enough recorded metadata to reverse the action. A response
 mechanism that fails N times in a window disables itself and raises a finding
 saying so.
 
-**Acceptance:** the tier table is complete or the build fails; every tier 2
-to 4 action has an automated rollback test (firewall, quarantine,
-configuration); a deliberately broken detector in a test cannot exceed its
-circuit breaker; PID reuse, symlink swap, bind-mount ambiguity under CageFS
+**Acceptance:** the tier table is complete or the build fails; every reversible
+tier 2 to 4 action has an automated rollback test (firewall, quarantine,
+configuration), and irreversible actions declare their recovery limits; a
+deliberately broken detector in a test cannot exceed its circuit breaker; PID reuse, symlink swap, bind-mount ambiguity under CageFS
 and a file replaced between detection and action are each covered by a test
 that proves the action is refused.
 
@@ -372,18 +417,105 @@ are still absent, and for those the daemon log is the only record:
 The wiring pattern is settled: record at the operation chokepoint, not at the
 entry point, so a CLI-driven and an automatic call produce the same record.
 
-There is also no `action_id`. Each record names the command that reverses it,
-but nothing addresses a single past action, so `csm undo <action_id>` cannot
-exist yet. Adding the identifier is small; dispatching an undo to the right
-subsystem rollback is the work, and every subsystem already has one.
+The durable firewall action service is implemented and tested through engine injection. Production activation, reader cutover, migration, restore, downgrade and operator recovery interfaces remain open.
 
-**Acceptance:** every tier 2 to 4 action in the safety model writes a record
-before it returns, including the failure and refusal paths; the audited set in
-`internal/privops` equals that list and the pinning test proves it;
-`csm undo <action_id>` reverses a recorded action or explains why it cannot.
+A JSONL outcome is evidence, not durable intent: it cannot alone distinguish a refused
+request from a mutation applied just before a crash. Existing rollback paths
+are useful, but some effects, including process termination, cannot be undone.
 
-**Size:** days for the remaining wiring; the undo command is a separate small
-item on top.
+**Decision:** every host mutation goes through a shared lifecycle at its
+operation boundary. Keep execution in the responsible domain; the lifecycle
+owns identity, admission, persistence, recovery and audit linkage. Reuse
+`mode: observe`, `auto_response.dry_run`, existing action-specific switches and
+the file-response budget/breaker settings. There is no second policy switch or
+parallel set of response limits.
+
+Start with firewall block/unblock. Persist a stable action ID, operation,
+actor, target identity, finding/incident links when present, intended effect,
+and recovery metadata before mutation. Distinguish planned, executing,
+applied and verified from refused, failed, partial, unknown and rolled back.
+After a crash, reconcile incomplete records against actual host state before
+retrying; an uncertain outcome remains visible until it can be proved. A
+stable ID supports deduplication, not a promise of exactly-once host effects.
+
+If intent or budget persistence fails, refuse new automated mutations and
+retain the finding. If outcome persistence fails after mutation, preserve the
+pending intent, report degraded action health and reconcile before another
+attempt. A bbolt transaction cannot atomically commit a filesystem or kernel
+change. Keep host I/O outside the database transaction and revalidate target
+identity immediately before execution, including on recovery and undo.
+
+Keep JSONL and `csm actions` as operator-facing audit interfaces, linked by
+`action_id`. Durable state and audit delivery need a retry/reconciliation
+contract so an applied action cannot silently lose its audit outcome. Add
+`csm action show <id>` and typed undo dispatch; never execute a stored command
+string as the authority to reverse a change. Undo verifies the current target,
+records its own linked action, and refuses changed or irreversible targets.
+Retention must keep unresolved intent and required recovery evidence. Backup
+restore must not resurrect pending actions, jobs or sessions as executable or
+authenticated live state; define what is disarmed and what requires review.
+
+**Acceptance:** every tier 2 to 4 operation in `internal/privops` maps to the
+lifecycle, including manual, CLI, API, integration and automatic entry points,
+with explicit bootstrap/offline handling where the daemon store is unavailable.
+The coverage test proves that mapping. Inject failures before and after intent
+commit, host mutation, verification, outcome commit and audit delivery; restart
+and verify reconciliation, duplicate requests, refusal, partial outcomes and
+safe undo. Reuse the existing action-family safety tests and add changed-target
+recovery cases. Never report success solely because a request was dispatched.
+
+**Size:** staged by response family. Audit wiring is smaller than the durable
+lifecycle, recovery and undo work; estimate each slice after its failure model
+is specified.
+
+## Firewall state migration to bbolt
+
+The lossless firewall state storage contract is implemented and tested
+independently of runtime callers. It preserves complete ordered state with
+revision checks and atomic replacement.
+
+The durable firewall action service is implemented and tested through engine injection. Production activation, reader cutover, migration, restore, downgrade and operator recovery interfaces remain open.
+
+**Status:** partially prepared. Firewall buckets and store methods exist, and
+pending configuration rollback already uses bbolt. The engine still reads and
+writes its authoritative runtime state in `state.json`.
+
+This belongs with response correctness. JSON writes already use atomic
+replacement, and the block path persists intended state before touching the
+kernel. Preserve those guarantees; changing the storage format alone cannot
+make the database and nftables one transaction.
+
+Inject a domain-owned firewall state interface into the engine. Reuse the
+existing blocked, allowed, subnet and per-port buckets behind it, without
+exposing bbolt transactions to firewall callers. The existing store schema and
+methods are not yet a lossless engine backend: subnet rows lack expiry and use
+a different creation-time field, while loaders hide read and decode failures.
+Extend the schema and error contract before cutover; preserve original times
+and explicit provenance instead of recreating them through add methods. A
+failed or corrupt read must not become a successful empty or partial ruleset.
+Commit each logical state change together, then update the hot-path cache only
+from committed state.
+Kernel application and recovery follow the durable action lifecycle above.
+
+Provide a one-shot migration through the owning daemon, or under an exclusive
+offline maintenance lock. Validate the entire source, import transactionally,
+record a schema/cutover marker, and retain the original JSON for rollback.
+A crash at any cutover step must be recoverable. After cutover only bbolt is
+authoritative; rollback must preserve post-cutover changes, not silently
+restore the now-stale JSON. Keep desired configuration in YAML.
+
+**Acceptance:** preserve block expiry, provenance, operator exclusions, subnet
+and port semantics, cache consistency, startup reapplication and failed-write
+behavior. Round-trip every engine state field, including temporary subnet
+expiry and original timestamps. Test import retries, corrupt input and stored
+rows, read failures, concurrent CLI/daemon requests,
+crashes around commit and kernel application, upgrade/downgrade and backup
+restore. Existing exports disarm pending configuration rollback; preserve that
+property and define the treatment of new action intent. Migration must not
+reset existing response budgets or failure pauses when those move to bbolt.
+
+**Size:** estimate after the state-owner and recovery slice; not a standalone
+file-format conversion.
 
 ## Response previews show intent, not the change
 
@@ -599,10 +731,29 @@ daemon the ability to act: detection and alerting run, automatic remediation
 and integration deployment do not. It reduces what the root process *does*, not
 what it *could* do, so it is a stopgap for this item rather than a substitute.
 
-Remaining stages, each shippable on its own: the helper for firewall, signals
-and quarantine (the tier 3 and 4 actions from the safety model, which defines
-the action set and should land first); then descriptor passing for fanotify and
-BPF; then dropping capabilities in the main process.
+Remaining stages, each shippable on its own: the helper for firewall, then
+signals and quarantine, then privileged configuration/filesystem writes; then
+descriptor passing for fanotify and BPF; then dropping capabilities in the main
+process. Each family first needs its safety classification and durable action
+contract, not completion of every other family's migration.
+
+Peer credentials authenticate the caller, not the requested operation. The
+helper must enforce target/account scope, identity, permitted verbs and safety
+policy even if the main process is compromised. Do not expose arbitrary shell,
+command execution or unrestricted file-write RPCs. Bound request sizes and
+execution time; test unknown verbs, malformed requests, stale identities and
+unauthorized peers. Decide how the helper verifies persisted intent and safety
+admission before shipping the first helper verbs. A record in a store writable
+by the main process is caller-controlled too; reading it back through RPC does
+not make it trusted approval. Define which process owns the store and how
+helper-enforced policy, budgets and replay protection survive a compromised
+caller and helper restart. If the main process remains the owner, its records
+are evidence only: it must not be able to reset or forge the helper's safety
+admission. Keep one owner per live database and protect admission authority
+from the caller. Test forged intent, replay and attempted budget reset as well
+as valid requests. Include socket ownership, protocol compatibility and
+unavailable-helper behavior in the first slice. Retain findings when mutation
+cannot safely proceed.
 
 **Acceptance:** the main process holds no capability it does not use; tests
 prove an RPC request cannot escape the intended path, user, process or
@@ -611,24 +762,41 @@ code that executes as root is small enough to be read in one sitting.
 
 **Size:** weeks, staged. The largest item on this list.
 
-## Browser sessions must not carry the admin token
+## Optional MFA for browser administrators
 
-**Status:** open. Confirmed in `internal/webui/server.go`.
+**Status:** open. Browser sessions, expiry and revocation are implemented.
 
-The login form sets the `csm_auth` cookie to the admin token itself, valid for
-24 hours. A read-scope token exists for the API, and the CSRF boundary for
-cookie sessions is in place, but the cookie is the long-lived credential, so
-it cannot be revoked without rotating the token, has no idle timeout, and is
-the same secret the API and the panel integrations use.
+Add optional WebAuthn for administrator logins with an explicit enrollment,
+recovery and credential-loss story. Reuse the existing session and named-token
+identity boundary; define how enrollment and recovery invalidate active sessions.
 
-**Acceptance:** login creates a random server-side session with a configurable
-lifetime and idle timeout; the identifier rotates after authentication and on
-any privilege change; sessions are listed and individually revocable,
-including remote logout of every session; API credentials never appear in a
-cookie; MFA with WebAuthn is optional for UI administrators and lands as a
-follow-up with its own recovery story. See [web UI](docs/src/webui.md).
+**Acceptance:** enrollment, authentication, lost-device recovery and removal
+have tested authorization and session-revocation behavior; API token scopes
+remain unchanged. See [browser sessions](docs/src/webui.md#browser-sessions).
 
-**Size:** 2-3 days for sessions; MFA separate.
+## Web UI module split
+
+**Status:** open. HTTP handlers mix request handling with the logic that
+quarantines, blocks and rewrites configuration.
+
+Split the handlers by domain -- findings, incidents, firewall, quarantine,
+scans, mail, settings, health -- behind narrow interfaces, and keep the
+security-sensitive logic out of the handler files so it can be reviewed and
+tested on its own. The authentication/session boundary is extracted and
+browser sessions are implemented. Move each remaining domain with its
+action/job slice, and complete the split before the external review so the reviewer reads the boundary rather than the
+handlers.
+
+Handlers authenticate, authorize, decode and validate request shape, call a
+domain service, then encode the response. Services own policy and action/job
+submission and are shared with CLI and automatic callers. Extract only the
+boundary needed for each slice; file splitting alone does not reduce privilege.
+
+**Acceptance per slice:** the extracted domain has interface tests; read-only
+authorization and CSRF checks survive extraction; HTTP, CLI and automatic paths
+cannot bypass its service-level safety checks. **Final acceptance:** no handler
+performs a host mutation directly. Use the existing privilege inventory to
+track remaining mutation coverage without gating sessions on the full split.
 
 ## Parser and input hardening
 
@@ -655,10 +823,10 @@ Commission a focused external review of: web UI and API, authentication and
 session handling, privileged filesystem operations, quarantine, the nftables
 response, process termination, installer and update verification, archive
 handling, symlink and TOCTOU behaviour, IPC boundaries, and the BPF and
-fanotify integration. Schedule it after the sessions item and the first stage
-of privilege separation have landed, otherwise it reports what this file
-already says. Publish a summary of findings and remediation, and repeat a
-focused review after each major architecture change.
+fanotify integration. Schedule it after the first stage of privilege
+separation has landed so the review covers the new security boundary.
+Browser sessions are already implemented. Publish a summary of findings and
+remediation, and repeat a focused review after each major architecture change.
 
 ## Decide the trust model for internal CI builds
 
@@ -740,6 +908,24 @@ their known incident; clean streams form nothing; the run reports correlation
 false-positive and false-negative rates; every correlation bug found in
 production is added as a fixture before it is fixed.
 
+## Observation, finding, incident and action identity
+
+**Status:** existing event sources, findings, incidents and action records are
+separate; a shared provenance contract for replay and sequence joins is open.
+
+Define an observation as a normalized fact with source, event time and verified
+account/host identity; a finding is a detector conclusion, an incident links
+related evidence, and an action records a response. Extend existing models and
+IDs instead of replacing the correlator or requiring an incident before every
+response. Operator actions may have no finding or incident.
+
+**Acceptance:** selected observations join to findings, incidents and actions
+through stable identifiers in the same replay format used by the attack corpus.
+Distinguish event time, first observation and later reports so rescans and
+retries cannot manufacture independent corroboration. Record provenance,
+missing attribution, retention and redaction rules. Capture only evidence
+needed for explanation and replay; an unbounded raw-log archive is out of scope.
+
 ## Corroboration grading
 
 **Status:** open. Highest value of this section.
@@ -793,13 +979,22 @@ per-source detectors' false-positive rate.
 
 ## Cross-server fleet ingest
 
-**Status:** open decision. Formerly audit item Y12.
+**Status:** direction chosen; fleet protocol and correlation remain open.
+Formerly audit item Y12.
 
-Correlating activity seen by separate installations requires choosing between
-panel-side correlation and a peer-to-peer ingest endpoint, and defining the
-trust model between hosts before any protocol work. Nothing is implemented.
-The [fleet validation evidence](#fleet-validation-evidence) decision below
-shares the same channel question and should be taken together with this one.
+Use authenticated outbound ingest and panel-side correlation, extending the
+existing webhook/export contracts. Agents do not form a peer trust mesh or
+require an inbound fleet endpoint. The panel owns its storage choice and can
+reuse its existing infrastructure independently of the agent's bbolt store.
+
+**Acceptance:** define host and tenant identity, schema versioning, deduplication,
+replay handling, credential rotation/revocation, bounded retries and backlog,
+and visible delivery loss. A compromised host cannot submit as another host or
+tenant. A disconnected or rejecting panel does not stop local detection or
+response. Fleet delivery and the
+[fleet validation evidence](#fleet-validation-evidence) work share the same
+channel and privacy contract; opt-in metrics still need a separate consent
+and redaction decision.
 
 ---
 
@@ -898,7 +1093,13 @@ defaults.
 
 ## Job model for every long-running operation
 
-**Status:** scans done; the rest open.
+**Status:** scan persistence and restart reporting exist; general job classes
+and mutation reconciliation remain open.
+
+`ScanJobManager` already uses a narrow store interface and persisted job and
+finding records. Restart marks unfinished scans as `error` with
+`daemon_restarted`; that is an honest interruption report, not resumability.
+Extend this manager and API contract rather than adding a second queue.
 
 Account and full scans already run as jobs with status endpoints (see
 `internal/webui/scanjobs_api.go`). Other operations that can run for minutes
@@ -914,6 +1115,13 @@ safely and is explicitly refused where it cannot (a half-applied firewall
 change is completed and recorded, never abandoned); job state survives a
 daemon restart well enough to say what was interrupted; concurrency and
 resource limits apply per job class so two full scans cannot run at once.
+Keep existing scan clients compatible. Record actor, operation type and linked
+action IDs; define queued, running, terminal, interrupted and reconciling
+semantics per class. Jobs track work while actions track mutations: restarting
+a job must not repeat a completed mutation. Test client disconnect, duplicate
+submission, cancellation at safe boundaries, restart and persistence failures.
+Store import needs an explicit maintenance handoff so replacing the store
+cannot erase the job's only completion/recovery record.
 
 ## `csm support-bundle`
 
@@ -978,7 +1186,8 @@ Off-host destinations and encryption are out of scope.
 
 ## Fleet validation evidence
 
-**Status:** open decision.
+**Status:** panel-side channel chosen; evidence schema, consent and privacy
+rules remain open.
 
 The defaults for confidence, severity and remediation are tuned from a handful
 of production servers read by hand. The panel data plane already carries every
@@ -988,8 +1197,9 @@ led to a confirmed incident, which were dismissed, per detector, per platform.
 Opt-in anonymised operational metrics from installations without a panel are
 the alternative, and need a documented privacy boundary before any code.
 
-**Acceptance:** a decision on the channel, taken together with the fleet
-ingest item in Priority 4; detector noise and resource usage compared across
+**Acceptance:** use the outbound fleet ingest contract in Priority 4;
+define consent, minimization and redaction before collecting optional metrics;
+detector noise and resource usage compared across
 cPanel, CloudLinux and generic Linux hosts; the numbers feed the calibration
 step of the clean corpus item rather than a separate tuning process.
 
@@ -1015,41 +1225,36 @@ instead of falling behind quietly, using the implemented
 [queue health reporting](docs/src/api.md#protection-queue-health) and
 [required ownership inventory](docs/src/production-tests.md#required-queue-inventory).
 
-## Web UI module split
+## Storage measurements and domain contracts
 
-**Status:** open. `internal/webui` is 47k lines; the two largest handler files
-are 1859 and 1276 lines and mix HTTP handling with the logic that quarantines,
-blocks and rewrites configuration.
+**Status:** partial boundaries exist; transaction instrumentation and domain
+conformance coverage remain open. `internal/store.DB` already hides its bbolt
+handle, and scan jobs already consume a narrow interface.
 
-Split the handlers by domain -- findings, incidents, firewall, quarantine,
-scans, mail, settings, health -- behind narrow interfaces, and keep the
-security-sensitive logic out of the handler files so it can be reviewed and
-tested on its own. Do this alongside the sessions item so the authentication
-path is not reworked twice, and before the external review so the reviewer
-reads the boundary rather than the handlers.
+Add consumer-owned interfaces where work above needs them, starting with
+firewall state and actions. Keep domain types and atomic operations explicit:
+a generic Get/Put wrapper or unrelated CRUD calls cannot express a committed
+action admission with its budget update. Preserve errors, ordering, pagination,
+retention and transaction semantics in conformance tests, including failed
+commits and reopen. Do not build a second backend without a measured need.
 
-**Acceptance:** no handler file performs a privileged action directly; each
-domain interface has its own tests; cross-domain imports inside the web UI
-package go through the interfaces.
+Extend the existing metrics and queue-health surfaces with write wait versus
+transaction duration, read duration, commit failures, batch sizes, pending
+writes, physical database size, reclaimable pages, and backup/compaction cost.
+Record representative contention and longest reads under the resource budgets;
+keep labels bounded and free of account, path or address identifiers.
 
-## Firewall state migration to bbolt
+Audit transaction lifetimes: copy values before returning them, then perform
+HTTP/SSE output, network calls, scans, host commands and expensive response
+encoding outside the transaction. Snapshot copying is an explicit measured
+exception: export already copies to a local file inside a read transaction,
+then archives it after closing the transaction. Do not replace it with an
+unbounded in-memory database copy or hold it open for a slow client.
 
-**Status:** partially prepared. A `fw:blocked` bucket exists but is written only
-during migration; `state.json` remains authoritative.
-
-This is a correctness item, not a performance one: every mutator rewrites the
-whole file, so a crash between mutators can leave an enforcement change
-half-applied.
-
-Move firewall state into bbolt: `fw:blocked` keyed by IP with
-`{added, expires, reason, source}`, parallel `fw:allow_*` and `fw:port_*`
-buckets, mutators wrapping `bolt.Update` and readers using `bolt.View`. The
-existing in-memory cache stays as the hot-path index under the same invalidation
-scheme. `csm store export` already snapshots bbolt, so firewall state rides
-along. Provide a one-shot `csm firewall migrate-state` that reads the existing
-JSON, writes the buckets and renames the file for rollback.
-
-**Size:** 2-3 days.
+**Acceptance:** contention, slow readers and failed writes are observable in
+repeatable workloads; storage calls on each migrated path preserve the domain
+contract; backup and compaction measurements expose their impact on live work.
+Use the results before revisiting the local database choice.
 
 ## Consolidate bootstrap toolchain pins
 

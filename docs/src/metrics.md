@@ -125,6 +125,12 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
   includes deleted pages still held by active readers, which become
   reclaimable when the daemon stops. Later writes can change whether
   compaction is due at startup.
+  History and attack-event writes pack pages densely when their timestamps
+  arrive mostly in order. A write uses balanced page splits when events older
+  than the newest stored one are most of its records or at least half its
+  inserted data. Space savings depend on record sizes and arrival order.
+  Archive imports keep the snapshot's page layout; compaction repacks an
+  existing file.
 
 ### Fanotify realtime monitor
 

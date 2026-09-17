@@ -18,7 +18,12 @@ import (
 type Config struct {
 	SocketPath string
 	RulesDir   string
-	ErrorLog   func(error)
+	// DisabledRules are the operator's signatures.disabled_rules names.
+	// The worker compiles the same rules the daemon would, so it has to
+	// honour the same list or a rule switched off in config keeps firing
+	// through the worker.
+	DisabledRules []string
+	ErrorLog      func(error)
 }
 
 // Run is the entrypoint the `csm yara-worker` subcommand calls. It
@@ -74,7 +79,7 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("yaraworker: listen: %w", err)
 	}
 
-	scanner, compileErr := yara.NewScanner(cfg.RulesDir)
+	scanner, compileErr := yara.NewScanner(cfg.RulesDir, cfg.DisabledRules...)
 	compileErrStr := ""
 	if compileErr != nil {
 		compileErrStr = compileErr.Error()
@@ -87,8 +92,9 @@ func Run(ctx context.Context, cfg Config) error {
 	// a later OpReload (forge update, SIGHUP) can rebuild from the fixed rules
 	// on disk instead of the worker staying silently dead until it crashes.
 	rulesDir := cfg.RulesDir
+	disabledRules := cfg.DisabledRules
 	rebuild := func() (Scanner, error) {
-		s, err := yara.NewScanner(rulesDir)
+		s, err := yara.NewScanner(rulesDir, disabledRules...)
 		if err != nil {
 			return nil, err
 		}

@@ -60,7 +60,7 @@ func TestAutomaticBlockSourcesRemainAuditable(t *testing.T) {
 				later.Timestamp = later.Timestamp.Add(time.Second)
 				input = append(input, later)
 			}
-			var notifiedSources int
+			var enforcementSources int
 			var observedSources int
 			t.Cleanup(alert.RegisterFindingObserver(func(got alert.Finding) {
 				if got.Check == f.Check {
@@ -69,7 +69,7 @@ func TestAutomaticBlockSourcesRemainAuditable(t *testing.T) {
 			}))
 			alert.SetCentralHook(func(got alert.Finding) {
 				if got.Check == f.Check {
-					notifiedSources++
+					enforcementSources++
 				}
 			})
 			t.Cleanup(func() { alert.SetCentralHook(nil) })
@@ -111,8 +111,15 @@ func TestAutomaticBlockSourcesRemainAuditable(t *testing.T) {
 			if kind == "same key" {
 				wantNotified = 1
 			}
-			if notifiedSources != wantNotified {
-				t.Errorf("audit changed notification suppression: sources=%d, want %d", notifiedSources, wantNotified)
+			// Central enforcement sees every new source, including checks kept
+			// off operator notifications; repeats of recorded findings are not
+			// new evidence.
+			wantEnforced := 0
+			if kind == "operator filtered" || kind == "same key" {
+				wantEnforced = 1
+			}
+			if enforcementSources != wantEnforced {
+				t.Errorf("central enforcement sources=%d, want %d", enforcementSources, wantEnforced)
 			}
 			if observedSources != wantNotified {
 				t.Errorf("audit changed observer suppression: sources=%d, want %d", observedSources, wantNotified)

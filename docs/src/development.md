@@ -205,6 +205,21 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 - **Web UI:** Vanilla JS, no framework, no build step. Tabler CSS framework. Use `CSM.get()` / `CSM.post()` / `CSM.delete()` for API calls. Escape string-built markup with `CSM.esc()`; prefer DOM APIs for attacker-controlled values.
 - **Logging:** New code should use `internal/log` (wraps `log/slog`). Legacy `fmt.Fprintf(os.Stderr, "[%s] ...", ts())` call sites remain valid until migrated.
 
+### Attack event storage
+
+Attack events live in `attacks:events`; `attacks:events:ip` stores empty values
+under `<ip>/<TimeKey>` keys. The writer chooses an unused primary key inside
+the write transaction because batch counters can repeat for the same timestamp.
+Primary rows, index entries and the event count are updated atomically, including
+count-cap pruning.
+
+Address queries walk the index newest-first and resolve primary rows until the
+requested limit is met. Older index entries can still contain a full event copy;
+the reader falls back to that copy if the primary row is missing, malformed or
+belongs to another address. Both forms must match the requested address. The UTC
+time-key migration preserves index values verbatim, so readers must keep handling
+both forms until older entries age out.
+
 ## Structured Logging (slog)
 
 Legacy daemon call sites emit log lines via `fmt.Fprintf(os.Stderr, "[%s] ...", ts())`. The `internal/log` package provides a drop-in slog wrapper so operators can opt into JSON output for log-shipping pipelines (Loki, ELK, Datadog) without a big bang migration.
@@ -287,9 +302,19 @@ Operator view:
   limited to one per minute) and restart with exponential backoff
   (1 s, 2 s, 4 s, capped at 60 s). Restarts reset to 1 s after the
   worker stays up for 30 s.
+- The crash finding is emitted before a restart is attempted, while YARA
+  scans cannot run. Scans can resume once a replacement worker serves
+  requests; they do not wait for the 30 s health check. The finding does
+  not confirm a successful restart or recovery.
+- `csm doctor` reports `watcher: yara_worker` as failed from a crash until
+  a restarted worker has stayed up for 30 s, so a worker that keeps
+  crashing shortly after each restart keeps doctor failing. This also
+  covers crashes between initial readiness and backend activation.
+  Shutdown waits for any in-flight recovery callback to finish.
 - A `csm update-rules` run that completes triggers the supervisor's
   in-process `Reload` (the worker recompiles). Escalate to a full
-  worker restart from Go code via `Supervisor.RestartWorker()`.
+  worker restart from Go code via `Supervisor.RestartWorker()`. An explicit
+  restart also marks the watcher failed until the replacement stays up.
 
 Emailav under worker mode: the IPC wire format carries string-valued
 rule metadata on every match (`yaraipc.Match.Meta` /
@@ -319,6 +344,22 @@ mdbook serve              # local preview at http://localhost:3000
 ```
 
 ## Clean application corpus
+
+The same job measures the shipped rules against long uninterrupted base64,
+hex and word runs, dense variable calls, and PDF-shaped streams. It discards
+one warm-up and scores the fastest of two further scans against a 5-second
+per-file budget. Each attempt has a 10-second engine timeout; a timeout never
+counts as a completed scan, and a cold timeout alone cannot fail the gate.
+Both scored attempts timing out fails it. The job shares the heavy-test
+resource group to avoid competing with other heavy tests in this project.
+
+A rule with no literal atom to match on can still pass match tests while
+stalling mail delivery. Investigate slow rules with `yr scan --profiling`.
+Run the gate and its fixture/timing checks locally with YARA-X installed:
+
+```bash
+CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go test -count=1 -v -tags yara ./internal/yara -run 'TestShippedRulesScanWithinBudget|TestRuleScanBudget'
+```
 
 Every pipeline runs the required [clean-corpus gate](clean-corpus.md) in the production YARA-X builder image. Package publication and GitHub releases depend on its success.
 

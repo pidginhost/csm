@@ -68,6 +68,27 @@ interpolation analysis.
 Shared positive and benign fixtures check both engines. Generated socket and
 funchand wrappers and ordinary legacy callbacks stay silent under these rules.
 
+The PHP goto-obfuscation rule requires three independent signals in both
+engines: a PHP opening tag, at least nine jumps to digit-bearing generated
+labels or eleven to alphabetic labels, and a decode call, execution call,
+dynamic include, or request input. Fixed-path bootstrap includes do not supply
+this evidence. Variable and array callback calls count even when the function
+name is constructed and the argument is a literal. Comments between a callable
+and its opening parenthesis do not hide the call. Line breaks and keyword case do not
+change the label counts. Long encoded strings and data URIs alone are not
+execution evidence. These are source-text heuristics, not PHP dataflow analysis;
+they cannot resolve arbitrary dynamically generated code or distinguish every
+benign use of these operations.
+
+The PHP content heuristic that runs during scans applies the same evidence
+rule: generated goto labels and descriptive goto labels both need a decode
+call, execution call, dynamic include, or request input before they count as
+an obfuscation indicator. `call_user_func` is deliberately not evidence in
+either place, because plugin loaders dispatch their own callables through it.
+The content heuristic uses the signature's evidence expression, including
+comment-separated calls, grouped and array callbacks, and case-sensitive PHP
+superglobal names. A regression check guards against expression drift.
+
 ### Legacy callback parser follow-up
 
 The callback signature does not inspect quoted function bodies. Doing so needs
@@ -198,7 +219,7 @@ signatures:
     tier: "core"              # core (5K rules, low FP), extended (10K), full (12K)
     update_interval: "168h"   # weekly
     download_url: "https://mirrors.pidginhost.com/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip"
-  disabled_rules:             # rule names to exclude from Forge downloads
+  disabled_rules:             # rule names to switch off, in Forge and in the shipped rules
     - SUSP_Example_Rule
 ```
 
@@ -242,16 +263,42 @@ Custom rules in `malware.yar` are never overwritten by the Forge fetcher.
 
 ### Disabling Rules
 
-If a Forge rule produces false positives, add its name to `disabled_rules` in the config and reload:
+If a rule produces false positives, add its name to `disabled_rules` in the config and restart the daemon:
 
 ```yaml
 signatures:
   disabled_rules:
     - SUSP_XOR_Encoded_URL
-    - HKTL_Mimikatz_Strings
+    - php_goto_obfuscation
 ```
 
-After editing, send SIGHUP or restart the daemon to apply.
+The list covers every rule CSM loads, not only YARA Forge: Forge rules are
+stripped from the download, rules shipped in `malware.yml` are skipped when
+the real-time engine loads them, and rules shipped in `malware.yar` are
+stripped before the scheduled engine compiles them. The self-test measures
+the ruleset that is left, so disabling a rule shows up as the coverage it
+costs.
+
+Names are matched in full, ignoring surrounding whitespace and letter case;
+prefixes and substrings do not match. Removing a YARA rule preserves neighboring
+rules, including when declarations share a line or literals contain braces.
+The YARA worker receives the daemon's effective disabled list and configuration
+paths; rule reloads and worker crash recovery retain that list.
+
+A valid ruleset whose rules are all disabled loads as an empty set, including
+on reload; stale rules are not retained. The self-test reports the resulting
+misses. An empty or invalid replacement still reports a load error.
+
+`csm validate` warns about a name that matches no rule, because a typo here
+otherwise reads as "that rule is off" while the rule keeps firing. Disabling
+a rule is a last resort and a standing gap in coverage; prefer fixing the
+rule.
+
+Validation recognizes a disabled YAML rule even if its regular expression is
+invalid, and counts repeated names only once.
+
+Signature settings require a daemon restart. SIGHUP does not apply a changed
+disabled list; rule-file reloads keep the current list.
 
 ## How Rules Avoid False Positives
 
@@ -263,7 +310,9 @@ YARA-X rules cannot express nesting, so multi-string rules state how their evide
 
 ## Alert Rate Limiting
 
-Default: 30 operator alert dispatches/hour (configurable via `max_per_hour`). **CRITICAL findings and threat-intel reputation sightings always get through** by email or generic webhook regardless of the rate limit. Other lower-severity alerts are rate-limited.
+Default: 30 operator alert dispatches/hour (configurable via `max_per_hour`). **CRITICAL findings and threat-intel reputation sightings always get through** by email or generic webhook regardless of the rate limit, and they do not count against it. Other lower-severity alerts are rate-limited, including when they are batched with a CRITICAL finding: once the budget is spent, only the urgent findings in that batch are sent.
+
+A dispatch uses one slot only when email or a generic webhook successfully delivers routine findings. If only urgent findings reach a channel and routine delivery fails, the slot remains available for a later dispatch. Email-disabled findings do not reserve a slot unless a generic webhook will carry them. The phpanel webhook stream bypasses this budget.
 
 ## Suppressions
 
@@ -272,6 +321,10 @@ Create suppression rules to silence known false positives:
 - From the **Findings** page: click the suppress button on any finding
 - From the **Rules** page: manage suppression rules directly
 - Via API: `POST /api/v1/suppressions`
+
+A suppression rule hides matching findings from the Findings page, stops their email and webhook alerts, and stops file, process and account remediation for them. It does not stop IP blocking, challenge routing or attack scoring: a rule that mutes a whole check would otherwise leave every attacker that check reports unblocked. To exempt an address that was blocked by mistake, allowlist it from the Threat page or with `csm firewall allow`.
+
+Incident auto-blocking, credential-spray containment and central threat intelligence also use suppressed findings. Database response may still block suspicious session IPs when enabled, but a suppressed database finding cannot trigger cleanup or session revocation. IP action notifications are separate findings; suppressing their check type mutes those notifications without stopping the action. These rules apply to startup, scheduled and real-time scans, control-socket runs with alerts enabled, and replay after restart.
 
 To suppress email alerts for specific checks while keeping them visible in the web UI, use `disabled_checks` in your config:
 

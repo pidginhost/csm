@@ -17,8 +17,8 @@ Sidebar group expand/collapse state is saved in the browser. On
 viewports under 992px the sidebar collapses into a top-bar drawer
 toggled from the hamburger button. Account detail (`/account`) is
 hidden from the sidebar; it is reached from finding rows, incident
-detail, and Threat Intel result panels. Read-scope sessions hide
-admin-only navigation entries such as Configuration and ModSec Rules.
+detail, and Threat Intel result panels. Browser logins require administrator
+scope. The header links to session management.
 
 ## Pages
 
@@ -42,15 +42,68 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 | **Audit** | `/audit` | System-wide action log with search, action and date filters, URL state, and export |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
 | **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer |
+| **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session |
 
 ## Security
 
-- **Authentication** - Bearer token (header or HttpOnly/Secure/SameSite=Strict cookie)
+- **Authentication** - API bearer tokens in the header; opaque server-side browser sessions in HttpOnly/Secure/SameSite=Strict cookies
 - **CSRF** - HMAC-derived token on cookie-authenticated POST, PUT, PATCH, and DELETE requests
 - **Headers** - X-Frame-Options DENY, Content-Security-Policy, HSTS, nosniff
 - **TLS** - Auto-generated self-signed certificate
 - **Rate limiting** - 5 login attempts/min, 600 API requests/min per IP
 - **Bearer auth** skips CSRF (for API-to-API calls)
+
+## Browser sessions
+
+Log in with an administrator credential from `webui.tokens` (or the migrated
+legacy `webui.auth_token`). The cookie contains a new random session secret;
+the reusable API credential never appears in it. Old token-valued cookies are
+rejected, so an upgrade requires a fresh login. Read-scope API tokens cannot
+create browser sessions.
+
+Use **Sessions** in the header (`/sessions`) to see login names, client address,
+browser, creation time, last activity and absolute expiry. Revoke one session
+or log out every browser, including your own. These operations do not rotate
+API credentials. Logout uses a CSRF-protected POST. Logout and revocation
+accept the same browser origins as API writes (`webui.allowed_origins`); the
+login form does not check the origin.
+
+```yaml
+webui:
+  session_lifetime: "24h"
+  session_idle_timeout: "30m"
+```
+
+Both durations require a restart. Lifetime must be between one second and
+30 days; idle timeout must be at least one second and no longer than lifetime. Zero does
+not disable expiry. Idle time means time without authenticated HTTP requests,
+including dashboard polling. Activity is committed at bounded intervals, so
+idle expiry can occur slightly early, never late. Passive event-stream
+heartbeats do not extend the session; streams check revocation and expiry
+before each event and heartbeat.
+
+Every daemon restart invalidates all browser sessions. Token removal, rotation,
+name or scope changes take effect after the required restart; log in again
+with a current administrator credential. Reauthentication creates a new
+session and revokes the previous one. Operator preferences remain tied to the
+login credential, so a new session does not reset them.
+
+The local transactional store keeps session verifiers, never raw cookie secrets.
+Failed persistence cannot issue a login or claim successful revocation. If the
+previous session cannot be read during reauthentication, login fails without
+issuing a replacement cookie or changing that session. Concurrent requests
+preserve the latest committed activity even when they arrive out of order.
+If the session store is unavailable, browser authentication fails closed; API bearer
+authentication remains independent. Session admission is bounded and refuses new
+logins at capacity instead of evicting active sessions. The login response says
+so; wait for idle sessions to expire, or revoke sessions from a logged-in
+browser or with an admin API token (`DELETE /api/v1/sessions`). Expired sessions are removed during admission, and startup clears
+the session records. Backup exports exclude live session records, and full
+restores discard any session records from older archives.
+
+MFA is a separate planned feature. See the
+[session management guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
+for the security principles behind opaque identifiers, expiry and revocation.
 
 ## Keyboard Shortcuts
 

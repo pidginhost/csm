@@ -44,9 +44,21 @@ notices remain informational, and both classes appear in the findings list.
 | `dismissed` | False positive. Future findings start a new incident.                  |
 
 Resolved and dismissed incidents are pruned 30 days after their last
-update. Open and contained incidents are never auto-pruned by the
-retention loop, but they may be auto-resolved by the per-kind idle
-threshold described under "Auto-close" below.
+update when an operator closed them, and 7 days after their last update
+when the daemon closed them (`closed_by` starting with `auto:`). Older records
+without close attribution keep the 30-day period. Confirming an automatic
+closure, changing a closed status, or recording a block on a closed incident
+gives that decision 30 days of retention. Recorded operator decisions on older rows with
+stale automatic attribution also keep this longer period. Reopening clears
+close attribution; the next closure determines retention again.
+
+Open and contained incidents are never auto-pruned by the retention loop, but
+they may be auto-resolved by the per-kind idle threshold described under
+"Auto-close" below. Retention sweeps use bounded transactions so a large
+backlog does not hold the store writer for the entire cleanup. Pruning frees
+space for reuse; it does not shrink the state file. Finding history has its
+own retention, so a retained incident can refer to findings already evicted
+from history.
 
 ## Auto-close
 
@@ -94,7 +106,7 @@ A host under sustained brute-force keeps a large open set mostly from the
 longer-lived kinds (`web_account_compromise` defaults to 168h). If the
 open-incident count is higher than you want to triage, shorten the
 relevant `by_kind` entry (e.g. `web_account_compromise: 72h`) rather than
-disabling auto-close. The closed records are retained 30 days regardless,
+disabling auto-close. Untouched auto-resolved records are retained 7 days,
 measured from when the incident resolves, so shortening the threshold also
 moves the eventual prune point earlier relative to the last finding.
 Auto-close still keeps a resolved record for follow-up instead of deleting
@@ -243,7 +255,9 @@ which then trips the generic auto_block gate.
 
 ModSecurity escalation is confidence-gated. Each deny is classified as
 high-confidence (a specific attack/probe rule -- SQLi, RCE, traversal,
-URL-encoding abuse, CSM custom), low-confidence (policy/anomaly scoring
+URL-encoding abuse, CSM custom, or an OWASP CRS rule from an
+`APPLICATION-ATTACK` rule file, which is how LiteSpeed logs, since it
+omits the rule message and tags), low-confidence (policy/anomaly scoring
 rules such as COMODO content-type `210710` or anomaly-points `214930`,
 and OWASP CRS anomaly-score rules), or unknown. A burst escalates to a
 firewall ban at the normal hit count only when it contains a
@@ -257,7 +271,8 @@ high-confidence rules. A determined source that floods only
 low-confidence rules is still banned once it reaches the
 `thresholds.modsec_low_confidence_escalation_hits` backstop (default
 30). Unknown blocking rules are escalation-eligible (fail-secure) and
-raise a one-time `modsec_classifier_gap` finding so a new vendor rule
+raise a `modsec_classifier_gap` finding once per rule for the whole host
+(repeated daily while the rule stays unclassified) so a new vendor rule
 pack is noticed rather than silently given a no-ban path.
 
 ## Kinds
@@ -624,6 +639,8 @@ Attribution gaps:
 | `email_auth_failure_realtime` | ignored | attacker-side |  |
 | `email_av_degraded` | ignored | self-health |  |
 | `email_av_encrypted_archive` | ignored | self-health |  |
+| `email_av_hold_bypass` | ignored | self-health |  |
+| `email_av_late_verdict` | ignored | self-health |  |
 | `email_av_parse_error` | ignored | self-health |  |
 | `email_av_quarantine_error` | ignored | self-health |  |
 | `email_av_queue_overflow` | ignored | self-health |  |

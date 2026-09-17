@@ -16,9 +16,15 @@ type Match struct {
 }
 
 // NewScanner returns nil when YARA-X is not available.
-func NewScanner(_ string) (*Scanner, error) {
+func NewScanner(_ string, _ ...string) (*Scanner, error) {
 	return nil, nil
 }
+
+// DisabledRules returns nothing without YARA-X; no rules are compiled.
+func (s *Scanner) DisabledRules() []string { return nil }
+
+// DisabledRuleCount returns zero without YARA-X.
+func (s *Scanner) DisabledRuleCount() int { return 0 }
 
 // Reload is a no-op without YARA-X.
 func (s *Scanner) Reload() error { return nil }

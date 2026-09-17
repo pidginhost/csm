@@ -12,7 +12,10 @@ import (
 // Persist intent before touching the kernel so a restart converges to the
 // requested policy. A failed atomic kernel batch restores the previous intent.
 // The caller holds e.mu across both writes and the kernel transaction.
-func (e *Engine) commitAllowedRemovals(prior, next FirewallState, removeIPs []string) error {
+func (e *Engine) commitAllowedRemovals(prior, next FirewallState, removeIPs []string, req ActionRequest) error {
+	if e.lifecycle != nil {
+		return e.runDurableLocked(req, nil, next)
+	}
 	if err := e.persistFirewallIntent(prior, next); err != nil {
 		return fmt.Errorf("persisting allow removal: %w", err)
 	}

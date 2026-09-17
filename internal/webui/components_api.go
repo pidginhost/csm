@@ -59,6 +59,7 @@ var componentLabels = map[string]string{
 	"dovecot_log":       "Dovecot log",
 	"exim_mainlog":      "Exim mainlog",
 	"cpanel_access_log": "cPanel access log",
+	"yara_worker":       "YARA-X worker",
 }
 
 // componentCheckOrigin maps a finding Check name back to the watcher that

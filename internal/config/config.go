@@ -1012,7 +1012,11 @@ type Config struct {
 			UpdateInterval string `yaml:"update_interval"` // default: "168h" (weekly)
 			DownloadURL    string `yaml:"download_url"`    // signed ZIP URL/template; supports {tier} and {version}
 		} `yaml:"yara_forge"`
-		DisabledRules []string `yaml:"disabled_rules"` // YARA rule names to exclude from Forge downloads
+		// DisabledRules names rules to switch off: they are stripped from
+		// YARA-Forge downloads, skipped when the shipped .yml rules load,
+		// and stripped before the shipped .yar rules compile. `csm validate`
+		// warns about a name that matches no rule.
+		DisabledRules []string `yaml:"disabled_rules"`
 		// YaraWorkerEnabled is a tri-state: nil means "use system default"
 		// (default-on, per ROADMAP item 2 follow-up), *true means explicit on,
 		// *false means explicit off. Callers must nil-check before dereferencing;
@@ -1021,13 +1025,15 @@ type Config struct {
 	} `yaml:"signatures" hotreload:"restart"`
 
 	WebUI struct {
-		Enabled      bool   `yaml:"enabled"`
-		Listen       string `yaml:"listen"`
-		AuthToken    string `yaml:"auth_token"`
-		MetricsToken string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
-		TLSCert      string `yaml:"tls_cert"`
-		TLSKey       string `yaml:"tls_key"`
-		UIDir        string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
+		SessionLifetime    string `yaml:"session_lifetime"`
+		SessionIdleTimeout string `yaml:"session_idle_timeout"`
+		Enabled            bool   `yaml:"enabled"`
+		Listen             string `yaml:"listen"`
+		AuthToken          string `yaml:"auth_token"`
+		MetricsToken       string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
+		TLSCert            string `yaml:"tls_cert"`
+		TLSKey             string `yaml:"tls_key"`
+		UIDir              string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
 		// AllowedOrigins lists extra browser origins ("https://host[:port]")
 		// whose API requests are accepted besides https://<hostname>:<port>.
 		// Loopback origins (SSH tunnels) are always accepted. Hot-reloadable.
@@ -1692,6 +1698,12 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Reputation.BotRanges.UpdateInterval == "" {
 		cfg.Reputation.BotRanges.UpdateInterval = "24h"
+	}
+	if cfg.WebUI.SessionLifetime == "" {
+		cfg.WebUI.SessionLifetime = DefaultBrowserSessionLifetime
+	}
+	if cfg.WebUI.SessionIdleTimeout == "" {
+		cfg.WebUI.SessionIdleTimeout = DefaultBrowserSessionIdleTimeout
 	}
 	if cfg.WebUI.Listen == "" {
 		cfg.WebUI.Listen = "0.0.0.0:9443"
@@ -2623,6 +2635,9 @@ func validateBPFEnforcement(cfg *Config) error {
 }
 
 func validateWebUITokens(cfg *Config) error {
+	if _, _, err := cfg.BrowserSessionDurations(); err != nil {
+		return err
+	}
 	seenNames := make(map[string]struct{}, len(cfg.WebUI.Tokens))
 	seenTokens := make(map[string]struct{}, len(cfg.WebUI.Tokens))
 	for i, tok := range cfg.WebUI.Tokens {

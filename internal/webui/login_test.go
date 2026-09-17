@@ -33,7 +33,7 @@ func TestHandleLoginPOSTSuccess(t *testing.T) {
 	cookies := w.Result().Cookies()
 	var authCookie *http.Cookie
 	for _, c := range cookies {
-		if c.Name == "csm_auth" && c.Value == "test-secret" {
+		if c.Name == "csm_auth" && c.Value != "" && c.Value != "test-secret" {
 			authCookie = c
 		}
 	}

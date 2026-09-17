@@ -15,7 +15,7 @@ func TestOperatorKeyHashesCookie(t *testing.T) {
 	s := newTestServer(t, "alpha")
 	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "beta", Token: "beta", Scope: "admin"})
 	req := httptest.NewRequest("GET", "/", nil)
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "alpha"})
+	req.AddCookie(testBrowserCookie(t, s, "alpha"))
 	first := s.operatorKey(req)
 	if first == "" || first == "alpha" {
 		t.Fatalf("operatorKey returned bad value %q", first)
@@ -31,7 +31,7 @@ func TestOperatorKeyHashesCookie(t *testing.T) {
 	}
 
 	req3 := httptest.NewRequest("GET", "/", nil)
-	req3.AddCookie(&http.Cookie{Name: "csm_auth", Value: "beta"})
+	req3.AddCookie(testBrowserCookie(t, s, "beta"))
 	if got := s.operatorKey(req3); got == first {
 		t.Fatal("different tokens must hash to different keys")
 	}

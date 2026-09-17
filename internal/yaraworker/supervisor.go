@@ -2,6 +2,7 @@ package yaraworker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +32,11 @@ type SupervisorConfig struct {
 	BinaryPath string
 	SocketPath string
 	RulesDir   string
+	ConfigFile string
+	ConfigDir  string
+	// Carry the effective list across crashes, even if config on disk changed
+	// while the daemon is waiting for a restart to apply those changes.
+	DisabledRules []string
 
 	StartTimeout       time.Duration
 	MinRestartInterval time.Duration
@@ -49,6 +55,13 @@ type SupervisorConfig struct {
 	// signal whose number is signal). Daemons wire this to a finding
 	// emitter.
 	OnRestart func(exitCode int, signal syscall.Signal, runDuration time.Duration)
+
+	// OnStable is called each time a worker has stayed up for StableDuration
+	// after becoming ready. A restart that passes its readiness probe and
+	// dies again soon after never reports stable.
+	// Like OnRestart, it must return promptly and must not call Stop, which
+	// waits for callbacks to finish.
+	OnStable func()
 
 	// Logf is an optional structured-log hook. Supervisor internals log
 	// restarts + transient errors here. Nil is fine.
@@ -72,6 +85,11 @@ type Supervisor struct {
 	stopped bool
 
 	running atomic.Bool
+
+	// callbackMu serializes OnRestart and OnStable. waitForChild clears cmd
+	// before OnRestart runs, so a stable check that loses the race to a crash
+	// sees a different child and cannot report the dead worker as stable.
+	callbackMu sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -131,6 +149,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 	if cfg.ClientTimeout == 0 {
 		cfg.ClientTimeout = 30 * time.Second
 	}
+	cfg.DisabledRules = append([]string(nil), cfg.DisabledRules...)
 	return &Supervisor{cfg: cfg}, nil
 }
 
@@ -202,6 +221,10 @@ func (s *Supervisor) Stop() error {
 	if done != nil {
 		<-done
 	}
+	// A timer may have passed its stopped/context check before shutdown.
+	// Join that callback before allowing its owner to tear down health state.
+	s.callbackMu.Lock()
+	defer s.callbackMu.Unlock()
 	return nil
 }
 
@@ -436,7 +459,9 @@ func (s *Supervisor) supervise() {
 		s.mu.Unlock()
 
 		if s.cfg.OnRestart != nil {
+			s.callbackMu.Lock()
 			s.cfg.OnRestart(exitCode, sig, runDuration)
+			s.callbackMu.Unlock()
 		}
 
 		// A stable exit already reset the delay. Short-lived workers and
@@ -549,6 +574,14 @@ func (s *Supervisor) spawnAndWaitReady() error {
 		"--socket", s.cfg.SocketPath,
 		"--rules-dir", s.cfg.RulesDir,
 	}
+	if s.cfg.ConfigFile != "" {
+		args = append(args, "--config", s.cfg.ConfigFile)
+	}
+	// Preserve the daemon's selection even when it is empty or missing.
+	// Omitting it would re-enable the worker's environment/default lookup.
+	args = append(args, "--inherited-config-dir", s.cfg.ConfigDir)
+	disabled, _ := json.Marshal(s.cfg.DisabledRules) // []string cannot fail to encode.
+	args = append(args, "--disabled-rules", string(disabled))
 	args = append(args, s.cfg.ExtraArgs...)
 
 	// #nosec G204 -- BinaryPath is supervisor-operator-configured (see
@@ -581,7 +614,27 @@ func (s *Supervisor) spawnAndWaitReady() error {
 		s.mu.Unlock()
 		return err
 	}
+	s.reportStableAfter(cmd)
 	return nil
+}
+
+// reportStableAfter calls OnStable once cmd has stayed the current worker for
+// StableDuration without the supervisor stopping.
+func (s *Supervisor) reportStableAfter(cmd *exec.Cmd) {
+	if s.cfg.OnStable == nil {
+		return
+	}
+	ctx := s.ctx
+	time.AfterFunc(s.cfg.StableDuration, func() {
+		s.callbackMu.Lock()
+		defer s.callbackMu.Unlock()
+		s.mu.Lock()
+		current := s.cmd == cmd && !s.stopped
+		s.mu.Unlock()
+		if current && ctx.Err() == nil {
+			s.cfg.OnStable()
+		}
+	})
 }
 
 func (s *Supervisor) waitForReady(client *yaraipc.Client) error {

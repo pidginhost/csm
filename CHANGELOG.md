@@ -9,22 +9,77 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ## [Unreleased]
 
+### Fixed
+
+- Restart advice now reflects reclaimable space in the state database, so a large file that is still mostly in use no longer triggers it.
+- `csm doctor` and the components view now keep reporting the YARA-X scanning worker as failed while it keeps crashing after restarts, instead of only when it cannot start at all. A restarted worker counts as recovered once it stays up for 30 seconds.
+- OWASP CRS attack rules logged by LiteSpeed are now recognised as attacks instead of unclassified, and an unclassified ModSecurity rule is reported once per day for the host instead of once for every source address.
+- A critical finding no longer carries the warnings batched with it past the hourly alert limit. Only delivered non-critical alerts count against that limit.
+- The YARA-X worker crash alert now reports the current scanning outage without claiming recovery. It distinguishes scanning becoming available after a restart from worker health recovering after the replacement stays up for 30 seconds.
+
+## [3.39.0] - 2026-09-16
+
+### Highlights
+
+- Suppression rules now mute alerts and remediation only. IP blocking, challenges, incident blocks and central threat responses ignore them, so a host that muted a brute-force check this way starts blocking those attackers after upgrading. Allowlist an address to exempt it, and use the email disabled-checks setting to keep a check out of email.
+- Browser logins now use revocable sessions. Upgrading and restarting the daemon require a fresh browser login; API credentials keep working.
+- Firewall actions survive interruptions and can be undone; `csm firewall actions` lists outcomes the daemon could not settle.
+- ModSecurity rule updates take effect after upgrading when a web server reload command is configured. Expect one web server reload.
+- Email attachment scanning no longer holds mail behind a saturated scanner.
+- The state file takes about half the space after the next compaction, and incidents the daemon closes on its own are kept for 7 days instead of 30.
+- `csm doctor` and the components view now fail when the YARA-X scanning worker cannot start.
+
+### Added
+
+- Firewall actions now retain durable intent, admission accounting, verification results, and retryable audit delivery. Recovery and typed undo preserve action identity, plan against one safety snapshot, verify removals against live state, and refuse conflicting changes while an outcome is uncertain. Proven outcomes are kept for undo under the findings-history retention setting, with a hard size and count bound that applies even when retention sweeps are off. Applying an action writes only the firewall entries that change, in one atomic update whatever its size. Recovery runs before the daemon applies the firewall and again on the maintenance tick, stays available after a failed startup, and `csm firewall actions` shows what it could not settle so an operator can record the outcome by hand.
+
 ### Security
 
+- Obfuscated malware remains detectable when execution is indirect, with consistent real-time, scheduled and content checks.
+- Disabling a signature no longer risks removing neighboring detections from the same rule file.
+- Detection self-tests now stop when the host configuration cannot be read instead of overstating available coverage.
+- Browser logins now use revocable sessions with idle and absolute expiry instead of copying the administrator API credential into a cookie. Upgrades and daemon restarts require a fresh browser login; API credentials continue to work.
 - A claimed crawler without reverse DNS no longer regains the softer challenge treatment after a daemon restart or when retry history fills up.
 - Mail log parsing no longer takes an authenticated user from message IDs, delivery replies, quoted fields or records carrying a remote ident username.
 - Mail authentication failures and authenticated arrivals keep their verified user and connecting address when login names, addresses, message IDs or optional envelope identities contain text that resembles log fields, including on TCP Fast Open connections.
 - The WordPress user enumeration filter now also stops requests that name the users route in the query string or use alternate request spellings.
+- Email attachment scanning no longer blocks later mail opens behind a saturated scanner, and overload handling preserves the configured delivery policy. Late quarantine leaves messages being delivered or awaiting delivery recovery untouched, and alerts distinguish deferred mail from mail allowed without a completed scan.
+- Real-time forwarder monitoring now sees pipe forwarders written in the quoted form cPanel uses, and a pipe counts as a cPanel built-in only when it runs that program. Scheduled and real-time checks follow the mail server's command quoting rules.
 - ModSecurity rule updates now take effect after an upgrade or install when a web server reload command is configured; previously they stayed inactive until the web server restarted for another reason. Expect one web server reload after upgrading.
+- Suppression rules no longer stop IP blocking, challenges, attack scoring, incident blocks or central threat responses; they still mute alerts and file, process, account and database remediation. A rule that muted a whole brute-force check left every attacker it reported unblocked; use an allowlist entry to exempt an address.
 
 ### Fixed
 
-- Restart advice now reflects reclaimable space in the state database, so a large file that is still mostly in use no longer triggers it.
+#### Detection and rules
+
+- Rule names listed under signature settings are now switched off everywhere CSM loads rules, including isolated scanning workers. Disabling every signature clears the loaded rules on reload, validation recognizes disabled rules with invalid expressions and counts repeated names once, and self-tests report the remaining coverage.
+- Commercially obfuscated plugin code no longer triggers a dropper alert solely for scrambled control flow or long embedded assets. Scans apply the same rule, so such a file no longer lands in the operator queue either.
 - Database scans no longer exhaust the SQL regular-expression budget or slow down on large styled content. If the server still stops a regular expression, plain hidden styles stay covered, later checks keep running, and coverage stays marked incomplete.
+- `csm doctor` and the components view now fail when the YARA-X scanning worker cannot start, instead of reporting an overall OK while malware scanning is off.
+
+#### Alerts and incidents
+
+- Suppression rules now also mute matching cross-account correlation alerts. Duplicate findings in a startup scan no longer inflate incident evidence or trigger premature blocks.
+- Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.
+
+#### Web traffic
+
 - Claimed crawlers without reverse DNS are no longer looked up again on every scan. Those repeats overflowed the bot verification queue on busy hosts, so genuine crawlers could miss verification and be handled as ordinary visitors.
 - The WordPress user enumeration filter no longer blocks signed-in users, so creating Application Passwords and loading author lists in the editor work again. Unrelated page paths and REST namespaces remain accessible.
+
+#### Mail
+
+- Mailing list aliases created by cPanel's Mailman are no longer reported as critical pipe forwarders, and autoresponder aliases are no longer reported as external forwarders. Forwarder alerts name the mailbox address once, and expected forwarders listed by full address are now recognized.
+
+#### State database
+
+- The finding history and attack event log no longer leave their database pages half empty, and the per-address attack index no longer stores a second copy of every event, so they take much less space in the state file. Existing files shrink after the next compaction; rows written by earlier releases are still read until they age out.
+- Attack events recorded at the same instant across separate batches no longer overwrite each other or disappear from address history. Address queries also skip older index copies that belong to a different address.
+- Incidents the daemon closes on its own are now kept for 7 days instead of 30, so busy hosts no longer hold tens of thousands of stale records in the state file. Incidents an operator closed or acted on keep 30 days, and large cleanups no longer pause incident processing.
+
+#### Upgrades
+
 - Upgrading a standalone install no longer leaves the daemon unable to start when a directory its service sandbox needs was never created; the upgrade now creates it first.
-- Outbound socket findings and per-domain mail volume findings now name the owning hosting account when the connection's user or every counted submission verifies it, and different accounts keep separate alerts.
 
 ## [3.38.0] - 2026-09-13
 

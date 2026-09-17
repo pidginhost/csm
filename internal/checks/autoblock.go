@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -165,6 +166,8 @@ type blockedIP struct {
 }
 
 type pendingIP struct {
+	ActionID  string         `json:"action_id,omitempty"`
+	ActionTTL time.Duration  `json:"action_ttl,omitempty"`
 	FindingID string         `json:"finding_id,omitempty"`
 	IP        string         `json:"ip"`
 	Reason    string         `json:"reason"`
@@ -419,8 +422,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 			continue
 		}
 		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
-		if err := callBlockSubnet(sb, cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry), alert.FindingID(f)); err != nil {
-			fmt.Fprintf(os.Stderr, "auto-block: error blocking subnet %s: %v\n", cidr, err)
+		if !autoFirewallActionApplied(cidr, callBlockSubnet(sb, cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry), alert.FindingID(f))) {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK-SUBNET: %s blocked\n", time.Now().Format("2006-01-02 15:04:05"), cidr)
@@ -467,10 +469,12 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 			findingID = alert.FindingID(f)
 		}
 		if existing, ok := ipsToBlock[ip]; ok {
-			existing.Reason = f.Message
-			existing.Check = f.Check
-			existing.Severity = f.Severity
-			existing.FindingID = findingID
+			if existing.ActionID == "" {
+				existing.Reason = f.Message
+				existing.Check = f.Check
+				existing.Severity = f.Severity
+				existing.FindingID = findingID
+			}
 			ipsToBlock[ip] = existing
 		} else {
 			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID}
@@ -484,6 +488,20 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 	maxPerHour := cfg.AutoResponse.MaxBlocksPerHour
 	if maxPerHour <= 0 {
 		maxPerHour = config.DefaultMaxBlocksPerHour
+	}
+
+	budgetUnavailable := false
+	if durable, ok := blocker.(interface {
+		DurableActionsEnabled() bool
+		FirewallScanBudget(string) (int, error)
+	}); ok && durable.DurableActionsEnabled() {
+		used, budgetErr := durable.FirewallScanBudget(currentHour)
+		if budgetErr != nil {
+			budgetUnavailable = true
+			actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_block", Message: "Firewall action accounting unavailable; scan blocks deferred", Details: budgetErr.Error(), Timestamp: time.Now()})
+		} else {
+			state.BlocksThisHour = used
+		}
 	}
 	// http_asn_crawl: surgical subnet tempban for confirmed Critical findings.
 	// Each CIDR consumes one MaxBlocksPerHour slot. Independent of the per-IP
@@ -512,12 +530,20 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 					actions = append(actions, dryRunSubnetNotice(cidr, " (asn-crawl)", f.Message))
 					continue
 				}
-				if state.BlocksThisHour >= maxPerHour {
+				if budgetUnavailable || state.BlocksThisHour >= maxPerHour {
 					break
 				}
 				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
-				if err := callBlockSubnet(sb, cidr, reason, tempban, alert.FindingID(f)); err != nil {
-					fmt.Fprintf(os.Stderr, "auto-block: asn-crawl subnet %s: %v\n", cidr, err)
+				var subnetErr error
+				if durable, ok := blocker.(interface {
+					DurableActionsEnabled() bool
+					BlockSubnetRequest(firewall.ActionRequest, *firewall.ScanAdmission) error
+				}); ok && durable.DurableActionsEnabled() {
+					subnetErr = durable.BlockSubnetRequest(firewall.ActionRequest{ID: rand.Text(), Operation: "block_subnet", Target: cidr, Reason: reason, TTL: tempban, FindingID: alert.FindingID(f), Actor: "daemon", Source: BlockSourceScan, Automatic: true}, &firewall.ScanAdmission{Window: currentHour, Limit: maxPerHour})
+				} else {
+					subnetErr = callBlockSubnet(sb, cidr, reason, tempban, alert.FindingID(f))
+				}
+				if !autoFirewallActionApplied(cidr, subnetErr) {
 					continue
 				}
 				state.BlocksThisHour++
@@ -556,9 +582,15 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 	for ip, cand := range ipsToBlock {
 		work.progress()
 		work.startCandidate(cand.queueCandidate)
-		if state.BlocksThisHour >= maxPerHour {
+		durableRetry := false
+		if durable, ok := blocker.(durableActionBlocker); ok {
+			durableRetry = cand.ActionID != "" && durable.DurableActionsEnabled()
+		}
+		// Existing requests need recovery even when their admission used the
+		// last slot. The durable store still caps any identity not yet admitted.
+		if budgetUnavailable || (state.BlocksThisHour >= maxPerHour && !durableRetry) {
 			requeue(cand)
-			rateLimited = true
+			rateLimited = !budgetUnavailable
 			continue
 		}
 
@@ -572,15 +604,36 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 			}
 			continue
 		}
+		if cand.ActionID == "" {
+			cand.ActionID = rand.Text()
+		}
+		requestTTL := expiry
+		if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
+			if cand.ActionTTL == 0 {
+				cand.ActionTTL = expiry
+			}
+			requestTTL = cand.ActionTTL
+		}
 		res, err := applyBlockLocked(cfg, blocker, state, ApplyBlockRequest{
+			ActionID:     cand.ActionID,
 			IP:           ip,
 			EngineReason: blockReason,
 			Reason:       cand.Reason,
-			TTL:          expiry,
+			TTL:          requestTTL,
 			Source:       BlockSourceScan,
 			FindingID:    cand.FindingID,
 		}, work.progress, func(err error) { work.candidateOutcome(cand.queueCandidate, err) })
-		if err != nil {
+		verifiedAuditPending := res.Outcome == firewall.BlockOutcomeLive && errors.Is(err, firewall.ErrActionAuditPending)
+		if verifiedAuditPending {
+			fmt.Fprintf(os.Stderr, "auto-block: %s verified with audit delivery pending: %v\n", ip, err)
+		}
+		if err != nil && !verifiedAuditPending {
+			if errors.Is(err, firewall.ErrActionFailed) {
+				// A proven rejection is terminal for this request ID. A later
+				// attempt gets independent admission under the current policy.
+				cand.ActionID = ""
+				cand.ActionTTL = 0
+			}
 			// Protected IPs (the server's own interface or infra_ips) are
 			// intentionally never blocked -- an expected no-op, not a failure.
 			// The triggering finding still stands, so suspicious activity from a
@@ -604,7 +657,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 			continue
 		}
 		if blocker.IsBlocked(ip) {
-			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, expiry)
+			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, requestTTL)
 		}
 		state.BlocksThisHour++
 		work.finishCandidate(cand.queueCandidate)
@@ -694,7 +747,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 						continue
 					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
-					if err := callBlockSubnet(sb, cidr, reason, subnetExpiry, subnetCauses[cidr].FindingID); err == nil {
+					if autoFirewallActionApplied(cidr, callBlockSubnet(sb, cidr, reason, subnetExpiry, subnetCauses[cidr].FindingID)) {
 						subnetBlocked[cidr] = true
 						fmt.Fprintf(os.Stderr, "[%s] AUTO-NETBLOCK: %s blocked (%d IPs from same subnet)\n", time.Now().Format("2006-01-02 15:04:05"), cidr, count)
 						actions = append(actions, alert.Finding{
@@ -805,21 +858,23 @@ func promoteToPermanentBlock(b IPBlocker, ip, reason, findingID string) bool {
 	if pp, ok := b.(interface {
 		PromoteToPermanentBlockWithFindingID(string, string, string) error
 	}); ok {
-		if err := pp.PromoteToPermanentBlockWithFindingID(ip, reason, findingID); err != nil {
-			fmt.Fprintf(os.Stderr, "auto-block: permblock promotion of %s failed: %v\n", ip, err)
-			return false
-		}
-		return true
+		return autoFirewallActionApplied(ip, pp.PromoteToPermanentBlockWithFindingID(ip, reason, findingID))
 	}
 	if pp, ok := b.(permanentPromoter); ok {
-		if err := pp.PromoteToPermanentBlock(ip, reason); err != nil {
-			fmt.Fprintf(os.Stderr, "auto-block: permblock promotion of %s failed: %v\n", ip, err)
-			return false
-		}
-		return true
+		return autoFirewallActionApplied(ip, pp.PromoteToPermanentBlock(ip, reason))
 	}
 	outcome, err := callBlockIP(b, ip, reason, 0, findingID)
-	return err == nil && outcome == firewall.BlockOutcomeLive
+	return outcome == firewall.BlockOutcomeLive && autoFirewallActionApplied(ip, err)
+}
+
+func autoFirewallActionApplied(target string, err error) bool {
+	if err == nil {
+		return true
+	}
+	// A verified mutation still needs its normal response evidence when the
+	// separate audit delivery is pending. Keep the degradation visible.
+	fmt.Fprintf(os.Stderr, "auto-block: firewall action for %s: %v\n", target, err)
+	return errors.Is(err, firewall.ErrActionAuditPending)
 }
 
 func isSubnetAlreadyBlocked(b IPBlocker, cidr string) bool {

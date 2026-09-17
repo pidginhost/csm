@@ -541,3 +541,18 @@ func assertYaraRuleMeta(t *testing.T, matches []Match, ruleName, key, want strin
 	}
 	t.Errorf("%s missing while checking metadata %s", ruleName, key)
 }
+
+func TestFPFlood_PhpGotoObfuscation_VendorObfuscatedLoader(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	// Commercial PHP obfuscator output: scrambled control flow, random labels,
+	// and nothing to decode or execute.
+	labels := []string{"kZV1K", "KjJ0O", "OYs2S", "xE0Vh", "uM3nr", "HJ9Pd", "SN1Yf", "v4G86", "Qd12X", "Bn77p", "Tr4Kq", "Lm90z", "Ww3Jc", "Zx5Tb"}
+	legit := []byte("<?php\nnamespace Vendor\\Addons; defined('ABSPATH') || die; final class AddonsLoader {\npublic function load() { ")
+	for _, l := range labels {
+		legit = append(legit, []byte("goto "+l+"; "+l+": $this->step();\n")...)
+	}
+	legit = append(legit, []byte("return $this; }\n}")...)
+	if hasYaraRule(s.ScanBytes(legit), "php_goto_obfuscation") {
+		t.Error("php_goto_obfuscation FP: vendor-obfuscated plugin loader has no decode or execution sink")
+	}
+}

@@ -113,7 +113,7 @@ alerts:
   heartbeat:
     enabled: false
     url: ""                             # healthchecks.io, cronitor, dead man's switch
-  max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses. Code default 30; the shipped csm.yaml template sets 10
+  max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses and is not counted. Code default 30; the shipped csm.yaml template sets 10
   block_digest:
     enabled: false                      # send per-country rollups for auto-blocked IPs
     countries: []                       # empty = trusted countries, then all countries
@@ -534,7 +534,7 @@ signatures:
     tier: "core"                        # "core", "extended", "full" (default: "core")
     update_interval: "168h"             # how often to check for updates (default: weekly)
     download_url: ""                    # signed ZIP URL/template; supports {tier} and {version}
-  disabled_rules: []                    # YARA rule names to exclude from Forge downloads
+  disabled_rules: []                    # rule names to switch off, in Forge and in the shipped rules
   # yara_worker_enabled: true           # tri-state: omit for the default (on), `false` to explicitly disable
 
 # signatures.signing_key is mandatory whenever either signatures.update_url
@@ -553,7 +553,9 @@ signatures:
 webui:
   enabled: true
   listen: "0.0.0.0:9443"               # address:port for HTTPS server
-  auth_token: ""                        # Bearer/cookie auth token (auto-generated on install)
+  auth_token: ""                        # API/login credential (auto-generated on install)
+  session_lifetime: "24h"               # browser absolute expiry; restart required
+  session_idle_timeout: "30m"           # browser idle expiry; restart required
   tokens: []                            # optional scoped tokens: name/token/scope (admin or read)
   metrics_token: ""                     # optional Bearer token for /metrics only
   tls_cert: ""                          # path to TLS certificate PEM file
@@ -573,6 +575,18 @@ email_av:
   quarantine_infected: true             # quarantine emails with infected attachments
   scan_concurrency: 4                   # parallel scan workers
   fail_mode: "open"                     # behavior when a scan cannot complete: "open" (default) delivers; "tempfail" defers so Exim retries
+  # Permission events have a five-second scan hold budget. When it expires,
+  # the open is allowed ("open") or denied for retry ("tempfail"); an admitted
+  # scan continues. A full scan queue applies the same policy immediately.
+  # Repeated deadline or capacity exhaustion raises email_av_hold_bypass and
+  # stops queueing new scans for five minutes. During this cooldown new opens
+  # are allowed unscanned ("open") or deferred ("tempfail"). Scanning resumes
+  # automatically afterwards; bypassed messages are not scanned later.
+  # Late malware results can quarantine only the original, unlocked message.
+  # Messages in active delivery, replaced spool files, and messages with a
+  # pending delivery journal are left untouched with email_av_quarantine_error.
+  # email_av_late_verdict means an allowed open later received a scan decision
+  # to stop delivery; it does not mean a previously deferred message escaped.
   # Password-protected archive attachments are outside fail_mode. Their members
   # cannot be read without the password, so no retry ever makes them scannable
   # and "tempfail" would defer the message until it bounced. CSM delivers them
@@ -834,7 +848,9 @@ disabled_checks: []                     # e.g. [waf_status, waf_rules, waf_detec
 retention:
   enabled: false                        # opt-in; when true, a daily sweep prunes old entries
   findings_days: 90                     # keep active findings this long (0 disables the findings sweep)
-  history_days: 30                      # keep findings-history entries this long
+  history_days: 30                      # keep findings-history entries and proven firewall
+                                        # outcomes this long; it also sets how far back a
+                                        # durable firewall action can be undone
   reputation_days: 180                  # keep IP reputation/attack entries this long
   sweep_interval: "24h"                 # how often the retention goroutine runs
   compact_min_size_mb: 128              # startup compaction floor; 0 disables auto-compaction
@@ -1016,6 +1032,8 @@ Config-management workflows (Ansible, Puppet, Chef) should:
 ## conf.d drop-ins
 
 Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **deep-merged** on top of it. Override with `--config-dir <path>` or `CSM_CONFIG_DIR`; the flag wins when both are set.
+
+The YARA-X worker inherits the daemon's selected directory on every start. If it is absent, the worker loads no fragments from it; it does not fall back to another directory. Explicit operator overrides still require an existing directory.
 
 - **Order:** lexicographic by filename. Scalar keys in `20-overrides.yaml` override the same keys in `10-base.yaml`. Use a numeric prefix.
 - **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order. All-scalar lists drop duplicate entries while keeping the first occurrence; structured lists such as `webui.tokens` keep every entry.

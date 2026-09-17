@@ -28,6 +28,13 @@ import (
 //   - db_post_injection (script in posts — too many FPs from page builders)
 //   - db_options_injection without confirmed malicious URLs
 func AutoRespondDBMalware(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+	return AutoRespondDBMalwareWithPolicy(cfg, findings, nil)
+}
+
+// AutoRespondDBMalwareWithPolicy keeps session IP enforcement independent of
+// permission to edit a database or revoke sessions. A nil policy permits both;
+// callers with suppressions supply a per-finding remediation decision.
+func AutoRespondDBMalwareWithPolicy(cfg *config.Config, findings []alert.Finding, canRemediate func(alert.Finding) bool) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.CleanDatabase {
 		return nil
 	}
@@ -35,15 +42,19 @@ func AutoRespondDBMalware(cfg *config.Config, findings []alert.Finding) []alert.
 	var actions []alert.Finding
 
 	for _, f := range findings {
+		remediate := canRemediate == nil || canRemediate(f)
 		switch f.Check {
 		case "db_options_injection":
-			acts := handleMaliciousOption(cfg, f)
+			acts := handleMaliciousOption(cfg, f, remediate)
 			actions = append(actions, acts...)
 		case "db_siteurl_hijack":
-			acts := handleSiteurlHijack(cfg, f)
+			acts := handleSiteurlHijack(cfg, f, remediate)
 			actions = append(actions, acts...)
 		case "db_malicious_trigger", "db_malicious_event",
 			"db_malicious_procedure", "db_malicious_function":
+			if !remediate {
+				continue
+			}
 			acts := handleMaliciousDBObject(f)
 			actions = append(actions, acts...)
 		}
@@ -143,7 +154,7 @@ func parseDBObjectFindingDetails(details string) (account, schema, kind, name st
 // 1. Extracts attacker IPs from WP sessions and emits block findings
 // 2. Revokes sessions for users with non-infra, non-private IPs only
 // 3. Backs up and cleans the malicious content from the option
-func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding {
+func handleMaliciousOption(cfg *config.Config, f alert.Finding, remediate bool) []alert.Finding {
 	var actions []alert.Finding
 
 	dbName, optionName := parseDBFindingDetails(f.Details)
@@ -190,6 +201,9 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding 
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
 	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
 		fmt.Sprintf("active WP session on compromised site, DB: %s", dbName), alert.FindingID(f))...)
+	if !remediate {
+		return actions
+	}
 
 	// 2. Revoke sessions only for users with suspicious IPs.
 	// This preserves the site admin's session if they're on an infra IP.
@@ -219,7 +233,7 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding 
 
 // handleSiteurlHijack handles siteurl/home hijacking by revoking sessions
 // and blocking attacker IPs. Does NOT modify siteurl/home values.
-func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
+func handleSiteurlHijack(cfg *config.Config, f alert.Finding, remediate bool) []alert.Finding {
 	var actions []alert.Finding
 
 	dbName, _ := parseDBFindingDetails(f.Details)
@@ -240,6 +254,9 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
 	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
 		fmt.Sprintf("active session on hijacked site, DB: %s", dbName), alert.FindingID(f))...)
+	if !remediate {
+		return actions
+	}
 
 	revoked := revokeCompromisedSessions(creds, prefix, cfg.InfraIPs)
 	if revoked > 0 {

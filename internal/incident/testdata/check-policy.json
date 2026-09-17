@@ -73,6 +73,8 @@
       "drupal_settings_injection",
       "email_av_degraded",
       "email_av_encrypted_archive",
+      "email_av_hold_bypass",
+      "email_av_late_verdict",
       "email_av_parse_error",
       "email_av_quarantine_error",
       "email_av_queue_overflow",

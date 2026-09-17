@@ -155,11 +155,11 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 			Source:       checks.BlockSourceCentral,
 			FindingID:    a.findingID,
 		})
+		d.recordAppliedBlocks(res.Findings)
 		if err != nil {
 			return err
 		}
 		log.Printf("central-intel: block %s outcome: %s", a.ip, res.Outcome)
-		d.recordAppliedBlocks(res.Findings)
 	}
 	return nil
 }

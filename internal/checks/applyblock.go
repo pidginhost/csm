@@ -25,6 +25,8 @@ const (
 // Reason is the human evidence recorded in the threat DB, the tracker, and
 // findings.
 type ApplyBlockRequest struct {
+	// ActionID preserves one admission identity across retries.
+	ActionID string
 	// FindingID is the original audit identity, captured before display truncation.
 	// Empty means this decision has no originating finding.
 	FindingID    string
@@ -80,6 +82,13 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	return res, err
 }
 
+// durableActionBlocker supplies atomic admission when the engine owns durable
+// action state. The existing scan policy is passed to that transaction.
+type durableActionBlocker interface {
+	DurableActionsEnabled() bool
+	BlockIPRequest(firewall.ActionRequest, *firewall.ScanAdmission) (firewall.BlockOutcome, error)
+}
+
 // applyBlockLocked performs one block attempt plus the evidence bookkeeping
 // a live outcome requires. The caller holds blockStateMu and owns loading
 // and saving state. It writes no stderr lines for live blocks - callers
@@ -87,11 +96,31 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 // dispatching them.
 func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest, progress func(), observe func(error)) (ApplyBlockResult, error) {
 	progress()
-	outcome, err := callBlockIP(blocker, req.IP, req.EngineReason, req.TTL, req.FindingID)
+	var outcome firewall.BlockOutcome
+	var err error
+	durableOutcome := false
+	if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
+		durableOutcome = true
+		var admission *firewall.ScanAdmission
+		if req.Source == BlockSourceScan {
+			limit := cfg.AutoResponse.MaxBlocksPerHour
+			if limit <= 0 {
+				limit = config.DefaultMaxBlocksPerHour
+			}
+			admission = &firewall.ScanAdmission{Window: autoBlockNow().Format("2006-01-02T15"), Limit: limit}
+		}
+		outcome, err = durable.BlockIPRequest(firewall.ActionRequest{
+			ID: req.ActionID, Operation: "block", Target: req.IP, Reason: req.EngineReason,
+			Source: req.Source, FindingID: req.FindingID, TTL: req.TTL, Actor: "daemon", Automatic: true,
+		}, admission)
+	} else {
+		outcome, err = callBlockIP(blocker, req.IP, req.EngineReason, req.TTL, req.FindingID)
+	}
 	observe(err)
 	observeBlockOutcome(outcome, err, req.Source)
 	res := ApplyBlockResult{Outcome: outcome}
-	if err != nil {
+	verifiedAuditPending := durableOutcome && outcome == firewall.BlockOutcomeLive && errors.Is(err, firewall.ErrActionAuditPending)
+	if err != nil && !verifiedAuditPending {
 		return res, err
 	}
 
@@ -178,5 +207,5 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 		}
 	}
 
-	return res, nil
+	return res, err
 }

@@ -267,7 +267,11 @@ Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved e
 
 ## Findings that always trigger IP block
 
-When `auto_response.block_ips: true` and the firewall is enabled, qualifying findings in this list block the source IP. Per-row severity and challenge exceptions apply. The dry-run gate still applies if `dry_run: true`.
+When `auto_response.block_ips: true` and the firewall is enabled, qualifying findings in this list block the source IP. Per-row severity and challenge exceptions apply. The dry-run gate still applies if `dry_run: true`. Suppression rules do not stop these blocks; allowlist an address to exempt it.
+
+Suppression rules also leave incident auto-blocking, credential-spray containment and central threat responses active. With database response enabled, suppression stops database cleanup and session revocation while keeping session IP blocking eligible. Suppress the action's own check type to mute its notification; this does not disable enforcement.
+
+Incidents and central threat responses receive new findings, including suppressed findings and checks that do not notify operators. Duplicate observations within a batch count once. Cross-account correlation uses only unsuppressed sources, and its derived alerts can be muted with their own suppression rules without removing them from enforcement.
 
 | Finding | Description |
 |---------|-------------|
@@ -343,7 +347,7 @@ receive them.
 - Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
-- CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour)
+- CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour); lower-severity findings batched with them still count against it
 - Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations
 
 ## What CSM Detects in Real-Time

@@ -51,6 +51,11 @@ const (
 	CmdFirewallRestart        = "firewall.restart"
 	CmdFirewallApplyConfirmed = "firewall.apply_confirmed"
 	CmdFirewallConfirm        = "firewall.confirm"
+	// Durable firewall actions. Actions lists what recovery could not settle,
+	// and ActionResolve records the outcome an operator established by hand.
+	CmdFirewallActions       = "firewall.actions"
+	CmdFirewallActionResolve = "firewall.action_resolve"
+
 	CmdFirewallRollbackStatus = "firewall.rollback_status"
 	CmdFirewallRollbackRevert = "firewall.rollback_revert"
 	CmdFirewallRollbackOK     = "firewall.rollback_confirm"
@@ -219,6 +224,15 @@ type FirewallGrepArgs struct {
 // "use the handler default" (currently 50 lines, matching the old CLI).
 type FirewallAuditArgs struct {
 	Limit int `json:"limit"`
+}
+
+// FirewallActionResolveArgs carries an operator decision about one durable
+// firewall action. Outcome is "applied" or "rejected", in the operator's own
+// terms; Note records the evidence they went on.
+type FirewallActionResolveArgs struct {
+	ID      string `json:"id"`
+	Outcome string `json:"outcome"`
+	Note    string `json:"note,omitempty"`
 }
 
 // FirewallApplyConfirmedArgs mirrors the CLI's minutes argument.

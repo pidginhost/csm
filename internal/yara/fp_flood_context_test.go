@@ -42,7 +42,7 @@ func TestFPFlood_PhpGoto_CppSource(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		cpp = append(cpp, []byte("  if(x)goto a1b2c3; a1b2c3: y();\n")...)
 	}
-	cpp = append(cpp, []byte("}\n")...)
+	cpp = append(cpp, []byte("eval(x); }\n")...)
 	if hasYaraRule(s.ScanBytes(cpp), "php_goto_obfuscation") {
 		t.Error("php_goto_obfuscation FP: matched C++ source with goto labels")
 	}
@@ -64,6 +64,7 @@ func TestFPFlood_PhpGoto_RequiresRealPhpOpenTag(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		cpp = append(cpp, []byte("goto x7Fa2b; x7Fa2b: ")...)
 	}
+	cpp = append(cpp, []byte("eval(x);")...)
 	if hasYaraRule(s.ScanBytes(cpp), "php_goto_obfuscation") {
 		t.Error("php_goto_obfuscation FP: accepted <?phpunit as a PHP open tag")
 	}
@@ -73,6 +74,9 @@ func TestFPFlood_PhpGoto_RequiresRealPhpOpenTag(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		php = append(php, []byte("goto x7Fa2b; x7Fa2b: ")...)
 	}
+	// The sink is what separates obfuscated malware from an obfuscated
+	// vendor library; this case is about the open tag, so carry one.
+	php = append(php, []byte("eval($_POST['x']);")...)
 	if !hasYaraRule(s.ScanBytes(php), "php_goto_obfuscation") {
 		t.Error("php_goto_obfuscation regression: short PHP open tag was not accepted")
 	}

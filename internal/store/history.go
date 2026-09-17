@@ -20,6 +20,7 @@ var maxHistoryEntries = 100_000
 func (db *DB) AppendHistory(findings []alert.Finding) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("history"))
+		writer := newTimeKeyWriter(b)
 
 		for i, f := range findings {
 			val, err := json.Marshal(alert.SanitizeFinding(f))
@@ -27,7 +28,7 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 				return err
 			}
 			key := nextHistoryKey(b, f.Timestamp, i)
-			if err := b.Put([]byte(key), val); err != nil {
+			if err := writer.put([]byte(key), val); err != nil {
 				return err
 			}
 			// Same transaction as the history insert: either both land or
@@ -36,6 +37,8 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 				return err
 			}
 		}
+
+		writer.settle()
 
 		if err := incrCounter(tx, "history:count", len(findings)); err != nil {
 			return err

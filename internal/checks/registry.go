@@ -256,6 +256,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_av_encrypted_archive", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_av_scanner_panic", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "realtime_scanner_panic", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "email_av_hold_bypass", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "email_av_late_verdict", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_av_parse_error", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_av_queue_overflow", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_av_quarantine_error", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

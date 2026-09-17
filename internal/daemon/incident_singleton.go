@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -76,10 +78,13 @@ const incidentAutoCloseDrainDelay = 30 * time.Second
 // thousands of bbolt persists in one tick.
 const incidentAutoCloseMaxPerSweep = 1000
 
-// incidentRetentionPeriod is how long resolved/dismissed incidents are
-// kept before compaction prunes them. Named constant per project
-// convention; config exposure deferred until operators ask.
-const incidentRetentionPeriod = 30 * 24 * time.Hour
+// incidentClosedRetention is how long resolved/dismissed incidents are kept
+// before compaction prunes them. Named value per project convention; config
+// exposure deferred until operators ask.
+var incidentClosedRetention = incident.ClosedRetention{
+	Operator: 30 * 24 * time.Hour,
+	Auto:     7 * 24 * time.Hour,
+}
 
 // incidentOpenThreshold is the number of correlated findings required
 // before a finding subject to the threshold opens an incident. Two means an
@@ -137,6 +142,10 @@ func IncidentCorrelator() *incident.Correlator {
 					// is a permanent block, which the engine understands.
 					live, err := blocker(ip, "CSM credential_spray: "+reason, ttl, findingID)
 					if err != nil {
+						if live && errors.Is(err, firewall.ErrActionAuditPending) {
+							csmlog.Warn("credential_spray block audit delivery pending", "ip", ip, "err", err)
+							return true
+						}
 						if !isProtectedIPRefusal(err) {
 							csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
 						}
@@ -168,6 +177,10 @@ func IncidentCorrelator() *incident.Correlator {
 					}
 					live, err := blocker(ip, "CSM incident: "+reason, ttl, findingID)
 					if err != nil {
+						if live && errors.Is(err, firewall.ErrActionAuditPending) {
+							csmlog.Warn("incident auto-block audit delivery pending", "ip", ip, "err", err)
+							return true
+						}
 						// Own-interface / infra IPs are intentionally never
 						// blockable; the incident still opened, so the operator is
 						// alerted to activity attributed to a protected address
@@ -419,17 +432,20 @@ func runIncidentCompaction(c *incident.Correlator) {
 	if db == nil {
 		return
 	}
-	now := time.Now()
-	pruned, err := db.CompactIncidents(now, incidentRetentionPeriod)
+	runIncidentCompactionWith(c, time.Now(), db.CompactIncidents)
+}
+
+func runIncidentCompactionWith(c *incident.Correlator, now time.Time, compact func(time.Time, incident.ClosedRetention) (int, error)) {
+	pruned, err := compact(now, incidentClosedRetention)
+	c.IncrementCompactedTotal(pruned)
 	if err != nil {
-		csmlog.Warn("incident retention compaction failed", "err", err)
+		csmlog.Warn("incident retention compaction failed", "pruned", pruned, "err", err)
 		return
 	}
-	_ = c.PruneClosedOlderThan(now, incidentRetentionPeriod)
+	_ = c.PruneClosedOlderThan(now, incidentClosedRetention)
 	_ = c.PruneStalePending(now)
 	_ = c.PruneStaleSpray(now)
 	if pruned > 0 {
-		c.IncrementCompactedTotal(pruned)
 		csmlog.Info("incident retention compaction", "pruned", pruned)
 	}
 }

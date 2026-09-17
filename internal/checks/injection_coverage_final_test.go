@@ -479,7 +479,7 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Database: targetdb\nOption: blogname",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) == 0 {
 		t.Fatal("expected auto-response actions for malicious option, got none")
 	}
@@ -566,7 +566,7 @@ func TestHandleSiteurlHijack_SuspiciousSessionsEmitBlocks(t *testing.T) {
 		Check:   "db_siteurl_hijack",
 		Details: "Database: hijackeddb\nSiteURL: http://phishing.example/",
 	}
-	actions := handleSiteurlHijack(cfg, f)
+	actions := handleSiteurlHijack(cfg, f, true)
 	if len(actions) == 0 {
 		t.Fatal("expected actions for siteurl hijack with suspicious sessions")
 	}
