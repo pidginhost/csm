@@ -12,6 +12,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 ### Fixed
 
 - `csm doctor` and the components view now keep reporting the YARA-X scanning worker as failed while it keeps crashing after restarts, instead of only when it cannot start at all. A restarted worker counts as recovered once it stays up for 30 seconds.
+- OWASP CRS attack rules logged by LiteSpeed are now recognised as attacks instead of unclassified, and an unclassified ModSecurity rule is reported once per day for the host instead of once for every source address.
 - The YARA-X worker crash alert now reports the current scanning outage without claiming recovery. It distinguishes scanning becoming available after a restart from worker health recovering after the replacement stays up for 30 seconds.
 
 ## [3.39.0] - 2026-09-16

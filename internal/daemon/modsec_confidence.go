@@ -101,8 +101,12 @@ var modsecPolicyAnomalyKeywords = []string{
 // WAFs (COMODO CWAF) emit CRITICAL severity on benign policy/anomaly rules, so
 // it is too noisy to separate attacks from policy hits. Rule ID, message, and
 // tags carry the reliable signal.
-func classifyModSecConfidence(ruleNum int, msg, tags string) modsecConfidence {
+func classifyModSecConfidence(ruleNum int, msg, tags, ruleFile string) modsecConfidence {
 	lc := strings.ToLower(msg + " " + tags)
+	// OWASP CRS names each rule file after the tag taxonomy of the rules in it
+	// (REQUEST-942-APPLICATION-ATTACK-SQLI.conf). LiteSpeed logs only the rule
+	// ID and file, so the file name is the only place that evidence survives.
+	attackTags := strings.ToLower(tags + " " + ruleFile)
 
 	// CSM custom rules are purpose-built attack/probe detections.
 	if ruleNum >= 900000 && ruleNum <= 900999 {
@@ -110,7 +114,7 @@ func classifyModSecConfidence(ruleNum int, msg, tags string) modsecConfidence {
 	}
 
 	// Specific attack/probe evidence wins over any low signal.
-	if containsAny(lc, modsecAttackMsgKeywords) || containsAny(strings.ToLower(tags), modsecAttackTagKeywords) {
+	if containsAny(lc, modsecAttackMsgKeywords) || containsAny(attackTags, modsecAttackTagKeywords) {
 		return modsecConfHigh
 	}
 

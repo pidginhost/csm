@@ -255,7 +255,9 @@ which then trips the generic auto_block gate.
 
 ModSecurity escalation is confidence-gated. Each deny is classified as
 high-confidence (a specific attack/probe rule -- SQLi, RCE, traversal,
-URL-encoding abuse, CSM custom), low-confidence (policy/anomaly scoring
+URL-encoding abuse, CSM custom, or an OWASP CRS rule from an
+`APPLICATION-ATTACK` rule file, which is how LiteSpeed logs, since it
+omits the rule message and tags), low-confidence (policy/anomaly scoring
 rules such as COMODO content-type `210710` or anomaly-points `214930`,
 and OWASP CRS anomaly-score rules), or unknown. A burst escalates to a
 firewall ban at the normal hit count only when it contains a
@@ -269,7 +271,8 @@ high-confidence rules. A determined source that floods only
 low-confidence rules is still banned once it reaches the
 `thresholds.modsec_low_confidence_escalation_hits` backstop (default
 30). Unknown blocking rules are escalation-eligible (fail-secure) and
-raise a one-time `modsec_classifier_gap` finding so a new vendor rule
+raise a `modsec_classifier_gap` finding once per rule for the whole host
+(repeated daily while the rule stays unclassified) so a new vendor rule
 pack is noticed rather than silently given a no-ban path.
 
 ## Kinds
