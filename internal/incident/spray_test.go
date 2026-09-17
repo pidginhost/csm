@@ -395,20 +395,29 @@ func TestPruneStaleSprayClearsExpiredEntries(t *testing.T) {
 // `recordSkipped` variant which returns false.
 type blockCapture struct {
 	mu    sync.Mutex
-	calls []struct{ IP, Reason string }
+	calls []struct {
+		IP, Reason string
+		TTL        time.Duration
+	}
 }
 
-func (b *blockCapture) record(ip, reason string) bool {
+func (b *blockCapture) record(ip, reason string, ttl time.Duration, _ string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.calls = append(b.calls, struct{ IP, Reason string }{ip, reason})
+	b.calls = append(b.calls, struct {
+		IP, Reason string
+		TTL        time.Duration
+	}{ip, reason, ttl})
 	return true
 }
 
-func (b *blockCapture) recordSkipped(ip, reason string) bool {
+func (b *blockCapture) recordSkipped(ip, reason string, ttl time.Duration, _ string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.calls = append(b.calls, struct{ IP, Reason string }{ip, reason})
+	b.calls = append(b.calls, struct {
+		IP, Reason string
+		TTL        time.Duration
+	}{ip, reason, ttl})
 	return false
 }
 
@@ -471,7 +480,7 @@ func TestSprayBlockCallbackRunsAfterCorrelatorUnlock(t *testing.T) {
 	var c *Correlator
 	c = NewCorrelator(CorrelatorConfig{
 		SpraySuppression: cfg,
-		OnSprayBlock: func(_, _ string) bool {
+		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
 			if got := c.OpenCount(); got != 1 {
 				t.Errorf("OpenCount from block callback = %d, want 1", got)
 			}
@@ -514,7 +523,7 @@ func TestSprayBlockCoalescesConcurrentCallback(t *testing.T) {
 	var calls atomic.Int32
 	c := NewCorrelator(CorrelatorConfig{
 		SpraySuppression: cfg,
-		OnSprayBlock: func(_, _ string) bool {
+		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
 			if calls.Add(1) == 1 {
 				close(firstEntered)
 				<-releaseFirst
@@ -609,7 +618,7 @@ func TestSprayBlockReleasesPendingSlotOnPanic(t *testing.T) {
 	calls := 0
 	c := NewCorrelator(CorrelatorConfig{
 		SpraySuppression: cfg,
-		OnSprayBlock: func(_, _ string) bool {
+		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
 			calls++
 			if calls == 1 {
 				panic("simulated spray block panic")

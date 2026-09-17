@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -73,7 +75,10 @@ func TestStopIncidentBackgroundLoopsFlushesPendingIncidentPersists(t *testing.T)
 
 	var persisted []incident.Incident
 	c := incident.NewCorrelator(incident.CorrelatorConfig{
-		Persist: func(inc incident.Incident) { persisted = append(persisted, inc) },
+		Persist: func(inc incident.Incident) error {
+			persisted = append(persisted, inc)
+			return nil
+		},
 	})
 	incidentCorrelator = c
 
@@ -86,7 +91,15 @@ func TestStopIncidentBackgroundLoopsFlushesPendingIncidentPersists(t *testing.T)
 		t.Fatalf("before shutdown flush: want 1 write, got %d", got)
 	}
 
+	if q := (&Daemon{}).QueueStatuses()["incident.persist.deferred"]; q.Depth != 1 {
+		t.Fatalf("pending shutdown bookkeeping missing: %+v", q)
+	}
 	StopIncidentBackgroundLoops()
+	for name, q := range c.QueueStatuses(time.Now()) {
+		if q.Depth != 0 || q.InFlight != 0 || q.DroppedTotal != 0 {
+			t.Errorf("%s not drained by shutdown: %+v", name, q)
+		}
+	}
 	if got := len(persisted); got != 2 {
 		t.Fatalf("after shutdown flush: want 2 writes, got %d", got)
 	}
@@ -237,7 +250,7 @@ func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T
 		mu    sync.Mutex
 		calls []blockCall
 	)
-	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) (bool, error) {
+	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration, _ string) (bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, blockCall{ip: ip, reason: reason, timeout: timeout})
@@ -287,7 +300,7 @@ func TestIncidentCorrelatorSprayBlockerRequiresLiveOutcome(t *testing.T) {
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
 		calls++
 		return false, nil
 	})
@@ -325,7 +338,7 @@ func TestIncidentCorrelatorSprayBlockerSuppressesProtectedIPError(t *testing.T) 
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
 		calls++
 		return false, firewall.ErrIPProtected
 	})
@@ -365,7 +378,7 @@ func TestIncidentCorrelatorAutoBlockSuppressesProtectedIPError(t *testing.T) {
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
 		calls++
 		return false, firewall.ErrIPProtected
 	})
@@ -397,6 +410,74 @@ func TestIncidentCorrelatorAutoBlockSuppressesProtectedIPError(t *testing.T) {
 	for _, inc := range c.Snapshot() {
 		if incidentHasAction(inc, "incident_block_requested") {
 			t.Fatalf("protected-IP incident refusal recorded live block action: %+v", inc.Actions)
+		}
+	}
+}
+
+func TestIncidentCorrelatorKeepsVerifiedContainmentWhenAuditPending(t *testing.T) {
+	for _, route := range []string{"spray", "incident"} {
+		for _, result := range []struct {
+			name string
+			live bool
+			err  error
+			want bool
+		}{
+			{name: "verified", live: true, err: firewall.ErrActionAuditPending, want: true},
+			{name: "unknown", live: true, err: firewall.ErrActionUnknown},
+			{name: "no_new_effect", err: firewall.ErrActionAuditPending},
+		} {
+			t.Run(route+"/"+result.name, func(t *testing.T) {
+				resetIncidentForTest()
+				t.Cleanup(resetIncidentForTest)
+				cfg := &config.Config{}
+				cfg.AutoResponse.Enabled = true
+				cfg.AutoResponse.BlockIPs = true
+				cfg.AutoResponse.BlockExpiry = "15m"
+				action := "incident_block_requested"
+				kind := incident.KindWebAttack
+				if route == "spray" {
+					cfg.Incidents.SpraySuppression.Enabled = true
+					cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
+					cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
+					cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+					cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
+					action, kind = "credential_spray_block_requested", incident.KindCredentialSpray
+				} else {
+					cfg.Incidents.AutoBlock.Enabled = true
+					cfg.Incidents.AutoBlock.BlockAtSeverity = "critical"
+				}
+				SetIncidentConfigSource(func() *config.Config { return cfg })
+				SetIncidentSprayBlocker(func(string, string, time.Duration, string) (bool, error) {
+					return result.live, result.err
+				})
+				finishLog := captureCSMLog(t)
+				t.Cleanup(func() { _ = finishLog() })
+				c := IncidentCorrelator()
+				if route == "spray" {
+					feedSpray(t, c, "192.0.2.83", 3)
+				} else {
+					if _, _, err := c.OnFinding(alert.Finding{Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "192.0.2.84", Timestamp: time.Now()}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				found := false
+				for _, inc := range c.Snapshot() {
+					if inc.Kind != kind {
+						continue
+					}
+					found = true
+					if got := incidentHasAction(inc, action); got != result.want {
+						t.Fatalf("containment action recorded=%t, want %t: %+v", got, result.want, inc.Actions)
+					}
+				}
+				if !found {
+					t.Fatal("triggering incident missing")
+				}
+				out := finishLog()
+				if !strings.Contains(out, result.err.Error()) || result.want && strings.Contains(out, "block failed") {
+					t.Fatalf("outcome degradation was not reported accurately: %q", out)
+				}
+			})
 		}
 	}
 }
@@ -450,7 +531,7 @@ func TestRunIncidentCompactionPrunesStoreAndMemory(t *testing.T) {
 		_ = db.Close()
 	})
 
-	old := time.Now().Add(-(incidentRetentionPeriod + time.Hour))
+	old := time.Now().Add(-(incidentClosedRetention.Operator + time.Hour))
 	inc := incident.Incident{
 		ID:        "inc_old",
 		Status:    incident.StatusResolved,
@@ -476,6 +557,73 @@ func TestRunIncidentCompactionPrunesStoreAndMemory(t *testing.T) {
 		t.Fatalf("GetIncident: %v", err)
 	} else if ok {
 		t.Fatal("compacted incident still visible in store")
+	}
+}
+
+func TestRunIncidentCompactionKeepsAutoClosedForShorterPeriod(t *testing.T) {
+	resetIncidentForTest()
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prev := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		resetIncidentForTest()
+		store.SetGlobal(prev)
+		_ = db.Close()
+	})
+
+	past := time.Now().Add(-(incidentClosedRetention.Auto + time.Hour))
+	for _, inc := range []incident.Incident{
+		{ID: "inc_auto", Status: incident.StatusResolved, Severity: alert.High, Account: "alice", ClosedBy: "auto:stale", ClosedAt: past, CreatedAt: past, UpdatedAt: past},
+		{ID: "inc_operator", Status: incident.StatusResolved, Severity: alert.High, Account: "bob", ClosedBy: "operator", ClosedAt: past, CreatedAt: past, UpdatedAt: past},
+		{ID: "inc_legacy", Status: incident.StatusResolved, UpdatedAt: past},
+		{ID: "inc_historical_operator", Status: incident.StatusDismissed, ClosedBy: "auto:stale", ClosedAt: past, UpdatedAt: past, Actions: []incident.IncidentAction{{Time: past, Action: "incident_status_changed"}}},
+	} {
+		if err := db.SaveIncident(inc); err != nil {
+			t.Fatalf("SaveIncident: %v", err)
+		}
+	}
+
+	c := IncidentCorrelator()
+	runIncidentCompaction(c)
+
+	if _, ok := c.Get("inc_auto"); ok {
+		t.Error("auto-closed incident still in memory")
+	}
+	if _, ok, _ := db.GetIncident("inc_auto"); ok {
+		t.Error("auto-closed incident still in store")
+	}
+	for _, id := range []string{"inc_operator", "inc_legacy", "inc_historical_operator"} {
+		if _, ok := c.Get(id); !ok {
+			t.Errorf("%s dropped from memory before 30 days", id)
+		}
+		if _, ok, err := db.GetIncident(id); err != nil || !ok {
+			t.Errorf("%s dropped from store before 30 days: found=%v err=%v", id, ok, err)
+		}
+	}
+}
+
+func TestIncidentCompactionCountsCommittedBatchesOnFailure(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	now := time.Now()
+	old := now.Add(-8 * 24 * time.Hour)
+	c.Restore([]incident.Incident{{ID: "inc_auto", Status: incident.StatusResolved, ClosedBy: "auto:stale", UpdatedAt: old}})
+	runIncidentCompactionWith(c, now, func(time.Time, incident.ClosedRetention) (int, error) {
+		return 256, errors.New("later batch failed")
+	})
+	reg := metrics.NewRegistry()
+	incident.RegisterMetrics(reg, c)
+	var out bytes.Buffer
+	if err := reg.WriteOpenMetrics(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "csm_incidents_compacted_total 256\n") {
+		t.Errorf("committed deletions lost from metrics: %s", out.String())
+	}
+	if _, ok := c.Get("inc_auto"); !ok {
+		t.Error("failed sweep pruned memory without completing store cleanup")
 	}
 }
 
@@ -541,6 +689,10 @@ func TestIncidentCorrelatorLogsPersistFailure(t *testing.T) {
 		t.Fatal("finding did not create an incident")
 	}
 
+	q := (&Daemon{}).QueueStatuses()["incident.persist.active"]
+	if q.DroppedTotal != 1 || q.RecentDrops != 1 || q.InFlight != 0 {
+		t.Fatalf("real closed-store failure missing from health: %+v", q)
+	}
 	out := finishLog()
 	if !strings.Contains(out, "WARN: incident persist failed") {
 		t.Fatalf("persist failure was not logged: %q", out)

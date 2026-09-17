@@ -12,6 +12,53 @@ import (
 	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
+func TestRunHonorsDisabledRulesAfterCompileRecovery(t *testing.T) {
+	dir := shortTmpDir(t)
+	rulePath := filepath.Join(dir, "rules.yar")
+	if err := os.WriteFile(rulePath, []byte("rule broken {"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "w.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, Config{SocketPath: sock, RulesDir: dir, DisabledRules: []string{"drop"}}) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	})
+	waitForSocket(t, sock, 2*time.Second)
+	c := yaraipc.NewClient(sock, 2*time.Second)
+	defer func() { _ = c.Close() }()
+	source := "rule drop { condition: true } rule drop_extra { condition: true }"
+	if err := os.WriteFile(rulePath, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// First rebuild from a failed compile, then reload the recovered scanner.
+	for i := 0; i < 2; i++ {
+		result, err := c.Reload(yaraipc.ReloadArgs{})
+		if err != nil || result.RuleCount != 1 || result.CompileError != "" {
+			t.Fatalf("reload %d: %+v, %v", i, result, err)
+		}
+		matches, err := c.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("probe")})
+		if err != nil || len(matches.Matches) != 1 || matches.Matches[0].RuleName != "drop_extra" {
+			t.Fatalf("scan after reload %d: %+v, %v", i, matches, err)
+		}
+	}
+	if err := os.WriteFile(rulePath, []byte("rule drop { condition: true }"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.Reload(yaraipc.ReloadArgs{})
+	if err != nil || result.RuleCount != 0 || result.CompileError != "" {
+		t.Fatalf("fully disabled reload: %+v, %v", result, err)
+	}
+	matches, err := c.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("probe")})
+	if err != nil || len(matches.Matches) != 0 {
+		t.Fatalf("fully disabled worker retained stale rules: %+v, %v", matches, err)
+	}
+}
+
 // End-to-end recovery against the real YARA-X engine: a worker that boots with
 // a rules directory that fails to compile must stay alive, report the compile
 // error and zero rules over Ping, and then recover on an OpReload once the
@@ -53,25 +100,27 @@ func TestRunRecoversFromBadRulesOnReload(t *testing.T) {
 
 	// Fix the rules and reload.
 	good := "rule good { strings: $a = \"malz\" condition: $a }"
-	if err := os.WriteFile(rulePath, []byte(good), 0o600); err != nil {
+	if err = os.WriteFile(rulePath, []byte(good), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rr, err := c.Reload(yaraipc.ReloadArgs{})
 	if err != nil {
 		t.Fatalf("Reload after fixing rules: %v", err)
 	}
-	if rr.RuleCount < 1 || rr.CompileError != "" {
-		t.Fatalf("Reload result = %+v, want >=1 rule + no compile error", rr)
+	if rr.RuleCount != 1 || rr.CompileError != "" {
+		t.Fatalf("Reload result = %+v, want exactly one rule + no compile error", rr)
 	}
 
 	ping, err = c.Ping()
 	if err != nil {
 		t.Fatalf("Ping after recovery: %v", err)
 	}
-	if ping.RuleCount < 1 || ping.CompileError != "" {
-		t.Errorf("post-recovery ping = %+v, want rules + no compile error", ping)
+	if ping.RuleCount != 1 || ping.CompileError != "" {
+		t.Errorf("post-recovery ping = %+v, want one rule + no compile error", ping)
 	}
 
 	cancel()
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("worker shutdown: %v", err)
+	}
 }

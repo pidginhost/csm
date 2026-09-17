@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -660,6 +661,180 @@ func TestPurgeAndMergeFindingsAtomic(t *testing.T) {
 		if f.Check == "perf" && f.Message == "stale" {
 			t.Error("stale perf finding should have been purged")
 		}
+	}
+}
+
+func TestPurgeAndMergeFindingsWithGapsPreservesCurrentEquivalentPaths(t *testing.T) {
+	s := openTestStore(t)
+	realRoot := t.TempDir()
+	path := filepath.Join(realRoot, "error_log")
+	if err := os.WriteFile(path, []byte("oversize"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(t.TempDir(), "docroot")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	storedPath := filepath.Join(linkRoot, ".", "error_log")
+	s.SetLatestFindings([]alert.Finding{
+		{Check: "yara_match_scheduled", Message: "rule-a", FilePath: storedPath, Timestamp: time.Unix(100, 0)},
+		{Check: "yara_match_scheduled", Message: "rule-b", FilePath: storedPath, Timestamp: time.Unix(200, 0)},
+		{Check: "yara_match_scheduled", Message: "covered", FilePath: filepath.Join(realRoot, "clean.php")},
+		{Check: "js_keylogger_dataflow", Message: "other owner", FilePath: storedPath},
+	})
+
+	// No carried findings are supplied: the path set must protect the current
+	// state observed under latestMu, including state newer than the scanner's
+	// earlier LatestFindings snapshot.
+	preserveAliases := make(map[string]bool)
+	for _, alias := range latestFindingPathAliases(path) {
+		preserveAliases[alias] = true
+	}
+	s.PurgeAndMergeFindingsDerivedWithGaps(
+		[]string{"yara_match_scheduled", "js_keylogger_dataflow"},
+		nil,
+		map[string]map[string]bool{"yara_match_scheduled": preserveAliases},
+		nil,
+		nil,
+	)
+
+	got := s.LatestFindings()
+	if len(got) != 2 {
+		t.Fatalf("path-scoped atomic purge retained the wrong findings: %+v", got)
+	}
+	want := map[string]time.Time{"rule-a": time.Unix(100, 0), "rule-b": time.Unix(200, 0)}
+	for _, finding := range got {
+		if finding.Check != "yara_match_scheduled" || finding.FilePath != storedPath ||
+			!finding.Timestamp.Equal(want[finding.Message]) {
+			t.Fatalf("preserved finding changed or crossed owner scope: %+v", finding)
+		}
+	}
+}
+
+func TestPurgeAndMergeFindingsWithGapsRejectsStaleCarries(t *testing.T) {
+	s := openTestStore(t)
+	const path = "/home/alice/public_html/error_log"
+	current := alert.Finding{
+		Check: "yara_match_scheduled", Message: "rule-a", FilePath: path,
+		Severity: alert.Warning, DemotedFrom: alert.Critical, Timestamp: time.Unix(100, 0),
+	}
+	stale := current
+	stale.Severity = alert.Critical
+	stale.DemotedFrom = 0
+	stale.ScanCarryForward = true
+	dismissedBeforeMerge := alert.Finding{
+		Check: "yara_match_scheduled", Message: "rule-b", FilePath: path,
+		Severity: alert.Critical, Timestamp: time.Unix(200, 0), ScanCarryForward: true,
+	}
+	s.SetLatestFindings([]alert.Finding{current})
+
+	s.PurgeAndMergeFindingsDerivedWithGaps(
+		[]string{"yara_match_scheduled"},
+		[]alert.Finding{stale, dismissedBeforeMerge},
+		map[string]map[string]bool{"yara_match_scheduled": {path: true}},
+		nil,
+		nil,
+	)
+
+	got := s.LatestFindings()
+	if len(got) != 1 || got[0].Key() != current.Key() || got[0].Severity != alert.Warning ||
+		got[0].DemotedFrom != alert.Critical {
+		t.Fatalf("stale carry overwrote current state or resurrected a dismissal: %+v", got)
+	}
+}
+
+func TestPurgeAndMergeFindingsWithGapsKeepsFreshDetection(t *testing.T) {
+	s := openTestStore(t)
+	const path = "/home/alice/public_html/new.php"
+	staleCarry := alert.Finding{
+		Check: "yara_match_scheduled", Message: "new rule", FilePath: path,
+		Severity: alert.Warning, Timestamp: time.Unix(200, 0), ScanCarryForward: true,
+	}
+	fresh := alert.Finding{
+		Check: "yara_match_scheduled", Message: "new rule", FilePath: path,
+		Severity: alert.Critical, Timestamp: time.Unix(300, 0),
+	}
+
+	s.PurgeAndMergeFindingsDerivedWithGaps(
+		[]string{"yara_match_scheduled"},
+		[]alert.Finding{staleCarry, fresh},
+		map[string]map[string]bool{"yara_match_scheduled": {path: true}},
+		nil,
+		nil,
+	)
+
+	got := s.LatestFindings()
+	if len(got) != 1 || got[0].Key() != fresh.Key() || got[0].Severity != fresh.Severity ||
+		!got[0].Timestamp.Equal(fresh.Timestamp) || got[0].ScanCarryForward {
+		t.Fatalf("fresh detection on a multiply-visited gapped path was dropped: %+v", got)
+	}
+}
+
+func TestPurgeAndMergeFindingsWithGapsDoesNotEvictProtectedAtCap(t *testing.T) {
+	s := openTestStore(t)
+	const protectedPath = "/home/alice/public_html/unreadable.php"
+	protected := alert.Finding{
+		Check: "yara_match_scheduled", Message: "protected", FilePath: protectedPath,
+		Severity: alert.Warning, Timestamp: time.Unix(1, 0),
+	}
+	seed := make([]alert.Finding, 0, latestFindingsCap)
+	seed = append(seed, protected)
+	for i := 1; i < latestFindingsCap; i++ {
+		seed = append(seed, alert.Finding{
+			Check: "unrelated", Message: fmt.Sprintf("finding-%05d", i),
+			Severity: alert.Critical, Timestamp: time.Unix(int64(i+1), 0),
+		})
+	}
+	s.SetLatestFindings(seed)
+
+	s.PurgeAndMergeFindingsDerivedWithGaps(
+		[]string{"yara_match_scheduled"},
+		nil,
+		map[string]map[string]bool{"yara_match_scheduled": {protectedPath: true}},
+		[]string{"derived"},
+		func([]alert.Finding) []alert.Finding {
+			return []alert.Finding{{Check: "derived", Message: "higher priority", Severity: alert.Critical, Timestamp: time.Now()}}
+		},
+	)
+
+	got := s.LatestFindings()
+	if len(got) != latestFindingsCap {
+		t.Fatalf("latest finding count = %d, want %d", len(got), latestFindingsCap)
+	}
+	for _, finding := range got {
+		if finding.Key() == protected.Key() {
+			return
+		}
+	}
+	t.Fatal("normal latest-state cap retired a finding for an unexamined file")
+}
+
+func TestPurgeAndMergeFindingsWithGapsHoldsOwnerOnAliasMismatch(t *testing.T) {
+	s := openTestStore(t)
+	current := alert.Finding{
+		Check: "yara_match_scheduled", Message: "current", FilePath: "/home/alice/covered.php",
+		Severity: alert.High, Timestamp: time.Unix(200, 0),
+	}
+	stale := alert.Finding{
+		Check: "yara_match_scheduled", Message: "stale", FilePath: "/home/alice/gap-a.php",
+		Severity: alert.Critical, Timestamp: time.Unix(100, 0), ScanCarryForward: true,
+	}
+	freshDuplicate := stale
+	freshDuplicate.ScanCarryForward = false
+	freshDuplicate.Severity = alert.High
+	s.SetLatestFindings([]alert.Finding{current})
+
+	s.PurgeAndMergeFindingsDerivedWithGaps(
+		[]string{"yara_match_scheduled"},
+		[]alert.Finding{freshDuplicate, stale},
+		map[string]map[string]bool{"yara_match_scheduled": {"/home/alice/gap-b.php": true}},
+		nil,
+		nil,
+	)
+
+	got := s.LatestFindings()
+	if len(got) != 1 || got[0].Key() != current.Key() {
+		t.Fatalf("carry/preserve disagreement purged current state or inserted stale state: %+v", got)
 	}
 }
 

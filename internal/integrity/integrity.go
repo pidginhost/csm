@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,14 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/pidginhost/csm/internal/config"
+)
+
+// Sentinel causes for a Verify failure. Callers such as `csm doctor` match on
+// them to suggest the right remedy; the wrapped messages carry the hashes.
+var (
+	ErrBinaryHashMismatch = errors.New("binary hash mismatch")
+	ErrConfigHashMismatch = errors.New("config hash mismatch")
+	ErrConfdHashMismatch  = errors.New("conf.d hash mismatch")
 )
 
 // HashFile returns the SHA256 hash of a file.
@@ -110,7 +119,7 @@ func HashConfigStableBytes(data []byte) string {
 func SignAndSaveAtomic(cfg *config.Config, binaryHash string) error {
 	cfg.Integrity.BinaryHash = binaryHash
 	cfg.Integrity.ConfigHash = ""
-	confdHash, err := HashConfDir(cfg.ConfigDir)
+	confdHash, err := HashConfDir(cfg.ConfigDir, cfg.ConfD.IntegrityExempt)
 	if err != nil {
 		return fmt.Errorf("hashing conf.d: %w", err)
 	}
@@ -217,20 +226,47 @@ func syncDirectory(dir string) error {
 //
 // Each fragment is domain-separated by name and length so two fragments cannot
 // collide by shuffling bytes across the filename boundary.
-func HashConfDir(confDir string) (string, error) {
+//
+// Fragments named in exempt (confd.integrity_exempt) hash as if absent: their
+// owning integration rewrites them on its own schedule, and pinning them would
+// turn every one of those rewrites into a failed restart.
+func HashConfDir(confDir string, exempt []string) (string, error) {
 	frags, err := config.ConfDirFragmentDigestInput(confDir)
 	if err != nil {
 		return "", err
 	}
-	if len(frags) == 0 {
-		return "", nil
-	}
 	h := sha256.New()
+	covered := 0
 	for _, f := range frags {
+		if isExemptFragment(f.Name, exempt) {
+			continue
+		}
+		covered++
 		fmt.Fprintf(h, "confd-fragment:%s:%d\n", f.Name, len(f.Data))
 		_, _ = h.Write(f.Data)
 	}
+	if covered == 0 {
+		return "", nil
+	}
 	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
+}
+
+// hashOrNone keeps "expected , got ..." out of operator-facing errors when one
+// side of a conf.d comparison is the empty no-fragments digest.
+func hashOrNone(h string) string {
+	if h == "" {
+		return "none"
+	}
+	return h
+}
+
+func isExemptFragment(name string, exempt []string) bool {
+	for _, e := range exempt {
+		if e == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Verify checks the binary and config file integrity.
@@ -244,7 +280,8 @@ func Verify(binaryPath string, cfg *config.Config) error {
 		return fmt.Errorf("hashing binary: %w", err)
 	}
 	if currentHash != cfg.Integrity.BinaryHash {
-		return fmt.Errorf("binary hash mismatch: expected %s, got %s", cfg.Integrity.BinaryHash, currentHash)
+		return fmt.Errorf("%w: expected %s, got %s; run `csm rehash` after an intentional binary upgrade",
+			ErrBinaryHashMismatch, cfg.Integrity.BinaryHash, currentHash)
 	}
 
 	if cfg.Integrity.ConfigHash != "" {
@@ -253,7 +290,8 @@ func Verify(binaryPath string, cfg *config.Config) error {
 			return fmt.Errorf("hashing config: %w", err)
 		}
 		if configHash != cfg.Integrity.ConfigHash {
-			return fmt.Errorf("config hash mismatch: expected %s, got %s", cfg.Integrity.ConfigHash, configHash)
+			return fmt.Errorf("%w: expected %s, got %s; run `csm rehash` after an intentional csm.yaml change",
+				ErrConfigHashMismatch, cfg.Integrity.ConfigHash, configHash)
 		}
 
 		// conf.d fragments are merged on top of the main config at load time,
@@ -262,12 +300,13 @@ func Verify(binaryPath string, cfg *config.Config) error {
 		// diverge from the stored one, and a baseline taken without conf.d
 		// stays empty == empty. Operators who already use conf.d must re-run
 		// `csm rehash` once after upgrade to populate confd_hash.
-		confdHash, err := HashConfDir(cfg.ConfigDir)
+		confdHash, err := HashConfDir(cfg.ConfigDir, cfg.ConfD.IntegrityExempt)
 		if err != nil {
 			return fmt.Errorf("hashing conf.d: %w", err)
 		}
 		if confdHash != cfg.Integrity.ConfdHash {
-			return fmt.Errorf("conf.d hash mismatch: expected %s, got %s", cfg.Integrity.ConfdHash, confdHash)
+			return fmt.Errorf("%w: a drop-in under %s changed since the config was last signed (expected %s, got %s); run `csm rehash` after an intentional conf.d change, or list fragments an integration rewrites under confd.integrity_exempt",
+				ErrConfdHashMismatch, cfg.ConfigDir, hashOrNone(cfg.Integrity.ConfdHash), hashOrNone(confdHash))
 		}
 	}
 

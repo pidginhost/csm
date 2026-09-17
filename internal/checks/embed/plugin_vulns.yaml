@@ -43,3 +43,28 @@ plugins:
     kev: true
     severity: critical
     reference: "https://nvd.nist.gov/vuln/detail/CVE-2020-25213"
+
+  - slug: litespeed-cache
+    cve: CVE-2023-40000
+    title: "Unauthenticated stored cross-site scripting via CDN setup status (loader runs for the next administrator who opens the dashboard)"
+    fixed_in: "5.7.0.1"
+    kev: false
+    severity: critical
+    reference: "https://nvd.nist.gov/vuln/detail/CVE-2023-40000"
+
+  - slug: litespeed-cache
+    cve: CVE-2024-28000
+    virtual_patch: true
+    title: "Unauthenticated privilege escalation to administrator via a guessable crawler hash"
+    fixed_in: "6.4"
+    kev: false
+    severity: critical
+    reference: "https://nvd.nist.gov/vuln/detail/CVE-2024-28000"
+
+  - slug: litespeed-cache
+    cve: CVE-2024-44000
+    title: "Administrator session cookie disclosed through the plugin debug log"
+    fixed_in: "6.5.0.1"
+    kev: false
+    severity: high
+    reference: "https://nvd.nist.gov/vuln/detail/CVE-2024-44000"

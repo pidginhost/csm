@@ -415,7 +415,7 @@ func TestRestoreArchive_RejectsOversizedEntry(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()
 	archive := filepath.Join(src, "huge.tar.gz")
-	if err := writeArchiveEntry(archive, "state/huge.db", maxRestoreEntrySize+1, nil); err != nil {
+	if err := writeArchiveEntry(archive, "state/huge.db", defaultBackupMaxBytes+1, nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -70,6 +71,86 @@ func TestSaveAndGetIncident(t *testing.T) {
 	}
 	if got.ID != want.ID || got.Account != want.Account || got.Severity != want.Severity {
 		t.Errorf("incident: %+v", got)
+	}
+}
+
+func TestIncidentBlockLadderSurvivesStoreAndRestore(t *testing.T) {
+	for _, spray := range []bool{false, true} {
+		t.Run(map[bool]string{false: "generic", true: "spray"}[spray], func(t *testing.T) {
+			db := newTestStore(t)
+			now := time.Now().UTC()
+			inc := sampleIncident("inc_ladder")
+			inc.Account = ""
+			inc.CorrelationKey = &incident.Key{RemoteIP: "192.0.2.10"}
+			inc.Kind = incident.KindWebAttack
+			check := "modsec_csm_block_escalation"
+			if spray {
+				inc.Kind, check = incident.KindCredentialSpray, "email_auth_failure_realtime"
+			}
+			inc.Timeline = []incident.IncidentEvent{{Kind: "finding", Check: check, RemoteIP: "192.0.2.10"}}
+			// A restart can happen long after the last finding and block expiry.
+			inc.UpdatedAt = now.Add(-25 * time.Hour)
+			inc.AutoBlock = incident.AutoBlockState{Count: 1, LastAt: inc.UpdatedAt, ExpiresAt: now.Add(-time.Hour)}
+			for _, count := range []int{1, 2, 3} {
+				if err := db.SaveIncident(inc); err != nil {
+					t.Fatal(err)
+				}
+				rows, err := db.ListIncidents()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(rows) != 1 || rows[0].AutoBlock != inc.AutoBlock {
+					t.Fatalf("stored block state = %+v, want %+v", rows, inc.AutoBlock)
+				}
+				var calls []time.Duration
+				block := func(_, _ string, ttl time.Duration, _ string) bool { calls = append(calls, ttl); return true }
+				cfg := incident.CorrelatorConfig{Persist: db.SaveIncident, AutoBlock: incident.IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"}, OnIncidentBlock: block}
+				if spray {
+					cfg.SpraySuppression = incident.SpraySuppressionConfig{Enabled: true, DistinctMailboxes: 2, BlockAtSeverity: "high", PerCheck: map[string]bool{check: true}}
+					cfg.OnSprayBlock = block
+					cfg.OnIncidentBlock = func(string, string, time.Duration, string) bool {
+						t.Error("spray reached generic hand-off")
+						return false
+					}
+				}
+				c := incident.NewCorrelator(cfg)
+				c.Restore(rows)
+				if len(calls) != 0 {
+					t.Fatal("restore requested a block without a finding")
+				}
+				for i := 0; i < 3; i++ {
+					id, _, findingErr := c.OnFinding(alert.Finding{Check: check, SourceIP: "192.0.2.10", Mailbox: "alice@example.com", Severity: alert.Critical, Timestamp: now})
+					if findingErr != nil || id != inc.ID {
+						t.Fatalf("restored finding id=%q err=%v, want %q", id, findingErr, inc.ID)
+					}
+				}
+				got, ok, err := db.GetIncident(inc.ID)
+				if err != nil || !ok {
+					t.Fatalf("read blocked incident: found=%v err=%v", ok, err)
+				}
+				if count == 3 {
+					if len(calls) != 0 || got.AutoBlock != inc.AutoBlock {
+						t.Fatalf("permanent block re-requested: calls=%v state=%+v", calls, got.AutoBlock)
+					}
+				} else {
+					wantTTL := time.Duration(0)
+					if count == 1 {
+						wantTTL = 7 * 24 * time.Hour
+					}
+					if len(calls) != 1 || calls[0] != wantTTL || got.AutoBlock.Count != count+1 {
+						t.Fatalf("restored ladder skipped or duplicated a rung: calls=%v state=%+v", calls, got.AutoBlock)
+					}
+					if wantTTL == 0 && !got.AutoBlock.ExpiresAt.IsZero() {
+						t.Fatal("permanent expiry was not persisted")
+					}
+				}
+				inc = got
+				inc.UpdatedAt = now.Add(-25 * time.Hour)
+				if count == 1 {
+					inc.AutoBlock.ExpiresAt = now.Add(-time.Hour)
+				}
+			}
+		})
 	}
 }
 
@@ -210,7 +291,7 @@ func TestCompactIncidentsPrunesOldResolved(t *testing.T) {
 		}
 	}
 
-	pruned, err := db.CompactIncidents(now, 30*24*time.Hour)
+	pruned, err := db.CompactIncidents(now, incident.ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 30 * 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("compact: %v", err)
 	}
@@ -299,7 +380,7 @@ func TestCompactIncidentsSkipsCorruptRecord(t *testing.T) {
 
 	putRawIncidentRow(t, db, "inc_corrupt", []byte("{bad"))
 
-	pruned, err := db.CompactIncidents(now, 30*24*time.Hour)
+	pruned, err := db.CompactIncidents(now, incident.ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 30 * 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("compact must not fail on corrupt row: %v", err)
 	}
@@ -310,5 +391,192 @@ func TestCompactIncidentsSkipsCorruptRecord(t *testing.T) {
 		t.Fatalf("GetIncident: %v", err)
 	} else if ok {
 		t.Errorf("inc_stale should be gone")
+	}
+}
+
+func TestCompactIncidentsPrunesAutoClosedSooner(t *testing.T) {
+	db := newTestStore(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	day := 24 * time.Hour
+	closed := func(id, by string, age time.Duration) incident.Incident {
+		inc := sampleIncident(id)
+		inc.Status = incident.StatusResolved
+		inc.ClosedBy = by
+		inc.ClosedAt = now.Add(-age)
+		inc.UpdatedAt = now.Add(-age)
+		return inc
+	}
+	rows := []incident.Incident{
+		closed("inc_auto_8d", "auto:stale", 8*day),
+		closed("inc_age_cap_8d", "auto:age_cap", 8*day),
+		closed("inc_auto_6d", "auto:stale", 6*day),
+		closed("inc_operator_8d", "operator", 8*day),
+		closed("inc_unattributed_8d", "", 8*day),
+		closed("inc_operator_31d", "operator", 31*day),
+	}
+	for _, inc := range rows {
+		if err := db.SaveIncident(inc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruned, err := db.CompactIncidents(now, incident.ClosedRetention{Operator: 30 * day, Auto: 7 * day})
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if pruned != 3 {
+		t.Errorf("pruned %d rows, want 3", pruned)
+	}
+	for id, want := range map[string]bool{
+		"inc_auto_8d":         false,
+		"inc_age_cap_8d":      false,
+		"inc_auto_6d":         true,
+		"inc_operator_8d":     true,
+		"inc_unattributed_8d": true,
+		"inc_operator_31d":    false,
+	} {
+		if _, ok, _ := db.GetIncident(id); ok != want {
+			t.Errorf("%s present = %v, want %v", id, ok, want)
+		}
+	}
+}
+
+func TestCompactIncidentsYieldsWriterDuringBacklog(t *testing.T) {
+	db := newTestStore(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	const count = 3000
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(incidentsBucket))
+		for i := 0; i < count; i++ {
+			inc := sampleIncident(fmt.Sprintf("inc_%06d", i))
+			inc.Status = incident.StatusResolved
+			inc.ClosedBy = "auto:stale"
+			inc.UpdatedAt = now.Add(-8 * 24 * time.Hour)
+			if i%3 == 0 {
+				inc.ClosedBy = "operator"
+			}
+			if err := bucket.Put([]byte(inc.ID), mustMarshalIncident(t, inc)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := db.WriteTxID()
+	pruned, err := db.CompactIncidents(now, incident.ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 7 * 24 * time.Hour})
+	if err != nil || pruned != 2000 {
+		t.Fatalf("compact: pruned=%d err=%v", pruned, err)
+	}
+	if writes := db.WriteTxID() - before; writes < 2 {
+		t.Errorf("backlog held the writer for a single transaction: %d commits", writes)
+	}
+	rows, err := db.ListIncidents()
+	if err != nil || len(rows) != 1000 {
+		t.Fatalf("remaining=%d err=%v, want 1000", len(rows), err)
+	}
+	for _, inc := range rows {
+		if inc.ClosedBy != "operator" {
+			t.Errorf("expired row survived across batch boundaries: %s", inc.ID)
+		}
+	}
+}
+
+func TestCompactIncidentsBatchBoundsScanAndKeepsConcurrentUpdate(t *testing.T) {
+	db := newTestStore(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	retention := incident.ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 7 * 24 * time.Hour}
+	const tailID = "inc_tail"
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(incidentsBucket))
+		for i := 0; i < incidentCompactionBatchSize; i++ {
+			inc := sampleIncident(fmt.Sprintf("inc_%06d", i))
+			if err := bucket.Put([]byte(inc.ID), mustMarshalIncident(t, inc)); err != nil {
+				return err
+			}
+		}
+		inc := sampleIncident(tailID)
+		inc.Status = incident.StatusResolved
+		inc.ClosedBy = "auto:stale"
+		inc.UpdatedAt = now.Add(-8 * 24 * time.Hour)
+		return bucket.Put([]byte(inc.ID), mustMarshalIncident(t, inc))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n, next, err := db.compactIncidentsBatch(now, retention, nil)
+	if err != nil || n != 0 || string(next) != tailID {
+		t.Fatalf("retained rows did not bound the scan: n=%d next=%q err=%v", n, next, err)
+	}
+	// An operator can update the next candidate while the sweep yields the
+	// writer. The next transaction must evaluate the new state.
+	inc := sampleIncident(tailID)
+	inc.Status = incident.StatusDismissed
+	inc.ClosedBy = "operator"
+	inc.UpdatedAt = now.Add(-8 * 24 * time.Hour)
+	if saveErr := db.SaveIncident(inc); saveErr != nil {
+		t.Fatal(saveErr)
+	}
+	n, next, err = db.compactIncidentsBatch(now, retention, next)
+	if err != nil || n != 0 || next != nil {
+		t.Fatalf("tail: n=%d next=%q err=%v", n, next, err)
+	}
+	if _, ok, err := db.GetIncident(tailID); err != nil || !ok {
+		t.Fatalf("operator update was lost: ok=%v err=%v", ok, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := db.CompactIncidents(now, retention); err == nil || n != 0 {
+		t.Fatalf("closed database: n=%d err=%v", n, err)
+	}
+}
+
+func BenchmarkCompactIncidentsUpgradeBacklog(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		db, openErr := Open(b.TempDir())
+		if openErr != nil {
+			b.Fatal(openErr)
+		}
+		if err := db.bolt.Update(func(tx *bolt.Tx) error {
+			bucket := tx.Bucket([]byte(incidentsBucket))
+			for j := 0; j < 93000; j++ {
+				inc := sampleIncident(fmt.Sprintf("inc_%06d", j))
+				inc.ClosedBy = "auto:stale"
+				inc.Status = incident.StatusResolved
+				inc.UpdatedAt = now.Add(-8 * 24 * time.Hour)
+				if j >= 58000 {
+					inc.UpdatedAt = now
+				}
+				if j >= 88000 {
+					inc.Status = incident.StatusOpen
+				}
+				for n := 0; n < 4; n++ {
+					inc.Timeline = append(inc.Timeline, incident.IncidentEvent{Time: inc.UpdatedAt, Kind: "finding", Check: "wp_login_bruteforce", Message: "Repeated authentication failures", RemoteIP: "192.0.2.10"})
+				}
+				raw, err := json.Marshal(inc)
+				if err != nil {
+					return err
+				}
+				if err := bucket.Put([]byte(inc.ID), raw); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			b.Fatal(err)
+		}
+		before := db.WriteTxID()
+		b.StartTimer()
+		pruned, err := db.CompactIncidents(now, incident.ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 7 * 24 * time.Hour})
+		b.StopTimer()
+		if err != nil || pruned != 58000 {
+			b.Fatalf("pruned=%d err=%v", pruned, err)
+		}
+		b.ReportMetric(float64(db.WriteTxID()-before), "commits/op")
+		if err := db.Close(); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

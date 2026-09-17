@@ -66,6 +66,7 @@ type accountEnumerator func(cfg *config.Config) ([]string, error)
 
 // scanJobRequest is what Enqueue pushes into the work channel.
 type scanJobRequest struct {
+	work       *scanJobWork
 	id         string
 	opts       checks.AccountScanOptions
 	quarantine bool               // when true, annotateQuarantine runs on each finding
@@ -92,9 +93,10 @@ type scanJobRemediation struct {
 // Lifecycle: the caller owns a sync.WaitGroup slot (d.wg). Stop() cancels
 // all in-flight work and blocks until the worker goroutine exits.
 type ScanJobManager struct {
-	st  *state.Store
-	cfg *config.Config
-	db  *store.DB // bbolt handle; resolved from store.Global() at construction
+	st     *state.Store
+	cfg    *config.Config
+	db     scanJobStore // bbolt handle; resolved from store.Global() at construction
+	health *scanJobHealth
 
 	// runAccountScan is the runner called for each job. Tests replace this
 	// with a fixture to control blocking / return values without sleep races.
@@ -127,7 +129,7 @@ type ScanJobManager struct {
 }
 
 // NewScanJobManager creates a ScanJobManager and reconciles any job left in
-// state "running" from a previous daemon crash to state "error" with reason
+// state "queued" or "running" from a previous daemon crash to "error" with reason
 // "daemon_restarted". Returns an error if the global bbolt handle is nil.
 func NewScanJobManager(st *state.Store, cfg *config.Config) (*ScanJobManager, error) {
 	db := store.Global()
@@ -139,6 +141,7 @@ func NewScanJobManager(st *state.Store, cfg *config.Config) (*ScanJobManager, er
 		st:                st,
 		cfg:               cfg,
 		db:                db,
+		health:            newScanJobHealth(),
 		runAccountScan:    defaultScanRunner,
 		enumerateAccounts: checks.EnumerateScanAccounts,
 		quarantineFile:    checks.QuarantineFindingFile,
@@ -148,7 +151,7 @@ func NewScanJobManager(st *state.Store, cfg *config.Config) (*ScanJobManager, er
 		workerDone:        make(chan struct{}),
 	}
 
-	if err := m.reconcileStaleRunning(); err != nil {
+	if err := m.reconcileInterruptedJobs(); err != nil {
 		return nil, fmt.Errorf("scan-job manager: reconcile: %w", err)
 	}
 
@@ -165,16 +168,17 @@ func defaultScanRunner(ctx context.Context, cfg *config.Config, st *state.Store,
 	return checks.RunAccountScanWithOptions(ctx, cfg, st, target, opts)
 }
 
-// reconcileStaleRunning marks any job persisted as "running" to "error" with
-// reason "daemon_restarted". Called once on construction before the worker
+// reconcileInterruptedJobs marks unfinished persisted jobs as "error" with
+// reason "daemon_restarted" because their in-memory requests cannot be resumed.
+// Called once on construction before the worker
 // starts, so no concurrent writes race with this read-modify-write pass.
-func (m *ScanJobManager) reconcileStaleRunning() error {
+func (m *ScanJobManager) reconcileInterruptedJobs() error {
 	jobs, err := m.db.ListScanJobs()
 	if err != nil {
 		return err
 	}
 	for _, rec := range jobs {
-		if rec.State != "running" {
+		if rec.State != "running" && rec.State != "queued" {
 			continue
 		}
 		rec.State = "error"
@@ -183,6 +187,7 @@ func (m *ScanJobManager) reconcileStaleRunning() error {
 		if putErr := m.db.PutScanJob(rec); putErr != nil {
 			return putErr
 		}
+		m.health.losses.Lose(time.Now(), 1)
 		csmlog.Warn("scan job reconciled after restart", "job_id", rec.ID)
 	}
 	return nil
@@ -193,9 +198,20 @@ func (m *ScanJobManager) reconcileStaleRunning() error {
 // A quarantine flag is recorded on the job record for use by a later phase;
 // no live auto-response is wired in Phase 1.
 func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOptions, quarantine bool) (string, error) {
+	admission := m.health.admission.Begin(time.Now())
+	completed := false
+	defer func() {
+		if completed {
+			admission.Finish(time.Now())
+		} else {
+			admission.Reject(time.Now())
+		}
+	}()
 	m.cancelMu.Lock()
 	defer m.cancelMu.Unlock()
+	admission.Start(time.Now())
 	if m.stopped {
+		completed = true
 		return "", errors.New("scan-job manager stopped")
 	}
 
@@ -227,9 +243,11 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 	// or by Stop(), which cancels all live job contexts before waiting for the
 	// worker goroutine to exit.
 	jobCtx, jobCancel := context.WithCancel(context.Background())
+	jobCtx, progress := checks.WithCheckDispatchProgress(jobCtx)
 	m.cancelFns[id] = jobCancel
 
 	req := scanJobRequest{
+		work:       m.health.begin(progress.Snapshot),
 		id:         id,
 		opts:       opts,
 		quarantine: quarantine,
@@ -240,8 +258,11 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 
 	select {
 	case m.workCh <- req:
+		completed = true
 		return id, nil
 	default:
+		req.work.finish(false)
+		completed = true
 		// Queue full -- remove the persisted record and cancel the context.
 		jobCancel()
 		delete(m.cancelFns, id)
@@ -325,7 +346,7 @@ func (m *ScanJobManager) Stop() {
 //     queued jobs are drained as "canceled" -- none write to the store after
 //     Close() because the daemon closes the store only after Stop() returns.
 func (m *ScanJobManager) worker() {
-	defer close(m.workerDone)
+	defer m.workerExited()
 	for {
 		select {
 		case <-m.stopCh:
@@ -333,7 +354,28 @@ func (m *ScanJobManager) worker() {
 			m.drainQueueOnStop()
 			return
 		case req := <-m.workCh:
-			m.runJob(req)
+			req.work.run(func() { m.runJob(req) })
+		}
+	}
+}
+
+func (m *ScanJobManager) workerExited() {
+	// A panic or Goexit can bypass the normal drain. Refuse new admissions
+	// under the same lock used to publish them before releasing queued work.
+	m.cancelMu.Lock()
+	defer m.cancelMu.Unlock()
+	defer close(m.workerDone)
+	m.stopped = true
+	for id, cancel := range m.cancelFns {
+		cancel()
+		delete(m.cancelFns, id)
+	}
+	for {
+		select {
+		case req := <-m.workCh:
+			req.work.finish(false)
+		default:
+			return
 		}
 	}
 }
@@ -344,11 +386,13 @@ func (m *ScanJobManager) drainQueueOnStop() {
 	for {
 		select {
 		case req := <-m.workCh:
-			req.cancelFn()
-			m.cancelMu.Lock()
-			delete(m.cancelFns, req.id)
-			m.cancelMu.Unlock()
-			m.setTerminal(req.id, "canceled", "")
+			req.work.run(func() {
+				req.cancelFn()
+				m.cancelMu.Lock()
+				delete(m.cancelFns, req.id)
+				m.cancelMu.Unlock()
+				m.setTerminal(req, "canceled", "")
+			})
 		default:
 			return
 		}
@@ -361,6 +405,7 @@ func (m *ScanJobManager) drainQueueOnStop() {
 //   - If the context is already canceled when we check, skip the scan entirely.
 //   - After the runner returns, inspect ctx.Err() to choose the terminal state.
 func (m *ScanJobManager) runJob(req scanJobRequest) {
+	db := req.trackedStore(m.db)
 	defer func() {
 		// Always remove the cancel function entry when the job is done.
 		m.cancelMu.Lock()
@@ -372,19 +417,19 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 	// If the job was canceled before the worker got to it (e.g. Cancel()
 	// called while it was queued), skip the scan and go straight to terminal.
 	if req.cancelCtx.Err() != nil {
-		m.setTerminal(req.id, "canceled", "")
+		m.setTerminal(req, "canceled", "")
 		return
 	}
 
 	// Transition to "running".
-	rec, ok, err := m.db.GetScanJob(req.id)
+	rec, ok, err := db.GetScanJob(req.id)
 	if err != nil || !ok {
 		csmlog.Warn("scan job missing at run time", "job_id", req.id)
 		return
 	}
 	rec.State = "running"
 	rec.Started = time.Now().UTC()
-	if putErr := m.db.PutScanJob(rec); putErr != nil {
+	if putErr := db.PutScanJob(rec); putErr != nil {
 		csmlog.Warn("scan job state update failed", "job_id", req.id, "err", putErr)
 		return
 	}
@@ -403,13 +448,15 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 		findingCount, findingsStored, truncated, jobState = m.runAllAccounts(req, rec, cfg)
 	} else {
 		// Run the scan. The runner blocks until complete or ctx is canceled.
+		req.work.progressed()
 		findings := m.runAccountScan(req.cancelCtx, cfg, m.st, rec.Target, req.opts)
+		req.work.progressed()
 
 		// Persist findings (batched, capped), even if canceled mid-scan, so the
 		// "cancel keeps partial" guarantee holds. Quarantine is applied only to
 		// findings that will be stored; truncated findings must not trigger
 		// unaudited file moves.
-		findingsStored, truncated = m.persistFindings(req.id, 0, findings, func(f alert.Finding) alert.Finding {
+		findingsStored, truncated = m.persistFindings(req, 0, findings, func(f alert.Finding) alert.Finding {
 			return m.annotateQuarantine(req, f)
 		})
 
@@ -423,7 +470,7 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 	// Refresh the record before writing the terminal state so FilesScanned
 	// and FindingCount reflect any in-progress updates (future phases may
 	// update these mid-scan via callbacks; for now we set them from findings).
-	rec2, ok2, err2 := m.db.GetScanJob(req.id)
+	rec2, ok2, err2 := db.GetScanJob(req.id)
 	if err2 != nil || !ok2 {
 		// Fall back to the snapshot we already have.
 		rec2 = rec
@@ -434,7 +481,7 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 	rec2.FindingsStored = findingsStored
 	rec2.FindingsTruncated = truncated
 	rec2.CurrentAccount = "" // clear transient progress field on completion
-	if putErr := m.db.PutScanJob(rec2); putErr != nil {
+	if putErr := db.PutScanJob(rec2); putErr != nil {
 		csmlog.Warn("scan job terminal state failed", "job_id", req.id, "err", putErr)
 	}
 
@@ -444,7 +491,7 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 	if retention <= 0 {
 		retention = 20
 	}
-	if _, pruneErr := m.db.PruneScanJobs(retention, maxRetainedScanJobFindings); pruneErr != nil {
+	if _, pruneErr := db.PruneScanJobs(retention, maxRetainedScanJobFindings); pruneErr != nil {
 		csmlog.Warn("scan job prune failed", "err", pruneErr)
 	}
 }
@@ -455,7 +502,9 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 // applied only to the findings that fit under the cap. It returns how many
 // findings from this slice were persisted and whether the cap or a write error
 // dropped any of them.
-func (m *ScanJobManager) persistFindings(jobID string, stored int, findings []alert.Finding, prepare func(alert.Finding) alert.Finding) (written int, truncated bool) {
+func (m *ScanJobManager) persistFindings(req scanJobRequest, stored int, findings []alert.Finding, prepare func(alert.Finding) alert.Finding) (written int, truncated bool) {
+	db := req.trackedStore(m.db)
+	jobID := req.id
 	room := len(findings)
 	if maxScanJobFindingsPerJob > 0 {
 		remaining := maxScanJobFindingsPerJob - stored
@@ -476,10 +525,12 @@ func (m *ScanJobManager) persistFindings(jobID string, stored int, findings []al
 		if prepare != nil {
 			batch = append([]alert.Finding(nil), batch...)
 			for i := range batch {
+				req.work.progressed()
 				batch[i] = prepare(batch[i])
+				req.work.progressed()
 			}
 		}
-		if err := m.db.AppendScanJobFindings(jobID, stored+off, batch); err != nil {
+		if err := db.AppendScanJobFindings(jobID, stored+off, batch); err != nil {
 			csmlog.Warn("scan job finding batch persist failed", "job_id", jobID, "seq", stored+off, "err", err)
 			return written, true
 		}
@@ -498,24 +549,28 @@ func (m *ScanJobManager) persistFindings(jobID string, stored int, findings []al
 // detects a canceled context before starting the next account, so partial
 // findings already persisted from completed accounts are retained.
 func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRecord, cfg *config.Config) (findingCount, findingsStored int, truncated bool, jobState string) {
+	db := req.trackedStore(m.db)
+	req.work.progressed()
 	accounts, err := m.enumerateAccounts(cfg)
+	req.work.progressed()
 	if err != nil {
+		req.work.fail()
 		// Persist error state immediately so the outer runJob terminal write
 		// picks up the correct state (it will overwrite State/Finished again,
 		// but we set Error here via a direct PutScanJob call first).
-		recErr, ok2, getErr := m.db.GetScanJob(req.id)
+		recErr, ok2, getErr := db.GetScanJob(req.id)
 		if getErr == nil && ok2 {
 			recErr.State = "error"
 			recErr.Error = err.Error()
 			recErr.Finished = time.Now().UTC()
-			_ = m.db.PutScanJob(recErr)
+			_ = db.PutScanJob(recErr)
 		}
 		return 0, 0, false, "error"
 	}
 
 	// Set AccountsTotal and persist immediately so progress is visible.
 	rec.AccountsTotal = len(accounts)
-	if putErr := m.db.PutScanJob(rec); putErr != nil {
+	if putErr := db.PutScanJob(rec); putErr != nil {
 		csmlog.Warn("scan job accounts_total persist failed", "job_id", req.id, "err", putErr)
 	}
 
@@ -530,13 +585,15 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 
 		// Update progress: current account being scanned.
 		rec.CurrentAccount = account
-		if putErr := m.db.PutScanJob(rec); putErr != nil {
+		if putErr := db.PutScanJob(rec); putErr != nil {
 			csmlog.Warn("scan job progress persist failed", "job_id", req.id, "err", putErr)
 		}
 
 		// Run the account scan with panic isolation so one bad account cannot
 		// abort the entire server-wide job.
+		req.work.progressed()
 		findings := m.runAccountScanIsolated(req, cfg, account)
+		req.work.progressed()
 
 		// Attribute each finding to the account when the check did not already
 		// set TenantID, then persist the account's findings as one batch. The
@@ -550,7 +607,7 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 				findings[i].Timestamp = now
 			}
 		}
-		written, trunc := m.persistFindings(req.id, findingsStored, findings, func(f alert.Finding) alert.Finding {
+		written, trunc := m.persistFindings(req, findingsStored, findings, func(f alert.Finding) alert.Finding {
 			return m.annotateQuarantine(req, f)
 		})
 		findingsStored += written
@@ -561,7 +618,7 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 		rec.FindingCount = findingCount
 		rec.FindingsStored = findingsStored
 		rec.FindingsTruncated = truncated
-		if putErr := m.db.PutScanJob(rec); putErr != nil {
+		if putErr := db.PutScanJob(rec); putErr != nil {
 			csmlog.Warn("scan job accounts_done persist failed", "job_id", req.id, "err", putErr)
 		}
 	}
@@ -582,6 +639,7 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 func (m *ScanJobManager) runAccountScanIsolated(req scanJobRequest, cfg *config.Config, account string) (findings []alert.Finding) {
 	defer func() {
 		if r := recover(); r != nil {
+			req.work.fail()
 			findings = []alert.Finding{{
 				Severity:  alert.High,
 				Check:     "account_scan_error",
@@ -597,15 +655,17 @@ func (m *ScanJobManager) runAccountScanIsolated(req scanJobRequest, cfg *config.
 
 // setTerminal writes a terminal state for a job without running any scan.
 // Used to transition queued-but-canceled jobs during drainQueueOnStop.
-func (m *ScanJobManager) setTerminal(id, jobState, errMsg string) {
-	rec, ok, err := m.db.GetScanJob(id)
+func (m *ScanJobManager) setTerminal(req scanJobRequest, jobState, errMsg string) {
+	db := req.trackedStore(m.db)
+	id := req.id
+	rec, ok, err := db.GetScanJob(id)
 	if err != nil || !ok {
 		return
 	}
 	rec.State = jobState
 	rec.Error = errMsg
 	rec.Finished = time.Now().UTC()
-	_ = m.db.PutScanJob(rec)
+	_ = db.PutScanJob(rec)
 }
 
 // annotateQuarantine runs the full-scan file remediation on f when the job's
@@ -651,6 +711,7 @@ func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding)
 			}
 		}
 	} else {
+		req.work.fail()
 		f.RemediationStatus = "failed"
 		f.RemediationDetail = result.Error
 	}
@@ -666,6 +727,8 @@ func (d *Daemon) startScanJobManager() (*ScanJobManager, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	d.registerQueueSource("scans", m)
 
 	// Track the manager's lifetime in the daemon wait-group using the same
 	// obs.Go + defer d.wg.Done() pattern every other background worker uses.

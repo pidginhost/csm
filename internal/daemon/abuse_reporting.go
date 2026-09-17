@@ -1,17 +1,16 @@
 package daemon
 
 import (
-	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/reporting"
 )
 
@@ -65,7 +64,6 @@ func (d *Daemon) startAbuseReporting() func() {
 		return nil
 	}
 
-	reportQueue := make(chan reporting.Report, abuseReportQueueSize(max))
 	spooler := reporting.NewSpooler(spool, reporting.NewSender(nil, nil), targets, abuseReportDrainEvery)
 	// The same firebreak that guards central-intel actions keeps
 	// infrastructure, Cloudflare edges and verified crawlers out of the
@@ -79,57 +77,36 @@ func (d *Daemon) startAbuseReporting() func() {
 	doneCh := make(chan struct{})
 	d.abuseReportStop = stopCh
 	d.abuseReportDone = doneCh
-	var dropped atomic.Uint64
-	var loggedDropped uint64
-	logDropped := func() {
-		n := dropped.Load()
-		if n != loggedDropped {
-			log.Printf("abuse-reporting: report queue full; dropped %d report(s)", n)
-			loggedDropped = n
-		}
-	}
+	consumer := newAbuseReportConsumer(stopCh, abuseReportQueueSize(max), abuseReportDrainEvery, spooler.Enqueue, spooler.DrainOnce)
+	d.registerQueueSource("abuse_reporting", abuseReportQueues{ingress: consumer, spool: spool})
 	alert.SetReportHook(func(f alert.Finding) {
 		if r, ok := gate.Consider(f); ok {
-			select {
-			case reportQueue <- r:
-			default:
-				dropped.Add(1)
-			}
+			consumer.enqueue(r)
 		}
 	})
 	log.Printf("abuse-reporting: enabled for %d target(s), %d class(es)", len(targets), len(enabled))
 
 	return func() {
 		defer close(doneCh)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		go func() {
-			<-stopCh
-			cancel()
-		}()
-
-		ticker := time.NewTicker(abuseReportDrainEvery)
-		defer ticker.Stop()
 		defer func() {
 			alert.SetReportHook(nil)
 			_ = spool.Close()
 		}()
-
-		for {
-			select {
-			case r := <-reportQueue:
-				spooler.Enqueue(r)
-			case <-ticker.C:
-				logDropped()
-				spooler.DrainOnce(ctx)
-			case <-stopCh:
-				alert.SetReportHook(nil)
-				logDropped()
-				drainReportQueue(spooler, reportQueue)
-				return
-			}
-		}
+		consumer.run()
 	}
+}
+
+type abuseReportQueues struct {
+	ingress *abuseReportConsumer
+	spool   *reporting.Spool
+}
+
+func (q abuseReportQueues) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	statuses := q.ingress.QueueStatuses(now)
+	for name, status := range q.spool.QueueStatuses(now) {
+		statuses[name] = status
+	}
+	return statuses
 }
 
 func (d *Daemon) stopAbuseReporting() {
@@ -147,17 +124,6 @@ func abuseReportQueueSize(spoolMax int) int {
 		return spoolMax
 	}
 	return abuseReportQueueDefault
-}
-
-func drainReportQueue(spooler *reporting.Spooler, reportQueue <-chan reporting.Report) {
-	for {
-		select {
-		case r := <-reportQueue:
-			spooler.Enqueue(r)
-		default:
-			return
-		}
-	}
 }
 
 // classSet parses configured class names into the set the gate accepts,

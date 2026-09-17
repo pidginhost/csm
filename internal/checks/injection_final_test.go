@@ -36,12 +36,13 @@ func TestFixQuarantineNoFile(t *testing.T) {
 // --- fixKillAndQuarantine with no process ----------------------------
 
 func TestFixKillAndQuarantineNoProcess(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			return nil, nil
 		},
 	})
-	result := fixKillAndQuarantine("/tmp/nonexistent", "")
+	result := fixKillAndQuarantine(context.Background(), "/tmp/nonexistent", "")
 	if result.Success {
 		t.Error("no process should not succeed")
 	}

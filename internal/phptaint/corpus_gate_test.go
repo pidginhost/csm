@@ -2,9 +2,12 @@ package phptaint
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/corpusgate"
 )
 
 // minCorpusPHPSources is the floor TestCorpusGate requires PHPTAINT_CORPUS to
@@ -46,17 +49,18 @@ func (s *corpusGateStats) observe(path string, mayBePHP bool, report Report) {
 //
 // It skips when unset so the default suite does not depend on a local tree.
 func TestCorpusGate(t *testing.T) {
-	root := os.Getenv("PHPTAINT_CORPUS")
+	root, rootErr := corpusgate.Root("PHPTAINT_CORPUS")
+	if rootErr != nil {
+		t.Fatal(rootErr)
+	}
 	if root == "" {
 		t.Skip("PHPTAINT_CORPUS not set")
 	}
 	var stats corpusGateStats
+	report := corpusgate.Report{Engine: "phptaint", Hits: map[string]int{"remote_exec": 0}, Thresholds: map[string]int{}, Statuses: map[string]int{}}
 	err := filepath.Walk(root, func(path string, fi os.FileInfo, walkErr error) error {
 		if walkErr != nil {
-			// A single unreadable directory entry (permissions, a removed
-			// symlink target, ...) must not abort the whole gate; skip it
-			// and keep walking the rest of the corpus.
-			return nil //nolint:nilerr
+			return fmt.Errorf("walk %s: %w", path, walkErr)
 		}
 		// Deliberately NOT restricted to .php. The deep scan applies no
 		// extension filter (internal/checks/yara_deep.go walks every readable
@@ -68,16 +72,30 @@ func TestCorpusGate(t *testing.T) {
 		}
 		src, readErr := os.ReadFile(path)
 		if readErr != nil {
-			// Same reasoning: a file that vanished or became unreadable
-			// between the stat above and this read is skipped, not fatal.
-			return nil //nolint:nilerr
+			return fmt.Errorf("read %s: %w", path, readErr)
 		}
 		rep := Analyze(context.Background(), src)
 		stats.observe(path, MayBePHPSource(src), rep)
+		report.Statuses[rep.Status.String()]++
+		if rep.TotalResults > 0 || len(rep.Results) > 0 {
+			report.Hits["remote_exec"]++
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
+	}
+	report.Scanned = stats.inputs
+	if err := report.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("CSM_CORPUS_REQUIRED") == "1" {
+		if report.Statuses[StatusAnalyzed.String()] < 100 {
+			t.Fatal("required corpus analyzed fewer than 100 PHP files")
+		}
+		if err := report.Validate(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Logf("read %d file(s), found %d PHP-looking source(s) and %d coverage gap(s)", stats.inputs, stats.phpSources, stats.gaps)
 	if stats.phpSources < minCorpusPHPSources {

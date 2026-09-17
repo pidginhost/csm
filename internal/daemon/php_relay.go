@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/store"
@@ -863,6 +864,7 @@ func (e *evaluator) makeFinding(k scriptKey, path, sourceIP, cpuser string, s *s
 		ScriptKey: string(k),
 		SourceIP:  sourceIP,
 		CPUser:    cpuser,
+		TenantID:  checks.HostingAccountForUser(cpuser),
 		MsgIDs:    msgIDs,
 		Timestamp: now,
 	}
@@ -1154,6 +1156,7 @@ func (e *evaluator) parsePHPRelayAccountVolumeAt(line string, eventTime, now tim
 		Path:       "volume_account",
 		Message:    fmt.Sprintf("Path 2b: account %s sent >= %d outbound mails in last hour", user, limit),
 		CPUser:     user,
+		TenantID:   checks.HostingAccountForUser(user),
 		RelayTotal: volume,
 		Timestamp:  now,
 	}}

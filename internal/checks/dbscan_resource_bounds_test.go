@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -79,14 +80,14 @@ func TestCheckDatabaseContentRejectsOversizedWPConfig(t *testing.T) {
 	content := "<?php\n" +
 		"define('DB_NAME', 'alice_wp');\n" +
 		"define('DB_USER', 'alice_wp');\n" +
-		strings.Repeat("# padding\n", maxWPConfigBytes/10+2)
+		strings.Repeat("# padding\n", maxCMSConfigBytes/10+2)
 	if err := os.WriteFile(configFile, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, complete := parseWPConfigChecked(configFile); complete {
 		t.Fatal("oversized wp-config.php parsed as complete")
 	}
-	if creds := parseWPConfig(configFile); creds != (wpDBCreds{}) {
+	if creds := parseWPConfig(configFile); reflect.DeepEqual(creds, wpDBCreds{}) == false {
 		t.Fatalf("oversized wp-config.php returned partial credentials: %+v", creds)
 	}
 	withMockOS(t, &mockOS{
@@ -97,8 +98,8 @@ func TestCheckDatabaseContentRejectsOversizedWPConfig(t *testing.T) {
 			return nil, nil
 		},
 		open: func(string) (*os.File, error) { return os.Open(configFile) },
-		lstat: func(string) (os.FileInfo, error) {
-			return os.Stat(configFile)
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 		},
 	})
 
@@ -161,8 +162,8 @@ func TestCheckDatabaseContentReportsQueryFailure(t *testing.T) {
 			return nil, nil
 		},
 		open: func(string) (*os.File, error) { return os.Open(configFile) },
-		lstat: func(string) (os.FileInfo, error) {
-			return os.Stat(configFile)
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 		},
 	})
 	queryCalls := 0
@@ -214,8 +215,8 @@ func TestCheckDatabaseContentReportsUnusableConfig(t *testing.T) {
 					return nil, nil
 				},
 				open: func(string) (*os.File, error) { return os.Open(configFile) },
-				lstat: func(string) (os.FileInfo, error) {
-					return os.Stat(configFile)
+				lstat: func(name string) (os.FileInfo, error) {
+					return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 				},
 			})
 			previous := runMySQLQuery
@@ -281,8 +282,11 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 			}
 		},
 		open: func(string) (*os.File, error) { return os.Open(configFile) },
-		lstat: func(string) (os.FileInfo, error) {
-			return os.Stat(configFile)
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{
+				"/home/alice/public_html/wp-config.php",
+				"/home/alice/shop.example.com/wp-config.php",
+			})
 		},
 	})
 
@@ -305,8 +309,8 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 	t.Cleanup(func() { contentSignatureScanner = previousScanner })
 
 	CheckDatabaseContent(context.Background(), nil, nil)
-	if queries != 14 {
-		t.Errorf("queries for two paths sharing one database = %d, want 14 for one scan", queries)
+	if queries != 15 {
+		t.Errorf("queries for two paths sharing one database = %d, want 15 for one scan", queries)
 	}
 }
 

@@ -78,7 +78,7 @@ func TestRecordTierRunFindingsLiveTriggersWPCronAutoFix(t *testing.T) {
 
 	wpcron := perfWPCronFinding("alice", "/home/alice/public_html/wp-config.php")
 	// live, alerts off: auto-fix is gated on the run being live, not on alerts.
-	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron}, nil, true, false)
+	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron}, nil, nil, true, false)
 
 	if len(seen) != 1 || seen[0].Check != "perf_wp_cron" {
 		t.Fatalf("live control tier run did not invoke WP-Cron auto-fix; got %+v", seen)
@@ -96,7 +96,7 @@ func TestRecordTierRunFindingsDryRunSkipsWPCronAutoFix(t *testing.T) {
 	})()
 
 	wpcron := perfWPCronFinding("alice", "/home/alice/public_html/wp-config.php")
-	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron}, nil, false, false)
+	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron}, nil, nil, false, false)
 
 	if called {
 		t.Fatal("dry-run control tier run must not invoke WP-Cron auto-fix")
@@ -106,6 +106,42 @@ func TestRecordTierRunFindingsDryRunSkipsWPCronAutoFix(t *testing.T) {
 	}
 	if got := drainAlertCh(d); len(got) != 0 {
 		t.Fatalf("dry-run control tier run should not enqueue alerts, got %+v", got)
+	}
+}
+
+func TestRecordTierRunFindingsAtomicallyPreservesYARAGap(t *testing.T) {
+	d := newTestDaemon(t)
+	c := &ControlListener{d: d}
+	const path = "/home/shared/public_html/error_log"
+	first := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "rule-a", FilePath: path, Timestamp: time.Unix(100, 0)}
+	second := alert.Finding{Check: "yara_match_scheduled", Severity: alert.High, Message: "rule-b", FilePath: path, Timestamp: time.Unix(200, 0)}
+	d.store.PurgeAndMergeFindings(nil, []alert.Finding{
+		first,
+		second,
+		{Check: "js_keylogger_dataflow", Severity: alert.Critical, Message: "covered sibling", FilePath: path},
+	})
+
+	// These findings model state added or refreshed after the scan took its
+	// earlier snapshot. The control path must preserve all current YARA state
+	// under the store lock while still purging a completed sibling owner.
+	c.recordTierRunFindings(
+		&config.Config{},
+		[]alert.Finding{first},
+		[]string{"yara_match_scheduled", "js_keylogger_dataflow"},
+		&state.ScanCoverage{PreservePaths: map[string]map[string]bool{"yara_match_scheduled": {path: true}}},
+		false,
+		false,
+	)
+
+	got := d.store.LatestFindings()
+	if len(got) != 2 {
+		t.Fatalf("control tier run did not preserve every carried YARA match: %+v", got)
+	}
+	want := map[string]time.Time{first.Key(): first.Timestamp, second.Key(): second.Timestamp}
+	for _, finding := range got {
+		if ts, ok := want[finding.Key()]; !ok || !finding.Timestamp.Equal(ts) {
+			t.Fatalf("control tier run changed carried identity or timestamp: %+v", finding)
+		}
 	}
 }
 
@@ -124,7 +160,7 @@ func TestRecordTierRunFindingsDryRunWithAlertsSkipsAutoFix(t *testing.T) {
 
 	wpcron := perfWPCronFinding("alice", "/home/alice/public_html/wp-config.php")
 	critical := alert.Finding{Severity: alert.Critical, Check: "webshell", Message: "shell", Timestamp: time.Now()}
-	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron, critical}, nil, false, true)
+	c.recordTierRunFindings(&config.Config{}, []alert.Finding{wpcron, critical}, nil, nil, false, true)
 
 	if called {
 		t.Fatal("dry-run tier run must not invoke WP-Cron auto-fix even with alerts on")

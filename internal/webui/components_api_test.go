@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type stubComponentsProvider struct {
@@ -15,6 +16,8 @@ type stubComponentsProvider struct {
 	changed  map[string]time.Time
 	upstream map[string]health.UpstreamResult
 }
+
+func (s *stubComponentsProvider) QueueStatuses() map[string]queuehealth.Status { return nil }
 
 func (s *stubComponentsProvider) WatcherStatuses() map[string]bool       { return s.statuses }
 func (s *stubComponentsProvider) WatcherChangedAt() map[string]time.Time { return s.changed }
@@ -42,6 +45,10 @@ func (s *stubComponentsProvider) AutomationStatus() health.AutomationStatus {
 	return health.AutomationStatus{}
 }
 func (s *stubComponentsProvider) UpdateInfo() health.UpdateInfo { return health.UpdateInfo{} }
+func (s *stubComponentsProvider) Mode() string                  { return "enforce" }
+func (s *stubComponentsProvider) CorrelationAttribution() *health.CorrelationAttribution {
+	return nil
+}
 
 // componentsTestServer wires a test Server with a stub provider and the
 // supplied watcher state. Findings seeded via the latest set so the
@@ -108,6 +115,7 @@ func TestAPIComponents_RealtimeChecksAttributeToWatcher(t *testing.T) {
 	}{
 		{check: "modsec_block_realtime", watcher: "modsec"},
 		{check: "webshell_realtime", watcher: "fanotify"},
+		{check: "yara_realtime_scan_error", watcher: "fanotify"},
 		{check: "email_auth_failure_realtime", watcher: "maillog"},
 		{check: "mail_bruteforce_suspected", watcher: "maillog"},
 		{check: "mail_auth_backend_degraded", watcher: "maillog"},
@@ -167,6 +175,7 @@ func TestAPIComponents_NonUniqueCheckFindingsDoNotAttributeToWatcher(t *testing.
 		{check: "outdated_plugins", watcher: "fanotify"},
 		{check: "suspicious_crontab", watcher: "fanotify"},
 		{check: "webshell", watcher: "fanotify"},
+		{check: "yara_scan_incomplete", watcher: "fanotify"},
 		{check: "waf_status", watcher: "modsec"},
 		{check: "waf_attack_blocked", watcher: "modsec"},
 		{check: "mail_queue", watcher: "maillog"},
@@ -228,5 +237,13 @@ func TestAPIComponents_NoProviderReturnsEmptyArray(t *testing.T) {
 	rows := decodeComponentRows(t, s)
 	if len(rows) != 0 {
 		t.Errorf("expected empty array, got %+v", rows)
+	}
+}
+
+func TestAPIComponents_YaraWorkerHasFriendlyLabel(t *testing.T) {
+	s := componentsTestServer(t, map[string]bool{"yara_worker": false}, nil, nil)
+	rows := decodeComponentRows(t, s)
+	if len(rows) != 1 || rows[0].Status != "degraded" || rows[0].Label != "YARA-X worker" {
+		t.Fatalf("yara_worker row = %+v, want degraded with friendly label", rows)
 	}
 }

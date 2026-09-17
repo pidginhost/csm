@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -46,12 +47,18 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleBotRangesReload(req.Args)
 	case control.CmdBaseline:
 		result, err = c.handleBaseline(req.Args)
+	case control.CmdThreatForget:
+		result, err = c.handleThreatForget(req.Args)
 	case control.CmdFirewallStatus:
 		result, err = c.handleFirewallStatus(req.Args)
 	case control.CmdFirewallPorts:
 		result, err = c.handleFirewallPorts(req.Args)
 	case control.CmdFirewallGrep:
 		result, err = c.handleFirewallGrep(req.Args)
+	case control.CmdFirewallActions:
+		result, err = c.handleFirewallActions(req.Args)
+	case control.CmdFirewallActionResolve:
+		result, err = c.handleFirewallActionResolve(req.Args)
 	case control.CmdFirewallAudit:
 		result, err = c.handleFirewallAudit(req.Args)
 	case control.CmdFirewallBlock:
@@ -184,14 +191,12 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		// kicked the tier run. The client also gets an error so the
 		// systemd timer unit fails loudly.
 		if args.Alerts {
-			select {
-			case c.d.alertCh <- alert.Finding{
+			if !alert.TryEnqueue(c.d.alertCh, alert.Finding{
 				Severity:  alert.Critical,
 				Check:     "integrity",
 				Message:   fmt.Sprintf("BINARY/CONFIG TAMPER DETECTED: %v", vErr),
 				Timestamp: time.Now(),
-			}:
-			default:
+			}) {
 				atomic.AddInt64(&c.d.droppedAlerts, 1)
 			}
 		}
@@ -206,13 +211,14 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		purgeChecks []string
 	)
 	cfg := c.d.currentCfg()
+	scanCtx, gaps := checks.WithCoverageGaps(c.d.scanContext())
 	if dryRun {
-		findings, purgeChecks = checks.RunTierDryRun(cfg, c.d.store, tier)
+		findings, purgeChecks = checks.RunTierDryRunWithContext(scanCtx, cfg, c.d.store, tier)
 	} else {
-		findings, purgeChecks = checks.RunTier(cfg, c.d.store, tier)
+		findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, c.d.store, tier)
 	}
 
-	c.recordTierRunFindings(cfg, findings, purgeChecks, !dryRun, args.Alerts)
+	c.recordTierRunFindings(cfg, findings, purgeChecks, gaps.Snapshot(), !dryRun, args.Alerts)
 
 	// Dry-run history + FindingList: the live path writes history via
 	// Daemon.runPeriodicChecks when the internal scanners fire; the
@@ -241,8 +247,8 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 // recordTierRunFindings persists a control-socket tier run's findings. Auto-fix
 // is gated on a live run so a dry run never edits a customer's wp-config.php,
 // and the alert push is gated separately on whether the caller asked for alerts.
-func (c *ControlListener) recordTierRunFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, live, alerts bool) {
-	checks.StoreLatestScanFindings(c.d.store, purgeChecks, findings)
+func (c *ControlListener) recordTierRunFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, coverage *state.ScanCoverage, live, alerts bool) {
+	checks.StoreLatestScanFindingsWithCoverage(c.d.store, purgeChecks, findings, coverage)
 	if live {
 		c.d.applyWPCronAutoFix(cfg, findings)
 	}

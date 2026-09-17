@@ -315,6 +315,7 @@ func TestCheckHtaccessContainerBackslashDoesNotEatSetHandler(t *testing.T) {
 // fixHtaccess must remove every physical line of a continuation-split remap and
 // preserve the legit handler. Portable variant so it also runs off Linux.
 func TestFixHtaccessRemovesContinuationRemapPortable(t *testing.T) {
+	withHtaccessBackupRoot(t)
 	saved := fixHtaccessAllowedRoots
 	dir, evalErr := filepath.EvalSymlinks(t.TempDir())
 	if evalErr != nil {
@@ -346,6 +347,7 @@ func TestFixHtaccessRemovesContinuationRemapPortable(t *testing.T) {
 }
 
 func TestFixHtaccessPreservesLegitContinuationAndRemovesFullDangerousSpan(t *testing.T) {
+	withHtaccessBackupRoot(t)
 	saved := fixHtaccessAllowedRoots
 	dir, evalErr := filepath.EvalSymlinks(t.TempDir())
 	if evalErr != nil {
@@ -384,6 +386,7 @@ func TestFixHtaccessPreservesLegitContinuationAndRemovesFullDangerousSpan(t *tes
 }
 
 func TestFixHtaccessPreservesCRLFLegitContinuationWriteBack(t *testing.T) {
+	withHtaccessBackupRoot(t)
 	saved := fixHtaccessAllowedRoots
 	dir, evalErr := filepath.EvalSymlinks(t.TempDir())
 	if evalErr != nil {

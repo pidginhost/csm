@@ -28,6 +28,13 @@ import (
 //   - db_post_injection (script in posts — too many FPs from page builders)
 //   - db_options_injection without confirmed malicious URLs
 func AutoRespondDBMalware(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+	return AutoRespondDBMalwareWithPolicy(cfg, findings, nil)
+}
+
+// AutoRespondDBMalwareWithPolicy keeps session IP enforcement independent of
+// permission to edit a database or revoke sessions. A nil policy permits both;
+// callers with suppressions supply a per-finding remediation decision.
+func AutoRespondDBMalwareWithPolicy(cfg *config.Config, findings []alert.Finding, canRemediate func(alert.Finding) bool) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.CleanDatabase {
 		return nil
 	}
@@ -35,15 +42,19 @@ func AutoRespondDBMalware(cfg *config.Config, findings []alert.Finding) []alert.
 	var actions []alert.Finding
 
 	for _, f := range findings {
+		remediate := canRemediate == nil || canRemediate(f)
 		switch f.Check {
 		case "db_options_injection":
-			acts := handleMaliciousOption(cfg, f)
+			acts := handleMaliciousOption(cfg, f, remediate)
 			actions = append(actions, acts...)
 		case "db_siteurl_hijack":
-			acts := handleSiteurlHijack(cfg, f)
+			acts := handleSiteurlHijack(cfg, f, remediate)
 			actions = append(actions, acts...)
 		case "db_malicious_trigger", "db_malicious_event",
 			"db_malicious_procedure", "db_malicious_function":
+			if !remediate {
+				continue
+			}
 			acts := handleMaliciousDBObject(f)
 			actions = append(actions, acts...)
 		}
@@ -143,7 +154,7 @@ func parseDBObjectFindingDetails(details string) (account, schema, kind, name st
 // 1. Extracts attacker IPs from WP sessions and emits block findings
 // 2. Revokes sessions for users with non-infra, non-private IPs only
 // 3. Backs up and cleans the malicious content from the option
-func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding {
+func handleMaliciousOption(cfg *config.Config, f alert.Finding, remediate bool) []alert.Finding {
 	var actions []alert.Finding
 
 	dbName, optionName := parseDBFindingDetails(f.Details)
@@ -189,7 +200,10 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding 
 	// real auto-block path (dry-run, rate limits, and allowlists all apply).
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
 	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
-		fmt.Sprintf("active WP session on compromised site, DB: %s", dbName))...)
+		fmt.Sprintf("active WP session on compromised site, DB: %s", dbName), alert.FindingID(f))...)
+	if !remediate {
+		return actions
+	}
 
 	// 2. Revoke sessions only for users with suspicious IPs.
 	// This preserves the site admin's session if they're on an infra IP.
@@ -219,7 +233,7 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding 
 
 // handleSiteurlHijack handles siteurl/home hijacking by revoking sessions
 // and blocking attacker IPs. Does NOT modify siteurl/home values.
-func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
+func handleSiteurlHijack(cfg *config.Config, f alert.Finding, remediate bool) []alert.Finding {
 	var actions []alert.Finding
 
 	dbName, _ := parseDBFindingDetails(f.Details)
@@ -239,7 +253,10 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
 	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
-		fmt.Sprintf("active session on hijacked site, DB: %s", dbName))...)
+		fmt.Sprintf("active session on hijacked site, DB: %s", dbName), alert.FindingID(f))...)
+	if !remediate {
+		return actions
+	}
 
 	revoked := revokeCompromisedSessions(creds, prefix, cfg.InfraIPs)
 	if revoked > 0 {
@@ -267,7 +284,7 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 // once did -- never blocked anything, yet alert.FilterBlockedAlerts trusted it
 // as proof-of-block and suppressed the IP's reputation alert, so the address was
 // neither blocked nor surfaced.
-func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext string) []alert.Finding {
+func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext, findingID string) []alert.Finding {
 	if len(ips) == 0 {
 		return nil
 	}
@@ -281,7 +298,7 @@ func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext strin
 			Timestamp: time.Now(),
 		})
 	}
-	return AutoBlockIPs(cfg, findings)
+	return autoBlockIPs(cfg, findings, findingID)
 }
 
 // --- URL analysis ---
@@ -290,6 +307,21 @@ func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext strin
 // Accepts https://, http://, and protocol-relative // URLs, since real
 // attackers use all three forms to load external payloads.
 var scriptSrcRe = regexp.MustCompile(`(?i)<script[^>]+src\s*=\s*["']?((?:https?:)?//[^"'\s>]+)`)
+
+// escapedSlashRe matches a forward slash behind one or more backslashes, the
+// form every JSON-encoded and re-serialised option value takes.
+var escapedSlashRe = regexp.MustCompile(`\\+/`)
+
+// unescapeStoredSlashes restores the slashes of a URL stored inside a JSON or
+// serialised option value. WordPress writes json_encode output straight into
+// wp_options, so a stored payload reads "https:\/\/host\/payload.js"; without
+// this the script matcher sees no "//" after the scheme and extracts nothing.
+func unescapeStoredSlashes(value string) string {
+	if !strings.Contains(value, `\/`) {
+		return value
+	}
+	return escapedSlashRe.ReplaceAllString(value, "/")
+}
 
 // knownSafeDomains are legitimate services that embed scripts in wp_options.
 var knownSafeDomains = []string{
@@ -351,7 +383,9 @@ var knownSafeDomains = []string{
 // knownSafeDomains is retained as a fast-path optimisation and operator-
 // pre-approved list — see isAttackerScriptURL for the composition order.
 func extractMaliciousScriptURL(content string) string {
-	matches := scriptSrcRe.FindAllStringSubmatch(content, -1)
+	// WordPress stores json_encode output verbatim, so a stored loader reads
+	// "https:\/\/host\/payload.js" and the src grammar never matches it.
+	matches := scriptSrcRe.FindAllStringSubmatch(unescapeStoredSlashes(content), -1)
 	for _, match := range matches {
 		if len(match) < 2 {
 			continue
@@ -421,9 +455,7 @@ func parseDBFindingDetails(details string) (dbName, optionName string) {
 // values come straight from a cPanel-user-writable file and end up in
 // root-credentialled SQL via handleMaliciousOption / handleSiteurlHijack.
 func findCredsForDB(dbName string) wpDBCreds {
-	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
-	addonConfigs, _ := accountHomeGlob("*/*/wp-config.php")
-	wpConfigs = append(wpConfigs, addonConfigs...)
+	wpConfigs := wpInstallConfigPaths(wpInstalls(context.Background(), "db_content"))
 
 	for _, path := range wpConfigs {
 		creds := parseWPConfig(path)
@@ -576,7 +608,7 @@ func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, ma
 	// finding but never persist a value that still carries a live payload.
 	// Plain text references to the same URL are inert option data and must
 	// not block a valid script cleanup.
-	if extractMaliciousScriptURL(cleaned) != "" {
+	if optionInjectionRemains(optionName, cleaned) {
 		return false
 	}
 	if cleaned == originalValue {
@@ -600,6 +632,17 @@ func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, ma
 	runMySQLQuery(creds, updateQuery)
 
 	return true
+}
+
+// A notice sink makes executable markup malicious regardless of URL
+// reputation. Removing one known attacker URL must not permit a partial write
+// while an ordinary HTTPS loader or inline script survives in the same row.
+func optionInjectionRemains(option, value string) bool {
+	if extractMaliciousScriptURL(value) != "" {
+		return true
+	}
+	_, sink := pluginNoticeSinkOptions[strings.ToLower(strings.TrimSpace(option))]
+	return sink && executableMarkupRe.MatchString(unescapeStoredSlashes(value))
 }
 
 // --- Script removal ---

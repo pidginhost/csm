@@ -8,7 +8,7 @@ import (
 )
 
 func TestClassifyKindMailboxTakeover(t *testing.T) {
-	got := ClassifyKind(alert.Finding{Check: "smtp_brute_failure_then_success", Mailbox: "alice@example.com"})
+	got := ClassifyKind(alert.Finding{Mailbox: "alice@example.com"})
 	if got != KindMailboxTakeover {
 		t.Errorf("got %v", got)
 	}
@@ -36,11 +36,9 @@ func TestClassifyKindPostExploitProcess(t *testing.T) {
 func TestClassifyKindHostIntegrityRisk(t *testing.T) {
 	for _, check := range []string{
 		"bulk_password_change",
-		"sensitive_file_write",
 		"sensitive_file_modified",
 		"fake_kernel_thread",
-		"auditd_disabled",
-		"modsec_disabled",
+		"integrity",
 		"shadow_change",
 		"sshd_config_change",
 		"root_password_change",
@@ -95,7 +93,6 @@ func TestClassifyKindMailAuthChecksMapToMailboxTakeover(t *testing.T) {
 		"email_spam_outbreak",
 		"mail_account_compromised",
 		"mail_per_account",
-		"smtp_brute_failure_then_success",
 	}
 	for _, check := range mailChecks {
 		got := ClassifyKind(alert.Finding{Check: check, TenantID: "alice"})

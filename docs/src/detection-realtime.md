@@ -6,9 +6,37 @@ CSM detects threats in under 2 seconds using kernel and log watchers running ins
 
 Monitors the mounts containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configured `account_roots`, and detected cPanel document roots.
 
+Atomic-save files enter the same bounded worker queue as ordinary writes.
+Where supported, create events inspect available content; close-write events inspect the
+completed write. Scans read the original event descriptor even if the file has
+been renamed, replaced, or deleted before analysis. No rename event is needed
+to inspect those bytes. Repeated findings use the normal alert cooldown, and
+queue overflow schedules a directory rescan of files that remain on disk.
+Kernel notification loss still relies on the next deep scan. A rename-only
+arrival without a usable create or close-write event is also first examined
+by the rolling content scan; the watcher does not subscribe to rename events.
+
+For WordPress atomic saves, the intended basename can select a core or plugin
+checksum entry. Only a match against the complete event-file content verifies
+the file; missing checksums, partial content, and modifications proceed through
+normal detection. The finding retains the actual event path.
+
+A WordPress update is unpacked under `wp-content/upgrade/` before it is moved
+into place, and each staged PHP file is judged by hash rather than by location.
+A file that matches the official wordpress.org checksum for its package version
+is stock and skips detection like an installed stock file. A file whose
+checksums are still being fetched is content-scanned now and compared once they
+land, even if the package header was written late or WordPress has already
+moved the tree into place. A file the official package does not ship gets its
+own warning, naming the installed path when it still exists. Themes, packages
+not published on wordpress.org, a full verification queue, and a package whose
+checksums do not arrive within 60 seconds raise one warning per staging
+directory, repeated after the normal alert cooldown if activity continues.
+
 **Detects:**
 - Webshell creation (PHP files in web directories)
-- Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. Upgrade staging, atomic-save temp files, and template compile caches are recognized and not reported; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`.
+- Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. Upgrade staging, atomic-save temp files, template compile caches, a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; a create/delete burst collapses into one lower-severity notice. Off with `thresholds.dropper_detection: false`. Candidate tracking and findings held for aggregation each accept up to 16,384 entries; additional work is refused without evicting older evidence. Status and doctor report refusals, exhausted probes, overdue work and stalled processing through [protection queue health](api.md#protection-queue-health).
+- Dropper admission and pending findings follow the live `suppressions.ignore_paths` list after reload. Intentionally suppressed candidates consume no tracker capacity; losses of eligible candidates still raise the capacity warning.
 - PHP in uploads, languages, upgrade directories
 - PHP in `.ssh`, `.cpanel`, mail directories (critical escalation)
 - Executable drops in `.config`
@@ -24,6 +52,40 @@ Monitors the mounts containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configur
 - Phishing kit ZIP archives
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
+
+Both the real-time and the scheduled WordPress admin-creation signature
+require an administrator role token plus literal or request-derived
+credentials, and both accept the same ASCII whitespace, including the vertical
+tab. An importer that creates users with a generated password does not trigger
+either one just for reading a login from an import form.
+
+Two divergences between the engines are known and left in place. Go folds the
+Unicode long s into ASCII s and YARA's nocase does not, so a token spelled
+with it can match in real time where a scan declines. Bounded expressions also
+count differently: the real-time engine counts characters and the scheduled one
+counts bytes. Neither can occur in real PHP, and both belong in the scanner's
+regex compilation rather than in hand-written escapes inside every rule.
+Strictness parity is not enforced across the rulesets: the parity check
+compares rule names, not how strict each side is.
+
+Complete blank files are excluded from dropper alerts after a close-write
+observation. Metadata-only changes during the read, such as an unlink, are
+retried only while content metadata, executable mode and the retained bytes
+remain unchanged. An observed write stays inconclusive even if a subsequent
+read could catch a quiet interval.
+
+PHP files are also excluded when their first statement stops the interpreter
+(`exit`, `die`, or `__halt_compiler`, with at most a plain literal argument and
+no preceding comment). Plugins keep state and firewall data in files of that
+shape and rewrite them constantly, and the bytes behind the terminator are
+never compiled. The exemption is refused when those trailing bytes are made
+only of transport-encoding alphabet: an operator who turns on PHP source
+conversion can have a file decoded before it is tokenized, which would make an
+encoded tail the program and this header padding. Comment-bearing PHP remains
+eligible for the same reason -- a comment's tokens depend on the interpreter's
+source encoding. Executable-mode files are not judged by PHP compilation rules,
+because a shell may read them instead. Content or signature findings and
+previously observed code always override inert-content filtering.
 
 **Features:**
 - Per-path alert deduplication (30s cooldown)
@@ -56,7 +118,40 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
 
+Successful FTP logins over loopback do not raise an unfamiliar-address warning.
+Failed authentication remains reportable over loopback, including through local
+relays.
+
 cPanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
+
+The Postfix/Dovecot file reader polls every two seconds. It reads replacement
+files from the start and rewinds when the current file shrinks below its read
+position. Truncation also clears buffered bytes from the previous file contents.
+With `copytruncate`, a file that regrows past that position between polls can
+hide the truncation and lose events. Use rename/create rotation with the log
+writer reopening its file, or journal input, when that loss is unacceptable.
+
+Mail records are emitted only after their newline arrives. A partial record
+survives temporary EOF up to the 64 KiB limit, including its newline. Longer
+records are discarded through the next newline even when written across
+several polls. Rotation and detected truncation clear pending record state.
+
+Mail source attachment retries after failures, starting at one second and
+doubling to a maximum delay of 30 seconds. The watcher remains unhealthy and
+reports an unavailable-source finding until a reader attaches successfully.
+Repeated identical errors are not re-emitted. Retries use the current mail
+source configuration and start at the current tail, so delayed attachment does
+not count historical authentication failures as new activity.
+
+With `mail_logs.source: auto`, each retry chooses the configured or platform
+file if present, otherwise the configured journal units. A file missing for
+90 seconds triggers a new selection. The old reader stops before a replacement
+starts. Journal input follows new records from the selected services, including
+services with no prior entries; it does not replay older records on attachment.
+
+Explicit `file` and `journal` modes retry their selected source without
+switching, and a working reader stays attached until it stops or loses its file.
+Journal input requires a build with journal support.
 
 ## SMTP / Dovecot Brute-Force Tracker
 

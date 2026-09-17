@@ -4,6 +4,8 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -13,14 +15,21 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// TestProbeBPFLSM_ReturnsBool is a "must not panic" smoke test on the
-// shared probe. Skipped without root because BPF program loading is
-// privileged.
-func TestProbeBPFLSM_ReturnsBool(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("BPF program load requires root / CAP_BPF")
+func TestProbeBPFLSMMatchesAttachment(t *testing.T) {
+	caps := bpf.Probe()
+	mon, err := tryStartBPFLSM(context.Background(), make(chan alert.Finding, 8), &config.Config{})
+	if !caps.LSMAttach || !caps.Ringbuf {
+		if !errors.Is(err, bpf.ErrUnsupported) || mon != nil {
+			t.Fatalf("unsupported capabilities: monitor=%v err=%v", mon, err)
+		}
+		return
 	}
-	_ = bpf.Probe().LSMAttach
+	if err != nil || mon == nil {
+		t.Fatalf("advertised BPF capability did not attach: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	mon.Run(ctx)
 }
 
 // TestTryStartBPFLSM_AttachesAndShutsDown loads the AF_ALG LSM program,
@@ -47,4 +56,20 @@ func TestTryStartBPFLSM_AttachesAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	mon.Run(ctx)
+}
+
+func TestDecodeAFAlgEventStampsDetectionTime(t *testing.T) {
+	before := time.Now()
+	ev, err := decodeAFAlgEvent(make([]byte, 300))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sec, nsec int64
+	if _, err := fmt.Sscanf(ev.Timestamp, "%d.%d", &sec, &nsec); err != nil {
+		t.Fatalf("parse BPF event timestamp %q: %v", ev.Timestamp, err)
+	}
+	detectedAt := time.Unix(sec, nsec)
+	if detectedAt.Before(before) || detectedAt.After(time.Now()) {
+		t.Fatalf("BPF event timestamp = %v, want a current detection time", detectedAt)
+	}
 }

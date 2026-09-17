@@ -2,6 +2,7 @@ package yaraworker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +32,11 @@ type SupervisorConfig struct {
 	BinaryPath string
 	SocketPath string
 	RulesDir   string
+	ConfigFile string
+	ConfigDir  string
+	// Carry the effective list across crashes, even if config on disk changed
+	// while the daemon is waiting for a restart to apply those changes.
+	DisabledRules []string
 
 	StartTimeout       time.Duration
 	MinRestartInterval time.Duration
@@ -49,6 +55,13 @@ type SupervisorConfig struct {
 	// signal whose number is signal). Daemons wire this to a finding
 	// emitter.
 	OnRestart func(exitCode int, signal syscall.Signal, runDuration time.Duration)
+
+	// OnStable is called each time a worker has stayed up for StableDuration
+	// after becoming ready. A restart that passes its readiness probe and
+	// dies again soon after never reports stable.
+	// Like OnRestart, it must return promptly and must not call Stop, which
+	// waits for callbacks to finish.
+	OnStable func()
 
 	// Logf is an optional structured-log hook. Supervisor internals log
 	// restarts + transient errors here. Nil is fine.
@@ -73,6 +86,11 @@ type Supervisor struct {
 
 	running atomic.Bool
 
+	// callbackMu serializes OnRestart and OnStable. waitForChild clears cmd
+	// before OnRestart runs, so a stable check that loses the race to a crash
+	// sees a different child and cannot report the dead worker as stable.
+	callbackMu sync.Mutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -81,7 +99,30 @@ type Supervisor struct {
 	restartCount   int
 	lastExitCode   int
 	lastExitSignal syscall.Signal
+
+	// Scan-failure log suppression. A scanner that cannot load its rules
+	// fails identically for every buffer, so the same message would
+	// otherwise be written once per scanned file.
+	scanErrMu       sync.Mutex
+	scanErrSeen     map[string]*scanErrRecord
+	scanErrOverflow scanErrRecord
 }
+
+// scanErrRecord tracks one distinct failure message: when it was last
+// written, and how many identical failures happened since.
+type scanErrRecord struct {
+	at         time.Time
+	suppressed int
+}
+
+// scanErrMaxTracked bounds the distinct-message table so a failure carrying
+// unique text (a path, an offset) cannot grow it without limit.
+const scanErrMaxTracked = 32
+
+// scanErrLogWindow bounds how often one recurring scan failure is written.
+// Long enough that a broken rules directory cannot flood the journal, short
+// enough that a persistent fault keeps reappearing.
+const scanErrLogWindow = time.Minute
 
 // NewSupervisor validates cfg and returns an unstarted supervisor.
 // Defaults: StartTimeout 10s, MinRestartInterval 1s, MaxRestartInterval
@@ -108,6 +149,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 	if cfg.ClientTimeout == 0 {
 		cfg.ClientTimeout = 30 * time.Second
 	}
+	cfg.DisabledRules = append([]string(nil), cfg.DisabledRules...)
 	return &Supervisor{cfg: cfg}, nil
 }
 
@@ -179,6 +221,10 @@ func (s *Supervisor) Stop() error {
 	if done != nil {
 		<-done
 	}
+	// A timer may have passed its stopped/context check before shutdown.
+	// Join that callback before allowing its owner to tear down health state.
+	s.callbackMu.Lock()
+	defer s.callbackMu.Unlock()
 	return nil
 }
 
@@ -237,10 +283,57 @@ func (s *Supervisor) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	}
 	res, err := client.ScanBytes(yaraipc.ScanBytesArgs{Data: data})
 	if err != nil {
-		s.logf("scan_bytes: %v", err)
+		s.logScanErr(err)
 		return nil, fmt.Errorf("yaraworker scan_bytes: %w", err)
 	}
 	return toYaraMatches(res.Matches), nil
+}
+
+// logScanErr writes a scan failure at most once per scanErrLogWindow per
+// distinct message, reporting how many identical failures were folded into
+// the gap so the volume stays visible. Tracking is per message rather than
+// per most-recent, so two failures alternating cannot defeat suppression.
+func (s *Supervisor) logScanErr(err error) {
+	msg := err.Error()
+	now := time.Now()
+
+	s.scanErrMu.Lock()
+	if s.scanErrSeen == nil {
+		s.scanErrSeen = make(map[string]*scanErrRecord)
+	}
+	rec, ok := s.scanErrSeen[msg]
+	overflow := !ok && len(s.scanErrSeen) >= scanErrMaxTracked
+	if overflow {
+		// Preserve known recurring failures. Resetting the table lets a stream
+		// of unique offsets or paths disable throttling for every message.
+		rec = &s.scanErrOverflow
+		ok = !rec.at.IsZero()
+	}
+	if ok && now.Sub(rec.at) < scanErrLogWindow {
+		rec.suppressed++
+		s.scanErrMu.Unlock()
+		return
+	}
+	if !ok {
+		if !overflow {
+			rec = &scanErrRecord{}
+			s.scanErrSeen[msg] = rec
+		}
+	}
+	suppressed := rec.suppressed
+	rec.at = now
+	rec.suppressed = 0
+	s.scanErrMu.Unlock()
+
+	if overflow {
+		s.logf("scan_bytes: %v (%d additional scan failures suppressed)", err, suppressed)
+		return
+	}
+	if suppressed > 0 {
+		s.logf("scan_bytes: %v (%d identical failures suppressed)", err, suppressed)
+		return
+	}
+	s.logf("scan_bytes: %v", err)
 }
 
 // Reload asks the worker to recompile its rules directory.
@@ -366,7 +459,9 @@ func (s *Supervisor) supervise() {
 		s.mu.Unlock()
 
 		if s.cfg.OnRestart != nil {
+			s.callbackMu.Lock()
 			s.cfg.OnRestart(exitCode, sig, runDuration)
+			s.callbackMu.Unlock()
 		}
 
 		// A stable exit already reset the delay. Short-lived workers and
@@ -479,6 +574,14 @@ func (s *Supervisor) spawnAndWaitReady() error {
 		"--socket", s.cfg.SocketPath,
 		"--rules-dir", s.cfg.RulesDir,
 	}
+	if s.cfg.ConfigFile != "" {
+		args = append(args, "--config", s.cfg.ConfigFile)
+	}
+	// Preserve the daemon's selection even when it is empty or missing.
+	// Omitting it would re-enable the worker's environment/default lookup.
+	args = append(args, "--inherited-config-dir", s.cfg.ConfigDir)
+	disabled, _ := json.Marshal(s.cfg.DisabledRules) // []string cannot fail to encode.
+	args = append(args, "--disabled-rules", string(disabled))
 	args = append(args, s.cfg.ExtraArgs...)
 
 	// #nosec G204 -- BinaryPath is supervisor-operator-configured (see
@@ -511,7 +614,27 @@ func (s *Supervisor) spawnAndWaitReady() error {
 		s.mu.Unlock()
 		return err
 	}
+	s.reportStableAfter(cmd)
 	return nil
+}
+
+// reportStableAfter calls OnStable once cmd has stayed the current worker for
+// StableDuration without the supervisor stopping.
+func (s *Supervisor) reportStableAfter(cmd *exec.Cmd) {
+	if s.cfg.OnStable == nil {
+		return
+	}
+	ctx := s.ctx
+	time.AfterFunc(s.cfg.StableDuration, func() {
+		s.callbackMu.Lock()
+		defer s.callbackMu.Unlock()
+		s.mu.Lock()
+		current := s.cmd == cmd && !s.stopped
+		s.mu.Unlock()
+		if current && ctx.Err() == nil {
+			s.cfg.OnStable()
+		}
+	})
 }
 
 func (s *Supervisor) waitForReady(client *yaraipc.Client) error {

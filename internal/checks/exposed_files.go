@@ -333,6 +333,7 @@ func exposureLabel(class exposedClass) string {
 // and Content-Type.
 type webProbe interface {
 	probe(ctx context.Context, domain, host, urlPath string) probeResult
+	probeComplete(ctx context.Context, domain, host, urlPath string) probeResult
 }
 
 var webProber webProbe = realWebProbe{}
@@ -343,14 +344,32 @@ func SetWebProbe(p webProbe) { webProber = p }
 type realWebProbe struct{}
 
 func (realWebProbe) probe(ctx context.Context, domain, host, urlPath string) probeResult {
+	return probeLocalSchemes(ctx, domain, host, urlPath, true, doLocalProbe)
+}
+
+// probeComplete always attempts both origin protocols. Detection may stop once
+// one protocol proves a raw exposure, but verification needs every protocol to
+// answer before a negative result can safely clear an earlier finding.
+func (realWebProbe) probeComplete(ctx context.Context, domain, host, urlPath string) probeResult {
+	return probeLocalSchemes(ctx, domain, host, urlPath, false, doLocalProbe)
+}
+
+type localProbeFunc func(context.Context, string, string, string, string) (probeResult, bool)
+
+func probeLocalSchemes(
+	ctx context.Context,
+	domain, host, urlPath string,
+	stopOnRawExposure bool,
+	probeOne localProbeFunc,
+) probeResult {
 	results := make([]probeResult, 0, 2)
 	partial := false
 	for _, scheme := range []string{"https", "http"} {
-		if pr, ok := doLocalProbe(ctx, scheme, domain, host, urlPath); ok {
+		if pr, ok := probeOne(ctx, scheme, domain, host, urlPath); ok {
 			results = append(results, pr)
 			// A successful non-HTML response is sufficient for every raw
 			// leak class; avoid an unnecessary second request.
-			if successfulProbe(pr) && !isHTMLContentType(pr.contentType) {
+			if stopOnRawExposure && successfulProbe(pr) && !isHTMLContentType(pr.contentType) {
 				return pr
 			}
 		} else {

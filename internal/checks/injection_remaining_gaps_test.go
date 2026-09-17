@@ -704,7 +704,7 @@ func TestAutoQuarantineFiles_ExercisesAllCheckTypes(t *testing.T) {
 	cfg.AutoResponse.QuarantineFiles = true
 	for _, ct := range []string{
 		"backdoor_binary", "new_webshell_file", "obfuscated_php",
-		"php_dropper", "suspicious_php_content", "phishing_page",
+		"suspicious_php_content", "phishing_page",
 		"htaccess_handler_abuse", "new_php_in_languages", "new_php_in_upgrade",
 	} {
 		findings := []alert.Finding{{
@@ -717,6 +717,7 @@ func TestAutoQuarantineFiles_ExercisesAllCheckTypes(t *testing.T) {
 }
 
 func TestAutoKillProcesses_StructuredPID(t *testing.T) {
+	calls := withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {
 			if strings.Contains(name, "/status") {
@@ -730,10 +731,14 @@ func TestAutoKillProcesses_StructuredPID(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.KillProcesses = true
 	findings := []alert.Finding{{Check: "fake_kernel_thread", Severity: alert.Critical, PID: 99999, Message: "Fake kernel thread detected", Details: "Some details"}}
-	_ = AutoKillProcesses(cfg, findings)
+	actions := AutoKillProcesses(context.Background(), cfg, findings)
+	if len(actions) != 0 || len(calls.requested) != 1 || calls.requested[0] != 99999 || len(calls.signaled) != 0 {
+		t.Fatalf("unverifiable structured PID: actions=%v calls=%+v", actions, calls)
+	}
 }
 
 func TestAutoKillProcesses_SkipsPIDZeroOrOne(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {
 			if strings.Contains(name, "/status") {
@@ -747,13 +752,14 @@ func TestAutoKillProcesses_SkipsPIDZeroOrOne(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.KillProcesses = true
 	findings := []alert.Finding{{Check: "fake_kernel_thread", Severity: alert.Critical, PID: 1, Message: "PID 1"}}
-	actions := AutoKillProcesses(cfg, findings)
+	actions := AutoKillProcesses(context.Background(), cfg, findings)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions for PID <= 1, got %d", len(actions))
 	}
 }
 
 func TestAutoKillProcesses_SkipsEmptyUID(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {
 			if strings.Contains(name, "/status") {
@@ -767,7 +773,7 @@ func TestAutoKillProcesses_SkipsEmptyUID(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.KillProcesses = true
 	findings := []alert.Finding{{Check: "fake_kernel_thread", Severity: alert.Critical, PID: 12345, Message: "Fake thread"}}
-	actions := AutoKillProcesses(cfg, findings)
+	actions := AutoKillProcesses(context.Background(), cfg, findings)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions when UID is empty, got %d", len(actions))
 	}
@@ -1193,8 +1199,8 @@ func TestCheckDatabaseContent_FullFlow(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
-		lstat: func(string) (os.FileInfo, error) {
-			return fakeFileInfo{name: "wp-config.php"}, nil
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 		},
 	})
 	queryCount := 0
@@ -1239,8 +1245,8 @@ func TestCheckDatabaseContent_EmptyDBNameSkipped(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
-		lstat: func(string) (os.FileInfo, error) {
-			return fakeFileInfo{name: "wp-config.php"}, nil
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 		},
 	})
 	withMockCmd(t, &mockCmd{})
@@ -1268,8 +1274,8 @@ func TestCheckDatabaseContent_SiteurlHijack(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
-		lstat: func(string) (os.FileInfo, error) {
-			return fakeFileInfo{name: "wp-config.php"}, nil
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/bob/public_html/wp-config.php"})
 		},
 	})
 	withMockCmd(t, &mockCmd{
@@ -1309,6 +1315,9 @@ func TestCleanDatabaseSpam_CleansPatterns(t *testing.T) {
 				return []string{"/home/alice/public_html/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
 		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
@@ -1359,6 +1368,9 @@ func TestCleanDatabaseSpam_SpamDomainsFound(t *testing.T) {
 				return []string{"/home/bob/public_html/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/bob/public_html/wp-config.php"})
 		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
@@ -1414,6 +1426,9 @@ func TestCleanDatabaseSpam_EmptyDBName(t *testing.T) {
 				return []string{"/home/x/public_html/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/x/public_html/wp-config.php"})
 		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {

@@ -74,6 +74,9 @@ integrity:
   config_hash: ""
   immutable: true
 
+confd:
+  integrity_exempt: []
+
 signatures:
   rules_dir: "/opt/csm/rules"
   auto_update: true
@@ -245,6 +248,9 @@ auto_response:
   dry_run: false              # FLIP AFTER VALIDATION
   kill_processes: true
   quarantine_files: true
+  max_file_actions_per_hour: 50         # shared quarantine and file-cleaning attempt budget
+  max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
+  max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: true
   block_expiry: "24h"
   max_blocks_per_hour: 50
@@ -343,11 +349,21 @@ firewall:
     - 873
     - 6277
     - 24441
+  # IPv6. false lets every IPv6 packet bypass the firewall: the blanket
+  # accept sits ahead of the blocked sets and the port rules, and the
+  # blocked-IP sets are IPv4-only, so a blocked attacker can return over
+  # IPv6. The empty lists below inherit the IPv4 policy above.
+  ipv6: true
+  tcp6_in: []
+  tcp6_out: []
+  udp6_in: []
+  udp6_out: []
   restricted_tcp:
     - 2086
     - 2087
     - 2325
     - 9443
+  required_tcp_out: []
   passive_ftp_start: 49152
   passive_ftp_end: 65534
   # 200/min and conn_limit 400 are CGNAT-tolerant. Lower if your

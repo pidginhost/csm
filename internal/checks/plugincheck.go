@@ -9,6 +9,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -206,7 +207,7 @@ func pluginCacheFresh(db *store.DB, cfg *config.Config) bool {
 // known-vulnerable detectors. The checks run concurrently, so list order in
 // the runner cannot establish the inventory dependency. Waiters reuse the
 // leader's failed result as well, avoiding a duplicate walk in the same scan.
-func ensurePluginCacheFresh(ctx context.Context, cfg *config.Config, db *store.DB) bool {
+func ensurePluginCacheFreshShared(ctx context.Context, cfg *config.Config, db *store.DB) bool {
 	if pluginCacheFresh(db, cfg) {
 		return true
 	}
@@ -255,73 +256,112 @@ func CheckOutdatedPlugins(ctx context.Context, cfg *config.Config, _ *state.Stor
 	return evaluatePluginCache(db)
 }
 
-// findAllWPInstalls discovers all wp-config.php files under /home, deduplicating
-// and skipping cache/backup/staging/trash paths.
-func findAllWPInstalls() []string {
-	// Relative to each account root; see accountHomeGlob.
-	patterns := []string{
-		"*/public_html/wp-config.php",
-		"*/public_html/*/wp-config.php",
-		"*/*/wp-config.php",
-	}
-
+// findAllWPInstalls lists the WordPress installs to inventory plugins for.
+// Discovery is shared (wpinstalls.go), which adds the panel's document-root
+// map: a root outside the home layout used to have no plugin coverage, so its
+// vulnerable plugins were never found and never virtually patched.
+func findAllWPInstalls(ctx context.Context) []string {
 	seen := make(map[string]bool)
 	var results []string
-
-	skipSubstrings := []string{"/cache/", "/backup", "/staging", "/.trash/"}
-
-	for _, pattern := range patterns {
-		matches, _ := accountHomeGlob(pattern)
-		for _, m := range matches {
-			m = canonicalWPInstallPath(m)
-			skip := false
-			lower := strings.ToLower(m)
-			for _, sub := range skipSubstrings {
-				if strings.Contains(lower, sub) {
-					skip = true
-					break
-				}
-			}
-			if skip {
-				continue
-			}
-			if !seen[m] {
-				seen[m] = true
-				results = append(results, m)
-			}
-		}
+	installs := wpInstalls(ctx, "vulnerable_plugins")
+	if checkMarkedIncomplete(ctx, "vulnerable_plugins") {
+		// The same inventory backs both checks, regardless of which one won
+		// the concurrent refresh. Neither may purge after a partial walk.
+		markCheckIncomplete(ctx, "outdated_plugins")
 	}
-
+	for _, install := range installs {
+		if seen[install.ConfigPath] {
+			continue
+		}
+		seen[install.ConfigPath] = true
+		results = append(results, install.ConfigPath)
+	}
 	return results
 }
 
-func canonicalWPInstallPath(wpConfig string) string {
+func canonicalWPInstallPath(wpConfig string) (string, error) {
 	clean := filepath.Clean(wpConfig)
 	dir := filepath.Dir(clean)
-	info, err := osFS.Lstat(dir)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return clean
+	home := wpInstallAccountRoot(clean)
+	if home == "" {
+		return "", fmt.Errorf("WordPress document root is outside an account home: %s", dir)
+	}
+	rel, err := filepath.Rel(home, dir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("WordPress document root is outside an account home: %s", dir)
 	}
 
-	target, err := osFS.Readlink(dir)
-	if err != nil || target == "" {
-		return clean
-	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(dir), target)
-	}
-	target = filepath.Clean(target)
+	parts := strings.Split(rel, string(filepath.Separator))
+	resolved := home
+	const maxSymlinks = 40
+	symlinks := 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("invalid WordPress document-root component in %s", dir)
+		}
+		candidate := filepath.Join(resolved, part)
+		info, err := osFS.Lstat(candidate)
+		if err != nil {
+			return "", fmt.Errorf("inspect WordPress document root %s: %w", candidate, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			if !info.IsDir() {
+				return "", fmt.Errorf("WordPress document root is not a directory: %s", candidate)
+			}
+			resolved = candidate
+			continue
+		}
 
-	home := homeAccountRoot(clean)
-	if home == "" || !isPathWithinOrEqual(target, home) {
-		return clean
+		symlinks++
+		if symlinks > maxSymlinks {
+			return "", fmt.Errorf("too many symlinks in WordPress document root: %s", dir)
+		}
+		target, err := osFS.Readlink(candidate)
+		if err != nil {
+			return "", fmt.Errorf("resolve WordPress document root %s: %w", candidate, err)
+		}
+		if target == "" {
+			return "", fmt.Errorf("resolve WordPress document root %s: empty symlink target", candidate)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(resolved, target)
+		}
+		target = filepath.Clean(target)
+		if !isPathWithinOrEqual(target, home) {
+			return "", fmt.Errorf("WordPress document root %s resolves outside its account", candidate)
+		}
+		targetRel, err := filepath.Rel(home, target)
+		if err != nil {
+			return "", fmt.Errorf("resolve WordPress document root %s: %w", candidate, err)
+		}
+		var targetParts []string
+		if targetRel != "." {
+			targetParts = strings.Split(targetRel, string(filepath.Separator))
+		}
+		parts = append(targetParts, parts...)
+		resolved = home
 	}
+	return filepath.Join(resolved, filepath.Base(clean)), nil
+}
 
-	targetInfo, err := osFS.Lstat(target)
-	if err != nil || !targetInfo.IsDir() || targetInfo.Mode()&os.ModeSymlink != 0 {
-		return clean
+func wpInstallAccountRoot(path string) string {
+	if home := homeAccountRoot(path); home != "" {
+		return home
 	}
-	return filepath.Join(target, filepath.Base(clean))
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return ""
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	for i, part := range parts {
+		if !isCPanelHomeBase(part) || i+2 >= len(parts) || !validAccountName.MatchString(parts[i+1]) {
+			continue
+		}
+		return filepath.Join(string(filepath.Separator), filepath.Join(parts[1:i+2]...))
+	}
+	return ""
 }
 
 // wpCLIPluginEntry mirrors the JSON output of `wp plugin list --format=json`.
@@ -336,11 +376,24 @@ type wpCLIPluginEntry struct {
 // plugins for each site, enriches free plugins via the WordPress.org API,
 // and stores everything in bbolt.
 func refreshPluginCache(ctx context.Context, db *store.DB) {
-	wpConfigs := findAllWPInstalls()
+	if incompleteCollectorFrom(ctx) == nil {
+		ctx, _ = withIncompleteCheckCollector(ctx)
+	}
+	wpConfigs := findAllWPInstalls(ctx)
+	discoveryIncomplete := checkMarkedIncomplete(ctx, "vulnerable_plugins")
+	coverage := newWPVerificationBatch(ctx, db, "plugins", "wp_plugin_inventory", wpConfigs)
+	defer func() {
+		if err := coverage.finish(ctx, !discoveryIncomplete); err != nil {
+			fmt.Fprintln(os.Stderr, "plugincheck: could not save verification history")
+		}
+	}()
 	if ctx.Err() != nil {
 		return
 	}
 	if len(wpConfigs) == 0 {
+		if discoveryIncomplete {
+			return
+		}
 		for path := range db.AllSitePlugins() {
 			if err := db.DeleteSitePlugins(path); err != nil {
 				fmt.Fprintf(os.Stderr, "plugincheck: prune failed for %s: %v\n", path, err)
@@ -357,80 +410,107 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 	slugsSeen := make(map[string]bool)
 	discoveredPaths := make(map[string]bool)
 
-	jobs := make(chan string, len(wpConfigs))
+	batch := pluginInventoryBatches.begin(len(wpConfigs), pluginCheckWorkers)
+	defer batch.abandon(ctx)
+	jobs := make(chan int, len(wpConfigs))
 	for i := 0; i < pluginCheckWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for wpConfig := range jobs {
-				if ctx.Err() != nil {
-					return
-				}
-				wpPath := filepath.Dir(wpConfig)
-				if ctx.Err() != nil {
-					return
-				}
-
-				mu.Lock()
-				discoveredPaths[wpPath] = true
-				mu.Unlock()
-
-				sitePlugins, err := inventoryWPSite(ctx, wpConfig)
-				if err != nil {
-					if ctx.Err() != nil {
+			for index := range jobs {
+				wpConfig, work := wpConfigs[index], batch.tasks[index]
+				work.admit()
+				stop := false
+				// Site URL discovery and plugin enumeration each have a command timeout.
+				work.run(ctx, 2*cmdTimeout, func() {
+					if err := ctx.Err(); err != nil {
+						work.withdraw(err)
+						stop = true
 						return
 					}
+					wpPath := filepath.Dir(wpConfig)
+					if err := ctx.Err(); err != nil {
+						work.withdraw(err)
+						stop = true
+						return
+					}
+
 					mu.Lock()
-					switch {
-					case errors.Is(err, context.DeadlineExceeded):
-						timeoutCount++
-					case errors.Is(err, errWPInventoryParse):
-						parseFailCount++
-					default:
-						execFailCount++
+					discoveredPaths[wpPath] = true
+					mu.Unlock()
+
+					sitePlugins, err := inventoryWPSite(ctx, wpConfig)
+					work.progress()
+					if err != nil {
+						parentErr := ctx.Err()
+						if (!errors.Is(err, context.Canceled) || parentErr == nil) && (!commandRefused(err) || errors.Is(err, errWPInventoryNoOutput)) {
+							work.fail()
+						}
+						if parentErr != nil {
+							work.withdraw(parentErr)
+							stop = true
+							return
+						}
+						coverage.record(wpPath, wpVerificationFailure(err, nil))
+						mu.Lock()
+						switch {
+						case errors.Is(err, context.DeadlineExceeded):
+							timeoutCount++
+						case errors.Is(err, errWPInventoryParse):
+							parseFailCount++
+						default:
+							execFailCount++
+						}
+						mu.Unlock()
+						if err := db.DeleteSitePlugins(wpPath); err != nil {
+							fmt.Fprintf(os.Stderr, "plugincheck: stale cache cleanup failed for %s: %v\n", wpPath, err)
+							mu.Lock()
+							cleanupFailCount++
+							mu.Unlock()
+						}
+						return
+					}
+
+					mu.Lock()
+					for _, p := range sitePlugins.Plugins {
+						slugsSeen[p.Slug] = true
 					}
 					mu.Unlock()
-					if err := db.DeleteSitePlugins(wpPath); err != nil {
-						fmt.Fprintf(os.Stderr, "plugincheck: stale cache cleanup failed for %s: %v\n", wpPath, err)
+
+					coverage.record(wpPath, store.WPVerificationResult{State: "verified"})
+					if err := db.SetSitePlugins(wpPath, sitePlugins); err != nil {
+						coverage.record(wpPath, store.WPVerificationResult{State: "unverified", Reason: "CSM could not save the plugin inventory"})
+						work.fail()
+						fmt.Fprintf(os.Stderr, "plugincheck: store failed for %s: %v\n", wpPath, err)
+						if cleanupErr := db.DeleteSitePlugins(wpPath); cleanupErr != nil {
+							fmt.Fprintf(os.Stderr, "plugincheck: stale cache cleanup failed for %s: %v\n", wpPath, cleanupErr)
+						}
 						mu.Lock()
 						cleanupFailCount++
 						mu.Unlock()
+						return
 					}
-					continue
-				}
 
-				mu.Lock()
-				for _, p := range sitePlugins.Plugins {
-					slugsSeen[p.Slug] = true
-				}
-				mu.Unlock()
-
-				if err := db.SetSitePlugins(wpPath, sitePlugins); err != nil {
-					fmt.Fprintf(os.Stderr, "plugincheck: store failed for %s: %v\n", wpPath, err)
-					if cleanupErr := db.DeleteSitePlugins(wpPath); cleanupErr != nil {
-						fmt.Fprintf(os.Stderr, "plugincheck: stale cache cleanup failed for %s: %v\n", wpPath, cleanupErr)
-					}
 					mu.Lock()
-					cleanupFailCount++
+					successCount++
 					mu.Unlock()
-					continue
+				})
+				if stop {
+					return
 				}
-
-				mu.Lock()
-				successCount++
-				mu.Unlock()
 			}
 		}()
 	}
 
-	for _, wpConfig := range wpConfigs {
+	for index := range wpConfigs {
 		if ctx.Err() != nil {
 			break
 		}
-		jobs <- wpConfig
+		jobs <- index
 	}
 	close(jobs)
 	wg.Wait()
+	batch.abandon(ctx)
 	if ctx.Err() != nil {
 		return
 	}
@@ -461,13 +541,15 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 		_ = db.SetPluginInfo(slug, info)
 	}
 
-	// Prune cache entries for WP installs no longer on disk.
-	allCached := db.AllSitePlugins()
-	for path := range allCached {
-		if !discoveredPaths[path] {
-			if err := db.DeleteSitePlugins(path); err != nil {
-				fmt.Fprintf(os.Stderr, "plugincheck: prune failed for %s: %v\n", path, err)
-				cleanupFailCount++
+	// A partial walk cannot prove that an absent path was removed.
+	if !discoveryIncomplete {
+		allCached := db.AllSitePlugins()
+		for path := range allCached {
+			if !discoveredPaths[path] {
+				if err := db.DeleteSitePlugins(path); err != nil {
+					fmt.Fprintf(os.Stderr, "plugincheck: prune failed for %s: %v\n", path, err)
+					cleanupFailCount++
+				}
 			}
 		}
 	}
@@ -496,6 +578,10 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 	if cf > 0 {
 		fmt.Fprintf(os.Stderr, "[%s] plugincheck: refresh incomplete, %d stale cache cleanup(s) failed, not updating timestamp\n",
 			ts, cf)
+		return
+	}
+	if discoveryIncomplete {
+		fmt.Fprintf(os.Stderr, "[%s] plugincheck: discovery incomplete, not updating timestamp\n", ts)
 		return
 	}
 	if failCount > 0 {
@@ -587,6 +673,9 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 // unparseable JSON, so callers can tell a parse failure from an exec failure.
 var errWPInventoryParse = errors.New("wp-cli plugin list: invalid JSON")
 
+// A refusal without command output cannot account for the inventory work.
+var errWPInventoryNoOutput = errors.New("wp-cli plugin list: no output")
+
 // inventoryWPSite runs wp-cli for a single site (as the site owner) and returns
 // its current plugin inventory. Shared by the periodic cache refresh and the
 // per-finding re-check so both see identical results. Read-only: it inventories,
@@ -601,7 +690,7 @@ func inventoryWPSiteForVerify(ctx context.Context, wpConfig string) (store.SiteP
 
 func inventoryWPSiteWithDomain(ctx context.Context, wpConfig string, includeDomain bool) (store.SitePlugins, error) {
 	wpPath := filepath.Dir(wpConfig)
-	user := extractUser(wpPath)
+	user := wpConfigUser(wpPath)
 	if !validWPCLIUser(user) {
 		return store.SitePlugins{}, fmt.Errorf("invalid WordPress site owner: %q", user)
 	}
@@ -617,8 +706,16 @@ func inventoryWPSiteWithDomain(ctx context.Context, wpConfig string, includeDoma
 	out, err := runWPCLIStdout(ctx, user,
 		wpCLIFlags+"plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
 	)
+	if out == nil {
+		// Output retains a failed command's stderr on ExitError. A refusal
+		// there still answers the check without contaminating the JSON input.
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || len(exit.Stderr) == 0 {
+			return store.SitePlugins{}, errors.Join(errWPInventoryNoOutput, err)
+		}
+	}
 	if err != nil {
-		return store.SitePlugins{}, err
+		return store.SitePlugins{}, &wpInventoryError{err: err, result: wpVerificationFailure(err, out)}
 	}
 
 	var entries []wpCLIPluginEntry

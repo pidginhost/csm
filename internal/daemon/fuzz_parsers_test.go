@@ -1,6 +1,58 @@
 package daemon
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
+
+func FuzzModSecRuleFileConfidence(f *testing.F) {
+	f.Add(211999, "Unknown vendor rule", "", `[file "/rules/anomaly-content-type.conf"]`)
+	f.Add(942190, "", "", liteSpeedTriggerLineCRSSQLi)
+	f.Add(942100, "SQL Injection Attack Detected", "attack-sqli", `[file "/rules/REQUEST-949-BLOCKING-EVALUATION.conf"]`)
+	f.Add(949110, "Inbound Anomaly Score Exceeded", "anomaly-evaluation", `[file "/rules/REQUEST-942-APPLICATION-ATTACK-SQLI.conf"]`)
+	f.Add(900100, "", "", `] at [unclosed`)
+	f.Fuzz(func(t *testing.T, rule int, msg, tags, line string) {
+		baseline := classifyModSecConfidence(rule, msg, tags, "")
+		got := classifyModSecConfidence(rule, msg, tags, extractModSecRuleFile(line))
+		// File evidence may promote any class to high. It must never turn
+		// an unknown deny into low-confidence policy or demote an attack.
+		if got != baseline && got != modsecConfHigh {
+			t.Fatalf("rule file changed confidence from %v to %v: %q", baseline, got, line)
+		}
+	})
+}
+
+func FuzzDropperContentIsInert(f *testing.F) {
+	for _, head := range []string{"", "<?php // guard", "<?php # guard\r", "<?php /*", "<?php ?><?=1?>", "<?php // +AAo-echo 1;", "<?php /* \xc2\xa0 */", "<?php // =0Aecho 1;", "<?php //AAAPD9waHAgZWNobyAxOyAg"} {
+		f.Add([]byte(head))
+	}
+	f.Fuzz(func(t *testing.T, head []byte) {
+		if dropperContentIsInert(head, int64(len(head))+1) {
+			t.Fatal("partial content declared inert")
+		}
+		// Close any comment before adding a new PHP block. The trailing
+		// statement must never disappear behind an earlier closing tag.
+		withCode := append(append([]byte(nil), head...), []byte("\n*/\r\n?><?php echo 1;")...)
+		if dropperContentIsInert(withCode, int64(len(withCode))) {
+			t.Fatalf("trailing code declared inert: %q", withCode)
+		}
+	})
+}
+
+func FuzzAtomicWriteContentPath(f *testing.F) {
+	for _, path := range []string{"/home/site/.temp.1.example.php", "/home/site/.temp.1..htaccess", "/home/site/.temp.1...", ".temp.1..", "", "/", ".temp.1.\x00"} {
+		f.Add(path)
+	}
+	f.Fuzz(func(t *testing.T, path string) {
+		got := atomicWriteContentPath(path)
+		if filepath.Dir(got) != filepath.Dir(path) {
+			t.Fatalf("content hint escaped parent: %q -> %q", path, got)
+		}
+		if !looksLikeAtomicWriteStage(filepath.Base(path)) && got != path {
+			t.Fatalf("ordinary name changed: %q -> %q", path, got)
+		}
+	})
+}
 
 // Fuzz targets for daemon-side log parsers. Same approach as
 // internal/checks/fuzz_parsers_test.go: find crashers, don't verify output.
@@ -84,5 +136,21 @@ func FuzzIsPrivateOrLoopback(f *testing.F) {
 	f.Add("")
 	f.Fuzz(func(t *testing.T, ip string) {
 		_ = isPrivateOrLoopback(ip)
+	})
+}
+
+func FuzzMailPermissionLogText(f *testing.F) {
+	f.Add("Domain example.com has an outgoing mail hold")
+	f.Add("Sender user@example.net has an outgoing mail hold")
+	f.Fuzz(func(t *testing.T, text string) {
+		for _, prefix := range []string{
+			"2026-09-08 10:00:00 1abc23-000456-AB <= user@example.com H=mail.example.org [203.0.113.5] P=esmtp T=",
+			"2026-09-08 10:00:00 dovecot_login authenticator failed for ",
+			"2026-09-08 10:00:00 1abc23-000456-AB ** user@example.com R=dnslookup T=remote_smtp: ",
+		} {
+			if got := mailPermissionLogText(prefix + text); got != "" {
+				t.Fatalf("untrusted log data became permission text: %q", got)
+			}
+		}
 	})
 }

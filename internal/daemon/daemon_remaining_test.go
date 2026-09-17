@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -171,7 +172,7 @@ func TestRefreshCloudflareIPs_NilFWEngine(t *testing.T) {
 	d.fwEngine = nil
 	// FetchCloudflareIPs will attempt HTTP and may fail; the method
 	// should handle errors gracefully without panic.
-	d.refreshCloudflareIPs()
+	d.refreshCloudflareIPs(context.Background())
 }
 
 // ---------------------------------------------------------------------------
@@ -206,10 +207,20 @@ func TestStartFileMonitor_FailsGracefully(t *testing.T) {
 	cfg := &config.Config{}
 	d := New(cfg, nil, nil, "")
 	d.startFileMonitor()
-	// On macOS, fanotify is not available. Should not panic.
-	if d.fileMonitor != nil {
-		t.Error("fileMonitor should be nil on macOS (no fanotify)")
+
+	if d.fileMonitor == nil {
+		// No fanotify here (macOS, or a kernel or permission that refuses it).
+		// Degrading instead of panicking is what this test exists for.
+		return
 	}
+
+	// Where fanotify does work the monitor really starts, and this test used to
+	// walk away from it. Its goroutines then outlived the test and kept reading
+	// package state that later tests repoint -- the source of this package's
+	// order-dependent failures and data races under -race. Owning the shutdown
+	// keeps the rest of the run deterministic.
+	d.fileMonitor.Stop()
+	d.wg.Wait()
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +233,10 @@ func TestStartSpoolWatcher_EnabledOnMacOS(t *testing.T) {
 	cfg.EmailAV.ClamdSocket = "/nonexistent/clamd.sock"
 	d := New(cfg, nil, nil, "")
 	d.startSpoolWatcher()
+	status, ok := d.QueueStatuses()["email_av.scans"]
+	if !ok || status.Status != "ok" || !status.CapacityUnavailable || status.Depth != 0 || status.InFlight != 0 || status.DroppedTotal != 0 {
+		t.Fatalf("email AV queue health was not published: found=%v status=%+v", ok, status)
+	}
 	// On macOS, NewSpoolWatcher returns error. Should not panic.
 	if d.getSpoolWatcher() != nil {
 		t.Error("spoolWatcher should be nil on macOS")
@@ -644,13 +659,19 @@ func TestStartFirewall_EnabledFailsGracefully(t *testing.T) {
 	cfg.Firewall = firewall.DefaultConfig()
 	cfg.Firewall.Enabled = true
 	cfg.StatePath = t.TempDir()
-	// No nftables binary on macOS, so firewall.NewEngine will fail.
 	d := New(cfg, nil, nil, "")
-	d.startFirewall()
-	// fwEngine should be nil on macOS since nftables is not available.
-	if d.fwEngine != nil {
-		t.Log("fwEngine unexpectedly non-nil (may be valid on Linux)")
+	attempts := 0
+	d.startFirewallUsing(firewallStartupOps{
+		newEngine: func(*firewall.FirewallConfig, string) (*firewall.Engine, error) {
+			attempts++
+			return nil, os.ErrPermission
+		},
+		delays: []time.Duration{0, 0},
+	})
+	if attempts != 3 || d.fwEngine != nil || d.fwStartupError == "" {
+		t.Fatalf("failed firewall startup was not bounded and retained: attempts=%d error=%q", attempts, d.fwStartupError)
 	}
+
 }
 
 // ---------------------------------------------------------------------------

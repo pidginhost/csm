@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -159,5 +161,93 @@ func TestRunRetentionOnce_ZeroDaysSkipsThatBucket(t *testing.T) {
 	}
 	if db.HistoryCount() != 1 {
 		t.Errorf("HistoryCount = %d, want 1", db.HistoryCount())
+	}
+}
+
+// firewallOutcomeFixture drives one durable firewall action to a delivered
+// outcome so the sweep has a retained record to work on.
+func firewallOutcomeFixture(t *testing.T, db *store.DB, id string, at time.Time) {
+	t.Helper()
+	state, revision, err := db.ReadFirewallState()
+	if err != nil {
+		if _, seedErr := db.ReplaceFirewallState(0, firewall.FirewallState{}); seedErr != nil {
+			t.Fatalf("seed firewall state: %v", seedErr)
+		}
+		state, revision = firewall.FirewallState{}, 1
+	}
+	next := firewall.FirewallState{Blocked: append([]firewall.BlockedEntry(nil), state.Blocked...)}
+	next.Blocked = append(next.Blocked, firewall.BlockedEntry{IP: "198.51.100." + id[len(id)-1:], Reason: "retention", BlockedAt: at})
+	plan := firewall.FirewallAction{
+		Request:   firewall.ActionRequest{ID: id, Operation: "block", Target: "198.51.100.1", Actor: "cli", Source: "manual"},
+		Before:    state,
+		After:     next,
+		Revision:  revision,
+		CreatedAt: at,
+	}
+	if _, _, admitErr := db.AdmitFirewallAction(plan); admitErr != nil {
+		t.Fatalf("admit %s: %v", id, admitErr)
+	}
+	for _, phase := range []string{"executing", "applied", "verified"} {
+		if _, transitionErr := db.TransitionFirewallAction(id, phase, "", at); transitionErr != nil {
+			t.Fatalf("transition %s: %v", id, transitionErr)
+		}
+	}
+	pending, err := db.FirewallAuditPending()
+	if err != nil {
+		t.Fatalf("audit pending: %v", err)
+	}
+	for _, a := range pending {
+		if err := db.AcknowledgeFirewallAudit(a.Request.ID, a.AuditVersion); err != nil {
+			t.Fatalf("acknowledge %s: %v", a.Request.ID, err)
+		}
+	}
+}
+
+func TestRunRetentionOnce_SweepsFirewallActionsWithHistoryDays(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fresh := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	firewallOutcomeFixture(t, db, "action-1", old)
+	firewallOutcomeFixture(t, db, "action-2", fresh)
+
+	result := RunRetentionOnce(db, retentionCfg(true, 90, 30, 180), now)
+	if len(result.Errors) != 0 {
+		t.Fatalf("Errors = %v", result.Errors)
+	}
+	if result.FirewallActions != 1 {
+		t.Fatalf("FirewallActions = %d, want 1", result.FirewallActions)
+	}
+	if _, err := db.ReadFirewallAction("action-1"); !errors.Is(err, firewall.ErrActionMissing) {
+		t.Fatalf("swept action read = %v, want it gone", err)
+	}
+	if _, err := db.ReadFirewallAction("action-2"); err != nil {
+		t.Fatalf("recent action must stay: %v", err)
+	}
+	if result.Deleted() < 1 {
+		t.Fatalf("Deleted = %d, want the firewall sweep counted", result.Deleted())
+	}
+}
+
+func TestRunRetentionOnce_DisabledKeepsFirewallActions(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	firewallOutcomeFixture(t, db, "action-1", old)
+	result := RunRetentionOnce(db, retentionCfg(false, 90, 30, 180), time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if result.FirewallActions != 0 {
+		t.Fatalf("FirewallActions = %d, want 0 when retention is disabled", result.FirewallActions)
+	}
+	if _, err := db.ReadFirewallAction("action-1"); err != nil {
+		t.Fatalf("action must stay when sweeps are off: %v", err)
 	}
 }

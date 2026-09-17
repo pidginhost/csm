@@ -12,6 +12,9 @@ import (
 func resetModSecCounters() {
 	modsecBlockCount = sync.Map{}
 	modsecDedup = sync.Map{}
+	modsecGapMu.Lock()
+	modsecGapReported = map[int]time.Time{}
+	modsecGapMu.Unlock()
 }
 
 func TestRecordModSecEvent_LowConfOnly_NoBanButBurst(t *testing.T) {
@@ -309,4 +312,67 @@ func TestEvictModSecState_ResetsLowBackstopLatchBelowBackstop(t *testing.T) {
 	if len(ctr.events) != 4 {
 		t.Fatalf("recent events = %d, want 4", len(ctr.events))
 	}
+}
+
+// A classifier gap is a property of the rule table, not of the source. Keyed
+// per IP and cleared with the IP's window, one unknown rule hit by a botnet
+// raised a warning for every source address.
+func TestRecordModSecEvent_ClassifierGapOncePerRuleAcrossIPs(t *testing.T) {
+	resetModSecCounters()
+	defer resetModSecCounters()
+	now := time.Now()
+	win := 10 * time.Minute
+
+	if out := recordModSecEvent("203.0.113.30", now, 211600, modsecConfUnknown, true, 3, 30, win); !out.classifierGap {
+		t.Fatal("first hit of an unknown rule must raise a classifier gap")
+	}
+	if out := recordModSecEvent("203.0.113.31", now.Add(time.Second), 211600, modsecConfUnknown, true, 3, 30, win); out.classifierGap {
+		t.Fatal("same unknown rule from a second IP must not raise another classifier gap")
+	}
+	if out := recordModSecEvent("203.0.113.31", now.Add(2*time.Second), 211601, modsecConfUnknown, true, 3, 30, win); !out.classifierGap {
+		t.Fatal("a different unknown rule must raise its own classifier gap")
+	}
+}
+
+func TestRecordModSecEvent_ClassifierGapSurvivesWindowDrain(t *testing.T) {
+	resetModSecCounters()
+	defer resetModSecCounters()
+	now := time.Now()
+	win := 10 * time.Minute
+	ip := "203.0.113.32"
+
+	recordModSecEvent(ip, now, 211602, modsecConfUnknown, true, 3, 30, win)
+	if out := recordModSecEvent(ip, now.Add(2*win), 211602, modsecConfUnknown, true, 3, 30, win); out.classifierGap {
+		t.Fatal("a drained escalation window must not re-raise the classifier gap for the same rule")
+	}
+	later := now.Add(modsecClassifierGapInterval + time.Second)
+	if out := recordModSecEvent(ip, later, 211602, modsecConfUnknown, true, 3, 30, win); !out.classifierGap {
+		t.Fatal("an unresolved gap must be reported again once the reminder interval has passed")
+	}
+}
+
+func TestEvictModSecStatePrunesExpiredClassifierGaps(t *testing.T) {
+	resetModSecCounters()
+	defer resetModSecCounters()
+	now := time.Now()
+	win := 10 * time.Minute
+
+	recordModSecEvent("203.0.113.33", now, 211603, modsecConfUnknown, true, 3, 30, win)
+	recordModSecEvent("203.0.113.33", now, 211604, modsecConfUnknown, true, 3, 30, win)
+	evictModSecState(now.Add(modsecClassifierGapInterval+time.Second), 3, win)
+	if n := modsecClassifierGapCount(); n != 0 {
+		t.Fatalf("expired classifier-gap entries kept after eviction: %d", n)
+	}
+
+	recordModSecEvent("203.0.113.33", now, 211605, modsecConfUnknown, true, 3, 30, win)
+	evictModSecState(now.Add(time.Minute), 3, win)
+	if n := modsecClassifierGapCount(); n != 1 {
+		t.Fatalf("live classifier-gap entry evicted early: count %d, want 1", n)
+	}
+}
+
+func modsecClassifierGapCount() int {
+	modsecGapMu.Lock()
+	defer modsecGapMu.Unlock()
+	return len(modsecGapReported)
 }

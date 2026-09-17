@@ -180,7 +180,7 @@ func (c *ControlListener) handleFirewallAllowPort(argsRaw json.RawMessage) (any,
 		return nil, fmt.Errorf("allow-port %s %s:%d: %w", args.IP, proto, args.Port, err)
 	}
 	return control.FirewallAckResult{
-		Message: fmt.Sprintf("Allowed %s on %s:%d - %s", args.IP, proto, args.Port, reason),
+		Message: fmt.Sprintf("Saved allow for %s on %s:%d - %s; takes effect after firewall reload", args.IP, proto, args.Port, reason),
 	}, nil
 }
 
@@ -211,7 +211,7 @@ func (c *ControlListener) handleFirewallRemovePort(argsRaw json.RawMessage) (any
 		return nil, fmt.Errorf("remove-port %s %s:%d: %w", args.IP, proto, args.Port, err)
 	}
 	return control.FirewallAckResult{
-		Message: fmt.Sprintf("Removed port-allow for %s on %s:%d", args.IP, proto, args.Port),
+		Message: fmt.Sprintf("Saved port-allow removal for %s on %s:%d; takes effect after firewall reload", args.IP, proto, args.Port),
 	}, nil
 }
 

@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -18,11 +19,12 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	bpfprog "github.com/pidginhost/csm/internal/daemon/sensitive_file_bpfprog"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type sensitiveFileBPF struct {
 	objs    *bpfprog.SensitiveFileObjects
-	link    link.Link
+	link    io.Closer
 	reader  *bpf.Reader[SensitiveFileEvent]
 	alertCh chan<- alert.Finding
 	cfg     *config.Config
@@ -58,14 +60,14 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 
 	l, err := link.AttachLSM(link.LSMOptions{Program: objs.CsmFilePerm})
 	if err != nil {
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("attach lsm/file_permission: %w", err)
 	}
 
-	reader, err := bpf.NewReader[SensitiveFileEvent](objs.Events, decodeSensitiveFileEvent)
+	reader, err := bpf.NewReader[SensitiveFileEvent](objs.Events, objs.QueueStats, decodeSensitiveFileEvent)
 	if err != nil {
 		_ = l.Close()
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
 
@@ -79,12 +81,20 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 		digests:      map[string]checks.SensitiveFileState{},
 		liveReported: map[string]checks.SensitiveFileState{},
 	}
-	if err := s.refreshWatchset(false); err != nil {
-		_ = s.link.Close()
-		s.objs.Close()
-		return nil, fmt.Errorf("populate watchset: %w", err)
+	if err := s.initializeWatchset(); err != nil {
+		return nil, err
 	}
 	return s, nil
+}
+
+func (s *sensitiveFileBPF) initializeWatchset() error {
+	if err := s.refreshWatchset(false); err != nil {
+		_ = s.reader.Close()
+		_ = s.link.Close()
+		_ = s.objs.Close()
+		return fmt.Errorf("populate watchset: %w", err)
+	}
+	return nil
 }
 
 func (s *sensitiveFileBPF) refreshWatchset(reportNew bool) error {
@@ -159,14 +169,18 @@ func (s *sensitiveFileBPF) refreshWatchset(reportNew bool) error {
 func (s *sensitiveFileBPF) Mode() string       { return "bpf" }
 func (s *sensitiveFileBPF) EventCount() uint64 { return s.count.Load() }
 
+func (s *sensitiveFileBPF) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return s.reader.QueueStatuses(now)
+}
+
 func (s *sensitiveFileBPF) Run(ctx context.Context) {
+	stopReader := s.reader.Start(ctx)
 	defer func() {
-		_ = s.reader.Close()
 		_ = s.link.Close()
-		s.objs.Close()
+		stopReader()
+		_ = s.objs.Close()
 	}()
 
-	go s.reader.Run(ctx)
 	errorsCh := s.reader.Errors()
 	eventsCh := s.reader.Events()
 
@@ -187,45 +201,47 @@ func (s *sensitiveFileBPF) Run(ctx context.Context) {
 			if err := s.refreshWatchset(true); err != nil {
 				csmlog.Warn("sensitive_file bpf: watchset refresh failed", "err", err)
 			}
-		case ev, ok := <-eventsCh:
+		case work, ok := <-eventsCh:
 			if !ok {
 				return
 			}
-			s.count.Add(1)
-			eventID := fileid{Dev: ev.Dev, Ino: ev.Ino}
-			s.mu.RLock()
-			path := s.paths[eventID]
-			s.mu.RUnlock()
-			if path == "" {
-				// Inode was just unwatched; skip rather than emit a path-less finding.
-				continue
-			}
-			matchesBefore := sensitivePathMatchesFileID(path, eventID)
-			state, contents := checks.NextSensitiveDigests(nil, []string{path})
-			matchesAfter := sensitivePathMatchesFileID(path, eventID)
-			content, contentKnown := contents[path]
-			stableEventPath := matchesBefore && matchesAfter
-			if !stableEventPath {
-				// The event belongs to an inode that is no longer at this path.
-				// Evaluate without content-based suppression, and do not let
-				// replacement bytes suppress the path-based refresh finding.
-				content = nil
-				contentKnown = false
-			}
-			finding, emit := checks.EvaluateSensitiveFileWriteSnapshot(path, ev.UID, ev.PID, ev.Comm, content, contentKnown)
-			if !emit {
-				continue
-			}
-			if !s.emitFinding(finding) {
-				continue
-			}
-			reportedState := state[path]
-			if !stableEventPath || reportedState.ContentDigest == "" || reportedState.PathIdentity == "" {
-				continue
-			}
-			s.mu.Lock()
-			s.liveReported[path] = reportedState
-			s.mu.Unlock()
+			work.Process(func(ev SensitiveFileEvent) {
+				s.count.Add(1)
+				eventID := fileid{Dev: ev.Dev, Ino: ev.Ino}
+				s.mu.RLock()
+				path := s.paths[eventID]
+				s.mu.RUnlock()
+				if path == "" {
+					// Inode was just unwatched; skip rather than emit a path-less finding.
+					return
+				}
+				matchesBefore := sensitivePathMatchesFileID(path, eventID)
+				state, contents := checks.NextSensitiveDigests(nil, []string{path})
+				matchesAfter := sensitivePathMatchesFileID(path, eventID)
+				content, contentKnown := contents[path]
+				stableEventPath := matchesBefore && matchesAfter
+				if !stableEventPath {
+					// The event belongs to an inode that is no longer at this path.
+					// Evaluate without content-based suppression, and do not let
+					// replacement bytes suppress the path-based refresh finding.
+					content = nil
+					contentKnown = false
+				}
+				finding, emit := checks.EvaluateSensitiveFileWriteSnapshot(path, ev.UID, ev.PID, ev.Comm, content, contentKnown)
+				if !emit {
+					return
+				}
+				if !s.emitFinding(finding) {
+					return
+				}
+				reportedState := state[path]
+				if !stableEventPath || reportedState.ContentDigest == "" || reportedState.PathIdentity == "" {
+					return
+				}
+				s.mu.Lock()
+				s.liveReported[path] = reportedState
+				s.mu.Unlock()
+			})
 		}
 	}
 }
@@ -239,10 +255,9 @@ func sensitivePathMatchesFileID(path string, want fileid) bool {
 }
 
 func (s *sensitiveFileBPF) emitFinding(f alert.Finding) bool {
-	select {
-	case s.alertCh <- f:
+	if alert.TryEnqueue(s.alertCh, f) {
 		return true
-	default:
+	} else {
 		csmlog.Warn("sensitive_file bpf: alert channel full, dropping finding")
 		return false
 	}

@@ -20,7 +20,7 @@ func TestQueryAbuseIPDB429(t *testing.T) {
 		w.WriteHeader(429)
 	}))
 
-	_, _, err := queryAbuseIPDB(client, "1.2.3.4", "key")
+	_, _, err := queryAbuseIPDB(client, "198.51.100.1", "key", nil)
 	if err == nil {
 		t.Error("429 should return error")
 	}

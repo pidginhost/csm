@@ -254,13 +254,17 @@ func TestCheckYARADeepRecordsPHPFileTypeChangeAsGap(t *testing.T) {
 		return phptaint.Report{}
 	})
 
-	findings := CheckYARADeep(context.Background(), &config.Config{
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{
 		AccountRoots:   []string{root},
 		DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
 	}, nil)
 	incomplete := jsFindingsByCheck(findings, "php_taint_scan_incomplete")
-	if len(incomplete) != 1 || !strings.Contains(incomplete[0].Details, "changed_during_read=1") {
-		t.Fatalf("findings = %+v, want one PHP changed_during_read gap", findings)
+	if len(incomplete) != 1 || !strings.Contains(incomplete[0].Details, "unreadable-range=1") {
+		t.Fatalf("findings = %+v, want one PHP unknown-range gap", findings)
+	}
+	if !collector.contains(logicalOwnerPHPTaintDeep) {
+		t.Fatal("a file raced into a directory must preserve the PHP owner's unknown subtree")
 	}
 }
 
@@ -380,6 +384,43 @@ func TestCheckYARADeepInactivePHPConsumerPreservesStateSilently(t *testing.T) {
 	StoreLatestScanFindings(st, purge, findings)
 	if got := jsFindingsByCheck(st.LatestFindings(), "php_remote_taint"); len(got) != 1 {
 		t.Fatalf("inactive PHP consumer purged prior state: findings=%+v purge=%v", st.LatestFindings(), purge)
+	}
+}
+
+func TestCheckYARADeepPHPGapRejectsConcurrentDismissal(t *testing.T) {
+	useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	useNilYARABackend(t)
+	withPHPTaintAnalyzer(t, func(context.Context, []byte) phptaint.Report {
+		return phptaint.Report{Status: phptaint.StatusWorkerFailure, Reason: "forced gap"}
+	})
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "broken.php", "<?php echo $input;")
+	prior := alert.Finding{
+		Check: "php_remote_taint", Severity: alert.High,
+		Message: "prior PHP finding", FilePath: path, Timestamp: time.Unix(100, 0),
+	}
+	st.SetLatestFindings([]alert.Finding{prior})
+
+	ctx, gaps := WithCoverageGaps(context.Background())
+	findings, purge := runParallelWithContext(ctx, &config.Config{
+		AccountRoots: []string{root}, DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
+	}, st, []namedCheck{{name: "yara_deep", fn: CheckYARADeep}}, "deep", true)
+	carried := jsFindingsByCheck(findings, "php_remote_taint")
+	if len(carried) != 1 || !carried[0].ScanCarryForward || !gaps.Paths()["php_remote_taint"][path] {
+		t.Fatalf("PHP gap did not publish matching carry and preservation state: findings=%+v gaps=%+v", carried, gaps.Paths())
+	}
+	st.DismissLatestFinding(prior.Key())
+	StoreLatestScanFindingsWithGaps(st, purge, findings, gaps.Paths())
+
+	if got := jsFindingsByCheck(st.LatestFindings(), "php_remote_taint"); len(got) != 0 {
+		t.Fatalf("PHP carry-forward resurrected a concurrently dismissed finding: %+v", got)
 	}
 }
 

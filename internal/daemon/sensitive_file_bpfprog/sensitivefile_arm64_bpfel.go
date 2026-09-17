@@ -13,6 +13,12 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type SensitiveFileCsmQueueStats struct {
+	_         structs.HostLayout
+	Lost      uint64
+	Submitted uint64
+}
+
 type SensitiveFileFileid struct {
 	_   structs.HostLayout
 	Dev uint64
@@ -29,6 +35,17 @@ type SensitiveFileSensitiveEvent struct {
 	Ino  uint64
 	Comm [16]uint8
 }
+
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	SensitiveFileMapEvents       = "events"
+	SensitiveFileMapQueueStats   = "queue_stats"
+	SensitiveFileMapWatched      = "watched"
+	SensitiveFileProgCsmFilePerm = "csm_file_perm"
+	SensitiveFileVarUnused       = "unused"
+)
 
 // LoadSensitiveFile returns the embedded CollectionSpec for SensitiveFile.
 func LoadSensitiveFile() (*ebpf.CollectionSpec, error) {
@@ -50,7 +67,7 @@ func LoadSensitiveFile() (*ebpf.CollectionSpec, error) {
 //	*SensitiveFileMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func LoadSensitiveFileObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func LoadSensitiveFileObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := LoadSensitiveFile()
 	if err != nil {
 		return err
@@ -79,8 +96,9 @@ type SensitiveFileProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type SensitiveFileMapSpecs struct {
-	Events  *ebpf.MapSpec `ebpf:"events"`
-	Watched *ebpf.MapSpec `ebpf:"watched"`
+	Events     *ebpf.MapSpec `ebpf:"events"`
+	QueueStats *ebpf.MapSpec `ebpf:"queue_stats"`
+	Watched    *ebpf.MapSpec `ebpf:"watched"`
 }
 
 // SensitiveFileVariableSpecs contains global variables before they are loaded into the kernel.
@@ -110,13 +128,15 @@ func (o *SensitiveFileObjects) Close() error {
 //
 // It can be passed to LoadSensitiveFileObjects or ebpf.CollectionSpec.LoadAndAssign.
 type SensitiveFileMaps struct {
-	Events  *ebpf.Map `ebpf:"events"`
-	Watched *ebpf.Map `ebpf:"watched"`
+	Events     *ebpf.Map `ebpf:"events"`
+	QueueStats *ebpf.Map `ebpf:"queue_stats"`
+	Watched    *ebpf.Map `ebpf:"watched"`
 }
 
 func (m *SensitiveFileMaps) Close() error {
 	return _SensitiveFileClose(
 		m.Events,
+		m.QueueStats,
 		m.Watched,
 	)
 }

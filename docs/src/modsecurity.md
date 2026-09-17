@@ -42,6 +42,47 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **Disabled-scope detection** - reports domains and accounts with the engine switched off, covering both the userdata flag and the per-account and per-domain config includes used by Apache and LiteSpeed in the std and ssl trees
 - **WAF event log parsing** - correlates events by IP, URI, and rule ID
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
+- **Rule activation** - ModSecurity reads rules only when the web server starts or reloads. When CSM's installed rule sections change, for example after an upgrade or `csm install`, the daemon runs `modsec.reload_command` at startup or during its WAF check. Each rule change reloads once. Standalone `csm check` runs never reload. A failed reload raises a `waf_status` warning and is retried. Without a command, CSM only warns at startup and the rules wait for the next web server restart.
+
+The reload command runs inside CSM's systemd sandbox. Use a service-manager
+command such as `systemctl reload lsws` for LiteSpeed, so the web server's service
+performs the reload. Direct reload scripts inherit CSM's filesystem restrictions
+and may fail. A LiteSpeed reload restarts workers and can briefly raise load.
+
+The LiteSpeed Cache role-simulation filter covers privileged routes and writes,
+including WordPress REST method overrides, when requests carry simulation cookies
+with a weak hash. Ordinary public GET/HEAD crawling remains allowed. This is a
+request-scoped mitigation: public reads still run under the simulated identity,
+so upgrading the vulnerable plugin remains necessary.
+
+The usual hash discriminator is 1-16 alphanumeric characters versus the fixed
+plugin's 32-character hashes. Numeric equivalents are also filtered because the
+vulnerable plugin compares hashes loosely; padding or exponent notation must not
+turn a weak hash into an exempt one. These checks also keep public crawler reads
+allowed.
+
+The WordPress user enumeration filter blocks anonymous requests for the REST
+users route, whether the route follows `wp-json/` in the path or starts at
+`wp/v2/users` in the `rest_route` query parameter, in any letter case. Other
+page paths and REST namespaces are left alone. Query values are matched as
+already decoded by the query parser. Requests that carry an `Authorization`
+header or a WordPress logged-in cookie pass, so admin screens, the editor and
+Application Password clients keep working. Both are presence checks: the filter
+turns away anonymous scanners, and WordPress still decides who is signed in.
+
+The filter runs in phase 1 and does not inspect request bodies. A route supplied
+only in a POST body, including with a REST method override, is outside its scope.
+Sites that need to restrict the public users endpoint must enforce that policy
+in WordPress. Disabling rule `900112` disables this filter for both route forms;
+its helper rules only set transaction-local flags and do not block requests.
+
+For Apache ModSecurity v2 regression validation, run
+`python3 scripts/test-litespeed-modsec.py` in a disposable Debian Linux environment
+with `apache2`, `libapache2-mod-security2`, `libapache2-mod-php`, and `python3`
+installed. The test loads the complete shipped configuration and exercises HTTP
+requests through the actual engine and PHP parser. It does not establish
+LiteSpeed runtime compatibility; verify changed rules on the supported LiteSpeed
+engine before deployment.
 
 ## Web UI Pages
 

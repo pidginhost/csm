@@ -2,6 +2,22 @@
 
 CSM is configured via `/etc/csm/csm.yaml`, with `--config <path>` to override. Legacy installs that only have `/opt/csm/csm.yaml` keep working; packaged upgrades migrate that file into `/etc/csm/csm.yaml` and leave the old path as a compatibility link. Optional drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged on top of the main file at startup; see [conf.d drop-ins](#confd-drop-ins) below.
 
+Environment-backed tokens and signing secrets use the environment inherited
+at daemon startup. After changing an environment file, restart the daemon;
+configuration reload alone does not import those changes. See
+[credential rotation](credential-rotation.md) for the systemd procedure.
+
+## Operating mode
+
+`mode` declares what CSM may do to the host. `enforce` (default) leaves every
+subsystem under its own switch; `observe` runs detection and alerting without
+automatic host remediation or integration updates. Full reference, including
+required switch settings: [Observe mode](observe-mode.md).
+
+```yaml
+mode: enforce
+```
+
 ## Platform & Web Server
 
 CSM auto-detects the host OS (Ubuntu, Debian, AlmaLinux, Rocky, RHEL, CloudLinux), control panel (cPanel, Plesk, DirectAdmin, or none), and web server (Apache, Nginx, LiteSpeed, or none) at daemon startup. The detected platform is logged as:
@@ -50,7 +66,7 @@ account_roots:
   - "/home/*/public_html"          # add if you also have cPanel-style accounts
 ```
 
-Each entry is a glob pattern expanded at scan time. Non-existent matches are silently dropped. If `account_roots` is empty and CSM is not on a cPanel host, the account-scan checks return no findings (they run but find nothing, which is the correct behavior for a plain-Linux host with no configured web roots).
+Each entry is an absolute, normalized glob pattern expanded at scan time. Configured directories also define remediation and restore scope. Custom locations need service write access; see [Custom account roots](custom-account-roots.md). Non-existent matches are silently dropped. If `account_roots` is empty and CSM is not on a cPanel host, the account-scan checks return no findings (they run but find nothing, which is the correct behavior for a plain-Linux host with no configured web roots).
 
 The setting covers `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, real-time `php.ini` monitoring, and WP-Cron remediation roots. CMS integrity, phishing, `.htaccess`, and file-index scans use the platform's account layout: every directory under `/home` on cPanel, DirectAdmin and plain hosts, under `/var/www/vhosts` on Plesk.
 
@@ -97,7 +113,7 @@ alerts:
   heartbeat:
     enabled: false
     url: ""                             # healthchecks.io, cronitor, dead man's switch
-  max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses. Code default 30; the shipped csm.yaml template sets 10
+  max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses and is not counted. Code default 30; the shipped csm.yaml template sets 10
   block_digest:
     enabled: false                      # send per-country rollups for auto-blocked IPs
     countries: []                       # empty = trusted countries, then all countries
@@ -123,6 +139,10 @@ integrity:
   config_hash: ""                       # populated by baseline/rehash/reload
   confd_hash: ""                        # populated by baseline/rehash/reload
   immutable: true                       # apply chattr +i to the installed binary during install/rehash
+
+# --- conf.d drop-in policy ---
+confd:
+  integrity_exempt: []                  # fragments an integration rewrites; left out of confd_hash (bare filenames)
 
 # --- Thresholds ---
 thresholds:
@@ -314,13 +334,16 @@ suppressions:
   suppress_webmail_alerts: true         # don't alert on webmail logins
   suppress_cpanel_login_alerts: false   # don't alert on cPanel direct logins
   suppress_blocked_alerts: true         # don't alert on IPs that were auto-blocked
-  trusted_countries: ["RO"]             # ISO 3166-1 alpha-2 - suppress cPanel login alerts from these
+  trusted_countries: ["RO"]             # requires a loaded GeoLite2-City database; download credentials alone do not supply country data
 
 # --- Auto-Response ---
 auto_response:
   enabled: false
   kill_processes: false                 # kill malicious processes
   quarantine_files: false               # move malware to quarantine
+  max_file_actions_per_hour: 50         # shared quarantine and file-cleaning attempt budget
+  max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
+  max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: false                      # block attacker IPs via firewall
   block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default
   http_asn_crawl_tempban: "24h"         # Critical ASN-crawl subnet ban duration
@@ -511,7 +534,7 @@ signatures:
     tier: "core"                        # "core", "extended", "full" (default: "core")
     update_interval: "168h"             # how often to check for updates (default: weekly)
     download_url: ""                    # signed ZIP URL/template; supports {tier} and {version}
-  disabled_rules: []                    # YARA rule names to exclude from Forge downloads
+  disabled_rules: []                    # rule names to switch off, in Forge and in the shipped rules
   # yara_worker_enabled: true           # tri-state: omit for the default (on), `false` to explicitly disable
 
 # signatures.signing_key is mandatory whenever either signatures.update_url
@@ -530,7 +553,9 @@ signatures:
 webui:
   enabled: true
   listen: "0.0.0.0:9443"               # address:port for HTTPS server
-  auth_token: ""                        # Bearer/cookie auth token (auto-generated on install)
+  auth_token: ""                        # API/login credential (auto-generated on install)
+  session_lifetime: "24h"               # browser absolute expiry; restart required
+  session_idle_timeout: "30m"           # browser idle expiry; restart required
   tokens: []                            # optional scoped tokens: name/token/scope (admin or read)
   metrics_token: ""                     # optional Bearer token for /metrics only
   tls_cert: ""                          # path to TLS certificate PEM file
@@ -545,11 +570,33 @@ email_av:
   scan_timeout: "30s"                   # per-attachment scan timeout
   max_attachment_size: 26214400         # max single attachment size in bytes (25MB)
   max_archive_depth: 1                  # max nested archive extraction depth
-  max_archive_files: 50                 # max files extracted from a single archive
+  max_archive_files: 50                 # max files extracted per archive; also caps encrypted member names reported per message
   max_extraction_size: 104857600        # max total extraction size in bytes (100MB)
   quarantine_infected: true             # quarantine emails with infected attachments
   scan_concurrency: 4                   # parallel scan workers
   fail_mode: "open"                     # behavior when a scan cannot complete: "open" (default) delivers; "tempfail" defers so Exim retries
+  # Permission events have a five-second scan hold budget. When it expires,
+  # the open is allowed ("open") or denied for retry ("tempfail"); an admitted
+  # scan continues. A full scan queue applies the same policy immediately.
+  # Repeated deadline or capacity exhaustion raises email_av_hold_bypass and
+  # stops queueing new scans for five minutes. During this cooldown new opens
+  # are allowed unscanned ("open") or deferred ("tempfail"). Scanning resumes
+  # automatically afterwards; bypassed messages are not scanned later.
+  # Late malware results can quarantine only the original, unlocked message.
+  # Messages in active delivery, replaced spool files, and messages with a
+  # pending delivery journal are left untouched with email_av_quarantine_error.
+  # email_av_late_verdict means an allowed open later received a scan decision
+  # to stop delivery; it does not mean a previously deferred message escaped.
+  # Password-protected archive attachments are outside fail_mode. Their members
+  # cannot be read without the password, so no retry ever makes them scannable
+  # and "tempfail" would defer the message until it bounced. CSM delivers them
+  # and reports email_av_encrypted_archive naming the archive and the member,
+  # at most once an hour. A full alert queue does not consume this allowance.
+  # Encrypted member names are capped at max_archive_files per message; the
+  # warning counts any additional encrypted members without deferring delivery.
+  # Both encryption schemes are covered:
+  # legacy ZipCrypto and WinZip AES. Blocking such mail outright is an Exim
+  # policy decision and is not something CSM does for you.
 
 # --- Email Protection ---
 email_protection:
@@ -624,9 +671,32 @@ firewall:
   # Restricted ports (infra IPs only)
   restricted_tcp: [2086,2087,2325,9443] # WHM and CSM Web UI ports
 
+  # Outbound ports a service on this host needs. Checked, never added to
+  # the policy: validation warns when an effective family policy omits one.
+  # Integrations declare theirs in their own conf.d fragment.
+  required_tcp_out: []
+
   # Passive FTP range
   passive_ftp_start: 49152
   passive_ftp_end: 65534
+
+  # Destination-scoped outbound TCP. tcp_out holds single ports only, so a
+  # port range can only be expressed here -- needed when this host is an FTP
+  # *client* and must open passive data connections to a known source.
+  # dst takes an IP or CIDR. 0.0.0.0/0 means any IPv4 destination; ::/0 means
+  # any IPv6 destination. Each rule applies to its own address family, and
+  # validation warns: a wide range to anywhere is the outbound path the
+  # output chain exists to close. When smtp_block is on, these rules follow
+  # its guard and ranges that overlap smtp_ports are rejected.
+  # An IPv6 destination emits no rule unless firewall.ipv6 is true.
+  # IPv4-mapped prefixes under ::ffff:0:0/96 are treated as IPv4 prefixes.
+  # Lockout warnings only credit valid rules in the connection's family;
+  # scoped exceptions still warn because hostname resolution is not checked.
+  tcp_out_allow: []
+  # tcp_out_allow:
+  #   - dst: 203.0.113.10/32
+  #     port_start: 49152
+  #     port_end: 65534
 
   # Infra IPs/CIDRs/hostnames for firewall rules
   infra_ips: []
@@ -703,7 +773,7 @@ modsec_error_log: ""                    # path to Apache/LiteSpeed error log for
 modsec:
   rules_file: ""                        # path to modsec2.user.conf
   overrides_file: ""                    # path to csm-overrides.conf
-  reload_command: ""                    # command to reload web server (e.g. "/usr/sbin/apachectl graceful")
+  reload_command: ""                    # command to reload web server (e.g. "/usr/sbin/apachectl graceful"); also activates CSM rule updates
 
 # --- Performance ---
 performance:
@@ -778,7 +848,9 @@ disabled_checks: []                     # e.g. [waf_status, waf_rules, waf_detec
 retention:
   enabled: false                        # opt-in; when true, a daily sweep prunes old entries
   findings_days: 90                     # keep active findings this long (0 disables the findings sweep)
-  history_days: 30                      # keep findings-history entries this long
+  history_days: 30                      # keep findings-history entries and proven firewall
+                                        # outcomes this long; it also sets how far back a
+                                        # durable firewall action can be undone
   reputation_days: 180                  # keep IP reputation/attack entries this long
   sweep_interval: "24h"                 # how often the retention goroutine runs
   compact_min_size_mb: 128              # startup compaction floor; 0 disables auto-compaction
@@ -832,7 +904,7 @@ depending on which fields you touch.
 
 For fields tagged as hot-reload-safe (`alerts`, `thresholds`,
 `detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
-`reputation`, `email_protection`, `disabled_checks`), the daemon can
+`reputation`, `email_protection`, `disabled_checks`, `confd`), the daemon can
 accept the change without a restart:
 
 ```bash
@@ -961,11 +1033,14 @@ Config-management workflows (Ansible, Puppet, Chef) should:
 
 Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **deep-merged** on top of it. Override with `--config-dir <path>` or `CSM_CONFIG_DIR`; the flag wins when both are set.
 
+The YARA-X worker inherits the daemon's selected directory on every start. If it is absent, the worker loads no fragments from it; it does not fall back to another directory. Explicit operator overrides still require an existing directory.
+
 - **Order:** lexicographic by filename. Scalar keys in `20-overrides.yaml` override the same keys in `10-base.yaml`. Use a numeric prefix.
 - **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order. All-scalar lists drop duplicate entries while keeping the first occurrence; structured lists such as `webui.tokens` keep every entry.
 - **Trust:** override directories must be absolute, must exist, and must be owned by root or the running process. The directory and every loaded fragment must not be group- or world-writable. Safe symlinked fragments are allowed, so packaged profiles can still be linked into `/etc/csm/conf.d/`.
 - **Integrity ownership:** drop-ins cannot set the `integrity` block. Integrity metadata is stored only in the main config.
-- **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-sign after validating the merged config. Rehash re-signs the resolved main file only; when a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift. Web settings saves refuse to bless a drop-in change that has not already been re-signed.
+- **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-sign after validating the merged config. Rehash re-signs the resolved main file only; when a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift. Web settings saves refuse to bless a drop-in change that has not already been re-signed. A mismatch is refused at the next daemon start with an error that names `csm rehash`. Until then the running daemon keeps its old hashes, but its periodic integrity check raises a tamper finding and skips the scheduled checks on every cycle; `csm doctor` reports the same mismatch, so it can be fixed before a restart turns it into an outage.
+- **Integration-owned fragments:** a fragment its owning package rewrites on its own schedule (phpanel-server-agent rewrites `10-phpanel-runtime.yaml` on every bootstrap) cannot be pinned by a static hash without making every one of those rewrites a failed restart. List such fragments by bare filename under `confd.integrity_exempt` in the main config, then run `csm rehash` once. Their content is left out of `confd_hash`; every other fragment stays covered. The list lives in the main config, outside the `integrity` block, so it is itself covered by `config_hash`, and a fragment cannot set `confd` to exempt itself.
 - **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
 
 ```bash

@@ -110,10 +110,10 @@ func (g Gate) Consider(f alert.Finding) (Report, bool) {
 	}, true
 }
 
-// Reporter accepts minimized reports for asynchronous delivery. Implementations
-// must not block the caller (the scan/alert path).
+// Reporter accepts minimized reports for later delivery, returning an error
+// when persistence is incomplete. Call it outside the scan/alert hot path.
 type Reporter interface {
-	Enqueue(Report)
+	Enqueue(Report) error
 }
 
 // Noop is the default Reporter; it discards reports. Used when reporting is
@@ -121,4 +121,4 @@ type Reporter interface {
 type Noop struct{}
 
 // Enqueue discards r.
-func (Noop) Enqueue(Report) {}
+func (Noop) Enqueue(Report) error { return nil }

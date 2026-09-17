@@ -3,6 +3,7 @@ package alert
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,5 +208,88 @@ func TestJSONLSinkCreatesParentDir(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	if _, statErr := os.Stat(parent); statErr != nil {
 		t.Errorf("parent dir not created: %v", statErr)
+	}
+}
+
+// The audit file is the SIEM shipper's source. Refusing appends until the next
+// logrotate run would let a detection flood, including an attacker-driven one,
+// blind the audit trail for up to a day. Size is logrotate's job, not a reason
+// to drop records.
+func TestJSONLSinkKeepsRecordsPastRotationSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	s := mustNewJSONLSink(t, path)
+	// Sparse allocation stands in for a file already past the packaged
+	// rotation size without writing a large fixture.
+	const rotationSize = 100 * 1024 * 1024
+	if err := os.Truncate(path, rotationSize); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		if err := s.Emit(sampleEvent(i)); err != nil {
+			t.Fatalf("audit record %d dropped past rotation size: %v", i, err)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() <= rotationSize {
+		t.Fatalf("records were not appended: size %d", info.Size())
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Seek(rotationSize, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(f)
+	for i := range 3 {
+		var event AuditEvent
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatalf("record %d is missing or invalid: %v", i, err)
+		}
+		if event.FindingID != sampleEvent(i).FindingID {
+			t.Fatalf("record %d has unexpected identity: %s", i, event.FindingID)
+		}
+	}
+	if err := decoder.Decode(new(AuditEvent)); err != io.EOF {
+		t.Fatalf("unexpected trailing record or bytes: %v", err)
+	}
+}
+
+func TestJSONLSinkInstancesAppendAfterCopytruncate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	first, second := mustNewJSONLSink(t, path), mustNewJSONLSink(t, path)
+	for _, sink := range []*JSONLSink{first, second} {
+		if err := sink.Emit(sampleEvent(0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i, sink := range []*JSONLSink{first, second} {
+		wg.Go(func() {
+			for j := range 50 {
+				event := sampleEvent(i*50 + j)
+				event.Message = strings.Repeat("evidence ", 1024)
+				if err := sink.Emit(event); err != nil {
+					t.Errorf("append after rotation: %v", err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	lines := readJSONLines(t, path)
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		seen[line["finding_id"].(string)] = true
+	}
+	if len(lines) != 100 || len(seen) != 100 {
+		t.Fatalf("concurrent appends after rotation: lines=%d unique=%d, want 100 each", len(lines), len(seen))
 	}
 }

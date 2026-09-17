@@ -130,7 +130,9 @@ func TestEngineSaveBlockedEntryExplicitSourcePreserved(t *testing.T) {
 func TestEngineRemoveBlockedStateEmptyFile(t *testing.T) {
 	e := &Engine{statePath: t.TempDir()}
 	// no-op on empty state
-	e.removeBlockedState("203.0.113.5")
+	if err := e.removeBlockedState("203.0.113.5"); err != nil {
+		t.Fatal(err)
+	}
 	st := e.loadStateFile()
 	if len(st.Blocked) != 0 {
 		t.Errorf("Blocked should remain empty, got %d", len(st.Blocked))
@@ -141,7 +143,9 @@ func TestEngineRemoveBlockedStateEmptyFile(t *testing.T) {
 
 func TestEngineRemoveAllowedStateEmptyFile(t *testing.T) {
 	e := &Engine{statePath: t.TempDir()}
-	e.removeAllowedState("10.0.0.1")
+	if err := e.removeAllowedState("10.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
 	st := e.loadStateFile()
 	if len(st.Allowed) != 0 {
 		t.Errorf("Allowed should remain empty, got %d", len(st.Allowed))
@@ -152,7 +156,9 @@ func TestEngineRemoveAllowedStateEmptyFile(t *testing.T) {
 
 func TestEngineRemoveSubnetStateEmptyFile(t *testing.T) {
 	e := &Engine{statePath: t.TempDir()}
-	e.removeSubnetState("192.168.0.0/16")
+	if err := e.removeSubnetState("192.168.0.0/16"); err != nil {
+		t.Fatal(err)
+	}
 	st := e.loadStateFile()
 	if len(st.BlockedNet) != 0 {
 		t.Errorf("BlockedNet should remain empty, got %d", len(st.BlockedNet))
@@ -163,11 +169,13 @@ func TestEngineRemoveSubnetStateEmptyFile(t *testing.T) {
 
 func TestEngineSaveAllowedEntryExplicitSourcePreserved(t *testing.T) {
 	e := &Engine{statePath: t.TempDir()}
-	e.saveAllowedEntry(AllowedEntry{
+	if err := e.saveAllowedEntry(AllowedEntry{
 		IP:     "10.0.0.1",
 		Reason: "vpn",
 		Source: "dyndns",
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	st := e.loadStateFile()
 	if len(st.Allowed) != 1 || st.Allowed[0].Source != "dyndns" {
 		t.Errorf("Source = %q, want dyndns", st.Allowed[0].Source)
@@ -179,8 +187,12 @@ func TestEngineSaveAllowedEntryExplicitSourcePreserved(t *testing.T) {
 func TestEngineSaveSubnetEntryDuplicateIgnored(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
-	e.saveSubnetEntry(SubnetEntry{CIDR: "10.0.0.0/8", Reason: "first", BlockedAt: time.Now()})
-	e.saveSubnetEntry(SubnetEntry{CIDR: "10.0.0.0/8", Reason: "second", BlockedAt: time.Now()})
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "10.0.0.0/8", Reason: "first", BlockedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saveSubnetEntry(SubnetEntry{CIDR: "10.0.0.0/8", Reason: "second", BlockedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 
 	st := e.loadStateFile()
 	if len(st.BlockedNet) != 1 {
@@ -195,10 +207,15 @@ func TestEngineSaveSubnetEntryDuplicateIgnored(t *testing.T) {
 
 func TestEngineRemoveAllowedStateBySourceSourceMismatch(t *testing.T) {
 	e := &Engine{statePath: t.TempDir()}
-	e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Source: "manual"})
+	if err := e.saveAllowedEntry(AllowedEntry{IP: "10.0.0.1", Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Wrong source - should return false
-	removed := e.removeAllowedStateBySource("10.0.0.1", "dyndns")
+	removed, err := e.removeAllowedStateBySource("10.0.0.1", "dyndns")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if removed {
 		t.Error("source mismatch should return false")
 	}

@@ -14,21 +14,30 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
-// Plugin verification mirrors the core-file verification path: when a file
-// under /wp-content/plugins/<slug>/ matches the hash we computed from the
+// Plugin verification mirrors the core-file verification path: when an
+// installed or update-staged plugin file matches the hash we computed from the
 // plugin's official wordpress.org ZIP, signature/YARA rule matches on it are
 // false positives and should not fire.
 
-const pluginsSegment = "/wp-content/plugins/"
+const (
+	pluginsSegment = "/wp-content/plugins/"
+	upgradeSegment = "/wp-content/upgrade/"
+)
 
 // DetectPluginRoot returns the plugin root directory and slug for a path that
-// sits under /wp-content/plugins/<slug>/. Returns empty strings if the path
-// is not inside a plugin.
+// sits inside a plugin, either installed under /wp-content/plugins/<slug>/ or
+// staged by an in-progress update under /wp-content/upgrade/<package>/<slug>/.
+// Returns empty strings if the path is not inside a plugin.
 func DetectPluginRoot(path string) (root, slug string) {
+	if root, slug := detectInstalledPluginRoot(path); root != "" {
+		return root, slug
+	}
+	return detectStagedPluginRoot(path)
+}
+
+func detectInstalledPluginRoot(path string) (root, slug string) {
 	idx := strings.Index(path, pluginsSegment)
 	if idx < 0 {
 		return "", ""
@@ -39,35 +48,142 @@ func DetectPluginRoot(path string) (root, slug string) {
 		return "", ""
 	}
 	slug = tail[:slashIdx]
+	if !safePluginPathComponent(slug) {
+		return "", ""
+	}
 	root = path[:idx+len(pluginsSegment)] + slug
 	return root, slug
 }
 
-var rePluginVersionHeader = regexp.MustCompile(`(?im)^\s*\*?\s*Version:\s*([^\s]+)`)
+// detectStagedPluginRoot resolves the layout WordPress unpacks an update into:
+// wp-content/upgrade/<package>/<slug>/<rest>, moved into wp-content/plugins/
+// only once the install succeeds. The staged tree carries the same files and
+// plugin header, so the per-file hash comparison against the official ZIP also
+// works before the move. Without this, a routine plugin update leaves every
+// one of its files unverifiable while it is staged.
+func detectStagedPluginRoot(path string) (root, slug string) {
+	idx := strings.Index(path, upgradeSegment)
+	if idx < 0 {
+		return "", ""
+	}
+	pkg, tail, ok := strings.Cut(path[idx+len(upgradeSegment):], "/")
+	if !ok || !safePluginPathComponent(pkg) {
+		return "", ""
+	}
+	slug, tail, ok = strings.Cut(tail, "/")
+	// A package directory with no file below <slug>/ is not a staged plugin.
+	if !ok || tail == "" || !safePluginPathComponent(slug) {
+		return "", ""
+	}
+	return path[:idx+len(upgradeSegment)] + pkg + "/" + slug, slug
+}
+
+// safePluginPathComponent rejects the components that would let a crafted path
+// resolve a root outside the directory it appears to name.
+func safePluginPathComponent(name string) bool {
+	return name != "" && name != "." && name != ".."
+}
+
+const (
+	pluginHeaderReadLimit = 8192
+	maxPluginRootEntries  = 256
+)
+
+var (
+	rePluginNameHeader    = regexp.MustCompile(`(?im)^[ \t/*#@]*Plugin Name:[ \t]*[^ \t\r\n]`)
+	rePluginVersionHeader = regexp.MustCompile(`(?im)^[ \t/*#@]*Version:[ \t]*([^\s]+)`)
+)
 
 // ReadPluginVersion extracts the Version: header from the plugin's main
-// file (<pluginRoot>/<slug>.php). WordPress requires this header to exist
-// on every published plugin.
+// file. Most plugins use <slug>.php, but WordPress permits any root-level PHP
+// filename. The fallback directory scan is bounded and requires Plugin Name:
+// as well as Version: so theme and core staging trees fail closed.
 func ReadPluginVersion(pluginRoot, slug string) (string, error) {
-	mainPath := filepath.Join(pluginRoot, slug+".php")
+	if !safePluginPathComponent(slug) {
+		return "", errors.New("invalid plugin slug")
+	}
+
+	preferredName := slug + ".php"
+	preferredPath := filepath.Join(pluginRoot, preferredName)
+	version, found, err := readPluginVersionHeader(preferredPath)
+	if err == nil && found {
+		return version, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
 	// #nosec G304 -- pluginRoot is derived from a path the scanner received
-	// from fanotify under /wp-content/plugins/; slug is the immediate child
-	// segment. The read is bounded by the header-detection limit below.
-	f, err := os.Open(mainPath)
+	// from fanotify under a recognized plugin or update-staging layout.
+	dir, err := os.Open(pluginRoot)
 	if err != nil {
 		return "", err
 	}
+	defer func() { _ = dir.Close() }()
+
+	entries, err := dir.ReadDir(maxPluginRootEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("reading plugin root: %w", err)
+	}
+	if len(entries) > maxPluginRootEntries {
+		return "", fmt.Errorf("plugin root has more than %d entries", maxPluginRootEntries)
+	}
+
+	versions := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.Name() == preferredName || filepath.Ext(entry.Name()) != ".php" {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return "", fmt.Errorf("stat plugin entry %s: %w", entry.Name(), infoErr)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		candidatePath := filepath.Join(pluginRoot, entry.Name())
+		candidateVersion, candidateFound, readErr := readPluginVersionHeader(candidatePath)
+		if readErr != nil {
+			return "", readErr
+		}
+		if candidateFound {
+			versions[candidateVersion] = struct{}{}
+		}
+	}
+
+	if len(versions) == 0 {
+		return "", errors.New("plugin header not found in root PHP files")
+	}
+	if len(versions) > 1 {
+		return "", errors.New("ambiguous plugin versions in root PHP files")
+	}
+	for candidateVersion := range versions {
+		return candidateVersion, nil
+	}
+	return "", errors.New("plugin version unavailable")
+}
+
+func readPluginVersionHeader(path string) (version string, found bool, err error) {
+	// #nosec G304 -- callers construct path from a scanner-derived root and a
+	// safe immediate child. Reads are bounded to WordPress's 8 KiB header limit.
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false, err
+	}
 	defer func() { _ = f.Close() }()
-	buf := make([]byte, 8192)
-	n, _ := f.Read(buf)
-	if n <= 0 {
-		return "", errors.New("empty plugin main file")
+
+	buf, err := io.ReadAll(io.LimitReader(f, pluginHeaderReadLimit))
+	if err != nil {
+		return "", false, fmt.Errorf("reading plugin header: %w", err)
 	}
-	m := rePluginVersionHeader.FindSubmatch(buf[:n])
+	if !rePluginNameHeader.Match(buf) {
+		return "", false, nil
+	}
+	m := rePluginVersionHeader.FindSubmatch(buf)
 	if m == nil {
-		return "", errors.New("version header not found in plugin main file")
+		return "", false, nil
 	}
-	return string(m[1]), nil
+	return string(m[1]), true, nil
 }
 
 // pluginZipURL returns the canonical wordpress.org download URL for a given
@@ -304,39 +420,4 @@ func (c *Cache) fetchPluginWithRetry(slug, version string, attempt int) {
 	}, func() {
 		c.clearFetching(key)
 	})
-}
-
-// IsVerifiedPluginFile compares a file against the cached wordpress.org
-// checksum for its plugin/version. Returns true only when the on-disk
-// content hash matches. Triggers a background fetch on cache miss.
-func (c *Cache) IsVerifiedPluginFile(fd int, path string) bool {
-	root, slug := DetectPluginRoot(path)
-	if root == "" {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return false
-	}
-
-	version, err := ReadPluginVersion(root, slug)
-	if err != nil || version == "" {
-		return false
-	}
-
-	expected, ok := c.lookupPluginChecksum(slug, version, rel)
-	if !ok {
-		if !c.hasPluginChecksums(slug, version) {
-			c.startBackgroundPluginFetch(slug, version)
-		}
-		return false
-	}
-
-	data := make([]byte, maxFileSize)
-	n, err := unix.Pread(fd, data, 0)
-	if n <= 0 || (err != nil && n == 0) {
-		return false
-	}
-	h := sha256.Sum256(data[:n])
-	return constantTimeHexDigestEqual(h[:], expected)
 }

@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -30,6 +31,11 @@ import (
 const dropperDigestMax = 8 << 20
 
 const dropperDigestChunk = 64 << 10
+
+// dropperHeadSnapshotAttempts bounds how many times the head read is retried
+// against a moved stat before the content is called unknown. Two attempts
+// settle a single metadata change; the third covers one landing in the retry.
+const dropperHeadSnapshotAttempts = 3
 
 const dropperPHPHandlerCacheMax = 4096
 
@@ -65,7 +71,13 @@ func (fm *FileMonitor) initDropperDetector(cfg *config.Config) {
 	// #nosec G115 -- os.Getpid returns this process's PID, bounded by
 	// /proc/sys/kernel/pid_max (<= 2^22 on Linux), so it always fits in int32.
 	selfPID := int32(os.Getpid())
-	e := newDropperEngine(dropperEngineConfig{ttl: ttl, selfPID: selfPID})
+	e := newDropperEngine(dropperEngineConfig{
+		ttl:     ttl,
+		selfPID: selfPID,
+		ignorePath: func(p string) bool {
+			return checks.PathMatchesIgnore(p, fm.currentCfg().Suppressions.IgnorePaths)
+		},
+	})
 	e.emit = func(sev alert.Severity, check, msg, details, path string) {
 		fm.sendAlertWithPath(sev, check, msg, details, path, "")
 	}
@@ -85,9 +97,9 @@ func (fm *FileMonitor) currentDropperDocroots() []string {
 }
 
 // isDropperInteresting admits paths that the normal content filter deliberately
-// excludes but the dropper detector still needs: atomic-write PHP staging
-// names, inherited .htaccess PHP handlers, and regular files carrying an
-// executable mode under a document root. It does not take ownership of fd.
+// excludes but the dropper detector still needs: inherited .htaccess PHP
+// handlers and regular files carrying an executable mode under a document
+// root. It does not take ownership of fd.
 func (fm *FileMonitor) isDropperInteresting(path string, fd int) (interesting, phpExecutable bool) {
 	if fm.dropper == nil {
 		return false, false
@@ -175,6 +187,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		PID:           event.pid,
 		ProcInfo:      procInfo,
 		Created:       event.mask&FAN_CREATE != 0,
+		WritePending:  event.mask&FAN_CREATE != 0 && event.mask&FAN_CLOSE_WRITE == 0,
 		PHPExecutable: event.phpExecutable,
 	}
 	if birth, ok := statxBirthFromFD(event.fd); ok {
@@ -199,7 +212,12 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	if !trackFresh && c.BirthKnown {
 		return nil
 	}
-	c.Head = readFromFd(event.fd, dropperTrackedHeadMax)
+	if parent, err := statDropperCandidateParent(c.Path, c.Device, c.Inode); err == nil {
+		c.Parent = parent
+	}
+	var stable bool
+	c.Head, c.Size, stable = readDropperHead(event.fd, st, readFromFd)
+	c.ContentMayExecute = !stable
 	// Only known install/atomic staging shapes need a digest for cross-filesystem
 	// copy-delete matching. A separate CLOSE_WRITE refresh normally follows
 	// FAN_CREATE with the final bytes, so create-only snapshots keep identity
@@ -217,10 +235,50 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	if !c.Created && fm.dropper.tr.Refresh(c) {
 		return &c
 	}
-	if !trackFresh || !fm.dropper.admit(c) {
+	if !trackFresh {
 		return nil
 	}
+	fm.dropper.admit(c)
+	// Even an inert snapshot must reach the content pass: a signature hit
+	// can override the admission gate without another filesystem read.
 	return &c
+}
+
+// readDropperHead snapshots the head bytes together with proof that nothing
+// changed the file while they were read. Size from before the read cannot
+// prove completeness if another writer changed the file in the meantime, even
+// when the retained head is empty.
+//
+// The stat pair also moves on a metadata-only change: unlink and rename
+// bump ctime without touching a byte. Plugin scratch files are
+// removed within seconds of being written, so that unlink lands inside the
+// stat window often enough to mark a zero-byte guard file "content unknown"
+// permanently. Only ctime changes can be retried: a quiet interval after a
+// write cannot erase evidence of that write, and a mode change invalidates
+// the caller's decision about which interpreter may execute the file.
+// Size is from the stat immediately before the returned head was read. It
+// proves completeness only when stable is true.
+func readDropperHead(fd int, before unix.Stat_t, read func(int, int) []byte) ([]byte, int64, bool) {
+	var head []byte
+	current := before
+	for attempt := 0; attempt < dropperHeadSnapshotAttempts; attempt++ {
+		previousHead := head
+		head = read(fd, dropperTrackedHeadMax)
+		var after unix.Stat_t
+		if unix.Fstat(fd, &after) != nil {
+			return head, current.Size, false
+		}
+		if current.Dev != after.Dev || current.Ino != after.Ino ||
+			current.Size != after.Size || current.Mtim != after.Mtim || current.Mode != after.Mode ||
+			(attempt > 0 && !bytes.Equal(previousHead, head)) {
+			return head, current.Size, false
+		}
+		if sameReadSnapshot(current, after) {
+			return head, after.Size, true
+		}
+		current = after
+	}
+	return head, current.Size, false
 }
 
 // dropperProbeLoop probes overdue candidates for deletion and flushes findings.
@@ -357,6 +415,7 @@ func statPathToFileState(path string, includeDigest bool) (dropperPathState, err
 	state := dropperPathState{
 		file: dropperFileState{
 			Path: path, Device: uint64(st.Dev), Inode: st.Ino, Size: st.Size,
+			IsRegular: st.Mode&unix.S_IFMT == unix.S_IFREG,
 		},
 		mode: uint32(st.Mode),
 	}
@@ -371,6 +430,83 @@ func statPathToFileState(path string, includeDigest bool) (dropperPathState, err
 		}
 	}
 	return state, nil
+}
+
+// openDropperDirNoSymlinks opens an absolute directory path one component at
+// a time. Refusing symlinks anywhere in the chain is important: reopening a
+// path through a retargeted ancestor could otherwise make an unchanged parent
+// look replaced and turn attacker-controlled path churn into demotion evidence.
+func openDropperDirNoSymlinks(path string) (int, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return -1, unix.EINVAL
+	}
+	flags := unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+	fd, err := unix.Open(string(filepath.Separator), flags, 0)
+	if err != nil {
+		return -1, err
+	}
+	for _, component := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		next, openErr := unix.Openat(fd, component, flags, 0)
+		_ = unix.Close(fd)
+		if openErr != nil {
+			return -1, openErr
+		}
+		fd = next
+	}
+	return fd, nil
+}
+
+// statDropperParent snapshots a real parent directory without following any
+// symlink in its path. Symlinked parents deliberately provide no removal
+// evidence: a dangling or retargeted link does not prove that the directory
+// which contained the event fd was removed.
+func statDropperParent(path string) (dropperParentIdentity, error) {
+	fd, err := openDropperDirNoSymlinks(path)
+	if err != nil {
+		return dropperParentIdentity{}, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	return statDropperParentFD(fd)
+}
+
+// statDropperCandidateParent also proves that the candidate fd identity is
+// still the entry in this parent. If the path was replaced while the event was
+// being admitted, the unrelated successor directory cannot later supply
+// removal evidence for the original candidate.
+func statDropperCandidateParent(path string, device, inode uint64) (dropperParentIdentity, error) {
+	fd, err := openDropperDirNoSymlinks(filepath.Dir(path))
+	if err != nil {
+		return dropperParentIdentity{}, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	var child unix.Stat_t
+	if err := unix.Fstatat(fd, filepath.Base(path), &child, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return dropperParentIdentity{}, err
+	}
+	if uint64(child.Dev) != device || child.Ino != inode {
+		return dropperParentIdentity{}, unix.ESTALE
+	}
+	return statDropperParentFD(fd)
+}
+
+func statDropperParentFD(fd int) (dropperParentIdentity, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return dropperParentIdentity{}, err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return dropperParentIdentity{}, unix.ENOTDIR
+	}
+	identity := dropperParentIdentity{Device: uint64(st.Dev), Inode: st.Ino}
+	if birth, ok := statxBirthFromFD(fd); ok {
+		identity.BirthKnown = true
+		identity.BirthNanos = birth.UnixNano()
+	}
+	return identity, nil
 }
 
 const dropperQuarantineLedgerMax = 4096

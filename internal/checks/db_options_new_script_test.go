@@ -29,7 +29,7 @@ func TestNewExternalScriptHostsInOptionsReportedOnceAsWarning(t *testing.T) {
 		`<script src="https://static.loader-example.com/t.js"></script>` +
 		`<script src="https://www.googletagmanager.com/gtm.js"></script>`
 
-	findings := newExternalScriptFindings("alice", "alice_wp", "wp_", "widget_text", value, firstSeen)
+	findings := newExternalScriptFindings("alice", wpDBCreds{dbName: "alice_wp"}, "wp_", "widget_text", value, firstSeen)
 	if len(findings) != 1 {
 		t.Fatalf("findings = %d, want exactly one for the unseen non-safe host: %+v", len(findings), findings)
 	}
@@ -40,7 +40,7 @@ func TestNewExternalScriptHostsInOptionsReportedOnceAsWarning(t *testing.T) {
 	if !strings.Contains(f.Details, "Script host: static.loader-example.com") || strings.Contains(f.Details, "Script host: cdn.vendor.example") {
 		t.Fatalf("details name the wrong host: %s", f.Details)
 	}
-	if again := newExternalScriptFindings("alice", "alice_wp", "wp_", "widget_text", value, firstSeen); len(again) != 0 {
+	if again := newExternalScriptFindings("alice", wpDBCreds{dbName: "alice_wp"}, "wp_", "widget_text", value, firstSeen); len(again) != 0 {
 		t.Fatalf("host reported again on the next scan: %+v", again)
 	}
 }
@@ -48,17 +48,17 @@ func TestNewExternalScriptHostsInOptionsReportedOnceAsWarning(t *testing.T) {
 func TestExternalScriptBaselineWaitsForSuccessfulQuery(t *testing.T) {
 	withFreshStore(t)
 	sdb := store.Global()
-	failed := false
+	failure := new(dbQueryState)
 	previous := runMySQLQuery
 	runMySQLQuery = func(_ wpDBCreds, query string) []string {
 		if strings.Contains(query, "option_value LIKE '%<script%src%'") {
-			failed = true
+			failure.failed = true
 		}
 		return nil
 	}
 	t.Cleanup(func() { runMySQLQuery = previous })
 
-	creds := wpDBCreds{dbName: "alice_wp", queryFailed: &failed}
+	creds := wpDBCreds{dbName: "alice_wp", queryState: failure}
 	_ = checkWPOptions("alice", creds, "wp_")
 	isNew, err := sdb.MarkExternalScriptSeen(externalScriptSiteKey(creds.dbName, "wp_"), "widget_text", "cdn.example", time.Now())
 	if err != nil {
@@ -73,7 +73,7 @@ func TestExternalScriptBaselineWaitsForSuccessfulQuery(t *testing.T) {
 // duplicated as a new-host warning.
 func TestNewExternalScriptHostsSkipStructurallyMaliciousLoaders(t *testing.T) {
 	value := `<script src="http://203.0.113.9/x.js"></script>`
-	findings := newExternalScriptFindings("alice", "alice_wp", "wp_", "widget_text", value, func(string, string) bool { return true })
+	findings := newExternalScriptFindings("alice", wpDBCreds{dbName: "alice_wp"}, "wp_", "widget_text", value, func(string, string) bool { return true })
 	if len(findings) != 0 {
 		t.Fatalf("raw-IP loader duplicated as a new-host warning: %+v", findings)
 	}

@@ -21,6 +21,34 @@ make build-linux        # cross-compile for Linux amd64
 go test ./... -count=1 -race
 ```
 
+**On a non-Linux host**, fanotify, nftables and the spool watcher are all behind
+`//go:build linux`, so most of the daemon will not build locally. Run Go
+commands inside a Linux container instead:
+
+```bash
+scripts/go-linux.sh go test ./... -count=1 -race
+scripts/go-linux.sh go build ./...
+```
+
+The wrapper pins the image to the exact Go release in `go.mod`, grants
+`CAP_SYS_ADMIN` (fanotify and nftables fail on permissions without it), and
+keeps its writable caches in one shared location outside the repository
+(`${XDG_CACHE_HOME:-$HOME/.cache}/csm-linux/`). The host module cache is mounted
+read-only and used as a local download source; container writes go to the shared
+cache instead. Repeated runs and separate worktrees therefore reuse cached work
+without giving the container write access to the host Go cache or sharing its
+locks.
+
+The wrapper uses apple/container when it is installed and falls back to Docker.
+Note that apple/container 1.2.2 keeps the rootfs snapshot of an auto-removed
+container -- about 2 GB per run, under
+`~/Library/Application Support/com.apple.container/snapshots`, and not reported
+by `container system df`. Set `GO_LINUX_RUNTIME=docker` to avoid that on a host
+that already runs Docker, and prune the leftover snapshots periodically.
+
+Do not hand-roll a `container run` line with its own throwaway `GOCACHE` under
+`/tmp` -- nothing reuses or cleans those up.
+
 **Lint:**
 ```bash
 make lint               # runs the pinned golangci-lint with repo-local caches

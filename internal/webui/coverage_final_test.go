@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -69,7 +70,7 @@ func TestAPIQuarantineRestoreHappyPathFinalCoverage(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(restoreDir) })
 	restoreTarget := filepath.Join(restoreDir, "restored.php")
 
-	meta := quarantineMeta{
+	meta := checks.QuarantineMeta{
 		OriginalPath: restoreTarget,
 		Owner:        os.Getuid(),
 		Group:        os.Getgid(),
@@ -142,7 +143,7 @@ func TestAPIQuarantineRestoreRejectsBadOriginalPathFinalCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	// /etc is NOT in allowed restore roots.
-	meta := quarantineMeta{
+	meta := checks.QuarantineMeta{
 		OriginalPath: "/etc/passwd",
 		Mode:         "-rw-r--r--",
 	}
@@ -276,7 +277,7 @@ func TestAPIQuarantineListsSeededEntryFinalCoverage(t *testing.T) {
 	if err := os.WriteFile(itemPath, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	meta := quarantineMeta{
+	meta := checks.QuarantineMeta{
 		OriginalPath: "/home/alice/public_html/x.php",
 		Size:         1,
 		QuarantineAt: time.Now(),
@@ -685,7 +686,7 @@ func TestNewLoadsTemplatesFromUIDirFinalCoverage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(templateDir, "layout.html"), []byte(layout), 0644); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec", "modsec-rules", "verified-bots", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings"} {
+	for _, p := range []string{"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec", "modsec-rules", "verified-bots", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings", "sessions"} {
 		page := `{{define "content"}}OK {{.Hostname}}{{end}}`
 		if err := os.WriteFile(filepath.Join(templateDir, p+".html"), []byte(page), 0644); err != nil {
 			t.Fatal(err)

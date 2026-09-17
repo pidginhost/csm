@@ -37,7 +37,7 @@ type perfMetrics struct {
 	PHPProcs    int         `json:"php_procs_total"`
 	TopPHPUsers []userProcs `json:"top_php_users"`
 	// MySQL telemetry is best-effort. Both fields are nil when csm could
-	// not read mysqld's pidfile or the mysql client failed (no /root/.my.cnf,
+	// not read the server's process status or the mysql client failed (no /root/.my.cnf,
 	// no socket auth, mysqld absent). The webui renders "n/a" in that case
 	// so operators can tell "MySQL is idle" from "we couldn't ask".
 	MySQLMemMB *uint64 `json:"mysql_mem_mb"`
@@ -137,6 +137,76 @@ func runCmdQuick(name string, args ...string) ([]byte, error) {
 	return out, err
 }
 
+// isPHPWorkerCmdline reports whether a /proc cmdline belongs to a PHP process
+// that serves requests.
+//
+// Two forms exist across the supported stacks: LiteSpeed spawns lsphp, and
+// cPanel EA4 on Apache runs php-fpm, whose workers retitle themselves
+// "php-fpm: pool <name>" and run as the account user. Matching only lsphp
+// reported zero PHP activity on every Apache host.
+//
+// The php-fpm master is excluded on purpose: it runs as root and serves no
+// requests, so counting it would attribute per-account load to root.
+func isPHPWorkerCmdline(cmdline string) bool {
+	if strings.HasPrefix(cmdline, "php-fpm: pool ") {
+		return true
+	}
+	if strings.HasPrefix(cmdline, "php-fpm: master") {
+		return false
+	}
+	return strings.Contains(cmdline, "lsphp")
+}
+
+// isMySQLServerCmdline reports whether a /proc cmdline is the database server
+// itself, as opposed to a client, a wrapper script, or a backup tool.
+//
+// The pid file used to be read from a hardcoded path, which does not exist on
+// the cPanel/MariaDB hosts CSM primarily targets: MariaDB writes
+// /var/lib/mysql/<host>.pid instead. Matching the process avoids maintaining a
+// list of per-distribution pid paths.
+func isMySQLServerCmdline(cmdline string) bool {
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 {
+		return false
+	}
+	base := filepath.Base(fields[0])
+	// A shell running mysqld_safe has the shell as argv[0]; neither it nor the
+	// wrapper is the server process.
+	return base == "mysqld" || base == "mariadbd"
+}
+
+// mysqlServerRSSMB returns the resident set size of the running database
+// server in MB, or nil when no server process is found.
+func mysqlServerRSSMB() *uint64 {
+	cmdlinePaths, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	for _, cmdPath := range cmdlinePaths {
+		// #nosec G304 -- cmdPath from /proc/*/cmdline glob; kernel pseudo-FS.
+		data, err := os.ReadFile(cmdPath)
+		if err != nil {
+			continue
+		}
+		if !isMySQLServerCmdline(strings.ReplaceAll(string(data), "\x00", " ")) {
+			continue
+		}
+		// #nosec G304 -- /proc/<pid>/status; kernel pseudo-FS.
+		statusData, _ := os.ReadFile(filepath.Join(filepath.Dir(cmdPath), "status"))
+		for _, line := range strings.Split(string(statusData), "\n") {
+			if !strings.HasPrefix(line, "VmRSS:") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if kb, perr := strconv.ParseUint(fields[1], 10, 64); perr == nil {
+					mb := kb / 1024
+					return &mb
+				}
+			}
+			break
+		}
+	}
+	return nil
+}
+
 // sampleMetrics gathers live system metrics and returns a populated perfMetrics.
 func sampleMetrics() *perfMetrics {
 	m := &perfMetrics{}
@@ -202,7 +272,7 @@ func sampleMetrics() *perfMetrics {
 		}
 	}
 
-	// PHP processes: scan /proc/*/cmdline for lsphp
+	// PHP processes: scan /proc/*/cmdline for PHP request workers.
 	{
 		cmdlinePaths, _ := filepath.Glob("/proc/[0-9]*/cmdline")
 		userCounts := make(map[string]int)
@@ -214,7 +284,7 @@ func sampleMetrics() *perfMetrics {
 				continue
 			}
 			cmdStr := strings.ReplaceAll(string(data), "\x00", " ")
-			if !strings.Contains(cmdStr, "lsphp") {
+			if !isPHPWorkerCmdline(cmdStr) {
 				continue
 			}
 			pid := filepath.Base(filepath.Dir(cmdPath))
@@ -264,28 +334,7 @@ func sampleMetrics() *perfMetrics {
 	// when the lookup fails so the webui can show "n/a" instead of a
 	// misleading 0.
 	{
-		pidData, err := os.ReadFile("/var/run/mysqld/mysqld.pid")
-		if err == nil {
-			mysqlPID := strings.TrimSpace(string(pidData))
-			if mysqlPID != "" {
-				// #nosec G304 G703 -- mysqlPID is read from mysqld's own
-				// /var/run/mysqld/mysqld.pid and we're reading the kernel
-				// /proc pseudo-filesystem.
-				statusData, _ := os.ReadFile(filepath.Join("/proc", mysqlPID, "status"))
-				for _, line := range strings.Split(string(statusData), "\n") {
-					if strings.HasPrefix(line, "VmRSS:") {
-						fields := strings.Fields(line)
-						if len(fields) >= 2 {
-							if kb, perr := strconv.ParseUint(fields[1], 10, 64); perr == nil {
-								mb := kb / 1024
-								m.MySQLMemMB = &mb
-							}
-						}
-						break
-					}
-				}
-			}
-		}
+		m.MySQLMemMB = mysqlServerRSSMB()
 		// Connection count. mysqlclient open returns nil on auth failure,
 		// missing socket, or absent server -- in every such case we
 		// leave MySQLConns nil rather than reporting a fake 0.

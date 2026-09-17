@@ -1,13 +1,26 @@
 package daemon
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
-// looksLikeAtomicWriteStage drives the realtime-scan skip for transient
-// write-then-rename staging files. Fix context: cPanel's fileTransfer
-// service produced a ~35-alert storm during a WordPress restore because
-// every write landed at `.temp.<nanoseconds>.<name>.<ext>` (scanned by
-// fanotify CLOSE_WRITE) before rename(2) to the final path (not scanned
-// -- fanotify mask does not include MOVED_TO).
+func TestAtomicWriteContentPath(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{".temp.1.example.php", "example.php"},
+		{".temp.1..htaccess", ".htaccess"},
+		{".temp.1.php.ini", "php.ini"},
+		{".temp.1..", ".temp.1.."},
+		{".temp.1...", ".temp.1..."},
+		{".temp.x.example.php", ".temp.x.example.php"},
+		{".temp.1.", ".temp.1."},
+	} {
+		path := filepath.Join("/home/site", tc.name)
+		if got, want := atomicWriteContentPath(path), filepath.Join("/home/site", tc.want); got != want {
+			t.Errorf("atomicWriteContentPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
 
 func TestLooksLikeAtomicWriteStage_Positive(t *testing.T) {
 	cases := []string{

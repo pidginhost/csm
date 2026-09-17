@@ -83,7 +83,10 @@ func TestAdminPasswordFingerprintsForSiteUsesRootQuery(t *testing.T) {
 	})
 	t.Cleanup(func() { mysqlclient.SetRootQueryForTest(nil) })
 
-	out := adminPasswordFingerprintsForSite(wpDBCreds{dbName: "alice_wp"}, "wp_")
+	out, err := adminPasswordFingerprintsForSite(wpDBCreds{dbName: "alice_wp"}, "wp_")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if gotSchema != "alice_wp" {
 		t.Fatalf("schema = %q, want alice_wp", gotSchema)
 	}
@@ -125,14 +128,25 @@ func TestCheckCredentialReuseScansHostAndDoesNotLeakHash(t *testing.T) {
 	oldOS := osFS
 	osFS = &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			if pattern != "/home/*/public_html/wp-config.php" {
-				t.Fatalf("glob pattern = %q", pattern)
+			switch pattern {
+			case "/home/*/public_html/wp-config.php":
+				return []string{
+					"/home/alice/public_html/wp-config.php",
+					"/home/bob/public_html/wp-config.php",
+					"/home/carol/public_html/wp-config.php",
+				}, nil
+			case "/home/*/public_html/*/wp-config.php", "/home/*/*/wp-config.php":
+				return nil, nil
 			}
-			return []string{
-				"/home/alice/public_html/wp-config.php",
-				"/home/bob/public_html/wp-config.php",
-				"/home/carol/public_html/wp-config.php",
-			}, nil
+			t.Fatalf("glob pattern = %q", pattern)
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			paths := make([]string, 0, len(files))
+			for path := range files {
+				paths = append(paths, path)
+			}
+			return mockPathInfo(name, paths)
 		},
 		open: func(name string) (*os.File, error) {
 			return os.Open(files[name])
@@ -185,10 +199,17 @@ func TestCheckCredentialReuseRejectsUnsafeTablePrefix(t *testing.T) {
 	oldOS := osFS
 	osFS = &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			if pattern != "/home/*/public_html/wp-config.php" {
-				t.Fatalf("glob pattern = %q", pattern)
+			switch pattern {
+			case "/home/*/public_html/wp-config.php":
+				return []string{wpConfig}, nil
+			case "/home/*/public_html/*/wp-config.php", "/home/*/*/wp-config.php":
+				return nil, nil
 			}
-			return []string{wpConfig}, nil
+			t.Fatalf("glob pattern = %q", pattern)
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
 		},
 		open: func(name string) (*os.File, error) {
 			if name != wpConfig {

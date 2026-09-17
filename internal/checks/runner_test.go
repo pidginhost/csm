@@ -1211,7 +1211,7 @@ func TestRunnerPurgeMapCoversEmittedCheckNames(t *testing.T) {
 	for _, n := range latestVolatileCheckNames {
 		covered[n] = struct{}{}
 	}
-	for _, n := range latestDerivedCheckNames {
+	for _, n := range DerivedCorrelationChecks() {
 		covered[n] = struct{}{}
 	}
 	for n := range nonScheduledEmitters {

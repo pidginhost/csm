@@ -190,6 +190,7 @@ func TestCheckOutboundEmailContentWithSpool(t *testing.T) {
 // --- AutoKillProcesses with findings ---------------------------------
 
 func TestAutoKillProcessesWithFindings(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			return nil, nil
@@ -200,7 +201,7 @@ func TestAutoKillProcessesWithFindings(t *testing.T) {
 		{Severity: alert.Critical, Check: "suspicious_process", Message: "Process xmrig from /tmp/xmrig"},
 	}
 
-	results := AutoKillProcesses(&config.Config{}, findings)
+	results := AutoKillProcesses(context.Background(), &config.Config{}, findings)
 	_ = results
 }
 

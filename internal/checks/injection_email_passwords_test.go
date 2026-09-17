@@ -84,13 +84,17 @@ func TestCheckEmailPasswordsThrottleSkipsIfRecentRefresh(t *testing.T) {
 
 func TestCheckEmailPasswordsForceAllOverridesThrottle(t *testing.T) {
 	db := withTestStore(t)
-	_ = db.SetEmailPWLastRefresh(time.Now()) // recent refresh
+	previousRefresh := time.Now().Add(-time.Minute)
+	if err := db.SetEmailPWLastRefresh(previousRefresh); err != nil {
+		t.Fatal(err)
+	}
 
 	prev := ForceAll
 	ForceAll = true
 	t.Cleanup(func() { ForceAll = prev })
 
-	// Provide a discoverable shadow file that's empty (no entries).
+	// An empty but readable shadow must still refresh the completed audit.
+	opens := 0
 	withMockOS(t, &mockOS{
 		glob: func(p string) ([]string, error) {
 			if strings.Contains(p, "shadow") {
@@ -99,6 +103,7 @@ func TestCheckEmailPasswordsForceAllOverridesThrottle(t *testing.T) {
 			return nil, nil
 		},
 		open: func(name string) (*os.File, error) {
+			opens++
 			tmp := t.TempDir() + "/shadow"
 			_ = os.WriteFile(tmp, []byte(""), 0644)
 			return os.Open(tmp)
@@ -108,18 +113,16 @@ func TestCheckEmailPasswordsForceAllOverridesThrottle(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.EmailProtection.PasswordCheckIntervalMin = 60
 
-	// ForceAll bypasses throttle. With no entries we just verify the
-	// function ran (no panic, returned nil).
-	_ = CheckEmailPasswords(context.Background(), cfg, nil)
+	findings := CheckEmailPasswords(context.Background(), cfg, nil)
+	if len(findings) != 0 || opens != 1 || !db.GetEmailPWLastRefresh().After(previousRefresh) {
+		t.Fatalf("forced audit did not read and refresh: findings=%v, opens=%d", findings, opens)
+	}
 }
 
 func TestCheckEmailPasswordsHeuristicMatchEmitsCritical(t *testing.T) {
 	withTestStore(t)
 
-	// Set up: shadow file with one mailbox whose hash matches a heuristic
-	// candidate. The mock cmd accepts the doveadm call when candidate
-	// matches what we expect generateCandidates to produce for our entry.
-	shadowContent := "alice@example.com:{CRYPT}$6$salt$hashpattern\n"
+	shadowContent := "alice:{PLAIN}alice2026\n"
 
 	withMockOS(t, &mockOS{
 		glob: func(p string) ([]string, error) {
@@ -134,17 +137,6 @@ func TestCheckEmailPasswordsHeuristicMatchEmitsCritical(t *testing.T) {
 			return os.Open(tmp)
 		},
 	})
-	withMockCmd(t, &mockCmd{
-		run: func(name string, args ...string) ([]byte, error) {
-			if name == "doveadm" {
-				// Accept any password as valid (simulates a hash that
-				// matches every candidate). Real doveadm would only
-				// match specific ones.
-				return nil, nil
-			}
-			return nil, fmt.Errorf("unexpected: %s", name)
-		},
-	})
 	// Mock HIBP to claim "found in 0 breaches" so the test doesn't hit
 	// pwnedpasswords.com.
 	withTestHIBP(t, func(w http.ResponseWriter, r *http.Request) {
@@ -155,26 +147,16 @@ func TestCheckEmailPasswordsHeuristicMatchEmitsCritical(t *testing.T) {
 	cfg.EmailProtection.PasswordCheckIntervalMin = 60
 
 	findings := CheckEmailPasswords(context.Background(), cfg, nil)
-	hasWeak := false
-	for _, f := range findings {
-		if f.Check == "email_weak_password" && f.Severity == alert.Critical {
-			hasWeak = true
-			if !strings.Contains(f.Message, "alice@example.com") {
-				t.Errorf("finding message should mention mailbox: %q", f.Message)
-			}
-			break
-		}
-	}
-	if !hasWeak {
-		t.Errorf("expected email_weak_password critical finding when doveadm matches, got: %+v", findings)
+	if len(findings) != 1 || findings[0].Check != "email_weak_password" || findings[0].Severity != alert.Critical || findings[0].Mailbox != "alice@example.com" {
+		t.Fatalf("expected exactly one critical finding for alice@example.com: %+v", findings)
 	}
 }
 
 func TestCheckEmailPasswordsSkipsUnchangedHash(t *testing.T) {
 	db := withTestStore(t)
 	// Pre-record a fingerprint for the mailbox we'll discover.
-	hash := "{CRYPT}$6$salt$preexisting"
-	fp := hashFingerprint(hash)
+	hash := "{PLAIN}example"
+	fp := "v2:" + hashFingerprint(hash)
 	_ = db.SetMetaString("email:pwaudit:alice:user@example.com", fp)
 
 	// Shadow file format puts just the local-part on the LHS;
@@ -194,26 +176,17 @@ func TestCheckEmailPasswordsSkipsUnchangedHash(t *testing.T) {
 			return os.Open(tmp)
 		},
 	})
-	doveadmCalls := 0
-	withMockCmd(t, &mockCmd{
-		run: func(name string, args ...string) ([]byte, error) {
-			if name == "doveadm" {
-				doveadmCalls++
-			}
-			return nil, fmt.Errorf("should not have been called")
-		},
-	})
 
 	cfg := &config.Config{}
 	cfg.EmailProtection.PasswordCheckIntervalMin = 60
 
-	_ = CheckEmailPasswords(context.Background(), cfg, nil)
-	if doveadmCalls != 0 {
-		t.Errorf("expected 0 doveadm calls when hash unchanged, got %d", doveadmCalls)
+	findings := CheckEmailPasswords(context.Background(), cfg, nil)
+	if len(findings) != 0 || db.GetMetaString("email:pwaudit:alice:user@example.com") != fp || db.GetEmailPWLastRefresh().IsZero() {
+		t.Fatalf("unchanged, previously audited hash was checked again: %+v", findings)
 	}
 }
 
-func TestCheckEmailPasswordsStopsBeforeDoveadmWhenContextCanceledAfterRead(t *testing.T) {
+func TestCheckEmailPasswordsDoesNotRecordAuditWhenContextCanceledAfterRead(t *testing.T) {
 	db := withTestStore(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -236,14 +209,6 @@ func TestCheckEmailPasswordsStopsBeforeDoveadmWhenContextCanceledAfterRead(t *te
 		},
 	})
 
-	doveadmCalls := 0
-	withMockCmd(t, &mockCmd{
-		runContext: func(context.Context, string, ...string) ([]byte, error) {
-			doveadmCalls++
-			return nil, nil
-		},
-	})
-
 	cfg := &config.Config{}
 	cfg.EmailProtection.PasswordCheckIntervalMin = 60
 
@@ -251,8 +216,8 @@ func TestCheckEmailPasswordsStopsBeforeDoveadmWhenContextCanceledAfterRead(t *te
 	if len(findings) != 0 {
 		t.Errorf("canceled scan should not emit findings, got %v", findings)
 	}
-	if doveadmCalls != 0 {
-		t.Errorf("doveadm called after context cancellation: %d", doveadmCalls)
+	if db.GetMetaString("email:pwaudit:alice:user@example.com") != "" {
+		t.Error("canceled scan recorded mailbox fingerprint")
 	}
 	if got := db.GetEmailPWLastRefresh(); !got.IsZero() {
 		t.Errorf("canceled scan recorded refresh timestamp: %s", got)

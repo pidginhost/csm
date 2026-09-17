@@ -59,6 +59,12 @@ func runHelper(mode string) {
 		helperRunNormal(sock, 139)
 	case "sigkill-after-ping":
 		helperRunSignaledDeath(sock, syscall.SIGKILL)
+	case "crash-after-delay":
+		// Serve normally, then die on a timer: a worker that keeps passing
+		// its readiness probe but never stays up.
+		delay, _ := time.ParseDuration(os.Getenv("YARAWORKER_EXIT_AFTER"))
+		time.AfterFunc(delay, func() { os.Exit(139) })
+		helperRunNormal(sock, 0)
 	default:
 		fmt.Fprintf(os.Stderr, "helper: unknown mode %q\n", mode)
 		os.Exit(2)

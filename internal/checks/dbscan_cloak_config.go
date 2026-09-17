@@ -521,7 +521,13 @@ func checkWPCloakConfig(user string, creds wpDBCreds, prefix string) []alert.Fin
 			Check:    "db_hostname_keyed_option",
 			Message: fmt.Sprintf("%s autoloaded WordPress %s %s named by digest and %s encoded data (account: %s)",
 				count, noun, verb, hold, user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
+				"An option named after a digest cannot be found without already knowing "+
+					"the key, and the base64 layer keeps its contents out of any search of "+
+					"the table. Cloak kits key that digest to the site's own hostname so one "+
+					"payload serves many sites. The row is autoloaded, so it is read on every request.",
+				cloakSample("Options", keyed)),
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				"An option named after a digest cannot be found without already knowing "+
 					"the key, and the base64 layer keeps its contents out of any search of "+
 					"the table. Cloak kits key that digest to the site's own hostname so one "+
@@ -539,7 +545,13 @@ func checkWPCloakConfig(user string, creds wpDBCreds, prefix string) []alert.Fin
 			Check:    "db_doorway_sitemap_routes",
 			Message: fmt.Sprintf("%d numbered sitemap %s %s generated pages to crawlers (account: %s)",
 				len(routes), noun, verb, user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
+				"Each rule routes sitemap<N>.xml straight into a matching feed, one per "+
+					"doorway cluster, so crawlers are handed the generated pages without them "+
+					"appearing in the site's real sitemap. Sitemap plugins add rewrite rules "+
+					"too, but none of them pair a numbered sitemap with a feed of the same number.",
+				cloakSample("Clusters", routes)),
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				"Each rule routes sitemap<N>.xml straight into a matching feed, one per "+
 					"doorway cluster, so crawlers are handed the generated pages without them "+
 					"appearing in the site's real sitemap. Sitemap plugins add rewrite rules "+

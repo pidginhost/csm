@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -347,5 +349,33 @@ func TestVerifyDpkgIntegrityDpkgVerifyCommandFailureNotResolved(t *testing.T) {
 	res := VerifyFinding("dpkg_integrity", "Modified system binary or library: /usr/bin/passwd (package: passwd)", "")
 	if res.Checked || res.Resolved {
 		t.Fatalf("dpkg --verify failure must not verify resolved, got %+v", res)
+	}
+}
+
+func TestPackageReverifyKeepsReportedChangesWithoutExecutableMode(t *testing.T) {
+	for _, exists := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exists=%v", exists), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "previously-executable")
+			if exists {
+				if err := os.WriteFile(path, []byte("modified"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, tc := range []struct {
+				name, output string
+				parse        func([]byte, string) packageVerifyOutputState
+			}{
+				{"rpm", "S.5....T.  " + path + "\n", manifestOutputState},
+				{"dpkg", "??5??????  " + path + "\n", manifestOutputState},
+				{"debsums", path + "\n", debsumsOutputState},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					result := resolvePkgVerifyOutput(tc.parse([]byte(tc.output), path), path, tc.name)
+					if !result.Checked || result.Resolved {
+						t.Fatalf("reported change was cleared after file mode or existence changed: %+v", result)
+					}
+				})
+			}
+		})
 	}
 }

@@ -32,9 +32,9 @@ const (
 	defaultBreakerCooldown = 60 * time.Second
 )
 
-// UpstreamConfig configures the HTTP threat-intel client. TokenEnv (if
-// set) is consulted at every Score call so operators can rotate via env
-// without restarting the daemon.
+// UpstreamConfig configures the HTTP threat-intel client. TokenEnv reads
+// the process environment before each HTTP request. External environment
+// changes require a daemon restart.
 type UpstreamConfig struct {
 	URL      string
 	Token    string
@@ -113,7 +113,7 @@ func NewUpstreamSource(cfg UpstreamConfig) *UpstreamSource {
 func (u *UpstreamSource) Name() string { return "upstream" }
 
 // resolveToken reads TokenEnv (if set) at query time, falling back to the
-// static token. Lets operators rotate via env without daemon restart.
+// static token. External environment changes require a daemon restart.
 func (u *UpstreamSource) resolveToken() string {
 	if u.cfg.TokenEnv != "" {
 		if v := os.Getenv(u.cfg.TokenEnv); v != "" {

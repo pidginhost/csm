@@ -26,7 +26,7 @@ func TestQuarantineFileTOCTOUSafe_HappyPath(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	if err := quarantineFileTOCTOUSafe(src, dst, info); err != nil {
+	if err := quarantineFileTOCTOUSafe(src, dst, info, []byte("{}")); err != nil {
 		t.Fatalf("quarantine: %v", err)
 	}
 	if _, err := os.Stat(dst); err != nil {
@@ -69,7 +69,7 @@ func TestQuarantineFileTOCTOUSafe_RefusesSymlink(t *testing.T) {
 		t.Fatalf("mkdir: %v", mkErr)
 	}
 
-	err = quarantineFileTOCTOUSafe(bait, dst, info)
+	err = quarantineFileTOCTOUSafe(bait, dst, info, []byte("{}"))
 	if err == nil {
 		t.Fatal("expected refusal of symlinked path, got nil error")
 	}
@@ -107,7 +107,7 @@ func TestQuarantineFileTOCTOUSafe_DetectsFileSwap(t *testing.T) {
 		t.Fatalf("mkdir: %v", mkErr)
 	}
 
-	err = quarantineFileTOCTOUSafe(src, dst, info)
+	err = quarantineFileTOCTOUSafe(src, dst, info, []byte("{}"))
 	if err == nil {
 		t.Fatal("expected refusal after file swap, got nil error")
 	}
@@ -136,21 +136,21 @@ func TestQuarantineFileTOCTOUSafe_CopyUsesOpenFD(t *testing.T) {
 	}
 
 	oldCopy := quarantineCopyByFD
-	quarantineCopyByFD = func(fd *os.File, qPath string) error {
+	quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte) error {
 		if rmErr := os.Remove(src); rmErr != nil {
 			return rmErr
 		}
 		if wrErr := os.WriteFile(src, []byte("replacement"), 0644); wrErr != nil {
 			return wrErr
 		}
-		return oldCopy(fd, qPath)
+		return oldCopy(fd, qPath, metadata)
 	}
 	t.Cleanup(func() { quarantineCopyByFD = oldCopy })
 
 	// The hook swapped a replacement into the source path after the fd was
 	// opened: the copy must still come from the open fd, and the swap is
 	// reported rather than passed off as a completed quarantine.
-	qErr := quarantineFileTOCTOUSafe(src, dst, info)
+	qErr := quarantineFileTOCTOUSafe(src, dst, info, []byte("{}"))
 	if qErr == nil || !strings.Contains(qErr.Error(), "replaced before unlink") {
 		t.Fatalf("swap after open not reported: %v", qErr)
 	}

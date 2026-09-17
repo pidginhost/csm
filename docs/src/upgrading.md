@@ -1,5 +1,16 @@
 # Upgrading
 
+Use the signed APT/DNF repository for maintained package upgrades. Standalone
+deploy scripts require successful detached signature verification for current
+releases. They verify with OpenSSL 3.0+ where available, otherwise with the installed
+CSM binary's `csm verify-release`, otherwise with `python3-cryptography`, so
+upgrades keep working on EL8/CloudLinux 8 (OpenSSL 1.1.1) including the first
+upgrade to a build that provides `csm verify-release`. When no verifier is
+present the upgrade stops; disabling `CSM_REQUIRE_SIGNATURES` does not enable
+unsigned current upgrades. Set `CSM_VERIFIER_BINARY` to select a specific CSM
+binary. See
+[Release signing](release-signing.md) for the historical-release exception.
+
 ## Package installations (recommended)
 
 Use the same signed repository that installed CSM:
@@ -26,9 +37,26 @@ The helper:
 2. Stages the UI, rules, PAM files, and deploy helper before downtime
 3. Stops the daemon and keeps the previous binary and assets as rollback material
 4. Activates the staged release and rehashes the config once
-5. Restarts the daemon and confirms it is active
+5. Restarts the daemon, checks sustained liveness, and runs `csm doctor`
 
-If activation, rehash, or startup fails, the helper restores the previous binary and assets, re-signs the restored binary hash, and starts the previous version.
+The health gate waits 20 seconds by default. Set `CSM_UPGRADE_HEALTH_SETTLE` to an integer from 1 to 3600 seconds for a longer or shorter observation window. Invalid values fail the gate. Doctor warnings do not trigger rollback; failed checks do.
+
+If activation, rehash, startup, or the health gate fails, the helper stops the new daemon, restores the previous binary and assets, re-signs the restored binary hash, and starts the previous version. It exits nonzero and reports where it retained recovery material. If recovery itself fails, it reports an incomplete rollback that needs operator attention.
+
+## Optional nightly upgrades
+
+Packages ship a disabled sample at `/opt/csm/configs/cron/csm-auto-upgrade`. It runs only after an operator installs it into `/etc/cron.d/`:
+
+```bash
+csm version && /opt/csm/deploy.sh check
+sudo install -m 0644 /opt/csm/configs/cron/csm-auto-upgrade /etc/cron.d/csm-auto-upgrade
+```
+
+Confirm the host runs a published release first. The checksum check reports any different build as an available update. The downgrade guard rejects a lower version, but a development build with the same version can still be replaced by the published release.
+
+The job invokes the standalone deploy helper every night between 03:30 and 04:30, with a random delay and a nonblocking lock. This updates runtime files directly; it does not update APT/DNF's installed package version. Hosts that need package-manager ownership and version tracking should use their package upgrade automation instead.
+
+Output goes to `/var/log/csm/auto-upgrade.log`. Failures also produce cron mail to root; configure and test root's mail alias before enabling the job. This notification does not depend on CSM's alert channels or on successful daemon recovery. Successful runs and an already-held lock produce no mail. Staggering spreads upgrades over an hour but does not stop a bad release from reaching the fleet.
 
 ## Troubleshooting
 
@@ -47,7 +75,7 @@ If `systemctl` says CSM is stopped but bbolt still times out, find the process h
 
 **Never delete `csm.db`** -- it contains all historical findings, firewall state, email forwarder baselines, and per-account data. If you delete it, the web UI will show empty data until the next full scan cycle (up to 60 minutes for deep scan findings). Restore from backup when possible; for an intentional reset, run `csm baseline --confirm` rather than removing the database by hand.
 
-**Config changes require rehash** -- After editing a restart-required field in `csm.yaml`, run `csm rehash` once, validate, then restart. Hot-reload-safe changes can use `systemctl reload csm`; the daemon validates and re-signs the accepted config itself.
+**Config changes require rehash** -- After editing a restart-required field in `csm.yaml` or any conf.d drop-in, run `csm rehash` once, validate, then restart. Hot-reload-safe changes can use `systemctl reload csm`; the daemon validates and re-signs the accepted config itself. A restart that fails with `conf.d hash mismatch` means a drop-in changed since the last signing: rehash if the change was intentional, and list fragments an integration rewrites on its own under `confd.integrity_exempt` so they stop needing one. `csm doctor` reports the mismatch while the daemon is still up.
 
 ## FHS migration (state, config, drop-ins, and profiles)
 

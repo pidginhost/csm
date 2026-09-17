@@ -106,6 +106,14 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
   phpanel delivery failures. Sustained growth means findings are not
   reaching operators; check SMTP, webhook reachability, and credentials.
 
+- `csm_audit_sink_degraded{sink}` (gauge): one when an enabled JSONL or syslog
+  destination failed to open or write, zero when healthy or disabled. Values
+  appear after the audit pipeline first runs and remain degraded during retry
+  backoff. Syslog reports local write results, not receiver acknowledgement.
+- `csm_audit_events_dropped_total{sink}` (counter): events whose destination
+  was unavailable or whose write failed. Use `csm export --since <when>` for
+  backfill; failed live deliveries are not replayed automatically.
+
 ### State
 
 - `csm_store_size_bytes` (gauge): on-disk size of the bbolt state
@@ -113,6 +121,12 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
   bound logical growth. Startup compaction reclaims freelisted pages
   automatically when the file is large and mostly slack; `csm store
   compact` does the same immediately with the daemon stopped.
+  History and attack-event writes pack pages densely when their timestamps
+  arrive mostly in order. A write uses balanced page splits when events older
+  than the newest stored one are most of its records or at least half its
+  inserted data. Space savings depend on record sizes and arrival order.
+  Archive imports keep the snapshot's page layout; compaction repacks an
+  existing file.
 
 ### Fanotify realtime monitor
 

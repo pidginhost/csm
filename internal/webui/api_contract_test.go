@@ -12,13 +12,20 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
 )
 
 func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 	now := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	queues := map[string]queuehealth.Status{"findings.ingest": {
+		Status: "degraded", Reason: "backlog_lag", Depth: 10, Capacity: 500,
+		InFlight: 2, DroppedTotal: 17, RecentDrops: 3, LagSeconds: 90, ProcessingSeconds: 12,
+	}}
 	s := &Server{cfg: capsTestCfg(), startTime: now.Add(-time.Hour), version: "test"}
 	s.SetHealthProvider(statusFakeProvider{
+		wordpress:            map[string]health.WPVerificationCounts{"core": {Verified: 3, Unverified: 2, LastAttempt: now}},
+		queues:               queues,
 		bpfEnforcementActive: true,
 		latestScan:           now.Add(-10 * time.Minute),
 		baselineAt:           now.Add(-24 * time.Hour),
@@ -26,9 +33,13 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			AutoResponseEnabled:           true,
 			AutoResponseBlockIPs:          true,
 			AutoResponseDryRun:            true,
+			ProcessKillEnabled:            true,
+			ProcessSignalError:            "fixture kernel probe failure",
 			DryRunBlocks:                  3,
 			ChallengeEnabled:              true,
 			ChallengePending:              2,
+			FirewallEnabled:               true,
+			FirewallStartupError:          "fixture apply failure",
 			FirewallRollbackPending:       true,
 			FirewallRollbackSecondsRemain: 120,
 			LastAction: &health.AutomationAction{
@@ -43,6 +54,12 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			Source:        "github",
 			CheckedAt:     now,
 		},
+		attribution: &health.CorrelationAttribution{
+			Current:          map[string]int{"db_rogue_admin": 2},
+			Cumulative:       map[string]int{"db_rogue_admin": 7},
+			ActiveSetUpdates: 3,
+			Since:            now,
+		},
 	})
 
 	rec := httptest.NewRecorder()
@@ -53,11 +70,26 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 		t.Fatalf("unmarshal status: %v", err)
 	}
 	assertJSONKeys(t, raw, jsonStructKeys(reflect.TypeOf(health.Snapshot{})))
+	var snapshot health.Snapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(snapshot.Queues, queues) {
+		t.Fatalf("queue evidence changed in API response: got %+v want %+v", snapshot.Queues, queues)
+	}
+	if got := snapshot.WordPressVerification["core"]; got.Verified != 3 || got.Unverified != 2 || !got.LastAttempt.Equal(now) {
+		t.Fatalf("WordPress coverage changed in API response: %+v", got)
+	}
 	automation, ok := raw["automation"].(map[string]any)
 	if !ok {
 		t.Fatalf("automation payload = %T, want object", raw["automation"])
 	}
 	assertJSONKeys(t, automation, jsonStructKeys(reflect.TypeOf(health.AutomationStatus{})))
+	attribution, ok := raw["correlation_attribution"].(map[string]any)
+	if !ok {
+		t.Fatalf("correlation_attribution payload = %T, want object", raw["correlation_attribution"])
+	}
+	assertJSONKeys(t, attribution, jsonStructKeys(reflect.TypeOf(health.CorrelationAttribution{})))
 }
 
 func TestAPICapabilitiesContract(t *testing.T) {

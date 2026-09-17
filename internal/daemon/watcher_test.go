@@ -71,6 +71,13 @@ func TestExtractAuthUser_IgnoresQuotedNonSubjectField(t *testing.T) {
 	}
 }
 
+func TestExtractAuthUserRejectsEmbeddedArrival(t *testing.T) {
+	line := `2026-01-01 10:00:00 1abc23-000456-AB == user@example.com R=remote T=remote_smtp: peer replied <= sender@example.com A=dovecot_login:forged@example.net`
+	if got := extractAuthUser(line); got != "" {
+		t.Fatalf("remote delivery reply supplied authentication identity %q", got)
+	}
+}
+
 func TestRateWindow_AddAndCount(t *testing.T) {
 	rw := &rateWindow{}
 	now := time.Now()

@@ -1,0 +1,34 @@
+[
+  {
+    "Package": "github.com/pidginhost/csm/internal/bpf",
+    "Name": "TestKernelReaderDeliversEvents"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/firewall",
+    "Name": "TestKernelInfraIntervalsApplyAndReload"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestTryStartBPFLSM_AttachesAndShutsDown"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/maillog",
+    "Name": "TestKernelJournalDelivery"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelSensitiveFileStartupClosesReaderOnWatchsetFailure"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelConnectionQueueLoss"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelConnectionVerdictQueuePublishedBeforeRun"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestNotificationKernelQueuesExposePendingRecords"
+  }
+]

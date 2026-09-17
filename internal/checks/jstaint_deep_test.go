@@ -254,7 +254,7 @@ func TestCheckYARADeepForcedJSAdapterPanicStillRunsYARA(t *testing.T) {
 func TestCheckYARADeepYARAErrorRetainsJSResult(t *testing.T) {
 	useRollingStore(t)
 	root := t.TempDir()
-	writeYARADeepFile(t, root, "probe.js", jsKeyloggerFixture)
+	path := writeYARADeepFile(t, root, "probe.js", jsKeyloggerFixture)
 
 	yara.SetActive(&deepYARATestBackend{err: fmt.Errorf("worker unavailable")})
 	t.Cleanup(func() { yara.SetActive(nil) })
@@ -268,8 +268,15 @@ func TestCheckYARADeepYARAErrorRetainsJSResult(t *testing.T) {
 	if !containsFindingCheck(findings, "yara_scan_incomplete") {
 		t.Fatalf("findings = %+v, want the YARA coverage gap", findings)
 	}
-	if !collector.contains("yara_deep") || collector.contains("js_taint_deep") {
-		t.Fatal("YARA error marks only its own owner incomplete")
+	gap := findingByCheck(findings, "yara_scan_incomplete")
+	if !strings.Contains(gap.Details, path) {
+		t.Fatalf("YARA gap did not name %s: %q", path, gap.Details)
+	}
+	// A YARA scan error names the file it happened on, so it is carried
+	// forward rather than suppressing the YARA purge. What must never happen
+	// is a YARA failure marking the JS owner partial.
+	if collector.contains("yara_deep") || collector.contains("js_taint_deep") {
+		t.Fatal("a known-path YARA error must not mark either owner incomplete")
 	}
 }
 
@@ -623,6 +630,39 @@ func TestCheckYARADeepCarriesOnlyNewestPriorJSTaintFindingPerGapPath(t *testing.
 	carried := jsFindingsByCheck(findings, "js_keylogger_dataflow")
 	if len(carried) != 1 || carried[0].Message != "newer prior" {
 		t.Fatalf("carry-forward = %+v, want only the newest prior finding for %s", carried, brokenPath)
+	}
+}
+
+func TestCheckYARADeepJSGapRejectsConcurrentDismissal(t *testing.T) {
+	useRollingStore(t)
+	useNilYARABackend(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "broken.js", "keydown fetch ((((")
+	prior := alert.Finding{
+		Check: "js_keylogger_dataflow", Severity: alert.Critical,
+		Message: "prior JS finding", FilePath: path, Timestamp: time.Unix(100, 0),
+	}
+	st.SetLatestFindings([]alert.Finding{prior})
+
+	ctx, gaps := WithCoverageGaps(context.Background())
+	findings, purge := runParallelWithContext(ctx, &config.Config{
+		AccountRoots: []string{root}, DisabledChecks: []string{"yara_deep", logicalOwnerPHPTaintDeep},
+	}, st, []namedCheck{{name: "yara_deep", fn: CheckYARADeep}}, "deep", true)
+	carried := jsFindingsByCheck(findings, "js_keylogger_dataflow")
+	if len(carried) != 1 || !carried[0].ScanCarryForward || !gaps.Paths()["js_keylogger_dataflow"][path] {
+		t.Fatalf("JS gap did not publish matching carry and preservation state: findings=%+v gaps=%+v", carried, gaps.Paths())
+	}
+	st.DismissLatestFinding(prior.Key())
+	StoreLatestScanFindingsWithGaps(st, purge, findings, gaps.Paths())
+
+	if got := jsFindingsByCheck(st.LatestFindings(), "js_keylogger_dataflow"); len(got) != 0 {
+		t.Fatalf("JS carry-forward resurrected a concurrently dismissed finding: %+v", got)
 	}
 }
 

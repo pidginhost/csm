@@ -19,6 +19,9 @@ import (
 func externalScriptHosts(content string) []string {
 	var hosts []string
 	seen := map[string]bool{}
+	// A payload stored as JSON carries escaped slashes, which the src
+	// grammar does not match; normalise before extracting.
+	content = unescapeStoredSlashes(content)
 	for _, match := range scriptSrcRe.FindAllStringSubmatch(content, -1) {
 		if len(match) < 2 {
 			continue
@@ -52,7 +55,7 @@ func externalScriptHosts(content string) []string {
 // in an option value that firstSeen has not recorded before. Severity stays
 // below the auto-response threshold: this is a "look at this" signal, not
 // proof of injection.
-func newExternalScriptFindings(user, dbName, prefix, option, value string, firstSeen func(option, host string) bool) []alert.Finding {
+func newExternalScriptFindings(user string, creds wpDBCreds, prefix, option, value string, firstSeen func(option, host string) bool) []alert.Finding {
 	var findings []alert.Finding
 	for _, host := range externalScriptHosts(value) {
 		if !firstSeen(option, host) {
@@ -62,7 +65,12 @@ func newExternalScriptFindings(user, dbName, prefix, option, value string, first
 			Severity: alert.Warning,
 			Check:    "db_options_new_external_script",
 			Message:  fmt.Sprintf("New external script host in wp_options '%s' (account: %s): %s", option, user, host),
-			Details: dbContentFindingDetails(dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
+				fmt.Sprintf("Option: %s", option),
+				fmt.Sprintf("Script host: %s", host),
+				fmt.Sprintf("Content preview: %s", truncateDB(value, 200)),
+				"First appearance of this host since the site's baseline; verify it is a service the site owner added."),
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				fmt.Sprintf("Option: %s", option),
 				fmt.Sprintf("Script host: %s", host),
 				fmt.Sprintf("Content preview: %s", truncateDB(value, 200)),

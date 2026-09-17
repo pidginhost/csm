@@ -16,6 +16,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/quarantinefs"
 )
 
 // Virtual patching for web-exposed files.
@@ -38,6 +39,8 @@ var chownFunc = func(file *os.File, uid, gid int) error {
 // virtualPatchBeforeCommitForTest simulates a customer or deploy process
 // changing .htaccess between the initial read and the atomic commit.
 var virtualPatchBeforeCommitForTest func(string, string)
+
+var syncVirtualPatchDirectory = quarantinefs.SyncDir
 
 const maxVirtualPatchHtaccessSize = 4 << 20
 
@@ -208,6 +211,9 @@ func applyHtaccessDeny(dir string, block []byte) (bool, error) {
 		return false, err
 	}
 	keepBackup = true
+	if err := syncVirtualPatchDirectory(dir); err != nil {
+		return false, fmt.Errorf("virtual-patch installed but directory sync failed; backup retained at %s: %w", backup.itemPath, err)
+	}
 	return reverted, nil
 }
 
@@ -594,6 +600,7 @@ func findExistingPrePatchBackup(htaccess string, state htaccessState, patched []
 			meta.Owner != state.uid ||
 			meta.Group != state.gid ||
 			meta.Mode != state.mode.String() ||
+			(state.existed && !meta.OriginalModTime.Equal(state.info.ModTime())) ||
 			meta.Size != int64(len(state.content)) {
 			return false
 		}
@@ -618,14 +625,20 @@ func findExistingPrePatchBackup(htaccess string, state htaccessState, patched []
 // The bool reports whether this call created the backup, so a failed patch
 // never removes an archived copy shared with an earlier successful patch.
 func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []byte) (virtualPatchBackup, bool, error) {
-	if err := os.MkdirAll(htaccessBackupDirRoot, 0750); err != nil {
+	if err := quarantinefs.EnsureDir(htaccessBackupDirRoot, 0750); err != nil {
 		return virtualPatchBackup{}, false, fmt.Errorf("creating backup dir: %v", err)
 	}
-	// A backup plugin that rewrites its own .htaccess sends CSM back here on
-	// every scan with byte-identical pre-patch content. Reuse the archived
-	// copy instead of stacking another one; the operator gains nothing from
-	// the duplicate and the quarantine list becomes unreadable.
+	// Reuse only an identical recovery state. Equal bytes with different
+	// attributes need a new backup so restore keeps the captured metadata.
 	if existing, found := findExistingPrePatchBackup(htaccess, state, patched); found {
+		for _, path := range []string{existing.itemPath, existing.metaPath} {
+			if err := quarantinefs.SyncFilePath(path); err != nil {
+				return virtualPatchBackup{}, false, fmt.Errorf("syncing existing backup: %w", err)
+			}
+		}
+		if err := quarantinefs.SyncDir(htaccessBackupDirRoot); err != nil {
+			return virtualPatchBackup{}, false, err
+		}
 		return existing, false, nil
 	}
 
@@ -661,7 +674,7 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 	if !state.existed {
 		restoreAction = QuarantineRestoreRemoveIfUnchanged
 	}
-	metaJSON, err := json.Marshal(QuarantineMeta{
+	meta := QuarantineMeta{
 		OriginalPath:          htaccess,
 		Owner:                 state.uid,
 		Group:                 state.gid,
@@ -671,7 +684,11 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 		Reason:                "exposed-file virtual-patch: pre-patch .htaccess backup",
 		RestoreAction:         restoreAction,
 		ExpectedCurrentSHA256: virtualPatchSHA256(patched),
-	})
+	}
+	if state.existed {
+		meta.OriginalModTime = state.info.ModTime().UTC()
+	}
+	metaJSON, err := json.Marshal(meta)
 	if err != nil {
 		return virtualPatchBackup{}, false, fmt.Errorf("encoding backup meta: %v", err)
 	}
@@ -690,6 +707,9 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 	if err := metaFile.Close(); err != nil {
 		return virtualPatchBackup{}, false, fmt.Errorf("closing backup meta: %v", err)
 	}
+	if err := quarantinefs.SyncDir(htaccessBackupDirRoot); err != nil {
+		return virtualPatchBackup{}, false, fmt.Errorf("syncing backup directory: %w", err)
+	}
 	keep = true
 	return backup, true, nil
 }
@@ -706,78 +726,6 @@ func (backup virtualPatchBackup) remove() {
 func virtualPatchSHA256(content []byte) string {
 	sum := sha256.Sum256(content)
 	return fmt.Sprintf("sha256:%x", sum[:])
-}
-
-// RestoreVirtualPatchBackup reverts a virtual-patch only when the live
-// .htaccess still has the exact content recorded after enforcement. This keeps
-// quarantine restore from overwriting customer edits made after the patch.
-func RestoreVirtualPatchBackup(backupPath, htaccess string, meta QuarantineMeta) error {
-	if filepath.Base(htaccess) != ".htaccess" {
-		return fmt.Errorf("virtual-patch restore applies only to .htaccess")
-	}
-	if meta.RestoreAction != QuarantineRestoreReplaceIfUnchanged &&
-		meta.RestoreAction != QuarantineRestoreRemoveIfUnchanged {
-		return fmt.Errorf("unsupported virtual-patch restore action %q", meta.RestoreAction)
-	}
-	mode, err := parseVirtualPatchMode(meta.Mode)
-	if err != nil {
-		return err
-	}
-	state, err := readHtaccessState(htaccess, filepath.Dir(htaccess))
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, err)
-	}
-	if !state.existed || virtualPatchSHA256(state.content) != meta.ExpectedCurrentSHA256 ||
-		state.uid != meta.Owner || state.gid != meta.Group || state.mode.Perm() != mode.Perm() {
-		return fmt.Errorf("%w: live file was modified after enforcement", ErrVirtualPatchRestoreConflict)
-	}
-
-	if meta.RestoreAction == QuarantineRestoreRemoveIfUnchanged {
-		if removeErr := removeVirtualPatchIfUnchanged(htaccess, state); removeErr != nil {
-			return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, removeErr)
-		}
-		return nil
-	}
-
-	// #nosec G304 -- backupPath is resolved by the quarantine handler beneath
-	// quarantineDir/pre_clean; O_NOFOLLOW rejects a replaced sidecar item.
-	backupInfo, err := os.Lstat(backupPath)
-	if err != nil {
-		return fmt.Errorf("inspecting virtual-patch backup: %v", err)
-	}
-	if backupInfo.Mode()&os.ModeSymlink != 0 || !backupInfo.Mode().IsRegular() {
-		return fmt.Errorf("virtual-patch backup is not a regular file")
-	}
-	backup, err := os.OpenFile(backupPath, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- validated pre_clean item; O_NOFOLLOW and inode checks reject swaps
-	if err != nil {
-		return fmt.Errorf("opening virtual-patch backup: %v", err)
-	}
-	openedBackupInfo, err := backup.Stat()
-	if err != nil || !os.SameFile(backupInfo, openedBackupInfo) || !openedBackupInfo.Mode().IsRegular() {
-		_ = backup.Close()
-		return fmt.Errorf("virtual-patch backup changed while opening")
-	}
-	backupContent, readErr := io.ReadAll(io.LimitReader(backup, maxVirtualPatchHtaccessSize+1))
-	closeErr := backup.Close()
-	if readErr != nil {
-		return fmt.Errorf("reading virtual-patch backup: %v", readErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("closing virtual-patch backup: %v", closeErr)
-	}
-	if len(backupContent) > maxVirtualPatchHtaccessSize {
-		return fmt.Errorf("virtual-patch backup exceeds %d bytes", maxVirtualPatchHtaccessSize)
-	}
-	restoreState := htaccessState{uid: meta.Owner, gid: meta.Group, mode: mode.Perm()}
-	tmp, tempState, err := writeVirtualPatchTemp(filepath.Dir(htaccess), backupContent, restoreState)
-	if err != nil {
-		return err
-	}
-	if err := commitVirtualPatchTemp(tmp, htaccess, state, tempState); err != nil {
-		removeVirtualPatchTemp(tmp, tempState)
-		return fmt.Errorf("%w: %v", ErrVirtualPatchRestoreConflict, err)
-	}
-	return nil
 }
 
 func parseVirtualPatchMode(value string) (os.FileMode, error) {

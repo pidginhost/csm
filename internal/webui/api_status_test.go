@@ -10,9 +10,12 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type statusFakeProvider struct {
+	wordpress            map[string]health.WPVerificationCounts
+	queues               map[string]queuehealth.Status
 	started              time.Time
 	bpfEnforcementActive bool
 	latestScan           time.Time
@@ -21,7 +24,14 @@ type statusFakeProvider struct {
 	update               health.UpdateInfo
 	watchers             map[string]bool
 	storeHealthy         *bool
+	attribution          *health.CorrelationAttribution
 }
+
+func (f statusFakeProvider) WordPressVerification() map[string]health.WPVerificationCounts {
+	return f.wordpress
+}
+
+func (f statusFakeProvider) QueueStatuses() map[string]queuehealth.Status { return f.queues }
 
 func (statusFakeProvider) Hostname() string { return "h" }
 func (f statusFakeProvider) StartedAt() time.Time {
@@ -60,6 +70,10 @@ func (f statusFakeProvider) AutomationStatus() health.AutomationStatus {
 	return f.automation
 }
 func (f statusFakeProvider) UpdateInfo() health.UpdateInfo { return f.update }
+func (f statusFakeProvider) Mode() string                  { return "enforce" }
+func (f statusFakeProvider) CorrelationAttribution() *health.CorrelationAttribution {
+	return f.attribution
+}
 
 var _ health.Provider = statusFakeProvider{}
 
@@ -189,6 +203,12 @@ func TestApiStatus_SecurityPostureWarnsOnDegradedSnapshot(t *testing.T) {
 				storeHealthy: boolPtr(false),
 			},
 		},
+		{
+			name: "stalled finding queue",
+			provider: statusFakeProvider{
+				queues: map[string]queuehealth.Status{"findings.ingest": {Status: "degraded", Reason: "processing_lag", InFlight: 1, ProcessingSeconds: 120}},
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -279,5 +299,24 @@ func TestApiStatus_NilProviderFallsBackToLegacyShape(t *testing.T) {
 	s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestApiStatus_AdvisoryQueueKeepsPostureHealthy(t *testing.T) {
+	s := &Server{cfg: capsTestCfg(), startTime: time.Now().Add(-time.Hour)}
+	s.SetHealthProvider(statusFakeProvider{
+		queues: map[string]queuehealth.Status{"events.deliveries": {Status: "degraded", Advisory: true, Reason: "queue_full", Depth: 64, Capacity: 64}},
+	})
+	s.sigCount = 5
+
+	rec := httptest.NewRecorder()
+	s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != "ok" || got["security_posture"] != "healthy" {
+		t.Fatalf("best-effort queue changed the posture: status=%v posture=%v", got["status"], got["security_posture"])
 	}
 }

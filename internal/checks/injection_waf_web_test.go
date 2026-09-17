@@ -214,14 +214,16 @@ func TestAuditCloudLinuxWithMocks(t *testing.T) {
 // --- ApplyFix --------------------------------------------------------
 
 func TestApplyFixUnknownCheck(t *testing.T) {
-	result := ApplyFix("unknown_check", "msg", "details")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "unknown_check", "msg", "details")
 	if result.Success {
 		t.Error("unknown check should not succeed")
 	}
 }
 
 func TestApplyFixNoPath(t *testing.T) {
-	result := ApplyFix("world_writable_php", "no path in message", "")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "world_writable_php", "no path in message", "")
 	if result.Success {
 		t.Error("no path should not succeed")
 	}

@@ -55,11 +55,49 @@ repo_gpgcheck=1
 gpgkey=https://mirrors.pidginhost.com/csm/csm-signing.gpg
 EOF
 
-# 3. Install
+# 3. Install (check the fingerprint below before accepting the key)
 sudo dnf install csm
 ```
 
-The explicit `rpm --import` is important: without it, the first `dnf install csm` prompts "Is this ok [y/N]:" to trust the repo key, and `dnf install -y` answers package install prompts but not the key-trust prompt. If the prompt goes unanswered on a non-interactive install, dnf fails with `repomd.xml GPG signature verification error: Signing key not found`.
+`rpm --import` populates the RPM keyring, which covers `gpgcheck` -- the
+signature on the package. It does not populate the separate keyring dnf keeps
+for `repo_gpgcheck`, the signature on the repository *metadata*. So the first
+transaction against a new repository still prompts, even after a successful
+import:
+
+```
+Importing GPG key 0x81CD59B1:
+ Userid     : "CSM Package Signing (CSM Repository Metadata Signing Key) <security@pidginhost.com>"
+ Fingerprint: 3A70 4D78 3CF2 6055 B2AA 8F49 4E0F 27F5 81CD 59B1
+Is this ok [y/N]:
+```
+
+Without `-y`, an unanswered key prompt defaults to no. A rejected key can
+produce an error such as:
+
+```
+Error: Failed to download metadata for repo 'csm':
+repomd.xml GPG signature verification error: Bad GPG signature
+```
+
+The error alone does not distinguish an untrusted key from damaged or
+incorrectly signed metadata. Check the fingerprint against the value above,
+then verify the metadata signature:
+
+```bash
+base=https://mirrors.pidginhost.com/csm/rpm/el9/x86_64/repodata
+curl -fsSLO $base/repomd.xml
+curl -fsSLO $base/repomd.xml.asc
+curl -fsSL https://mirrors.pidginhost.com/csm/csm-signing.gpg | gpg --import
+gpg --verify repomd.xml.asc repomd.xml
+# gpg: Good signature from "CSM Package Signing ... <security@pidginhost.com>"
+```
+
+For unattended installs, approve the repository key in provisioning first,
+then use `sudo dnf -y install csm`. DNF's
+[`assumeyes` option](https://dnf.readthedocs.io/en/stable/conf_ref.html#main-options)
+accepts key-import prompts as well as package prompts. Keep both signature
+checks enabled; `-y` is not a substitute for verifying the expected key.
 
 The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. Works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel-managed hosts.
 
@@ -67,13 +105,15 @@ To upgrade later: `sudo dnf upgrade csm`.
 
 ## Online standalone installer
 
-Use the standalone installer when the host has Internet access but cannot use the APT or DNF repository. It downloads the binary and supporting assets from the latest GitHub release, verifies their checksums, verifies Ed25519 signatures when the installed OpenSSL supports it, and installs outside the package manager.
+Use the standalone installer when the host has Internet access but cannot use the APT or DNF repository. It downloads the binary and supporting assets from the latest GitHub release, verifies their checksums, requires successful Ed25519 signature verification, and installs outside the package manager.
 
 ```bash
 curl -fsSLo /tmp/csm-install.sh https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh
 less /tmp/csm-install.sh
 sudo bash /tmp/csm-install.sh
 ```
+
+Standalone verification uses OpenSSL 3.0 or newer, an already installed CSM build providing `csm verify-release`, or `python3-cryptography` -- in that order. EL8 and CloudLinux 8 have the last of these, so the standalone path works there even though their OpenSSL 1.1.1 cannot verify Ed25519. A missing key, missing current-release signature, absent verifier, or failed verification stops the install before executing the binary. See [Release signing](release-signing.md) for the narrowly scoped historical-release exception.
 
 It auto-detects the hostname and alert email, generates a Web UI token, and prompts before applying. Non-interactive mode:
 
@@ -85,16 +125,22 @@ This is not an offline or air-gapped installation path. Mirror the signed packag
 
 ## Manual `.rpm` / `.deb` download
 
-If you need a specific version or want to install without adding the repository:
+If you need a specific version or want to install without adding the repository, verify its detached signature before invoking the package manager. Save the trusted public key from [Release signing](release-signing.md#public-key) as `csm-signing.pub`. These commands require OpenSSL 3.0 or newer; older hosts should use the signed repository above. Installing a local package does not by itself establish the repository signature chain:
 
 ```bash
 # RHEL family
 curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm-VERSION-1.x86_64.rpm
-sudo dnf install -y ./csm-VERSION-1.x86_64.rpm
+curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm-VERSION-1.x86_64.rpm.sig
+openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
+  -sigfile csm-VERSION-1.x86_64.rpm.sig -in csm-VERSION-1.x86_64.rpm && \
+  sudo dnf install -y ./csm-VERSION-1.x86_64.rpm
 
 # Debian/Ubuntu
 curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_amd64.deb
-sudo apt install -y ./csm_VERSION_amd64.deb
+curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_amd64.deb.sig
+openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
+  -sigfile csm_VERSION_amd64.deb.sig -in csm_VERSION_amd64.deb && \
+  sudo apt install -y ./csm_VERSION_amd64.deb
 ```
 
 Replace `VERSION` with a published version. Both files are also available from the package mirror if you need to pin a release without adding the repository.
@@ -116,6 +162,8 @@ The package uses FHS paths for config, state, drop-ins, and shipped profiles. Up
 | YARA / signature rules | `/opt/csm/rules/` |
 
 The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions for the FHS directories. On upgrade, the package copies a real legacy main config into `/etc/csm/csm.yaml` when needed and points `/opt/csm/csm.yaml` at it. On first start the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/` (only when the new directory is empty), then continues using the FHS state path. See [Upgrading - FHS migration](upgrading.md#fhs-migration-state-config-drop-ins-and-profiles) for the manual-binary-swap case.
+
+When refreshing the service unit, install and `csm rehash` create any missing directory the unit requires before replacing it, without changing the mode of directories that already exist. Optional paths and systemd-managed directories are left alone. If a required directory cannot be created, the refresh fails and the previous unit stays in place.
 
 ## Post-install (all methods)
 
@@ -166,7 +214,7 @@ The daemon runs as one executable plus packaged UI, rule, profile, and PAM asset
 |---------|-----------|---------|
 | `auditd` | All | Shadow file / SSH key tamper detection via auditd |
 | `debsums` | Debian/Ubuntu | Cleaner system binary integrity output vs. `dpkg --verify` fallback |
-| `logrotate` | All | Rotation of `/var/log/csm/monitor.log` |
+| `logrotate` | All | Rotation of `/var/log/csm/monitor.log`, `/var/log/csm/audit.jsonl`, and the PHP Shield event log |
 | `wp-cli` | Optional | WordPress core integrity check |
 | ModSecurity | All | WAF enforcement checks (see platform-specific install below) |
 

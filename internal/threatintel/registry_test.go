@@ -76,7 +76,7 @@ func TestAsyncBotVerifier_OperatorEntryVerifies(t *testing.T) {
 			gotVerified, gotValid = verified, true
 		}
 		return nil
-	})
+	}, nil)
 	a.res = &mockResolver{
 		ptr: map[string][]string{ip: {"crawl-9.acme.example."}},
 		a:   map[string][]net.IP{"crawl-9.acme.example": {net.ParseIP(ip)}},
@@ -93,7 +93,7 @@ func TestAsyncBotVerifier_OperatorEntryVerifies(t *testing.T) {
 // An operator entry naming a built-in extends that bot's suffix list rather
 // than replacing it, so both the built-in and the added suffix verify.
 func TestAsyncBotVerifier_OperatorExtendsBuiltinSuffixes(t *testing.T) {
-	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error { return nil })
+	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error { return nil }, nil)
 	a.res = &mockResolver{
 		ptr: map[string][]string{
 			"203.0.113.20": {"node.extra.example."},

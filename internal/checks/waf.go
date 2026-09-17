@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/modsec"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -33,8 +34,9 @@ var wafRulesAssembleRetryDelay = 30 * time.Second
 // CheckWAFStatus verifies that ModSecurity is loaded, the engine is in
 // enforcement mode (not DetectionOnly), OWASP/Comodo rules are active,
 // and rules are up to date.
-func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckWAFStatus(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
+	manageHost := cfg == nil || !cfg.ObserveMode()
 
 	info := platform.Detect()
 
@@ -101,7 +103,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 		if staleAge > 0 {
 			// Attempt auto-update before alerting
 			updated := false
-			if info.IsCPanel() {
+			if info.IsCPanel() && manageHost {
 				updated = autoUpdateWAFRules()
 			}
 			if updated {
@@ -121,8 +123,21 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 
 	// --- Virtual patch deployment ---
 	// Only cPanel has the modsec user config dirs we write into.
-	if info.IsCPanel() {
-		deployVirtualPatches()
+	if info.IsCPanel() && manageHost {
+		reloadCommand := ""
+		if cfg != nil {
+			reloadCommand = cfg.ModSec.ReloadCommand
+		}
+		// Hosts without a reload command are warned at daemon startup; a
+		// finding here would repeat every scan with nothing CSM can verify.
+		if err := deployAndReconcileModSec(ctx, reloadCommand); err != nil {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "waf_status",
+				Message:  "CSM ModSecurity rule activation could not be confirmed",
+				Details:  err.Error(),
+			})
+		}
 	}
 
 	// --- Disabled ModSecurity scopes ---
@@ -858,12 +873,6 @@ const (
 // or rewrites its own marker-delimited section; every byte outside the
 // section is preserved verbatim.
 func deployVirtualPatches() {
-	// Possible modsec user config paths
-	destPaths := []string{
-		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
-		"/usr/local/apache/conf/modsec2.user.conf",
-	}
-
 	srcPath := "/opt/csm/configs/csm_modsec_custom.conf"
 	srcData, err := osFS.ReadFile(srcPath)
 	if err != nil {
@@ -871,7 +880,7 @@ func deployVirtualPatches() {
 	}
 	section := buildVPSection(srcData)
 
-	for _, dest := range destPaths {
+	for _, dest := range vpDestPaths {
 		dir := filepath.Dir(dest)
 		if _, err := osFS.Stat(dir); os.IsNotExist(err) {
 			continue
@@ -1156,7 +1165,7 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 	// Count blocked attacks per IP
 	blocked := countModSecDenials(lines)
 	for ip := range blocked {
-		if isInfraIP(ip, cfg.InfraIPs) {
+		if isInfraIP(ip, cfg.InfraIPs) || !wafAttackerIsReportable(ip) {
 			delete(blocked, ip)
 		}
 	}
@@ -1169,12 +1178,40 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 				Check:    "waf_attack_blocked",
 				SourceIP: ip,
 				Message:  fmt.Sprintf("WAF blocking high-volume attacker: %s (%d blocked requests)", ip, count),
-				Details:  fmt.Sprintf("IP %s has been blocked %d times by ModSecurity. Consider permanent block via CSM.", ip, count),
+				Details:  wafBlockAdvice(ip, count),
 			})
 		}
 	}
 
 	return findings
+}
+
+// wafAttackerIsReportable reports whether a ModSecurity denial count belongs
+// to an address worth telling the operator about.
+//
+// The control panel proxies its own traffic over loopback and, on cPanel,
+// through the machine's public address rather than 127.0.0.1, so denials
+// attributed to either accumulate on any busy host. Reporting those as a
+// high-volume attacker and advising a permanent block points the operator at
+// their own machine -- and the firewall's local-address guard excludes
+// loopback, so the block is accepted rather than refused.
+//
+// A lookup failure fails open: a real attacker must never be suppressed by a
+// transient syscall error. Loopback is decided without the lookup.
+func wafAttackerIsReportable(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	if parsed.IsLoopback() || parsed.IsUnspecified() {
+		return false
+	}
+	return !netutil.IsHostAddress(ip)
+}
+
+// wafBlockAdvice is the operator guidance attached to a WAF attacker finding.
+func wafBlockAdvice(ip string, count int) string {
+	return fmt.Sprintf("IP %s has been blocked %d times by ModSecurity. Consider permanent block via CSM.", ip, count)
 }
 
 // modsecAuditLogPaths yields the audit log candidates; a seam for tests.

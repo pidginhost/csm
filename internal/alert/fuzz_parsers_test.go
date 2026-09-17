@@ -29,3 +29,30 @@ func FuzzRedactCommandLine(f *testing.F) {
 		}
 	})
 }
+
+func FuzzRedactSensitive(f *testing.F) {
+	for _, seed := range []string{
+		"[cpaneld] NEW ",
+		"[cpaneld] NEW :",
+		"[cpaneld] NEW NEW shop:session-fixture",
+		"[cpaneld] NEW shop:[REDACTED] PURGE shop:session-fixture",
+		"[cpsrvd] NEW shop:session-fixture password=[REDACTED]",
+		"[whostmgrd] NEW root:session-fixture",
+		"[cpdavd] NEW _dav_:session-fixture",
+		"[security] internal PURGE shop:session-fixture password_change",
+		"password=fixture&password=other-fixture",
+		`log="request token_value=first-fixture token_value=second-fixture evidence"`,
+		`log="request password='quoted fixture' evidence"`,
+		"log=\"password=[REDACTED]\tuser=shop\"",
+		`curl https://user:fixture@example.com/?api_token=fixture&x=1`,
+		"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		got := redactSensitive(input)
+		if again := redactSensitive(got); again != got {
+			t.Fatalf("redaction is not idempotent: first %q, second %q", got, again)
+		}
+	})
+}

@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -28,14 +30,28 @@ var (
 	// nil means "no blocker wired" (early startup or unit tests); the
 	// singleton then skips wiring OnSprayBlock and the spray detector
 	// stays detection-only even with BlockAtSeverity set.
-	incidentSprayBlocker func(ip, reason string, timeout time.Duration) (bool, error)
+	incidentSprayBlocker func(ip, reason string, timeout time.Duration, findingID string) (bool, error)
 )
+
+// autoResponseBlockExpiry is the operator's configured block duration, the
+// first rung of the incident auto-block escalation ladder. An unset or
+// unparseable value falls back to a day, matching the firewall default.
+func autoResponseBlockExpiry(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return 24 * time.Hour
+	}
+	timeout, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry)
+	if err != nil || timeout <= 0 {
+		return 24 * time.Hour
+	}
+	return timeout
+}
 
 // SetIncidentSprayBlocker installs the firewall-side hand-off used by the
 // incident auto-block paths. Call once after the firewall engine is built
 // and before the first IncidentCorrelator() call.
 // Passing nil clears the binding.
-func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration) (bool, error)) {
+func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration, findingID string) (bool, error)) {
 	incidentSprayBlocker = fn
 }
 
@@ -62,10 +78,13 @@ const incidentAutoCloseDrainDelay = 30 * time.Second
 // thousands of bbolt persists in one tick.
 const incidentAutoCloseMaxPerSweep = 1000
 
-// incidentRetentionPeriod is how long resolved/dismissed incidents are
-// kept before compaction prunes them. Named constant per project
-// convention; config exposure deferred until operators ask.
-const incidentRetentionPeriod = 30 * 24 * time.Hour
+// incidentClosedRetention is how long resolved/dismissed incidents are kept
+// before compaction prunes them. Named value per project convention; config
+// exposure deferred until operators ask.
+var incidentClosedRetention = incident.ClosedRetention{
+	Operator: 30 * 24 * time.Hour,
+	Auto:     7 * 24 * time.Hour,
+}
 
 // incidentOpenThreshold is the number of correlated findings required
 // before a finding subject to the threshold opens an incident. Two means an
@@ -85,31 +104,23 @@ var incidentOpenThreshold = 2
 func IncidentCorrelator() *incident.Correlator {
 	incidentOnce.Do(func() {
 		db := store.Global()
-		var persist func(incident.Incident)
+		var persist func(incident.Incident) error
 		if db != nil {
-			persist = func(inc incident.Incident) {
-				if err := db.SaveIncident(inc); err != nil {
-					// The in-memory correlator has already advanced, so
-					// failed writes mean the next restore may replay stale
-					// incident state unless operators repair the store.
-					csmlog.Warn("incident persist failed",
-						"id", inc.ID, "kind", string(inc.Kind),
-						"status", string(inc.Status), "err", err)
-				}
-			}
+			persist = db.SaveIncident
 		}
 		// Resolve spray-suppression knobs from the active config. nil
 		// config (early test wiring) leaves the detector disabled.
 		var spray incident.SpraySuppressionConfig
 		var autoBlock incident.IncidentAutoBlockConfig
 		var whitelisted func(string) bool
-		var onSprayBlock func(ip, reason string) bool
-		var onIncidentBlock func(ip, reason string) bool
+		var onSprayBlock func(ip, reason string, ttl time.Duration, findingID string) bool
+		var onIncidentBlock func(ip, reason string, ttl time.Duration, findingID string) bool
 		if cfg := globalCfgForIncidents(); cfg != nil {
 			spray = incident.SpraySuppressionConfig{
 				Enabled:            cfg.Incidents.SpraySuppression.Enabled,
 				DryRun:             cfg.Incidents.SpraySuppression.DryRun,
 				DistinctMailboxes:  cfg.Incidents.SpraySuppression.DistinctMailboxes,
+				BlockExpiry:        autoResponseBlockExpiry(cfg),
 				SeverityEscalateAt: cfg.Incidents.SpraySuppression.SeverityEscalateAt,
 				PerCheck:           cfg.IncidentsSpraySuppressionPerCheck(),
 				MaxTrackedIPs:      cfg.Incidents.SpraySuppression.MaxTrackedIPs,
@@ -122,17 +133,19 @@ func IncidentCorrelator() *incident.Correlator {
 			// the singleton.
 			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onSprayBlock = func(ip, reason string) bool {
+				onSprayBlock = func(ip, reason string, ttl time.Duration, findingID string) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
-					timeout, perr := time.ParseDuration(liveCfg.AutoResponse.BlockExpiry)
-					if perr != nil || timeout <= 0 {
-						timeout = 24 * time.Hour
-					}
-					live, err := blocker(ip, "CSM credential_spray: "+reason, timeout)
+					// ttl comes from the correlator's escalation ladder; zero
+					// is a permanent block, which the engine understands.
+					live, err := blocker(ip, "CSM credential_spray: "+reason, ttl, findingID)
 					if err != nil {
+						if live && errors.Is(err, firewall.ErrActionAuditPending) {
+							csmlog.Warn("credential_spray block audit delivery pending", "ip", ip, "err", err)
+							return true
+						}
 						if !isProtectedIPRefusal(err) {
 							csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
 						}
@@ -152,21 +165,22 @@ func IncidentCorrelator() *incident.Correlator {
 			autoBlock = incident.IncidentAutoBlockConfig{
 				Enabled:         cfg.Incidents.AutoBlock.Enabled,
 				BlockAtSeverity: cfg.Incidents.AutoBlock.BlockAtSeverity,
+				BlockExpiry:     autoResponseBlockExpiry(cfg),
 				Kinds:           kinds,
 			}
 			if autoBlock.Enabled && autoBlock.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onIncidentBlock = func(ip, reason string) bool {
+				onIncidentBlock = func(ip, reason string, ttl time.Duration, findingID string) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
-					timeout, perr := time.ParseDuration(liveCfg.AutoResponse.BlockExpiry)
-					if perr != nil || timeout <= 0 {
-						timeout = 24 * time.Hour
-					}
-					live, err := blocker(ip, "CSM incident: "+reason, timeout)
+					live, err := blocker(ip, "CSM incident: "+reason, ttl, findingID)
 					if err != nil {
+						if live && errors.Is(err, firewall.ErrActionAuditPending) {
+							csmlog.Warn("incident auto-block audit delivery pending", "ip", ip, "err", err)
+							return true
+						}
 						// Own-interface / infra IPs are intentionally never
 						// blockable; the incident still opened, so the operator is
 						// alerted to activity attributed to a protected address
@@ -418,17 +432,20 @@ func runIncidentCompaction(c *incident.Correlator) {
 	if db == nil {
 		return
 	}
-	now := time.Now()
-	pruned, err := db.CompactIncidents(now, incidentRetentionPeriod)
+	runIncidentCompactionWith(c, time.Now(), db.CompactIncidents)
+}
+
+func runIncidentCompactionWith(c *incident.Correlator, now time.Time, compact func(time.Time, incident.ClosedRetention) (int, error)) {
+	pruned, err := compact(now, incidentClosedRetention)
+	c.IncrementCompactedTotal(pruned)
 	if err != nil {
-		csmlog.Warn("incident retention compaction failed", "err", err)
+		csmlog.Warn("incident retention compaction failed", "pruned", pruned, "err", err)
 		return
 	}
-	_ = c.PruneClosedOlderThan(now, incidentRetentionPeriod)
+	_ = c.PruneClosedOlderThan(now, incidentClosedRetention)
 	_ = c.PruneStalePending(now)
 	_ = c.PruneStaleSpray(now)
 	if pruned > 0 {
-		c.IncrementCompactedTotal(pruned)
 		csmlog.Info("incident retention compaction", "pruned", pruned)
 	}
 }

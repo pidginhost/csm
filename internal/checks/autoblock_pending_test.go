@@ -36,7 +36,7 @@ func pendingTestConfig(t *testing.T) *config.Config {
 func TestAutoBlockPendingRequeuedWhenEngineUnavailable(t *testing.T) {
 	cfg := pendingTestConfig(t)
 	saveBlockState(cfg.StatePath, &blockState{
-		Pending: []pendingIP{{IP: "203.0.113.10", Reason: "queued"}},
+		Pending: []pendingIP{{IP: "203.0.113.10", Check: "wp_login_bruteforce", Reason: "queued"}},
 	})
 
 	oldBlocker := getIPBlocker()
@@ -64,8 +64,8 @@ func TestAutoBlockPendingStaleEntriesDropped(t *testing.T) {
 	cfg := pendingTestConfig(t)
 	saveBlockState(cfg.StatePath, &blockState{
 		Pending: []pendingIP{
-			{IP: "203.0.113.11", Reason: "stale", QueuedAt: time.Now().Add(-3 * time.Hour)},
-			{IP: "203.0.113.12", Reason: "fresh", QueuedAt: time.Now().Add(-time.Minute)},
+			{IP: "203.0.113.11", Check: "wp_login_bruteforce", Reason: "stale", QueuedAt: time.Now().Add(-3 * time.Hour)},
+			{IP: "203.0.113.12", Check: "wp_login_bruteforce", Reason: "fresh", QueuedAt: time.Now().Add(-time.Minute)},
 		},
 	})
 
@@ -91,7 +91,7 @@ func TestAutoBlockRateLimitQueuePreservesQueuedAt(t *testing.T) {
 	saveBlockState(cfg.StatePath, &blockState{
 		BlocksThisHour: 1,
 		HourKey:        autoBlockNow().Format("2006-01-02T15"),
-		Pending:        []pendingIP{{IP: "203.0.113.13", Reason: "queued", QueuedAt: queuedAt}},
+		Pending:        []pendingIP{{IP: "203.0.113.13", Check: "wp_login_bruteforce", Reason: "queued", QueuedAt: queuedAt}},
 	})
 
 	blocker := &recordingIPBlocker{}
@@ -149,7 +149,7 @@ func TestAutoBlockRateLimitQueueStampsNewEntries(t *testing.T) {
 func TestAutoBlockErrorRequeuesPendingIP(t *testing.T) {
 	cfg := pendingTestConfig(t)
 	saveBlockState(cfg.StatePath, &blockState{
-		Pending: []pendingIP{{IP: "203.0.113.15", Reason: "queued"}},
+		Pending: []pendingIP{{IP: "203.0.113.15", Check: "wp_login_bruteforce", Reason: "queued"}},
 	})
 
 	blocker := &failingIPBlocker{}
@@ -175,6 +175,7 @@ func TestAutoBlockPendingOverflowWarnsWhenEngineUnavailable(t *testing.T) {
 	for i := 0; i <= maxPendingBlocks; i++ {
 		pending = append(pending, pendingIP{
 			IP:       fmt.Sprintf("2001:db8::%x", i),
+			Check:    "wp_login_bruteforce",
 			Reason:   "queued",
 			QueuedAt: now,
 		})
@@ -235,6 +236,7 @@ func TestAutoBlockPendingErrorOverflowDoesNotClaimDroppedRetry(t *testing.T) {
 	for i := 0; i <= maxPendingBlocks; i++ {
 		pending = append(pending, pendingIP{
 			IP:       fmt.Sprintf("2001:db8::%x", i),
+			Check:    "wp_login_bruteforce",
 			Reason:   "queued",
 			QueuedAt: now,
 		})
@@ -260,7 +262,7 @@ func TestAutoBlockPendingErrorOverflowDoesNotClaimDroppedRetry(t *testing.T) {
 func TestAutoBlockPendingMalformedIPDroppedWithoutRetry(t *testing.T) {
 	cfg := pendingTestConfig(t)
 	saveBlockState(cfg.StatePath, &blockState{
-		Pending: []pendingIP{{IP: "not-an-ip", Reason: "legacy", QueuedAt: time.Now()}},
+		Pending: []pendingIP{{IP: "not-an-ip", Check: "wp_login_bruteforce", Reason: "legacy", QueuedAt: time.Now()}},
 	})
 
 	oldBlocker := getIPBlocker()
@@ -274,9 +276,8 @@ func TestAutoBlockPendingMalformedIPDroppedWithoutRetry(t *testing.T) {
 	}
 }
 
-// Old blocked_ips.json files have no queued_at key. They must still load,
-// survive one retry, and receive their first timestamp when requeued.
-func TestAutoBlockPendingLegacyJSONStampsQueuedAtOnRetry(t *testing.T) {
+// Legacy queues cannot prove whether their source check is still blockable.
+func TestAutoBlockPendingLegacyJSONWithoutCheckIsDiscarded(t *testing.T) {
 	cfg := pendingTestConfig(t)
 	cfg.AutoResponse.MaxBlocksPerHour = 1
 	now := time.Date(2026, 8, 3, 12, 30, 0, 0, time.UTC)
@@ -296,11 +297,8 @@ func TestAutoBlockPendingLegacyJSONStampsQueuedAtOnRetry(t *testing.T) {
 	AutoBlockIPs(cfg, nil)
 
 	state := loadBlockState(cfg.StatePath)
-	if len(state.Pending) != 1 || state.Pending[0].IP != "203.0.113.16" {
-		t.Fatalf("pending = %+v, want legacy entry requeued", state.Pending)
-	}
-	if !state.Pending[0].QueuedAt.Equal(now) {
-		t.Fatalf("QueuedAt = %v, want first retry time %v", state.Pending[0].QueuedAt, now)
+	if len(state.Pending) != 0 {
+		t.Fatalf("pending = %+v, want legacy entry discarded", state.Pending)
 	}
 }
 
@@ -317,6 +315,7 @@ func TestAutoBlockPendingReasonRefreshPreservesQueuedAt(t *testing.T) {
 		HourKey:        now.Format("2006-01-02T15"),
 		Pending: []pendingIP{{
 			IP:       "203.0.113.17",
+			Check:    "wp_login_bruteforce",
 			Reason:   "old reason",
 			QueuedAt: queuedAt,
 		}},

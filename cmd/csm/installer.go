@@ -714,6 +714,12 @@ func deployDefaultConfig(path string) error {
 
 hostname: "SET_HOSTNAME_HERE"
 
+# enforce (default): every subsystem acts under its own switch.
+# observe: detection, correlation and alerting only. CSM changes no host
+# state, and a config that still enables a state-changing subsystem is
+# refused at startup by name. See docs/src/observe-mode.md.
+mode: "enforce"
+
 alerts:
   email:
     enabled: true
@@ -744,6 +750,8 @@ webui:
   enabled: true
   listen: "0.0.0.0:9443"
   auth_token: ""  # auto-generated on install
+  session_lifetime: "24h"
+  session_idle_timeout: "30m"
   # metrics_token gates GET /metrics (Prometheus). Set a long random
   # string here so a scraper does NOT need the admin auth_token. Leave
   # empty to fall back to admin-token/UI-session auth. See the Metrics docs.
@@ -757,6 +765,12 @@ integrity:
   config_hash: ""
   confd_hash: ""
   immutable: true  # apply chattr +i to /opt/csm/csm during install and rehash
+
+# conf.d drop-in policy. Fragments listed here are left out of confd_hash
+# because their owning integration rewrites them on its own schedule;
+# every other fragment stays covered. Bare filenames only.
+confd:
+  integrity_exempt: []
 
 thresholds:
   mail_queue_warn: 500
@@ -854,6 +868,9 @@ auto_response:
   enabled: false              # must be explicitly enabled
   kill_processes: false       # auto-kill fake kernel threads, reverse shells
   quarantine_files: false     # auto-move webshells/backdoors to /opt/csm/quarantine/
+  max_file_actions_per_hour: 50         # shared quarantine and file-cleaning attempt budget
+  max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
+  max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: false            # auto-block attacker IPs via nftables
   block_expiry: "24h"         # how long IPs stay blocked
   http_asn_crawl_tempban: "24h"  # ban duration for http_asn_crawl findings
@@ -951,8 +968,20 @@ firewall:
     - 2087
     - 2325
     - 9443                      # CSM web UI
+  required_tcp_out: []          # outbound ports a service on this host needs; checked, never merged
   passive_ftp_start: 49152
   passive_ftp_end: 65534
+  # Destination-scoped outbound TCP. tcp_out holds single ports only, so a
+  # port RANGE can only be expressed here -- needed when this host is an FTP
+  # CLIENT and must open passive data connections to a known source.
+  # dst takes an IP or CIDR; 0.0.0.0/0 means any IPv4 destination and ::/0
+  # means any IPv6 destination. Either warns; IPv6 requires ipv6: true.
+  # Emitted after smtp_block; overlaps with smtp_ports are rejected when on.
+  tcp_out_allow: []
+  # tcp_out_allow:
+  #   - dst: 203.0.113.10/32
+  #     port_start: 49152
+  #     port_end: 65534
   conn_rate_limit: 200          # new connections per minute per IP (CGNAT-tolerant)
   syn_flood_protection: true
   conn_limit: 400               # max concurrent connections per IP (0 = disabled)
@@ -1036,8 +1065,15 @@ func deploySystemdTimer() error {
 	exec.Command("systemctl", "disable", "csm.timer").Run()
 	os.Remove("/etc/systemd/system/csm.timer")
 
-	// Deploy daemon service unit (the only unit CSM ships now)
-	if err := writeSystemdServiceUnit(systemdServiceUnit("/opt/csm/csm")); err != nil {
+	// Deploy daemon service unit (the only unit CSM ships now). Directives
+	// this host's systemd rejects are left out rather than logged as
+	// "Unknown lvalue" and ignored at every start.
+	systemdVersion := detectSystemdVersion()
+	if dropped := unsupportedSystemdDirectives(systemdVersion); len(dropped) > 0 {
+		fmt.Fprintf(os.Stderr, "systemd %d does not support %s; those sandbox directives are omitted from the unit\n",
+			systemdVersion, strings.Join(dropped, ", "))
+	}
+	if err := writeSystemdServiceUnit(systemdServiceUnitFor("/opt/csm/csm", systemdVersion)); err != nil {
 		return err
 	}
 
@@ -1048,14 +1084,44 @@ func deploySystemdTimer() error {
 	return nil
 }
 
-func deployLogrotate() error {
-	content := `/var/log/csm/monitor.log {
+// logrotateConfig is the /etc/logrotate.d/csm content.
+//
+// The audit log rotates with copytruncate on purpose: the daemon holds one
+// append-only fd on it for the life of the process, so a rename-and-create
+// rotation would leave every later event going to the rotated inode. maxsize
+// permits early rotation if the host runs logrotate more often than daily;
+// it does not cap growth between invocations.
+func logrotateConfig() string {
+	return `/var/log/csm/monitor.log {
     weekly
     rotate 4
     compress
     missingok
     notifempty
     create 0640 root root
+}
+
+/var/log/csm/audit.jsonl {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+    maxsize 100M
+}
+
+# The action log rotates itself: the sink renames actions.jsonl to
+# actions.jsonl.1 at 10 MB under a lock the readers share. logrotate must not
+# touch the live file, but the rotated one is never written again, so archiving
+# it here is what gives the audit trail history beyond the sink's two files.
+/var/log/csm/actions.jsonl.1 {
+    daily
+    rotate 90
+    compress
+    missingok
+    notifempty
+    nocreate
 }
 
 /var/log/csm-php-shield/events.log {
@@ -1068,8 +1134,11 @@ func deployLogrotate() error {
     maxsize 5M
 }
 `
+}
+
+func deployLogrotate() error {
 	// #nosec G306 -- /etc/logrotate.d/csm; logrotate requires 0644.
-	return os.WriteFile("/etc/logrotate.d/csm", []byte(content), 0644)
+	return os.WriteFile("/etc/logrotate.d/csm", []byte(logrotateConfig()), 0644)
 }
 
 // InstallWHMPlugin deploys the CGI proxy and AppConfig registration
@@ -1761,9 +1830,23 @@ return array(
 // systemdUnitPath is where the daemon's service unit is installed.
 var systemdUnitPath = "/etc/systemd/system/csm.service"
 
+// systemdSandboxRoot is the filesystem root the unit's writable grants
+// resolve against.
+var systemdSandboxRoot = "/"
+
 // writeSystemdServiceUnit replaces the service unit atomically: systemd
 // (daemon-reload, a concurrent systemctl) must never read a truncated or
 // half-written unit, which a plain in-place write exposed on every rehash.
+//
+// The grants the unit requires are created first: rehash refreshes the unit on
+// hosts that were installed before a grant existed, and systemd will not start
+// a unit whose unprefixed writable path is missing.
 func writeSystemdServiceUnit(content string) error {
+	for _, dir := range systemdUnitRequiredWritableDirs(content) {
+		path := filepath.Join(systemdSandboxRoot, dir)
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("creating sandbox grant %s: %w", dir, err)
+		}
+	}
 	return writeFileAtomic(systemdUnitPath, []byte(content), 0o644)
 }

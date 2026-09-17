@@ -17,13 +17,16 @@ import (
 // Returns the mockOS to use with withMockOS.
 func wpConfigFixture(t *testing.T, account, wpConfigContent string) *mockOS {
 	t.Helper()
+	primary := fmt.Sprintf("/home/%s/public_html/wp-config.php", account)
 	return &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			primary := fmt.Sprintf("/home/%s/public_html/wp-config.php", account)
 			if pattern == primary {
 				return []string{primary}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{primary})
 		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
@@ -693,6 +696,9 @@ $table_prefix = 'mywp_';
 			}
 			return nil, nil
 		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/addonacct/addon.com/wp-config.php"})
+		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
 				f, err := os.CreateTemp(t.TempDir(), "wpconfig")
@@ -750,7 +756,7 @@ func TestHandleMaliciousOption_SkipsCSMBackupOption(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Database: testdb\nOption: csm_backup_siteurl_1234567890",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should skip csm_backup_ options, got %d actions", len(actions))
 	}
@@ -765,7 +771,7 @@ func TestHandleMaliciousOption_EmptyDBName(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Option: siteurl",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil for empty DB, got %d actions", len(actions))
 	}
@@ -780,7 +786,7 @@ func TestHandleMaliciousOption_InvalidOptionInDetails(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Database: testdb\nOption: '; DROP TABLE;",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should skip invalid option name, got %d actions", len(actions))
 	}
@@ -801,7 +807,7 @@ func TestHandleMaliciousOption_NoCredsForDB(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Database: nonexistent_db\nOption: siteurl",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil for missing creds, got %d actions", len(actions))
 	}
@@ -825,6 +831,9 @@ $table_prefix = 'wp_';
 				return []string{"/home/user1/public_html/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/user1/public_html/wp-config.php"})
 		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
@@ -857,7 +866,7 @@ $table_prefix = 'wp_';
 		Check:   "db_options_injection",
 		Details: "Database: cleandb\nOption: blogname",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil when no malicious URL, got %d actions", len(actions))
 	}
@@ -873,7 +882,7 @@ func TestHandleSiteurlHijack_EmptyDB(t *testing.T) {
 		Check:   "db_siteurl_hijack",
 		Details: "Something without DB line",
 	}
-	actions := handleSiteurlHijack(cfg, f)
+	actions := handleSiteurlHijack(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil for empty DB, got %d actions", len(actions))
 	}
@@ -890,7 +899,7 @@ func TestHandleSiteurlHijack_NoCreds(t *testing.T) {
 		Check:   "db_siteurl_hijack",
 		Details: "Database: nosuchdb\nSiteURL changed to phishing",
 	}
-	actions := handleSiteurlHijack(cfg, f)
+	actions := handleSiteurlHijack(cfg, f, true)
 	if len(actions) != 0 {
 		t.Errorf("should return nil when no creds found, got %d actions", len(actions))
 	}
@@ -1133,6 +1142,9 @@ $table_prefix = 'wp_';
 			}
 			return nil, nil
 		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/user1/addon.com/wp-config.php"})
+		},
 		open: func(name string) (*os.File, error) {
 			if strings.HasSuffix(name, "wp-config.php") {
 				f, err := os.CreateTemp(t.TempDir(), "wpconfig")
@@ -1281,7 +1293,8 @@ func TestIsPathWithinOrEqual_PartialPrefix(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestApplyFix_UnknownCheckType(t *testing.T) {
-	result := ApplyFix("unknown_check_type", "msg", "details")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "unknown_check_type", "msg", "details")
 	if result.Success {
 		t.Error("unknown check should not succeed")
 	}
@@ -1291,7 +1304,8 @@ func TestApplyFix_UnknownCheckType(t *testing.T) {
 }
 
 func TestApplyFix_WorldWritableEmptyPath(t *testing.T) {
-	result := ApplyFix("world_writable_php", "no path here", "")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "world_writable_php", "no path here", "")
 	if result.Success {
 		t.Error("should fail with no path")
 	}
@@ -1301,7 +1315,8 @@ func TestApplyFix_WorldWritableEmptyPath(t *testing.T) {
 }
 
 func TestApplyFix_HtaccessNonHtaccessFile(t *testing.T) {
-	result := ApplyFix("htaccess_injection", "", "", "/home/alice/public_html/index.php")
+	withSimulatedProcessSignal(t)
+	result := ApplyFix(context.Background(), "htaccess_injection", "", "", "/home/alice/public_html/index.php")
 	if result.Success {
 		t.Error("should fail for non-.htaccess file")
 	}
@@ -1311,8 +1326,9 @@ func TestApplyFix_HtaccessNonHtaccessFile(t *testing.T) {
 }
 
 func TestApplyFix_HtaccessOutsideAllowedRoot(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	// fixHtaccess only allows paths under /home.
-	result := ApplyFix("htaccess_injection", "", "", "/tmp/.htaccess")
+	result := ApplyFix(context.Background(), "htaccess_injection", "", "", "/tmp/.htaccess")
 	if result.Success {
 		t.Error("should fail for path outside /home")
 	}

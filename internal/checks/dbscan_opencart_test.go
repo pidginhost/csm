@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -32,7 +33,7 @@ type fakeOpenCartOS struct {
 	mockOS
 	rootBody  string
 	adminBody string
-	skipAdmin bool // when true, admin/config.php read returns ""
+	skipAdmin bool // when true, admin/config.php is absent
 }
 
 func (m *fakeOpenCartOS) Glob(pattern string) ([]string, error) {
@@ -48,7 +49,7 @@ func (m *fakeOpenCartOS) ReadFile(name string) ([]byte, error) {
 		return []byte(m.rootBody), nil
 	case "/home/alice/public_html/admin/config.php":
 		if m.skipAdmin {
-			return nil, nil
+			return nil, os.ErrNotExist
 		}
 		return []byte(m.adminBody), nil
 	}
@@ -58,11 +59,11 @@ func (m *fakeOpenCartOS) ReadFile(name string) ([]byte, error) {
 // --- looksLikeOpenCart ----------------------------------------------------
 
 func TestLooksLikeOpenCartPositive(t *testing.T) {
-	withMockOS(t, &fakeOpenCartOS{
+	withCMSConfigOS(t, &fakeOpenCartOS{
 		rootBody:  canonicalOpenCartConfig(),
 		adminBody: canonicalOpenCartConfig(),
 	})
-	if !looksLikeOpenCart("/home/alice/public_html/config.php") {
+	if matched, err := looksLikeOpenCart(context.Background(), "/home/alice/public_html/config.php"); err != nil || !matched {
 		t.Error("expected OpenCart marker pair to be detected")
 	}
 }
@@ -71,21 +72,21 @@ func TestLooksLikeOpenCartRequiresBothFiles(t *testing.T) {
 	// A plain PHP site with a root-level config.php that happens
 	// to mention DB_DRIVER, but no admin/config.php. Must not be
 	// classified as OpenCart.
-	withMockOS(t, &fakeOpenCartOS{
+	withCMSConfigOS(t, &fakeOpenCartOS{
 		rootBody:  "<?php define('DB_DRIVER', 'mysqli');\n",
 		skipAdmin: true,
 	})
-	if looksLikeOpenCart("/home/alice/public_html/config.php") {
+	if matched, err := looksLikeOpenCart(context.Background(), "/home/alice/public_html/config.php"); err != nil || matched {
 		t.Error("non-OpenCart PHP site misidentified (no admin/config.php)")
 	}
 }
 
 func TestLooksLikeOpenCartNegative(t *testing.T) {
 	// Random PHP file with no DB_DRIVER reference.
-	withMockOS(t, &fakeOpenCartOS{
+	withCMSConfigOS(t, &fakeOpenCartOS{
 		rootBody: "<?php echo 'hello';\n",
 	})
-	if looksLikeOpenCart("/home/alice/public_html/config.php") {
+	if matched, err := looksLikeOpenCart(context.Background(), "/home/alice/public_html/config.php"); err != nil || matched {
 		t.Error("non-OC config.php misidentified")
 	}
 }
@@ -93,11 +94,14 @@ func TestLooksLikeOpenCartNegative(t *testing.T) {
 // --- parseOpenCartConfig --------------------------------------------------
 
 func TestParseOpenCartConfigExtractsAllFields(t *testing.T) {
-	withMockOS(t, &fakeOpenCartOS{
+	withCMSConfigOS(t, &fakeOpenCartOS{
 		rootBody:  canonicalOpenCartConfig(),
 		adminBody: canonicalOpenCartConfig(),
 	})
-	creds := parseOpenCartConfig("/home/alice/public_html/config.php")
+	creds, err := parseOpenCartConfig(context.Background(), "/home/alice/public_html/config.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbName != "oc_shop" {
 		t.Errorf("dbName = %q, want oc_shop", creds.dbName)
 	}
@@ -123,8 +127,11 @@ define('DB_PASSWORD', 'p');
 define('DB_DATABASE', 'd');
 define('DB_PREFIX', 'oc_');
 `
-	withMockOS(t, &fakeOpenCartOS{rootBody: body, adminBody: body})
-	creds := parseOpenCartConfig("/home/alice/public_html/config.php")
+	withCMSConfigOS(t, &fakeOpenCartOS{rootBody: body, adminBody: body})
+	creds, err := parseOpenCartConfig(context.Background(), "/home/alice/public_html/config.php")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if creds.dbHost != "localhost" {
 		t.Errorf("missing DB_HOSTNAME should default to localhost, got %q", creds.dbHost)
 	}
@@ -133,7 +140,7 @@ define('DB_PREFIX', 'oc_');
 // --- CheckOpenCartContent end-to-end -------------------------------------
 
 func TestCheckOpenCartContentSkipsNonOpenCart(t *testing.T) {
-	withMockOS(t, &fakeOpenCartOS{
+	withCMSConfigOS(t, &fakeOpenCartOS{
 		rootBody:  "<?php echo 'plain';",
 		skipAdmin: true,
 	})
@@ -150,7 +157,7 @@ func TestCheckOpenCartContentSkipsNonOpenCart(t *testing.T) {
 }
 
 func TestCheckOpenCartContentEmitsAcrossThreeScans(t *testing.T) {
-	withMockOS(t, &fakeOpenCartOS{
+	withCMSConfigOS(t, &fakeOpenCartOS{
 		rootBody:  canonicalOpenCartConfig(),
 		adminBody: canonicalOpenCartConfig(),
 	})
@@ -181,8 +188,8 @@ func TestCheckOpenCartContentEmitsAcrossThreeScans(t *testing.T) {
 	if categories["opencart_settings_injection"] != 1 {
 		t.Errorf("opencart_settings_injection = %d, want 1", categories["opencart_settings_injection"])
 	}
-	if categories["opencart_content_injection"] < 1 {
-		t.Errorf("opencart_content_injection = %d, want >= 1", categories["opencart_content_injection"])
+	if categories["opencart_content_injection"] != 1 {
+		t.Errorf("opencart_content_injection = %d, want 1", categories["opencart_content_injection"])
 	}
 	// The first pass over an install baselines its administrators silently;
 	// only an admin that appears later is reported (see cmsAdminFindings).
@@ -193,7 +200,7 @@ func TestCheckOpenCartContentEmitsAcrossThreeScans(t *testing.T) {
 
 func TestCheckOpenCartContentRespectsCustomDBPrefix(t *testing.T) {
 	body := strings.ReplaceAll(canonicalOpenCartConfig(), "'oc_'", "'shop9_'")
-	withMockOS(t, &fakeOpenCartOS{rootBody: body, adminBody: body})
+	withCMSConfigOS(t, &fakeOpenCartOS{rootBody: body, adminBody: body})
 
 	queries := []string{}
 	withMockCmd(t, &mockCmd{
@@ -222,7 +229,7 @@ func TestCheckOpenCartContentRespectsCustomDBPrefix(t *testing.T) {
 // Regression: confirm the post-filter applies to OpenCart settings
 // rows. config_url with a Tag Manager embed must not flag.
 func TestCheckOpenCartContentSuppressesScriptOnlySettingsFP(t *testing.T) {
-	withMockOS(t, &fakeOpenCartOS{
+	withCMSConfigOS(t, &fakeOpenCartOS{
 		rootBody:  canonicalOpenCartConfig(),
 		adminBody: canonicalOpenCartConfig(),
 	})
@@ -252,7 +259,7 @@ func TestCheckOpenCartContentSuppressesScriptOnlySettingsFP(t *testing.T) {
 // opencart_content_injection findings for the same row without
 // the language_id = 1 filter.
 func TestCheckOpenCartContentFiltersLanguageID(t *testing.T) {
-	withMockOS(t, &fakeOpenCartOS{
+	withCMSConfigOS(t, &fakeOpenCartOS{
 		rootBody:  canonicalOpenCartConfig(),
 		adminBody: canonicalOpenCartConfig(),
 	})

@@ -6,6 +6,9 @@
 
 - [Installation](installation.md)
 - [Configuration](configuration.md)
+- [Credential rotation](credential-rotation.md)
+- [Custom account roots](custom-account-roots.md)
+- [Service configuration writes](service-confinement.md)
 - [Upgrading](upgrading.md)
 - [CLI Commands](cli.md)
 
@@ -15,6 +18,9 @@
 - [Critical Checks](detection-critical.md)
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)
+- [Observe Mode](observe-mode.md)
+- [Capability Matrix](capability-matrix.md)
+- [Self-test](self-test.md)
 - [Incidents](incidents.md)
 - [Incident Response Runbook](incident-response-runbook.md)
 - [Direct SMTP Egress](direct-smtp-egress.md)
@@ -41,8 +47,13 @@
 - [API Reference](api.md)
 - [Metrics (Prometheus)](metrics.md)
 - [Audit Log (SIEM)](audit-log.md)
+- [Action Log](action-log.md)
 
 # Development
 
 - [Building and Testing](development.md)
+  - [Clean Application Corpus](clean-corpus.md)
+  - [Recorded Finding Streams](finding-streams.md)
+  - [cPanel Release Tests](cpanel-release-tests.md)
+  - [Production Build and Kernel Tests](production-tests.md)
 - [Release Signing](release-signing.md)

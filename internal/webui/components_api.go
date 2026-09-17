@@ -59,6 +59,7 @@ var componentLabels = map[string]string{
 	"dovecot_log":       "Dovecot log",
 	"exim_mainlog":      "Exim mainlog",
 	"cpanel_access_log": "cPanel access log",
+	"yara_worker":       "YARA-X worker",
 }
 
 // componentCheckOrigin maps a finding Check name back to the watcher that
@@ -71,6 +72,7 @@ var componentCheckOrigin = map[string]string{
 	"credential_log_realtime":                    "fanotify",
 	"email_auth_failure_realtime":                "maillog",
 	"email_av_degraded":                          "email_av_spool",
+	"email_av_encrypted_archive":                 "email_av_spool",
 	"email_av_parse_error":                       "email_av_spool",
 	"email_av_quarantine_error":                  "email_av_spool",
 	"email_av_timeout":                           "email_av_spool",
@@ -142,6 +144,7 @@ var componentCheckOrigin = map[string]string{
 	"webshell_realtime":                          "fanotify",
 	"yara_match_realtime":                        "fanotify",
 	"yara_match_scheduled":                       "scheduled",
+	"yara_realtime_scan_error":                   "fanotify",
 }
 
 // apiComponents returns one row per registered watcher with its live

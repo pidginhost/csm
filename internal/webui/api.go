@@ -2,9 +2,7 @@ package webui
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -16,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -90,6 +87,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"capabilities":           snap.Capabilities,
 		"dry_run_blocks":         snap.DryRunBlocks,
 		"automation":             snap.Automation,
+		"mode":                   snap.Mode,
 		"status":                 snap.OverallStatus(),
 	}
 
@@ -108,6 +106,17 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	if !snap.Update.CheckedAt.IsZero() {
 		resp["update"] = snap.Update
 	}
+	// Present only after the daemon has merged an active set; absence means
+	// "not observed yet", not "clean".
+	if snap.CorrelationAttribution != nil {
+		resp["correlation_attribution"] = snap.CorrelationAttribution
+	}
+	if len(snap.Queues) != 0 {
+		resp["queues"] = snap.Queues
+	}
+	if len(snap.WordPressVerification) != 0 {
+		resp["wordpress_verification"] = snap.WordPressVerification
+	}
 	writeJSON(w, resp)
 }
 
@@ -123,6 +132,12 @@ func operationalProblems(sigCount int, snap health.Snapshot) int {
 	}
 	if !snap.AllWatchersAttached() {
 		problems++
+	}
+	for _, q := range snap.Queues {
+		if q.Status == "degraded" && !q.Advisory {
+			problems++
+			break
+		}
 	}
 	return problems
 }
@@ -587,13 +602,15 @@ var quarantineDir = "/opt/csm/quarantine"
 func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 
 	type quarantineEntry struct {
-		ID           string `json:"id"`
-		Kind         string `json:"kind"`
-		OriginalPath string `json:"original_path"`
-		Size         int64  `json:"size"`
-		QuarantineAt string `json:"quarantined_at"`
-		Reason       string `json:"reason"`
-		LiveState    string `json:"live_state"`
+		ID              string    `json:"id"`
+		Kind            string    `json:"kind"`
+		OriginalPath    string    `json:"original_path"`
+		Size            int64     `json:"size"`
+		QuarantineAt    string    `json:"quarantined_at"`
+		Reason          string    `json:"reason"`
+		LiveState       string    `json:"live_state"`
+		OriginalModTime time.Time `json:"original_mtime,omitzero"`
+		quarantinedAt   time.Time
 	}
 
 	var entries []quarantineEntry
@@ -624,20 +641,29 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 			kind = "pre_clean"
 		}
 
+		var timestamp string
+		if !meta.QuarantineAt.IsZero() {
+			timestamp = meta.QuarantineAt.UTC().Format(time.RFC3339Nano)
+		}
 		entries = append(entries, quarantineEntry{
-			ID:           quarantineEntryID(metaFile),
-			Kind:         kind,
-			OriginalPath: meta.OriginalPath,
-			Size:         meta.Size,
-			QuarantineAt: meta.QuarantineAt.Format(time.RFC3339),
-			Reason:       meta.Reason,
-			LiveState:    liveState,
+			ID:              quarantineEntryID(metaFile),
+			Kind:            kind,
+			OriginalPath:    meta.OriginalPath,
+			Size:            meta.Size,
+			QuarantineAt:    timestamp,
+			Reason:          meta.Reason,
+			LiveState:       liveState,
+			OriginalModTime: meta.OriginalModTime,
+			quarantinedAt:   meta.QuarantineAt,
 		})
 	}
 
 	// Sort newest first
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].QuarantineAt > entries[j].QuarantineAt
+		if entries[i].quarantinedAt.Equal(entries[j].quarantinedAt) {
+			return entries[i].ID < entries[j].ID
+		}
+		return entries[i].quarantinedAt.After(entries[j].quarantinedAt)
 	})
 
 	writeJSON(w, entries)
@@ -931,7 +957,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	result := checks.ApplyFix(req.Check, message, details, filePath)
+	result := checks.ApplyFix(r.Context(), req.Check, message, details, filePath)
 
 	// If fix succeeded, dismiss from both alert state and latest findings.
 	if result.Success {
@@ -944,9 +970,10 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiVerifyFinding re-checks whether a finding's condition still holds against
-// the live filesystem and, when it no longer does, dismisses the finding. This
-// lets an operator confirm a manual fix immediately instead of waiting for the
-// next scan, and is the "Re-check" action behind a finding row.
+// the live filesystem. It dismisses a resolved finding, lowers an inert
+// replacement to Warning, or restores an earlier automatic demotion. This lets
+// an operator confirm a manual fix immediately instead of waiting for the next
+// scan, and is the "Re-check" action behind a finding row.
 // POST /api/v1/verify-finding  body: {"check":"...","message":"...","details":"...","file_path":"...","key":"..."}
 func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -960,18 +987,42 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	in, key := s.verifyFindingInput(req)
-	res := checks.VerifyFindingInput(in)
-	if res.Checked && res.Resolved {
+	in, key, stored, found := s.verifyFindingInput(req)
+	in.Context = r.Context()
+	response := verifyFindingResponse{VerifyResult: s.verifyFinding(in)}
+	switch {
+	case response.Checked && response.Resolved:
 		if key == "" {
 			key = req.Check + ":" + req.Message
 		}
 		s.store.DismissFinding(key)
 		s.store.DismissLatestFinding(key)
-		s.auditLog(r, "verify-resolved", req.Check, res.Detail)
+		s.auditLog(r, "verify-resolved", req.Check, response.Detail)
+	// A severity change rewrites the stored finding, so it needs the exact
+	// snapshot the verifier read; a request that could not be matched to one
+	// leaves the finding alone rather than guessing which it meant.
+	case found && checks.ShouldRestoreSeverity(stored, response.VerifyResult):
+		if s.store.RestoreLatestFindingSeverity(stored) {
+			response.SeverityChange = "restored"
+			s.auditLog(r, "verify-restored", req.Check, response.Detail)
+		}
+	case found && checks.ShouldDemoteSeverity(stored, response.VerifyResult):
+		if s.store.DemoteLatestFinding(stored, alert.Warning) {
+			response.SeverityChange = "demoted"
+			s.auditLog(r, "verify-demoted", req.Check, response.Detail)
+		}
 	}
 
-	writeJSON(w, res)
+	writeJSON(w, response)
+}
+
+// verifyFindingResponse distinguishes the verifier's recommendation from a
+// state change the store actually accepted. Demote remains a verdict: it can be
+// true for an already-demoted finding or after a concurrent scan replaced the
+// snapshot, neither of which means this request changed the stored severity.
+type verifyFindingResponse struct {
+	checks.VerifyResult
+	SeverityChange string `json:"severity_change,omitempty"`
 }
 
 type verifyFindingRequest struct {
@@ -983,21 +1034,24 @@ type verifyFindingRequest struct {
 	Key           string `json:"key"`
 }
 
-func (s *Server) verifyFindingInput(req verifyFindingRequest) (checks.VerifyInput, string) {
+// verifyFindingInput builds the verifier input, and returns the stored finding
+// it was built from so a caller applying a severity change can pass the exact
+// snapshot the verifier saw.
+func (s *Server) verifyFindingInput(req verifyFindingRequest) (checks.VerifyInput, string, alert.Finding, bool) {
 	in := checks.VerifyInput{
 		Check: req.Check, Message: req.Message, Details: req.Details,
 		Path: req.FilePath,
 	}
 	f, ok := s.latestFindingForVerify(req.Key, req.Check, req.Message)
 	if !ok {
-		return in, req.Key
+		return in, req.Key, alert.Finding{}, false
 	}
 	in.Message = f.Message
 	in.Details = f.Details
 	in.Path = f.FilePath
 	in.ContentSHA256 = f.ContentSHA256
 	in.DetectLogic = f.DetectLogic
-	return in, f.Key()
+	return in, f.Key(), f, true
 }
 
 func (s *Server) latestFindingForVerify(key, check, message string) (alert.Finding, bool) {
@@ -1055,7 +1109,7 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 			results = append(results, checks.RemediationResult{Error: err.Error()})
 			continue
 		}
-		result := checks.ApplyFix(req.Check, message, details, filePath)
+		result := checks.ApplyFix(r.Context(), req.Check, message, details, filePath)
 		if result.Success {
 			s.store.DismissFinding(dismissKey)
 			s.store.DismissLatestFinding(dismissKey)
@@ -1124,6 +1178,10 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		IP       string `json:"ip"`
 		Reason   string `json:"reason"`
 		Duration string `json:"duration"`
+		// IncidentID, when set, notes the block on that incident so the
+		// timeline shows an operator acted. Optional: the firewall action is
+		// the point, the note is bookkeeping.
+		IncidentID json.RawMessage `json:"incident_id"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
@@ -1158,6 +1216,16 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditLog(r, "block_ip", req.IP, req.Reason)
+	// A failure to annotate must not turn a successful block into an error:
+	// the address is blocked either way, and a stale incident id is the
+	// operator's tab being out of date, not a fault worth refusing.
+	var incidentID string
+	if json.Unmarshal(req.IncidentID, &incidentID) == nil && incidentID != "" && s.incidentCorrelator != nil {
+		if err := s.incidentCorrelator.RecordOperatorBlock(incidentID, req.IP, dur); err != nil {
+			log.Printf("webui: could not note an operator block on incident %s: %v",
+				safeLogString(incidentID), err)
+		}
+	}
 	resp := map[string]string{"status": "blocked", "ip": req.IP}
 	// The input chain accepts Cloudflare edges on 80/443 before the blocked
 	// drop, so a block of a covered IP does not stop its web traffic.
@@ -1387,251 +1455,6 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "dismissed", "key": req.Key})
 }
 
-// apiQuarantineRestore restores a quarantined file to its original location.
-// POST /api/v1/quarantine-restore  body: {"id": "filename"}
-func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req struct {
-		ID string `json:"id"`
-	}
-	if err := decodeJSONBodyLimited(w, r, 16*1024, &req); err != nil || req.ID == "" {
-		writeJSONError(w, "ID is required", http.StatusBadRequest)
-		return
-	}
-
-	entry, err := resolveQuarantineEntry(req.ID)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if !quarantineEntryDeletable(entry) {
-		writeJSONError(w, "Quarantine entry not found", http.StatusNotFound)
-		return
-	}
-
-	metaData, err := os.ReadFile(entry.MetaPath)
-	if err != nil {
-		writeJSONError(w, "Quarantine entry not found", http.StatusNotFound)
-		return
-	}
-
-	var meta checks.QuarantineMeta
-	if unmarshalErr := json.Unmarshal(metaData, &meta); unmarshalErr != nil {
-		writeJSONError(w, "Invalid metadata", http.StatusInternalServerError)
-		return
-	}
-
-	restorePath, err := validateQuarantineRestorePath(meta.OriginalPath)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Check if quarantined item is a directory or file
-	quarInfo, err := os.Lstat(entry.ItemPath)
-	if err != nil {
-		writeJSONError(w, fmt.Sprintf("Cannot stat quarantined file: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if quarInfo.Mode()&os.ModeSymlink != 0 {
-		writeJSONError(w, "Cannot restore symlink quarantine entry", http.StatusInternalServerError)
-		return
-	}
-
-	// Parse original mode from metadata (format: "-rw-r--r--" or "drwxr-xr-x")
-	restoredMode := os.FileMode(0644)
-	if meta.Mode != "" && len(meta.Mode) >= 10 {
-		restoredMode = parseModeString(meta.Mode)
-	}
-
-	if meta.RestoreAction != "" {
-		if filepath.Clean(filepath.Dir(entry.ItemPath)) != filepath.Join(quarantineDir, "pre_clean") {
-			writeJSONError(w, "Virtual-patch backups must come from pre_clean", http.StatusBadRequest)
-			return
-		}
-		if quarInfo.IsDir() {
-			writeJSONError(w, "Invalid virtual-patch backup", http.StatusInternalServerError)
-			return
-		}
-		if err := checks.RestoreVirtualPatchBackup(entry.ItemPath, restorePath, meta); err != nil {
-			if errors.Is(err, checks.ErrVirtualPatchRestoreConflict) {
-				writeJSONError(w, err.Error(), http.StatusConflict)
-				return
-			}
-			writeJSONError(w, fmt.Sprintf("Cannot restore virtual-patch backup: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := os.Remove(entry.ItemPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("webui: failed to remove %s: %v", safeLogString(entry.ItemPath), err)
-		}
-		if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("webui: failed to remove %s: %v", safeLogString(entry.MetaPath), err)
-		}
-		s.auditLog(r, "restore", restorePath, "virtual-patch restore")
-		writeJSON(w, map[string]string{
-			"status":  "restored",
-			"path":    restorePath,
-			"warning": "Virtual-patch reverted. Re-scan recommended.",
-		})
-		return
-	}
-
-	// Ensure parent directory exists
-	parentDir := filepath.Dir(restorePath)
-	// #nosec G301 -- Restoring a quarantined file into a user's public_html
-	// (validated by validateQuarantineRestorePath). The webserver must be
-	// able to traverse intermediate directories to serve the file.
-	if mkdirErr := os.MkdirAll(parentDir, 0755); mkdirErr != nil {
-		writeJSONError(w, fmt.Sprintf("Cannot create parent directory: %v", mkdirErr), http.StatusInternalServerError)
-		return
-	}
-
-	if quarInfo.IsDir() {
-		if _, statErr := os.Lstat(restorePath); statErr == nil {
-			writeJSONError(w, "Cannot restore - destination already exists", http.StatusConflict)
-			return
-		} else if !os.IsNotExist(statErr) {
-			writeJSONError(w, fmt.Sprintf("Cannot inspect restore destination: %v", statErr), http.StatusInternalServerError)
-			return
-		}
-		if err := os.Chmod(entry.ItemPath, restoredMode); err != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot restore directory mode: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := syscall.Chown(entry.ItemPath, meta.Owner, meta.Group); err != nil {
-			log.Printf("webui: chown %s before restore failed: %v", safeLogString(entry.ItemPath), err)
-		}
-		// Directory restore: use os.Rename (same device)
-		if err := os.Rename(entry.ItemPath, restorePath); err != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot restore directory: %v", err), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		// File restore: use O_EXCL to prevent overwriting an existing file
-		src, readErr := os.Open(entry.ItemPath)
-		if readErr != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot read quarantined file: %v", readErr), http.StatusInternalServerError)
-			return
-		}
-		// #nosec G304 -- restorePath was validated with
-		// validateQuarantineRestorePath above (see handler); the O_EXCL|
-		// O_NOFOLLOW flags additionally block TOCTOU replacement.
-		dst, createErr := os.OpenFile(restorePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
-		if createErr != nil {
-			_ = src.Close()
-			writeJSONError(w, fmt.Sprintf("Cannot restore - file already exists at original path: %v", createErr), http.StatusConflict)
-			return
-		}
-		if quarantineRestoreAfterCreateForTest != nil {
-			quarantineRestoreAfterCreateForTest(restorePath)
-		}
-		if _, err := ensureOpenFileStillAtPath(dst, restorePath); err != nil {
-			_ = src.Close()
-			_ = dst.Close()
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		_, copyErr := io.Copy(dst, src)
-		if closeErr := src.Close(); copyErr == nil && closeErr != nil {
-			copyErr = closeErr
-		}
-		if copyErr != nil {
-			removeRestorePathIfSameOpenFile(dst, restorePath)
-			_ = dst.Close()
-			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
-			return
-		}
-		if err := dst.Chmod(restoredMode); err != nil {
-			removeRestorePathIfSameOpenFile(dst, restorePath)
-			_ = dst.Close()
-			writeJSONError(w, fmt.Sprintf("Cannot restore file mode: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := dst.Chown(meta.Owner, meta.Group); err != nil {
-			log.Printf("webui: chown %s after restore failed: %v", safeLogString(restorePath), err)
-		}
-		restoredInfo, err := ensureOpenFileStillAtPath(dst, restorePath)
-		if err != nil {
-			_ = dst.Close()
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		if err := dst.Close(); err != nil {
-			removeRestorePathIfSameInfo(restorePath, restoredInfo)
-			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := ensurePathStillNamesInfo(restorePath, restoredInfo); err != nil {
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		if err := os.Remove(entry.ItemPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("webui: failed to remove %s: %v", safeLogString(entry.ItemPath), err)
-		}
-	}
-
-	// Remove metadata sidecar
-	if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
-		log.Printf("webui: failed to remove %s: %v", safeLogString(entry.MetaPath), err)
-	}
-
-	s.auditLog(r, "restore", restorePath, "quarantine restore")
-	writeJSON(w, map[string]string{
-		"status":  "restored",
-		"path":    restorePath,
-		"warning": "File restored to original location. Re-scan recommended.",
-	})
-}
-
-// quarantineRestoreAfterCreateForTest lets race tests replace the path
-// after O_EXCL creation; nil in production.
-var quarantineRestoreAfterCreateForTest func(string)
-
-func ensureOpenFileStillAtPath(f *os.File, path string) (os.FileInfo, error) {
-	fileInfo, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("cannot stat restored file handle: %w", err)
-	}
-	if err := ensurePathStillNamesInfo(path, fileInfo); err != nil {
-		return nil, err
-	}
-	return fileInfo, nil
-}
-
-func ensurePathStillNamesInfo(path string, fileInfo os.FileInfo) error {
-	pathInfo, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("cannot stat restored file path: %w", err)
-	}
-	if !os.SameFile(fileInfo, pathInfo) {
-		return fmt.Errorf("restore destination changed during restore")
-	}
-	return nil
-}
-
-func removeRestorePathIfSameOpenFile(f *os.File, path string) {
-	fileInfo, err := ensureOpenFileStillAtPath(f, path)
-	if err != nil {
-		log.Printf("webui: not removing changed restore path %s: %v", safeLogString(path), err)
-		return
-	}
-	removeRestorePathIfSameInfo(path, fileInfo)
-}
-
-func removeRestorePathIfSameInfo(path string, fileInfo os.FileInfo) {
-	if err := ensurePathStillNamesInfo(path, fileInfo); err != nil {
-		log.Printf("webui: not removing changed restore path %s: %v", safeLogString(path), err)
-		return
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		log.Printf("webui: failed to remove %s: %v", safeLogString(path), err)
-	}
-}
-
 // apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.
 func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 	entry, err := resolveQuarantineEntry(r.URL.Query().Get("id"))
@@ -1791,8 +1614,15 @@ func parseModeString(s string) os.FileMode {
 			mode |= b
 		}
 	}
-	if mode == 0 {
-		mode = 0644 // fallback
+	for _, flag := range s[:len(s)-9] {
+		switch flag {
+		case 'u':
+			mode |= os.ModeSetuid
+		case 'g':
+			mode |= os.ModeSetgid
+		case 't':
+			mode |= os.ModeSticky
+		}
 	}
 	return mode
 }
@@ -2012,6 +1842,12 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 // by checking the message, details, and file path for /home/{user}/ patterns
 // or "Account: " / "user: " in the details field (used by login checks).
 func extractAccountFromFinding(f alert.Finding) string {
+	if f.FilePath == "" && (f.Check == "wp_core_unverified" || f.Check == "wp_plugin_inventory_unverified") {
+		// Collapsed coverage warnings carry an account only when every
+		// installation shares it. Their bounded path sample cannot establish
+		// ownership, even when it happens to show just one account.
+		return f.TenantID
+	}
 	for _, s := range []string{f.Message, f.Details, f.FilePath} {
 		if idx := strings.Index(s, "/home/"); idx >= 0 {
 			rest := s[idx+6:]

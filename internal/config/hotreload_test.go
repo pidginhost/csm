@@ -183,6 +183,7 @@ func TestHotReloadManifestMatchesConfiguredPolicy(t *testing.T) {
 		"reputation",
 		"email_protection",
 		"disabled_checks",
+		"confd",
 	}
 	for _, field := range wantSafe {
 		policy, ok := got[field]
@@ -196,6 +197,7 @@ func TestHotReloadManifestMatchesConfiguredPolicy(t *testing.T) {
 
 	wantRestart := []string{
 		"hostname",
+		"mode",
 		"infra_ips",
 		"state_path",
 		"challenge",

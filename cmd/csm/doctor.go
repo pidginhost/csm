@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integration/webserver"
+	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -56,11 +57,13 @@ func runDoctor() {
 
 	report := buildDoctorReport(tryLoadConfigLite, func() ([]byte, error) {
 		return sendControl(control.CmdStatus, nil)
+	}, func(cfg *config.Config) error {
+		return integrity.Verify(binaryPath, cfg)
 	})
 	emitDoctor(report, jsonOut)
 }
 
-func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus func() ([]byte, error)) DoctorReport {
+func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus func() ([]byte, error), verifyIntegrity func(*config.Config) error) DoctorReport {
 	report := DoctorReport{}
 
 	// 1. Config validation (offline). Keep this path JSON-friendly: runDoctor
@@ -76,12 +79,22 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.OverallStatus = collapseDoctor(report.Checks)
 		return report
 	}
+	modeCheckIndex := len(report.Checks)
+	report.Checks = append(report.Checks, doctorModeCheck(cfg))
 	validationChecks, invalid := doctorConfigValidation(cfg)
 	report.Checks = append(report.Checks, validationChecks...)
 	if invalid {
 		report.OverallStatus = collapseDoctor(report.Checks)
 		return report
 	}
+
+	// 1b. Integrity baseline (offline). The running daemon keeps its old
+	// hashes, so a drop-in rewritten after the last signing only surfaces
+	// when the next restart refuses to start. Checking here, before the
+	// daemon probe, also puts the remedy in front of an operator whose
+	// daemon is already down for that reason.
+	report.Checks = append(report.Checks, doctorIntegrityCheck(cfg, verifyIntegrity))
+	report.Checks = append(report.Checks, doctorAccountRootAccess(cfg)...)
 
 	// 2. Daemon reachable
 	resp, err := readStatus()
@@ -121,6 +134,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 	}
 
 	report.Snapshot = sr.Snapshot
+	report.Checks[modeCheckIndex] = doctorLiveModeCheck(cfg, sr.Snapshot.Mode)
 	report.Checks = append(report.Checks, DoctorCheck{Name: "health snapshot available", Status: "ok"})
 	if len(sr.Snapshot.Watchers) == 0 {
 		report.Checks = append(report.Checks, DoctorCheck{
@@ -152,12 +166,114 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.Checks = append(report.Checks, DoctorCheck{Name: "bbolt store healthy", Status: "ok"})
 	}
 
+	report.Checks = append(report.Checks, correlationAttributionCheck(sr.Snapshot.CorrelationAttribution))
+	report.Checks = append(report.Checks, queueDoctorChecks(sr.Snapshot.Queues)...)
+
+	if automation := sr.Snapshot.Automation; automation.FirewallEnabled {
+		check := DoctorCheck{Name: "firewall managed", Status: "ok"}
+		if !automation.FirewallManaged {
+			check.Status = "fail"
+			check.Message = "firewall is enabled but CSM could not initialize its engine"
+			if automation.FirewallStartupError != "" {
+				check.Message += ": " + automation.FirewallStartupError
+			}
+			check.Fix = "inspect journalctl -u csm.service for the firewall startup error, correct the configuration or nftables permissions, then restart csm.service"
+		}
+		report.Checks = append(report.Checks, check)
+	}
+
+	// Termination depends on a kernel that can pin a process handle. Report it
+	// only where it is configured, so hosts that never kill processes are not
+	// asked to act on a capability they do not use.
+	if automation := sr.Snapshot.Automation; automation.ProcessKillEnabled {
+		check := DoctorCheck{Name: "process termination supported", Status: "ok"}
+		if !automation.ProcessSignalSupported {
+			check.Status = "fail"
+			check.Message = "auto_response.kill_processes is enabled but this kernel cannot signal a pinned process handle"
+			if automation.ProcessSignalError != "" {
+				check.Message += ": " + automation.ProcessSignalError
+			}
+			check.Fix = "run a kernel providing pidfd_send_signal (Linux 5.1+, including EL8 backports), or set auto_response.kill_processes: false so detections are not silently left unremediated"
+		}
+		report.Checks = append(report.Checks, check)
+	}
+
+	// An operator copy of a deploy script is never upgraded in place, so a
+	// version predating mandatory verification keeps installing unverified
+	// releases until somebody reads it.
+	report.Checks = append(report.Checks, deployScriptDoctorChecks()...)
+
 	if cfg.PHPShield.Enabled {
 		report.Checks = append(report.Checks, phpShieldCageFSDoctorChecks()...)
 	}
 
 	report.OverallStatus = collapseDoctor(report.Checks)
 	return report
+}
+
+func doctorIntegrityCheck(cfg *config.Config, verify func(*config.Config) error) DoctorCheck {
+	check := DoctorCheck{Name: "integrity baseline"}
+	err := verify(cfg)
+	if err == nil {
+		if cfg.Integrity.BinaryHash == "" || cfg.Integrity.ConfigHash == "" {
+			check.Status = "warn"
+			check.Message = "integrity baseline is incomplete, so the binary and configuration are not fully verified"
+			check.Fix = "run `csm baseline` on a new host, or `csm rehash` to record the current binary and configuration hashes"
+			return check
+		}
+		check.Status = "ok"
+		return check
+	}
+	check.Status = "fail"
+	check.Message = err.Error()
+	switch {
+	case errors.Is(err, integrity.ErrConfdHashMismatch):
+		check.Fix = "the next restart will refuse to start: run `csm rehash` if the conf.d change was intentional; for a fragment its owning integration rewrites, list it under confd.integrity_exempt in csm.yaml and rehash once"
+	case errors.Is(err, integrity.ErrConfigHashMismatch):
+		check.Fix = "the next restart will refuse to start: run `csm rehash` if you edited csm.yaml on purpose; otherwise treat the edit as tampering"
+	case errors.Is(err, integrity.ErrBinaryHashMismatch):
+		check.Fix = "run `csm rehash` after a deliberate binary upgrade; otherwise treat it as tampering and reinstall from a trusted package"
+	default:
+		check.Fix = "fix the read error, then run `csm verify`"
+	}
+	return check
+}
+
+// Disk config is only the next-start posture. A SIGHUP can re-sign a mode
+// change while leaving the running daemon in its previous posture.
+func doctorModeCheck(cfg *config.Config) DoctorCheck {
+	mode := config.ModeEnforce
+	if cfg.ObserveMode() {
+		mode = config.ModeObserve
+	}
+	return DoctorCheck{
+		Name:    "configured mode",
+		Status:  "ok",
+		Message: mode + " (applies at daemon startup)",
+	}
+}
+
+func doctorLiveModeCheck(cfg *config.Config, running string) DoctorCheck {
+	configured := config.ModeEnforce
+	if cfg.ObserveMode() {
+		configured = config.ModeObserve
+	}
+	check := DoctorCheck{Name: "operating mode", Status: "ok", Message: running}
+	switch {
+	case running != config.ModeObserve && running != config.ModeEnforce:
+		check.Status = "warn"
+		check.Message = "daemon did not report a supported operating mode (configured: " + configured + ")"
+		check.Fix = "upgrade or restart csm.service, then check the running mode again"
+	case running != configured:
+		check.Status = "warn"
+		check.Message = "running " + running + "; configured " + configured + " (restart required)"
+		check.Fix = "systemctl restart csm.service"
+	case running == config.ModeObserve:
+		check.Message += " (no automatic remediation or integration changes)"
+	default:
+		check.Message += " (subsystems act under their own switches)"
+	}
+	return check
 }
 
 func doctorConfigValidation(cfg *config.Config) ([]DoctorCheck, bool) {

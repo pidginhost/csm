@@ -39,9 +39,14 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 | `csm install` | Deploy config, systemd, auditd rules, logrotate, WHM plugin |
 | `csm uninstall [--purge]` | Remove the executable and CSM-owned service, audit, logrotate, webserver, and ModSecurity integrations. Config, drop-ins, state, logs, signature rules, and quarantine data are preserved by default. `--purge` removes all CSM-owned data. Operator ModSecurity rules are never removed. |
 | `csm baseline` | Full server scan via the daemon, records current state for change tracking. Dangerous privileged accounts or WHM root tokens can still be reported on first scan. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running. |
-| `csm rehash` | Update binary/config hashes without scanning. Use once after editing restart-required config or replacing the binary. It also applies `integrity.immutable` to the installed binary. |
+| `csm rehash` | Re-sign the binary, `csm.yaml` and conf.d hashes without scanning. Use once after editing restart-required config, changing a drop-in by hand, or replacing the binary; a stale hash makes the next restart refuse to start. It also applies `integrity.immutable` to the installed binary. |
 | `csm status` | Show current state, last run, active findings, and automation rollout state. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes, automation). |
-| `csm doctor` | Config + daemon + watchers + store sanity check. On CloudLinux with PHP Shield enabled it also reports whether the Shield event mount has been applied to the cages. `csm doctor challenge` checks challenge public URL, TLS, port gate, webserver snippets, configtest, and the live `/challenge/gate` endpoint. Add `--json` for machine-readable output. |
+| `csm verify-release <key.pem> <file.sig> <file>` | Verify a release artifact's Ed25519 signature without OpenSSL; the supported verification path on EL8 and CloudLinux 8. |
+| `csm systemd-roots` | Print a validated systemd drop-in granting write access to configured account trees; see [custom account roots](custom-account-roots.md). |
+| `csm privileges [--json] [--markdown]` | Print every operation that needs privilege beyond reading CSM's own files, with what it writes and the config key that stops it. Reads nothing from the host, so it answers "what would this do to my server" before installing. See [capability matrix](capability-matrix.md). |
+| `csm actions [--since <when>] [--op <id>] [--limit N] [--json]` | Print what CSM did to this host: quarantines, cleans, process kills and firewall changes, with the digest before and after a file change. Reads the log directly, so it answers after a crash. See [action log](action-log.md). |
+| `csm selftest [--json]` | Scan a bundle of samples with known verdicts and report what the installed rules catch, including the gaps the bundle records. Reads no account data. See [self-test](self-test.md). |
+| `csm doctor` | Config + integrity + daemon + watchers (including the YARA-X scanning worker, which fails while it is down or keeps crashing) + store sanity check, including service write access for custom account roots. Config checks include the firewall lockout warnings for inbound and outbound policy; the integrity check reports a binary, `csm.yaml` or conf.d hash mismatch before the next restart refuses to start, with the remedy. On CloudLinux with PHP Shield enabled it also reports whether the Shield event mount has been applied to the cages, names up to five missing cages, and gives per-account remount commands. Unresolved accounts appear as `uid:N`; resolve their account names before remounting. For more than five missing cages, it also offers a remount of all cages during a maintenance window. The `correlation attribution` line names the checks whose findings sit in the active set without a hosting owner (WARN) or confirms every eligible finding carries one (OK), with the cumulative count since start either way. `csm doctor challenge` checks challenge public URL, TLS, port gate, webserver snippets, configtest, and the live `/challenge/gate` endpoint. Add `--json` for machine-readable output. |
 | `csm validate` | Validate config (`--deep` for connectivity probes) |
 | `csm config show [--no-redact] [--json]` | Display config. Secrets are redacted unless `--no-redact`; `--json` emits JSON instead of YAML. |
 | `csm config schema` | Print a JSON Schema reflected from the `Config` struct. Use for CI validation of conf.d drop-ins or panel-side editor schemas. |
@@ -54,6 +59,12 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 | `csm pam <install\|uninstall\|status>` | Install or remove the `pam_csm.so` PAM hook (`csm pam --help`). |
 | `csm report enroll` | Generate an abuse-reporting node key pair. |
 
+`csm doctor` also lists [protection queue health](api.md#protection-queue-health):
+waiting and running work, losses and lag. A sustained backlog or drop rate
+fails the named queue check and includes recovery guidance. Queues whose work
+is best effort warn instead of failing, so they never change the exit status.
+The same evidence appears in `csm status --json` and the HTTP status response.
+
 ## Backup & restore
 
 | Command | Description |
@@ -64,6 +75,12 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 `csm store export` / `csm store import` (below) is the lower-level alternative: tar+zstd, sha256-verified, finer-grained `--only=` flags. `csm backup`/`restore` is the convenience wrapper most operators want.
 
 Backup and restore use the state lock to exclude daemon access. Restore stages all data beside its destination before replacement, so validation failures leave the live installation unchanged. Uninstall is intentionally non-destructive unless `--purge` is supplied.
+
+Restore accepts the format produced by `csm backup`: one tar archive in one gzip member, with no data or padding after the tar end markers and no trailing compressed bytes or additional members. It validates the gzip checksum and length before replacing any destination, and rejects corrupt or truncated archives.
+
+Both commands stream file contents and limit the total uncompressed tar archive to 16 GiB by default, including headers, manifest, and padding. There is no separate limit on a state file. Use `--max-bytes <positive byte count>` on both commands to raise or lower the budget; restore also accepts older large backups when they fit the selected budget. An over-limit backup fails without replacing an existing archive. Restore keeps its manifest read limited to 64 KiB.
+
+Backup checks space before copying the state database snapshot. Restore checks before each staged file and each replacement copy, including copies onto a different destination filesystem. These checks leave 64 MiB free beyond the file being copied. Allow space for the old installation, the full extracted archive, and a second copy of the restored files during replacement. Space checks cannot reserve storage against other writers; write failures still abort staging before live replacement. If a limit or space check fails, retain the original archive, provision enough storage, and retry with the same or a higher explicit budget.
 
 ## Hardening
 
@@ -96,7 +113,7 @@ Operator-driven mitigations applied to the host. Run `csm harden` with no argume
 | `csm store compact --preview` | Snapshot into a temp file next to the live DB and print src/dst sizes without replacing anything. Use to estimate reclaim before scheduling a maintenance window. |
 | `csm store export <path>` | Write a tar+zstd backup containing the bbolt store, the state directory, and the signature-rules cache. Private in-progress staging files and unconfirmed firewall rollback artifacts are omitted. A sibling `<path>.sha256` companion file holds the archive hash for verification. Daemon must be running. |
 | `csm store import <path>` | Restore from a backup archive. Daemon must be stopped. Default restores everything; `--only=baseline` restores only state JSON files (file hashes); `--only=firewall` merges only firewall buckets into the existing bbolt; `--force-platform-mismatch` allows restoring an archive captured on a different OS / panel / web server. |
-| `csm store reset-bot-verify` | Drop cached bot PTR verification results so the next scan re-runs reverse DNS checks. Requires the daemon to be stopped because bbolt holds an exclusive file lock while running. |
+| `csm store reset-bot-verify` | Drop cached bot PTR verification results and missing-PTR records so the next scan re-runs reverse DNS checks. Requires the daemon to be stopped because bbolt holds an exclusive file lock while running. |
 | `csm export --since <when>` | Dump audit-log events for SIEM backfill. `<when>` is RFC 3339 (`2026-04-01T00:00:00Z`) or a duration relative to now (`24h`, `7d`). One JSON event per line on stdout, in the same `v=1` schema the live audit_log sinks emit. Pipe to a file or directly into a log shipper. Daemon must be running. |
 
 ## Updates

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -349,7 +350,18 @@ func (m *Manager) timerExpired(ctx context.Context) error {
 // immediacy. A failed clear aborts before the restart for the same reason:
 // restarting with the record still present is what loops.
 // Caller must hold m.mu.
-func (m *Manager) applyRevertLocked(ctx context.Context, rb store.FirewallRollback) error {
+func (m *Manager) applyRevertLocked(ctx context.Context, rb store.FirewallRollback) (resultErr error) {
+	rec := actionlog.Record{Op: "operate.manual_firewall", Action: "rollback_config", Target: m.configPath, Before: actionlog.Stat(m.configPath), Result: actionlog.Failed}
+	recorded := false
+	defer func() {
+		if !recorded {
+			if resultErr != nil {
+				rec.Error = resultErr.Error()
+			}
+			actionlog.Write(rec)
+		}
+	}()
+
 	if m.timer != nil {
 		m.timer.Stop()
 		m.timer = nil
@@ -360,9 +372,15 @@ func (m *Manager) applyRevertLocked(ctx context.Context, rb store.FirewallRollba
 	if err := integrity.WriteConfigBytesAtomic(m.configPath, rb.PrevYAML); err != nil {
 		return fmt.Errorf("restore previous config: %w", err)
 	}
+	rec.Result = actionlog.Applied
+	rec.After = actionlog.Stat(m.configPath)
 	if err := m.db.ClearFirewallRollback(); err != nil {
 		return fmt.Errorf("clear rollback before restart: %w", err)
 	}
+	// Restart may terminate this process before it returns. The config change
+	// has completed and must be recorded before requesting the restart.
+	actionlog.Write(rec)
+	recorded = true
 	if m.restart != nil {
 		if err := m.restart(ctx); err != nil {
 			return fmt.Errorf("trigger restart after revert (config already restored on disk): %w", err)

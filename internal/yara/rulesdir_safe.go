@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -41,7 +42,7 @@ func validateRulesDir(dir string) error {
 		if entry.IsDir() {
 			continue
 		}
-		ext := filepath.Ext(entry.Name())
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
 		if ext != ".yar" && ext != ".yara" {
 			continue
 		}

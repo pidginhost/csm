@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -25,10 +26,19 @@ func (h accountHome) Path() string { return filepath.Join(h.Root, h.Entry.Name()
 // Name is the account name.
 func (h accountHome) Name() string { return h.Entry.Name() }
 
-// listAccountHomes enumerates every account directory under every root.
-// A root that does not exist is skipped; any other read error is returned
-// so callers can tell a broken enumeration from an empty host.
+// listAccountHomes provides a best-effort account inventory. Stateful scanners
+// use readAccountHomes so a partial inventory cannot retire unseen findings.
 func listAccountHomes() ([]accountHome, error) {
+	homes, err := readAccountHomes()
+	if len(homes) > 0 {
+		return homes, nil
+	}
+	return homes, err
+}
+
+// readAccountHomes skips absent roots, but reports other read failures even
+// when another root supplies accounts.
+func readAccountHomes() ([]accountHome, error) {
 	var homes []accountHome
 	var firstErr error
 	for _, root := range accountHomeRoots() {
@@ -43,10 +53,7 @@ func listAccountHomes() ([]accountHome, error) {
 			homes = append(homes, accountHome{Root: root, Entry: e})
 		}
 	}
-	if len(homes) == 0 && firstErr != nil {
-		return nil, firstErr
-	}
-	return homes, nil
+	return homes, firstErr
 }
 
 // accountHomeDir resolves an account's home directory: the first root that
@@ -109,8 +116,12 @@ func accountHomeSubPatterns(sub string) []string {
 // must lie strictly inside an account directory: a root or an account home
 // itself is not "inside an account".
 func accountRootOf(path string) (root, account string, ok bool) {
+	return accountRootOfAt(path, accountHomeRoots())
+}
+
+func accountRootOfAt(path string, roots []string) (root, account string, ok bool) {
 	clean := filepath.Clean(path)
-	for _, r := range accountHomeRoots() {
+	for _, r := range roots {
 		r = filepath.Clean(r)
 		rest, found := strings.CutPrefix(clean, r+string(filepath.Separator))
 		if !found {
@@ -160,11 +171,12 @@ func accountRootPrefixes(extra ...string) []string {
 	return append(out, extra...)
 }
 
-// accountNameInText returns the account named by the first
+// accountNameInTextAt returns the account named by the first
 // "<root>/<account>/" reference in free text (a finding message or
 // details), or "" when none is present.
-func accountNameInText(text string) string {
-	for _, prefix := range accountRootPrefixes() {
+func accountNameInTextAt(text string, roots []string) string {
+	for _, root := range roots {
+		prefix := filepath.Clean(root) + string(filepath.Separator)
 		idx := strings.Index(text, prefix)
 		if idx < 0 {
 			continue
@@ -185,6 +197,12 @@ func effectiveFixRoots(override []string, extra ...string) []string {
 		return override
 	}
 	roots := append([]string(nil), accountHomeRoots()...)
+	if cfg := config.Active(); cfg != nil {
+		// Failed roots are excluded; doctor reports the resolution errors.
+		// One tenant's symlink must not disable fixes for other accounts.
+		configured, _ := platform.ResolveAccountRoots(cfg.AccountRoots)
+		roots = append(roots, configured...)
+	}
 	return append(roots, extra...)
 }
 

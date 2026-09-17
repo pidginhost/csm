@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // dropperCandidate captures the fstat/read state of a file at close-write
@@ -36,9 +37,65 @@ type dropperCandidate struct {
 	// ContentSuspicious prevents FP heuristics from demoting a file whose
 	// realtime content/signature pass already found malicious structure.
 	ContentSuspicious bool
+	// A create event can precede the writer's first bytes. Retain its
+	// freshness evidence until a close-write supplies the payload.
+	WritePending bool
+	// Sticky across refreshes: truncating a previously executable snapshot
+	// must not turn its later deletion into a harmless empty guard.
+	ContentMayExecute bool
 	Digest            [32]byte
 	DigestKnown       bool
 	Head              []byte
+	// Parent identifies the real, non-symlink directory that contained the
+	// candidate while its event fd was open. The later probe uses this stable
+	// identity instead of inferring directory removal from two path stats.
+	Parent dropperParentIdentity
+	ticket queuehealth.Ticket
+}
+
+// dropperParentIdentity is deliberately compact because one is retained for
+// every tracked candidate. BirthNanos disambiguates inode reuse when statx
+// exposes it; without birth time, a reused identity is treated as unchanged
+// and cannot earn a false-positive demotion.
+type dropperParentIdentity struct {
+	Device     uint64
+	Inode      uint64
+	BirthNanos int64
+	BirthKnown bool
+	Conflicted bool
+}
+
+func (i dropperParentIdentity) known() bool {
+	return !i.Conflicted && i.Device != 0 && i.Inode != 0
+}
+
+func mergeDropperParentIdentity(a, b dropperParentIdentity) dropperParentIdentity {
+	switch {
+	case a.Conflicted || b.Conflicted:
+		return dropperParentIdentity{Conflicted: true}
+	case !a.known():
+		return b
+	case !b.known():
+		return a
+	case a.Device != b.Device || a.Inode != b.Inode:
+		return dropperParentIdentity{Conflicted: true}
+	case a.BirthKnown && b.BirthKnown && a.BirthNanos != b.BirthNanos:
+		return dropperParentIdentity{Conflicted: true}
+	case b.BirthKnown:
+		return b
+	default:
+		return a
+	}
+}
+
+func dropperParentChanged(observed, current dropperParentIdentity) bool {
+	if !observed.known() || !current.known() {
+		return false
+	}
+	if observed.Device != current.Device || observed.Inode != current.Inode {
+		return true
+	}
+	return observed.BirthKnown && current.BirthKnown && observed.BirthNanos != current.BirthNanos
 }
 
 // shouldTrackDropper reports whether a close-write event is a freshly
@@ -78,17 +135,23 @@ const (
 	unixSIFREG = 0o100000
 )
 
-// dropperMaxTracked bounds the tracker map. A cPanel package restore can
-// close-write thousands of PHP files in seconds; entries beyond the cap are
-// dropped (and counted) rather than evicting older candidates, because the
-// oldest entries are the ones closest to their probe and losing them would
-// blind the detector exactly when a bulk write storm provides cover.
-const dropperMaxTracked = 4096
+// dropperMaxTracked bounds the tracker map. A cPanel package restore or a
+// WP Toolkit site clone can close-write tens of thousands of PHP files in
+// seconds, and every one stays tracked for the whole unlink TTL; entries
+// beyond the cap are dropped (and counted) rather than evicting older
+// candidates, because the oldest entries are the ones closest to their probe
+// and losing them would blind the detector exactly when a bulk write storm
+// provides cover.
+const dropperMaxTracked = 16384
 
-// Keep enough leading content to recognise generated template artifacts and
-// show useful evidence without allowing a burst of large files to retain
-// hundreds of MiB until the probe and grace windows expire.
-const dropperTrackedHeadMax = 4096
+// Keep each waiting or detached batch's head-byte budget at 16 MiB.
+// Candidate/map/path metadata is additional bounded memory and grows with the
+// entry cap; this constant only accounts for copied content. Representative
+// Twig and Smarty headers place all required markers inside this window.
+const (
+	dropperTrackedHeadBudget = 16 << 20
+	dropperTrackedHeadMax    = dropperTrackedHeadBudget / dropperMaxTracked
+)
 
 type dropperCandidateKey struct {
 	path       string
@@ -112,6 +175,7 @@ func candidateKey(c dropperCandidate) dropperCandidateKey {
 }
 
 func ownDropperCandidate(c dropperCandidate) dropperCandidate {
+	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsInert(c)
 	if len(c.Head) > dropperTrackedHeadMax {
 		c.Head = c.Head[:dropperTrackedHeadMax]
 	}
@@ -130,6 +194,8 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.Created = prev.Created || next.Created
 	merged.PHPExecutable = prev.PHPExecutable || next.PHPExecutable
 	merged.ContentSuspicious = prev.ContentSuspicious || next.ContentSuspicious
+	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
+	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
 	if !merged.BirthKnown {
 		switch {
 		case prev.BirthKnown:
@@ -140,6 +206,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 			merged.BirthKnown = true
 		}
 	}
+	merged.ticket = prev.ticket
 	return merged
 }
 
@@ -153,6 +220,10 @@ type dropperTracker struct {
 	entries    map[dropperCandidateKey]dropperCandidate
 	pending    []dropperGone
 	overflow   uint64
+	now        func() time.Time
+	healthOnce sync.Once
+	health     *queuehealth.Tracker
+	heldHealth *queuehealth.Tracker
 }
 
 func newDropperTracker(ttl time.Duration) *dropperTracker {
@@ -160,7 +231,20 @@ func newDropperTracker(ttl time.Duration) *dropperTracker {
 		ttl:        ttl,
 		maxTracked: dropperMaxTracked,
 		entries:    make(map[dropperCandidateKey]dropperCandidate),
+		now:        time.Now,
 	}
+}
+
+func (t *dropperTracker) initQueueHealth() {
+	t.healthOnce.Do(func() {
+		t.health = queuehealth.New(t.maxTracked, time.Minute)
+		t.heldHealth = queuehealth.New(dropperMaxTracked, time.Minute)
+	})
+}
+
+func (t *dropperTracker) queueStatuses(now time.Time) (queuehealth.Status, queuehealth.Status) {
+	t.initQueueHealth()
+	return t.health.Snapshot(now), t.heldHealth.Snapshot(now)
 }
 
 // Observe records a candidate. Re-observing the same file identity keeps the
@@ -172,20 +256,47 @@ func newDropperTracker(ttl time.Duration) *dropperTracker {
 // result is detection coverage loss and the Linux wiring must surface it as
 // a metric and operator-facing warning.
 func (t *dropperTracker) Observe(c dropperCandidate) bool {
+	t.initQueueHealth()
 	c = ownDropperCandidate(c)
 	key := candidateKey(c)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if prev, ok := t.entries[key]; ok {
 		t.entries[key] = mergeDropperCandidate(prev, c)
+		prev.ticket.RetainQueuedAt(c.Observed.Add(t.ttl))
 		return true
 	}
 	if len(t.entries) >= t.maxTracked {
 		t.overflow++
+		t.health.Lose(t.now(), 1)
 		return false
 	}
+	c.ticket = t.health.BeginAt(c.Observed.Add(t.ttl), t.now())
 	t.entries[key] = c
 	return true
+}
+
+// Retry returns a detached probe to the waiting set. A new observation may
+// already occupy its identity or the available slot, so this transfer must
+// share the admission lock with Observe.
+func (t *dropperTracker) Retry(c dropperCandidate) (queuehealth.Ticket, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := candidateKey(c)
+	now := t.now()
+	if waiting, ok := t.entries[key]; ok {
+		waiting.ticket.MergeRunning(c.ticket, now)
+		t.entries[key] = mergeDropperCandidate(waiting, c)
+		return waiting.ticket, true
+	}
+	if len(t.entries) >= t.maxTracked {
+		t.overflow++
+		c.ticket.Reject(now)
+		return queuehealth.Ticket{}, false
+	}
+	c.ticket.Requeue(now)
+	t.entries[key] = c
+	return c.ticket, true
 }
 
 // Refresh updates a previously admitted candidate without creating a new
@@ -202,6 +313,7 @@ func (t *dropperTracker) Refresh(c dropperCandidate) bool {
 	defer t.mu.Unlock()
 	if prev, ok := t.entries[key]; ok {
 		t.entries[key] = mergeDropperCandidate(prev, c)
+		prev.ticket.RetainQueuedAt(c.Observed.Add(t.ttl))
 		return true
 	}
 	if c.Inode == 0 {
@@ -218,11 +330,9 @@ func (t *dropperTracker) Refresh(c dropperCandidate) bool {
 			continue
 		}
 		merged := mergeDropperCandidate(prev, c)
+		prev.ticket.RetainQueuedAt(c.Observed.Add(t.ttl))
 		delete(t.entries, prevKey)
 		mergedKey := candidateKey(merged)
-		if existing, ok := t.entries[mergedKey]; ok {
-			merged = mergeDropperCandidate(existing, merged)
-		}
 		t.entries[mergedKey] = merged
 		return true
 	}
@@ -233,9 +343,11 @@ func (t *dropperTracker) Refresh(c dropperCandidate) bool {
 func (t *dropperTracker) Due(now time.Time) []dropperCandidate {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	started := t.now()
 	var due []dropperCandidate
 	for key, c := range t.entries {
 		if now.Sub(c.Observed) >= t.ttl {
+			c.ticket.Start(started)
 			due = append(due, c)
 			delete(t.entries, key)
 		}
@@ -255,6 +367,21 @@ func (t *dropperTracker) overflowDropped() uint64 {
 	return t.overflow
 }
 
+// discardPending runs after both the probe loop and analyzer workers join.
+// Analyzer work finishing during shutdown can still admit fresh candidates.
+func (t *dropperTracker) discardPending(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, c := range t.entries {
+		c.ticket.Reject(now)
+	}
+	clear(t.entries)
+	for _, g := range t.pending {
+		g.ticket.Reject(now)
+	}
+	t.pending = nil
+}
+
 // dropperFileState is the identity and content evidence captured when the
 // probe opens a path. All fields must come from the same open fd. Device plus
 // inode handles rename(2); birth time guards against inode reuse; a full
@@ -269,6 +396,10 @@ type dropperFileState struct {
 	BirthKnown  bool
 	Digest      [32]byte
 	DigestKnown bool
+	// IsRegular distinguishes a file that took over the path from a directory
+	// or symlink left behind there. Only a regular file can be the result of
+	// an atomic write.
+	IsRegular bool
 }
 
 // dropperProbe is what the TTL probe learned about a candidate. AtPath and
@@ -283,8 +414,12 @@ type dropperProbe struct {
 	// DocrootRemoved is true only for a confirmed ENOENT on the document
 	// root, not for permission or transient I/O failures.
 	DocrootRemoved bool
-	RenamedTo      string
-	RenameTarget   *dropperFileState
+	// ParentRemoved is true only when a snapshotted, non-symlink parent is now
+	// absent or a different directory identity. A file whose whole directory
+	// went away was not singled out for deletion.
+	ParentRemoved bool
+	RenamedTo     string
+	RenameTarget  *dropperFileState
 	// QuarantineMatched requires an exact ledger identity/fingerprint match,
 	// not merely a prior quarantine entry for the same path.
 	QuarantineMatched bool
@@ -299,11 +434,13 @@ const (
 	dropperDemotedAtomicWrite
 	dropperDemotedWPUpgrade
 	dropperDemotedDocroot
+	dropperDemotedDirRemoved
+	dropperDemotedReplaced
 	dropperSuspect
 )
 
 func dropperVerdictDemoted(v dropperVerdict) bool {
-	return v >= dropperDemotedTemplate && v <= dropperDemotedDocroot
+	return v >= dropperDemotedTemplate && v <= dropperDemotedReplaced
 }
 
 func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
@@ -316,11 +453,30 @@ func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
 	return !c.BirthKnown || c.Birth.Equal(current.Birth)
 }
 
+// dropperReplacedInPlace reports whether the file now at the candidate's path
+// is a regular file that came into existence after the candidate was observed.
+// That is an atomic write completing (write temp, rename over the live path),
+// which repeats every few minutes for WAF and cache state files. The successor
+// stays on disk and is scanned in its own right, and the candidate's own bytes
+// were already read by the content pass, so the evidence loss that makes a
+// self-delete Critical does not apply.
+//
+// This does not weaken the detector against an attacker who leaves a benign
+// file behind: overwriting the same inode already returns dropperBenign above,
+// which is both cheaper and quieter than unlink plus rename. A birth time is
+// required, so a filesystem without STATX_BTIME keeps the suspect verdict.
+func dropperReplacedInPlace(c dropperCandidate, current dropperFileState) bool {
+	if !current.IsRegular || !current.BirthKnown {
+		return false
+	}
+	return !current.Birth.Before(c.Observed)
+}
+
 // assessDropper turns a probe result into a verdict for one candidate.
 func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if !p.Conclusive {
 		// Due removed this candidate from the tracker. The probe loop should
-		// reinsert it with Observe and handle a false capacity result.
+		// reinsert it with Retry and handle a false capacity result.
 		return dropperInconclusive
 	}
 	if p.QuarantineMatched {
@@ -345,8 +501,17 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if c.ContentSuspicious {
 		return dropperSuspect
 	}
+	if !c.WritePending && !c.ContentMayExecute && dropperCandidateIsInert(c) {
+		return dropperBenign
+	}
+	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
+		return dropperDemotedReplaced
+	}
 	if p.DocrootRemoved {
 		return dropperDemotedDocroot
+	}
+	if p.ParentRemoved {
+		return dropperDemotedDirRemoved
 	}
 	if atomicWriteRenameCandidate(c.Path) != "" {
 		return dropperDemotedAtomicWrite
@@ -419,22 +584,6 @@ func wpUpgradeRenameCandidates(path, configuredDocroot string) []string {
 	}
 }
 
-// atomicWriteRenameCandidate maps cPanel's .temp.<timestamp>.<name> staging
-// path to its intended final path. It is only a location hint: the probe must
-// still validate the destination with dropperRenameMatch.
-func atomicWriteRenameCandidate(path string) string {
-	base := filepath.Base(path)
-	if !looksLikeAtomicWriteStage(base) {
-		return ""
-	}
-	rest := strings.TrimPrefix(base, ".temp.")
-	dot := strings.IndexByte(rest, '.')
-	if dot < 0 || dot == len(rest)-1 {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(path), rest[dot+1:])
-}
-
 func dropperRenameTargetAllowed(c dropperCandidate, target string) bool {
 	if atomicTarget := atomicWriteRenameCandidate(c.Path); atomicTarget != "" && target == atomicTarget {
 		return true
@@ -474,6 +623,7 @@ type dropperGone struct {
 	Cand    dropperCandidate
 	Verdict dropperVerdict
 	held    time.Time
+	ticket  queuehealth.Ticket
 }
 
 // dropperFinding is one flush decision: either a single vanished file or a
@@ -490,9 +640,18 @@ func (t *dropperTracker) HoldGone(c dropperCandidate, v dropperVerdict, now time
 	if v == dropperBenign || v == dropperInconclusive {
 		return
 	}
+	t.initQueueHealth()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.pending = append(t.pending, dropperGone{Cand: ownDropperCandidate(c), Verdict: v, held: now})
+	if len(t.pending) >= dropperMaxTracked {
+		t.heldHealth.Lose(t.now(), 1)
+		return
+	}
+	c.ticket = queuehealth.Ticket{}
+	t.pending = append(t.pending, dropperGone{
+		Cand: ownDropperCandidate(c), Verdict: v, held: now,
+		ticket: t.heldHealth.BeginAt(now.Add(dropperGraceWindow), t.now()),
+	})
 }
 
 // FlushDue emits findings for docroot groups whose oldest held entry has
@@ -501,6 +660,7 @@ func (t *dropperTracker) HoldGone(c dropperCandidate, v dropperVerdict, now time
 func (t *dropperTracker) FlushDue(now time.Time) []dropperFinding {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	started := t.now()
 
 	type groupKey struct {
 		docroot string
@@ -523,6 +683,7 @@ func (t *dropperTracker) FlushDue(now time.Time) []dropperFinding {
 	for _, g := range t.pending {
 		key := keyFor(g)
 		if now.Sub(oldest[key]) >= dropperGraceWindow {
+			g.ticket.Start(started)
 			groups[key] = append(groups[key], g)
 		} else {
 			keep = append(keep, g)
@@ -618,6 +779,10 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 			details += "\nDemoted: path is structurally inside a WordPress upgrade staging tree."
 		case dropperDemotedDocroot:
 			details += "\nDemoted: the containing document root was removed before the probe."
+		case dropperDemotedDirRemoved:
+			details += "\nDemoted: the original containing directory was removed before the probe."
+		case dropperDemotedReplaced:
+			details += "\nDemoted: the path was replaced in place by a newer file (atomic write), not emptied."
 		}
 	}
 	if len(c.Head) > 0 {

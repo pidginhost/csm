@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,57 @@ func TestEmitAuditFiresBeforeRateLimit(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Error("audit log empty even though emit should fire before rate limit")
+	}
+}
+
+func TestDispatchRedactsBothAuditSinks(t *testing.T) {
+	resetAuditSinksForTest()
+	t.Cleanup(resetAuditSinksForTest)
+	addr, received := receiveOneUDP(t)
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	cfg := cfgWithJSONLAudit(t, path)
+	cfg.Alerts.MaxPerHour = 0
+	cfg.Alerts.AuditLog.Syslog.Enabled = true
+	cfg.Alerts.AuditLog.Syslog.Network = "udp"
+	cfg.Alerts.AuditLog.Syslog.Address = addr
+	cfg.Alerts.AuditLog.Syslog.Facility = "local0"
+	f := Finding{
+		Check: "cpanel_login_realtime", Severity: Warning, Timestamp: time.Unix(1757589449, 0),
+		Message: "password=password-fixture",
+		Details: "[whostmgrd] 198.51.100.56 NEW shop:session-fixture app=cpaneld",
+	}
+	if err := Dispatch(cfg, []Finding{f}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	resetAuditSinksForTest()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkEvent := func(raw []byte) {
+		t.Helper()
+		var event AuditEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatalf("invalid audit JSON: %v", err)
+		}
+		if event.Message != "password=[REDACTED]" ||
+			event.Details != "[whostmgrd] 198.51.100.56 NEW shop:[REDACTED] app=cpaneld" {
+			t.Errorf("audit sink received unredacted text: %+v", event)
+		}
+		if event.FindingID != FindingID(f) {
+			t.Errorf("audit sink lost finding correlation: %q", event.FindingID)
+		}
+	}
+	checkEvent(raw)
+	select {
+	case raw := <-received:
+		start := strings.IndexByte(string(raw), '{')
+		if start < 0 {
+			t.Fatalf("syslog JSON body missing: %q", raw)
+		}
+		checkEvent(raw[start:])
+	case <-time.After(2 * time.Second):
+		t.Fatal("syslog receive timeout")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -35,6 +36,16 @@ func observeAutoResponse(action string, n int) {
 		metrics.MustRegister("csm_auto_response_actions_total", autoResponseActions)
 	})
 	autoResponseActions.With(action).Add(float64(n))
+}
+
+func observeFileResponseActions(action string, findings []alert.Finding) {
+	n := 0
+	for _, finding := range findings {
+		if finding.Check == "auto_response" {
+			n++
+		}
+	}
+	observeAutoResponse(action, n)
 }
 
 // checkDuration is the per-check latency histogram for /metrics.
@@ -202,7 +213,7 @@ var runnerFindingNames = map[string][]string{
 	"cpanel_logins":         {"cpanel_login", "cpanel_multi_ip_login", "cpanel_password_purge"},
 	"crontabs":              {"crond_change", "crontab_change", "suspicious_crontab"},
 	"database_dumps":        {"database_dump"},
-	"db_content":            {"db_content_scan_incomplete", "db_doorway_sitemap_routes", "db_hidden_link_injection", "db_hostname_keyed_option", "db_options_injection", "db_options_new_external_script", "db_phantom_post_author", "db_post_injection", "db_post_volume_burst", "db_spam_taxonomy", "db_stored_cloak_logic", "db_stored_code_execution", "db_rogue_admin", "db_siteurl_hijack", "db_siteurl_invalid", "db_spam_cleaned", "db_spam_found", "db_spam_injection", "db_suspicious_admin_email"},
+	"db_content":            {"db_content_scan_incomplete", "db_doorway_sitemap_routes", "db_hidden_link_injection", "db_hostname_keyed_option", "db_options_injection", "db_options_new_external_script", "db_options_plugin_notice_injection", "db_phantom_post_author", "db_post_injection", "db_post_volume_burst", "db_spam_taxonomy", "db_stored_cloak_logic", "db_stored_code_execution", "db_rogue_admin", "db_siteurl_foreign_host", "db_siteurl_hijack", "db_siteurl_invalid", "db_spam_cleaned", "db_spam_found", "db_spam_injection", "db_suspicious_admin_email"},
 	"db_content_drupal":     {"drupal_admin_injection", "drupal_content_injection", "drupal_settings_injection"},
 	"db_content_joomla":     {"joomla_admin_injection", "joomla_content_injection", "joomla_extensions_injection"},
 	"db_content_magento":    {"magento_admin_injection", "magento_content_injection", "magento_settings_injection"},
@@ -213,61 +224,64 @@ var runnerFindingNames = map[string][]string{
 	"email_content":         {"email_phishing_content"},
 	"email_forwarder_audit": {"email_pipe_forwarder", "email_suspicious_forwarder"},
 	"email_mail_filters":    {"email_filter_blackhole", "email_filter_exfil", "email_filter_forwarder", "email_filter_pipe", "email_mail_filters"},
-	"email_weak_password":   {"email_weak_password"},
+	"email_weak_password":   {"email_weak_password", "email_password_audit_incomplete"},
 	"exfiltration_paste":    {"exfiltration_paste_site"},
 	"fake_kernel_threads":   {"fake_kernel_thread"},
-	"file_index":            {"new_executable_in_config", "new_php_in_sensitive_dir", "new_php_in_sensitive_dir_clean", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
-	"filesystem":            {"backdoor_binary", "suid_binary", "suspicious_file"},
-	"firewall":              {"firewall", "firewall_ports", "firewall_ipv6_unmanaged"},
-	"ftp_logins":            {"ftp_bruteforce", "ftp_login", "ftp_login_after_bruteforce"},
-	"group_writable_php":    {"group_writable_php"},
-	"health":                {"csm_health"},
-	"htaccess":              append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
-	"exposed_files":         {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
-	"ip_reputation":         {"ip_reputation"},
-	"kernel_modules":        {"kernel_module"},
-	"local_threat_score":    {"local_threat_score"},
-	"mail_per_account":      {"mail_per_account"},
-	"mail_queue":            {"mail_queue", "mail_queue_unavailable"},
-	"modsec_audit":          {"waf_attack_blocked"},
-	"mysql_users":           {"mysql_superuser"},
-	"nulled_plugins":        {"nulled_plugin"},
-	"open_basedir":          {"open_basedir"},
-	"outbound_connections":  {"backdoor_port", "backdoor_port_outbound", "c2_connection"},
-	"outdated_plugins":      {"outdated_plugins"},
-	"vulnerable_plugins":    {"vulnerable_plugins"},
-	"vulnerable_timthumb":   {"vulnerable_timthumb"},
-	"perf_error_logs":       {"perf_error_logs"},
-	"perf_load":             {"perf_load"},
-	"perf_memory":           {"perf_memory"},
-	"perf_mysql_config":     {"perf_mysql_config"},
-	"perf_php_handler":      {"perf_php_handler"},
-	"perf_php_processes":    {"perf_php_processes"},
-	"perf_redis_config":     {"perf_redis_config"},
-	"perf_wp_config":        {"perf_wp_config"},
-	"perf_wp_cron":          {"perf_wp_cron"},
-	"perf_wp_transients":    {"perf_wp_transients"},
-	"phishing":              {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
-	"yara_deep":             {"yara_match_scheduled", "yara_scan_incomplete"},
-	"php_config_changes":    {"php_config_change", "php_config_scan_incomplete"},
-	"php_content":           {"obfuscated_php", "suspicious_php_content"},
-	"php_processes":         {"php_suspicious_execution"},
-	"rpm_integrity":         {"dpkg_integrity", "rpm_integrity"},
-	"shadow_changes":        {"bulk_password_change", "root_password_change", "shadow_change"},
-	"ssh_keys":              {"ssh_keys"},
-	"ssh_logins":            {"ssh_login_unknown_ip"},
-	"sshd_config":           {"sshd_config_change"},
-	"ssl_certs":             {"ssl_cert_issued"},
-	"suspicious_processes":  {"suspicious_process"},
-	"symlink_attacks":       {"symlink_attack"},
-	"uid0_accounts":         {"uid0_account"},
-	"user_outbound":         {"user_outbound_connection", "direct_smtp_egress", "bad_asn_outbound"},
-	"waf_status":            {"modsec_disabled_vhost", "waf_bypass", "waf_detection_only", "waf_rules", "waf_rules_stale", "waf_status"},
-	"webmail_logins":        {"webmail_bruteforce"},
-	"webshells":             {"webshell", "world_writable_php"},
-	"whm_access":            {"whm_account_action", "whm_password_change"},
-	"wp_bruteforce":         {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood", "http_asn_crawl"},
-	"wp_core":               {"wp_core_integrity"},
+	// new_php_in_languages and new_php_in_upgrade were emitted until a20c6f76;
+	// they stay here so a completed scan clears rows written by older versions.
+	"file_index":           {"new_executable_in_config", "new_php_in_languages", "new_php_in_sensitive_dir", "new_php_in_sensitive_dir_clean", "new_php_in_upgrade", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
+	"filesystem":           {"backdoor_binary", "suid_binary", "suspicious_file"},
+	"firewall":             {"firewall", "firewall_ports", "firewall_ipv6_unmanaged"},
+	"ftp_logins":           {"ftp_bruteforce", "ftp_login", "ftp_login_after_bruteforce"},
+	"group_writable_php":   {"group_writable_php"},
+	"health":               {"csm_health"},
+	"htaccess":             append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
+	"exposed_files":        {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
+	"ip_reputation":        {"ip_reputation"},
+	"kernel_modules":       {"kernel_module"},
+	"local_threat_score":   {"local_threat_score"},
+	"mail_per_account":     {"mail_per_account"},
+	"mail_queue":           {"mail_queue", "mail_queue_unavailable"},
+	"modsec_audit":         {"waf_attack_blocked"},
+	"mysql_users":          {"mysql_superuser"},
+	"nulled_plugins":       {"nulled_plugin"},
+	"open_basedir":         {"open_basedir"},
+	"outbound_connections": {"backdoor_port", "backdoor_port_outbound", "c2_connection"},
+	"outdated_plugins":     {"outdated_plugins"},
+	"vulnerable_plugins":   {"vulnerable_plugins"},
+	"vulnerable_timthumb":  {"vulnerable_timthumb"},
+	"perf_error_logs":      {"perf_error_logs"},
+	"perf_load":            {"perf_load"},
+	"perf_memory":          {"perf_memory"},
+	"perf_mysql_config":    {"perf_mysql_config"},
+	"perf_php_handler":     {"perf_php_handler"},
+	"perf_php_processes":   {"perf_php_processes"},
+	"perf_redis_config":    {"perf_redis_config"},
+	"perf_wp_config":       {"perf_wp_config"},
+	"perf_wp_cron":         {"perf_wp_cron"},
+	"perf_wp_transients":   {"perf_wp_transients"},
+	"phishing":             {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
+	"yara_deep":            {"yara_match_scheduled", "yara_scan_incomplete"},
+	"php_config_changes":   {"php_config_change", "php_config_scan_incomplete"},
+	"php_content":          {"obfuscated_php", "suspicious_php_content"},
+	"php_processes":        {"php_suspicious_execution"},
+	"rpm_integrity":        {"dpkg_integrity", "rpm_integrity"},
+	"shadow_changes":       {"bulk_password_change", "root_password_change", "shadow_change"},
+	"ssh_keys":             {"ssh_keys"},
+	"ssh_logins":           {"ssh_login_unknown_ip"},
+	"sshd_config":          {"sshd_config_change"},
+	"ssl_certs":            {"ssl_cert_issued"},
+	"suspicious_processes": {"suspicious_process"},
+	"symlink_attacks":      {"symlink_attack"},
+	"uid0_accounts":        {"uid0_account"},
+	"user_outbound":        {"user_outbound_connection", "direct_smtp_egress", "bad_asn_outbound"},
+	"waf_status":           {"modsec_disabled_vhost", "waf_bypass", "waf_detection_only", "waf_rules", "waf_rules_stale", "waf_status"},
+	"webmail_logins":       {"webmail_bruteforce"},
+	"webshells":            {"webshell", "world_writable_php"},
+	"whm_access":           {"whm_account_action", "whm_password_change"},
+	"wp_bruteforce":        {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood", "http_asn_crawl"},
+	"wp_core":              {"wp_core_integrity"},
+	"wp_plugin_inventory":  {"wp_plugin_inventory_unverified"},
 }
 
 const (
@@ -275,6 +289,7 @@ const (
 	logicalOwnerPHPTaintDeep        = "php_taint_deep"
 	logicalOwnerReputationQuota     = "reputation_quota_health"
 	logicalOwnerReputationFeedStale = "reputation_feed_health"
+	logicalOwnerWPCoreVerification  = "wp_core_verification"
 )
 
 // logicalOwnerFindingNames maps a logical finding owner hosted inside another
@@ -287,6 +302,7 @@ var logicalOwnerFindingNames = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {"php_remote_taint", "php_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {"reputation_quota_exhausted"},
 	logicalOwnerReputationFeedStale: {"threat_feed_stale"},
+	logicalOwnerWPCoreVerification:  {"wp_core_unverified"},
 }
 
 // logicalOwnerDisableAliases maps a logical owner to the disabled_checks
@@ -297,6 +313,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 	logicalOwnerPHPTaintDeep:        {logicalOwnerPHPTaintDeep, "php_remote_taint"},
 	logicalOwnerReputationQuota:     {logicalOwnerReputationQuota, "reputation_quota_exhausted", "ip_reputation"},
 	logicalOwnerReputationFeedStale: {logicalOwnerReputationFeedStale, "threat_feed_stale", "ip_reputation"},
+	logicalOwnerWPCoreVerification:  {logicalOwnerWPCoreVerification, "wp_core_unverified", "wp_core"},
 }
 
 // physicalCheckLogicalOwners maps a runnable check to the logical owners it
@@ -306,6 +323,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 var physicalCheckLogicalOwners = map[string][]string{
 	"yara_deep":     {logicalOwnerJSTaintDeep, logicalOwnerPHPTaintDeep},
 	"ip_reputation": {logicalOwnerReputationQuota, logicalOwnerReputationFeedStale},
+	"wp_core":       {logicalOwnerWPCoreVerification},
 }
 
 // disabledLogicalOwners returns the logical owners disabled by cfg.
@@ -318,6 +336,11 @@ func disabledLogicalOwners(cfg *config.Config) map[string]struct{} {
 	for _, name := range cfg.DisabledChecks {
 		if name = strings.TrimSpace(name); name != "" {
 			disabled[name] = struct{}{}
+			// A public finding alias also disables owners that explicitly
+			// inherit disablement from its physical check.
+			for _, runner := range runnerNamesForFinding(name) {
+				disabled[runner] = struct{}{}
+			}
 		}
 	}
 	for owner, aliases := range logicalOwnerDisableAliases {
@@ -493,6 +516,7 @@ func deepChecks() []namedCheck {
 		{"credential_reuse", CheckCredentialReuse},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
+		{"wp_plugin_inventory", CheckWPPluginVerification},
 		{"vulnerable_plugins", CheckVulnerablePlugins},
 		{"vulnerable_timthumb", CheckVulnerableTimThumb},
 		{"supply_chain", CheckSupplyChain},
@@ -538,6 +562,7 @@ func reducedDeepChecks() []namedCheck {
 		{"credential_reuse", CheckCredentialReuse},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
+		{"wp_plugin_inventory", CheckWPPluginVerification},
 		{"vulnerable_plugins", CheckVulnerablePlugins},
 		{"vulnerable_timthumb", CheckVulnerableTimThumb},
 		{"supply_chain", CheckSupplyChain},
@@ -633,12 +658,14 @@ func withLogicalOwnerPurgeNames(toScan []namedCheck) []string {
 // An empty entry lets a stateful logical owner preserve its last finding
 // without inventing a per-run status finding.
 var perRunFindingNames = map[string][]string{
+	"email_weak_password":           {"email_password_audit_incomplete"},
 	"yara_deep":                     {"yara_scan_incomplete"},
 	"db_content":                    {"db_content_scan_incomplete"},
 	logicalOwnerJSTaintDeep:         {"js_taint_scan_incomplete"},
 	logicalOwnerPHPTaintDeep:        {"php_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {},
 	logicalOwnerReputationFeedStale: {},
+	logicalOwnerWPCoreVerification:  {},
 	"php_config_changes":            {"php_config_scan_incomplete"},
 }
 
@@ -646,42 +673,69 @@ var latestVolatileCheckNames = []string{
 	"account_scan_truncated",
 	"auto_block",
 	"auto_response",
+	"auto_response_paused",
 	"challenge_route",
 	"check_panic",
 	"check_timeout",
 }
 
-var latestDerivedCheckNames = []string{
-	"coordinated_attack",
-	"cross_account_malware",
-}
+// Keep merge completion and health publication in the same order. The
+// store lock alone cannot prevent an older caller publishing after a newer
+// merge once both have returned from the store.
+var latestScanMergeMu sync.Mutex
 
 // StoreLatestScanFindings replaces the latest findings owned by a scan, then
 // rebuilds derived correlation findings from the merged current set. One-shot
 // auto-response actions stay in history and alerts, not the active findings
 // view.
 func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []alert.Finding) {
+	StoreLatestScanFindingsWithGaps(st, purgeChecks, findings, nil)
+}
+
+// StoreLatestScanFindingsWithGaps preserves the latest state for files a
+// completed scan could not examine while replacing its covered state. gapPaths
+// contains the lexical and resolved aliases captured when each gap occurred;
+// the state store applies that frozen set under the same lock as the purge.
+func StoreLatestScanFindingsWithGaps(st *state.Store, purgeChecks []string, findings []alert.Finding, gapPaths map[string]map[string]bool) {
+	StoreLatestScanFindingsWithCoverage(st, purgeChecks, findings, &state.ScanCoverage{PreservePaths: gapPaths})
+}
+
+// StoreLatestScanFindingsWithCoverage retires only completed checks or scopes
+// and preserves current findings for file gaps in the same atomic operation.
+func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, findings []alert.Finding, coverage *state.ScanCoverage) {
 	if st == nil {
 		return
 	}
-	if len(purgeChecks) == 0 && len(findings) == 0 {
+	if len(purgeChecks) == 0 && len(findings) == 0 && (coverage == nil || len(coverage.CompletedScopes) == 0) {
 		return
 	}
+	// Cold detection runs commands; correlation under latestMu must only
+	// read cached platform roots.
+	platform.Detect()
+	latestScanMergeMu.Lock()
 	now := time.Now()
-	st.PurgeAndMergeFindingsDerived(
+	st.PurgeAndMergeFindingsDerivedWithCoverage(
 		latestPurgeWithVolatile(purgeChecks),
 		latestPersistentFindings(findings),
-		latestDerivedCheckNames,
+		coverage,
+		DerivedCorrelationChecks(),
 		func(merged []alert.Finding) []alert.Finding {
-			derived := CorrelateFindings(merged)
-			for i := range derived {
-				if derived[i].Timestamp.IsZero() {
-					derived[i].Timestamp = now
+			res := defaultCorrelator.Correlate(merged, now)
+			for i := range res.Derived {
+				if res.Derived[i].Timestamp.IsZero() {
+					res.Derived[i].Timestamp = now
 				}
 			}
-			return derived
+			return res.Derived
 		},
 	)
+	// Adding derived findings can evict source rows at the active-set cap.
+	// Count the final set, not the intermediate input to derivation.
+	unattributed := defaultCorrelator.Correlate(st.LatestFindings(), now).Unattributed
+	reporter := defaultUnattributedReporter
+	warnings := reporter.record(unattributed, true)
+	latestScanMergeMu.Unlock()
+	reporter.warnCounts(warnings)
 }
 
 func latestPurgeWithVolatile(purgeChecks []string) []string {
@@ -712,12 +766,7 @@ func isLatestVolatileFinding(check string) bool {
 }
 
 func isLatestDerivedFinding(check string) bool {
-	for _, name := range latestDerivedCheckNames {
-		if check == name {
-			return true
-		}
-	}
-	return false
+	return IsDerivedCorrelationCheck(check)
 }
 
 func checksForTier(tier Tier) []namedCheck {
@@ -799,7 +848,14 @@ func RunTierWithContext(ctx context.Context, cfg *config.Config, store *state.St
 // RunTierDryRun is the dry-run variant of RunTier: auto-response actions
 // are skipped. Used by `csm check*` socket commands and the legacy CLI.
 func RunTierDryRun(cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
-	return runParallelWithContext(context.Background(), cfg, store, checksForTier(tier), string(tier), true)
+	return RunTierDryRunWithContext(context.Background(), cfg, store, tier)
+}
+
+// RunTierDryRunWithContext is RunTierDryRun with a caller-owned parent
+// context. Control-socket scans use it to collect coverage gaps without
+// enabling auto-response actions.
+func RunTierDryRunWithContext(ctx context.Context, cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
+	return runParallelWithContext(ctx, cfg, store, checksForTier(tier), string(tier), true)
 }
 
 // RunReducedDeep runs only the deep checks that fanotify can't replace.
@@ -859,6 +915,10 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	if parent == nil {
 		parent = context.Background()
 	}
+	coverageGaps := coverageGapsFrom(parent)
+	// Clear a reused handle before work starts. An interrupted run must never
+	// expose the preceding run's path set as its own.
+	coverageGaps.replace(nil, nil, nil)
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
 	// Logical owners hosted by checks in this set: a disabled owner purges
@@ -882,8 +942,15 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		}
 	}
 
-	scanCtx, truncations := withAccountScanTruncationCollector(parent)
+	// Hide the caller's sink from nested runners and late check goroutines. The
+	// private path collector below is copied out only after this runner's workers
+	// completed inside their budgets.
+	scanCtx := context.WithValue(parent, coverageGapsContextKey{}, (*CoverageGaps)(nil))
+	scanCtx, truncations := withAccountScanTruncationCollector(scanCtx)
+	scanCtx, coveragePaths := withCoveragePathCollector(scanCtx)
 	scanCtx, incompleteChecks := withIncompleteCheckCollector(scanCtx)
+	// One WordPress discovery per cycle, shared by every check that needs it.
+	scanCtx = withWPInstallCache(scanCtx)
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
@@ -899,27 +966,52 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// incompleteRan collects checks that returned within budget but marked
 	// themselves incomplete; their per-run status finding names still purge.
 	incompleteRan := make([]string, 0)
+	coverageGapPaths := make(map[string]map[string]bool)
+	completedScopeNames := make(map[string]map[string]bool)
+	addCoverageGapPaths := func(owner string) {
+		paths := coveragePaths.gapPaths(owner)
+		if len(paths) == 0 {
+			return
+		}
+		findingNames := []string{owner}
+		findingNames = append(findingNames, runnerFindingNames[owner]...)
+		findingNames = append(findingNames, logicalOwnerFindingNames[owner]...)
+		for _, findingName := range findingNames {
+			if coverageGapPaths[findingName] == nil {
+				coverageGapPaths[findingName] = make(map[string]bool, len(paths))
+			}
+			for path := range paths {
+				coverageGapPaths[findingName][path] = true
+			}
+		}
+	}
 
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
+	dispatches := checkDispatches.begin(len(enabledChecks), cap(sem))
+	checkDispatches.observe(scanCtx, dispatches)
 
-	for _, nc := range enabledChecks {
+	for i, nc := range enabledChecks {
 		wg.Add(1)
 		c := nc
+		task := dispatches[i]
 		// Check functions run against user filesystem content (unparsed PHP,
 		// crafted archives, foreign encodings), so contain both a panic in the
 		// runner and one inside the check execution. The inner recovery reports
 		// check_panic immediately with a stack trace.
-		obs.SafeGo("check-runner", func() {
+		obs.SafeGo("check-runner", task.wrap(func() {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
 			case <-scanCtx.Done():
+				task.withdraw(scanCtx)
 				return
 			}
 			defer func() { <-sem }()
+			task.admit()
 
 			if scanCtx.Err() != nil {
+				task.withdraw(scanCtx)
 				return
 			}
 
@@ -938,14 +1030,16 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 
 			// Run with cancellable context so timed-out checks stop
 			budget := timeoutFor(c.name)
-			ctx, cancel := context.WithTimeout(scanCtx, budget)
+			ctx, cancel := context.WithTimeout(withCheckDispatch(scanCtx, task), budget)
 			start := time.Now()
-			done := executeCheckAsync("check-exec", func() []alert.Finding {
+			execution := executeCheckAsync(ctx, "check-exec", func() []alert.Finding {
 				return c.fn(ctx, cfg, store)
 			})
+			defer execution.finishCaller()
 
 			select {
-			case outcome := <-done:
+			case outcome := <-execution.done:
+				execution.received()
 				if outcome.panicErr != "" {
 					cancel()
 					if throttleReserved {
@@ -965,6 +1059,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				}
 				results := outcome.findings
 				if ctx.Err() != nil {
+					execution.withdraw(ctx.Err())
 					cancel()
 					if throttleReserved {
 						store.ReleaseThrottle(c.name)
@@ -986,8 +1081,15 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
 				mu.Lock()
+				if scopes := coveragePaths.completedScopes(c.name); len(scopes) > 0 {
+					names := append([]string{c.name}, runnerFindingNames[c.name]...)
+					for _, name := range names {
+						completedScopeNames[name] = scopes
+					}
+				}
 				if !incompleteChecks.contains(c.name) {
 					completedChecks = append(completedChecks, c)
+					addCoverageGapPaths(c.name)
 				} else {
 					incompleteRan = append(incompleteRan, c.name)
 				}
@@ -998,6 +1100,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				for _, owner := range hostedOwners[c.name] {
 					if !incompleteChecks.contains(owner) {
 						completedOwners = append(completedOwners, owner)
+						addCoverageGapPaths(owner)
 					} else {
 						incompleteRan = append(incompleteRan, owner)
 					}
@@ -1010,6 +1113,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				}
 				mu.Unlock()
 			case <-ctx.Done():
+				execution.withdraw(ctx.Err())
 				cancel()
 				if throttleReserved {
 					store.ReleaseThrottle(c.name)
@@ -1031,7 +1135,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				})
 				mu.Unlock()
 			}
-		})
+		}))
 	}
 
 	wg.Wait()
@@ -1062,13 +1166,17 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	}
 
 	// Cross-account correlation
-	extra := CorrelateFindings(findings)
-	for i := range extra {
-		if extra[i].Timestamp.IsZero() {
-			extra[i].Timestamp = now
+	if len(findings) > 0 {
+		platform.Detect()
+	}
+	correlated := CorrelateBatchFindings(findings)
+	for i := range correlated.Derived {
+		if correlated.Derived[i].Timestamp.IsZero() {
+			correlated.Derived[i].Timestamp = now
 		}
 	}
-	findings = append(findings, extra...)
+	findings = append(findings, correlated.Derived...)
+	ReportUnattributedCorrelation(correlated.Unattributed)
 
 	// Auto-response: skip when the caller requested a dry run
 	// (check/baseline commands).
@@ -1086,7 +1194,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		}
 		findings = append(findings, challengeActions...)
 
-		killActions := AutoKillProcesses(cfg, findings)
+		killActions := AutoKillProcesses(parent, cfg, findings)
 		for i := range killActions {
 			if killActions[i].Timestamp.IsZero() {
 				killActions[i].Timestamp = now
@@ -1101,7 +1209,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				quarantineActions[i].Timestamp = now
 			}
 		}
-		observeAutoResponse("quarantine", len(quarantineActions))
+		observeFileResponseActions("quarantine", quarantineActions)
 		findings = append(findings, quarantineActions...)
 
 		htaccessActions := AutoCleanHtaccess(cfg, findings)
@@ -1110,7 +1218,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				htaccessActions[i].Timestamp = now
 			}
 		}
-		observeAutoResponse("htaccess_clean", len(htaccessActions))
+		observeFileResponseActions("htaccess_clean", htaccessActions)
 		findings = append(findings, htaccessActions...)
 
 		vpatchActions := AutoVirtualPatchExposedFiles(cfg, findings)
@@ -1138,6 +1246,37 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	for owner := range disabledOwnerSet {
 		purgeNames = append(purgeNames, logicalOwnerFindingNames[owner]...)
 	}
+	// Selected checks that never completed (including timeouts, panics and
+	// throttle skips) did not examine their prior findings. Reuse the known
+	// completion sets to protect that state without authorizing any purge.
+	uncompletedOwners := make(map[string]bool)
+	for _, check := range enabledChecks {
+		uncompletedOwners[check.name] = true
+		for _, owner := range hostedOwners[check.name] {
+			uncompletedOwners[owner] = true
+		}
+	}
+	for _, check := range completedChecks {
+		delete(uncompletedOwners, check.name)
+	}
+	for _, owner := range completedOwners {
+		delete(uncompletedOwners, owner)
+	}
+	incompleteFindingNames := make(map[string]bool)
+	for owner := range uncompletedOwners {
+		names := append([]string{owner}, runnerFindingNames[owner]...)
+		names = append(names, logicalOwnerFindingNames[owner]...)
+		for _, name := range names {
+			incompleteFindingNames[name] = true
+		}
+	}
+	// Only checks that returned replace their per-run coverage summaries.
+	for _, owner := range incompleteRan {
+		for _, name := range perRunFindingNames[owner] {
+			delete(incompleteFindingNames, name)
+		}
+	}
+	coverageGaps.replace(coverageGapPaths, completedScopeNames, incompleteFindingNames)
 	return findings, mergePerRunPurgeNames(purgeNames, incompleteRan)
 }
 

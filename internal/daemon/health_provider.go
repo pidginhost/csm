@@ -2,20 +2,74 @@ package daemon
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/processhandle"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/updatecheck"
 )
+
+// QueueStatuses reports protection work independently of alert delivery.
+func (d *Daemon) QueueStatuses() map[string]queuehealth.Status {
+	return d.queueStatuses(time.Now())
+}
+
+func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
+	out := d.registeredQueueStatuses(now)
+	for name, status := range checks.AutoBlockQueueStatuses(now) {
+		out["auto_block."+name] = status
+	}
+	if incidentCorrelator != nil {
+		for name, status := range incidentCorrelator.QueueStatuses(now) {
+			out["incident."+name] = status
+		}
+	}
+	out["actionlog.writes"] = actionlog.QueueStatus(now)
+	out["phpanel.spool"] = alert.PhpanelQueueStatus(now)
+	out["checks.executions"] = checks.CheckExecutionQueueStatus(now)
+	out["checks.plugin_inventory"] = checks.PluginInventoryQueueStatus(now)
+	out["checks.wordpress_core"] = checks.WPCoreQueueStatus(now)
+	out["checks.reputation_queries"] = checks.ReputationQueueStatus(now)
+	for name, status := range checks.FileIndexQueueStatuses(now) {
+		out["checks.file_index."+name] = status
+	}
+	out["checks.dispatch"] = checks.CheckDispatchQueueStatus(now)
+	for name, status := range rdnsCache().QueueStatuses(now) {
+		out["smtp_rdns."+name] = status
+	}
+	for name, status := range checks.EmailPasswordQueueStatuses(now) {
+		out["email_password."+name] = status
+	}
+	if enr := processCtxPublished.Load(); enr != nil {
+		for name, state := range enr.QueueStatuses(now) {
+			out["processctx."+name] = state
+		}
+	}
+	if d.alertQueue != nil {
+		out["findings.ingest"] = d.alertQueue.Snapshot(now)
+	}
+	if fm := d.getFileMonitor(); fm != nil {
+		maps.Copy(out, fm.queueStatuses(now))
+	}
+	if sw := d.getSpoolWatcher(); sw != nil {
+		maps.Copy(out, sw.queueStatuses(now))
+	}
+	return out
+}
 
 // Hostname implements health.Provider.
 func (d *Daemon) Hostname() string {
@@ -159,6 +213,22 @@ func (d *Daemon) BinaryHash() string {
 	return h
 }
 
+// CorrelationAttribution implements health.Provider. Nil until the first
+// active-set merge, so a fresh daemon does not claim a clean state it has
+// not yet observed.
+func (d *Daemon) CorrelationAttribution() *health.CorrelationAttribution {
+	h := checks.AttributionHealth()
+	if h.ActiveSetUpdates == 0 {
+		return nil
+	}
+	return &health.CorrelationAttribution{
+		Current:          h.Current,
+		Cumulative:       h.Cumulative,
+		ActiveSetUpdates: h.ActiveSetUpdates,
+		Since:            h.Since,
+	}
+}
+
 // DryRunBlocksCount implements health.Provider.
 // Returns the number of firewall blocks that were intercepted by dry_run.
 func (d *Daemon) DryRunBlocksCount() int {
@@ -180,6 +250,14 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 		out.AutoResponseEnabled = cfg.AutoResponse.Enabled
 		out.AutoResponseBlockIPs = cfg.AutoResponse.BlockIPs
 		out.AutoResponseDryRun = cfg.AutoResponseDryRunEnabled()
+		// Configured termination that the kernel cannot perform safely is
+		// inoperative, not merely unused: report the capability either way.
+		out.ProcessKillEnabled = cfg.AutoResponse.Enabled && cfg.AutoResponse.KillProcesses
+		if err := processhandle.Available(); err != nil {
+			out.ProcessSignalError = err.Error()
+		} else {
+			out.ProcessSignalSupported = true
+		}
 		out.ChallengeEnabled = cfg.Challenge.Enabled
 		out.ChallengePortGateEnabled = cfg.Challenge.PortGate.Enabled
 	}
@@ -190,6 +268,9 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	out.ChallengePortGateActive = d.challengeGate != nil
 	if cfg != nil && cfg.Firewall != nil {
 		out.FirewallEnabled = cfg.Firewall.Enabled
+		if out.FirewallEnabled {
+			out.FirewallStartupError = d.fwStartupError
+		}
 	}
 	// FirewallManaged is true only when a live engine is wired. Reporting it
 	// (alongside FirewallEnabled) lets monitoring detect "enabled but not
@@ -259,6 +340,23 @@ func isAutomationActionCheck(check string) bool {
 		return true
 	}
 	return strings.HasPrefix(check, "email_php_relay_action_")
+}
+
+// Mode implements health.Provider. It reports the operator's posture so
+// status, the API and doctor all show whether this host is allowed to change
+// its own state.
+func (d *Daemon) Mode() string {
+	cfg := config.Active()
+	if cfg == nil {
+		cfg = d.cfg
+	}
+	if cfg == nil {
+		return config.ModeEnforce
+	}
+	if cfg.ObserveMode() {
+		return config.ModeObserve
+	}
+	return config.ModeEnforce
 }
 
 // UpdateInfo implements health.Provider. Returns the latest cached

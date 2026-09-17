@@ -442,6 +442,7 @@ func (l *AFAlgAuditListener) handleLine(line string) {
 		Severity:  alert.Critical,
 		Check:     "af_alg_socket_use",
 		Message:   fmt.Sprintf("AF_ALG socket opened by uid=%s exe=%s", ev.UID, ev.Exe),
+		TenantID:  checks.AFAlgOwner(ev),
 		Timestamp: time.Now(),
 		Details: fmt.Sprintf(
 			"Live audit-log detection: timestamp=%s serial=%s\nauid=%s uid=%s comm=%q exe=%q pid=%s\n"+
@@ -455,9 +456,7 @@ func (l *AFAlgAuditListener) handleLine(line string) {
 	// Non-blocking send — the alert dispatcher buffer is sized for bursts;
 	// dropping a finding under extreme pressure is preferable to blocking
 	// the listener loop.
-	select {
-	case l.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(l.alertCh, finding) {
 		csmlog.Warn("af_alg audit listener: alert channel full; finding dropped", "uid", ev.UID, "exe", ev.Exe)
 	}
 	// Optional reactions (kill, quarantine) gated by config; implemented

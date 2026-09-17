@@ -41,14 +41,92 @@ rules:
 - `severity` - critical, high, or warning
 - `category` - webshell, backdoor, phishing, dropper, exploit
 - `file_types` - file extensions to match (or `["*"]` for all)
-- `patterns` - literal strings
-- `regexes` - regex patterns
+- `patterns` - case-insensitive literal strings
+- `regexes` - regex patterns, compiled case-insensitively
 - `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
 - `exclude_regexes` - regex patterns that suppress a match
-- `min_match` - minimum patterns that must match
-- `require_regex` - require at least one regex match in addition to `min_match`
+- `min_match` - minimum total number of matching literal and regex entries; each entry counts once
+- `require_regex` - require at least one regex among the matches counted toward `min_match`
 - `max_file_bytes` - skip this rule when the complete scanned file is larger than the byte limit; omitted or `0` is unbounded
 - `max_file_bytes_exempt_regexes` - high-confidence regexes that let the rule continue normal evaluation above `max_file_bytes`
+
+When a regex includes a literal listed in `patterns`, the same content can
+satisfy both entries. Use independent entries when a rule needs multiple pieces
+of evidence. The bundled HTTP tunnel rule requires both socket creation and a
+CONNECT request. The legacy PHP callback rule uses the same narrow signature in
+YAML and YARA-X: a direct function call with a quoted parameter list, a variable,
+`null`, a simple array lookup or a short helper call as its first argument.
+The second argument is a decoder or request lookup, optionally preceded by one
+concatenated literal. Quoted lists can contain commas, semicolons and escaped
+quotes. Array indices accept a single quoted key or an unquoted scalar. Helper
+arguments accept at most one literal among unquoted scalar operands, including
+`implode(',', $args)`. These bounded forms consume quoted operands whole and
+exclude comments, interpolation and nested expressions, so delimiters inside
+data cannot supply the body-source evidence. Double-quoted array keys, helper
+literals and body prefixes must escape dollar signs; unescaped dollars require
+interpolation analysis.
+Shared positive and benign fixtures check both engines. Generated socket and
+funchand wrappers and ordinary legacy callbacks stay silent under these rules.
+
+The PHP goto-obfuscation rule requires three independent signals in both
+engines: a PHP opening tag, at least nine jumps to digit-bearing generated
+labels or eleven to alphabetic labels, and a decode call, execution call,
+dynamic include, or request input. Fixed-path bootstrap includes do not supply
+this evidence. Variable and array callback calls count even when the function
+name is constructed and the argument is a literal. Comments between a callable
+and its opening parenthesis do not hide the call. Line breaks and keyword case do not
+change the label counts. Long encoded strings and data URIs alone are not
+execution evidence. These are source-text heuristics, not PHP dataflow analysis;
+they cannot resolve arbitrary dynamically generated code or distinguish every
+benign use of these operations.
+
+The PHP content heuristic that runs during scans applies the same evidence
+rule: generated goto labels and descriptive goto labels both need a decode
+call, execution call, dynamic include, or request input before they count as
+an obfuscation indicator. `call_user_func` is deliberately not evidence in
+either place, because plugin loaders dispatch their own callables through it.
+The content heuristic uses the signature's evidence expression, including
+comment-separated calls, grouped and array callbacks, and case-sensitive PHP
+superglobal names. A regression check guards against expression drift.
+
+### Legacy callback parser follow-up
+
+The callback signature does not inspect quoted function bodies. Doing so needs
+PHP string decoding, tokenization and expression analysis: for example,
+`assert($x > 0)` is an ordinary boolean check, and `"eval($x)"` can be data.
+The rules scan source text, so they do not promise general PHP comment or string
+awareness, nor complete coverage of dynamically generated code.
+
+The following cases were covered by the expanded regex and are deliberately
+outside the narrowed signature. They remain acceptance cases for a parser
+follow-up, not claims of current detection by this rule:
+
+| Deferred case | Examples to restore |
+| --- | --- |
+| Constructed parameter lists | Concatenation, nested array indices, helper calls with multiple quoted operands, and `chr(100/(1+1))` as the first argument; only the bounded simple forms above are covered |
+| Comments inside constructed parameters | Comments in array indices or helper arguments, especially those containing closing delimiters or body-source names |
+| Interpolated parameter operands | Double-quoted array keys or helper operands containing unescaped dollars, including interpolation with nested quoted keys |
+| Comments between arguments | Block comments with embedded commas, and line comments before the body source |
+| Constructed body expressions | Grouped concatenation, parenthesized decoders and `trim(base64_decode($payload))`; a single literal concatenated onto request input is covered |
+| Interpolated bodies | A double-quoted body such as `"return {$_POST['code']};"`, or a concatenated double-quoted prefix containing unescaped dollars |
+| Literal executable bodies | `eval($x)` or string-capable `assert($x)`, with statements, strings or comments before them; both outer quote styles and escaped quotes |
+| Literal expression contexts | `return`, `or`, `do`, `case`, `include`, `include_once`, `require`, `require_once`, `clone`, `yield from`, comparisons, shifts and inequality before an execution sink |
+| Literal lexical edges | Global `assert`, comment backslashes before `*` or `*/`, and quoted operands before a comparison |
+| Outer call contexts | Calls immediately following a ternary colon, case-label colon or comparison operator |
+
+This work belongs in `internal/phptaint`, which already uses VKCOM/php-parser
+and records the second argument of `create_function` as a sink. Extend that
+analysis to decode and parse statically known callback bodies under its existing
+budgets, distinguish boolean assertions from string execution, and report
+unresolved dynamic bodies as analysis gaps. It currently feeds a separate
+scheduled check; it is not a post-filter for YAML or YARA. Realtime coverage
+would need explicit integration and latency tests, and standalone YARA would
+still have the narrower coverage.
+
+Acceptance requires restoring the deferred cases as positive parser fixtures,
+retaining the shared benign fixtures, checking both quote styles and comment
+forms, and passing the clean-corpus gate without new baseline entries. Do not
+expand another regex into a PHP tokenizer to recover these cases.
 
 ## YARA-X Rules (Optional)
 
@@ -57,6 +135,11 @@ Build CSM with YARA-X support:
 ```bash
 CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags yara ./cmd/csm/
 ```
+
+The rules directory and rule files must be owned by root or the scanner user and
+must not be group- or world-writable. The standard service and its YARA worker
+run as root; the installer uses `0750` for the directory and `0640` for shipped
+rules. Custom rules must also remain readable by the scanner.
 
 Place `.yar` or `.yara` files alongside YAML rules in `/opt/csm/rules/`. CSM compiles them at startup and uses them for:
 - Real-time fanotify file scanning
@@ -70,6 +153,14 @@ and special files are skipped. An unreadable or oversized file, or a scanner
 backend error, emits `yara_scan_incomplete` and preserves findings from the
 previous complete sweep. Scheduled findings and real-time fanotify findings
 have separate ownership, so one path cannot purge the other's results.
+
+A real-time scan that cannot inspect a changed file emits
+`yara_realtime_scan_error` instead, so a scanning outage stays separable from
+the scheduled coverage report. The dashboard's Components matrix shows this
+finding as Fanotify's last event; scheduled coverage reports do not advance
+that event time. This error finding is suppressed while the file monitor is
+stopping: the YARA backend is stopped before the file monitor has finished
+draining, and a clean restart is not an outage.
 
 Without the `yara` build tag, YARA rules are not loaded or evaluated.
 
@@ -94,7 +185,7 @@ the YARA one. Both gates require at least 5,000 non-empty files within the
 default scheduled scan size limit. Rule-load, traversal, and read failures fail
 the relevant run instead of counting as clean; YARA backend errors do too.
 
-The measured YARA baseline is empty. The YAML baseline records six rules that
+The measured YARA baseline is empty. The YAML baseline records rules that
 already fire on clean plugin and core code and are named in the realtime-rule
 porting backlog. Tighten a noisy rule rather than excluding paths or filenames.
 
@@ -128,7 +219,7 @@ signatures:
     tier: "core"              # core (5K rules, low FP), extended (10K), full (12K)
     update_interval: "168h"   # weekly
     download_url: "https://mirrors.pidginhost.com/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip"
-  disabled_rules:             # rule names to exclude from Forge downloads
+  disabled_rules:             # rule names to switch off, in Forge and in the shipped rules
     - SUSP_Example_Rule
 ```
 
@@ -172,26 +263,56 @@ Custom rules in `malware.yar` are never overwritten by the Forge fetcher.
 
 ### Disabling Rules
 
-If a Forge rule produces false positives, add its name to `disabled_rules` in the config and reload:
+If a rule produces false positives, add its name to `disabled_rules` in the config and restart the daemon:
 
 ```yaml
 signatures:
   disabled_rules:
     - SUSP_XOR_Encoded_URL
-    - HKTL_Mimikatz_Strings
+    - php_goto_obfuscation
 ```
 
-After editing, send SIGHUP or restart the daemon to apply.
+The list covers every rule CSM loads, not only YARA Forge: Forge rules are
+stripped from the download, rules shipped in `malware.yml` are skipped when
+the real-time engine loads them, and rules shipped in `malware.yar` are
+stripped before the scheduled engine compiles them. The self-test measures
+the ruleset that is left, so disabling a rule shows up as the coverage it
+costs.
+
+Names are matched in full, ignoring surrounding whitespace and letter case;
+prefixes and substrings do not match. Removing a YARA rule preserves neighboring
+rules, including when declarations share a line or literals contain braces.
+The YARA worker receives the daemon's effective disabled list and configuration
+paths; rule reloads and worker crash recovery retain that list.
+
+A valid ruleset whose rules are all disabled loads as an empty set, including
+on reload; stale rules are not retained. The self-test reports the resulting
+misses. An empty or invalid replacement still reports a load error.
+
+`csm validate` warns about a name that matches no rule, because a typo here
+otherwise reads as "that rule is off" while the rule keeps firing. Disabling
+a rule is a last resort and a standing gap in coverage; prefer fixing the
+rule.
+
+Validation recognizes a disabled YAML rule even if its regular expression is
+invalid, and counts repeated names only once.
+
+Signature settings require a daemon restart. SIGHUP does not apply a changed
+disabled list; rule-file reloads keep the current list.
 
 ## How Rules Avoid False Positives
 
 Signature rules require **structural nesting**, not co-presence of strings. Two dangerous function calls appearing in the same file but in unrelated code paths won't trigger a rule. The call must directly wrap or chain with the other for a match.
 
+YARA-X rules cannot express nesting, so multi-string rules state how their evidence is related. A bounded distance is used when closeness is part of the malicious shape. When valid malware can carry padding between its signals, PHP diagnostic records are kept as separate contexts so one record cannot borrow evidence from another. Anchoring works the same way: a CGI webshell rule requires its shebang at offset 0, because that is where the web server needs it. None of these controls refers to a file's name or path.
+
 **Realtime signature auto-quarantine** adds a safety gate: only `webshell` and `dropper` matches are eligible, and the file must be at least 512 bytes and either have Shannon entropy >= 5.5 or hex density > 20% plus an obfuscated-execution signal. Legitimate plugin code (well below 5.5 entropy) passes through; obfuscated malware (5.8+) is caught.
 
 ## Alert Rate Limiting
 
-Default: 30 operator alert dispatches/hour (configurable via `max_per_hour`). **CRITICAL findings and threat-intel reputation sightings always get through** by email or generic webhook regardless of the rate limit. Other lower-severity alerts are rate-limited.
+Default: 30 operator alert dispatches/hour (configurable via `max_per_hour`). **CRITICAL findings and threat-intel reputation sightings always get through** by email or generic webhook regardless of the rate limit, and they do not count against it. Other lower-severity alerts are rate-limited, including when they are batched with a CRITICAL finding: once the budget is spent, only the urgent findings in that batch are sent.
+
+A dispatch uses one slot only when email or a generic webhook successfully delivers routine findings. If only urgent findings reach a channel and routine delivery fails, the slot remains available for a later dispatch. Email-disabled findings do not reserve a slot unless a generic webhook will carry them. The phpanel webhook stream bypasses this budget.
 
 ## Suppressions
 
@@ -200,6 +321,10 @@ Create suppression rules to silence known false positives:
 - From the **Findings** page: click the suppress button on any finding
 - From the **Rules** page: manage suppression rules directly
 - Via API: `POST /api/v1/suppressions`
+
+A suppression rule hides matching findings from the Findings page, stops their email and webhook alerts, and stops file, process and account remediation for them. It does not stop IP blocking, challenge routing or attack scoring: a rule that mutes a whole check would otherwise leave every attacker that check reports unblocked. To exempt an address that was blocked by mistake, allowlist it from the Threat page or with `csm firewall allow`.
+
+Incident auto-blocking, credential-spray containment and central threat intelligence also use suppressed findings. Database response may still block suspicious session IPs when enabled, but a suppressed database finding cannot trigger cleanup or session revocation. IP action notifications are separate findings; suppressing their check type mutes those notifications without stopping the action. These rules apply to startup, scheduled and real-time scans, control-socket runs with alerts enabled, and replay after restart.
 
 To suppress email alerts for specific checks while keeping them visible in the web UI, use `disabled_checks` in your config:
 

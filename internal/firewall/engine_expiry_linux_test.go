@@ -136,12 +136,14 @@ func TestCleanExpiredAllowsQueueErrorKeepsState(t *testing.T) {
 		cfg:        &FirewallConfig{},
 		setAllowed: anonymousIPv4Set("allowed_ips"),
 	}
-	e.saveAllowedEntry(AllowedEntry{
+	if err := e.saveAllowedEntry(AllowedEntry{
 		IP:        "10.0.0.43",
 		Reason:    "expired cli",
 		Source:    SourceCLI,
 		ExpiresAt: time.Now().Add(-time.Hour),
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	var removed int
 	stderr := captureStderr(t, func() {
@@ -150,7 +152,7 @@ func TestCleanExpiredAllowsQueueErrorKeepsState(t *testing.T) {
 	if removed != 0 {
 		t.Fatalf("CleanExpiredAllows removed %d after queue error, want 0", removed)
 	}
-	if !strings.Contains(stderr, "firewall: nft CleanExpiredAllows remove for 10.0.0.43 failed") {
+	if !strings.Contains(stderr, "firewall: expired-allow cleanup failed: removing allow for 10.0.0.43") {
 		t.Fatalf("stderr missing nft cleanup error, got %q", stderr)
 	}
 

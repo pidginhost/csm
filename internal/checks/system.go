@@ -275,6 +275,16 @@ func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) 
 	if err != nil {
 		return nil
 	}
+	if slices.Contains(rows, "mysql\tlocalhost") {
+		// Only MariaDB's stock socket account is exempt. mysql.user hides
+		// alternative auth plugins, so inspect the full definition without
+		// fetching password hashes. MySQL lacks global_priv; on any lookup
+		// failure the account remains in the audit for operator review.
+		stock, err := mysqlclient.RootQuery(ctx, stockMariaDBAccountQuery)
+		if err == nil && len(stock) == 1 && stock[0] == "1" {
+			rows = slices.DeleteFunc(rows, func(row string) bool { return row == "mysql\tlocalhost" })
+		}
+	}
 
 	sort.Strings(rows)
 	output := strings.TrimSpace(strings.Join(rows, "\n"))
@@ -317,6 +327,15 @@ func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) 
 
 	return findings
 }
+
+// Match the authentication definition installed by mariadb-install-db:
+// only the mysql OS user can log in, and password authentication is disabled.
+// Extra alternatives or socket identity mappings must remain auditable.
+const stockMariaDBAccountQuery = `SELECT 1 FROM mysql.global_priv
+WHERE User='mysql' AND Host='localhost'
+AND BINARY JSON_VALUE(Priv, '$.plugin') = 'mysql_native_password'
+AND BINARY JSON_VALUE(Priv, '$.authentication_string') = 'invalid'
+AND BINARY JSON_COMPACT(JSON_EXTRACT(Priv, '$.auth_or')) = '[{},{"plugin":"unix_socket"}]'`
 
 // CheckGroupWritablePHP scans for PHP files that are group-writable
 // where the group is the web server (nobody/www-data). This allows

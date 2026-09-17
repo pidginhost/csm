@@ -260,7 +260,38 @@ func TestApplyBPFEnforcementVerdictAnnotatesFinding(t *testing.T) {
 		DstPort:  587,
 	}
 
-	applyBPFEnforcementVerdict(context.Background(), cfg, ev, &f)
+	if !bpfVerdictEnabled(cfg, ev) {
+		t.Fatal("a denied connection must be eligible for the verdict callback")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	enricher := newVerdictEnricher(verdictEnricherOpts{
+		Ask: func(ctx context.Context, req verdict.Request) (verdict.Response, error) {
+			return askBPFVerdict(ctx, cfg, req)
+		},
+		Workers: 1,
+		Queue:   4,
+		TTL:     time.Minute,
+	})
+	enricher.start(ctx)
+	// Cancel before waiting: the workers exit on ctx.Done, so waiting first
+	// would deadlock.
+	defer func() {
+		cancel()
+		enricher.wait()
+	}()
+
+	reason := bpfVerdictReason(f.Check, ev.DstPort)
+	// The first event dispatches unenriched and queues the lookup; the answer
+	// lands on the events that follow it.
+	enricher.annotate(&f, ev.DstIP.String(), reason, f.Severity.String())
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		f = alert.Finding{Check: "direct_smtp_egress", Severity: alert.High, Details: "base"}
+		if enricher.annotate(&f, ev.DstIP.String(), reason, f.Severity.String()) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	if gotReq.Source != "bpf_enforcement" {
 		t.Fatalf("Source = %q, want bpf_enforcement", gotReq.Source)
@@ -275,7 +306,7 @@ func TestApplyBPFEnforcementVerdictAnnotatesFinding(t *testing.T) {
 	}
 }
 
-func TestApplyBPFEnforcementVerdictSkipsAllowDecision(t *testing.T) {
+func TestBPFVerdictSkipsAllowDecision(t *testing.T) {
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -295,8 +326,11 @@ func TestApplyBPFEnforcementVerdictSkipsAllowDecision(t *testing.T) {
 		DstPort:  587,
 	}
 
-	applyBPFEnforcementVerdict(context.Background(), cfg, ev, &f)
+	if bpfVerdictEnabled(cfg, ev) {
+		t.Fatal("allow decisions must not be eligible for the verdict callback")
+	}
 	if called {
 		t.Fatal("allow decisions must not call the BPF enforcement verdict callback")
 	}
+	_ = f
 }

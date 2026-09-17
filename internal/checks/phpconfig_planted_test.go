@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -241,6 +242,31 @@ func TestPHPConfigRealtimeRootPatternsPreferExplicitConfig(t *testing.T) {
 	got := PHPConfigRealtimeRootPatterns(cfg)
 	if len(got) != 1 || got[0] != cfg.AccountRoots[0] {
 		t.Fatalf("realtime PHP config roots = %v, want %v", got, cfg.AccountRoots)
+	}
+}
+
+func TestRealtimeDocumentRootPatternsIncludeCPanelAlternateHomes(t *testing.T) {
+	panel := platform.PanelCPanel
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{Panel: &panel})
+	withMockOS(t, phpIniFS(map[string]string{
+		userdataDomainsPath: strings.Join([]string{
+			"primary.example: victim==root==main==example.com==/home/victim/public_html",
+			"alternate.example: victim==root==addon==example.com==/home2/victim/addon",
+			"external.example: victim==root==addon==example.com==/srv/vhosts/external",
+		}, "\n"),
+	}))
+
+	got := RealtimeDocumentRootPatterns(&config.Config{})
+	for _, want := range []string{
+		"/home/*/public_html",
+		"/home2/victim/addon",
+		"/srv/vhosts/external",
+	} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("realtime document roots = %v, missing %s", got, want)
+		}
 	}
 }
 

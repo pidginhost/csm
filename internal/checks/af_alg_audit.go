@@ -36,6 +36,17 @@ func ParseAFAlgEventLine(line string) (AFAlgEvent, bool) {
 	return parseAFAlgEvent(line)
 }
 
+// AFAlgOwner resolves the hosting account whose process opened the socket.
+// The audit uid is resolved through the shared passwd cache; root, service
+// users and unknown uids yield "" so the finding stays unattributed.
+func AFAlgOwner(ev AFAlgEvent) string {
+	uid, err := strconv.ParseUint(ev.UID, 10, 32)
+	if err != nil {
+		return ""
+	}
+	return HostingAccountForUser(LookupUser(uint32(uid)))
+}
+
 // after reports whether e is strictly newer than other. Comparison is
 // (Timestamp, Serial) lexicographic with numeric semantics.
 func (e afAlgEvent) after(other afAlgEvent) bool {
@@ -190,6 +201,7 @@ func CheckAFAlgSocketUsage(_ context.Context, _ *config.Config, st *state.Store)
 			Severity: alert.Critical,
 			Check:    "af_alg_socket_use",
 			Message:  fmt.Sprintf("AF_ALG socket opened by uid=%s exe=%s", ev.UID, ev.Exe),
+			TenantID: AFAlgOwner(ev),
 			Details: fmt.Sprintf(
 				"Audit event: timestamp=%s serial=%s\nauid=%s uid=%s comm=%q exe=%q\n"+
 					"AF_ALG is essentially never used by cPanel/PHP workloads. This is\n"+

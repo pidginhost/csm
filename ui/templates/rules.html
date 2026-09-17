@@ -98,7 +98,7 @@
             <h3 class="card-title"><i class="ti ti-eye-off"></i>&nbsp;Suppression Rules</h3>
         </div>
         <div class="card-body">
-            <p class="text-muted small mb-3">Suppression rules prevent specific findings from triggering email/webhook alerts. They are stored in state, not in rule files, so they survive rule updates.</p>
+            <p class="text-muted small mb-3">Suppression rules hide matching findings, stop their email/webhook alerts, and stop file, process and account remediation for them. They do not stop IP blocking or challenges; allowlist an address on the Threat page instead. Rules are stored in state, not in rule files, so they survive rule updates.</p>
             <form id="suppression-form" class="row g-2 align-items-end">
                 <div class="col-sm-3">
                     <label class="form-label" for="suppress-check">Check Type</label>

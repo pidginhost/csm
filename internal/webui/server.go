@@ -32,7 +32,9 @@ import (
 	"github.com/pidginhost/csm/internal/mailfwd/intel"
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/session"
 	"github.com/pidginhost/csm/internal/state"
+	persiststore "github.com/pidginhost/csm/internal/store"
 )
 
 // IPBlocker abstracts the firewall engine for block/unblock operations.
@@ -90,6 +92,8 @@ func (d noListDir) Open(name string) (http.File, error) {
 // Server is the web UI HTTP server. Serves API always; serves HTML pages
 // and static files only if the UI directory exists on disk.
 type Server struct {
+	sessions        *session.Manager
+	sessionNow      func() time.Time
 	cfg             *config.Config
 	store           *state.Store
 	httpSrv         *http.Server
@@ -127,6 +131,9 @@ type Server struct {
 	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
 	sigCountMu       sync.RWMutex
 	settingsSaveHook func()
+	// verifyFinding is per server so handler tests can inject a verdict without
+	// replacing process-wide behavior while another server is handling a request.
+	verifyFinding func(checks.VerifyInput) checks.VerifyResult
 
 	provider health.Provider // set by Daemon when it starts the WebUI
 
@@ -176,6 +183,19 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		queueReporter:    selectQueueReporter(),
 		queueFlusher:     selectQueueFlusher(),
 		forwardHeld:      selectForwardHeld(),
+		verifyFinding:    checks.VerifyFindingInput,
+	}
+
+	lifetime, idle, err := cfg.BrowserSessionDurations()
+	if err != nil {
+		return nil, err
+	}
+	s.sessionNow = time.Now
+	if db := persiststore.Global(); db != nil {
+		s.sessions, err = session.New(db, lifetime, idle)
+		if err != nil {
+			return nil, fmt.Errorf("initialize browser sessions: %w", err)
+		}
 	}
 
 	// Check if UI directory exists on disk
@@ -204,7 +224,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec", "modsec-rules", "verified-bots", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings"} {
+		for _, page := range []string{"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec", "modsec-rules", "verified-bots", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings", "sessions"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -252,6 +272,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/performance", s.requireAuth(http.HandlerFunc(s.handlePerformance)))
 		mux.Handle("/hardening", s.requireAuth(http.HandlerFunc(s.handleHardening)))
 		mux.Handle("/settings", s.requireAuth(http.HandlerFunc(s.handleSettings)))
+		mux.Handle("GET /sessions", s.requireAuth(http.HandlerFunc(s.handleSessions)))
+		mux.Handle("POST /sessions/revoke", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.handleSessionRevoke))))
 		mux.Handle("/modsec", s.requireAuth(http.HandlerFunc(s.handleModSec)))
 		mux.Handle("/modsec/rules", s.requireAuth(http.HandlerFunc(s.handleModSecRules)))
 		mux.Handle("/verified-bots", s.requireAuth(http.HandlerFunc(s.handleVerifiedBots)))
@@ -399,8 +421,11 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/undo/pending", s.requireAuth(http.HandlerFunc(s.apiUndoPending)))
 	mux.Handle("/api/v1/undo/run", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiUndoRun))))
 
-	// Logout (clears cookie, requires auth to prevent logout CSRF)
-	mux.Handle("/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
+	// Session management requires admin scope; browser mutations require CSRF.
+	mux.Handle("/api/v1/sessions", s.requireAuth(http.HandlerFunc(s.apiSessions)))
+	mux.Handle("DELETE /api/v1/sessions", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSessions))))
+	mux.Handle("/api/v1/sessions/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSessions))))
+	mux.Handle("/logout", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.handleLogout))))
 
 	// /metrics (ROADMAP item 4) has its own auth: the handler accepts
 	// cfg.WebUI.MetricsToken as a dedicated Bearer token so Prometheus
@@ -762,6 +787,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"spam":                           "Spam",
 			"cpanel_login":                   "cPanel Login",
 			"file_upload":                    "File Upload",
+			"auth_success":                   "Authenticated Activity",
 			"recon":                          "Reconnaissance",
 			"c2":                             "C2 Communication",
 			"other":                          "Other",
@@ -829,189 +855,6 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"password_hijack_confirmed":      "Password Hijack",
 		},
 	}
-}
-
-// --- Authentication ---
-
-// tokenHasScope reports whether the credentials in r grant at least the
-// requested scope. "read" is granted by any token; "admin" is granted only
-// by admin-scope tokens. Constant-time compare against every configured
-// token. Cookie credentials get treated as their token's scope (browser
-// session uses the admin login form, which only matches admin tokens).
-func (s *Server) tokenHasScope(r *http.Request, want string) bool {
-	// Browser cookie session
-	if _, ok := s.cookieTokenWithScope(r, want); ok {
-		return true
-	}
-
-	// Bearer token
-	_, ok := s.bearerTokenWithScope(r, want)
-	return ok
-}
-
-func (s *Server) cookieTokenWithScope(r *http.Request, want string) (string, bool) {
-	c, err := r.Cookie("csm_auth")
-	if err != nil || c.Value == "" {
-		return "", false
-	}
-	for _, tok := range s.cfg.WebUI.Tokens {
-		if webUITokenMatches(c.Value, tok) && webUITokenAllows(tok, want) {
-			return c.Value, true
-		}
-	}
-	return "", false
-}
-
-func (s *Server) bearerTokenWithScope(r *http.Request, want string) (string, bool) {
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return "", false
-	}
-	supplied := strings.TrimPrefix(auth, "Bearer ")
-	if supplied == "" {
-		return "", false
-	}
-	for _, tok := range s.cfg.WebUI.Tokens {
-		if webUITokenMatches(supplied, tok) && webUITokenAllows(tok, want) {
-			return supplied, true
-		}
-	}
-	return "", false
-}
-
-func webUITokenMatches(supplied string, tok config.WebUIToken) bool {
-	return supplied != "" &&
-		tok.Token != "" &&
-		subtle.ConstantTimeCompare([]byte(supplied), []byte(tok.Token)) == 1
-}
-
-func webUITokenAllows(tok config.WebUIToken, want string) bool {
-	switch want {
-	case "read":
-		return tok.Scope == "read" || tok.Scope == "admin"
-	case "admin":
-		return tok.Scope == "admin"
-	default:
-		return false
-	}
-}
-
-func (s *Server) requireAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.tokenHasScope(r, "admin") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		// API calls get 401 JSON; browser requests get redirect to login
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		http.Redirect(w, r, "/login", http.StatusFound)
-	})
-}
-
-func (s *Server) requireRead(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.tokenHasScope(r, "read") {
-			if r.Method != http.MethodGet {
-				writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			next.ServeHTTP(w, r)
-			return
-		}
-		// API calls get 401 JSON; browser requests get redirect to login
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		http.Redirect(w, r, "/login", http.StatusFound)
-	})
-}
-
-// isAuthenticated is a thin shim used by handleLogin and metrics_api.
-// New callers should prefer tokenHasScope directly.
-func (s *Server) isAuthenticated(r *http.Request) bool {
-	return s.tokenHasScope(r, "admin")
-}
-
-// clientIPKey strips the port from a net/http RemoteAddr for use as a
-// per-client rate-limit key, handling bracketed IPv6 ([::1]:443 -> ::1).
-// Falls back to the raw value when there is no host:port to split, so a
-// missing port never collapses distinct clients onto one key.
-func clientIPKey(remoteAddr string) string {
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		return host
-	}
-	return remoteAddr
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	// Redirect already-authenticated users to dashboard
-	if s.isAuthenticated(r) {
-		http.Redirect(w, r, "/dashboard", http.StatusFound)
-		return
-	}
-
-	if r.Method == http.MethodGet {
-		s.renderTemplate(w, "login.html", nil)
-		return
-	}
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Rate limit: 5 attempts per minute per IP (strip port from RemoteAddr)
-	ip := clientIPKey(r.RemoteAddr)
-	s.loginMu.Lock()
-	now := time.Now()
-	attempts := s.loginAttempts[ip]
-	var recent []time.Time
-	for _, t := range attempts {
-		if now.Sub(t) < time.Minute {
-			recent = append(recent, t)
-		}
-	}
-	if len(recent) >= 5 {
-		s.loginMu.Unlock()
-		http.Error(w, "Too many login attempts", http.StatusTooManyRequests)
-		return
-	}
-	if _, tracked := s.loginAttempts[ip]; !tracked {
-		boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
-	}
-	s.loginAttempts[ip] = append(recent, now)
-	s.loginMu.Unlock()
-
-	token := r.FormValue("token")
-	// Only admin-scope tokens may log in via the browser form.
-	validLogin := false
-	if token != "" {
-		for _, tok := range s.cfg.WebUI.Tokens {
-			if tok.Scope == "admin" && webUITokenMatches(token, tok) {
-				validLogin = true
-				break
-			}
-		}
-	}
-	if !validLogin {
-		s.renderTemplate(w, "login.html", map[string]string{"Error": "Invalid token"})
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "csm_auth",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400, // 24 hours
-	})
-	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
 // --- Template helpers ---
@@ -1092,7 +935,9 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		// the request's Host header. Reading r.Host would let a proxy
 		// attacker forge a Host that matches their forged Origin and
 		// trivially pass the equality check.
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		// Browser logout and session revocation change server state like API
+		// writes. Login stays reachable: it already requires the credential.
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/sessions") {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
 				if !s.originAllowed(origin) {
@@ -1235,21 +1080,6 @@ func (s *Server) isBearerAuth(r *http.Request) bool {
 func (s *Server) isAdminBearerAuth(r *http.Request) bool {
 	_, ok := s.bearerTokenWithScope(r, "admin")
 	return ok
-}
-
-// --- Logout ---
-
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "csm_auth",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1, // delete cookie
-	})
-	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
 // --- Scan rate limiting ---

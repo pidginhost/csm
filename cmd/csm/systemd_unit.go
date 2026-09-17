@@ -1,6 +1,143 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os/exec"
+	"path"
+	"strconv"
+	"strings"
+)
+
+// systemdDirectiveSince lists the sandbox directives that older systemd
+// rejects with "Unknown lvalue" at every start, keyed by the release that
+// introduced each. EL8 and CloudLinux 8 ship 239.
+var systemdDirectiveSince = []struct {
+	name  string
+	since int
+}{
+	{"ProtectHostname", 242},
+	{"ProtectKernelLogs", 244},
+	{"ProtectClock", 245},
+}
+
+// unsupportedSystemdDirectives returns the directives a systemd of the given
+// version does not know, oldest first. Version 0 means unknown and keeps
+// every directive: a warning is cheaper than a missing protection.
+func unsupportedSystemdDirectives(version int) []string {
+	if version <= 0 {
+		return nil
+	}
+	var out []string
+	for _, d := range systemdDirectiveSince {
+		if version < d.since {
+			out = append(out, d.name)
+		}
+	}
+	return out
+}
+
+// parseSystemdVersion reads the major version from `systemctl --version`
+// output ("systemd 239 (239-82.el8_10.19)"). Anything unparseable is 0.
+func parseSystemdVersion(out string) int {
+	line, _, _ := strings.Cut(out, "\n")
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != "systemd" {
+		return 0
+	}
+	v, err := strconv.Atoi(fields[1])
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
+}
+
+// detectSystemdVersion asks the running systemd for its version; 0 when it
+// cannot be determined, which keeps the full unit.
+func detectSystemdVersion() int {
+	out, err := exec.Command("systemctl", "--version").Output()
+	if err != nil {
+		return 0
+	}
+	return parseSystemdVersion(string(out))
+}
+
+// systemdServiceUnitFor renders the unit for a host running the given
+// systemd version, leaving out the directives that version rejects together
+// with the comment lines that explain them. The packaged unit stays the full
+// one; only the installer's generated copy is trimmed.
+func systemdServiceUnitFor(binaryPath string, systemdVersion int) string {
+	full := systemdServiceUnit(binaryPath)
+	drop := unsupportedSystemdDirectives(systemdVersion)
+	if len(drop) == 0 {
+		return full
+	}
+	var out []string
+	var pendingComments []string
+	for _, line := range strings.Split(full, "\n") {
+		if strings.HasPrefix(line, "#") {
+			pendingComments = append(pendingComments, line)
+			continue
+		}
+		dropped := false
+		for _, name := range drop {
+			if strings.HasPrefix(line, name+"=") {
+				dropped = true
+				break
+			}
+		}
+		if dropped {
+			pendingComments = nil
+			continue
+		}
+		out = append(out, pendingComments...)
+		pendingComments = nil
+		out = append(out, line)
+	}
+	out = append(out, pendingComments...)
+	return strings.Join(out, "\n")
+}
+
+// systemdExecDirectoryBases maps the exec-directory directives to the base
+// systemd creates their directories under before it sets up the namespace.
+var systemdExecDirectoryBases = map[string]string{
+	"RuntimeDirectory":       "/run",
+	"StateDirectory":         "/var/lib",
+	"CacheDirectory":         "/var/cache",
+	"LogsDirectory":          "/var/log",
+	"ConfigurationDirectory": "/etc",
+}
+
+// systemdUnitRequiredWritableDirs returns the ReadWritePaths entries without
+// the "-" tolerate-absent prefix that systemd does not create itself. Each one
+// must exist before the unit starts or namespace setup fails with
+// status=226/NAMESPACE.
+func systemdUnitRequiredWritableDirs(unit string) []string {
+	managed := make(map[string]bool)
+	var grants []string
+	for _, line := range strings.Split(unit, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		if key == "ReadWritePaths" {
+			grants = append(grants, strings.Fields(value)...)
+			continue
+		}
+		if base, ok := systemdExecDirectoryBases[key]; ok {
+			for _, name := range strings.Fields(value) {
+				managed[path.Join(base, name)] = true
+			}
+		}
+	}
+	var out []string
+	for _, grant := range grants {
+		if strings.HasPrefix(grant, "-") || managed[grant] {
+			continue
+		}
+		out = append(out, grant)
+	}
+	return out
+}
 
 func systemdServiceUnit(binaryPath string) string {
 	return fmt.Sprintf(`[Unit]
@@ -16,6 +153,9 @@ Restart=always
 RestartSec=10
 TimeoutStartSec=120
 WatchdogSec=300
+# Let the daemon stop its workers before systemd kills remaining processes.
+# A cgroup-wide SIGTERM can reach a worker before the daemon enters shutdown.
+KillMode=mixed
 
 StateDirectory=csm
 StateDirectoryMode=0700
@@ -45,7 +185,8 @@ ProtectSystem=strict
 # Empty log file). The read-only home mode is enforced after writable path
 # grants, so it would still leave /home read-only. ProtectSystem=strict keeps
 # paths outside explicit writable grants read-only; only the explicit -/home
-# grant below reopens account home directories.
+# grant below reopens account home directories. Custom roots need the
+# validated drop-in printed by csm systemd-roots.
 ProtectHome=no
 # -/opt/csm/state (tolerate-absent) covers installs that still pin the legacy
 # state_path (state_path: /opt/csm/state) instead of the FHS default
@@ -54,15 +195,14 @@ ProtectHome=no
 # dir (the package ships every other /opt/csm grant but not this one), and an
 # unprefixed grant makes systemd fail the namespace setup (226/NAMESPACE) so
 # the daemon cannot start.
-ReadWritePaths=/var/lib/csm -/opt/csm/state /var/log/csm -/var/log/csm-php-shield /etc/csm /opt/csm/quarantine /opt/csm/policies
+ReadWritePaths=/var/lib/csm -/opt/csm/state /var/log/csm -/var/log/csm-php-shield /etc/csm /opt/csm/quarantine
 ReadWritePaths=/opt/csm/rules -/opt/csm/deploy.sh -/home /tmp /var/tmp -/dev/shm
-# /etc: CSM atomically maintains the forward-guard router/transport in
-# /etc/exim.conf.local. The temp file must be a sibling in /etc, so a
-# file-scoped grant is not enough. The heavyweight cPanel rebuild
-# (buildeximconf) runs as a separate transient systemd service and is not
-# limited by csm.service's sandbox; the daemon only needs /etc for the atomic
-# write above.
-ReadWritePaths=/etc -/usr/local/apache/conf
+# Configuration writes stay within managed subsystem directories. Exim's
+# atomic config update and rebuild run together in a fixed-purpose transient
+# service; the daemon does not need write access to the whole /etc directory.
+ReadWritePaths=-/etc/audit -/etc/modprobe.d
+ReadWritePaths=-/etc/apache2/conf.d -/etc/apache2/conf-enabled -/etc/httpd/conf.d -/etc/nginx/conf.d
+ReadWritePaths=-/usr/local/apache/conf -/usr/local/lsws/conf/templates
 ReadWritePaths=-/usr/local/cpanel/whostmgr/docroot/cgi -/var/cpanel
 ReadWritePaths=-/var/spool/cron -/var/spool/exim/input -/var/spool/exim4/input
 # NOTE: exim log grants deliberately removed. Exim opens its main/panic logs
@@ -107,7 +247,10 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service @network-io @file-system
 SystemCallFilter=bpf fanotify_init fanotify_mark inotify_init inotify_init1 inotify_add_watch inotify_rm_watch perf_event_open
 SystemCallFilter=clone clone3 execve execveat fork vfork mmap mprotect munmap mremap brk
-SystemCallFilter=~@reboot ~@swap ~@module ~@raw-io ~@mount ~@cpu-emulation
+SystemCallFilter=pidfd_open pidfd_send_signal
+# One "~" negates the whole line; repeating it per entry makes systemd
+# read "~@swap" as a syscall NAME, fail to parse it, and drop it.
+SystemCallFilter=~@reboot @swap @module @raw-io @mount @cpu-emulation
 SystemCallErrorNumber=EPERM
 
 [Install]

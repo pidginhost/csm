@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/wpcheck"
 	"github.com/pidginhost/csm/internal/yara"
@@ -31,14 +33,75 @@ import (
 
 // fanotify constants (not all in Go stdlib)
 const (
-	FAN_MARK_ADD    = 0x00000001
-	FAN_MARK_MOUNT  = 0x00000010
-	FAN_CLOSE_WRITE = 0x00000008
-	FAN_CREATE      = 0x00000100
-	FAN_CLASS_NOTIF = 0x00000000
-	FAN_CLOEXEC     = 0x00000001
-	FAN_NONBLOCK    = 0x00000002
+	FAN_MARK_ADD = 0x00000001
+	// FAN_MARK_MOUNT covers a single vfsmount. FAN_MARK_FILESYSTEM marks the
+	// whole superblock, so a write that reaches the same inode through a bind
+	// mount is reported too. EL8 backported the flag into 4.18, which is what
+	// CloudLinux 8 runs, so cages are reachable on production kernels.
+	FAN_MARK_MOUNT      = 0x00000010
+	FAN_MARK_FILESYSTEM = 0x00000100
+	FAN_CLOSE_WRITE     = 0x00000008
+	FAN_CREATE          = 0x00000100
+	FAN_CLASS_NOTIF     = 0x00000000
+	FAN_CLOEXEC         = 0x00000001
+	FAN_NONBLOCK        = 0x00000002
 )
+
+// markFunc is the fanotify_mark syscall, passed in so the ladder can be
+// exercised without a kernel and without a mutable package-level seam that
+// concurrent tests would race on.
+type markFunc func(fd int, flags uint, mask uint64, dirFd int, path string) error
+
+// markScope records how widely a watch root ended up being marked.
+type markScope int
+
+const (
+	markScopeNone markScope = iota
+	markScopeFilesystem
+	markScopeMount
+)
+
+func (s markScope) String() string {
+	switch s {
+	case markScopeFilesystem:
+		return "filesystem"
+	case markScopeMount:
+		return "mount"
+	default:
+		return "none"
+	}
+}
+
+// markWatchRoot watches path, preferring a filesystem-scoped mark.
+//
+// A mount-scoped mark sees only the vfsmount it was added to. Every CloudLinux
+// CageFS account reaches its files through a bind mount of the same superblock,
+// so writes inside a cage produced no event at all and the realtime scanner was
+// blind for precisely the accounts most likely to be compromised. Marking the
+// superblock covers every mount of it.
+//
+// The ladder degrades in two independent directions: kernels without
+// FAN_MARK_FILESYSTEM fall back to the mount mark, and kernels without
+// FAN_CREATE (EL8 among them) keep their scope and drop that event bit.
+func markWatchRoot(fd int, path string, mark markFunc) (markScope, error) {
+	var lastErr error
+	for _, attempt := range []struct {
+		scope markScope
+		flags uint
+	}{
+		{markScopeFilesystem, FAN_MARK_ADD | FAN_MARK_FILESYSTEM},
+		{markScopeMount, FAN_MARK_ADD | FAN_MARK_MOUNT},
+	} {
+		for _, mask := range []uint64{FAN_CLOSE_WRITE | FAN_CREATE, FAN_CLOSE_WRITE} {
+			if err := mark(fd, attempt.flags, mask, -1, path); err != nil {
+				lastErr = err
+				continue
+			}
+			return attempt.scope, nil
+		}
+	}
+	return markScopeNone, lastErr
+}
 
 // fanotifyEventMetadata is the header for each fanotify event.
 type fanotifyEventMetadata struct {
@@ -63,15 +126,15 @@ var knownWebshells = map[string]bool{
 	"webshell.php": true,
 }
 
-// M3 - plugin stat cache with TTL
-type pluginCacheEntry struct {
+// M3 - WordPress path stat cache with TTL
+type wpPathCacheEntry struct {
 	exists bool
 	ts     time.Time
 }
 
-var pluginStatCache sync.Map // key: pluginDir string → value: pluginCacheEntry
+var wpPathStatCache sync.Map // key: path string → value: wpPathCacheEntry
 
-const pluginCacheTTL = 5 * time.Minute
+const wpPathCacheTTL = 5 * time.Minute
 
 // alertDedupTTL is the cooldown period for duplicate alerts on the same
 // check+filepath combination. Prevents alert storms from rapid writes.
@@ -85,9 +148,14 @@ type FileMonitor struct {
 
 	// panicMu / lastPanicAt rate-limit the realtime_scanner_panic finding
 	// raised when an analyzer panics on one event (see analyzeFileSafe).
-	panicMu     sync.Mutex
-	lastPanicAt time.Time
-	analyzerCh  chan fileEvent
+	panicMu           sync.Mutex
+	lastPanicAt       time.Time
+	analyzerCh        chan fileEvent
+	queueHealthOnce   sync.Once
+	analyzerHealth    *queuehealth.Tracker
+	reconcileHealth   *queuehealth.Tracker
+	kernelQueueHealth *queuehealth.Tracker
+	kernelQueue       *notificationQueue
 
 	// M7 - separate counters for dropped events and alerts
 	droppedEvents int64
@@ -120,12 +188,23 @@ type FileMonitor struct {
 	// Per-path alert deduplication: "check:filepath" → last alert time
 	alertDedup sync.Map
 
+	// accountRootPatterns and docRootPatterns describe where accounts and their
+	// document roots live on this platform. The realtime detectors used to
+	// hardcode /home and /public_html, which made every one of them dead on
+	// Plesk and DirectAdmin and on cPanel accounts outside /home.
+	accountRootPatterns []string
+	docRootPatterns     []string
 	// webRootPatterns is the immutable PHP configuration root set captured at
 	// startup from account_roots and platform discovery.
 	webRootPatterns []string
 
-	// WordPress core checksum verifier - skips detection on unmodified WP core files
-	wpCache *wpcheck.Cache
+	// WordPress checksum verifier: skips detection on unmodified core and
+	// plugin files and judges staged update packages file by file.
+	wpCache wpVerifier
+	// wpPending holds staged package files whose checksums are still being
+	// fetched; stagedPackageLoop resolves them once a second.
+	wpPending     *stagedPackageQueue
+	wpPendingInit sync.Once
 
 	// Drop-recovery reconcile: directories that had fanotify events dropped
 	// because the analyzer queue was full. The overflow reporter walks this
@@ -133,7 +212,7 @@ type FileMonitor struct {
 	// reconcileWindow so bulk filesystem operations (unzip, backup restore)
 	// do not blind detection to actual threats landing in the storm.
 	reconcileMu   sync.Mutex
-	reconcileDirs map[string]time.Time
+	reconcileDirs map[string]reconcileDirectory
 
 	// reconcileSig is a buffered cap-1 channel that lets sendEvent's drop
 	// branch nudge overflowReporter to run reconcileDrops out of cycle
@@ -277,6 +356,7 @@ func recordReadTruncation(fd int, maxBytes int, check string) {
 }
 
 type fileEvent struct {
+	queueTicket   queuehealth.Ticket
 	path          string
 	fd            int
 	pid           int32
@@ -308,6 +388,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	webRootPatterns := checks.PHPConfigRealtimeRootPatterns(cfg)
 	mountPaths := fanotifyMountPaths(webRootPatterns)
 	mountOK := 0
+	var mountScoped []string
 	for index, path := range mountPaths {
 		if index >= 4 {
 			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
@@ -317,17 +398,22 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 				continue
 			}
 		}
-		// H1 - use golang.org/x/sys/unix for fanotify_mark
-		err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE|FAN_CREATE, -1, path)
-		if err != nil {
-			// Try without FAN_CREATE (older kernels)
-			err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE, -1, path)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), path, err)
-				continue
-			}
+		scope, markErr := markWatchRoot(fd, path, unix.FanotifyMark)
+		if markErr != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), path, markErr)
+			continue
+		}
+		if scope == markScopeMount {
+			mountScoped = append(mountScoped, path)
 		}
 		mountOK++
+	}
+	if len(mountScoped) > 0 {
+		// Worth saying out loud: on these roots a write that arrives through a
+		// bind mount (a CageFS cage) raises no event, and only the rolling
+		// content scan will meet it.
+		fmt.Fprintf(os.Stderr, "[%s] Warning: watching %v per-mount only; writes through bind mounts on them are not seen in real time\n",
+			ts(), mountScoped)
 	}
 
 	// M2 - error on zero successful mounts
@@ -362,19 +448,23 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	}
 
 	fm := &FileMonitor{
-		fd:              fd,
-		cfg:             cfg,
-		alertCh:         alertCh,
-		analyzerCh:      make(chan fileEvent, analyzerChBufferSize),
-		pipeFds:         pipeFds,
-		stopCh:          make(chan struct{}),
-		reconcileDirs:   make(map[string]time.Time),
-		reconcileSig:    make(chan struct{}, 1),
-		webRootPatterns: webRootPatterns,
+		fd:                  fd,
+		cfg:                 cfg,
+		alertCh:             alertCh,
+		analyzerCh:          make(chan fileEvent, analyzerChBufferSize),
+		pipeFds:             pipeFds,
+		stopCh:              make(chan struct{}),
+		reconcileDirs:       make(map[string]reconcileDirectory),
+		reconcileSig:        make(chan struct{}, 1),
+		webRootPatterns:     webRootPatterns,
+		accountRootPatterns: checks.AccountHomePatterns(),
+		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
 	}
 
-	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
-	fm.wpCache.SetStopCh(fm.stopCh)
+	wpCache := wpcheck.NewCache(cfg.StatePath)
+	wpCache.SetStopCh(fm.stopCh)
+	fm.wpCache = wpCache
+	fm.wpPending = newStagedPackageQueue(stagedPackageQueueMax)
 
 	fm.initDropperDetector(cfg)
 
@@ -439,6 +529,10 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	// Start overflow reporter
 	fm.wg.Add(1)
 	obs.Go("fanotify-overflow", fm.overflowReporter)
+
+	// Resolve staged WordPress package files once their checksums land.
+	fm.wg.Add(1)
+	obs.Go("fanotify-wp-package", fm.stagedPackageLoop)
 
 	// Start the self-deleting-dropper probe loop when the detector is enabled.
 	if fm.dropper != nil {
@@ -526,13 +620,12 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 			// #nosec G115 -- POSIX fd fits in int32.
 			if events[i].Fd == int32(fm.fd) {
 				// fanotify events ready — single read per epoll wake
-				nr, readErr := unix.Read(fm.fd, buf)
+				fm.initQueueHealth()
+				_, readErr := fm.kernelQueue.read(buf, fm.processEvents)
 				if readErr != nil {
 					if readErr != unix.EAGAIN && readErr != unix.EINTR {
 						fmt.Fprintf(os.Stderr, "[%s] fanotify read error: %v\n", ts(), readErr)
 					}
-				} else if nr >= metadataSize {
-					fm.processEvents(buf[:nr])
 				}
 			}
 		}
@@ -560,7 +653,8 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 		default:
 		}
 
-		n, err := unix.Read(fm.fd, buf)
+		fm.initQueueHealth()
+		_, err := fm.kernelQueue.read(buf, fm.processEvents)
 		if err != nil {
 			if err == unix.EAGAIN || err == unix.EINTR {
 				time.Sleep(100 * time.Millisecond)
@@ -571,11 +665,6 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 			continue
 		}
 
-		if n < metadataSize {
-			continue
-		}
-
-		fm.processEvents(buf[:n])
 	}
 }
 
@@ -609,6 +698,8 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 // lost, and nudge the reconcile pass to rescan directories that also saw
 // analyzer-queue drops during the same storm.
 func (fm *FileMonitor) handleQueueOverflow() {
+	fm.initQueueHealth()
+	fm.kernelQueueHealth.Lose(time.Now(), 1)
 	atomic.AddInt64(&fm.queueOverflows, 1)
 	if fanotifyKernelOverflowTotal != nil {
 		fanotifyKernelOverflowTotal.Inc()
@@ -642,6 +733,12 @@ func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
 		close(fm.analyzerCh)
 		fm.wg.Wait()
+		fm.discardReconcilePending()
+		fm.stagedPackages().discardPending(time.Now())
+		if fm.dropper != nil {
+			fm.dropper.tr.discardPending(time.Now())
+			clear(fm.dropper.attempts)
+		}
 		// Mark pipe as closed before actually closing, so Stop() won't
 		// write to an already-closed fd (H2 fix).
 		atomic.StoreInt32(&fm.pipeClosed, 1)
@@ -661,7 +758,8 @@ func (fm *FileMonitor) Stop() {
 			_, _ = unix.Write(fm.pipeFds[1], []byte{0})
 		}
 		// Close fanotify fd - causes any pending Read/EpollWait to return
-		_ = unix.Close(fm.fd)
+		fm.initQueueHealth()
+		_ = fm.kernelQueue.close()
 	})
 }
 
@@ -680,11 +778,8 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 		return
 	}
 
-	// Keep the existing content scanner filter separate from the dropper
-	// admission filter. Atomic-write staging names deliberately skip the
-	// normal content pipeline, while the dropper tracker still needs to see
-	// them so it can distinguish a rename from a deletion. Likewise, an
-	// executable with an arbitrary filename has no path-only content signal.
+	// The dropper tracker also needs arbitrary executable names that have
+	// no path-only content signal.
 	fm.invalidateDropperPHPHandlerCache(path)
 	contentInteresting := fm.isInteresting(path)
 	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)
@@ -694,9 +789,12 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	}
 
 	// Send to analyzer pool (with backpressure)
+	fm.initQueueHealth()
+	ticket := fm.analyzerHealth.Begin(time.Now())
 	select {
 	case fm.analyzerCh <- fileEvent{
-		path: path, fd: fd, pid: pid, mask: mask,
+		queueTicket: ticket,
+		path:        path, fd: fd, pid: pid, mask: mask,
 		dropperOnly: !contentInteresting, phpExecutable: phpExecutable,
 	}:
 	default:
@@ -704,6 +802,7 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 		// reconcile pass in overflowReporter can rescan it. Without this
 		// every file in a bulk burst past buffer capacity is invisible to
 		// detection forever.
+		ticket.Reject(time.Now())
 		n := atomic.AddInt64(&fm.droppedEvents, 1)
 		if fanotifyDroppedTotal != nil {
 			fanotifyDroppedTotal.Inc()
@@ -735,108 +834,9 @@ func (fm *FileMonitor) maybeTriggerEagerReconcile(droppedSoFar int64) {
 	signalEagerReconcile(fm.reconcileSig, droppedSoFar, eagerReconcileDropThreshold)
 }
 
-// recordDroppedDir registers a directory whose file had its fanotify event
-// dropped, capped at reconcileDirCap entries (oldest evicted).
-func (fm *FileMonitor) recordDroppedDir(path string) {
-	dir := filepath.Dir(path)
-	fm.reconcileMu.Lock()
-	defer fm.reconcileMu.Unlock()
-	if fm.reconcileDirs == nil {
-		fm.reconcileDirs = make(map[string]time.Time)
-	}
-	fm.reconcileDirs[dir] = time.Now()
-	if len(fm.reconcileDirs) <= reconcileDirCap {
-		return
-	}
-	var oldestKey string
-	var oldestTime time.Time
-	first := true
-	for k, t := range fm.reconcileDirs {
-		if first || t.Before(oldestTime) {
-			oldestKey, oldestTime, first = k, t, false
-		}
-	}
-	delete(fm.reconcileDirs, oldestKey)
-}
-
-// reconcileDrops walks every directory with a recent dropped event and
-// analyses any interesting file modified within reconcileWindow. Converts
-// lost events into delayed events rather than invisible ones. Called from
-// overflowReporter after the minute-granularity overflow alert.
-func (fm *FileMonitor) reconcileDrops() {
-	fm.reconcileMu.Lock()
-	dirs := fm.reconcileDirs
-	fm.reconcileDirs = make(map[string]time.Time)
-	fm.reconcileMu.Unlock()
-
-	if len(dirs) == 0 {
-		return
-	}
-
-	if fanotifyReconcileDur != nil {
-		start := time.Now()
-		defer func() {
-			fanotifyReconcileDur.Observe(time.Since(start).Seconds())
-		}()
-	}
-
-	cutoff := time.Now().Add(-reconcileWindow)
-	for dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			if info.ModTime().Before(cutoff) {
-				continue
-			}
-			fullPath := filepath.Join(dir, e.Name())
-			if !fm.isInteresting(fullPath) {
-				continue
-			}
-			// Open+analyse+close wrapped so a panic in analyzeFile does not
-			// leak the fd; otherwise `defer f.Close()` in a loop body would
-			// defer until reconcileDrops returns, accumulating fds across
-			// every entry in every tracked dir.
-			func() {
-				// #nosec G304 -- fullPath is a directory entry under a dir
-				// the kernel already notified us about; reconcile owns
-				// reopening because the original fanotify fd is gone.
-				f, err := os.Open(fullPath)
-				if err != nil {
-					return
-				}
-				defer func() { _ = f.Close() }()
-				// #nosec G115 -- POSIX fd fits in int32 (rlimit caps fds at ~1024).
-				fm.analyzeFile(fileEvent{path: fullPath, fd: int(f.Fd())})
-			}()
-		}
-	}
-}
-
 // isInteresting is the fast filter - zero I/O, pure string matching.
 func (fm *FileMonitor) isInteresting(path string) bool {
-	// Atomic-write staging files. cPanel's fileTransfer and any restore
-	// tool using write-then-rename stages content as
-	// `.temp.<nanoseconds>.<name>.<ext>` before rename(2) to the final
-	// path. CSM's fanotify mask is CLOSE_WRITE + CREATE only; it does not
-	// subscribe to FAN_MOVED_TO, so the post-rename file is never
-	// rescanned in real time. Scanning the transient staging path
-	// produces a false-positive storm on legitimate WordPress restores
-	// because the staged content IS genuine WP core. The periodic deep
-	// scan catches any file that lingers at a staging name (attacker
-	// hiding under `.temp.` would leave a permanent .temp.* file on disk
-	// for the next hourly deep pass to pick up).
-	if looksLikeAtomicWriteStage(filepath.Base(path)) {
-		return false
-	}
+	path = atomicWriteContentPath(path)
 
 	lower := strings.ToLower(path)
 
@@ -852,8 +852,9 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// CGI scripts in web-accessible directories — detect Perl/Python/Bash backdoors
-	if strings.HasPrefix(path, "/home/") {
+	// CGI scripts in hosted trees - detect Perl/Python/Bash backdoors.
+	// An explicit document root may live outside the platform's account homes.
+	if fm.underAccountOrConfiguredDocRoot(path) {
 		if strings.HasSuffix(lower, ".pl") || strings.HasSuffix(lower, ".cgi") ||
 			strings.HasSuffix(lower, ".py") || strings.HasSuffix(lower, ".sh") ||
 			strings.HasSuffix(lower, ".rb") {
@@ -871,8 +872,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// HTML files in /home (phishing pages)
-	if strings.HasPrefix(path, "/home/") &&
+	// HTML files in an account or explicitly configured document tree.
+	if fm.underAccountOrConfiguredDocRoot(path) &&
 		(strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".htm")) {
 		return true
 	}
@@ -883,8 +884,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// ZIP archives in /home (phishing kit uploads)
-	if strings.HasPrefix(path, "/home/") && strings.HasSuffix(lower, ".zip") {
+	// ZIP archives in an account or explicitly configured document tree.
+	if fm.underAccountOrConfiguredDocRoot(path) && strings.HasSuffix(lower, ".zip") {
 		return true
 	}
 
@@ -913,6 +914,29 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	}
 
 	return false
+}
+
+// underAccountRoot reports whether path sits inside a hosting account's tree.
+// Falls back to the historical /home spelling when the platform offers no
+// patterns, so an unconfigured plain-Linux host keeps the behaviour it had.
+func (fm *FileMonitor) underAccountRoot(path string) bool {
+	if len(fm.accountRootPatterns) == 0 {
+		return strings.HasPrefix(path, "/home/")
+	}
+	return pathMatchesWebRootPatterns(path, fm.accountRootPatterns)
+}
+
+// underDocRoot reports whether path sits inside a served document root.
+func (fm *FileMonitor) underDocRoot(path string) bool {
+	if len(fm.docRootPatterns) == 0 {
+		return strings.Contains(path, "/public_html/")
+	}
+	return pathMatchesWebRootPatterns(path, fm.docRootPatterns)
+}
+
+func (fm *FileMonitor) underAccountOrConfiguredDocRoot(path string) bool {
+	return fm.underAccountRoot(path) ||
+		(len(fm.docRootPatterns) > 0 && fm.underDocRoot(path))
 }
 
 func pathMatchesWebRootPatterns(path string, patterns []string) bool {
@@ -966,7 +990,8 @@ func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
 			fm.reportScannerPanic(event.path, r)
 		}
 	}()
-	fileAnalyzer(fm, event)
+	work := queuehealth.Work[fileEvent]{Value: event, Ticket: event.queueTicket}
+	work.Process(func(queued fileEvent) { fileAnalyzer(fm, queued) })
 }
 
 // reportScannerPanic logs the panic with its stack, forwards it to
@@ -996,6 +1021,71 @@ func readFromFd(fd int, maxBytes int) []byte {
 		return nil
 	}
 	return buf[:n]
+}
+
+const readCompleteMaxInterrupts = 8
+
+// readExactSize reads exactly the snapshotted size. Its buffer is fixed before
+// the first read, so a concurrently growing source cannot extend the loop; a
+// bounded EINTR retry count also prevents a pathological signal storm from
+// pinning an analyzer worker.
+func readExactSize(size int64, maxBytes int, pread func([]byte, int64) (int, error)) []byte {
+	if size <= 0 || maxBytes <= 0 || size > int64(maxBytes) {
+		return nil
+	}
+	buf := make([]byte, int(size))
+	interrupts := 0
+	for off := 0; off < len(buf); {
+		n, err := pread(buf[off:], int64(off))
+		if n < 0 || n > len(buf)-off {
+			return nil
+		}
+		if n > 0 {
+			off += n
+			interrupts = 0
+		}
+		if err != nil && !errors.Is(err, unix.EINTR) {
+			return nil
+		}
+		if n > 0 {
+			continue
+		}
+		if !errors.Is(err, unix.EINTR) {
+			return nil
+		}
+		interrupts++
+		if interrupts > readCompleteMaxInterrupts {
+			return nil
+		}
+	}
+	return buf
+}
+
+func sameReadSnapshot(before, after unix.Stat_t) bool {
+	return before.Dev == after.Dev && before.Ino == after.Ino && before.Size == after.Size &&
+		before.Mtim == after.Mtim && before.Ctim == after.Ctim
+}
+
+// readCompleteFromFd returns a stable snapshot of the entire file behind fd
+// when it fits within maxBytes. A short read, concurrent size/content change,
+// or excessive interruption fails closed so whole-file recognizers never
+// accept a stale prefix.
+func readCompleteFromFd(fd, maxBytes int) []byte {
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		return nil
+	}
+	buf := readExactSize(before.Size, maxBytes, func(p []byte, off int64) (int, error) {
+		return unix.Pread(fd, p, off)
+	})
+	if buf == nil {
+		return nil
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || !sameReadSnapshot(before, after) {
+		return nil
+	}
+	return buf
 }
 
 func isBenignPHPStubData(fd int, data []byte) bool {
@@ -1082,7 +1172,8 @@ func resolveProcessInfo(pid int32) string {
 
 func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	path := event.path
-	name := filepath.Base(path)
+	contentPath := atomicWriteContentPath(path)
+	name := filepath.Base(contentPath)
 	nameLower := strings.ToLower(name)
 
 	// Resolve process info from PID (best-effort - process may have exited)
@@ -1097,13 +1188,14 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			return
 		}
 		cand.ContentSuspicious = true
-		fm.dropper.tr.Refresh(*cand)
+		if !fm.dropper.tr.Refresh(*cand) {
+			fm.dropper.admit(*cand)
+		}
 	}
 
 	// Some events are admitted only for dropper tracking. Handler-mapped PHP
-	// still needs the normal PHP scanner; arbitrary executables and atomic-write
-	// staging paths retain only the strongest cheap content signal so staging
-	// does not regain the false-positive storm this pipeline already avoided.
+	// still needs the normal PHP scanner; arbitrary executables retain the
+	// strongest cheap content signal for the later deletion verdict.
 	if event.dropperOnly {
 		if event.phpExecutable {
 			if fm.checkPHPContent(event.fd, path, procInfo) {
@@ -1124,18 +1216,22 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		}
 	}
 
-	// Skip verified WordPress core files - checksum matches official WP.org checksums.
-	// Content is read from the event fd (not path) to preserve TOCTOU safety.
-	if fm.wpCache != nil && fm.wpCache.IsVerifiedCoreFile(event.fd, path) {
-		return
-	}
-
-	// Verified WordPress plugin files: hash matches the plugin's official
-	// wordpress.org ZIP for its declared version. Stops signature/YARA FPs
-	// on stock plugin code (Wordfence, Contact Form 7, etc.). Cache miss
-	// triggers a background fetch; misses fall through to rule evaluation.
-	if fm.wpCache != nil && fm.wpCache.IsVerifiedPluginFile(event.fd, path) {
-		return
+	// Skip unmodified WordPress core and plugin files: the hash matches the
+	// official wordpress.org checksums for the version the install or
+	// package declares. Stops signature/YARA FPs on stock code, installed or
+	// staged: a realtime Critical feeds inline quarantine, and a byte-for-byte
+	// copy of the official release is not what that is for. A cache miss
+	// triggers a background fetch and falls through to rule evaluation; the
+	// description is kept for the update-staging branch below, which judges
+	// a staged package by these verdicts. For atomic writes, the intended
+	// basename only selects the checksum entry. Trust requires hashing the
+	// complete original event descriptor.
+	var wpVerdict wpcheck.Verification
+	if fm.wpCache != nil {
+		wpVerdict = fm.wpCache.VerifyFile(event.fd, contentPath)
+		if wpVerdict.Verdict == wpcheck.VerdictVerified {
+			return
+		}
 	}
 
 	// User crontab written under /var/spool/cron/<user>. Scan content
@@ -1340,8 +1436,21 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		if fm.checkPHPContent(event.fd, path, procInfo) {
 			markDropperContentSuspicious()
 		} else {
-			data := readFromFd(event.fd, 65536)
-			if isBenignPHPStubData(event.fd, data) {
+			// Every staged file reaches content analysis first. Its original
+			// digest then decides the path-only warning, even for inert files
+			// absent from the official manifest.
+			if fm.handleStagedPackageFile(path, wpVerdict, procInfo) {
+				return
+			}
+			// Translation caches and comment-only stubs require a stable,
+			// complete body. A no-argument PHP terminator is safe from a
+			// prefix because all following bytes are unreachable, so retain
+			// the old bounded-head fallback for oversized files.
+			data := readCompleteFromFd(event.fd, checks.MaxInertPHPScanBytes)
+			if data != nil && checks.IsBenignPHPStubBytesComplete(data, true) {
+				return
+			}
+			if data == nil && checks.IsBenignPHPStubBytesComplete(readFromFd(event.fd, 65536), false) {
 				return
 			}
 			// WordPress 6.5+ writes *.l10n.php translation caches here as pure
@@ -1386,7 +1495,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// CGI scripts in web-accessible directories (Perl, Python, Bash, Ruby)
 	// Detect backdoor toolkits like LEVIATHAN that use non-PHP scripts.
-	if strings.HasPrefix(path, "/home/") && isCGIExtension(nameLower) {
+	if fm.underAccountOrConfiguredDocRoot(path) && isCGIExtension(nameLower) {
 		fm.checkCGIBackdoor(event.fd, path, procInfo)
 		return
 	}
@@ -1495,7 +1604,7 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on .htaccess content
-	fm.runSignatureScan(data, path, ".htaccess", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".htaccess", procInfo)
 }
 
 // checkUserINI reads the event fd so a path replacement cannot change the
@@ -1521,7 +1630,7 @@ func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on PHP configuration content.
-	fm.runSignatureScan(data, path, ".ini", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".ini", procInfo)
 }
 
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
@@ -1709,19 +1818,24 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	// if a file's hash matches a known-clean core file, signature matches
 	// on it are false positives (e.g. $_POST in wp-includes, mail() in
 	// PHPMailer, fsockopen() in POP3.php).
-	if checks.IsVerifiedCMSFile(path) {
+	// Hashed from the event descriptor, not by re-opening the path: the path
+	// can resolve to clean core content while the bytes just scanned were
+	// malicious, which would skip signature and YARA scanning for the file
+	// that was actually examined.
+	contentSize := int64(len(data))
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err == nil && stat.Size > contentSize {
+		contentSize = stat.Size
+	}
+	if !checks.CMSCacheEmpty() && checks.CMSCacheMayContainSize(contentSize) &&
+		checks.IsVerifiedCMSHash(hashEventFD(fd, data, contentSize)) {
 		return false
 	}
 
 	// External signature + YARA scanning. The YAML engine sees the complete
 	// event-file size even though realtime analysis scans a bounded prefix, so
 	// per-rule file-size limits cannot be defeated by prefix truncation.
-	contentSize := int64(len(data))
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err == nil && stat.Size > contentSize {
-		contentSize = stat.Size
-	}
-	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo)
+	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, scannedIdentity(fd))
 }
 
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:
@@ -1736,7 +1850,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 	// /wp-content/themes/, /wp-content/plugins/, /node_modules/, /vendor/,
 	// /.well-known/ let an attacker who compromised any of those dirs drop
 	// a credential-harvesting page with full suppression.
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
@@ -1829,7 +1943,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 	}
 
 	// Run signature/YARA scanning on HTML content not caught by phishing heuristics
-	fm.runSignatureScan(data, path, ".html", procInfo)
+	fm.runEventSignatureScan(fd, data, path, ".html", procInfo)
 }
 
 // checkCredentialLog reads a text file and checks if it contains harvested
@@ -1838,7 +1952,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 // fanotify event fd (not re-opened by path) so an attacker cannot swap the
 // file between the event and the read.
 func (fm *FileMonitor) checkCredentialLog(fd int, path, procInfo string) {
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
@@ -1901,7 +2015,7 @@ func (fm *FileMonitor) checkCredentialLog(fd int, path, procInfo string) {
 // Plain plugin distribution backups (google-site-kit.zip, mailchimp.zip)
 // have a brand without an action verb and don't fire.
 func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
-	if !strings.Contains(path, "/public_html/") {
+	if !fm.underDocRoot(path) {
 		return
 	}
 
@@ -1958,11 +2072,28 @@ func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
 // Non-critical YAML matches use directory-level dedup to avoid alert floods
 // when a plugin directory has many files matching the same rule.
 // Critical matches (backdoors, webshells) always alert per-file.
-func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
-	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo)
+// scannedIdentity describes the object behind an event descriptor. Stat of the
+// /proc magic link resolves the open file itself rather than walking the path
+// again, so it still names the scanned inode after the path has been replaced.
+// os.NewFile is avoided deliberately: its finalizer can close a descriptor the
+// daemon still owns.
+func scannedIdentity(fd int) os.FileInfo {
+	info, err := os.Stat(fmt.Sprintf("/proc/self/fd/%d", fd))
+	if err != nil {
+		return nil
+	}
+	return info
 }
 
-func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string) bool {
+func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, nil)
+}
+
+func (fm *FileMonitor) runEventSignatureScan(fd int, data []byte, path, ext, procInfo string) bool {
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo, scannedIdentity(fd))
+}
+
+func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string, scanned os.FileInfo) bool {
 	// Both engines see every file. A .yml hit used to end the scan here, so
 	// a file matching a High .yml rule never met the Critical YARA rule and
 	// the inline quarantine that only a Critical match triggers. Only a file
@@ -1988,30 +2119,34 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 			if !suppressed {
 				details := fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
 					m.Category, m.Description, strings.Join(m.Matched, ", "))
-				fm.sendAlertWithPath(sev, "signature_match_realtime",
-					fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
-					details, path, procInfo)
-
-				// Inline quarantine: move high-confidence malware to quarantine
-				// immediately instead of waiting for the 5-second batch dispatcher.
-				// Uses the same 3-gate validation as AutoQuarantineFiles (category +
-				// library exclusion + entropy >= 5.5) to prevent false positives,
-				// and the same auto-response policy gate (enabled + quarantine_files)
-				// so the realtime path never moves files the batch path would not.
+				finding := alert.Finding{
+					Severity:    sev,
+					Check:       "signature_match_realtime",
+					Message:     fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
+					Details:     details,
+					FilePath:    path,
+					ProcessInfo: procInfo,
+				}
+				var qPath string
+				var quarantined bool
+				var paused *alert.Finding
 				if sev == alert.Critical {
-					finding := alert.Finding{
-						Severity: sev,
-						Check:    "signature_match_realtime",
-						Details:  details,
-						FilePath: path,
-					}
-					if qPath, ok := checks.InlineQuarantineGated(fm.currentCfg(), finding, path, data); ok {
-						fm.recordDropperQuarantine(path, qPath)
-						fm.sendAlert(alert.Critical, "auto_response",
-							fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
-							fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
-						return true
-					}
+					// Capture provenance before remediation can remove the source.
+					checks.StampContentFingerprint(&finding)
+					qPath, quarantined, paused = checks.InlineQuarantineGatedIdentified(fm.currentCfg(), &finding, path, data, scanned)
+				}
+				// Publish after the inline decision so delivery sees its budget
+				// provenance. A rejected window can still get full-file validation.
+				fm.sendFileFinding(finding)
+				if paused != nil && !alert.TryEnqueue(fm.alertCh, *paused) {
+					atomic.AddInt64(&fm.droppedAlerts, 1)
+				}
+				if quarantined {
+					fm.recordDropperQuarantine(path, qPath)
+					fm.sendAlert(alert.Critical, "auto_response",
+						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
+						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
+					return true
 				}
 			}
 		}
@@ -2034,7 +2169,36 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 	return matched
 }
 
+// stopping reports whether this monitor has been signalled to stop. A nil
+// stopCh (a monitor built directly in a test) is never stopping, because a
+// receive on a nil channel cannot proceed.
+func (fm *FileMonitor) stopping() bool {
+	select {
+	case <-fm.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// reportYARAScanError names a changed file the scanner could not inspect.
+// It is its own check rather than the deep scan's "yara_scan_incomplete",
+// which reports scheduled coverage: that report fires for every archive past
+// the scan size limit, roughly thirteen times a day forever on a live host,
+// and sharing the name left a real scanning outage indistinguishable from
+// routine backlog.
+//
+// Shutdown is not an outage. The daemon stops the YARA backend while this
+// monitor's goroutine is still draining events, because the wait for workers
+// comes after the teardown, so a clean restart otherwise reported a
+// High-severity scanning failure every time. The teardown cannot move after
+// that wait, which is unbounded and would hang on a wedged worker. The
+// return happens before the rate-limit window is taken, so a suppressed
+// shutdown report cannot swallow the first genuine failure afterwards.
 func (fm *FileMonitor) reportYARAScanError(path string, err error) {
+	if fm.stopping() {
+		return
+	}
 	fm.yaraErrorReportMu.Lock()
 	if !fm.lastYARAError.IsZero() && time.Since(fm.lastYARAError) < time.Minute {
 		fm.yaraErrorReportMu.Unlock()
@@ -2042,7 +2206,7 @@ func (fm *FileMonitor) reportYARAScanError(path string, err error) {
 	}
 	fm.lastYARAError = time.Now()
 	fm.yaraErrorReportMu.Unlock()
-	fm.sendAlert(alert.High, "yara_scan_incomplete",
+	fm.sendAlert(alert.High, "yara_realtime_scan_error",
 		"YARA real-time scan could not inspect a changed file",
 		fmt.Sprintf("File: %s\nError: %v", path, err))
 }
@@ -2058,9 +2222,7 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 		Details:   details,
 		Timestamp: time.Now(),
 	}
-	select {
-	case fm.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
 }
@@ -2069,22 +2231,23 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 // ProcessInfo fields for structured propagation to auto-response.
 // Applies per-path deduplication to prevent alert storms from rapid writes.
 func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message, details, filePath, processInfo string) {
-	if !fm.shouldAlert(check, filePath) {
-		return
-	}
-	finding := alert.Finding{
+	fm.sendFileFinding(alert.Finding{
 		Severity:    severity,
 		Check:       check,
 		Message:     message,
 		Details:     details,
 		FilePath:    filePath,
 		ProcessInfo: processInfo,
-		Timestamp:   time.Now(),
+	})
+}
+
+func (fm *FileMonitor) sendFileFinding(finding alert.Finding) {
+	if !fm.shouldAlert(finding.Check, finding.FilePath) {
+		return
 	}
+	finding.Timestamp = time.Now()
 	checks.StampContentFingerprint(&finding)
-	select {
-	case fm.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
 }
@@ -2156,24 +2319,24 @@ func (fm *FileMonitor) overflowReporter() {
 				}
 				return true
 			})
-			evictStalePluginStatCache(now)
+			evictStaleWPPathStatCache(now)
 		}
 	}
 }
 
-// evictStalePluginStatCache bounds the package-level plugin update stat cache.
+// evictStaleWPPathStatCache bounds the package-level WordPress path stat cache.
 // The compare-delete keeps the minute sweep from removing a fresh stat result
 // stored by an analyzer worker after Range observed an older entry.
-func evictStalePluginStatCache(now time.Time) {
-	pluginCutoff := 2 * pluginCacheTTL
-	pluginStatCache.Range(func(key, value any) bool {
-		entry, ok := value.(pluginCacheEntry)
+func evictStaleWPPathStatCache(now time.Time) {
+	cutoff := 2 * wpPathCacheTTL
+	wpPathStatCache.Range(func(key, value any) bool {
+		entry, ok := value.(wpPathCacheEntry)
 		if !ok {
-			pluginStatCache.Delete(key)
+			wpPathStatCache.Delete(key)
 			return true
 		}
-		if now.Sub(entry.ts) > pluginCutoff {
-			pluginStatCache.CompareAndDelete(key, entry)
+		if now.Sub(entry.ts) > cutoff {
+			wpPathStatCache.CompareAndDelete(key, entry)
 		}
 		return true
 	})
@@ -2282,7 +2445,7 @@ func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
 	}
 
 	// Run signature scan on the content
-	fm.runSignatureScan(data, path, filepath.Ext(path), procInfo)
+	fm.runEventSignatureScan(fd, data, path, filepath.Ext(path), procInfo)
 }
 
 // matchSuppression checks if a file path matches a suppression glob pattern.
@@ -2379,19 +2542,30 @@ func looksLikePluginUpdate(path string) bool {
 	}
 
 	// Check if a matching plugin directory exists in plugins/
-	pluginDir := wpRoot + "/wp-content/plugins/" + pluginName
+	return cachedPathExists(wpRoot + "/wp-content/plugins/" + pluginName)
+}
 
-	// M3 - check cache first
-	if cached, ok := pluginStatCache.Load(pluginDir); ok {
-		entry := cached.(pluginCacheEntry)
-		if time.Since(entry.ts) < pluginCacheTTL {
-			return entry.exists
+// cachedPathExists answers whether path exists, memoised for wpPathCacheTTL
+// when it does and for wpPathNegativeTTL when it does not. The realtime path
+// asks this once per file event during an update, so an uncached stat per
+// staged file would be paid thousands of times per package; a missing path
+// during an update is transient, so its answer must expire quickly.
+func cachedPathExists(path string) bool {
+	if cached, ok := wpPathStatCache.Load(path); ok {
+		if entry, ok := cached.(wpPathCacheEntry); ok {
+			ttl := wpPathCacheTTL
+			if !entry.exists {
+				ttl = wpPathNegativeTTL
+			}
+			if time.Since(entry.ts) < ttl {
+				return entry.exists
+			}
 		}
 	}
 
-	_, err := os.Stat(pluginDir)
+	_, err := os.Stat(path)
 	exists := err == nil
-	pluginStatCache.Store(pluginDir, pluginCacheEntry{
+	wpPathStatCache.Store(path, wpPathCacheEntry{
 		exists: exists,
 		ts:     time.Now(),
 	})

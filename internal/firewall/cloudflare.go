@@ -14,6 +14,9 @@ import (
 func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.lifecycleReadyLocked(); err != nil {
+		return err
+	}
 
 	// Both sets are created together by createSets, but ConnectExisting
 	// loads them independently, so one can be present while the other is
@@ -41,7 +44,7 @@ func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 		elems4 = appendIntervalSetElements(elems4, start, end)
 	}
 	if len(elems4) > 0 {
-		if err := e.conn.SetAddElements(e.setCFWhitelist, elems4); err != nil {
+		if err := e.conn.SetAddElements(e.setCFWhitelist, normalizeIntervalElements(elems4)); err != nil {
 			return fmt.Errorf("adding CF IPv4 elements: %w", err)
 		}
 	}
@@ -53,6 +56,9 @@ func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 		if err != nil {
 			continue
 		}
+		if network.IP.To4() != nil {
+			continue
+		}
 		start := network.IP.To16()
 		end := lastIPInRange(network)
 		if start == nil || end == nil {
@@ -61,7 +67,7 @@ func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 		elems6 = appendIntervalSetElements(elems6, start, end)
 	}
 	if len(elems6) > 0 {
-		if err := e.conn.SetAddElements(e.setCFWhitelist6, elems6); err != nil {
+		if err := e.conn.SetAddElements(e.setCFWhitelist6, normalizeIntervalElements(elems6)); err != nil {
 			return fmt.Errorf("adding CF IPv6 elements: %w", err)
 		}
 	}

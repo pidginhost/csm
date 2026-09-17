@@ -29,9 +29,11 @@ func withCageFSDoctorPaths(t *testing.T, mountPoints string, applied bool) {
 	oldMP, oldSample := cagefsMountPointsPath, cagefsCageMountSample
 	cagefsMountPointsPath = mpPath
 	if applied {
-		cagefsCageMountSample = func() (int, int, error) { return 0, 12, nil }
+		cagefsCageMountSample = func() ([]string, int, error) { return nil, 12, nil }
 	} else {
-		cagefsCageMountSample = func() (int, int, error) { return 11, 12, nil }
+		cagefsCageMountSample = func() ([]string, int, error) {
+			return []string{"u01", "u02", "u03", "u04", "u05", "u06", "u07", "u08", "u09", "u10", "u11"}, 12, nil
+		}
 	}
 	t.Cleanup(func() {
 		cagefsMountPointsPath, cagefsCageMountSample = oldMP, oldSample
@@ -134,6 +136,7 @@ func TestBuildDoctorReportIncludesCageFSMountCheck(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return cfg, nil },
 		func() ([]byte, error) { return payload, nil },
+		integrityOK,
 	)
 	for _, check := range report.Checks {
 		if check.Name == "php shield: cagefs event mount" {
@@ -167,6 +170,7 @@ func TestBuildDoctorReportSkipsCageFSCheckWhenShieldDisabled(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return cfg, nil },
 		func() ([]byte, error) { return payload, nil },
+		integrityOK,
 	)
 	for _, check := range report.Checks {
 		if check.Name == "php shield: cagefs event mount" {

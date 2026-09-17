@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type mockResolver struct {
@@ -224,7 +226,7 @@ func TestAsyncBotVerifier_DoesNotCacheNoPTR(t *testing.T) {
 	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error {
 		puts++
 		return nil
-	})
+	}, nil)
 	a.v["googlebot"] = newVerifier(&mockResolver{err: &net.DNSError{IsNotFound: true}}, []string{"googlebot.com"})
 
 	a.process(verifyJob{IP: net.ParseIP("203.0.113.10"), Bot: "googlebot"})
@@ -293,8 +295,9 @@ func TestAsyncBotVerifier_CancelsInflightOnShutdown(t *testing.T) {
 	started := make(chan struct{})
 	res := &blockingResolver{started: started}
 	a := &AsyncBotVerifier{
-		inflight: make(map[string]struct{}),
+		inflight: make(map[string]time.Time),
 		ch:       make(chan verifyJob, 4),
+		stats:    queuehealth.New(4, time.Minute),
 		v:        map[string]*verifier{"googlebot": newVerifier(res, []string{"googlebot.com"})},
 		put:      func(net.IP, string, bool, time.Time) error { return nil },
 	}
@@ -328,8 +331,9 @@ func TestAsyncBotVerifier_CancelsForwardLookupOnShutdown(t *testing.T) {
 		ptr:     "crawl-66-249-66-99.googlebot.com.",
 	}
 	a := &AsyncBotVerifier{
-		inflight: make(map[string]struct{}),
+		inflight: make(map[string]time.Time),
 		ch:       make(chan verifyJob, 4),
+		stats:    queuehealth.New(4, time.Minute),
 		v:        map[string]*verifier{"googlebot": newVerifier(res, []string{"googlebot.com"})},
 		put:      func(net.IP, string, bool, time.Time) error { return nil },
 	}
@@ -361,7 +365,7 @@ func TestAsyncBotVerifier_DoesNotCacheTransientErrors(t *testing.T) {
 	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error {
 		puts++
 		return nil
-	})
+	}, nil)
 	a.v["googlebot"] = newVerifier(&mockResolver{err: errors.New("temporary resolver failure")}, []string{"googlebot.com"})
 
 	a.process(verifyJob{IP: net.ParseIP("203.0.113.10"), Bot: "googlebot"})

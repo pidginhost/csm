@@ -51,6 +51,11 @@ const (
 	CmdFirewallRestart        = "firewall.restart"
 	CmdFirewallApplyConfirmed = "firewall.apply_confirmed"
 	CmdFirewallConfirm        = "firewall.confirm"
+	// Durable firewall actions. Actions lists what recovery could not settle,
+	// and ActionResolve records the outcome an operator established by hand.
+	CmdFirewallActions       = "firewall.actions"
+	CmdFirewallActionResolve = "firewall.action_resolve"
+
 	CmdFirewallRollbackStatus = "firewall.rollback_status"
 	CmdFirewallRollbackRevert = "firewall.rollback_revert"
 	CmdFirewallRollbackOK     = "firewall.rollback_confirm"
@@ -72,6 +77,11 @@ const (
 	CmdPHPRelayIgnoreList   = "phprelay.ignore_list"
 	CmdPHPRelayDryRun       = "phprelay.dry_run"
 	CmdPHPRelayThaw         = "phprelay.thaw"
+
+	// Clears one address's accumulated local threat-scoring state. Kept
+	// separate from the firewall commands: it changes no block, allow or
+	// whitelist entry, only what local_threat_score reads.
+	CmdThreatForget = "threat.forget"
 
 	// Phase 2 incident correlation.
 	CmdIncidentsList       = "incidents.list"
@@ -216,6 +226,15 @@ type FirewallAuditArgs struct {
 	Limit int `json:"limit"`
 }
 
+// FirewallActionResolveArgs carries an operator decision about one durable
+// firewall action. Outcome is "applied" or "rejected", in the operator's own
+// terms; Note records the evidence they went on.
+type FirewallActionResolveArgs struct {
+	ID      string `json:"id"`
+	Outcome string `json:"outcome"`
+	Note    string `json:"note,omitempty"`
+}
+
 // FirewallApplyConfirmedArgs mirrors the CLI's minutes argument.
 type FirewallApplyConfirmedArgs struct {
 	Minutes int `json:"minutes"`
@@ -225,6 +244,20 @@ type FirewallApplyConfirmedArgs struct {
 // commands that do not need to report state back (block, allow, etc).
 // Message is a short human-readable string the CLI can print verbatim.
 type FirewallAckResult struct {
+	Message string `json:"message"`
+}
+
+// ThreatForgetResult reports what clearing an address's scoring state
+// actually removed. Found distinguishes "cleared a stale record" from
+// "there was nothing to clear", which the operator cannot otherwise tell
+// apart and which decides whether the alert will stop.
+// If legacy spellings created multiple records for the same address, Events
+// is their total event count and Score is the highest removed record's score.
+type ThreatForgetResult struct {
+	IP      string `json:"ip"`
+	Found   bool   `json:"found"`
+	Score   int    `json:"score"`
+	Events  int    `json:"events"`
 	Message string `json:"message"`
 }
 
@@ -253,6 +286,7 @@ type FirewallStatusResult struct {
 	Restricted      []string               `json:"restricted"`
 	PassiveFTPStart int                    `json:"passive_ftp_start"`
 	PassiveFTPEnd   int                    `json:"passive_ftp_end"`
+	TCPOutAllow     []string               `json:"tcp_out_allow,omitempty"`
 	InfraIPCount    int                    `json:"infra_ip_count"`
 	BlockedCount    int                    `json:"blocked_count"`
 	BlockedNetCount int                    `json:"blocked_net_count"`

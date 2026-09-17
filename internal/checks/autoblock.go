@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -157,6 +158,7 @@ func getIPBlocker() IPBlocker {
 }
 
 type blockedIP struct {
+	FindingID string    `json:"finding_id,omitempty"`
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
 	BlockedAt time.Time `json:"blocked_at"`
@@ -164,13 +166,19 @@ type blockedIP struct {
 }
 
 type pendingIP struct {
-	IP     string `json:"ip"`
-	Reason string `json:"reason"`
+	ActionID  string         `json:"action_id,omitempty"`
+	ActionTTL time.Duration  `json:"action_ttl,omitempty"`
+	FindingID string         `json:"finding_id,omitempty"`
+	IP        string         `json:"ip"`
+	Reason    string         `json:"reason"`
+	Check     string         `json:"check,omitempty"`
+	Severity  alert.Severity `json:"severity,omitempty"`
 	// QueuedAt is when the IP first entered the queue; it survives
-	// requeue cycles so age accumulates instead of resetting. Zero on
-	// entries written by older builds (treated as fresh once, then
-	// stamped on the first requeue).
-	QueuedAt time.Time `json:"queued_at,omitempty"`
+	// requeue cycles so age accumulates instead of resetting. Stamped on
+	// the first requeue for eligible entries with no timestamp.
+	QueuedAt       time.Time `json:"queued_at,omitempty"`
+	queueRecord    *autoBlockPendingRecord
+	queueCandidate *autoBlockCandidate
 }
 
 type blockState struct {
@@ -191,15 +199,90 @@ type blockState struct {
 	PendingDropWarnedHour string `json:"pending_drop_warned_hour,omitempty"`
 }
 
-// AutoBlockIPs processes findings and blocks attacker IPs via the firewall engine.
-// Note: this should be called with ALL findings (not just new ones)
-// for reputation-based blocking to work on repeat offenders.
+// alwaysBlockChecks carry a confirmed attacker IP: thresholded brute force,
+// confirmed compromise, C2/reputation, or escalation. Raw mailbox auth
+// failures and account-only mail findings feed incident grouping and
+// thresholded trackers, but one row is not enough evidence for a block.
+var alwaysBlockChecks = map[string]bool{
+	"wp_login_bruteforce":         true,
+	"xmlrpc_abuse":                true,
+	"http_request_flood":          true,
+	"http_scanner_profile":        true,
+	"http_claimed_bot_unverified": true,
+	"http_ua_spoof":               true,
+	"ftp_bruteforce":              true,
+	"smtp_bruteforce":             true,
+	"smtp_probe_abuse":            true,
+	"mail_bruteforce":             true,
+	"mail_account_compromised":    true,
+	"admin_panel_bruteforce":      true,
+	"ssh_login_unknown_ip":        true,
+	"ssh_login_realtime":          true,
+	"pam_bruteforce":              true,
+	"credential_stuffing":         true,
+	"c2_connection":               true,
+	"ip_reputation":               true,
+	"local_threat_score":          true,
+	"modsec_block_escalation":     true,
+	"modsec_csm_block_escalation": true,
+	"email_compromised_account":   true,
+	"email_cloud_relay_abuse":     true,
+	"waf_attack_blocked":          true,
+}
+
+// cpanelWebmailFailureChecks are blockable only when block_cpanel_logins is
+// enabled (disabled by default). Every entry reports a FAILED or thresholded
+// authentication attempt, which is real evidence.
+//
+// Checks that report a SUCCESSFUL operation are deliberately absent, and must
+// stay absent. cpanel_login and cpanel_login_realtime were excluded first:
+// they fire on every direct form login from a non-infra IP, and blocking on
+// one such Warning turns a legitimate customer logging in from a new country
+// into a 24h lockout.
+//
+// cpanel_file_upload_realtime, ftp_login_realtime and webmail_login_realtime
+// were missed at the time and caused exactly that. A customer was blocked one
+// second after uploading a file in File Manager, and five addresses were
+// blocked for logging in to FTP successfully. The handler skips 401 and 403,
+// so these only fire once the user has authenticated; on shared hosting every
+// customer is a non-infra IP, so they fire on ordinary use of core features.
+// They remain findings, which is where their value is -- correlated with
+// other evidence on the same account -- but they never block on their own.
+var cpanelWebmailFailureChecks = map[string]bool{
+	"cpanel_multi_ip_login":     true,
+	"api_auth_failure":          true,
+	"api_auth_failure_realtime": true,
+	"webmail_bruteforce":        true,
+	"ftp_auth_failure_realtime": true,
+}
+
+// blockableCheck reports whether a finding's check may drive a firewall block.
+func blockableCheck(check string, blockCpanelLogins bool) bool {
+	if alwaysBlockChecks[check] {
+		return true
+	}
+	return blockCpanelLogins && cpanelWebmailFailureChecks[check]
+}
+
+func blockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
+	// An established multi-mailbox source is advisory below Critical.
+	return blockableCheck(f.Check, blockCpanelLogins) &&
+		(f.Check != "mail_account_compromised" || f.Severity == alert.Critical)
+}
+
+// AutoBlockIPs processes all findings, including repeats, for IP blocking.
 func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+	return autoBlockIPs(cfg, findings, "")
+}
+
+// autoBlockIPs retains the observed source when database response converts one
+// finding into several session-IP candidates for the existing block policy.
+func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID string) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return nil
 	}
-	blockStateMu.Lock()
-	defer blockStateMu.Unlock()
+	work := autoBlockQueues.acquire()
+	defer work.finish()
 
 	// Snapshot the wired firewall engine ONCE per call. A concurrent
 	// SetIPBlocker (SIGHUP re-wire, test cleanup) can swap the global
@@ -215,6 +298,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	var liveBlocked firewall.LiveBlockedSnapshot
 	var useLiveBlocked bool
 	if blocker != nil {
+		work.progress()
 		liveBlocked, useLiveBlocked = liveBlockedSnapshot(blocker)
 	}
 
@@ -226,7 +310,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	var actions []alert.Finding
 
 	// Load block state
-	state := loadBlockState(cfg.StatePath)
+	work.progress()
+	state := work.loadState(cfg.StatePath)
 
 	// Prune IPs that the firewall engine no longer has blocked.
 	// The engine handles expiry natively via nftables timeouts -
@@ -236,6 +321,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// the kernel expires entries before state.json is rewritten.
 	var stillBlocked []blockedIP
 	for _, b := range state.IPs {
+		work.progress()
 		if blocker != nil {
 			if !blockedLiveOrCached(blocker, liveBlocked, useLiveBlocked, b.IP) {
 				// Engine expired this block - clean up our state
@@ -251,7 +337,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// before making new subnet decisions this cycle. Never in dry-run:
 	// dry-run promises a read-only firewall and pruning is a kernel mutation.
 	if blocker != nil && isAutoResponseActive(cfg) {
-		PruneExemptAutoSubnets(cfg, blocker)
+		pruneExemptAutoSubnets(cfg, blocker, work.progress)
 	}
 
 	// Check rate limit
@@ -264,72 +350,34 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Collect IPs to block from findings
 	ipsToBlock := make(map[string]pendingIP)
 
-	// Always blockable findings carry a confirmed attacker IP: thresholded
-	// brute force, confirmed compromise, C2/reputation, or escalation.
-	// Raw mailbox auth failures and account-only mail findings feed incident
-	// grouping and thresholded trackers, but one row is not enough evidence
-	// for a firewall block.
-	alwaysBlock := map[string]bool{
-		"wp_login_bruteforce":         true,
-		"xmlrpc_abuse":                true,
-		"http_request_flood":          true,
-		"http_scanner_profile":        true,
-		"http_claimed_bot_unverified": true,
-		"http_ua_spoof":               true,
-		"ftp_bruteforce":              true,
-		"smtp_bruteforce":             true,
-		"smtp_probe_abuse":            true,
-		"mail_bruteforce":             true,
-		"mail_account_compromised":    true,
-		"admin_panel_bruteforce":      true,
-		"ssh_login_unknown_ip":        true,
-		"ssh_login_realtime":          true,
-		"pam_bruteforce":              true,
-		"credential_stuffing":         true,
-		"c2_connection":               true,
-		"ip_reputation":               true,
-		"local_threat_score":          true,
-		"modsec_block_escalation":     true,
-		"modsec_csm_block_escalation": true,
-		"email_compromised_account":   true,
-		"email_cloud_relay_abuse":     true,
-		"waf_attack_blocked":          true,
-	}
-
-	// Only blockable when block_cpanel_logins is enabled (disabled by default).
-	// cpanel_login / cpanel_login_realtime are deliberately absent: those
-	// fire as Warning-level audit on every direct form login from a non-
-	// infra IP and a single event is not brute-force evidence. Blocking on
-	// one Warning turns a legitimate customer logging in from a new country
-	// into a 24h lockout. Thresholded brute checks below stay blockable.
-	cpanelWebmailChecks := map[string]bool{
-		"cpanel_multi_ip_login":       true,
-		"cpanel_file_upload_realtime": true,
-		"api_auth_failure":            true,
-		"api_auth_failure_realtime":   true,
-		"webmail_bruteforce":          true,
-		"webmail_login_realtime":      true,
-		"ftp_login_realtime":          true,
-		"ftp_auth_failure_realtime":   true,
-	}
-
 	// Drain pending queue first (IPs from prior rate-limited or failed
 	// cycles). Stale entries are dropped by name so the audit trail shows
 	// exactly which attackers aged out instead of being blocked.
 	for _, p := range state.Pending {
+		work.beginPending(p)
 		ip := normalizeBlockIP(p.IP)
 		if ip == "" {
 			fmt.Fprintf(os.Stderr, "auto-block: dropping invalid pending IP %q\n", p.IP)
 			continue
 		}
 		p.IP = ip
+		// Retry only evidence still eligible under the current policy. Older
+		// queues lack check identity; a free-text reason cannot establish it.
+		if !blockableFinding(alert.Finding{Check: p.Check, Severity: p.Severity}, cfg.AutoResponse.BlockCpanelLogins) {
+			work.completePending(p)
+			fmt.Fprintf(os.Stderr, "auto-block: dropping ineligible pending %s (check %q)\n", p.IP, p.Check)
+			continue
+		}
 		if !p.QueuedAt.IsZero() && autoBlockNow().Sub(p.QueuedAt) > maxPendingAge {
 			fmt.Fprintf(os.Stderr, "auto-block: dropping stale pending %s (queued %s)\n",
 				p.IP, p.QueuedAt.Format(time.RFC3339))
 			continue
 		}
 		if !isAlreadyBlocked(state, p.IP) {
+			p.queueCandidate = work.candidate(p, ipsToBlock[p.IP].queueCandidate)
 			ipsToBlock[p.IP] = p
+		} else {
+			work.completePending(p)
 		}
 	}
 	state.Pending = nil
@@ -338,6 +386,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Independent of the per-IP rate limit, because a single subnet block
 	// replaces what would otherwise be hundreds of per-IP blocks.
 	for _, f := range findings {
+		work.progress()
 		if f.Check != "smtp_subnet_spray" && f.Check != "mail_subnet_spray" {
 			continue
 		}
@@ -373,8 +422,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
-		if err := sb.BlockSubnet(cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry)); err != nil {
-			fmt.Fprintf(os.Stderr, "auto-block: error blocking subnet %s: %v\n", cidr, err)
+		if !autoFirewallActionApplied(cidr, callBlockSubnet(sb, cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry), alert.FindingID(f))) {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK-SUBNET: %s blocked\n", time.Now().Format("2006-01-02 15:04:05"), cidr)
@@ -387,22 +435,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		})
 	}
 
-	// blockOnlyAtCritical marks checks whose sub-critical findings are
-	// advisory annotations (e.g. an established multi-mailbox office source)
-	// rather than confirmed-attacker evidence; those must never firewall.
-	blockOnlyAtCritical := map[string]bool{
-		"mail_account_compromised": true,
-	}
-
 	for _, f := range findings {
-		isBlockable := alwaysBlock[f.Check]
-		if !isBlockable && cfg.AutoResponse.BlockCpanelLogins && cpanelWebmailChecks[f.Check] {
-			isBlockable = true
-		}
-		if !isBlockable {
-			continue
-		}
-		if blockOnlyAtCritical[f.Check] && f.Severity != alert.Critical {
+		work.progress()
+		if !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
 			continue
 		}
 
@@ -428,12 +463,23 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		// A drained pending entry keeps its QueuedAt when the same IP
-		// recurs in fresh findings; only the reason is refreshed.
+		// recurs in fresh findings; the check, severity and reason are refreshed.
+		findingID := sourceFindingID
+		if findingID == "" {
+			findingID = alert.FindingID(f)
+		}
 		if existing, ok := ipsToBlock[ip]; ok {
-			existing.Reason = f.Message
+			if existing.ActionID == "" {
+				existing.Reason = f.Message
+				existing.Check = f.Check
+				existing.Severity = f.Severity
+				existing.FindingID = findingID
+			}
 			ipsToBlock[ip] = existing
 		} else {
-			ipsToBlock[ip] = pendingIP{IP: ip, Reason: f.Message}
+			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID}
+			p.queueCandidate = work.candidate(p, nil)
+			ipsToBlock[ip] = p
 		}
 	}
 
@@ -443,6 +489,20 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if maxPerHour <= 0 {
 		maxPerHour = config.DefaultMaxBlocksPerHour
 	}
+
+	budgetUnavailable := false
+	if durable, ok := blocker.(interface {
+		DurableActionsEnabled() bool
+		FirewallScanBudget(string) (int, error)
+	}); ok && durable.DurableActionsEnabled() {
+		used, budgetErr := durable.FirewallScanBudget(currentHour)
+		if budgetErr != nil {
+			budgetUnavailable = true
+			actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_block", Message: "Firewall action accounting unavailable; scan blocks deferred", Details: budgetErr.Error(), Timestamp: time.Now()})
+		} else {
+			state.BlocksThisHour = used
+		}
+	}
 	// http_asn_crawl: surgical subnet tempban for confirmed Critical findings.
 	// Each CIDR consumes one MaxBlocksPerHour slot. Independent of the per-IP
 	// list but shares its hourly budget. Skips infra intersections and
@@ -451,10 +511,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if sb, ok := blocker.(subnetBlocker); ok {
 		tempban := parseExpiryWithDefault(cfg.AutoResponse.HTTPASNCrawlTempban, config.DefaultHTTPASNCrawlTempban)
 		for _, f := range findings {
+			work.progress()
 			if f.Check != "http_asn_crawl" || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
 				continue
 			}
 			for _, cidr := range f.CIDRs {
+				work.progress()
 				if isSubnetAlreadyBlocked(blocker, cidr) || cidrIntersectsInfra(cfg, cidr) {
 					continue
 				}
@@ -468,12 +530,20 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 					actions = append(actions, dryRunSubnetNotice(cidr, " (asn-crawl)", f.Message))
 					continue
 				}
-				if state.BlocksThisHour >= maxPerHour {
+				if budgetUnavailable || state.BlocksThisHour >= maxPerHour {
 					break
 				}
 				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
-				if err := sb.BlockSubnet(cidr, reason, tempban); err != nil {
-					fmt.Fprintf(os.Stderr, "auto-block: asn-crawl subnet %s: %v\n", cidr, err)
+				var subnetErr error
+				if durable, ok := blocker.(interface {
+					DurableActionsEnabled() bool
+					BlockSubnetRequest(firewall.ActionRequest, *firewall.ScanAdmission) error
+				}); ok && durable.DurableActionsEnabled() {
+					subnetErr = durable.BlockSubnetRequest(firewall.ActionRequest{ID: rand.Text(), Operation: "block_subnet", Target: cidr, Reason: reason, TTL: tempban, FindingID: alert.FindingID(f), Actor: "daemon", Source: BlockSourceScan, Automatic: true}, &firewall.ScanAdmission{Window: currentHour, Limit: maxPerHour})
+				} else {
+					subnetErr = callBlockSubnet(sb, cidr, reason, tempban, alert.FindingID(f))
+				}
+				if !autoFirewallActionApplied(cidr, subnetErr) {
 					continue
 				}
 				state.BlocksThisHour++
@@ -501,37 +571,69 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			p.QueuedAt = autoBlockNow()
 		}
 		if len(state.Pending) < maxPendingBlocks {
-			state.Pending = append(state.Pending, p)
+			state.Pending = append(state.Pending, work.requeueCandidate(p))
 			return true
 		}
+		work.rejectCandidate(p.queueCandidate)
 		fmt.Fprintf(os.Stderr, "auto-block: pending queue full, dropping %s\n", p.IP)
 		droppedPending++
 		return false
 	}
 	for ip, cand := range ipsToBlock {
-		if state.BlocksThisHour >= maxPerHour {
+		work.progress()
+		work.startCandidate(cand.queueCandidate)
+		durableRetry := false
+		if durable, ok := blocker.(durableActionBlocker); ok {
+			durableRetry = cand.ActionID != "" && durable.DurableActionsEnabled()
+		}
+		// Existing requests need recovery even when their admission used the
+		// last slot. The durable store still caps any identity not yet admitted.
+		if budgetUnavailable || (state.BlocksThisHour >= maxPerHour && !durableRetry) {
 			requeue(cand)
-			rateLimited = true
+			rateLimited = !budgetUnavailable
 			continue
 		}
 
 		// Block via firewall engine (nftables)
 		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(cand.Reason, 100))
 		if blocker == nil {
+			work.candidateOutcome(cand.queueCandidate, ErrNoIPBlocker)
 			observeBlockOutcome(firewall.BlockOutcomeNoop, ErrNoIPBlocker, BlockSourceScan)
 			if requeue(cand) {
 				engineUnavailableRequeued++
 			}
 			continue
 		}
+		if cand.ActionID == "" {
+			cand.ActionID = rand.Text()
+		}
+		requestTTL := expiry
+		if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
+			if cand.ActionTTL == 0 {
+				cand.ActionTTL = expiry
+			}
+			requestTTL = cand.ActionTTL
+		}
 		res, err := applyBlockLocked(cfg, blocker, state, ApplyBlockRequest{
+			ActionID:     cand.ActionID,
 			IP:           ip,
 			EngineReason: blockReason,
 			Reason:       cand.Reason,
-			TTL:          expiry,
+			TTL:          requestTTL,
 			Source:       BlockSourceScan,
-		})
-		if err != nil {
+			FindingID:    cand.FindingID,
+		}, work.progress, func(err error) { work.candidateOutcome(cand.queueCandidate, err) })
+		verifiedAuditPending := res.Outcome == firewall.BlockOutcomeLive && errors.Is(err, firewall.ErrActionAuditPending)
+		if verifiedAuditPending {
+			fmt.Fprintf(os.Stderr, "auto-block: %s verified with audit delivery pending: %v\n", ip, err)
+		}
+		if err != nil && !verifiedAuditPending {
+			if errors.Is(err, firewall.ErrActionFailed) {
+				// A proven rejection is terminal for this request ID. A later
+				// attempt gets independent admission under the current policy.
+				cand.ActionID = ""
+				cand.ActionTTL = 0
+			}
 			// Protected IPs (the server's own interface or infra_ips) are
 			// intentionally never blocked -- an expected no-op, not a failure.
 			// The triggering finding still stands, so suspicious activity from a
@@ -544,17 +646,21 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 				} else {
 					fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v (retry dropped)\n", ip, err)
 				}
+			} else {
+				work.finishCandidate(cand.queueCandidate)
 			}
 			continue
 		}
 		actions = append(actions, res.Findings...)
 		if res.Outcome != firewall.BlockOutcomeLive {
+			work.finishCandidate(cand.queueCandidate)
 			continue
 		}
 		if blocker.IsBlocked(ip) {
-			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, expiry)
+			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, requestTTL)
 		}
 		state.BlocksThisHour++
+		work.finishCandidate(cand.queueCandidate)
 	}
 	if engineUnavailableRequeued > 0 {
 		fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, requeued %d IPs\n", engineUnavailableRequeued)
@@ -599,6 +705,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		subnetExpiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
 		// Count blocked IPs per subnet (IPv4 /24, IPv6 /64).
 		subnetCounts := make(map[string]int)
+		subnetCauses := make(map[string]blockedIP)
 		subnetBlocked := make(map[string]bool)
 		for _, b := range state.IPs {
 			cidr := subnetEscalationCIDR(b.IP)
@@ -607,9 +714,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			// range cannot inadvertently auto-block that range as a subnet.
 			if cidr != "" && !cidrIntersectsDOSExempt(cfg, cidr) {
 				subnetCounts[cidr]++
+				prior := subnetCauses[cidr]
+				if b.FindingID != "" && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
+					subnetCauses[cidr] = b
+				}
 			}
 		}
 		for cidr, count := range subnetCounts {
+			work.progress()
 			if count >= threshold && !subnetBlocked[cidr] {
 				if sb, ok := blocker.(subnetBlocker); ok {
 					if isSubnetAlreadyBlocked(blocker, cidr) {
@@ -635,7 +747,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 						continue
 					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
-					if err := sb.BlockSubnet(cidr, reason, subnetExpiry); err == nil {
+					if autoFirewallActionApplied(cidr, callBlockSubnet(sb, cidr, reason, subnetExpiry, subnetCauses[cidr].FindingID)) {
 						subnetBlocked[cidr] = true
 						fmt.Fprintf(os.Stderr, "[%s] AUTO-NETBLOCK: %s blocked (%d IPs from same subnet)\n", time.Now().Format("2006-01-02 15:04:05"), cidr, count)
 						actions = append(actions, alert.Finding{
@@ -651,7 +763,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 
 	// Save state (expired IPs were already pruned at the top of this function)
-	saveBlockState(cfg.StatePath, state)
+	work.progress()
+	work.saveState(cfg.StatePath, state)
+	work.complete()
 
 	return actions
 }
@@ -711,7 +825,12 @@ func blockedLiveOrCached(b IPBlocker, snap firewall.LiveBlockedSnapshot, useSnap
 // IPBlocker interface and assumes the call landed live (the behaviour
 // every IPBlocker had before BlockIPOutcome existed). This keeps tests
 // and any third-party implementations of IPBlocker working unchanged.
-func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewall.BlockOutcome, error) {
+func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration, findingID string) (firewall.BlockOutcome, error) {
+	if ob, ok := b.(interface {
+		BlockIPOutcomeWithFindingID(string, string, time.Duration, string) (firewall.BlockOutcome, error)
+	}); ok {
+		return ob.BlockIPOutcomeWithFindingID(ip, reason, timeout, findingID)
+	}
 	if ob, ok := b.(outcomeBlocker); ok {
 		return ob.BlockIPOutcome(ip, reason, timeout)
 	}
@@ -735,16 +854,27 @@ func shouldSkipAutoBlockForChallenge(cfg *config.Config, f alert.Finding) bool {
 // blocked in a way that trips skipExisting, so a fresh zero-timeout block on
 // them lands live; that fallback preserves pre-existing behaviour for tests
 // and third-party implementations.
-func promoteToPermanentBlock(b IPBlocker, ip, reason string) bool {
+func promoteToPermanentBlock(b IPBlocker, ip, reason, findingID string) bool {
+	if pp, ok := b.(interface {
+		PromoteToPermanentBlockWithFindingID(string, string, string) error
+	}); ok {
+		return autoFirewallActionApplied(ip, pp.PromoteToPermanentBlockWithFindingID(ip, reason, findingID))
+	}
 	if pp, ok := b.(permanentPromoter); ok {
-		if err := pp.PromoteToPermanentBlock(ip, reason); err != nil {
-			fmt.Fprintf(os.Stderr, "auto-block: permblock promotion of %s failed: %v\n", ip, err)
-			return false
-		}
+		return autoFirewallActionApplied(ip, pp.PromoteToPermanentBlock(ip, reason))
+	}
+	outcome, err := callBlockIP(b, ip, reason, 0, findingID)
+	return outcome == firewall.BlockOutcomeLive && autoFirewallActionApplied(ip, err)
+}
+
+func autoFirewallActionApplied(target string, err error) bool {
+	if err == nil {
 		return true
 	}
-	outcome, err := callBlockIP(b, ip, reason, 0)
-	return err == nil && outcome == firewall.BlockOutcomeLive
+	// A verified mutation still needs its normal response evidence when the
+	// separate audit delivery is pending. Keep the degradation visible.
+	fmt.Fprintf(os.Stderr, "auto-block: firewall action for %s: %v\n", target, err)
+	return errors.Is(err, firewall.ErrActionAuditPending)
 }
 
 func isSubnetAlreadyBlocked(b IPBlocker, cidr string) bool {
@@ -850,16 +980,17 @@ func readBlockState(statePath string) (*blockState, error) {
 }
 
 func saveBlockState(statePath string, s *blockState) {
-	_ = writeBlockState(statePath, s)
+	if err := writeBlockState(statePath, s); err != nil {
+		logBlockStateFailure(statePath, err)
+	}
 }
 
 func writeBlockState(statePath string, s *blockState) error {
-	path := filepath.Join(statePath, blockStateFile)
-	if err := atomicio.AtomicWriteJSON(path, 0o600, s); err != nil {
-		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
-		return err
-	}
-	return nil
+	return atomicio.AtomicWriteJSON(filepath.Join(statePath, blockStateFile), 0o600, s)
+}
+
+func logBlockStateFailure(statePath string, err error) {
+	fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", filepath.Join(statePath, blockStateFile), err)
 }
 
 // subnetEscalationCIDR returns the canonical CIDR used by the
@@ -972,10 +1103,11 @@ type AutoBlockFlushResult struct {
 // firewall was flushed but bookkeeping cleanup was only partial. SnapshotErr
 // is advisory because the tracker-side union still covers tracked auto-blocks.
 func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushResult, error) {
-	blockStateMu.Lock()
-	defer blockStateMu.Unlock()
+	work := autoBlockQueues.acquire()
+	defer work.finish()
 
 	var result AutoBlockFlushResult
+	work.progress()
 	engineState, snapshotErr := firewall.LoadState(statePath)
 	result.SnapshotErr = snapshotErr
 	var ips []string
@@ -986,13 +1118,18 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 			ips = append(ips, b.IP)
 		}
 	}
+	work.progress()
 	if err := flush(); err != nil {
+		work.observe(err)
+		work.complete()
 		return result, fmt.Errorf("flushing blocked IPs: %w", err)
 	}
 	result.Flushed = true
+	work.beginCleanup(statePath, ips, snapshotErr)
 
 	var cleanupErr error
-	state, err := readBlockState(statePath)
+	work.progress()
+	state, err := work.readState(statePath)
 	seenCapacity := len(ips)
 	if state != nil {
 		seenCapacity += len(state.IPs) + len(state.CleanupPending)
@@ -1003,12 +1140,14 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		if !seen[ip] {
 			seen[ip] = true
 			cleanupIPs = append(cleanupIPs, ip)
+			work.admitCleanup(ip)
 		}
 	}
 	for _, ip := range ips {
 		addCleanupIP(ip)
 	}
 	if err != nil {
+		work.observe(err)
 		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("reading auto-block state: %w", err))
 	} else {
 		for _, b := range state.IPs {
@@ -1023,8 +1162,13 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 	tdb := GetThreatDB()
 	failed := make([]string, 0)
 	for _, ip := range cleanupIPs {
+		work.startCleanup(ip)
+		cleanupFailed := false
 		if sdb != nil {
 			if _, err := sdb.RemoveAutoBlock(ip); err != nil {
+				cleanupFailed = true
+				work.cleanupOutcome(ip, true)
+				work.observe(err)
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("removing auto-block store row for %s: %w", ip, err))
 				failed = append(failed, ip)
 			}
@@ -1032,6 +1176,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		if tdb != nil {
 			tdb.RemoveTemporary(ip)
 		}
+		work.cleanupOutcome(ip, cleanupFailed)
 	}
 	if state != nil {
 		state.IPs = nil
@@ -1039,10 +1184,14 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		// firewall state is empty, or a retry has no way to identify the
 		// stale row that can recreate the block after restart.
 		state.CleanupPending = failed
-		if err := writeBlockState(statePath, state); err != nil {
+		work.progress()
+		if err := work.writeState(statePath, state); err != nil {
+			work.observe(err)
+			logBlockStateFailure(statePath, err)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("clearing auto-block state: %w", err))
 		}
 	}
+	work.complete()
 	return result, cleanupErr
 }
 
@@ -1174,12 +1323,18 @@ func shouldSkipAutoSubnet(cfg *config.Config, cidr string, logged map[string]str
 // are left untouched. If b does not implement subnetManager, returns 0.
 // UnblockSubnet errors are logged and the entry is not counted as pruned.
 func PruneExemptAutoSubnets(cfg *config.Config, b IPBlocker) int {
+	return pruneExemptAutoSubnets(cfg, b, func() {})
+}
+
+func pruneExemptAutoSubnets(cfg *config.Config, b IPBlocker, progress func()) int {
 	sm, ok := b.(subnetManager)
 	if !ok {
 		return 0
 	}
 	pruned := 0
+	progress()
 	for _, entry := range sm.BlockedSubnets() {
+		progress()
 		if entry.Source != firewall.SourceAutoResponse {
 			continue
 		}
@@ -1217,4 +1372,15 @@ func extractCIDRFromFinding(f alert.Finding) string {
 		return ""
 	}
 	return ipnet.String()
+}
+
+// callBlockSubnet uses causal metadata when the engine supports it, preserving
+// the legacy interface for other blocker implementations.
+func callBlockSubnet(b subnetBlocker, cidr, reason string, timeout time.Duration, findingID string) error {
+	if sb, ok := b.(interface {
+		BlockSubnetWithFindingID(string, string, time.Duration, string) error
+	}); ok {
+		return sb.BlockSubnetWithFindingID(cidr, reason, timeout, findingID)
+	}
+	return b.BlockSubnet(cidr, reason, timeout)
 }

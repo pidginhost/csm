@@ -44,9 +44,21 @@ notices remain informational, and both classes appear in the findings list.
 | `dismissed` | False positive. Future findings start a new incident.                  |
 
 Resolved and dismissed incidents are pruned 30 days after their last
-update. Open and contained incidents are never auto-pruned by the
-retention loop, but they may be auto-resolved by the per-kind idle
-threshold described under "Auto-close" below.
+update when an operator closed them, and 7 days after their last update
+when the daemon closed them (`closed_by` starting with `auto:`). Older records
+without close attribution keep the 30-day period. Confirming an automatic
+closure, changing a closed status, or recording a block on a closed incident
+gives that decision 30 days of retention. Recorded operator decisions on older rows with
+stale automatic attribution also keep this longer period. Reopening clears
+close attribution; the next closure determines retention again.
+
+Open and contained incidents are never auto-pruned by the retention loop, but
+they may be auto-resolved by the per-kind idle threshold described under
+"Auto-close" below. Retention sweeps use bounded transactions so a large
+backlog does not hold the store writer for the entire cleanup. Pruning frees
+space for reuse; it does not shrink the state file. Finding history has its
+own retention, so a retained incident can refer to findings already evicted
+from history.
 
 ## Auto-close
 
@@ -94,7 +106,7 @@ A host under sustained brute-force keeps a large open set mostly from the
 longer-lived kinds (`web_account_compromise` defaults to 168h). If the
 open-incident count is higher than you want to triage, shorten the
 relevant `by_kind` entry (e.g. `web_account_compromise: 72h`) rather than
-disabling auto-close. The closed records are retained 30 days regardless,
+disabling auto-close. Untouched auto-resolved records are retained 7 days,
 measured from when the incident resolves, so shortening the threshold also
 moves the eventual prune point earlier relative to the last finding.
 Auto-close still keeps a resolved record for follow-up instead of deleting
@@ -243,7 +255,9 @@ which then trips the generic auto_block gate.
 
 ModSecurity escalation is confidence-gated. Each deny is classified as
 high-confidence (a specific attack/probe rule -- SQLi, RCE, traversal,
-URL-encoding abuse, CSM custom), low-confidence (policy/anomaly scoring
+URL-encoding abuse, CSM custom, or an OWASP CRS rule from an
+`APPLICATION-ATTACK` rule file, which is how LiteSpeed logs, since it
+omits the rule message and tags), low-confidence (policy/anomaly scoring
 rules such as COMODO content-type `210710` or anomaly-points `214930`,
 and OWASP CRS anomaly-score rules), or unknown. A burst escalates to a
 firewall ban at the normal hit count only when it contains a
@@ -257,7 +271,8 @@ high-confidence rules. A determined source that floods only
 low-confidence rules is still banned once it reaches the
 `thresholds.modsec_low_confidence_escalation_hits` backstop (default
 30). Unknown blocking rules are escalation-eligible (fail-secure) and
-raise a one-time `modsec_classifier_gap` finding so a new vendor rule
+raise a `modsec_classifier_gap` finding once per rule for the whole host
+(repeated daily while the rule stays unclassified) so a new vendor rule
 pack is noticed rather than silently given a no-ban path.
 
 ## Kinds
@@ -279,7 +294,10 @@ pack is noticed rather than silently given a no-ban path.
 - `post_exploit_process` -- process exec from `/tmp`, `/var/tmp`,
   `/dev/shm`.
 - `host_integrity_risk` -- daemon/kernel-level signals (sensitive file
-  writes, fake kernel threads, auditd disabled).
+  changes, fake kernel threads, binary/config tampering). Periodic
+  binary/config tamper findings join the local host incident even without
+  account or IP attribution. Startup verification still alerts and refuses
+  to start before normal incident processing is available.
 - `host_takeover` -- any two of a new uid-0 account, a planted suid
   binary, and an outbound connection to a bad ASN, seen for the same host
   inside the merge window.
@@ -289,6 +307,23 @@ pack is noticed rather than silently given a no-ban path.
   produces one super-incident instead of thousands of mailbox_bruteforce
   rows. Findings from the same IP after the trip attach to this
   incident's timeline. See "Credential-spray suppression" below.
+
+The host-integrity set, all five compound sets, kind selectors and identity
+exclusions are checked against the detector registry. The independent test
+fixture `internal/incident/testdata/check-policy.json` records an explicit
+classification role and selecting-set membership for every registered check,
+including checks with no named override. Tests reject unknown names, missing
+eligible members, new tables without a contract and new checks without a
+policy decision. They also exercise each check with account, mailbox, process
+and source-IP attribution to test classification precedence.
+
+These tests live in the external `incident_test` package, which can import the
+check registry without adding a production dependency from `incident` to
+`checks`. That dependency would cycle through `checks -> control -> incident`.
+Changes to the fixture require a review of the detector's emitted evidence;
+do not regenerate it from the selecting tables. Classification coverage does
+not calibrate correlation weights or prove that broader compound membership
+is safe.
 
 ## Severity policy
 
@@ -325,6 +360,548 @@ as the `csm_incidents_pending` gauge.
 The stored incident includes the full correlation key, including process
 PID/UID and remote IP when those are the only available dimensions, so
 active incidents keep merging after daemon restart.
+
+## Cross-account correlation of findings
+
+Separately from incidents, the scan runner, the latest-state merge and the
+realtime dispatcher derive two findings from the findings they see:
+
+- `coordinated_attack` (Critical) when at least three distinct hosting
+  accounts each carry at least one Critical finding from a check classified
+  as a security event or malware artifact. The checks may differ between accounts. Repeated
+  findings or several installs inside one account never raise the count.
+- `cross_account_malware` (Critical) when the same malware-artifact check
+  (`webshell`, `new_webshell_file`, `backdoor_binary`,
+  `new_executable_in_config`) is present on two or more accounts at any
+  severity. Different malware checks on different accounts do not combine.
+
+Over the persisted latest-state set, both aggregates only combine findings
+whose condition was **first observed** in the last hour. A scan re-emits every
+finding it still sees and the merge refreshes its report time, so judging by
+that would let a months-old condition re-enter the window on every cycle; the
+merge therefore carries each finding's first observation across re-reports and
+correlation reads that instead, including when a completed scan replaces its
+owned findings. A condition removed by a completed scan starts a new observation
+if it is found again later. The window is relative to the merge time, so
+the next completed scan clears expired aggregates even if it produces no
+findings. Source rows are retained when their aggregates expire, a finding
+carrying no first observation falls back to its report time, and a finding
+carrying no timestamp at all still counts. Derived timestamps never affect the
+window. JSON output omits `first_seen` when no first observation was recorded.
+
+The first observation is not retroactive. On upgrade, a stored finding adopts
+its existing report time, because nothing recorded when that condition actually
+started. A long-lived finding with a recent report can therefore count once
+after upgrading; it ages out one hour after that saved report time, and the
+next completed scan clears expired aggregates even if it reports the same
+conditions again.
+
+The realtime and scan batch paths keep their existing grouping and count all
+qualifying rows in the batch. A scan can carry forward an older finding for a
+file it could not examine; its original timestamp does not exclude it from
+batch correlation or get refreshed by correlation.
+
+Every registered check is classified as a security event, a malware
+artifact, ignored with a stated reason, or derived. Derived findings are never
+inputs. A nonempty `TenantID` wins verbatim, including case, over the file
+path and text. It must identify the host-local hosting account. Existing
+stored values and verdict callbacks use the same precedence; callbacks must
+supply the same owner keys as producers. External identifiers can split one
+owner or combine distinct owners, and correlation does not validate them.
+
+If that field is empty, correlation uses the account home containing the
+cleaned absolute `FilePath`. Relative paths, root/home-only paths and paths
+that escape the home after cleaning do not identify that home. This is a
+lexical mapping through the platform's account roots, including Plesk roots;
+it does not resolve symlinks or prove that directory aliases are distinct
+owners. Nonstandard content roots need producer-supplied identity.
+
+The final fallback scans Message before Details for an account-root path.
+It recognizes `<account-root>/<user>/`, not `(account: user)` labels. Within
+each field it searches roots in configured order, can match an embedded root
+substring, and can select an incidental path. These compatibility limits are
+why account-aware producers should supply identity.
+
+Qualifying rows with no identity from any source do not count toward either
+aggregate. They are counted once per call and logged once per check name per
+process, using only that call's row count and no finding text. Ignored,
+derived, unknown and below-threshold security-event rows produce no
+diagnostic count. A check with a declared attribution gap is still eligible:
+when its producer does supply an authoritative owner, that Critical counts.
+
+The health snapshot (`csm status --json`, `/api/v1/status`) carries a
+`correlation_attribution` block with two views: `current` is the per-check
+count of unattributed qualifying rows retained in the active set and inside
+the correlation window at its latest merge, including any eviction caused by
+the size limit. Unstamped legacy rows also count. It clears when a later merge
+attributes those rows or they age out of the window; `cumulative`
+sums every unattributed row since the daemon started, across active-set
+merges and per-batch derivations, so a producer that recovered stays visible
+as having failed. Counters are published together in merge order. The block
+is absent until the first merge. `csm doctor`
+reports the same state as `correlation attribution`: OK when `current` is
+empty, WARN naming the checks and their counts otherwise, with the history
+in both cases.
+
+The two per-batch derivations (scan runner, realtime dispatcher) see only
+their batch and produce alerts. The latest-state merge derives from the
+merged, deduplicated, capped persisted active set under the same lock as the purge,
+so evidence from separate scans combines: three accounts compromised in three
+different scans still produce a persisted `coordinated_attack`, and it clears
+only when fewer than three accounts still carry a qualifying Critical there.
+Each completed runner snapshot replaces only its own checks' rows; rows kept
+for an unscanned owner or a file coverage gap stay as inputs; the previous
+derived findings are dropped and recomputed from the merged set. Demotion,
+dismissal or re-verification of a contributing row takes effect at the next
+nonempty scan merge, and only if fewer qualifying accounts remain; there is
+no immediate recompute and no promise that every file is re-verified.
+Demoting a malware artifact below Critical cannot clear the all-severity
+malware aggregate by itself. There is no time window, no shared-signature or
+causal requirement, and no precision multiplier: the widened Critical inputs
+accumulate across scans and can include unrelated events and false
+positives, which is why the threshold calibration stays open on the roadmap.
+
+Callers initialize platform detection before correlation; the latest-state
+caller does so before taking the store lock. Correlation reads cached roots,
+and attribution warnings are reported after the merge releases that lock.
+
+Class membership does not mean an emitter currently reaches Critical: the
+non-WordPress administrator checks emit High with a stored baseline and
+Warning without one, and the outbound backdoor-port and bad-ASN variants emit
+High, so all of them are eligible but contribute nothing until a Critical
+variant exists.
+
+Eligible producers supply verified identity when available. The test
+inventory names the producer test for each check, including unresolved
+branches:
+
+- Database and CMS scanners stamp the owner of the install's configuration
+  path, resolved through the account roots. An install outside every root
+  keeps its display label but no owner.
+- Mail producers (rate windows, mail holds, credential leaks, bulk-service
+  logins, forwarders, filters, mail brute force, cloud relay, geo logins,
+  PHP relay volume) resolve a mailbox or domain to its owning account through
+  the panel's domain ownership table. Without that table (any panel other
+  than cPanel) the owner stays empty and the row is reported, not counted. A
+  bare account name must resolve to a passwd home directly under an account
+  root. Credential and bulk-service findings use the authenticated identity,
+  never the envelope sender. A sender-domain volume aggregate carries an
+  owner only when every counted arrival proves the same local account through
+  authentication or local submission. Arrivals with a remote ident username
+  after the connecting address stay unattributed: that unquoted text can
+  imitate later authentication metadata. Records whose greeting hides the
+  connecting address also remain unattributed and supply no address. Mixed
+  or unverified aggregates stay unattributed without reducing the volume
+  count. Owner lookups run after tracker locks are
+  released. Mail hold and governor findings require a local mail-server
+  permission decision. Submission identities are read only from reception
+  metadata before the message size; message IDs, subjects, addresses and
+  login names cannot supply, replace or remove an owner or connecting
+  address. Address literals in message IDs and recipients remain message
+  data, and local arrivals do not acquire a peer from later metadata.
+  An optional MAIL AUTH value follows the authenticated identity and does
+  not change that identity or the peer.
+  TCP Fast Open connections retain the same peer and ownership checks.
+  The submission boundary follows
+  [Exim's reception log fields](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-log_files.html)
+  and assumes Exim's default greeting syntax check.
+- Process, login and crontab producers accept a system user as owner only
+  when its home directory sits directly under an account root, so root,
+  service users and unknown uids never become an account. Direct SMTP findings
+  apply this validation to both socket users and enriched process accounts.
+- File families (content, phishing, htaccess, file index, core integrity,
+  realtime file events, PHP shield events, self-deleting droppers) carry the
+  judged file's path, which resolves as described above. The collapsed
+  core-integrity finding has no single path and carries the install owner.
+- Socket checks resolve the kernel UID through the same passwd and direct
+  account-home validation. Bad-ASN events also retain that owner when realtime
+  process enrichment misses. Root, service and unknown UIDs stay unattributed.
+  An attributed socket or mail finding includes its owner in the message so
+  different accounts retain separate dispatch and audit identities.
+- A sender-domain mail aggregate with mixed or unverified submitters remains
+  a declared attribution gap. The owning account for a mailbox still requires
+  the cPanel domain table. Any unattributed qualifying finding reaches the
+  diagnostic count rather than contributing an invented account.
+
+### Correlation policy table
+
+The table below is generated from the check registry: every registered
+check with its class, its ignore reason when it is excluded, and its declared
+attribution gap. A test compares it with the registry byte for byte and fails
+when a row is stale, missing or duplicated; regenerate it with
+`go test ./internal/checks -run '^TestCorrelationDocumentation$' -args -update-correlation-docs`
+rather than editing rows by hand. A class says how correlation treats a check
+when it fires; it does not say the check currently reaches Critical, that its
+owner is available on every panel, or how precise it is.
+
+Regeneration preserves the surrounding prose and marker line endings, even
+when they use CRLF. The generated block itself uses LF line endings.
+
+<!-- correlation-table:begin -->
+Ignore reasons:
+
+- `account-aggregate`: already summarizes several accounts without a single victim identity
+- `attacker-side`: attacker activity or attempted access, not evidence of compromise of the named victim
+- `host-scope`: host-wide condition with no account to attribute; a cross-account count cannot use it even when it is a real compromise
+- `informational`: audit trail or inventory event with no compromise claim
+- `performance`: resource usage
+- `posture`: static configuration, hardening or hygiene state; a Critical means a misconfiguration, not an attack on the account
+- `response`: record of an automatic action already taken; feeding it back would double count
+- `self-health`: CSM's own health, capacity or coverage state
+
+Attribution gaps:
+
+- `envelope-sender`: sender-domain volume aggregate is unattributed when contributing submissions are unverified or belong to different accounts
+
+| Check | Class | Ignore reason | Attribution gap |
+| --- | --- | --- | --- |
+| `account_scan` | ignored | self-health |  |
+| `account_scan_error` | ignored | self-health |  |
+| `account_scan_truncated` | ignored | self-health |  |
+| `admin_cross_account_overlap` | ignored | account-aggregate |  |
+| `admin_panel_bruteforce` | ignored | attacker-side |  |
+| `af_alg_enforcement_corrected` | ignored | self-health |  |
+| `af_alg_socket_use` | security event |  |  |
+| `api_auth_failure` | ignored | attacker-side |  |
+| `api_auth_failure_realtime` | ignored | attacker-side |  |
+| `api_tokens` | ignored | informational |  |
+| `auto_block` | ignored | response |  |
+| `auto_response` | ignored | response |  |
+| `auto_response_paused` | ignored | response |  |
+| `backdoor_binary` | malware artifact |  |  |
+| `backdoor_port` | security event |  |  |
+| `backdoor_port_outbound` | security event |  |  |
+| `bad_asn_outbound` | security event |  |  |
+| `bpf_ringbuf_error` | ignored | self-health |  |
+| `bpf_unavailable` | ignored | self-health |  |
+| `bulk_password_change` | ignored | account-aggregate |  |
+| `c2_connection` | security event |  |  |
+| `cgi_backdoor_realtime` | security event |  |  |
+| `cgi_suspicious_location_realtime` | security event |  |  |
+| `challenge_route` | ignored | response |  |
+| `check_panic` | ignored | self-health |  |
+| `check_timeout` | ignored | self-health |  |
+| `config_reload_error` | ignored | self-health |  |
+| `config_reload_restart_required` | ignored | self-health |  |
+| `coordinated_attack` | derived |  |  |
+| `cpanel_file_upload` | security event |  |  |
+| `cpanel_file_upload_realtime` | security event |  |  |
+| `cpanel_login` | ignored | informational |  |
+| `cpanel_login_realtime` | ignored | informational |  |
+| `cpanel_multi_ip_login` | security event |  |  |
+| `cpanel_password_purge` | ignored | informational |  |
+| `cpanel_password_purge_realtime` | ignored | informational |  |
+| `credential_log_realtime` | security event |  |  |
+| `credential_reuse` | ignored | posture |  |
+| `credential_stuffing` | ignored | attacker-side |  |
+| `crond_change` | ignored | host-scope |  |
+| `crontab_change` | ignored | informational |  |
+| `cross_account_malware` | derived |  |  |
+| `csm_health` | ignored | self-health |  |
+| `database_dump` | ignored | informational |  |
+| `db_content_scan_incomplete` | ignored | self-health |  |
+| `db_doorway_sitemap_routes` | security event |  |  |
+| `db_hidden_link_injection` | security event |  |  |
+| `db_hostname_keyed_option` | security event |  |  |
+| `db_magic_token_user` | security event |  |  |
+| `db_malicious_event` | security event |  |  |
+| `db_malicious_function` | security event |  |  |
+| `db_malicious_procedure` | security event |  |  |
+| `db_malicious_trigger` | security event |  |  |
+| `db_options_injection` | security event |  |  |
+| `db_options_new_external_script` | security event |  |  |
+| `db_options_plugin_notice_injection` | security event |  |  |
+| `db_phantom_post_author` | security event |  |  |
+| `db_post_injection` | security event |  |  |
+| `db_post_volume_burst` | security event |  |  |
+| `db_rogue_admin` | security event |  |  |
+| `db_siteurl_foreign_host` | security event |  |  |
+| `db_siteurl_hijack` | security event |  |  |
+| `db_siteurl_invalid` | ignored | posture |  |
+| `db_spam_cleaned` | ignored | response |  |
+| `db_spam_found` | security event |  |  |
+| `db_spam_injection` | security event |  |  |
+| `db_spam_taxonomy` | security event |  |  |
+| `db_stored_cloak_logic` | security event |  |  |
+| `db_stored_code_execution` | security event |  |  |
+| `db_suspicious_admin_email` | security event |  |  |
+| `db_unexpected_event` | ignored | informational |  |
+| `db_unexpected_function` | ignored | informational |  |
+| `db_unexpected_procedure` | ignored | informational |  |
+| `db_unexpected_trigger` | ignored | informational |  |
+| `direct_smtp_egress` | security event |  |  |
+| `dns_connection` | ignored | host-scope |  |
+| `dns_zone_change` | ignored | informational |  |
+| `dpkg_integrity` | ignored | host-scope |  |
+| `drupal_admin_injection` | security event |  |  |
+| `drupal_content_injection` | security event |  |  |
+| `drupal_settings_injection` | security event |  |  |
+| `email_auth_failure_realtime` | ignored | attacker-side |  |
+| `email_av_degraded` | ignored | self-health |  |
+| `email_av_encrypted_archive` | ignored | self-health |  |
+| `email_av_hold_bypass` | ignored | self-health |  |
+| `email_av_late_verdict` | ignored | self-health |  |
+| `email_av_parse_error` | ignored | self-health |  |
+| `email_av_quarantine_error` | ignored | self-health |  |
+| `email_av_queue_overflow` | ignored | self-health |  |
+| `email_av_scan_error` | ignored | self-health |  |
+| `email_av_scanner_panic` | ignored | self-health |  |
+| `email_av_timeout` | ignored | self-health |  |
+| `email_cloud_relay_abuse` | security event |  |  |
+| `email_compromised_account` | security event |  |  |
+| `email_credential_leak` | security event |  |  |
+| `email_defer_fail_governor` | ignored | informational |  |
+| `email_dkim_failure` | ignored | posture |  |
+| `email_filter_blackhole` | security event |  |  |
+| `email_filter_exfil` | security event |  |  |
+| `email_filter_forwarder` | security event |  |  |
+| `email_filter_pipe` | security event |  |  |
+| `email_mail_filters` | ignored | self-health |  |
+| `email_malware` | ignored | attacker-side |  |
+| `email_password_audit_incomplete` | ignored | self-health |  |
+| `email_phishing_content` | ignored | attacker-side |  |
+| `email_php_relay_abuse` | security event |  |  |
+| `email_php_relay_account_volume_capped` | ignored | self-health |  |
+| `email_php_relay_action_dry_run` | ignored | response |  |
+| `email_php_relay_action_failed` | ignored | response |  |
+| `email_php_relay_action_skipped` | ignored | response |  |
+| `email_php_relay_cpanel_limit_unreadable` | ignored | self-health |  |
+| `email_php_relay_disabled` | ignored | self-health |  |
+| `email_php_relay_inotify_overflow` | ignored | self-health |  |
+| `email_php_relay_inotify_overflow_recovered` | ignored | self-health |  |
+| `email_php_relay_msgindex_persist_failed` | ignored | self-health |  |
+| `email_php_relay_no_exim` | ignored | self-health |  |
+| `email_php_relay_overflow_scan_truncated` | ignored | self-health |  |
+| `email_php_relay_path2b_disabled` | ignored | self-health |  |
+| `email_php_relay_policies_reload` | ignored | self-health |  |
+| `email_php_relay_rate_limit_hit` | ignored | response |  |
+| `email_php_relay_sweep_failed` | ignored | self-health |  |
+| `email_php_relay_watcher_failed` | ignored | self-health |  |
+| `email_pipe_forwarder` | security event |  |  |
+| `email_rate_critical` | security event |  |  |
+| `email_rate_warning` | security event |  |  |
+| `email_spam_outbreak` | security event |  |  |
+| `email_spf_rejection` | ignored | posture |  |
+| `email_suspicious_forwarder` | security event |  |  |
+| `email_suspicious_geo` | security event |  |  |
+| `email_weak_password` | ignored | posture |  |
+| `executable_in_config_realtime` | security event |  |  |
+| `executable_in_tmp_realtime` | security event |  |  |
+| `exfiltration_paste_site` | security event |  |  |
+| `exim_frozen_realtime` | ignored | host-scope |  |
+| `fake_kernel_thread` | security event |  |  |
+| `fanotify_kernel_overflow` | ignored | self-health |  |
+| `fanotify_overflow` | ignored | self-health |  |
+| `firewall` | ignored | host-scope |  |
+| `firewall_ipv6_unmanaged` | ignored | host-scope |  |
+| `firewall_ports` | ignored | host-scope |  |
+| `ftp_auth_failure_realtime` | ignored | attacker-side |  |
+| `ftp_bruteforce` | ignored | attacker-side |  |
+| `ftp_login` | ignored | informational |  |
+| `ftp_login_after_bruteforce` | security event |  |  |
+| `ftp_login_realtime` | ignored | informational |  |
+| `full_scan_file_too_large` | ignored | self-health |  |
+| `group_writable_php` | ignored | posture |  |
+| `htaccess_auto_prepend` | security event |  |  |
+| `htaccess_cgi_handler_abuse` | security event |  |  |
+| `htaccess_errordocument_hijack` | security event |  |  |
+| `htaccess_filesmatch_shield` | security event |  |  |
+| `htaccess_handler_abuse` | security event |  |  |
+| `htaccess_header_injection` | security event |  |  |
+| `htaccess_injection` | security event |  |  |
+| `htaccess_injection_realtime` | security event |  |  |
+| `htaccess_php_in_uploads` | security event |  |  |
+| `htaccess_security_disabled` | security event |  |  |
+| `htaccess_spam_redirect` | security event |  |  |
+| `htaccess_user_agent_cloak` | security event |  |  |
+| `http_asn_crawl` | ignored | attacker-side |  |
+| `http_claimed_bot_unverified` | ignored | attacker-side |  |
+| `http_distributed_flood` | ignored | attacker-side |  |
+| `http_request_flood` | ignored | attacker-side |  |
+| `http_scanner_profile` | ignored | attacker-side |  |
+| `http_ua_spoof` | ignored | attacker-side |  |
+| `infra_ips_unresolvable` | ignored | self-health |  |
+| `integrity` | ignored | host-scope |  |
+| `ip_reputation` | ignored | attacker-side |  |
+| `joomla_admin_injection` | security event |  |  |
+| `joomla_content_injection` | security event |  |  |
+| `joomla_extensions_injection` | security event |  |  |
+| `js_keylogger_dataflow` | security event |  |  |
+| `js_taint_scan_incomplete` | ignored | self-health |  |
+| `kernel_module` | ignored | host-scope |  |
+| `local_threat_score` | ignored | attacker-side |  |
+| `magento_admin_injection` | security event |  |  |
+| `magento_content_injection` | security event |  |  |
+| `magento_settings_injection` | security event |  |  |
+| `mail_account_compromised` | security event |  |  |
+| `mail_account_spray` | ignored | attacker-side |  |
+| `mail_auth_backend_degraded` | ignored | self-health |  |
+| `mail_bruteforce` | ignored | attacker-side |  |
+| `mail_bruteforce_suspected` | ignored | attacker-side |  |
+| `mail_log_source_unavailable` | ignored | self-health |  |
+| `mail_per_account` | security event |  | envelope-sender |
+| `mail_queue` | ignored | host-scope |  |
+| `mail_queue_unavailable` | ignored | self-health |  |
+| `mail_subnet_spray` | ignored | attacker-side |  |
+| `modsec_block_escalation` | ignored | attacker-side |  |
+| `modsec_block_realtime` | ignored | attacker-side |  |
+| `modsec_classifier_gap` | ignored | self-health |  |
+| `modsec_csm_block_escalation` | ignored | attacker-side |  |
+| `modsec_disabled_vhost` | ignored | posture |  |
+| `modsec_low_confidence_burst` | ignored | attacker-side |  |
+| `modsec_warning_realtime` | ignored | attacker-side |  |
+| `mysql_superuser` | ignored | host-scope |  |
+| `new_executable_in_config` | malware artifact |  |  |
+| `new_php_in_languages` | security event |  |  |
+| `new_php_in_sensitive_dir` | security event |  |  |
+| `new_php_in_sensitive_dir_clean` | ignored | informational |  |
+| `new_php_in_upgrade` | security event |  |  |
+| `new_php_in_uploads` | security event |  |  |
+| `new_php_in_uploads_clean` | ignored | informational |  |
+| `new_suspicious_php` | security event |  |  |
+| `new_webshell_file` | malware artifact |  |  |
+| `nulled_plugin` | ignored | posture |  |
+| `obfuscated_php` | security event |  |  |
+| `obfuscated_php_realtime` | security event |  |  |
+| `open_basedir` | ignored | posture |  |
+| `opencart_admin_injection` | security event |  |  |
+| `opencart_content_injection` | security event |  |  |
+| `opencart_settings_injection` | security event |  |  |
+| `outdated_plugins` | ignored | posture |  |
+| `pam_bruteforce` | ignored | attacker-side |  |
+| `pam_login` | ignored | informational |  |
+| `password_hijack_confirmed` | security event |  |  |
+| `perf_error_logs` | ignored | performance |  |
+| `perf_load` | ignored | performance |  |
+| `perf_memory` | ignored | performance |  |
+| `perf_mysql_config` | ignored | performance |  |
+| `perf_php_handler` | ignored | performance |  |
+| `perf_php_processes` | ignored | performance |  |
+| `perf_redis_config` | ignored | performance |  |
+| `perf_wp_config` | ignored | performance |  |
+| `perf_wp_cron` | ignored | performance |  |
+| `perf_wp_transients` | ignored | performance |  |
+| `phishing_credential_log` | security event |  |  |
+| `phishing_directory` | security event |  |  |
+| `phishing_iframe` | security event |  |  |
+| `phishing_kit_archive` | security event |  |  |
+| `phishing_kit_realtime` | security event |  |  |
+| `phishing_page` | security event |  |  |
+| `phishing_php` | security event |  |  |
+| `phishing_realtime` | security event |  |  |
+| `phishing_redirector` | security event |  |  |
+| `php_config_change` | ignored | posture |  |
+| `php_config_realtime` | ignored | posture |  |
+| `php_config_scan_incomplete` | ignored | self-health |  |
+| `php_dropper_realtime` | security event |  |  |
+| `php_in_sensitive_dir_realtime` | security event |  |  |
+| `php_in_uploads_realtime` | security event |  |  |
+| `php_remote_taint` | security event |  |  |
+| `php_shield_block` | security event |  |  |
+| `php_shield_eval` | security event |  |  |
+| `php_shield_webshell` | security event |  |  |
+| `php_suspicious_execution` | security event |  |  |
+| `php_taint_scan_incomplete` | ignored | self-health |  |
+| `protection_queue_degraded` | ignored | self-health |  |
+| `protection_queue_recovered` | ignored | self-health |  |
+| `realtime_scanner_panic` | ignored | self-health |  |
+| `reputation_quota_exhausted` | ignored | self-health |  |
+| `root_password_change` | ignored | host-scope |  |
+| `rpm_integrity` | ignored | host-scope |  |
+| `self_deleting_dropper_overflow` | ignored | self-health |  |
+| `self_deleting_dropper_realtime` | security event |  |  |
+| `sensitive_file_modified` | ignored | host-scope |  |
+| `shadow_change` | ignored | host-scope |  |
+| `signature_match_realtime` | security event |  |  |
+| `signature_update_rescan_queued` | ignored | self-health |  |
+| `signature_update_rollback` | ignored | self-health |  |
+| `smtp_account_spray` | ignored | attacker-side |  |
+| `smtp_bruteforce` | ignored | attacker-side |  |
+| `smtp_probe_abuse` | ignored | attacker-side |  |
+| `smtp_subnet_spray` | ignored | attacker-side |  |
+| `ssh_keys` | ignored | host-scope |  |
+| `ssh_login_realtime` | ignored | informational |  |
+| `ssh_login_unknown_ip` | ignored | informational |  |
+| `sshd_config_change` | ignored | host-scope |  |
+| `ssl_cert_issued` | ignored | informational |  |
+| `suid_binary` | security event |  |  |
+| `supply_chain_vuln` | ignored | posture |  |
+| `suspicious_crontab` | security event |  |  |
+| `suspicious_file` | ignored | host-scope |  |
+| `suspicious_php_content` | security event |  |  |
+| `suspicious_process` | security event |  |  |
+| `symlink_attack` | security event |  |  |
+| `test_alert` | ignored | informational |  |
+| `threat_feed_stale` | ignored | self-health |  |
+| `uid0_account` | ignored | host-scope |  |
+| `user_outbound_connection` | ignored | informational |  |
+| `vulnerable_plugins` | ignored | posture |  |
+| `vulnerable_timthumb` | ignored | posture |  |
+| `waf_attack_blocked` | ignored | attacker-side |  |
+| `waf_bypass` | ignored | posture |  |
+| `waf_detection_only` | ignored | posture |  |
+| `waf_rules` | ignored | posture |  |
+| `waf_rules_stale` | ignored | posture |  |
+| `waf_status` | ignored | posture |  |
+| `web_exposed_backup_archive` | ignored | posture |  |
+| `web_exposed_config_leak` | ignored | posture |  |
+| `web_exposed_db_dump` | ignored | posture |  |
+| `web_exposed_phpinfo` | ignored | posture |  |
+| `web_exposed_repo_metadata` | ignored | posture |  |
+| `web_exposed_sample_sql` | ignored | posture |  |
+| `web_exposed_source_backup` | ignored | posture |  |
+| `webmail_bruteforce` | ignored | attacker-side |  |
+| `webmail_login_realtime` | ignored | informational |  |
+| `webshell` | malware artifact |  |  |
+| `webshell_content_realtime` | security event |  |  |
+| `webshell_realtime` | security event |  |  |
+| `whm_account_action` | ignored | informational |  |
+| `whm_login_realtime` | ignored | informational |  |
+| `whm_password_change` | ignored | informational |  |
+| `whm_password_change_noninfra` | security event |  |  |
+| `whm_unauth_scripts_realtime` | ignored | attacker-side |  |
+| `world_writable_php` | ignored | posture |  |
+| `wp_core_integrity` | security event |  |  |
+| `wp_core_unverified` | ignored | self-health |  |
+| `wp_login_bruteforce` | ignored | attacker-side |  |
+| `wp_plugin_inventory_unverified` | ignored | self-health |  |
+| `wp_user_enumeration` | ignored | attacker-side |  |
+| `xmlrpc_abuse` | ignored | attacker-side |  |
+| `yara_forge_rollback` | ignored | self-health |  |
+| `yara_match_realtime` | security event |  |  |
+| `yara_match_scheduled` | security event |  |  |
+| `yara_realtime_scan_error` | ignored | self-health |  |
+| `yara_scan_incomplete` | ignored | self-health |  |
+| `yara_worker_crashed` | ignored | self-health |  |
+<!-- correlation-table:end -->
+
+## Findings from retired checks
+
+A check name that no version of CSM emits any more stays registered while
+older installations can still hold findings under it, because a finding is
+only ever cleared when its name appears in the owning runner's purge list.
+Two file-index names, `new_php_in_languages` and `new_php_in_upgrade`, are
+in that state: findings written by releases before the content-first file
+index are cleared by the next completed `file_index` scan, are kept while
+that scan is incomplete, and are kept per file while the scan reports a
+coverage gap for that file. Nothing emits them again. `php_dropper` was
+never emitted by any release, is not registered, and no response table lists
+it: the manual, automatic and full-scan quarantine sets and the attack
+database mapping are each declared once and tested against the registry, so a
+renamed or never-emitted name cannot sit inert in a response table. The same
+guard removed `modsec_block` and `waf_block` from the attack database mapping;
+neither was ever emitted, so WAF blocks have never fed local reputation
+scoring through that database. Whether the emitted ModSecurity block names
+should is an open scoring decision, not something the guard decides.
+
+Directory enumeration and PHP handler-configuration read errors make the
+file-index scan incomplete, including when only one account root is unreadable.
+The scanner keeps its previous index and directory cache, preserves its active
+findings, and still reports new findings from readable directories. A later
+completed scan clears the retired names; absent optional directories do not
+prevent completion. The first scan after startup and every retry after an
+incomplete or interrupted walk enumerate directories again, even if their
+cached modification times still match.
 
 ## API
 

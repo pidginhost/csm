@@ -1,14 +1,23 @@
 package health
 
-import "time"
+import (
+	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
+)
 
 // Snapshot is the unified machine-readable health view assembled from the
 // running daemon (or, on a cold lookup, from on-disk state). It is the
 // single source of truth for /api/v1/status, csm status --json, csm doctor,
 // and the sd_notify readiness gate.
 type Snapshot struct {
-	Version              string          `json:"version"`
-	Hostname             string          `json:"hostname"`
+	WordPressVerification map[string]WPVerificationCounts `json:"wordpress_verification,omitempty"`
+	Queues                map[string]queuehealth.Status   `json:"queues,omitempty"`
+	Version               string                          `json:"version"`
+	Hostname              string                          `json:"hostname"`
+	// Mode is the operator's posture: "enforce" or "observe". An observe
+	// host runs detection and alerting but changes no host state.
+	Mode                 string          `json:"mode,omitempty"`
 	StartedAt            time.Time       `json:"started_at"`
 	UptimeSec            int64           `json:"uptime_sec"`
 	LatestScan           time.Time       `json:"latest_scan,omitempty"`
@@ -35,6 +44,11 @@ type Snapshot struct {
 	// rollback, and the last recorded automation action in one stable payload.
 	Automation AutomationStatus `json:"automation,omitempty"`
 
+	// CorrelationAttribution reports which checks feed cross-account
+	// correlation findings without a hosting owner. Nil until the daemon has
+	// merged an active set, and on daemons that predate the block.
+	CorrelationAttribution *CorrelationAttribution `json:"correlation_attribution,omitempty"`
+
 	// Update reports whether a newer CSM release is available upstream.
 	// Populated by internal/updatecheck. Zero value means the checker has
 	// not yet completed a poll (very early startup) or is disabled in
@@ -47,15 +61,21 @@ type Snapshot struct {
 // observe-only, actively mutating the firewall, or waiting for operator
 // confirmation after a tentative firewall apply.
 type AutomationStatus struct {
-	AutoResponseEnabled      bool `json:"auto_response_enabled"`
-	AutoResponseBlockIPs     bool `json:"auto_response_block_ips"`
-	AutoResponseDryRun       bool `json:"auto_response_dry_run"`
-	DryRunBlocks             int  `json:"dry_run_blocks"`
-	ChallengeEnabled         bool `json:"challenge_enabled"`
-	ChallengePortGateEnabled bool `json:"challenge_port_gate_enabled"`
-	ChallengePortGateActive  bool `json:"challenge_port_gate_active"`
-	ChallengePending         int  `json:"challenge_pending"`
-	ChallengeEscalated       int  `json:"challenge_escalated"`
+	AutoResponseEnabled  bool `json:"auto_response_enabled"`
+	AutoResponseBlockIPs bool `json:"auto_response_block_ips"`
+	AutoResponseDryRun   bool `json:"auto_response_dry_run"`
+	// Termination needs a kernel process handle. A kernel that cannot pin one
+	// leaves configured automatic killing inoperative, so the capability and
+	// its cause travel with the status instead of staying in the log.
+	ProcessKillEnabled       bool   `json:"process_kill_enabled"`
+	ProcessSignalSupported   bool   `json:"process_signal_supported"`
+	ProcessSignalError       string `json:"process_signal_error,omitempty"`
+	DryRunBlocks             int    `json:"dry_run_blocks"`
+	ChallengeEnabled         bool   `json:"challenge_enabled"`
+	ChallengePortGateEnabled bool   `json:"challenge_port_gate_enabled"`
+	ChallengePortGateActive  bool   `json:"challenge_port_gate_active"`
+	ChallengePending         int    `json:"challenge_pending"`
+	ChallengeEscalated       int    `json:"challenge_escalated"`
 	// FirewallEnabled reflects firewall.enabled in config. FirewallManaged is
 	// true only when the daemon has a live nftables engine wired. The
 	// combination FirewallEnabled && !FirewallManaged means the firewall is
@@ -63,6 +83,7 @@ type AutomationStatus struct {
 	// to apply at startup) -- a condition monitoring should alert on.
 	FirewallEnabled               bool              `json:"firewall_enabled"`
 	FirewallManaged               bool              `json:"firewall_managed"`
+	FirewallStartupError          string            `json:"firewall_startup_error,omitempty"`
 	FirewallBlockedIPs            int               `json:"firewall_blocked_ips"`
 	FirewallBlockedSubnets        int               `json:"firewall_blocked_subnets"`
 	FirewallRollbackPending       bool              `json:"firewall_rollback_pending"`
@@ -75,6 +96,22 @@ type AutomationAction struct {
 	Check     string    `json:"check"`
 	Message   string    `json:"message"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// CorrelationAttribution is the operator-facing view of cross-account
+// correlation attribution. Current is the per-check count of qualifying
+// findings in the latest-state active set that carry no hosting owner and
+// are inside the correlation window at its most recent merge. Unstamped
+// legacy rows also count. A later merge clears attributed or expired rows.
+// Cumulative sums every unattributed row reported since the daemon started,
+// across active-set merges and per-batch derivations, so a producer that
+// recovered stays visible as having failed. Kept as its own type so
+// internal/health does not import internal/checks.
+type CorrelationAttribution struct {
+	Current          map[string]int `json:"current"`
+	Cumulative       map[string]int `json:"cumulative"`
+	ActiveSetUpdates int            `json:"active_set_updates"`
+	Since            time.Time      `json:"since"`
 }
 
 // UpdateInfo mirrors updatecheck.Info for the health snapshot. Kept
@@ -113,14 +150,23 @@ func (s Snapshot) AllWatchersAttached() bool {
 
 // OverallStatus collapses the snapshot into one of: "ok", "degraded", "down".
 //   - "down" if the snapshot was zero-valued (never assembled)
-//   - "degraded" if any watcher is detached or the store is unhealthy
+//   - "degraded" if a watcher is detached, the store is unhealthy, an enabled
+//     firewall is unmanaged, enabled termination has no safe kernel path,
+//     or a protection queue is degraded. Advisory queues carry best-effort
+//     work and are reported without changing the host status.
 //   - "ok" otherwise
 func (s Snapshot) OverallStatus() string {
 	if s.StartedAt.IsZero() && len(s.Watchers) == 0 {
 		return "down"
 	}
-	if !s.StoreHealthy || !s.AllWatchersAttached() {
+	if !s.StoreHealthy || !s.AllWatchersAttached() || s.Automation.FirewallEnabled && !s.Automation.FirewallManaged ||
+		s.Automation.ProcessKillEnabled && !s.Automation.ProcessSignalSupported {
 		return "degraded"
+	}
+	for _, q := range s.Queues {
+		if q.Status == "degraded" && !q.Advisory {
+			return "degraded"
+		}
 	}
 	return "ok"
 }

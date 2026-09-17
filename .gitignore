@@ -8,12 +8,15 @@ state/state.json
 /skills-lock.json
 /csm
 .cache/
+/corpus-results/
 graphify-out/
 
 # Internal planning / local-only files
+/CSM_ARCHITECTURE_PROPOSAL.md
 CLAUDE.md
 AGENTS.md
 docs/superpowers/
+.codex-flow/
 scripts/deploy-gitlab.sh
 
 # Stale duplicate of build/pam/. The packaged PAM module is built from
@@ -67,3 +70,8 @@ docs/book/
 /findings.txt
 /scan-*.txt
 /*.alerts
+
+/production-results/
+
+# Go test binaries left behind by profiling runs.
+*.test

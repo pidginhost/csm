@@ -28,9 +28,10 @@ CSM signs the raw request body with HMAC-SHA256 using the configured
 secret and sends the digest in `X-CSM-Signature: sha256=<hex>`. The
 secret is resolved once per request/response exchange: if
 `hmac_secret_env` is set and the env var is non-empty, it wins over the
-static `hmac_secret` field. This lets operators rotate the secret via
-env without restarting the daemon while keeping request and response
-verification on the same key for that exchange.
+static `hmac_secret` field. Request and response verification use the same
+key for that exchange. The value comes from the running process environment;
+editing an environment file requires a daemon restart, even if configuration
+is reloaded. See [credential rotation](src/credential-rotation.md).
 
 CSM refuses to enable the callback without a non-empty `hmac_secret` or
 resolved `hmac_secret_env` value. Operators can set

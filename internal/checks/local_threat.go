@@ -33,6 +33,8 @@ func CheckLocalThreatScore(ctx context.Context, cfg *config.Config, _ *state.Sto
 		if alreadyBlocked[rec.IP] {
 			continue
 		}
+		// Local addresses can represent proxied attacks or compromised local
+		// processes. Firewall self-protection is not a reason to hide evidence.
 		score := attackdb.ComputeScore(rec)
 		if score >= 70 {
 			findings = append(findings, alert.Finding{

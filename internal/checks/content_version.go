@@ -91,6 +91,22 @@ func ContentDetectionVersion() string {
 	)
 }
 
+// reverifySweepLogicVersion identifies the sweep's own semantics, as opposed to
+// the detection logic it re-runs: which outcomes it may apply and which paths
+// its verifiers can reach. BUMP IT in the same commit as any such change, so an
+// upgraded host sweeps at startup instead of carrying the old behaviour until
+// its next deep-scan cycle.
+const reverifySweepLogicVersion = 1
+
+// FindingReverifyVersion identifies every verifier family the startup sweep
+// runs unattended, plus the sweep's own semantics. Including the exposure
+// verifier forces one sweep when that family is first deployed or its
+// fail-closed semantics change.
+func FindingReverifyVersion() string {
+	return fmt.Sprintf("%s;exposed=%d;reverify=%d",
+		ContentDetectionVersion(), exposedReverifyLogicVersion, reverifySweepLogicVersion)
+}
+
 // contentDetectionVersionToken renders the version components. Pure so a test
 // can pass two different component values and prove the tokens differ.
 func contentDetectionVersionToken(phpVer, scanVer, sigVer, yaraRules, jsTaintVer, phpTaintVer int) string {

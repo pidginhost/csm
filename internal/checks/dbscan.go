@@ -3,17 +3,16 @@ package checks
 import (
 	"bufio"
 	"context"
-	"errors"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/netip"
 	"net/url"
-	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -53,87 +52,88 @@ var dbMalwarePatterns = []struct {
 	{"pastebin.com/raw", alert.Critical, "Pastebin payload URL", false},
 }
 
-// nonDocRootDirs are common account-data and alias directories that are never
-// candidate document roots during the home-directory walk.
+// nonDocRootDirs are common account-data directories that are never candidate
+// document roots during the home-directory walk. "www" is deliberately absent:
+// where it is cPanel's alias for public_html the discovery walk collapses the
+// symlink (canonicalWPInstallPath), and where it is a real directory it is a
+// document root serving a real site.
 var nonDocRootDirs = map[string]bool{
 	"mail": true, "etc": true, "logs": true, "ssl": true, "tmp": true,
 	"public_ftp": true, "cache": true, ".cagefs": true,
 	"access-logs": true, "access_logs": true, "backups": true,
 	"cgi-bin": true, "perl5": true, "spamassassin": true, "var": true,
-	"www": true,
 }
 
-// wpConfigPaths returns direct wp-config.php files at account document roots.
-// cPanel's map covers addon roots in any supported layout; other panels retain
-// the one-level home-directory fallback.
-func wpConfigPaths(ctx context.Context) []string {
-	seen := make(map[string]bool)
-	var out []string
-	add := func(missingIsIncomplete bool, paths ...string) {
-		for _, p := range paths {
-			if seen[p] {
-				continue
-			}
-			info, err := osFS.Lstat(p)
-			if err != nil {
-				if missingIsIncomplete || !errors.Is(err, fs.ErrNotExist) {
-					markCheckIncomplete(ctx, "db_content")
-				}
-				continue
-			}
-			if !info.Mode().IsRegular() {
-				markCheckIncomplete(ctx, "db_content")
-				continue
-			}
-			seen[p] = true
-			out = append(out, p)
+// servedState records whether the panel currently serves a document root.
+// A dormant install is not harmless -- it holds a live database and becomes
+// public again the moment the domain is re-pointed -- but it is not being
+// served to anyone today, and triage that cannot tell the two apart orders its
+// queue wrongly in both directions.
+type servedState int
+
+const (
+	// servedUnknown is the honest answer when the panel's domain map could not
+	// be read. It is not "not served".
+	servedUnknown servedState = iota
+	servedByPanel
+	notServed
+)
+
+// wpConfigPaths returns direct wp-config.php files at account document roots,
+// each with whether the panel currently serves that root.
+func wpConfigPaths(ctx context.Context) ([]string, map[string]servedState) {
+	paths, served, _ := wpConfigPathsWithDomains(ctx)
+	return paths, served
+}
+
+// wpConfigPathsWithDomains projects the shared install seam into the shapes
+// CheckDatabaseContent works in. Discovery itself lives in wpinstalls.go, so
+// this check, the object and overlap scanners, the core verifier and every
+// fixer see the same installs.
+func wpConfigPathsWithDomains(ctx context.Context) ([]string, map[string]servedState, map[string][]string) {
+	installs, panelDomains := wpInstallsWithDomains(ctx, "db_content")
+	paths := make([]string, 0, len(installs))
+	served := make(map[string]servedState, len(installs))
+	for _, in := range installs {
+		paths = append(paths, in.ConfigPath)
+		served[in.ConfigPath] = in.Served
+	}
+	return paths, served, panelDomains
+}
+
+// wpConfigOwners maps each discovered wp-config.php to the hosting account
+// discovery attributed it to; unattributable installs are absent so their
+// findings stay unstamped.
+func wpConfigOwners(installs []wpInstall) map[string]string {
+	owners := make(map[string]string, len(installs))
+	for _, in := range installs {
+		if in.Account != "" {
+			owners[in.ConfigPath] = in.Account
 		}
 	}
+	return owners
+}
 
-	// cPanel publishes its actual domain-to-document-root map. It is
-	// authoritative for SERVED roots and reaches layouts the home-directory
-	// walk below cannot see, so it is consulted first.
-	vhostData, vhostErr := osFS.ReadFile(userdataDomainsPath)
-	switch {
-	case vhostErr == nil:
-		vhosts, complete := parseUserdataDomainRootsChecked(string(vhostData))
-		if !complete || len(vhosts) == 0 {
-			markCheckIncomplete(ctx, "db_content")
-		}
-		accountScope := AccountFromContext(ctx)
-		for _, vh := range vhosts {
-			if accountScope != "" && vh.user != accountScope {
-				continue
-			}
-			root := filepath.Clean(vh.docroot)
-			if !docrootBelongsToCPanelUser(root, vh.user) {
-				markCheckIncomplete(ctx, "db_content")
-				continue
-			}
-			add(false, filepath.Join(root, "wp-config.php"))
-		}
-	case vhostMapFailureIsIncomplete(vhostErr):
-		markCheckIncomplete(ctx, "db_content")
-	}
-
-	// The served map is not sufficient on its own. A document root the panel
-	// has stopped serving still holds a live database, and the compromise this
-	// scan was widened for sat in exactly such a root -- absent from the domain
-	// map, from /etc/userdomains, and from vhost userdata alike. Re-pointing the
-	// domain publishes it again, so the home-directory layout is walked whatever
-	// the panel says. nonDocRootDirs keeps account-data and backup directories
-	// out of the result.
-	primary, _ := homeGlob(ctx, "public_html", "wp-config.php")
-	add(true, primary...)
-	addon, _ := homeGlob(ctx, "*", "wp-config.php")
-	for _, p := range addon {
-		dir := filepath.Base(filepath.Dir(p))
-		if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") || seen[p] {
+// The shared vhost parser omits wildcard names because they cannot be used as
+// an HTTP Host for exposure probes. They still declare a served document root
+// and tenant ownership, so the database scan parses those rows separately.
+func parseWildcardUserdataDomainRootsChecked(content string) ([]vhost, bool) {
+	var out []vhost
+	complete := true
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "*.") {
 			continue
 		}
-		add(true, p)
+		parsed, lineComplete := parseUserdataDomainRootsChecked(strings.TrimPrefix(line, "*.") + "\n")
+		if !lineComplete || len(parsed) != 1 {
+			complete = false
+			continue
+		}
+		parsed[0].domain = "*." + parsed[0].domain
+		out = append(out, parsed[0])
 	}
-	return out
+	return out, complete
 }
 
 func docrootBelongsToCPanelUser(root, user string) bool {
@@ -175,17 +175,98 @@ func spamCountLabel(n int, truncated bool) string {
 	return strconv.Itoa(n)
 }
 
+// dbScanCoverage counts why discovered installs could not be inspected and
+// keeps one example path per reason. Multisite limits have their own detailed
+// findings and are not counted again here.
+//
+// The owner remains incomplete when any install fails. Independently
+// completed database scopes can still retire their own previous findings.
+type dbScanCoverage struct {
+	discovered           int
+	discoveryIncomplete  bool
+	counts               map[string]int
+	examples             map[string]string
+	queryFailures        map[string]int
+	queryFailureOverflow int
+}
+
+func (c *dbScanCoverage) record(reason, configPath string) {
+	if c == nil {
+		return
+	}
+	if c.counts == nil {
+		c.counts = make(map[string]int, 5)
+		c.examples = make(map[string]string, 5)
+	}
+	c.counts[reason]++
+	if c.examples[reason] == "" {
+		c.examples[reason] = configPath
+	}
+}
+
+func (c *dbScanCoverage) skipped() int {
+	if c == nil {
+		return 0
+	}
+	var n int
+	for _, v := range c.counts {
+		n += v
+	}
+	return n
+}
+
+// summary renders the reason breakdown, or the empty string when nothing was
+// attributed, including when discovery stops before reaching any install.
+func (c *dbScanCoverage) summary() string {
+	if c.skipped() == 0 {
+		return ""
+	}
+	reasons := make([]string, 0, len(c.counts))
+	for reason := range c.counts {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d of %d discovered installs could not be fully inspected.\n", c.skipped(), c.discovered)
+	for _, reason := range reasons {
+		// Account-controlled names must not forge reason lines or terminal
+		// commands. Bound the escaped display so expansion cannot grow it.
+		example := strconv.QuoteToASCII(c.examples[reason])
+		example = truncateDB(example[1:len(example)-1], 200)
+		fmt.Fprintf(&b, "%s=%d (example: %s)\n", reason, c.counts[reason], example)
+	}
+	b.WriteString(c.queryFailureSummary())
+	if c.discoveryIncomplete {
+		b.WriteString("Document-root discovery was incomplete; additional installs may be missing.\n")
+	}
+	return b.String()
+}
+
 // CheckDatabaseContent scans WordPress databases for injected malware,
 // spam content, siteurl hijacking, and rogue admin accounts.
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs := wpConfigPaths(ctx)
-	if len(wpConfigs) == 0 {
-		return appendDatabaseScanIncompleteFinding(ctx, nil)
+	coverage := &dbScanCoverage{}
+	installs, panelDomains := wpInstallsWithDomains(ctx, "db_content")
+	coverage.discoveryIncomplete = checkMarkedIncomplete(ctx, "db_content")
+	if len(installs) == 0 {
+		return appendDatabaseScanIncompleteFinding(ctx, nil, coverage)
 	}
+	coverage.discovered = len(installs)
+	wpConfigs := make([]string, 0, len(installs))
+	servedRoots := make(map[string]servedState, len(installs))
+	for _, in := range installs {
+		wpConfigs = append(wpConfigs, in.ConfigPath)
+		servedRoots[in.ConfigPath] = in.Served
+	}
+	owners := wpConfigOwners(installs)
+	domainOwnership := newPanelDomainOwnership(panelDomains)
 
-	seenDatabases := make(map[string]struct{}, len(wpConfigs))
+	// Cache the coverage outcome as well as the scan: aliases of an unreadable
+	// database are affected installs too, but must not repeat its queries.
+	seenDatabases := make(map[string]string, len(wpConfigs))
+	completedScopes := make(map[string]bool)
 	for _, wpConfig := range wpConfigs {
 		if ctx.Err() != nil {
 			return findings
@@ -193,73 +274,127 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		user := wpConfigUser(filepath.Dir(wpConfig))
 		creds, complete := parseWPConfigChecked(wpConfig)
 		if !complete {
+			coverage.record("unreadable_config", wpConfig)
 			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
 		if creds.dbName == "" || creds.dbUser == "" {
+			// A missing login does not erase an otherwise known scope. Its
+			// healthy alias must not retire findings this install could not
+			// examine, regardless of which config discovery returned first.
+			if prefix, ok := resolveTablePrefix(creds); creds.dbName != "" && ok {
+				completedScopes[dbContentDedupKey(user, creds, prefix)] = false
+			}
+			coverage.record("missing_credentials", wpConfig)
 			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
-		creds.queryCtx = ctx
-		queryFailed := false
-		creds.queryFailed = &queryFailed
-
 		prefix, ok := resolveTablePrefix(creds)
 		if !ok {
+			coverage.record("unresolved_table_prefix", wpConfig)
 			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
 		creds.tablePrefix = prefix
+		creds.docrootServed = servedRoots[wpConfig]
+		creds.panelDomains = domainOwnership
 		databaseKey := strings.Join([]string{
 			user, creds.dbHost, creds.dbName, creds.dbUser, creds.dbPass, prefix,
 			strconv.FormatBool(creds.multisite),
 		}, "\x00")
-		if _, duplicate := seenDatabases[databaseKey]; duplicate {
+		if reason, duplicate := seenDatabases[databaseKey]; duplicate {
+			if reason != "" {
+				coverage.record(reason, wpConfig)
+			}
 			continue
 		}
-		seenDatabases[databaseKey] = struct{}{}
-		var installFindings []alert.Finding
-
-		// Always scan the main-site (or single-site) tables. In
-		// multisite, blog ID 1 keeps the unprefixed names; in a
-		// single-site install these are the only tables.
-		installFindings = append(installFindings, scanWPBlog(user, creds, prefix, prefix)...)
-
-		// wp_users / wp_usermeta are network-wide in multisite, so
-		// the user-table scan runs once regardless of the layout.
-		installFindings = append(installFindings, checkWPUsers(user, creds, prefix)...)
-
-		// Multisite: enumerate active secondary blog IDs and scan
-		// each one's wp_<N>_options / wp_<N>_posts. Spam, archived,
-		// and deleted blogs are excluded -- their content is
-		// already operator-suppressed at the WP level, and most
-		// hosts have stale ones we'd otherwise alert on
-		// indefinitely.
-		if creds.multisite {
-			installFindings = append(installFindings, scanMultisiteSecondaryBlogs(ctx, user, creds, prefix)...)
+		// Isolate content-read gaps so an earlier install's failure cannot
+		// mask this one's. The scanner keeps the outer context for multisite
+		// limits, which already emit a separate account-specific finding.
+		queryCtx, contentIncomplete := withIncompleteCheckCollector(ctx)
+		creds.queryCtx = queryCtx
+		creds.queryState = new(dbQueryState)
+		// Stamp each install's own slice before merging: the host-wide
+		// summary appended below must never inherit an owner.
+		installFindings := capPhantomAuthorFindings(wpInstallScanner(ctx, user, creds, prefix), maxPhantomAuthorsReported)
+		scope := dbContentDedupKey(user, creds, prefix)
+		multisiteLimited := false
+		for i := range installFindings {
+			installFindings[i].CoverageScope = scope
+			if installFindings[i].Check == "db_content_scan_incomplete" {
+				multisiteLimited = true
+			}
 		}
-		findings = append(findings,
-			capPhantomAuthorFindings(installFindings, maxPhantomAuthorsReported)...)
+		findings = append(findings, stampTenantIDIfEmpty(installFindings, owners[wpConfig])...)
+		var reason string
+		if creds.queryState.failed {
+			reason = "query_failed"
+		} else if contentIncomplete.contains("db_content") {
+			reason = "incomplete_content"
+		}
+		scopeComplete := reason == "" && !multisiteLimited
+		if prior, seen := completedScopes[scope]; seen {
+			scopeComplete = scopeComplete && prior
+		}
+		completedScopes[scope] = scopeComplete
+		coverage.recordQueryFailures(creds.queryState)
+		seenDatabases[databaseKey] = reason
+		if reason != "" {
+			coverage.record(reason, wpConfig)
+			markCheckIncomplete(ctx, "db_content")
+		}
 	}
 
-	return appendDatabaseScanIncompleteFinding(ctx, findings)
+	recordCompletedCoverageScopes(ctx, "db_content", completedScopes)
+	return appendDatabaseScanIncompleteFinding(ctx, findings, coverage)
+}
+
+// wpInstallScanner is the per-install scan boundary. Tests replace it with
+// an inert scanner to prove ownership stamping for every finding name
+// without driving each SQL scanner.
+var wpInstallScanner = scanWPInstall
+
+// scanWPInstall runs every content, user and multisite scanner for one
+// discovered install and returns the unstamped findings.
+func scanWPInstall(ctx context.Context, user string, creds wpDBCreds, prefix string) []alert.Finding {
+	var installFindings []alert.Finding
+
+	// Always scan the main-site (or single-site) tables. In
+	// multisite, blog ID 1 keeps the unprefixed names; in a
+	// single-site install these are the only tables.
+	installFindings = append(installFindings, scanWPBlog(user, creds, prefix, prefix)...)
+
+	// wp_users / wp_usermeta are network-wide in multisite, so
+	// the user-table scan runs once regardless of the layout.
+	installFindings = append(installFindings, checkWPUsers(user, creds.withQueryStage("users"), prefix)...)
+
+	// Multisite: enumerate active secondary blog IDs and scan
+	// each one's wp_<N>_options / wp_<N>_posts. Spam, archived,
+	// and deleted blogs are excluded -- their content is
+	// already operator-suppressed at the WP level, and most
+	// hosts have stale ones we'd otherwise alert on
+	// indefinitely.
+	if creds.multisite {
+		installFindings = append(installFindings, scanMultisiteSecondaryBlogs(ctx, user, creds, prefix)...)
+	}
+	return installFindings
 }
 
 // scanWPBlog runs checks whose tables belong to one blog. usersPrefix stays
 // separate because multisite blogs share the network-wide users table.
 func scanWPBlog(user string, creds wpDBCreds, sitePrefix, usersPrefix string) []alert.Finding {
 	var findings []alert.Finding
-	findings = append(findings, checkWPOptions(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPPosts(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPStoredCode(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPSpamTaxonomy(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPHiddenLinks(user, creds, sitePrefix)...)
-	findings = append(findings, checkWPCloakConfig(user, creds, sitePrefix)...)
+	findings = append(findings, checkWPOptions(user, creds.withQueryStage("options"), sitePrefix)...)
+	findings = append(findings, checkWPPosts(user, creds.withQueryStage("posts"), sitePrefix)...)
+	findings = append(findings, checkWPStoredCode(user, creds.withQueryStage("stored_code"), sitePrefix)...)
+	findings = append(findings, checkWPSpamTaxonomy(user, creds.withQueryStage("taxonomy"), sitePrefix)...)
+	findings = append(findings, checkWPHiddenLinks(user, creds.withQueryStage("hidden_links"), sitePrefix)...)
+	findings = append(findings, checkWPCloakConfig(user, creds.withQueryStage("cloak_config"), sitePrefix)...)
 	// Rate change rather than vocabulary: the next kit will use different
 	// words, but it will still publish a flood onto a long-quiet site.
-	findings = append(findings, checkWPPostVolumeBurst(user, creds, sitePrefix)...)
+	findings = append(findings, checkWPPostVolumeBurst(user, creds.withQueryStage("post_burst"), sitePrefix)...)
 	findings = append(findings,
-		checkWPPhantomAuthors(user, creds, sitePrefix, usersPrefix, maxPhantomAuthorsReported)...)
+		checkWPPhantomAuthors(user, creds.withQueryStage("phantom_authors"), sitePrefix, usersPrefix, maxPhantomAuthorsReported)...)
 	return findings
 }
 
@@ -273,21 +408,36 @@ func wpConfigUser(path string) string {
 	return extractUser(path)
 }
 
-func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.Finding) []alert.Finding {
+func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.Finding, coverage *dbScanCoverage) []alert.Finding {
 	if !checkMarkedIncomplete(ctx, "db_content") {
 		return findings
 	}
-	for _, finding := range findings {
-		if finding.Check == "db_content_scan_incomplete" {
-			return findings
+	// A multisite-limit warning covers only its own network. Suppress the
+	// generic fallback only when no other coverage gaps need reporting.
+	if coverage.skipped() == 0 && !coverage.discoveryIncomplete {
+		for _, finding := range findings {
+			if finding.Check == "db_content_scan_incomplete" {
+				return findings
+			}
 		}
 	}
 	return append(findings, alert.Finding{
 		Severity: alert.Warning,
 		Check:    "db_content_scan_incomplete",
 		Message:  "WordPress database scan could not inspect every discovered install",
-		Details:  "A document-root record, wp-config.php file, or database query could not be read safely. Findings from the previous complete scan are retained.",
+		Details:  databaseScanIncompleteDetails(coverage),
 	})
+}
+
+// databaseScanIncompleteDetails names what was skipped and why when the scan
+// got far enough to attribute a cause, and falls back to the generic sentence
+// when no install-specific cause was recorded.
+func databaseScanIncompleteDetails(coverage *dbScanCoverage) string {
+	const retained = "Findings without complete database coverage are retained."
+	if summary := coverage.summary(); summary != "" {
+		return summary + retained
+	}
+	return "A document-root record, wp-config.php file, or database query could not be read safely. " + retained
 }
 
 // scanMultisiteSecondaryBlogs queries wp_blogs for active blog IDs other than 1
@@ -304,7 +454,7 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 		"SELECT blog_id FROM %sblogs WHERE archived = 0 AND deleted = 0 AND spam = 0 AND blog_id != 1 ORDER BY blog_id LIMIT %d",
 		prefix, maxWPSecondaryBlogs+1,
 	)
-	rows := runMySQLQuery(creds, query)
+	rows := runMySQLQuery(creds.withQueryStage("multisite_discovery"), query)
 	var findings []alert.Finding
 	truncated := len(rows) > maxWPSecondaryBlogs
 	if truncated {
@@ -320,6 +470,8 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 		}
 		// Guard against any garbage in the row -- only digits.
 		if !isAllDigits(blogID) {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
 		sitePrefix := fmt.Sprintf("%s%s_", prefix, blogID)
@@ -331,7 +483,9 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 			Severity: alert.Warning,
 			Check:    "db_content_scan_incomplete",
 			Message:  fmt.Sprintf("WordPress multisite database scan reached its %d-site safety limit (account: %s)", maxWPSecondaryBlogs, user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
+				"The network has more active secondary sites than one scheduled scan can safely inspect."),
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				"The network has more active secondary sites than one scheduled scan can safely inspect."),
 		})
 	}
@@ -356,13 +510,23 @@ type wpDBCreds struct {
 	dbPass      string
 	dbHost      string
 	tablePrefix string
+	// docrootServed records whether the panel serves this install's document
+	// root, so a finding says whether it is reachable today.
+	docrootServed servedState
+	// panelDomains is the complete panel domain ownership map. The foreign-host
+	// check needs every account, not just this one, so a more-specific domain
+	// delegated to another tenant wins over this account's parent domain.
+	panelDomains *panelDomainOwnership
 	// queryCtx ties scheduled database work to the runner's deadline. Command
 	// paths leave it nil and retain the per-query timeout below.
 	queryCtx context.Context
-	// queryFailed is shared by the sequential queries for one install. Once a
-	// connection or query fails, later checks skip redundant retries and the
-	// host-wide scan can continue with the next install.
-	queryFailed *bool
+	// queryOwner identifies the CMS check whose coverage depends on a query.
+	// WordPress callers use the default owner when this is empty.
+	queryOwner string
+	// queryState is shared by the sequential queries for one install.
+	// Coverage failures and an unusable connection are tracked separately.
+	queryState *dbQueryState
+	queryStage string
 	// multisite is set when wp-config.php declares
 	// `define('MULTISITE', true)`. In multisite, the main blog
 	// (ID 1) keeps the unprefixed table names and secondary blogs
@@ -372,8 +536,6 @@ type wpDBCreds struct {
 	// iteration entirely.
 	multisite bool
 }
-
-const maxWPConfigBytes = 1 << 20
 
 // parseWPConfig extracts database credentials from wp-config.php.
 func parseWPConfig(path string) wpDBCreds {
@@ -387,29 +549,16 @@ func parseWPConfig(path string) wpDBCreds {
 // parseWPConfigChecked bounds account-controlled input so a special or very
 // large wp-config.php cannot strand the scheduled database scan.
 func parseWPConfigChecked(path string) (wpDBCreds, bool) {
-	var f *os.File
-	var err error
-	if _, productionFS := osFS.(realOS); productionFS {
-		// The account controls this path. A nonblocking, no-follow open prevents
-		// a regular-file-to-FIFO or symlink swap from stranding the worker.
-		// #nosec G304 -- read-only document-root candidate; flags reject unsafe types.
-		f, err = os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
-	} else {
-		f, err = osFS.Open(path)
-	}
+	f, err := openCMSConfig(path)
 	if err != nil {
 		return wpDBCreds{}, false
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return wpDBCreds{}, false
-	}
 
 	var creds wpDBCreds
-	limited := &io.LimitedReader{R: f, N: maxWPConfigBytes + 1}
+	limited := &io.LimitedReader{R: f, N: maxCMSConfigBytes + 1}
 	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 64*1024), maxWPConfigBytes+1)
+	scanner.Buffer(make([]byte, 64*1024), maxCMSConfigBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -552,7 +701,7 @@ func extractPHPString(s string) string {
 // error (the legacy implementation swallowed errors the same way).
 // Var so tests can serve canned rows without a live database.
 var runMySQLQuery = func(creds wpDBCreds, query string) []string {
-	if creds.queryFailed != nil && *creds.queryFailed {
+	if creds.queryState != nil && creds.queryState.halted {
 		return nil
 	}
 	parent := creds.queryCtx
@@ -568,12 +717,8 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 		DBName:   creds.dbName,
 	}, query)
 	if err != nil {
-		if creds.queryFailed != nil {
-			*creds.queryFailed = true
-		}
-		if creds.queryCtx != nil {
-			markCheckIncomplete(creds.queryCtx, "db_content")
-		}
+		creds.queryState.record(creds.queryStage, err)
+		markCheckIncomplete(creds.queryCtx, creds.queryCheck())
 		return nil
 	}
 	out := make([]string, 0, len(rows))
@@ -587,6 +732,13 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 		return nil
 	}
 	return out
+}
+
+func (c wpDBCreds) queryCheck() string {
+	if c.queryOwner != "" {
+		return c.queryOwner
+	}
+	return "db_content"
 }
 
 // siteURLPoisonReason reports why a siteurl/home value cannot be a real site
@@ -665,6 +817,7 @@ func isScriptPath(path string) bool {
 // checkWPOptions checks for siteurl/home hijacking and injected JavaScript.
 func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	var findings []alert.Finding
+	foreignByOption := make(map[string]*alert.Finding, 2)
 
 	// Check siteurl and home for hijacking
 	query := fmt.Sprintf(
@@ -689,7 +842,9 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 					Severity: alert.Critical,
 					Check:    "db_siteurl_hijack",
 					Message:  fmt.Sprintf("WordPress %s contains malicious code (account: %s)", optName, user),
-					Details: dbContentFindingDetails(creds.dbName, prefix,
+					Details: dbContentFindingDetails(creds, prefix,
+						fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
+					DedupKey: dbContentDedupKey(user, creds, prefix,
 						fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
 				})
 			} else if reason, bad := siteURLPoisonReason(parts[1]); bad {
@@ -697,11 +852,27 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 					Severity: alert.Critical,
 					Check:    "db_siteurl_invalid",
 					Message:  fmt.Sprintf("WordPress %s is not a site address (account: %s): %s", optName, user, reason),
-					Details: dbContentFindingDetails(creds.dbName, prefix,
+					Details: dbContentFindingDetails(creds, prefix,
+						fmt.Sprintf("%s = %s\nWordPress builds every asset URL from this value, so the address it names is loaded on every page.",
+							optName, truncateDB(parts[1], 200))),
+					DedupKey: dbContentDedupKey(user, creds, prefix,
+						"reason="+reason,
 						fmt.Sprintf("%s = %s\nWordPress builds every asset URL from this value, so the address it names is loaded on every page.",
 							optName, truncateDB(parts[1], 200))),
 				})
+			} else if foreign := foreignSiteURLFinding(user, creds, prefix, optName, parts[1]); foreign != nil {
+				// siteurl and home commonly hold the same address. Emit one stable
+				// condition per blog, preferring siteurl regardless of row order.
+				if current := foreignByOption[optName]; current == nil || foreign.Details < current.Details {
+					foreignByOption[optName] = foreign
+				}
 			}
+		}
+	}
+	for _, option := range []string{"siteurl", "home"} {
+		if foreign := foreignByOption[option]; foreign != nil {
+			findings = append(findings, *foreign)
+			break
 		}
 	}
 
@@ -731,7 +902,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			// No attacker marker. A loader on an unremarkable HTTPS host is
 			// still reported once, the first time it appears after the
 			// site's baseline.
-			findings = append(findings, newExternalScriptFindings(user, creds.dbName, prefix, optName, optValue, firstSeen)...)
+			findings = append(findings, newExternalScriptFindings(user, creds, prefix, optName, optValue, firstSeen)...)
 			continue
 		}
 
@@ -739,18 +910,29 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			Severity: alert.Critical,
 			Check:    "db_options_injection",
 			Message:  fmt.Sprintf("Malicious script injection in wp_options '%s' (account: %s)", optName, user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
+				fmt.Sprintf("Option: %s", optName),
+				fmt.Sprintf("Malicious URL: %s", maliciousURL),
+				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				fmt.Sprintf("Option: %s", optName),
 				fmt.Sprintf("Malicious URL: %s", maliciousURL),
 				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
 		})
 	}
-	queryComplete := creds.queryFailed == nil || !*creds.queryFailed
+	queryComplete := creds.queryState == nil || !creds.queryState.failed
 	if queryComplete {
 		if sdb := store.Global(); sdb != nil {
 			_ = sdb.FinishExternalScriptBaseline(externalScriptSiteKey(creds.dbName, prefix), time.Now())
 		}
 	}
+
+	// Path 1b: Plugin status options that WordPress renders as admin
+	// notices. These are queried by name because the generic script lookup
+	// above caps its result set and requires a src attribute, while an
+	// injection here may be inline. The option's identity is the verdict,
+	// so neither host reputation nor the first-seen baseline applies.
+	findings = append(findings, checkWPPluginNotices(user, creds, prefix)...)
 
 	// Path 2: Inline script/code injection in core WP options that should
 	// NEVER contain JavaScript (siteurl, home, blogname, blogdescription).
@@ -770,7 +952,10 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			Severity: alert.Critical,
 			Check:    "db_options_injection",
 			Message:  fmt.Sprintf("Malicious content in core wp_option '%s' (account: %s)", parts[0], user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
+				fmt.Sprintf("Option: %s", parts[0]),
+				fmt.Sprintf("Content preview: %s", truncateDB(parts[1], 200))),
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				fmt.Sprintf("Option: %s", parts[0]),
 				fmt.Sprintf("Content preview: %s", truncateDB(parts[1], 200))),
 		})
@@ -860,7 +1045,10 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			Severity: mp.severity,
 			Check:    "db_post_injection",
 			Message:  fmt.Sprintf("WordPress posts contain %s (account: %s, %d posts)", mp.desc, user, len(confirmedIDs)),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
+				fmt.Sprintf("Affected post IDs: %s", strings.Join(confirmedIDs, ", ")),
+				fmt.Sprintf("Pattern: %s", mp.pattern)),
+			DedupKey: dbContentDedupKey(user, creds, prefix,
 				fmt.Sprintf("Affected post IDs: %s", strings.Join(confirmedIDs, ", ")),
 				fmt.Sprintf("Pattern: %s", mp.pattern)),
 		})
@@ -918,17 +1106,53 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			// scale, and scale is what decides whether an operator looks.
 			Message: fmt.Sprintf("WordPress posts contain cloaked spam keyword '%s' (%s posts, account: %s)",
 				sp.keyword, spamCountLabel(n, spamSampled[i] >= dbSpamSampleLimit), user),
-			Details: dbContentFindingDetails(creds.dbName, prefix),
+			Details: dbContentFindingDetails(creds, prefix),
+			// The pattern is the identity; the count is not. Spam grows between
+			// scans, and that is the same finding, not a new one.
+			DedupKey: dbContentDedupKey(user, creds, prefix, "keyword="+sp.keyword),
 		})
 	}
 
 	return findings
 }
 
-func dbContentFindingDetails(dbName, prefix string, lines ...string) string {
+// dbContentDedupKey pins a database-content finding's identity to the database
+// it was found in, the account using it, and what was found there. Callers
+// include stable distinctions from Message as well as Details, excluding
+// observation-only changes such as site age and document-root served state.
+//
+// The document-root note is deliberately excluded. It reports what the panel's
+// domain map said during this scan, not anything the scan found in the
+// database, and that map read fails transiently -- when it does the note
+// disappears, the default Message+Details identity changes with it, and the
+// store keeps a second copy of a finding that never changed.
+func dbContentDedupKey(user string, creds wpDBCreds, prefix string, lines ...string) string {
+	identity := make([]byte, 0, 128)
+	appendField := func(value string) {
+		identity = binary.BigEndian.AppendUint64(identity, uint64(len(value)))
+		identity = append(identity, value...)
+	}
+	appendField(user)
+	appendField(creds.dbHost)
+	appendField(creds.dbName)
+	appendField(prefix)
+	for _, line := range lines {
+		appendField(line)
+	}
+	digest := sha256.Sum256(identity)
+	return fmt.Sprintf("db-content:%x", digest[:12])
+}
+
+// dbContentFindingDetails renders a database-content finding's details. The
+// document-root note it adds is scan-time context, not part of what was found,
+// so every caller supplies a DedupKey that excludes this note.
+func dbContentFindingDetails(creds wpDBCreds, prefix string, lines ...string) string {
 	out := []string{
-		fmt.Sprintf("Database: %s", dbName),
+		fmt.Sprintf("Database: %s", creds.dbName),
 		fmt.Sprintf("Table prefix: %s", prefix),
+	}
+	if note := docrootServedNote(creds.docrootServed); note != "" {
+		out = append(out, note)
 	}
 	out = append(out, lines...)
 	return strings.Join(out, "\n")
@@ -1088,9 +1312,7 @@ func truncateDB(s string, maxLen int) string {
 func CleanDatabaseSpam(account string) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*/wp-config.php"))
-	wpConfigs2, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "public_html/wp-config.php"))
-	wpConfigs = append(wpConfigs, wpConfigs2...)
+	wpConfigs := spamCleanWPConfigs(account)
 
 	for _, wpConfig := range wpConfigs {
 		creds := parseWPConfig(wpConfig)
@@ -1280,4 +1502,26 @@ func firstN(in []string, n int) []string {
 		return in
 	}
 	return in[:n]
+}
+
+// docrootServedNote states whether this install is reachable today. Both
+// answers change how a finding should be queued: a dormant install is not
+// serving anyone right now, and a served one is. Silence when the panel's map
+// could not be read -- claiming either would be a guess.
+func docrootServedNote(state servedState) string {
+	switch state {
+	case servedByPanel:
+		return "Document root: served by the panel, so this is live now."
+	case notServed:
+		return "Document root: not currently served. The database is still live " +
+			"and the content publishes again the moment a domain is pointed here."
+	default:
+		return ""
+	}
+}
+
+// spamCleanWPConfigs lists the installs the spam cleaner acts on. Shared
+// discovery: spam left in a nested or panel-mapped install is the same spam.
+func spamCleanWPConfigs(account string) []string {
+	return wpInstallConfigPaths(wpInstallsForAccount(context.Background(), "db_content", account))
 }

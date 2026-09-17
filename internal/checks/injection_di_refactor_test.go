@@ -11,8 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-// Tests for source paths newly reachable after switching exec.Command
-// calls to cmdExec (firewall.go, emailpasswd.go, plugincheck.go).
+// Firewall, password verification, and WordPress command integration tests.
 
 // --- CheckFirewall: full structural validation success path -------------
 
@@ -131,30 +130,13 @@ func TestCheckFirewallDetectsRuleHashChange(t *testing.T) {
 	}
 }
 
-// --- verifyDoveadm: success and failure paths --------------------------
-
-func TestVerifyDoveadmSuccess(t *testing.T) {
-	withMockCmd(t, &mockCmd{
-		run: func(name string, args ...string) ([]byte, error) {
-			if name == "doveadm" {
-				return nil, nil // exit 0 = match
-			}
-			return nil, errors.New("unexpected cmd")
-		},
-	})
-	if !verifyDoveadm("{CRYPT}$6$salt$hashedwordhere", "secret123") {
-		t.Error("expected verifyDoveadm to return true when doveadm succeeds")
-	}
-}
-
-func TestVerifyDoveadmFailure(t *testing.T) {
-	withMockCmd(t, &mockCmd{
-		run: func(name string, args ...string) ([]byte, error) {
-			return nil, errors.New("doveadm: password mismatch")
-		},
-	})
-	if verifyDoveadm("{CRYPT}$6$salt$hash", "wrongpass") {
-		t.Error("expected verifyDoveadm to return false when doveadm errors")
+func TestEmailPasswordVerificationMatchAndMismatch(t *testing.T) {
+	v := mustEmailPasswordVerifier(t, "{PLAIN}secret123")
+	for _, candidate := range []string{"secret123", "wrongpass"} {
+		got, err := v.matches(context.Background(), candidate)
+		if err != nil || got != (candidate == "secret123") {
+			t.Fatalf("unexpected verification: %v, %v", got, err)
+		}
 	}
 }
 

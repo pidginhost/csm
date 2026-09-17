@@ -362,7 +362,7 @@ func TestAutoCleanHtaccessRunsOnlyWhenFlagSet(t *testing.T) {
 	body := "ErrorDocument 404 https://attacker.tk/oops.html\n"
 	path := writeHtaccess(t, dir, "site", body)
 
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.CleanHtaccess = false
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -104,5 +105,19 @@ func TestCheckPHPProcessesNone(t *testing.T) {
 	findings := CheckPHPProcesses(context.Background(), &config.Config{}, nil)
 	if len(findings) != 0 {
 		t.Errorf("no PHP procs should return 0 findings, got %d", len(findings))
+	}
+}
+
+func TestEvaluateExecStampsDetectionTime(t *testing.T) {
+	before := time.Now()
+	findings := EvaluateExec(1001, 4242, "gsocket", "/tmp/gsocket", "bash")
+	after := time.Now()
+	if len(findings) == 0 {
+		t.Fatal("expected a suspicious exec finding")
+	}
+	for _, finding := range findings {
+		if finding.Timestamp.Before(before) || finding.Timestamp.After(after) {
+			t.Fatalf("live exec finding %q timestamp = %v, want current detection time", finding.Check, finding.Timestamp)
+		}
 	}
 }

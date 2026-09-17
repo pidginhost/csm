@@ -25,6 +25,11 @@ const (
 // Reason is the human evidence recorded in the threat DB, the tracker, and
 // findings.
 type ApplyBlockRequest struct {
+	// ActionID preserves one admission identity across retries.
+	ActionID string
+	// FindingID is the original audit identity, captured before display truncation.
+	// Empty means this decision has no originating finding.
+	FindingID    string
 	IP           string
 	EngineReason string
 	Reason       string
@@ -63,12 +68,25 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 		observeBlockOutcome(res.Outcome, ErrNoIPBlocker, req.Source)
 		return res, ErrNoIPBlocker
 	}
-	blockStateMu.Lock()
-	defer blockStateMu.Unlock()
-	state := loadBlockState(cfg.StatePath)
-	res, err := applyBlockLocked(cfg, blocker, state, req)
-	saveBlockState(cfg.StatePath, state)
+	work := autoBlockQueues.acquire()
+	defer work.finish()
+	state := work.loadState(cfg.StatePath)
+	attemptAt := autoBlockNow()
+	res, err := applyBlockLocked(cfg, blocker, state, req, work.progress, func(err error) { work.directOutcome(req.IP, attemptAt, err) })
+	if !errors.Is(err, firewall.ErrIPProtected) {
+		work.observe(err)
+	}
+	work.progress()
+	work.saveState(cfg.StatePath, state)
+	work.complete()
 	return res, err
+}
+
+// durableActionBlocker supplies atomic admission when the engine owns durable
+// action state. The existing scan policy is passed to that transaction.
+type durableActionBlocker interface {
+	DurableActionsEnabled() bool
+	BlockIPRequest(firewall.ActionRequest, *firewall.ScanAdmission) (firewall.BlockOutcome, error)
 }
 
 // applyBlockLocked performs one block attempt plus the evidence bookkeeping
@@ -76,11 +94,33 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 // and saving state. It writes no stderr lines for live blocks - callers
 // keep their own operational logging - and emits findings instead of
 // dispatching them.
-func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest) (ApplyBlockResult, error) {
-	outcome, err := callBlockIP(blocker, req.IP, req.EngineReason, req.TTL)
+func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest, progress func(), observe func(error)) (ApplyBlockResult, error) {
+	progress()
+	var outcome firewall.BlockOutcome
+	var err error
+	durableOutcome := false
+	if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
+		durableOutcome = true
+		var admission *firewall.ScanAdmission
+		if req.Source == BlockSourceScan {
+			limit := cfg.AutoResponse.MaxBlocksPerHour
+			if limit <= 0 {
+				limit = config.DefaultMaxBlocksPerHour
+			}
+			admission = &firewall.ScanAdmission{Window: autoBlockNow().Format("2006-01-02T15"), Limit: limit}
+		}
+		outcome, err = durable.BlockIPRequest(firewall.ActionRequest{
+			ID: req.ActionID, Operation: "block", Target: req.IP, Reason: req.EngineReason,
+			Source: req.Source, FindingID: req.FindingID, TTL: req.TTL, Actor: "daemon", Automatic: true,
+		}, admission)
+	} else {
+		outcome, err = callBlockIP(blocker, req.IP, req.EngineReason, req.TTL, req.FindingID)
+	}
+	observe(err)
 	observeBlockOutcome(outcome, err, req.Source)
 	res := ApplyBlockResult{Outcome: outcome}
-	if err != nil {
+	verifiedAuditPending := durableOutcome && outcome == firewall.BlockOutcomeLive && errors.Is(err, firewall.ErrActionAuditPending)
+	if err != nil && !verifiedAuditPending {
 		return res, err
 	}
 
@@ -113,18 +153,21 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	// Record in the local threat DB with the same lifetime as the firewall
 	// block. A permanent record here would re-flag the IP via ip_reputation
 	// after the temp block lapses and re-block it forever (permablock loop).
+	progress()
 	if db := GetThreatDB(); db != nil {
 		db.AddTemporary(req.IP, req.Reason, req.TTL)
 	}
 
 	state.IPs = append(state.IPs, blockedIP{
 		IP:        req.IP,
+		FindingID: req.FindingID,
 		Reason:    req.Reason,
 		BlockedAt: time.Now(),
 		ExpiresAt: time.Now().Add(req.TTL),
 	})
 
 	details := fmt.Sprintf("Reason: %s", req.Reason)
+	progress()
 	if cc, ok := blocker.(cloudflareCoverChecker); ok && cc.CloudflareCovers(req.IP) {
 		details += " (warning: " + firewall.CloudflareCoverageWarning + ")"
 	}
@@ -148,9 +191,11 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 			count = config.DefaultPermBlockCount
 		}
 		interval := parseExpiryWithDefault(cfg.AutoResponse.PermBlockInterval, config.DefaultPermBlockInterval)
+		progress()
 		if checkPermBlockEscalation(cfg.StatePath, req.IP, count, interval) {
 			permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
-			if promoteToPermanentBlock(blocker, req.IP, permReason) {
+			progress()
+			if promoteToPermanentBlock(blocker, req.IP, permReason, req.FindingID) {
 				res.Findings = append(res.Findings, alert.Finding{
 					Severity:  alert.Critical,
 					Check:     "auto_block",
@@ -162,5 +207,5 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 		}
 	}
 
-	return res, nil
+	return res, err
 }

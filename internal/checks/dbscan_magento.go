@@ -51,14 +51,15 @@ import (
 // which discovery path produced the creds (useful for messages).
 type magentoCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx      context.Context
-	dbName   string
-	dbUser   string
-	dbPass   string
-	dbHost   string
-	dbPrefix string
-	version  string // "M1" | "M2"
-	path     string
+	ctx        context.Context
+	dbName     string
+	dbUser     string
+	dbPass     string
+	dbHost     string
+	dbPrefix   string
+	version    string // "M1" | "M2"
+	path       string
+	queryState *dbQueryState
 }
 
 func (c magentoCreds) asWPDBCreds() wpDBCreds {
@@ -69,6 +70,8 @@ func (c magentoCreds) asWPDBCreds() wpDBCreds {
 		dbHost:      c.dbHost,
 		tablePrefix: c.dbPrefix,
 		queryCtx:    c.ctx,
+		queryOwner:  "db_content_magento",
+		queryState:  c.queryState,
 	}
 }
 
@@ -117,6 +120,20 @@ var (
 // where M2 found zero malware findings (a clean install). Without
 // this, a half-migrated host with both env.php and stale local.xml
 // would scan the database twice with different credential sets.
+// scanMagentoInstall scans one discovered install (either configuration
+// layout) and stamps its findings with the owner resolved from the
+// configuration path. The display label stays as before; an install
+// outside every account root is not stamped.
+func scanMagentoInstall(ctx context.Context, path, account string, creds magentoCreds, store *state.Store) []alert.Finding {
+	creds.ctx = ctx
+	creds.queryState = new(dbQueryState)
+	findings := scanMagentoAll(store, account, creds)
+	if owner, ok := installOwner(path); ok {
+		findings = stampTenantIDIfEmpty(findings, owner)
+	}
+	return findings
+}
+
 func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
@@ -127,24 +144,24 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.S
 	// M2 discovery first (active version). Rank by mtime desc so recently
 	// touched installs are processed first when the check timeout cuts
 	// iteration short.
-	m2Files := cmsDiscover("*/public_html/app/etc/env.php", "*/*/app/etc/env.php")
-	for _, path := range rankPathsByMtimeDesc(ctx, m2Files, accountScanMaxFiles(ctx, cfg)) {
+	m2Files := cmsDiscover(ctx, "db_content_magento", "*/public_html/app/etc/env.php", "*/*/app/etc/env.php")
+	for _, path := range rankCMSConfigs(ctx, "db_content_magento", m2Files, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
 		account := magentoAccountFromPath(path)
-		creds := parseMagentoM2(path)
-		if creds.dbName == "" {
+		creds, err := parseMagentoM2(ctx, path)
+		if err != nil || creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_content_magento")
 			continue
 		}
-		creds.ctx = ctx
 		seenAccounts[account] = true
-		findings = append(findings, scanMagentoAll(store, account, creds)...)
+		findings = append(findings, scanMagentoInstall(ctx, path, account, creds, store)...)
 	}
 
 	// M1 fallback for hosts where env.php is absent or unparseable.
-	m1Files := cmsDiscover("*/public_html/app/etc/local.xml", "*/*/app/etc/local.xml")
-	for _, path := range rankPathsByMtimeDesc(ctx, m1Files, accountScanMaxFiles(ctx, cfg)) {
+	m1Files := cmsDiscover(ctx, "db_content_magento", "*/public_html/app/etc/local.xml", "*/*/app/etc/local.xml")
+	for _, path := range rankCMSConfigs(ctx, "db_content_magento", m1Files, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
@@ -152,12 +169,12 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.S
 		if seenAccounts[account] {
 			continue
 		}
-		creds := parseMagentoM1(path)
-		if creds.dbName == "" {
+		creds, err := parseMagentoM1(ctx, path)
+		if err != nil || creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_content_magento")
 			continue
 		}
-		creds.ctx = ctx
-		findings = append(findings, scanMagentoAll(store, account, creds)...)
+		findings = append(findings, scanMagentoInstall(ctx, path, account, creds, store)...)
 	}
 	return findings
 }
@@ -175,18 +192,16 @@ func magentoAccountFromPath(path string) string {
 }
 
 // parseMagentoM1 reads local.xml and extracts the connection block.
-// Returns zero-valued creds on any error -- a malformed XML file
-// silently skips the install rather than crashing the deep tier.
-func parseMagentoM1(path string) magentoCreds {
+// A read or XML error keeps the installation out of the completed scan.
+func parseMagentoM1(ctx context.Context, path string) (magentoCreds, error) {
 	creds := magentoCreds{path: path, version: "M1"}
-	// #nosec G304 -- path resolved via osFS.Glob over /home/*/public_html/app/etc/; not attacker-controlled.
-	data, err := osFS.ReadFile(path)
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return creds
+		return creds, err
 	}
 	var root magentoM1XMLRoot
 	if err := xml.Unmarshal(data, &root); err != nil {
-		return creds
+		return creds, err
 	}
 	creds.dbHost = strings.TrimSpace(root.Connection.Host)
 	creds.dbUser = strings.TrimSpace(root.Connection.Username)
@@ -196,7 +211,7 @@ func parseMagentoM1(path string) magentoCreds {
 	if creds.dbHost == "" {
 		creds.dbHost = "localhost"
 	}
-	return creds
+	return creds, nil
 }
 
 // parseMagentoM2 reads env.php and pulls credentials out via the
@@ -204,12 +219,11 @@ func parseMagentoM1(path string) magentoCreds {
 // layout to match against (the one Magento Setup writes), but to
 // stay robust against operator-edited env.php files we match each
 // key independently.
-func parseMagentoM2(path string) magentoCreds {
+func parseMagentoM2(ctx context.Context, path string) (magentoCreds, error) {
 	creds := magentoCreds{path: path, version: "M2"}
-	// #nosec G304 -- same Glob-resolved path as parseMagentoM1.
-	data, err := osFS.ReadFile(path)
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return creds
+		return creds, err
 	}
 	body := string(data)
 
@@ -231,7 +245,7 @@ func parseMagentoM2(path string) magentoCreds {
 	if creds.dbHost == "" {
 		creds.dbHost = "localhost"
 	}
-	return creds
+	return creds, nil
 }
 
 // scanMagentoAll runs the four scan paths against one Magento
@@ -255,7 +269,7 @@ func scanMagentoSettings(account string, creds magentoCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT path, value FROM %score_config_data WHERE %s",
 		creds.dbPrefix, paramsLikeClause("value"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		cfgPath, body := splitTabRow(row)
@@ -293,7 +307,7 @@ func scanMagentoContent(account string, creds magentoCreds, table, valueCol stri
 	query := fmt.Sprintf(
 		"SELECT %s, %s FROM %s%s WHERE %s",
 		idCol, valueCol, creds.dbPrefix, table, paramsLikeClause(valueCol))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		id, body := splitTabRow(row)
@@ -321,8 +335,8 @@ func scanMagentoAdmins(store *state.Store, account string, creds magentoCreds) [
 	query := fmt.Sprintf(
 		"SELECT user_id, username, email FROM %sadmin_user",
 		creds.dbPrefix)
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
-	return cmsAdminFindings(store, "magento", "magento_admin_injection", account, rows, func(fields []string) (string, string) {
+	rows, complete := runCMSQuery(creds.asWPDBCreds(), query)
+	return cmsAdminFindings(store, "magento", "magento_admin_injection", account, creds.asWPDBCreds(), rows, complete, func(fields []string) (string, string) {
 		return fmt.Sprintf("Magento %s admin account on %s: user_id=%s", creds.version, account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})

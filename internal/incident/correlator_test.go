@@ -506,7 +506,10 @@ func TestKeyStringDoesNotCollideOnDelimiters(t *testing.T) {
 func TestCorrelatorPersistFiresExactlyOncePerCreateAndMerge(t *testing.T) {
 	var calls int
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(_ Incident) { calls++ },
+		Persist: func(_ Incident) error {
+			calls++
+			return nil
+		},
 	})
 	base := time.Unix(1_700_000_000, 0)
 	clock := base
@@ -577,9 +580,10 @@ func TestCorrelatorPersistRunsOutsideLock(t *testing.T) {
 	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
 
 	// Install Persist after construction so we have the *Correlator.
-	c.cfg.Persist = func(inc Incident) {
+	c.cfg.Persist = func(inc Incident) error {
 		// Re-enter; if mu were held this would deadlock the test.
 		_, _ = c.Get(inc.ID)
+		return nil
 	}
 
 	done := make(chan struct{})
@@ -612,15 +616,16 @@ func TestCorrelatorPersistReentrantReadDoesNotDeadlockBehindQueuedWriter(t *test
 	firstPersist := make(chan struct{})
 	allowFirstRead := make(chan struct{})
 	var persistCalls atomic.Int32
-	c.cfg.Persist = func(inc Incident) {
+	c.cfg.Persist = func(inc Incident) error {
 		if persistCalls.Add(1) != 1 {
-			return
+			return nil
 		}
 		close(firstPersist)
 		<-allowFirstRead
 		if _, ok := c.Get(inc.ID); !ok {
 			t.Errorf("Persist re-entry could not read incident %q", inc.ID)
 		}
+		return nil
 	}
 
 	firstDone := make(chan struct{})
@@ -686,16 +691,17 @@ func TestCorrelatorDeferredStatusPersistenceWaitsForEarlierWrites(t *testing.T) 
 			releaseFirst := make(chan struct{})
 			laterPersist := make(chan struct{}, 1)
 			var calls atomic.Int32
-			c.cfg.Persist = func(_ Incident) {
+			c.cfg.Persist = func(_ Incident) error {
 				if calls.Add(1) == 1 {
 					close(firstPersist)
 					<-releaseFirst
-					return
+					return nil
 				}
 				select {
 				case laterPersist <- struct{}{}:
 				default:
 				}
+				return nil
 			}
 
 			createDone := make(chan struct{})
@@ -763,12 +769,13 @@ func waitForTestSignal(t *testing.T, ch <-chan struct{}, message string) {
 func TestCorrelatorPersistReceivesDeepCopy(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{})
 	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
-	c.cfg.Persist = func(inc Incident) {
+	c.cfg.Persist = func(inc Incident) error {
 		inc.Findings[0] = "mutated-finding"
 		inc.Timeline[0].Message = "mutated-message"
 		if inc.CorrelationKey != nil {
 			inc.CorrelationKey.Account = "mallory"
 		}
+		return nil
 	}
 
 	id, _, _ := c.OnFinding(alert.Finding{
@@ -967,7 +974,7 @@ func TestCorrelatorPruneClosedOlderThanRemovesMemoryEntries(t *testing.T) {
 	})
 	c.lastPersistAt["inc_old_closed"] = old
 
-	pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour)
+	pruned := c.PruneClosedOlderThan(now, ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 30 * 24 * time.Hour})
 	if pruned != 1 {
 		t.Fatalf("PruneClosedOlderThan pruned %d, want 1", pruned)
 	}
@@ -1045,7 +1052,7 @@ func TestCorrelatorPruneClosedUnbindsSpray(t *testing.T) {
 		t.Fatalf("setup: spray binding for %s = %q, want inc_spray_closed_b", ip2, got)
 	}
 
-	if pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour); pruned != 2 {
+	if pruned := c.PruneClosedOlderThan(now, ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 30 * 24 * time.Hour}); pruned != 2 {
 		t.Fatalf("PruneClosedOlderThan pruned %d, want 2", pruned)
 	}
 	if got := c.spray.IncidentForIP(ip1); got != "" {
@@ -1333,5 +1340,25 @@ func TestCorrelatorOpenCountsBySeverity(t *testing.T) {
 	}
 	if got["warning"] != 1 {
 		t.Errorf("warning: want 1, got %d", got["warning"])
+	}
+}
+
+func TestCorrelatorPruneClosedOlderThanPrunesAutoClosedSooner(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	eightDays := now.Add(-8 * 24 * time.Hour)
+	c := newTestCorrelator()
+	c.Restore([]Incident{
+		{ID: "inc_auto", Status: StatusResolved, Severity: alert.High, Account: "alice", ClosedBy: "auto:stale", ClosedAt: eightDays, CreatedAt: eightDays, UpdatedAt: eightDays},
+		{ID: "inc_operator", Status: StatusDismissed, Severity: alert.High, Account: "bob", ClosedBy: "operator", ClosedAt: eightDays, CreatedAt: eightDays, UpdatedAt: eightDays},
+	})
+
+	if pruned := c.PruneClosedOlderThan(now, ClosedRetention{Operator: 30 * 24 * time.Hour, Auto: 7 * 24 * time.Hour}); pruned != 1 {
+		t.Fatalf("PruneClosedOlderThan pruned %d, want 1", pruned)
+	}
+	if _, ok := c.Get("inc_auto"); ok {
+		t.Error("auto-closed incident past its retention still present")
+	}
+	if _, ok := c.Get("inc_operator"); !ok {
+		t.Error("operator-closed incident pruned before its retention")
 	}
 }

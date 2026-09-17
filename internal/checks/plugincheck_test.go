@@ -152,11 +152,14 @@ func TestRefreshPluginCacheTimeoutDoesNotDoubleLog(t *testing.T) {
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			// Match findAllWPInstalls()'s "/home/*/*/wp-config.php" pattern.
+			// Match findAllWPInstalls(context.Background())'s "/home/*/*/wp-config.php" pattern.
 			if pattern == "/home/*/*/wp-config.php" {
 				return []string{"/home/alice/www/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/www/wp-config.php"})
 		},
 	})
 
@@ -209,6 +212,31 @@ func TestRefreshPluginCacheNoInstallsClearsStaleInventory(t *testing.T) {
 	}
 }
 
+func TestRefreshPluginCacheIncompleteDiscoveryKeepsStaleInventory(t *testing.T) {
+	db := setupPluginStore(t)
+	const wpPath = "/home/alice/public_html"
+	if err := db.SetSitePlugins(wpPath, store.SitePlugins{
+		Domain:  "alice.example",
+		Plugins: []store.SitePluginEntry{{Slug: "ultimate-member", InstalledVersion: "2.4.1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{
+		readFile: func(string) ([]byte, error) { return nil, os.ErrPermission },
+		glob:     func(string) ([]string, error) { return nil, nil },
+	})
+
+	ctx, _ := withIncompleteCheckCollector(context.Background())
+	refreshPluginCache(ctx, db)
+
+	if _, found := db.GetSitePlugins(wpPath); !found {
+		t.Fatal("incomplete discovery pruned a site that may still exist")
+	}
+	if !db.GetPluginRefreshTime().IsZero() {
+		t.Fatal("incomplete discovery marked the partial inventory fresh")
+	}
+}
+
 func TestRefreshPluginCacheFailedInventoryDropsStaleSite(t *testing.T) {
 	db := setupPluginStore(t)
 	wpPath := "/home/alice/public_html"
@@ -218,12 +246,17 @@ func TestRefreshPluginCacheFailedInventoryDropsStaleSite(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
-		if pattern == "/home/*/public_html/wp-config.php" {
-			return []string{wpPath + "/wp-config.php"}, nil
-		}
-		return nil, nil
-	}})
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpPath + "/wp-config.php"}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpPath + "/wp-config.php"})
+		},
+	})
 	withMockCmd(t, &mockCmd{runContextStdout: func(context.Context, string, ...string) ([]byte, error) {
 		return nil, context.DeadlineExceeded
 	}})
@@ -241,12 +274,17 @@ func TestRefreshPluginCacheFailedInventoryDropsStaleSite(t *testing.T) {
 func TestEnsurePluginCacheFreshCoalescesConcurrentRefreshes(t *testing.T) {
 	db := setupPluginStore(t)
 	wpConfig := "/home/alice/public_html/wp-config.php"
-	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
-		if pattern == "/home/*/public_html/wp-config.php" {
-			return []string{wpConfig}, nil
-		}
-		return nil, nil
-	}})
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
+		},
+	})
 	var inventoryCalls atomic.Int32
 	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		command := strings.Join(args, " ")
@@ -324,11 +362,14 @@ func TestRefreshPluginCacheDropsStderrFromStdout(t *testing.T) {
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			// Match findAllWPInstalls()'s "/home/*/*/wp-config.php" pattern.
+			// Match findAllWPInstalls(context.Background())'s "/home/*/*/wp-config.php" pattern.
 			if pattern == "/home/*/*/wp-config.php" {
 				return []string{"/home/alice/www/wp-config.php"}, nil
 			}
 			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/www/wp-config.php"})
 		},
 	})
 
@@ -395,5 +436,26 @@ func TestRunWPCLIUsesRunuserNotSu(t *testing.T) {
 	wantArgs := []string{"-l", "-s", "/bin/bash", "-c", "plugin list --format=json", "--", "alice"}
 	if !slices.Equal(gotArgs, wantArgs) {
 		t.Fatalf("runuser args = %#v, want %#v", gotArgs, wantArgs)
+	}
+}
+
+// Plugin discovery already walked nested roots but never consulted the panel
+// map, so a document root outside the home layout had no plugin coverage at
+// all -- including the vulnerable-plugin findings that drive virtual patching.
+func TestFindAllWPInstalls_UsesPanelMappedRoots(t *testing.T) {
+	old := osFS
+	fs := &mockOSGlobRoots{files: []string{"/home/alice/sites/live/wp-config.php"}}
+	fs.readFile = func(name string) ([]byte, error) {
+		if name == userdataDomainsPath {
+			return []byte("shop.example.com: alice==alice==sub==shop.example.com==/home/alice/sites/live\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	osFS = fs
+	t.Cleanup(func() { osFS = old })
+
+	got := findAllWPInstalls(context.Background())
+	if len(got) != 1 || got[0] != "/home/alice/sites/live/wp-config.php" {
+		t.Errorf("installs = %v, want the panel-mapped root", got)
 	}
 }

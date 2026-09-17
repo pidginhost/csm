@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -287,6 +288,7 @@ func TestHasFix_SuspiciousCrontab(t *testing.T) {
 }
 
 func TestApplyFix_SuspiciousCrontab_RouteWired(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	spool := mustEvalSymlinks(t, t.TempDir())
 	withCrontabAllowedRoots(t, spool)
 	withQuarantineDirCF(t, filepath.Join(t.TempDir(), "q"))
@@ -296,7 +298,7 @@ func TestApplyFix_SuspiciousCrontab_RouteWired(t *testing.T) {
 		t.Fatalf("stage: %v", err)
 	}
 
-	res := ApplyFix("suspicious_crontab",
+	res := ApplyFix(context.Background(), "suspicious_crontab",
 		"Suspicious pattern in crontab for user victim1: defunct-kernel",
 		"",
 		target)

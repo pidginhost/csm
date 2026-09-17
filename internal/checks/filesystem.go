@@ -357,6 +357,19 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 // remainder, so "*.php" became the bare token ".php" and silenced every file
 // whose path merely contained ".php" -- turning a narrow pattern into a
 // whole-subtree allowlist an attacker could hide a webshell in.
+// PathMatchesIgnore reports whether path is covered by any of the operator's
+// suppressions.ignore_paths patterns, using the same glob semantics the
+// content checks apply. Exported so the real-time watchers honour the same
+// suppression list instead of maintaining a second interpretation of it.
+func PathMatchesIgnore(path string, ignores []string) bool {
+	for _, ignore := range ignores {
+		if matchGlob(path, ignore) {
+			return true
+		}
+	}
+	return false
+}
+
 func matchGlob(path, pattern string) bool {
 	if pattern == "" {
 		return false

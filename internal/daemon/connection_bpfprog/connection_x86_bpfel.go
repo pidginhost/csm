@@ -25,12 +25,33 @@ type ConnectionConnEvent struct {
 	Decision uint32
 }
 
+type ConnectionCsmQueueStats struct {
+	_         structs.HostLayout
+	Lost      uint64
+	Submitted uint64
+}
+
 type ConnectionPolicyState struct {
 	_              structs.HostLayout
 	Enforce        uint32
 	DryRun         uint32
 	ProtectedPorts uint32
 }
+
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	ConnectionMapEvents         = "events"
+	ConnectionMapPolicy         = "policy"
+	ConnectionMapProtectedPorts = "protected_ports"
+	ConnectionMapQueueStats     = "queue_stats"
+	ConnectionMapSafeUids       = "safe_uids"
+	ConnectionProgCsmConnect4   = "csm_connect4"
+	ConnectionProgCsmConnect6   = "csm_connect6"
+	ConnectionVarUnused         = "unused"
+	ConnectionVarUnusedPolicy   = "unused_policy"
+)
 
 // LoadConnection returns the embedded CollectionSpec for Connection.
 func LoadConnection() (*ebpf.CollectionSpec, error) {
@@ -52,7 +73,7 @@ func LoadConnection() (*ebpf.CollectionSpec, error) {
 //	*ConnectionMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func LoadConnectionObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func LoadConnectionObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := LoadConnection()
 	if err != nil {
 		return err
@@ -85,6 +106,7 @@ type ConnectionMapSpecs struct {
 	Events         *ebpf.MapSpec `ebpf:"events"`
 	Policy         *ebpf.MapSpec `ebpf:"policy"`
 	ProtectedPorts *ebpf.MapSpec `ebpf:"protected_ports"`
+	QueueStats     *ebpf.MapSpec `ebpf:"queue_stats"`
 	SafeUids       *ebpf.MapSpec `ebpf:"safe_uids"`
 }
 
@@ -119,6 +141,7 @@ type ConnectionMaps struct {
 	Events         *ebpf.Map `ebpf:"events"`
 	Policy         *ebpf.Map `ebpf:"policy"`
 	ProtectedPorts *ebpf.Map `ebpf:"protected_ports"`
+	QueueStats     *ebpf.Map `ebpf:"queue_stats"`
 	SafeUids       *ebpf.Map `ebpf:"safe_uids"`
 }
 
@@ -127,6 +150,7 @@ func (m *ConnectionMaps) Close() error {
 		m.Events,
 		m.Policy,
 		m.ProtectedPorts,
+		m.QueueStats,
 		m.SafeUids,
 	)
 }

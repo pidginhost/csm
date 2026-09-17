@@ -23,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/metrics"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // spoolQueueOverflowTotal counts FAN_Q_OVERFLOW records on the spool watcher.
@@ -108,8 +109,11 @@ type SpoolWatcher struct {
 	runActive      int32 // atomic - Run owns scanCh shutdown while set
 	degradedMu     sync.Mutex
 	lastDegradedAt time.Time
-	panicMu        sync.Mutex
-	lastPanicAt    time.Time
+
+	encryptedMu     sync.Mutex
+	lastEncryptedAt time.Time
+	panicMu         sync.Mutex
+	lastPanicAt     time.Time
 
 	// queueOverflows counts FAN_Q_OVERFLOW records. In permission mode a kernel
 	// queue overflow means opens were let through without a scan verdict, so
@@ -118,13 +122,38 @@ type SpoolWatcher struct {
 	queueOverflows int64 // atomic
 	overflowMu     sync.Mutex
 	lastOverflowAt time.Time
+	// holds tracks hold-budget expiries and decides when to stop holding mail.
+	holds holdWatchdog
+
+	queueHealthOnce   sync.Once
+	scannerHealth     *queuehealth.Tracker
+	kernelQueueHealth *queuehealth.Tracker
+	kernelQueue       *notificationQueue
 }
 
 type spoolEvent struct {
-	path     string
-	fd       int // fanotify event fd (for permission response)
-	pid      int32
-	needResp bool // true if permission event requiring response
+	queueTicket queuehealth.Ticket
+	path        string
+	fd          int // fanotify event fd (for permission response)
+	pid         int32
+	needResp    bool // true if permission event requiring response
+	// guard bounds how long this open stays suspended. Nil for events built
+	// outside dispatchEvent, which answer directly from needResp.
+	guard *holdGuard
+}
+
+// finish hands the kernel a verdict for this event, once, and closes the
+// event fd. The guard may already have answered when the scan outran the
+// hold budget; then this verdict only affects quarantine, not delivery.
+func (evt spoolEvent) finish(sw *SpoolWatcher, response uint32) {
+	switch {
+	case evt.guard != nil:
+		evt.guard.finish(response)
+		return
+	case evt.needResp:
+		spoolWriteResponse(sw, int32(evt.fd), response) // #nosec G115 -- POSIX fd fits in int32.
+	}
+	_ = unix.Close(evt.fd)
 }
 
 // NewSpoolWatcher creates a dedicated fanotify instance for Exim spool scanning.
@@ -324,12 +353,12 @@ func (sw *SpoolWatcher) Run() {
 }
 
 func (sw *SpoolWatcher) readEvents(buf []byte) {
+	sw.initQueueHealth()
 	for {
-		n, err := unix.Read(sw.fd, buf)
+		n, err := sw.kernelQueue.read(buf, sw.parseEvents)
 		if err != nil || n < metadataSize {
 			return
 		}
-		sw.parseEvents(buf[:n])
 	}
 }
 
@@ -359,6 +388,8 @@ func (sw *SpoolWatcher) parseEvents(buf []byte) {
 // them, so an overflow means some inbound messages were delivered without an
 // AV scan. Count it and emit a rate-limited Warning that says so.
 func (sw *SpoolWatcher) handleQueueOverflow() {
+	sw.initQueueHealth()
+	sw.kernelQueueHealth.Lose(time.Now(), 1)
 	atomic.AddInt64(&sw.queueOverflows, 1)
 	if spoolQueueOverflowTotal != nil {
 		spoolQueueOverflowTotal.Inc()
@@ -414,25 +445,36 @@ func (sw *SpoolWatcher) dispatchEvent(fd int32, pid int32) {
 		return
 	}
 
-	// Send to scan workers - blocks if pool is full.
-	// This is intentional: backpressure on Exim's delivery runner
-	// is the correct behavior per the spec. Exim is designed to
-	// handle delivery delays; unscanned delivery is not acceptable.
+	// While the scanner is behind, release opens instead of queueing them.
+	if sw.dispatchBypass(fd, sw.permissionMode) {
+		return
+	}
+
+	// Hand to a scan worker. The kernel keeps the opener suspended meanwhile,
+	// so the guard's budget starts here: time spent queued counts against the
+	// same deadline as time spent scanning.
+	sw.initQueueHealth()
 	evt := spoolEvent{
-		path:     path,
-		fd:       int(fd),
-		pid:      pid,
-		needResp: sw.permissionMode,
+		queueTicket: sw.scannerHealth.Begin(time.Now()),
+		path:        path,
+		fd:          int(fd),
+		pid:         pid,
+		needResp:    sw.permissionMode,
+		guard:       sw.newHoldGuard(fd, sw.permissionMode),
 	}
 	select {
 	case sw.scanCh <- evt:
 		// Worker will handle response and fd close
 	case <-sw.stopCh:
 		// Shutting down - allow and close
-		if sw.permissionMode {
-			sw.writeResponse(fd, FAN_ALLOW)
-		}
-		_ = unix.Close(int(fd))
+		evt.queueTicket.Reject(time.Now())
+		evt.finish(sw, FAN_ALLOW)
+	default:
+		// Never wait in the reader: later events in this batch (including our
+		// own parser opens) are also suspended and do not yet have timers.
+		evt.queueTicket.Reject(time.Now())
+		evt.guard.expire()
+		evt.finish(sw, FAN_ALLOW)
 	}
 }
 
@@ -476,18 +518,23 @@ func (sw *SpoolWatcher) scanWorker() {
 // substitute a panicking handler.
 var spoolEventHandler = (*SpoolWatcher).handleSpoolEvent
 
-// handleSpoolEventSafe runs one event and contains a panic. The handler's
-// deferred response still answers the kernel (fail-open) and closes the fd
-// while the stack unwinds, so what remains is to report and carry on.
+// handleSpoolEventSafe contains panics and guarantees event cleanup even if a
+// handler fails before installing its own defer. Shared guard ownership makes
+// this fallback safe after a handler has already answered and closed the fd.
 // Re-raising would restart the daemon, and Exim would redeliver the same
 // message into the same panic.
 func (sw *SpoolWatcher) handleSpoolEventSafe(evt spoolEvent) {
+	if evt.guard == nil {
+		evt.guard = &holdGuard{sw: sw, fd: int32(evt.fd), needResp: evt.needResp} // #nosec G115 -- POSIX fd fits in int32.
+	}
 	defer func() {
+		evt.finish(sw, FAN_ALLOW)
 		if r := recover(); r != nil {
 			sw.reportScannerPanic(evt.path, r)
 		}
 	}()
-	spoolEventHandler(sw, evt)
+	work := queuehealth.Work[spoolEvent]{Value: evt, Ticket: evt.queueTicket}
+	work.Process(func(queued spoolEvent) { spoolEventHandler(sw, queued) })
 }
 
 // reportScannerPanic logs the panic with its stack, forwards it to
@@ -510,11 +557,15 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	// Only overridden to FAN_DENY when policy requires deferral or quarantine.
 	response := uint32(FAN_ALLOW)
 	defer func() {
-		if evt.needResp {
-			// #nosec G115 -- evt.fd is a POSIX fd; fits in int32.
-			sw.writeResponse(int32(evt.fd), response)
+		evt.finish(sw, response)
+		// finish joins the winning verdict; checking before it could miss a
+		// timer that wins concurrently, or mistake a tempfail for delivery.
+		released := evt.guard != nil && evt.guard.timedOut() && evt.guard.timeoutVerdict == FAN_ALLOW
+		if released && response == FAN_DENY {
+			sw.emitFinding("email_av_late_verdict", alert.Warning,
+				fmt.Sprintf("Message %s was allowed before its scan finished (hold budget %s) and the scan then asked to stop delivery. A copy may already have been delivered; see the scan and quarantine findings for the final outcome.",
+					strings.TrimSuffix(filepath.Base(evt.path), "-D"), spoolHoldBudget))
 		}
-		_ = unix.Close(evt.fd)
 	}()
 
 	// Derive message ID: strip -D suffix and directory
@@ -562,6 +613,8 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 			os.Remove(p.TempPath)
 		}
 	}()
+
+	sw.emitEncryptedArchiveWarning(msgID, extraction.EncryptedEntries, extraction.EncryptedEntriesOmitted)
 
 	if extraction.Partial {
 		partialResult := &emailav.ScanResult{PartialExtraction: true}
@@ -621,7 +674,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	}
 
 	if sw.cfg.EmailAV.QuarantineInfected {
-		if err := sw.quarantine.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
+		if err := sw.quarantineSpoolEvent(evt, msgID, spoolDir, result, env); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] spool watcher: quarantine failed for %s: %v\n", ts(), msgID, err)
 			sw.emitFinding("email_av_quarantine_error", alert.Warning,
 				fmt.Sprintf("Quarantine failed for infected message %s: %v", msgID, err))
@@ -659,7 +712,8 @@ func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 	// #nosec G103 -- serializing the fanotify response struct for the
 	// kernel write; unsafe cast to a byte slice of the exact struct size.
 	respBytes := (*[responseSize]byte)(unsafe.Pointer(&resp))[:]
-	_, err := unix.Write(sw.fd, respBytes)
+	sw.initQueueHealth()
+	_, err := sw.kernelQueue.write(respBytes)
 	if err != nil {
 		// The kernel holds blocked processes until a response is written or
 		// the fanotify fd is closed. A failed write means the fd is broken -
@@ -674,19 +728,60 @@ func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 // closeFd closes the fanotify fd exactly once, even if called from multiple paths.
 func (sw *SpoolWatcher) closeFd() {
 	if atomic.CompareAndSwapInt32(&sw.fdClosed, 0, 1) {
-		_ = unix.Close(sw.fd)
+		sw.initQueueHealth()
+		_ = sw.kernelQueue.close()
 	}
 }
 
-func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, message string) {
-	select {
-	case sw.alertCh <- alert.Finding{
-		Severity: severity,
-		Check:    check,
-		Message:  message,
-	}:
-	default:
+func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, message string) bool {
+	if alert.TryEnqueue(sw.alertCh, alert.Finding{
+		Severity:  severity,
+		Check:     check,
+		Message:   message,
+		Timestamp: time.Now(),
+	}) {
+		return true
+	} else {
 		// Alert channel full - drop
+		return false
+	}
+}
+
+// encryptedArchiveAlertInterval rate-limits the encrypted-archive finding.
+// Password-protected archives are a steady part of ordinary business mail, so
+// this is a recurring condition rather than an incident; a per-minute limit
+// would put over a thousand findings a day in front of the operator.
+const encryptedArchiveAlertInterval = time.Hour
+
+// emitEncryptedArchiveWarning reports attachments delivered without being
+// scanned because their archive entries are encrypted. This is deliberately
+// not an email_av_degraded finding: nothing is degraded, and no retry will
+// make the content readable. Keeping it separate lets an operator set policy
+// on unscannable mail without losing the signal that scanning itself broke.
+func (sw *SpoolWatcher) emitEncryptedArchiveWarning(msgID string, entries []emime.EncryptedArchiveEntry, omitted int) {
+	if len(entries) == 0 && omitted == 0 {
+		return
+	}
+
+	sw.encryptedMu.Lock()
+	defer sw.encryptedMu.Unlock()
+	if time.Since(sw.lastEncryptedAt) < encryptedArchiveAlertInterval {
+		return
+	}
+
+	named := make([]string, 0, len(entries))
+	for _, e := range entries {
+		named = append(named, fmt.Sprintf("%s in %s", e.Filename, e.ArchiveName))
+	}
+	if omitted > 0 {
+		named = append(named, fmt.Sprintf("%d additional encrypted member(s) (names omitted)", omitted))
+	}
+	if sw.emitFinding("email_av_encrypted_archive", alert.Warning,
+		fmt.Sprintf("Encrypted archive attachment could not be scanned for message %s: %s",
+			msgID, strings.Join(named, ", "))) {
+		// Only delivered warnings consume the allowance; queue pressure must
+		// not hide this condition for an hour after the queue recovers.
+		sw.lastEncryptedAt = time.Now()
 	}
 }
 

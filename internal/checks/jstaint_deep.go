@@ -58,32 +58,80 @@ func sanitizeJSTaintDisplay(s string, maxBytes int) string {
 // the js_taint_scan_incomplete diagnostic. Non-analyzed statuses are never
 // counted as clean files.
 type jsTaintGapCollector struct {
-	paths    map[string]struct{}
-	byStatus map[string]int
-	example  map[string]string
+	paths          map[string]struct{}
+	pathAliases    map[string]struct{}
+	aliasesByPath  map[string][]string
+	byStatus       map[string]int
+	example        map[string]string
+	recordCoverage func([]string)
+	resolveAliases func(string) ([]string, bool)
+	unknown        int
+	unknownExample string
 }
 
 func newJSTaintGapCollector() *jsTaintGapCollector {
 	return &jsTaintGapCollector{
-		paths:    map[string]struct{}{},
-		byStatus: map[string]int{},
-		example:  map[string]string{},
+		paths:         map[string]struct{}{},
+		pathAliases:   map[string]struct{}{},
+		aliasesByPath: map[string][]string{},
+		byStatus:      map[string]int{},
+		example:       map[string]string{},
 	}
 }
 
 func (g *jsTaintGapCollector) record(path, status string) {
-	g.paths[path] = struct{}{}
+	aliases, retained := g.aliasesByPath[path]
+	if !retained {
+		stable := true
+		if g.resolveAliases != nil {
+			aliases, stable = g.resolveAliases(path)
+		} else {
+			aliases = []string{coverageLexicalPath(path)}
+		}
+		if !stable {
+			g.recordUnknownRange(fmt.Sprintf("%s changed while its path identity was captured", path))
+			g.byStatus[status]++
+			if _, ok := g.example[status]; !ok {
+				g.example[status] = sanitizeJSTaintDisplay(path, jsTaintExampleMaxBytes)
+			}
+			return
+		}
+		g.paths[path] = struct{}{}
+		g.aliasesByPath[path] = aliases
+		for _, alias := range aliases {
+			g.pathAliases[alias] = struct{}{}
+		}
+	}
+	if g.recordCoverage != nil {
+		g.recordCoverage(aliases)
+	}
 	g.byStatus[status]++
 	if _, ok := g.example[status]; !ok {
 		g.example[status] = sanitizeJSTaintDisplay(path, jsTaintExampleMaxBytes)
 	}
 }
 
-func (g *jsTaintGapCollector) empty() bool { return len(g.byStatus) == 0 }
+func (g *jsTaintGapCollector) recordUnknownRange(detail string) {
+	g.unknown++
+	if g.unknownExample == "" {
+		g.unknownExample = sanitizeJSTaintDisplay(detail, jsTaintExampleMaxBytes)
+	}
+}
+
+func (g *jsTaintGapCollector) pathsIncomplete() bool { return g.unknown > 0 }
+
+func (g *jsTaintGapCollector) empty() bool { return len(g.byStatus) == 0 && g.unknown == 0 }
 
 func (g *jsTaintGapCollector) hasPath(path string) bool {
-	_, ok := g.paths[path]
-	return ok
+	if _, ok := g.paths[path]; ok {
+		return true
+	}
+	for _, alias := range coveragePathAliases(path) {
+		if _, ok := g.pathAliases[alias]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *jsTaintGapCollector) finding() alert.Finding {
@@ -94,14 +142,21 @@ func (g *jsTaintGapCollector) finding() alert.Finding {
 		statuses = append(statuses, status)
 	}
 	sort.Strings(statuses)
-	parts := make([]string, 0, len(statuses))
+	parts := make([]string, 0, len(statuses)+1)
 	for _, status := range statuses {
 		parts = append(parts, fmt.Sprintf("%s=%d (example: %s)", status, g.byStatus[status], g.example[status]))
+	}
+	if g.unknown > 0 {
+		parts = append(parts, fmt.Sprintf("unreadable-range=%d (example: %s)", g.unknown, g.unknownExample))
+	}
+	message := fmt.Sprintf("JavaScript taint deep scan could not analyze %d file(s)", total)
+	if total == 0 {
+		message = fmt.Sprintf("JavaScript taint deep scan could not cover %d location(s)", g.unknown)
 	}
 	return alert.Finding{
 		Severity: alert.Warning,
 		Check:    "js_taint_scan_incomplete",
-		Message:  fmt.Sprintf("JavaScript taint deep scan could not analyze %d file(s)", total),
+		Message:  message,
 		Details:  strings.Join(parts, "; "),
 	}
 }
@@ -130,7 +185,9 @@ func carryForwardJSTaintFindings(prior []alert.Finding, gaps *jsTaintGapCollecto
 	sort.Strings(paths)
 	carried := make([]alert.Finding, 0, len(paths))
 	for _, path := range paths {
-		carried = append(carried, byPath[path])
+		finding := byPath[path]
+		finding.ScanCarryForward = true
+		carried = append(carried, finding)
 	}
 	return carried
 }

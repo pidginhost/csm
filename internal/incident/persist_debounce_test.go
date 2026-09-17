@@ -27,7 +27,10 @@ func sprayIncidentSeverity(c *Correlator) alert.Severity {
 func TestMergeDebouncesBookkeepingPersists(t *testing.T) {
 	var calls int32
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(Incident) { atomic.AddInt32(&calls, 1) },
+		Persist: func(Incident) error {
+			atomic.AddInt32(&calls, 1)
+			return nil
+		},
 	})
 	c.openThreshold = 1
 	base := time.Unix(1_700_000_000, 0)
@@ -55,7 +58,10 @@ func TestMergeDebouncesBookkeepingPersists(t *testing.T) {
 func TestMergePersistsAfterDebounceWindow(t *testing.T) {
 	var calls int32
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(Incident) { atomic.AddInt32(&calls, 1) },
+		Persist: func(Incident) error {
+			atomic.AddInt32(&calls, 1)
+			return nil
+		},
 	})
 	c.openThreshold = 1
 	base := time.Unix(1_700_000_000, 0)
@@ -79,7 +85,10 @@ func TestMergePersistsAfterDebounceWindow(t *testing.T) {
 func TestFlushPendingPersistsWritesDebouncedBookkeeping(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(inc Incident) { persisted = append(persisted, inc) },
+		Persist: func(inc Incident) error {
+			persisted = append(persisted, inc)
+			return nil
+		},
 	})
 	c.openThreshold = 1
 	base := time.Unix(1_700_000_000, 0)
@@ -112,7 +121,10 @@ func TestFlushPendingPersistsWritesDebouncedBookkeeping(t *testing.T) {
 func TestBulkStatusPersistClearsPendingDebounce(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(inc Incident) { persisted = append(persisted, inc) },
+		Persist: func(inc Incident) error {
+			persisted = append(persisted, inc)
+			return nil
+		},
 	})
 	c.openThreshold = 1
 	base := time.Unix(1_700_000_000, 0)
@@ -161,7 +173,10 @@ func TestThresholdPromotionPersistsTriggerFindingWithinDebounceWindow(t *testing
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
 		OpenThreshold: 2,
-		Persist:       func(inc Incident) { persisted = append(persisted, inc) },
+		Persist: func(inc Incident) error {
+			persisted = append(persisted, inc)
+			return nil
+		},
 	})
 	base := time.Unix(1_700_000_000, 0)
 	clock := base
@@ -204,7 +219,10 @@ func TestThresholdPromotionPersistsTriggerFindingWithinDebounceWindow(t *testing
 func TestSeverityEscalationPersistsWithinDebounceWindow(t *testing.T) {
 	var calls int32
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(Incident) { atomic.AddInt32(&calls, 1) },
+		Persist: func(Incident) error {
+			atomic.AddInt32(&calls, 1)
+			return nil
+		},
 	})
 	c.openThreshold = 1
 	base := time.Unix(1_700_000_000, 0)
@@ -229,7 +247,10 @@ func TestSpraySuppressEscalationPersistsOnce(t *testing.T) {
 	var calls int32
 	c := NewCorrelator(CorrelatorConfig{
 		SpraySuppression: sprayTestConfig(true, false),
-		Persist:          func(Incident) { atomic.AddInt32(&calls, 1) },
+		Persist: func(Incident) error {
+			atomic.AddInt32(&calls, 1)
+			return nil
+		},
 	})
 	c.openThreshold = 1
 	base := time.Unix(1_700_000_000, 0)

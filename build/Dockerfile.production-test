@@ -1,0 +1,10 @@
+ARG BUILDER_IMAGE
+FROM ${BUILDER_IMAGE}
+
+# Kernel/service tests use the same C library and Go bindings as the release.
+# nftables: the firewall kernel tests shell out to nft, and without it they
+# fail on a missing binary rather than on the behaviour they exist to check.
+RUN dnf -y module reset php \
+    && dnf -y module enable php:8.2 \
+    && dnf -y install systemd dbus php-cli nftables \
+    && dnf clean all

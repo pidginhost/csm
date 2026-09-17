@@ -211,3 +211,57 @@ func TestSpamTaxonomy_MalformedRows(t *testing.T) {
 		t.Error("malformed taxonomy rows did not mark the database scan incomplete")
 	}
 }
+
+// The "Document root: served by the panel" line in a database finding's
+// details reports what the panel map said this scan, not what was found in the
+// database. That map is read per scan and can fail transiently, so the line
+// appears and disappears while the finding itself is unchanged -- which minted
+// a second copy of every affected row. Production carried six db_spam_taxonomy
+// rows for three sites this way.
+func TestSpamTaxonomy_IdentityIgnoresDocrootServedState(t *testing.T) {
+	rows := []string{
+		"48\tpost_tag\t1\thttps://hellspincasino.pl",
+		"49\tpost_tag\t1\thttps://azurslots.at",
+	}
+	find := func(state servedState) alert.Finding {
+		t.Helper()
+		taxonomyRows(t, rows)
+		creds := wpDBCreds{dbHost: "localhost", dbName: "wp", dbUser: "u", dbPass: "p", docrootServed: state}
+		got := checkWPSpamTaxonomy("alice", creds, "wp_")
+		if len(got) != 1 {
+			t.Fatalf("findings = %d, want 1", len(got))
+		}
+		return got[0]
+	}
+	served := find(servedByPanel)
+	unknown := find(servedUnknown)
+	if served.Details == unknown.Details {
+		t.Fatal("test is not exercising the served-state difference: details are identical")
+	}
+	if served.Key() != unknown.Key() {
+		t.Errorf("identity changed with the served state:\n served  = %q\n unknown = %q", served.Key(), unknown.Key())
+	}
+	if served.Fingerprint() != unknown.Fingerprint() {
+		t.Errorf("fingerprint changed with the served state: %q vs %q", served.Fingerprint(), unknown.Fingerprint())
+	}
+}
+
+// Two different spam vocabularies in the same database are two findings, so
+// the pinned identity must still separate them.
+func TestSpamTaxonomy_IdentitySeparatesDistinctFindings(t *testing.T) {
+	creds := wpDBCreds{dbHost: "localhost", dbName: "wp", dbUser: "u", dbPass: "p", docrootServed: servedByPanel}
+	find := func(rows []string) alert.Finding {
+		t.Helper()
+		taxonomyRows(t, rows)
+		got := checkWPSpamTaxonomy("alice", creds, "wp_")
+		if len(got) != 1 {
+			t.Fatalf("findings = %d, want 1", len(got))
+		}
+		return got[0]
+	}
+	casino := find([]string{"48\tpost_tag\t1\thttps://hellspincasino.pl"})
+	pharma := find([]string{"51\tproduct_cat\t1\tPharmacy"})
+	if casino.Key() == pharma.Key() {
+		t.Errorf("distinct spam findings collapsed onto one identity: %q", casino.Key())
+	}
+}

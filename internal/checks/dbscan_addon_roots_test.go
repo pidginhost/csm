@@ -19,12 +19,7 @@ func (m *mockOSGlobRoots) Lstat(name string) (os.FileInfo, error) {
 	if m.lstat != nil {
 		return m.lstat(name)
 	}
-	for _, file := range m.files {
-		if file == name {
-			return fakeFileInfo{name: "wp-config.php"}, nil
-		}
-	}
-	return nil, os.ErrNotExist
+	return mockPathInfo(name, m.files)
 }
 
 func (m *mockOSGlobRoots) Glob(pattern string) ([]string, error) {
@@ -65,7 +60,7 @@ func TestWPConfigPaths_IncludesAddonDomainRoots(t *testing.T) {
 	}}
 	t.Cleanup(func() { osFS = old })
 
-	got := wpConfigPaths(context.Background())
+	got, _ := wpConfigPaths(context.Background())
 	want := []string{
 		"/home/alice/public_html/wp-config.php",
 		"/home/alice/shop.example.com/wp-config.php",
@@ -93,13 +88,12 @@ func TestWPConfigPaths_SkipsNonDocumentRoots(t *testing.T) {
 		"/home/alice/perl5/wp-config.php",
 		"/home/alice/spamassassin/wp-config.php",
 		"/home/alice/var/wp-config.php",
-		"/home/alice/www/wp-config.php",
 		"/home/alice/.cpanel/wp-config.php",
 		"/home/alice/.trash/wp-config.php",
 	}}
 	t.Cleanup(func() { osFS = old })
 
-	if got := wpConfigPaths(context.Background()); len(got) != 0 {
+	if got, _ := wpConfigPaths(context.Background()); len(got) != 0 {
 		t.Errorf("non-document-root wp-configs discovered: %v", got)
 	}
 }
@@ -119,12 +113,6 @@ func TestWPConfigPaths_UsesCPanelDocumentRoots(t *testing.T) {
 				}
 				return nil, os.ErrNotExist
 			},
-			lstat: func(name string) (os.FileInfo, error) {
-				if strings.HasSuffix(name, "/wp-config.php") {
-					return fakeFileInfo{name: "wp-config.php"}, nil
-				}
-				return nil, os.ErrNotExist
-			},
 		},
 		files: []string{
 			"/home/alice/public_html/wp-config.php",
@@ -138,7 +126,7 @@ func TestWPConfigPaths_UsesCPanelDocumentRoots(t *testing.T) {
 	// The served map supplies alice's roots. The home walk still contributes
 	// bob's public_html, a real document root these map entries simply do not
 	// mention; backups/ stays out on the denylist.
-	got := wpConfigPaths(context.Background())
+	got, _ := wpConfigPaths(context.Background())
 	want := []string{
 		"/home/alice/public_html/wp-config.php",
 		"/home/alice/shop.example.com/wp-config.php",
@@ -165,10 +153,10 @@ func TestWPConfigPaths_RejectsCrossAccountCPanelRoot(t *testing.T) {
 				}
 				return nil, os.ErrNotExist
 			},
-			lstat: func(string) (os.FileInfo, error) {
-				return fakeFileInfo{name: "wp-config.php"}, nil
-			},
 		},
+		// Lstat answers from files below: a double that claims every path
+		// exists would put an install in alice's home that the test never
+		// created.
 		files: []string{"/home/bob/shop.example.com/wp-config.php"},
 	}
 	t.Cleanup(func() { osFS = old })
@@ -176,14 +164,24 @@ func TestWPConfigPaths_RejectsCrossAccountCPanelRoot(t *testing.T) {
 	// The map claims alice owns a root inside bob's home. What must not happen
 	// is that claim pulling bob's directory into alice's scope; the directory
 	// itself is bob's and is scanned as bob's, which is correct ownership.
-	if got := wpConfigPaths(ContextWithAccountScope(context.Background(), "alice")); len(got) != 0 {
+	if got, _ := wpConfigPaths(ContextWithAccountScope(context.Background(), "alice")); len(got) != 0 {
 		t.Errorf("cross-account map root entered alice's scope: %v", got)
 	}
 
-	got := wpConfigPaths(context.Background())
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	got, served, domains := wpConfigPathsWithDomains(ctx)
 	want := []string{"/home/bob/shop.example.com/wp-config.php"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("host-wide scan = %v, want the root owned by bob %v", got, want)
+	}
+	if state := served[want[0]]; state != servedUnknown {
+		t.Errorf("home-walk path after rejected map row = %v, want servedUnknown", state)
+	}
+	if domains != nil {
+		t.Errorf("all-rejected map exposed domain ownership: %v", domains)
+	}
+	if !incomplete.contains("db_content") {
+		t.Fatal("all-rejected map did not mark the database scan incomplete")
 	}
 }
 
@@ -218,7 +216,7 @@ func TestWPConfigPaths_SkipsSpecialConfigFile(t *testing.T) {
 	}
 	t.Cleanup(func() { osFS = old })
 
-	if got := wpConfigPaths(context.Background()); len(got) != 0 {
+	if got, _ := wpConfigPaths(context.Background()); len(got) != 0 {
 		t.Errorf("special wp-config.php discovered: %v", got)
 	}
 }
@@ -239,13 +237,16 @@ func TestWPConfigPaths_AcceptsNumberedCPanelHome(t *testing.T) {
 	}
 	t.Cleanup(func() { osFS = old })
 
-	got := wpConfigPaths(context.Background())
+	got, _, domains := wpConfigPathsWithDomains(context.Background())
 	want := []string{"/home2/alice/shop.example.com/wp-config.php"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("wp-config paths = %v, want numbered-home root %v", got, want)
 	}
 	if user := wpConfigUser(filepath.Dir(got[0])); user != "alice" {
 		t.Errorf("addon root account = %q, want alice", user)
+	}
+	if got := domains["alice"]; len(got) != 1 || got[0] != "shop.example.com" {
+		t.Errorf("numbered-home account domains = %v, want shop.example.com", domains)
 	}
 }
 
@@ -260,7 +261,7 @@ func TestWPConfigPaths_EmptyCPanelMapIsIncomplete(t *testing.T) {
 	t.Cleanup(func() { osFS = old })
 
 	ctx, incomplete := withIncompleteCheckCollector(context.Background())
-	if got := wpConfigPaths(ctx); len(got) != 0 {
+	if got, _ := wpConfigPaths(ctx); len(got) != 0 {
 		t.Fatalf("empty cPanel map returned wp-config paths: %v", got)
 	}
 	if !incomplete.contains("db_content") {
@@ -274,7 +275,37 @@ func TestWPConfigPaths_DoesNotDuplicatePublicHTML(t *testing.T) {
 	osFS = &mockOSGlobRoots{files: []string{"/home/alice/public_html/wp-config.php"}}
 	t.Cleanup(func() { osFS = old })
 
-	if got := wpConfigPaths(context.Background()); len(got) != 1 {
+	if got, _ := wpConfigPaths(context.Background()); len(got) != 1 {
 		t.Errorf("public_html wp-config returned %d times: %v", len(got), got)
+	}
+}
+
+// db_content used to miss installs nested one level under public_html, the
+// layout every "blog in a subdirectory" site uses.
+func TestWPConfigPaths_IncludesNestedPublicHTMLRoots(t *testing.T) {
+	old := osFS
+	osFS = &mockOSGlobRoots{files: []string{
+		"/home/alice/public_html/wp-config.php",
+		"/home/alice/public_html/blog/wp-config.php",
+	}}
+	t.Cleanup(func() { osFS = old })
+
+	got, _ := wpConfigPaths(context.Background())
+	if len(got) != 2 {
+		t.Errorf("wp-config paths = %v, want both roots", got)
+	}
+}
+
+// A real www directory serves a real site. Excluding it as an alias hid an
+// entire install from the database scan; the alias case is handled by
+// collapsing the symlink instead.
+func TestWPConfigPaths_KeepsRealWWWDirectory(t *testing.T) {
+	old := osFS
+	osFS = &mockOSGlobRoots{files: []string{"/home/alice/www/wp-config.php"}}
+	t.Cleanup(func() { osFS = old })
+
+	got, _ := wpConfigPaths(context.Background())
+	if len(got) != 1 || got[0] != "/home/alice/www/wp-config.php" {
+		t.Errorf("wp-config paths = %v, want the www document root", got)
 	}
 }

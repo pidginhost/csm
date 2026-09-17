@@ -33,6 +33,13 @@ const (
 	// DefaultMaxBlocksPerHour is the safe hourly cap used when the operator
 	// leaves auto_response.max_blocks_per_hour unset or sets it to 0.
 	DefaultMaxBlocksPerHour = 50
+	// File response limits share one rolling window across automatic cleaners
+	// and quarantine. Zero selects these defaults, never an unlimited budget.
+	DefaultMaxFileActionsPerHour           = 50
+	DefaultMaxFileActionsPerAccountPerHour = 10
+	DefaultMaxFileActionFailuresPerHour    = 3
+	// MaxFileResponseLimit bounds retained hourly safety reservations.
+	MaxFileResponseLimit = 10000
 	// DefaultNetBlockThreshold is how many blocked addresses in one IPv4 /24
 	// or IPv6 /64 escalate to a subnet block when the key is unset.
 	DefaultNetBlockThreshold = 3
@@ -157,6 +164,15 @@ type Config struct {
 
 	Hostname string `yaml:"hostname" hotreload:"restart"`
 
+	// Mode is the operator's posture for this host. "enforce" (default)
+	// leaves every subsystem under its own switch. "observe" declares that
+	// CSM must not change host state: the daemon skips the host integration
+	// files it otherwise deploys at startup, and a config that still enables
+	// a state-changing subsystem is refused by name instead of being
+	// silently rewritten. Rewriting would be persisted: the config
+	// re-signing path marshals the in-memory config back over csm.yaml.
+	Mode string `yaml:"mode" hotreload:"restart"`
+
 	Alerts struct {
 		Email struct {
 			Enabled        bool     `yaml:"enabled"`
@@ -233,6 +249,19 @@ type Config struct {
 		ConfdHash string `yaml:"confd_hash"`
 		Immutable bool   `yaml:"immutable"`
 	} `yaml:"integrity"`
+
+	// ConfD holds operator policy for the conf.d drop-in directory. It lives
+	// outside the integrity block on purpose: config_hash skips that block,
+	// so an exemption placed there could be added without tripping
+	// verification. Here it is covered by config_hash like any other key.
+	ConfD struct {
+		// IntegrityExempt names drop-in fragments (bare filenames) whose
+		// content is left out of integrity.confd_hash. A fragment its owning
+		// integration rewrites on its own schedule cannot be pinned by a
+		// static hash without turning every restart into a manual rehash.
+		// Every other fragment stays covered. Fragments cannot set this key.
+		IntegrityExempt []string `yaml:"integrity_exempt,omitempty"`
+	} `yaml:"confd,omitempty" hotreload:"safe"`
 
 	Thresholds struct {
 		MailQueueWarn             int `yaml:"mail_queue_warn"`
@@ -679,11 +708,14 @@ type Config struct {
 	} `yaml:"suppressions" hotreload:"safe"`
 
 	AutoResponse struct {
-		Enabled         bool   `yaml:"enabled"`
-		KillProcesses   bool   `yaml:"kill_processes"`
-		QuarantineFiles bool   `yaml:"quarantine_files"`
-		BlockIPs        bool   `yaml:"block_ips"`
-		BlockExpiry     string `yaml:"block_expiry"` // e.g. "24h", "12h"
+		Enabled                         bool   `yaml:"enabled"`
+		KillProcesses                   bool   `yaml:"kill_processes"`
+		QuarantineFiles                 bool   `yaml:"quarantine_files"`
+		MaxFileActionsPerHour           int    `yaml:"max_file_actions_per_hour"`
+		MaxFileActionsPerAccountPerHour int    `yaml:"max_file_actions_per_account_per_hour"`
+		MaxFileActionFailuresPerHour    int    `yaml:"max_file_action_failures_per_hour"`
+		BlockIPs                        bool   `yaml:"block_ips"`
+		BlockExpiry                     string `yaml:"block_expiry"` // e.g. "24h", "12h"
 		// HTTPASNCrawlTempban is the ban duration for http_asn_crawl findings
 		// when auto-response is enabled. Default "24h".
 		HTTPASNCrawlTempban string `yaml:"http_asn_crawl_tempban"`
@@ -980,7 +1012,11 @@ type Config struct {
 			UpdateInterval string `yaml:"update_interval"` // default: "168h" (weekly)
 			DownloadURL    string `yaml:"download_url"`    // signed ZIP URL/template; supports {tier} and {version}
 		} `yaml:"yara_forge"`
-		DisabledRules []string `yaml:"disabled_rules"` // YARA rule names to exclude from Forge downloads
+		// DisabledRules names rules to switch off: they are stripped from
+		// YARA-Forge downloads, skipped when the shipped .yml rules load,
+		// and stripped before the shipped .yar rules compile. `csm validate`
+		// warns about a name that matches no rule.
+		DisabledRules []string `yaml:"disabled_rules"`
 		// YaraWorkerEnabled is a tri-state: nil means "use system default"
 		// (default-on, per ROADMAP item 2 follow-up), *true means explicit on,
 		// *false means explicit off. Callers must nil-check before dereferencing;
@@ -989,13 +1025,15 @@ type Config struct {
 	} `yaml:"signatures" hotreload:"restart"`
 
 	WebUI struct {
-		Enabled      bool   `yaml:"enabled"`
-		Listen       string `yaml:"listen"`
-		AuthToken    string `yaml:"auth_token"`
-		MetricsToken string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
-		TLSCert      string `yaml:"tls_cert"`
-		TLSKey       string `yaml:"tls_key"`
-		UIDir        string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
+		SessionLifetime    string `yaml:"session_lifetime"`
+		SessionIdleTimeout string `yaml:"session_idle_timeout"`
+		Enabled            bool   `yaml:"enabled"`
+		Listen             string `yaml:"listen"`
+		AuthToken          string `yaml:"auth_token"`
+		MetricsToken       string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
+		TLSCert            string `yaml:"tls_cert"`
+		TLSKey             string `yaml:"tls_key"`
+		UIDir              string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
 		// AllowedOrigins lists extra browser origins ("https://host[:port]")
 		// whose API requests are accepted besides https://<hostname>:<port>.
 		// Loopback origins (SSH tunnels) are always accepted. Hot-reloadable.
@@ -1108,7 +1146,8 @@ type Config struct {
 
 	// AccountRoots lets operators point the account-scan based checks at
 	// non-cPanel web root layouts. Each entry is a glob pattern expanded
-	// at check time. Examples:
+	// at check time. Validated directories also bound content remediation
+	// and quarantine restore. Examples:
 	//
 	//   account_roots:
 	//     - /var/www/*/public
@@ -1601,6 +1640,11 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/var/lib/csm/state"
 	}
+	if cfg.Mode == "" {
+		cfg.Mode = ModeEnforce
+	} else {
+		cfg.Mode = normalizeMode(cfg.Mode)
+	}
 	// Binary immutability defaults on; a config written before the key existed
 	// must not read as "disable protection". Explicit false is kept.
 	if !presence.integrityImmutable {
@@ -1654,6 +1698,12 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Reputation.BotRanges.UpdateInterval == "" {
 		cfg.Reputation.BotRanges.UpdateInterval = "24h"
+	}
+	if cfg.WebUI.SessionLifetime == "" {
+		cfg.WebUI.SessionLifetime = DefaultBrowserSessionLifetime
+	}
+	if cfg.WebUI.SessionIdleTimeout == "" {
+		cfg.WebUI.SessionIdleTimeout = DefaultBrowserSessionIdleTimeout
 	}
 	if cfg.WebUI.Listen == "" {
 		cfg.WebUI.Listen = "0.0.0.0:9443"
@@ -1900,6 +1950,15 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute == 0 {
 		cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 60
+	}
+	if cfg.AutoResponse.MaxFileActionsPerHour == 0 {
+		cfg.AutoResponse.MaxFileActionsPerHour = DefaultMaxFileActionsPerHour
+	}
+	if cfg.AutoResponse.MaxFileActionsPerAccountPerHour == 0 {
+		cfg.AutoResponse.MaxFileActionsPerAccountPerHour = DefaultMaxFileActionsPerAccountPerHour
+	}
+	if cfg.AutoResponse.MaxFileActionFailuresPerHour == 0 {
+		cfg.AutoResponse.MaxFileActionFailuresPerHour = DefaultMaxFileActionFailuresPerHour
 	}
 	if cfg.AutoResponse.MaxBlocksPerHour == 0 {
 		cfg.AutoResponse.MaxBlocksPerHour = DefaultMaxBlocksPerHour
@@ -2154,6 +2213,9 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	applyDefaults(cfg, presence)
+	if err := validateMode(cfg); err != nil {
+		return nil, err
+	}
 	if err := validateWebUITokens(cfg); err != nil {
 		return nil, err
 	}
@@ -2573,6 +2635,9 @@ func validateBPFEnforcement(cfg *Config) error {
 }
 
 func validateWebUITokens(cfg *Config) error {
+	if _, _, err := cfg.BrowserSessionDurations(); err != nil {
+		return err
+	}
 	seenNames := make(map[string]struct{}, len(cfg.WebUI.Tokens))
 	seenTokens := make(map[string]struct{}, len(cfg.WebUI.Tokens))
 	for i, tok := range cfg.WebUI.Tokens {

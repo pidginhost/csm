@@ -15,12 +15,14 @@ func TestRepositoryYaraRulesCompile(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "malware.yar"), data, 0o644); err != nil {
+	if err = os.WriteFile(filepath.Join(dir, "malware.yar"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s, err := NewScanner(dir)
 	if err != nil {
 		t.Fatalf("configs/malware.yar failed to compile: %v", err)
 	}
-	_ = s
+	if s.RuleCount() == 0 {
+		t.Fatal("compiled repository ruleset is empty")
+	}
 }

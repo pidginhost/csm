@@ -18,6 +18,7 @@
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+#include "../bpf_headers/csm_ringbuf.h"
 #include <bpf/bpf_endian.h>
 
 // Stable Linux socket-family constants. Hardcoded because the kernel headers
@@ -116,11 +117,11 @@ static __always_inline int emit_event(struct bpf_sock_addr *ctx, __u32 family) {
     __u16 dst_port = bpf_ntohs(ctx->user_port);
     __u32 decision = classify(uid, dst_port);
 
-    struct conn_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    struct conn_event *e = csm_ringbuf_reserve(&events, sizeof(*e));
     if (!e) {
         // Ringbuf full. Even when classify=DENY we cannot block silently;
         // failing open is the correct security trade-off here. The userspace
-        // ringbuf-drops counter will surface the back-pressure.
+        // kernel queue counter records the rejected event.
         return 1;
     }
 
@@ -139,7 +140,7 @@ static __always_inline int emit_event(struct bpf_sock_addr *ctx, __u32 family) {
     }
 
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    bpf_ringbuf_submit(e, 0);
+    csm_ringbuf_submit(e);
 
     if (decision == DECISION_DENY) {
         return 0;

@@ -39,6 +39,9 @@ func yaraWorkerOn(cfg *config.Config) bool {
 	return *cfg.Signatures.YaraWorkerEnabled
 }
 
+// yaraWorkerWatcher names the YARA-X worker in the watcher status map.
+const yaraWorkerWatcher = "yara_worker"
+
 // initYaraBackend wires up either the out-of-process YARA-X supervisor
 // (default, per ROADMAP item 2 follow-up) or the in-process scanner
 // (when config.Signatures.YaraWorkerEnabled is explicitly *false).
@@ -54,26 +57,13 @@ func yaraWorkerOn(cfg *config.Config) bool {
 // — severity no longer needs the in-process *yara_x.Rules object.
 func (d *Daemon) initYaraBackend() error {
 	if !yaraWorkerOn(d.cfg) {
-		if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir); yaraScanner != nil {
+		if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir, d.cfg.Signatures.DisabledRules...); yaraScanner != nil {
 			fmt.Fprintf(os.Stderr, "[%s] YARA-X scanner active: %d rule file(s)\n", ts(), yaraScanner.RuleCount())
 		}
 		return nil
 	}
 
-	sup, err := yaraworker.NewSupervisor(yaraworker.SupervisorConfig{
-		BinaryPath:         d.binaryPath,
-		SocketPath:         yaraworker.DefaultSocketPath(),
-		RulesDir:           d.cfg.Signatures.RulesDir,
-		StartTimeout:       10 * time.Second,
-		MinRestartInterval: time.Second,
-		MaxRestartInterval: 60 * time.Second,
-		StableDuration:     30 * time.Second,
-		ClientTimeout:      30 * time.Second,
-		OnRestart:          d.onYaraWorkerRestart,
-		Logf: func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, "[%s] yara-worker: "+format+"\n", append([]any{ts()}, args...)...)
-		},
-	})
+	sup, err := yaraworker.NewSupervisor(d.yaraSupervisorConfig())
 	if err != nil {
 		return fmt.Errorf("creating yara-worker supervisor: %w", err)
 	}
@@ -83,6 +73,9 @@ func (d *Daemon) initYaraBackend() error {
 	// leaving an orphaned worker attempt outside shutdown ownership.
 	d.yaraSup = sup
 	if err := sup.Start(context.Background()); err != nil {
+		// Every YARA scan is off until the worker starts, so report it where
+		// doctor and the status API look for components that failed to attach.
+		d.MarkWatcher(yaraWorkerWatcher, false)
 		// A boot-time start failure must not disable YARA for the daemon's
 		// whole lifetime. Retry in the background with backoff and raise a
 		// finding once the failure looks persistent, mirroring the
@@ -102,6 +95,14 @@ func (d *Daemon) initYaraBackend() error {
 // of masquerading as a healthy zero-rule host.
 func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
 	yara.SetActive(sup)
+	// Start launches supervision before returning. Serialize boot readiness
+	// with crash reporting so activation cannot erase an early crash; only
+	// the stable callback may restore health after an exit.
+	d.yaraCrashMu.Lock()
+	if sup.RestartCount() == 0 {
+		d.MarkWatcher(yaraWorkerWatcher, true)
+	}
+	d.yaraCrashMu.Unlock()
 
 	// Expose the supervisor's cumulative restart count to Prometheus.
 	// Registered once per process; subsequent calls re-point nothing
@@ -115,12 +116,44 @@ func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
 		)
 	})
 
-	fmt.Fprintf(os.Stderr,
-		"[%s] YARA-X worker active: %d rule(s) compiled in child process (pid=%d)\n",
-		ts(), sup.RuleCount(), sup.ChildPID())
+	fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), yaraWorkerStatusLine(sup.RuleCount(), sup.ChildPID()))
 
 	d.reportYaraCompileStatus(sup.CompileError())
 	d.reportRealtimeRuleCoverage(yamlRuleCount(), sup.RuleCount(), sup.CompileError() == "")
+}
+
+// yaraSupervisorConfig describes the worker the daemon runs and how its
+// lifecycle is reported.
+func (d *Daemon) yaraSupervisorConfig() yaraworker.SupervisorConfig {
+	return yaraworker.SupervisorConfig{
+		BinaryPath:         d.binaryPath,
+		SocketPath:         yaraworker.DefaultSocketPath(),
+		RulesDir:           d.cfg.Signatures.RulesDir,
+		ConfigFile:         d.cfg.ConfigFile,
+		ConfigDir:          d.cfg.ConfigDir,
+		DisabledRules:      d.cfg.Signatures.DisabledRules,
+		StartTimeout:       10 * time.Second,
+		MinRestartInterval: time.Second,
+		MaxRestartInterval: 60 * time.Second,
+		StableDuration:     30 * time.Second,
+		ClientTimeout:      30 * time.Second,
+		OnRestart:          d.onYaraWorkerRestart,
+		OnStable:           d.onYaraWorkerStable,
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "[%s] yara-worker: "+format+"\n", append([]any{ts()}, args...)...)
+		},
+	}
+}
+
+// yaraWorkerStatusLine describes the worker's startup state. A worker that
+// compiled zero rules is running but matches nothing, so it must not be
+// called active: that wording let a host report a healthy scanner while every
+// scan silently checked against an empty rule set.
+func yaraWorkerStatusLine(ruleCount int, childPID int) string {
+	if ruleCount == 0 {
+		return fmt.Sprintf("YARA-X worker started with 0 rules compiled - scanning nothing until rules load (pid=%d)", childPID)
+	}
+	return fmt.Sprintf("YARA-X worker active: %d rule(s) compiled in child process (pid=%d)", ruleCount, childPID)
 }
 
 // retryYaraStart re-attempts a failed worker start with capped exponential
@@ -221,11 +254,10 @@ func (d *Daemon) reportYaraCompileStatus(compileErr string) {
 // emitYaraFinding pushes a finding without blocking; a saturated alert channel
 // is accounted for by the daemon's general drop counter.
 func (d *Daemon) emitYaraFinding(sev alert.Severity, check, msg string) bool {
-	finding := alert.Finding{Severity: sev, Check: check, Message: msg}
-	select {
-	case d.alertCh <- finding:
+	finding := alert.Finding{Severity: sev, Check: check, Message: msg, Timestamp: time.Now()}
+	if alert.TryEnqueue(d.alertCh, finding) {
 		return true
-	default:
+	} else {
 		atomic.AddInt64(&d.droppedAlerts, 1)
 		return false
 	}
@@ -243,12 +275,40 @@ func (d *Daemon) stopYaraBackend() {
 	yara.SetActive(nil)
 }
 
+// onYaraWorkerStable records a worker that stayed up after starting or
+// restarting as attached again.
+func (d *Daemon) onYaraWorkerStable() {
+	select {
+	case <-d.stopCh:
+		return
+	default:
+	}
+	d.MarkWatcher(yaraWorkerWatcher, true)
+}
+
 // onYaraWorkerRestart is called once per unplanned worker exit. Emits
 // a Critical finding the first time, then one every minute after to
 // avoid spamming alerts while a broken rule package is in place.
 func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor time.Duration) {
+	// The supervisor suppresses this callback once its own context is
+	// cancelled, but that happens in stopYaraBackend, late in shutdown.
+	// stopCh closes at the top of shutdown and covers that window. The unit's
+	// KillMode=mixed lets the daemon begin shutdown before stopping workers;
+	// a worker can still exit independently during the drain.
+	//
+	// A nil stopCh (zero-value Daemon, several tests) blocks forever on
+	// receive, so the default arm is what keeps those reporting.
+	select {
+	case <-d.stopCh:
+		return
+	default:
+	}
+
 	now := time.Now()
 	d.yaraCrashMu.Lock()
+	// Pair with activation's readiness publication. Scanning stays failed
+	// until a restarted worker proves it stays up.
+	d.MarkWatcher(yaraWorkerWatcher, false)
 	last := d.yaraLastCrashAlert
 	d.yaraLastCrashAlert = now
 	d.yaraCrashMu.Unlock()
@@ -261,14 +321,10 @@ func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor ti
 	}
 
 	finding := alert.Finding{
-		Severity: alert.Critical,
-		Check:    "yara_worker_crashed",
-		Message:  fmt.Sprintf("YARA-X worker crashed (exit=%d signal=%v after %s); supervisor restarted it, real-time scanning recovered.", exitCode, sig, ranFor.Round(time.Millisecond)),
+		Severity:  alert.Critical,
+		Check:     "yara_worker_crashed",
+		Timestamp: now,
+		Message:   fmt.Sprintf("YARA-X worker crashed (exit=%d signal=%v after %s); YARA scanning is offline; supervisor will attempt a restart. Worker health remains failed until a restarted worker stays up for 30s.", exitCode, sig, ranFor.Round(time.Millisecond)),
 	}
-	select {
-	case d.alertCh <- finding:
-	default:
-		// Channel saturated; the daemon's general drop-counter path
-		// already tracks this.
-	}
+	alert.TryEnqueue(d.alertCh, finding)
 }

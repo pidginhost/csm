@@ -12,7 +12,9 @@ import (
 	"time"
 )
 
-const cmdTimeout = 2 * time.Minute
+// cmdTimeout bounds one external command. A variable so a test can exercise
+// the real deadline without waiting two minutes for it.
+var cmdTimeout = 2 * time.Minute
 
 var systemCommandSearchDirs = []string{
 	"/usr/local/sbin",
@@ -117,6 +119,16 @@ func runCmdAllowNonZeroReal(name string, args ...string) ([]byte, error) {
 	return out, err
 }
 
+// commandRefused reports whether a command ran to completion and answered with
+// a failure, such as wp-cli on a tree that is not a WordPress installation or
+// one whose wp-config.php fatals. The check has its answer, so the queue lost
+// no work. A command that never started, was killed by a signal or ran out of
+// time is still lost work.
+func commandRefused(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() > 0
+}
+
 func runCmdCombinedContextReal(parent context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, cmdTimeout)
 	defer cancel()
@@ -125,7 +137,7 @@ func runCmdCombinedContextReal(parent context.Context, name string, args ...stri
 	out, err := exec.CommandContext(ctx, resolveSystemCommand(name), args...).CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
-		return nil, nil
+		return nil, context.DeadlineExceeded
 	}
 	if parent.Err() != nil {
 		return nil, parent.Err()

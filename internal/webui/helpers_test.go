@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/emailav"
 )
 
@@ -399,7 +400,7 @@ func TestReadQuarantineMeta_Valid(t *testing.T) {
 	metaPath := filepath.Join(dir, "test.meta")
 
 	ts := time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC)
-	meta := quarantineMeta{
+	meta := checks.QuarantineMeta{
 		OriginalPath: "/home/user/public_html/malware.php",
 		Owner:        1001,
 		Group:        1001,
@@ -517,7 +518,8 @@ func TestResolveQuarantineEntry_PreClean(t *testing.T) {
 
 func TestValidateQuarantineRestorePath_AllowedTempPath(t *testing.T) {
 	restorePath := filepath.Join("/tmp", "csm-test", "restored.php")
-	got, err := validateQuarantineRestorePath(restorePath)
+	roots, _ := quarantineRootsForConfig(nil)
+	got, err := validateQuarantineRestorePath(restorePath, roots)
 	if err != nil {
 		t.Fatalf("validateQuarantineRestorePath() error = %v", err)
 	}
@@ -527,7 +529,8 @@ func TestValidateQuarantineRestorePath_AllowedTempPath(t *testing.T) {
 }
 
 func TestValidateQuarantineRestorePath_RejectsOutsideRoots(t *testing.T) {
-	if _, err := validateQuarantineRestorePath("/etc/passwd"); err == nil {
+	roots, _ := quarantineRootsForConfig(nil)
+	if _, err := validateQuarantineRestorePath("/etc/passwd", roots); err == nil {
 		t.Fatal("validateQuarantineRestorePath() = nil error, want root validation failure")
 	}
 }

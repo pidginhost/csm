@@ -244,17 +244,21 @@ func (d *DynDNSResolver) resolveHost(ctx context.Context, host string) {
 		}
 	}
 
-	// Remove IPs no longer in DNS (only remove the dyndns source entry)
+	var successIPs []string
+	// Keep failed removals tracked so the next DNS refresh retries them.
 	for _, ip := range oldIPs {
 		if !newSet[ip] {
-			_ = d.engine.RemoveAllowIPBySource(ip, SourceDynDNS)
+			if err := d.engine.RemoveAllowIPBySource(ip, SourceDynDNS); err != nil {
+				successIPs = append(successIPs, ip)
+				fmt.Fprintf(os.Stderr, "dyndns: error removing %s (%s): %v\n", ip, host, err)
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "dyndns: %s removed %s (no longer resolves)\n", host, ip)
 		}
 	}
 
 	// Add new IPs
 	reason := fmt.Sprintf("dyndns: %s", host)
-	var successIPs []string
 	for _, ip := range newIPs {
 		if oldSet[ip] {
 			successIPs = append(successIPs, ip) // already allowed
@@ -268,7 +272,7 @@ func (d *DynDNSResolver) resolveHost(ctx context.Context, host string) {
 		fmt.Fprintf(os.Stderr, "dyndns: %s resolved to %s (added)\n", host, ip)
 	}
 
-	// Only update resolved map with successfully allowed IPs
+	// Retain active allows and old addresses whose removal still needs retrying.
 	d.mu.Lock()
 	d.resolved[host] = successIPs
 	isInfra := false

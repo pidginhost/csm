@@ -26,16 +26,24 @@ import (
 // manual review or run a full account scan). When Checked is true, Resolved
 // reports whether the condition is gone and the finding can be cleared.
 type VerifyResult struct {
-	Checked  bool   `json:"checked"`
-	Resolved bool   `json:"resolved"`
-	Detail   string `json:"detail"`
+	Checked  bool `json:"checked"`
+	Resolved bool `json:"resolved"`
+	// Demote marks a finding whose flagged content is gone but whose
+	// remediation cannot be proven, because the file changed since detection.
+	// It is never cleared -- an attacker must not retire a finding by editing
+	// the file -- but it stops ranking beside live threats.
+	Demote bool   `json:"demote"`
+	Detail string `json:"detail"`
 }
 
 // VerifyInput carries everything a finding verifier may need. ContentSHA256 and
 // DetectLogic are populated only for content findings emitted with a fingerprint.
+// Context is optional; long-running verifiers use Background when it is nil.
 type VerifyInput struct {
 	Check, Message, Details, Path string
 	ContentSHA256, DetectLogic    string
+	Context                       context.Context
+	exposureVhosts                *exposureVhostIndex
 }
 
 // presenceVerifiableChecks are findings whose remediation removes or
@@ -104,6 +112,7 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 		"email_phishing_content")
 	register(func(in VerifyInput) VerifyResult { return verifyCrontabClear(in.Path) },
 		"suspicious_crontab")
+	register(verifyExposedFile, exposedVerifiableChecks...)
 	register(func(in VerifyInput) VerifyResult { return verifyOutdatedPlugins(in.Details) },
 		"outdated_plugins")
 	register(func(in VerifyInput) VerifyResult { return verifyWPCoreIntegrity(in.Details) },
@@ -194,7 +203,7 @@ func reverifyContentFinding(in VerifyInput) VerifyResult {
 	if in.Path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, info, exists, err := readOnlyFixPath(in.Path, fixQuarantineAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(in.Path, effectiveFixRoots(fixQuarantineAllowedRoots, quarantineExtraRoots...))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
@@ -217,10 +226,87 @@ func reverifyContentFinding(in VerifyInput) VerifyResult {
 			"identical content (sha256 unchanged) is no longer flagged by current detection logic (%s) -- superseded-heuristic false positive",
 			ContentDetectionVersion())}
 	case in.ContentSHA256 != "":
-		return VerifyResult{Checked: true, Resolved: false, Detail: "file modified since detection (sha256 mismatch); not auto-cleared -- run a full rescan or review manually"}
+		return demotionForChangedContent(in.Check, clean, info, currentHash,
+			"file modified since detection (sha256 mismatch); not auto-cleared")
 	default:
-		return VerifyResult{Checked: true, Resolved: false, Detail: "current detection logic no longer flags this file, but no detection-time fingerprint exists to rule out modification; review and dismiss if benign"}
+		return demotionForChangedContent(in.Check, clean, info, currentHash,
+			"current detection logic no longer flags this file, but no detection-time fingerprint exists to rule out modification")
 	}
+}
+
+// demotionEntropyCeiling rejects a replacement that reads as packed or encoded.
+// The inert-source gate below is stricter, but checking entropy first keeps a
+// large encoded comment blob ineligible too.
+const demotionEntropyCeiling = 5.0
+
+// changedContentDemotionEligible reports whether a changed-content finding may
+// be considered for demotion. Every check whose condition this package can
+// re-run qualifies: what makes a demotion safe is the inert-replacement gate,
+// which reads the bytes, not the name of the detector that flagged them.
+func changedContentDemotionEligible(check string) bool {
+	return IsContentReverifiable(check)
+}
+
+// demotionForChangedContent decides whether a finding whose file changed since
+// detection, and which current detection no longer flags, may drop out of the
+// live queue. It never clears the finding.
+func demotionForChangedContent(check, path string, info os.FileInfo, classifiedHash, reason string) VerifyResult {
+	if !changedContentDemotionEligible(check) {
+		return VerifyResult{Checked: true, Resolved: false,
+			Detail: reason + "; changed content is not eligible for automatic demotion -- review manually"}
+	}
+	// The classifier and the demotion gates must inspect the same bytes. A
+	// bounded second snapshot avoids unbounded allocation, preserves inode and
+	// metadata identity, and its digest closes the gap between the two reads.
+	snap, err := readContentSnapshotForReverifyBounded(path, info, contentFingerprintMaxBytes)
+	if err != nil {
+		return VerifyResult{Checked: true, Resolved: false,
+			Detail: reason + "; replacement exceeds the demotion read limit or changed during verification -- review manually"}
+	}
+	if classifiedHash == "" || snap.sha256 != classifiedHash {
+		return VerifyResult{Checked: true, Resolved: false,
+			Detail: reason + "; replacement changed during verification -- review manually"}
+	}
+	content := string(snap.data)
+	if hasObfuscatedExecutionSignal(content) {
+		return VerifyResult{Checked: true, Resolved: false,
+			Detail: reason + "; replacement content still carries an obfuscated-execution signal -- review manually"}
+	}
+	if shannonEntropy(content) >= demotionEntropyCeiling {
+		return VerifyResult{Checked: true, Resolved: false,
+			Detail: reason + "; replacement content reads as packed or encoded -- review manually"}
+	}
+	if !isInertPHPReplacement(content) {
+		return VerifyResult{Checked: true, Resolved: false,
+			Detail: reason + "; replacement still contains active PHP or web content -- review manually"}
+	}
+	return VerifyResult{Checked: true, Resolved: false, Demote: true,
+		Detail: reason + "; replacement is an inert PHP stub -- confirm remediation"}
+}
+
+// isInertPHPReplacement deliberately proves a very small safe shape instead of
+// trying to blacklist every way PHP can execute. Current detection not matching
+// is already a precondition here; another deny-list would make any omitted
+// include, callback, side-effect function, or inline script a severity-demotion
+// bypass. Only an empty file or a comment-only, non-closing PHP stub is inert.
+// Rejecting closing tags also rejects inline HTML or JavaScript that would stay
+// live after PHP execution stops.
+func isInertPHPReplacement(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return true
+	}
+	if len(trimmed) < len("<?php") || !strings.EqualFold(trimmed[:len("<?php")], "<?php") {
+		return false
+	}
+	if len(trimmed) > len("<?php") && !isPHPSpace(trimmed[len("<?php")]) {
+		return false
+	}
+	if strings.Contains(trimmed, "?>") {
+		return false
+	}
+	code := stripPHPCommentsFromCode(phpCodeOnly(trimmed))
+	return strings.TrimSpace(code) == ""
 }
 
 // contentStillMatches re-runs the appropriate classifier for the check type.
@@ -442,7 +528,7 @@ func verifyWriteBit(path string, bit os.FileMode, label string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, info, exists, err := readOnlyFixPath(path, fixPermissionsAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(path, effectiveFixRoots(fixPermissionsAllowedRoots))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
@@ -476,7 +562,7 @@ func verifyHtaccessClean(path string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, info, exists, err := readOnlyFixPath(path, fixHtaccessAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}

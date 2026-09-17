@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,6 +164,9 @@ func TestScanJobCapsFindingsAndSurfacesTruncation(t *testing.T) {
 	}
 	if _, total, terr := db.ListScanJobFindings(id, 0, 0); terr != nil || total != 10 {
 		t.Fatalf("persisted findings total=%d err=%v, want 10", total, terr)
+	}
+	if health := waitScanJobsEmpty(t, m); health.DroppedTotal != 0 {
+		t.Errorf("configured report truncation counted as lost work: %+v", health)
 	}
 }
 
@@ -423,41 +427,43 @@ func TestScanJobQueueBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Stop()
-
-	// Block the worker so the queue fills up.
 	block := make(chan struct{})
-	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
-		select {
-		case <-block:
-		case <-ctx.Done():
-		}
+	release := sync.OnceFunc(func() { close(block) })
+	defer func() { release(); m.Stop() }()
+	ran := make(chan string, scanJobQueueDepth+1)
+	m.runAccountScan = func(_ context.Context, _ *config.Config, _ *state.Store, target string, _ checks.AccountScanOptions) []alert.Finding {
+		ran <- target
+		<-block
 		return nil
 	}
-
-	// Fill the queue: one running + scanJobQueueDepth queued.
-	enqueuedIDs := make([]string, 0, scanJobQueueDepth+1)
-	var enqID string
-	var enqErr error
-	for i := 0; i < scanJobQueueDepth+1; i++ {
-		enqID, enqErr = m.Enqueue("account", "acct", checks.AccountScanOptions{}, false)
-		if enqErr != nil {
-			// This slot failed -- that's OK once the queue is truly full.
-			break
+	ids := make([]string, 0, scanJobQueueDepth+1)
+	id, err := m.Enqueue("account", "first", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids = append(ids, id)
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	for range scanJobQueueDepth {
+		id, err := m.Enqueue("account", "waiting", checks.AccountScanOptions{}, false)
+		if err != nil {
+			t.Fatal(err)
 		}
-		enqueuedIDs = append(enqueuedIDs, enqID)
+		ids = append(ids, id)
 	}
-	_ = enqID
-
-	// The very next Enqueue must fail.
-	_, err = m.Enqueue("account", "acct", checks.AccountScanOptions{}, false)
-	if err == nil {
-		t.Fatal("expected error when queue is full, got nil")
+	if _, err := m.Enqueue("account", "excess", checks.AccountScanOptions{}, false); err == nil {
+		t.Fatal("full queue accepted work")
 	}
-
-	// Drain so the test goroutine does not leak.
-	close(block)
-	_ = enqueuedIDs
+	release()
+	for _, id := range ids {
+		waitForState(t, m, id, "done", time.Second)
+	}
+	if len(ran) != scanJobQueueDepth {
+		t.Errorf("waiting jobs executed=%d want %d", len(ran), scanJobQueueDepth)
+	}
 }
 
 // TestScanJobCancelQueued verifies that canceling a job that is still
@@ -700,12 +706,11 @@ func TestAllScopeCancelMidIteration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListScanJobFindings: %v", err)
 	}
-	if total == 0 {
-		t.Fatal("no partial findings retained after cancel")
+	if total != 1 {
+		t.Fatalf("partial findings=%d, want exactly one", total)
 	}
-	// Must not have scanned all 3 accounts.
-	if rec.AccountsDone >= 3 {
-		t.Fatalf("AccountsDone = %d after cancel, expected < 3", rec.AccountsDone)
+	if rec.AccountsDone != 1 {
+		t.Fatalf("AccountsDone = %d after cancel, want exactly one", rec.AccountsDone)
 	}
 }
 
@@ -736,7 +741,10 @@ func TestAllScopeTenantIDNotClobbered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListScanJobFindings: %v", err)
 	}
-	if len(findings) != 1 || findings[0].TenantID != "pre-set-tenant" {
+	if len(findings) != 1 {
+		t.Fatalf("findings=%d, want one", len(findings))
+	}
+	if findings[0].TenantID != "pre-set-tenant" {
 		t.Fatalf("TenantID = %q, want pre-set-tenant", findings[0].TenantID)
 	}
 }
@@ -779,14 +787,25 @@ func TestAllScopeAccountScopeRegression(t *testing.T) {
 	}
 }
 
-// TestScanJobDoesNotCallAlertDispatch verifies the report-only guarantee:
-// the worker must never push findings to the alert pipeline. We accomplish
-// this by confirming that only AppendScanJobFinding is called (indirectly
-// via ListScanJobFindings) and no alert.Finding ends up in the global
-// alertCh (which a real daemon would have wired).
+type scanJobDispatchObserver struct{ calls atomic.Int32 }
+
+func (o *scanJobDispatchObserver) Publish(alert.Finding) { o.calls.Add(1) }
+
+// Report-only jobs persist findings without sending them to passive observers.
 func TestScanJobDoesNotCallAlertDispatch(t *testing.T) {
 	st, db := openTestScanJobStores(t)
-	m, err := NewScanJobManager(st, &config.Config{})
+	previous := alert.FindingBus
+	observer := &scanJobDispatchObserver{}
+	alert.FindingBus = observer
+	defer func() { alert.FindingBus = previous }()
+	cfg := &config.Config{StatePath: t.TempDir()}
+	if err := alert.Dispatch(cfg, []alert.Finding{{Check: "dispatch_control", Severity: alert.Warning}}); err != nil {
+		t.Fatal(err)
+	}
+	if observer.calls.Load() != 1 {
+		t.Fatal("dispatch observer did not see the control finding")
+	}
+	m, err := NewScanJobManager(st, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -811,6 +830,10 @@ func TestScanJobDoesNotCallAlertDispatch(t *testing.T) {
 	if total != 1 || len(findings) != 1 {
 		t.Fatalf("findings count = %d total=%d, want 1", len(findings), total)
 	}
+	waitScanJobsEmpty(t, m)
+	if got := observer.calls.Load(); got != 1 {
+		t.Errorf("report-only scan dispatched %d finding(s)", got-1)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -829,8 +852,8 @@ func TestScanJobDoesNotCallAlertDispatch(t *testing.T) {
 func fakeQuarantineFile(qdir string) func(f alert.Finding) (checks.RemediationResult, bool) {
 	eligible := map[string]bool{
 		"webshell": true, "new_webshell_file": true, "obfuscated_php": true,
-		"php_dropper": true, "suspicious_php_content": true,
-		"new_php_in_languages": true, "new_php_in_upgrade": true,
+		"suspicious_php_content": true,
+		"new_php_in_languages":   true, "new_php_in_upgrade": true,
 		"phishing_page": true, "phishing_directory": true,
 	}
 	return func(f alert.Finding) (checks.RemediationResult, bool) {
@@ -1022,5 +1045,8 @@ func TestScanJobQuarantine_EligibleButFailed(t *testing.T) {
 	}
 	if findings[0].RemediationDetail == "" {
 		t.Fatal("RemediationDetail must carry the error on a failed quarantine")
+	}
+	if health := waitScanJobsEmpty(t, m); health.DroppedTotal != 1 {
+		t.Errorf("failed remediation missing from job health: %+v", health)
 	}
 }

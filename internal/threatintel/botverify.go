@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type resolver interface {
@@ -41,7 +44,7 @@ const LogicVersion = 5
 
 // ErrUnverifiable signals that the resolver returned no usable PTR for
 // the source IP, so the verifier cannot prove or disprove the claimed
-// bot identity. Callers treat this as fail-open: do not cache, do not
+// bot identity. Callers treat this as fail-open: do not cache a verdict or
 // flag as spoof. Genuine spoof signals -- PTR present but outside the
 // bot's domain suffix list, or forward-confirm mismatch -- still return
 // (false, nil).
@@ -53,7 +56,7 @@ var ErrUnverifiable = errors.New("bot verify: no PTR record for source IP")
 // forward-A fails to round-trip the IP), (false, ErrUnverifiable) when
 // the IP has no PTR at all, and (false, err) on context cancellation
 // or transient resolver failure. Both error paths cause the async
-// worker to skip the cache write so unverifiable IPs do not get pinned
+// worker to skip the verdict write so unverifiable IPs do not get pinned
 // as spoof for the TTL window.
 func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, error) {
 	names, err := v.res.LookupAddr(ctx, ip.String())
@@ -114,16 +117,39 @@ func isDNSNotFound(err error) bool {
 // hot path via store.DB.GetBotVerify with no goroutine.
 type AsyncBotVerifier struct {
 	mu       sync.Mutex
-	inflight map[string]struct{}
+	inflight map[string]time.Time
+	attempts map[string]botVerifyAttempt
 	ch       chan verifyJob
 	v        map[string]*verifier // bot identity -> verifier; guarded by mu
 	res      resolver             // retained so SetOperatorEntries can rebuild v
 	put      func(net.IP, string, bool, time.Time) error
+	// unverifiable holds no-PTR results. A missing PTR rarely changes between
+	// scans, so repeat claims wait for the record to lapse instead of queuing
+	// the same lookup on every scan and crowding out crawlers not yet checked.
+	unverifiable UnverifiableRecords
+	// unverifiableSwept tracks sweep attempts, including failures, and is
+	// owned by the single worker that writes records.
+	unverifiableSwept time.Time
+	stats             *queuehealth.Tracker
+	stop              <-chan struct{}
+	closed            bool
+}
+
+// Attempt history prevents each unresolved retry from renewing the initial
+// grace. It is bounded by queue capacity. New sources can replace the oldest
+// completed attempt after its initial cooldown, so repeated failures cannot
+// reserve every slot for the full cache TTL. A live job or newly granted grace
+// is never evicted; retries cannot slide that reservation indefinitely.
+type botVerifyAttempt struct {
+	retryAfter  time.Time
+	retainUntil time.Time
+	expiresAt   time.Time
 }
 
 type verifyJob struct {
-	IP  net.IP
-	Bot string
+	IP     net.IP
+	Bot    string
+	ticket queuehealth.Ticket
 }
 
 // BotDomains maps each claimed-bot identity to the DNS suffix list
@@ -144,16 +170,28 @@ var BotDomains = map[string][]string{
 	"seranking":     {"seranking.com"},
 }
 
+// UnverifiableRecords persists when a claimed bot identity had no PTR. The
+// verifier derives retry suppression and attempt history from that time and
+// sweeps records older than the history. store.DB implements it.
+type UnverifiableRecords interface {
+	PutBotVerifyUnverifiable(ip net.IP, bot string, observedAt time.Time) error
+	BotVerifyUnverifiable(ip net.IP, bot string) (observedAt time.Time, ok bool)
+	SweepBotVerifyUnverifiable(cutoff time.Time) (int, error)
+}
+
 // NewAsyncBotVerifier constructs an async verifier backed by the
-// system resolver. put is store.DB.PutBotVerify or a test seam.
-func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error) *AsyncBotVerifier {
+// system resolver. put is store.DB.PutBotVerify or a test seam; records is
+// the store, or nil to keep no-PTR results in retry history only.
+func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error, records UnverifiableRecords) *AsyncBotVerifier {
 	res := net.DefaultResolver
 	a := &AsyncBotVerifier{
-		inflight: make(map[string]struct{}),
-		ch:       make(chan verifyJob, 256),
-		v:        make(map[string]*verifier),
-		res:      res,
-		put:      put,
+		inflight:     make(map[string]time.Time),
+		ch:           make(chan verifyJob, 256),
+		v:            make(map[string]*verifier),
+		res:          res,
+		put:          put,
+		unverifiable: records,
+		stats:        queuehealth.New(256, time.Minute),
 	}
 	for bot, domains := range BotDomains {
 		a.v[bot] = newVerifier(res, domains)
@@ -188,25 +226,128 @@ func (a *AsyncBotVerifier) SetOperatorEntries(entries []BotEntry) {
 	a.mu.Unlock()
 }
 
-// Enqueue queues a verification job. Drops the request on a full queue
-// (the scan path must never block on bot verification).
-func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) {
+// Enqueue reports whether a job is queued or already in flight. Unsupported
+// identities and unavailable capacity never receive pending treatment, and a
+// source with a live no-PTR record is not queued again until it lapses.
+func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) bool {
 	key := bot + "|" + ip.String()
 	a.mu.Lock()
-	if _, ok := a.inflight[key]; ok {
-		a.mu.Unlock()
-		return
+	defer a.mu.Unlock()
+	// Serialize the record read with finish: a worker that writes after this
+	// read must still be in flight when we decide whether to admit a retry.
+	var recorded bool
+	if a.unverifiable != nil {
+		if observed, ok := a.unverifiable.BotVerifyUnverifiable(ip, bot); ok {
+			now := time.Now()
+			if !now.After(observed.Add(botVerifyUnverifiableTTL)) {
+				return false
+			}
+			// A lapsed record still counts as an attempt for as long as
+			// in-memory history would, so a restart or eviction cannot
+			// grant fresh pending treatment.
+			recorded = now.Before(observed.Add(botVerifyCacheTTL))
+		}
 	}
-	a.inflight[key] = struct{}{}
-	a.mu.Unlock()
-
+	if a.closed {
+		a.stats.Lose(time.Now(), 1)
+		return false
+	}
 	select {
-	case a.ch <- verifyJob{IP: ip, Bot: bot}:
+	case <-a.stop:
+		a.stats.Lose(time.Now(), 1)
+		return false
 	default:
-		a.mu.Lock()
-		delete(a.inflight, key)
-		a.mu.Unlock()
 	}
+	if _, ok := a.inflight[key]; ok {
+		return true
+	}
+	if ip == nil || a.v[bot] == nil {
+		return false
+	}
+	now := time.Now()
+	for attemptKey, previous := range a.attempts {
+		_, live := a.inflight[attemptKey]
+		if !live && !now.Before(previous.expiresAt) && !now.Before(previous.retryAfter) {
+			delete(a.attempts, attemptKey)
+		}
+	}
+	attempt, attempted := a.attempts[key]
+	if attempted && now.Before(attempt.retryAfter) {
+		return false
+	}
+	var replaceKey string
+	if !attempted && len(a.attempts) >= cap(a.ch) {
+		var oldest time.Time
+		for attemptKey, previous := range a.attempts {
+			if _, live := a.inflight[attemptKey]; live || now.Before(previous.retainUntil) {
+				continue
+			}
+			if replaceKey == "" || previous.expiresAt.Before(oldest) {
+				replaceKey = attemptKey
+				oldest = previous.expiresAt
+			}
+		}
+		if replaceKey == "" {
+			a.stats.Lose(now, 1)
+			return false
+		}
+	}
+	var pendingUntil time.Time
+	if !attempted && !recorded {
+		pendingUntil = now.Add(botVerifyTimeout)
+	}
+	a.inflight[key] = pendingUntil
+	// The caller may reuse its IP buffer as soon as admission returns. The
+	// queued lookup and its dedup key must retain the same address.
+	job := verifyJob{IP: slices.Clone(ip), Bot: bot, ticket: a.stats.Begin(time.Now())}
+	select {
+	case a.ch <- job:
+		if !attempted {
+			if a.attempts == nil {
+				a.attempts = make(map[string]botVerifyAttempt)
+			}
+			delete(a.attempts, replaceKey)
+			a.attempts[key] = botVerifyAttempt{
+				retainUntil: now.Add(botVerifyRetryDelay),
+				expiresAt:   now.Add(botVerifyCacheTTL),
+			}
+		}
+		return true
+	default:
+		job.ticket.Reject(time.Now())
+		delete(a.inflight, key)
+		return false
+	}
+}
+
+// Pending is true only while an admitted job is live and its initial grace
+// has not expired. Queue wait counts against the same bound as a DNS lookup.
+func (a *AsyncBotVerifier) Pending(ip net.IP, bot string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.v[bot] == nil {
+		return false
+	}
+	select {
+	case <-a.stop:
+		return false
+	default:
+	}
+	until, ok := a.inflight[bot+"|"+ip.String()]
+	return ok && time.Now().Before(until)
+}
+
+const (
+	botVerifyTimeout    = 5 * time.Second
+	botVerifyRetryDelay = time.Minute
+	botVerifyCacheTTL   = 24 * time.Hour
+	// Shorter than a verdict: a crawler that gains a PTR is verified within
+	// the hour, while a stable no-PTR source costs one lookup per hour.
+	botVerifyUnverifiableTTL = time.Hour
+)
+
+func (a *AsyncBotVerifier) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return map[string]queuehealth.Status{"requests": a.stats.Snapshot(now)}
 }
 
 // Run processes the queue until stopCh closes. Runs as a single
@@ -217,8 +358,10 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) {
 // returns from its DNS lookup immediately rather than holding the Run
 // goroutine for the per-job 5s timeout.
 func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
+	a.mu.Lock()
+	a.stop = stopCh
+	a.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	bridge := make(chan struct{})
 	go func() {
@@ -232,13 +375,31 @@ func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
 	defer func() {
 		cancel()
 		<-bridge
+		a.mu.Lock()
+		a.closed = true
+		close(a.ch)
+		a.mu.Unlock()
+		for job := range a.ch {
+			a.finish(job, false, false)
+		}
 	}()
 
 	for {
 		select {
+		case <-stopCh:
+			return
+		default:
+		}
+		select {
 		case <-ctx.Done():
 			return
 		case job := <-a.ch:
+			select {
+			case <-stopCh:
+				a.finish(job, false, false)
+				return
+			default:
+			}
 			a.processWithContext(ctx, job)
 		}
 	}
@@ -249,25 +410,69 @@ func (a *AsyncBotVerifier) process(job verifyJob) {
 }
 
 func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verifyJob) {
-	defer a.finish(job)
+	job.ticket.Start(time.Now())
+	completed, cached := false, false
+	defer func() { a.finish(job, completed, cached) }()
 
 	a.mu.Lock()
 	v, ok := a.v[job.Bot]
 	a.mu.Unlock()
 	if !ok {
+		completed = true
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, botVerifyTimeout)
+	defer cancel()
 	result, err := v.verify(ctx, job.IP, job.Bot)
 	cancel()
-	if err != nil || a.put == nil {
+	if err != nil {
+		completed = errors.Is(err, ErrUnverifiable) && a.recordUnverifiable(job)
 		return
 	}
-	_ = a.put(job.IP, job.Bot, result, time.Now().Add(24*time.Hour))
+	if a.put == nil {
+		completed = true
+		return
+	}
+	cached = a.put(job.IP, job.Bot, result, time.Now().Add(botVerifyCacheTTL)) == nil
+	completed = cached
 }
 
-func (a *AsyncBotVerifier) finish(job verifyJob) {
+// recordUnverifiable reports whether a no-PTR result is settled. It is not a
+// verdict, so a lapsed record prevents fresh pending grace while within the
+// history window. An unwritten record leaves the work unaccounted for.
+func (a *AsyncBotVerifier) recordUnverifiable(job verifyJob) bool {
+	if a.unverifiable == nil {
+		return true
+	}
+	now := time.Now()
+	if a.unverifiable.PutBotVerifyUnverifiable(job.IP, job.Bot, now) != nil {
+		return false
+	}
+	// Records past the attempt history affect nothing. Sweeping after a write
+	// bounds the bucket by recent no-PTR volume; once an hour keeps the scan
+	// off the per-result path. Failures also wait an hour, so a failing large
+	// transaction cannot hold up every subsequent result write.
+	if now.Sub(a.unverifiableSwept) >= botVerifyUnverifiableTTL {
+		a.unverifiableSwept = now
+		_, _ = a.unverifiable.SweepBotVerifyUnverifiable(now.Add(-botVerifyCacheTTL))
+	}
+	return true
+}
+
+func (a *AsyncBotVerifier) finish(job verifyJob, completed, cached bool) {
 	a.mu.Lock()
-	delete(a.inflight, job.Bot+"|"+job.IP.String())
-	a.mu.Unlock()
+	defer a.mu.Unlock()
+	key := job.Bot + "|" + job.IP.String()
+	delete(a.inflight, key)
+	if cached {
+		delete(a.attempts, key)
+	} else if attempt, tracked := a.attempts[key]; tracked {
+		attempt.retryAfter = time.Now().Add(botVerifyRetryDelay)
+		a.attempts[key] = attempt
+	}
+	if completed {
+		job.ticket.Finish(time.Now())
+	} else {
+		job.ticket.Reject(time.Now())
+	}
 }

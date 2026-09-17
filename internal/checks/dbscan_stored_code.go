@@ -129,7 +129,13 @@ func checkWPStoredCode(user string, creds wpDBCreds, prefix string) []alert.Find
 			Check:    "db_stored_code_execution",
 			Message: fmt.Sprintf("Stored PHP snippet %s (%s) matches %s (account: %s)",
 				row.id, row.status, strings.Join(names, ", "), user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
+				fmt.Sprintf("Snippet %s is stored in %sposts for WPCode, "+
+					"so it is not visible to any filesystem scan.\nMatched: %s%s",
+					row.id, prefix, strings.Join(names, ", "),
+					storedCloakNote(cacheDefeat, crawler))),
+			DedupKey: dbContentDedupKey(user, creds, prefix,
+				"status="+row.status,
 				fmt.Sprintf("Snippet %s is stored in %sposts for WPCode, "+
 					"so it is not visible to any filesystem scan.\nMatched: %s%s",
 					row.id, prefix, strings.Join(names, ", "),

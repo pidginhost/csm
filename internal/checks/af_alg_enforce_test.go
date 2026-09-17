@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -178,7 +177,7 @@ func TestEnforceAFAlgBlocked_UnloadsModulesWhenMarkerValidButLoaded(t *testing.T
 		},
 	})
 	withMockCmd(t, &mockCmd{
-		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
+		run: func(name string, args ...string) ([]byte, error) {
 			if name == "modprobe" && len(args) >= 1 && args[0] == "-r" {
 				modprobeCalled = true
 				return nil, nil
@@ -209,9 +208,7 @@ func TestEnforceAFAlgBlocked_ReportsStuckModuleWhenUnloadFails(t *testing.T) {
 	// modprobe -r returns non-zero (module in use). The wrapper observes
 	// failure via the post-call /proc/modules re-read — modules are still
 	// there. ModuleUnloaded must be false; Notes must name the stuck module.
-	// (RunAllowNonZero swallows non-zero exits AND captures stdout-only via
-	// .Output(), so modprobe's stderr is not visible to us — we rely on the
-	// observable kernel state instead.)
+	// Command errors are also reported, but success requires kernel evidence.
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
 			if name == afAlgMarkerPath {
@@ -238,8 +235,8 @@ func TestEnforceAFAlgBlocked_ReportsStuckModuleWhenUnloadFails(t *testing.T) {
 		},
 	})
 	withMockCmd(t, &mockCmd{
-		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
-			return nil, nil // simulates exit-1 swallowed by RunAllowNonZero
+		run: func(name string, args ...string) ([]byte, error) {
+			return nil, errors.New("module command rejected")
 		},
 	})
 
@@ -251,6 +248,9 @@ func TestEnforceAFAlgBlocked_ReportsStuckModuleWhenUnloadFails(t *testing.T) {
 		t.Errorf("ModuleUnloaded must be false when post-call /proc/modules still shows the module; res=%+v", res)
 	}
 	notes := strings.Join(res.Notes, "\n")
+	if !strings.Contains(notes, "module command rejected") {
+		t.Fatalf("command failure missing from notes: %s", notes)
+	}
 	if !strings.Contains(notes, "algif_aead") {
 		t.Errorf("Notes must name the stuck module so the operator can investigate; got %v", res.Notes)
 	}
@@ -408,11 +408,3 @@ func TestCheckAFAlgEnforcement_RespectsDisableFlag(t *testing.T) {
 		t.Errorf("disabled enforcement should produce no findings; got %d", len(got))
 	}
 }
-
-// silence unused-import warnings for "errors" / "time" if the rest of this
-// file ever loses references to them; both ARE used elsewhere in the file
-// (errors in TestEnforceAFAlgBlocked_ReturnsErrorWhenStatFailsUnexpectedly,
-// time in fakeFileInfo.ModTime) so this block exists only to make the
-// dependency explicit for future readers.
-var _ = errors.New
-var _ time.Time

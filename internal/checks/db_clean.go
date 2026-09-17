@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,7 +68,7 @@ func DBCleanOption(account, optionName string, preview bool) DBCleanResult {
 		result.Message = "Content unchanged after cleaning"
 		return result
 	}
-	if extractMaliciousScriptURL(cleaned) != "" {
+	if optionInjectionRemains(optionName, cleaned) {
 		result.Message = "Failed to remove all malicious scripts"
 		return result
 	}
@@ -387,11 +388,21 @@ func splitSpamCandidate(line string) (id, text string, ok bool) {
 // Returns root-authenticated credentials that use /root/.my.cnf instead of
 // wp-config.php passwords (which are often stale on cPanel servers).
 func findCredsForAccount(account string) (wpDBCreds, string) {
-	patterns := []string{
-		filepath.Join(accountHomeDir(account), "public_html", "wp-config.php"),
+	patterns := wpInstallConfigPaths(wpInstallsForAccount(context.Background(), "db_content", account))
+	if len(patterns) == 0 {
+		return wpDBCreds{}, ""
 	}
-	addonConfigs, _ := osFS.Glob(filepath.Join(accountHomeDir(account), "*", "wp-config.php"))
-	patterns = append(patterns, addonConfigs...)
+	sort.Strings(patterns)
+	primary := filepath.Join(accountHomeDir(account), "public_html", "wp-config.php")
+	if canonical, err := canonicalWPInstallPath(primary); err == nil {
+		primary = canonical
+	}
+	for i, path := range patterns {
+		if path == primary {
+			patterns[0], patterns[i] = patterns[i], patterns[0]
+			break
+		}
+	}
 
 	for _, path := range patterns {
 		creds := parseWPConfig(path)

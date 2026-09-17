@@ -199,6 +199,11 @@ func parseConfFragment(ff confFragmentFile) (*yaml.Node, bool, error) {
 	if hasTopLevelKey(&node, "integrity") {
 		return nil, false, fmt.Errorf("conf.d fragment %s must not set daemon-managed integrity metadata", ff.path)
 	}
+	// The confd block decides which fragments the integrity digest covers, so
+	// a fragment that could set it would be able to exempt itself.
+	if hasTopLevelKey(&node, "confd") {
+		return nil, false, fmt.Errorf("conf.d fragment %s must not set the confd policy block; it belongs in the main config", ff.path)
+	}
 	return &node, true, nil
 }
 

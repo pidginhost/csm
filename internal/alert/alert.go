@@ -14,6 +14,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/processctx"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 const alertDispatchFailuresMetric = "csm_alert_dispatch_failures_total"
@@ -59,10 +60,20 @@ func (s Severity) String() string {
 
 // Finding represents a single security check result.
 type Finding struct {
-	Severity Severity `json:"severity"`
-	Check    string   `json:"check"`
-	Message  string   `json:"message"`
-	Details  string   `json:"details,omitempty"`
+	queueTicket queuehealth.Ticket
+	Severity    Severity `json:"severity"`
+	// DemotedFrom retains the severity an automatically demoted finding came
+	// from, so a later positive re-check can restore it. It is deliberately not
+	// part of Key(): a finding's identity must not change when its severity
+	// does, or every dismissal and dedup entry keyed to it would be orphaned.
+	DemotedFrom Severity `json:"demoted_from,omitempty"`
+	Check       string   `json:"check"`
+	Message     string   `json:"message"`
+	Details     string   `json:"details,omitempty"`
+	// CoverageScope identifies a scanner-owned unit that can be retired after
+	// complete coverage. Empty legacy scopes require whole-check completion.
+	// It is opaque, contains no credentials, and does not change dedup identity.
+	CoverageScope string `json:"coverage_scope,omitempty"`
 	// DedupKey, when set, pins the finding's dedup identity (Key and
 	// Fingerprint) regardless of Message/Details content. For findings whose
 	// details embed volatile values (pids, byte counts) that would otherwise
@@ -83,6 +94,15 @@ type Finding struct {
 	// this content finding was emitted. Optional; used for sweep gating and
 	// audit explainability.
 	DetectLogic string `json:"detect_logic,omitempty"`
+	// ScanCarryForward marks an unchanged snapshot re-emitted only because the
+	// current scan could not examine its path. It is process-local provenance for
+	// the atomic latest-state merge, not part of the public finding contract.
+	ScanCarryForward bool `json:"-"`
+	// AutoFileResponseEvaluated records process-local delivery provenance.
+	// A detector or scan already considered automatic file remediation, so
+	// the alert dispatcher must not retry it, including a refused attempt.
+	// New detections and findings read from storage get a fresh evaluation.
+	AutoFileResponseEvaluated bool `json:"-"`
 
 	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
 	// zero values mean "this finding does not carry that dimension".
@@ -124,6 +144,14 @@ type Finding struct {
 	Process *processctx.ProcessContext `json:"process,omitempty"`
 
 	Timestamp time.Time `json:"timestamp"`
+	// FirstSeen is when this condition was first observed, as opposed to
+	// when it was last reported. The latest-state merge carries it across
+	// re-reports; a scan that finds the same condition again refreshes
+	// Timestamp but not this. Correlation reads it so a months-old finding
+	// re-emitted by every scan cannot keep re-entering a recent-activity
+	// window. Zero on findings that never went through the merge, and on
+	// rows stored before the field existed; callers fall back to Timestamp.
+	FirstSeen time.Time `json:"first_seen,omitzero"`
 
 	// Full-scan quarantine outcome (Phase 2). Set ONLY on findings produced by a
 	// `--full --quarantine` job; empty for all report-only findings so existing
@@ -302,7 +330,7 @@ func FormatAlert(hostname string, findings []Finding) string {
 	for _, sev := range []Severity{Critical, High, Warning} {
 		for _, f := range findings {
 			if f.Severity == sev {
-				b.WriteString(sanitizeFinding(f).String())
+				b.WriteString(SanitizeFinding(f).String())
 				b.WriteString("\n\n")
 			}
 		}
@@ -314,9 +342,11 @@ func FormatAlert(hostname string, findings []Finding) string {
 	return b.String()
 }
 
-// sanitizeFinding redacts sensitive data (passwords, tokens, secrets)
-// from finding messages and details before including them in alerts.
-func sanitizeFinding(f Finding) Finding {
+// SanitizeFinding returns a copy with recognized credentials redacted from
+// Message and Details. Call it at output and persistence boundaries so detection
+// and identity calculations can still use the original finding. Other fields
+// are unchanged; nested data is not modified.
+func SanitizeFinding(f Finding) Finding {
 	f.Message = redactSensitive(f.Message)
 	f.Details = redactSensitive(f.Details)
 	return f
@@ -328,67 +358,152 @@ func redactSensitive(s string) string {
 		return s
 	}
 
-	// Redact password= values in URLs and POST data.
-	// Matches: password=X, pass=X, passwd=X (up to next & or space or quote).
-	//
-	// The search base advances past each replacement (or past an
-	// empty-value occurrence) so we never re-match the same prefix
-	// position on the next iteration. An earlier version of this code
-	// restarted the search at position 0 after every replacement, which
-	// re-found the same prefix and re-wrote `[REDACTED]` -> `[REDACTED]`
-	// forever whenever the replacement was non-empty. That infinite
-	// loop would hang the daemon's alert dispatch on any log line that
-	// contained a populated password field.
-	for _, prefix := range []string{
-		"password=", "pass=", "passwd=", "new_password=",
-		"old_password=", "confirmpassword=",
-	} {
-		searchFrom := 0
-		for searchFrom < len(s) {
-			lower := strings.ToLower(s[searchFrom:])
-			rel := strings.Index(lower, prefix)
-			if rel < 0 {
+	s = redactCredentialFields(s)
+
+	// Normalize command-line text first: NUL-delimited arguments can expose
+	// session keywords once the argument separators become spaces.
+	s = RedactCommandLine(s)
+
+	// Gate each log line separately: a finding can also contain unrelated
+	// prose with NEW/PURGE and colons whose evidence must survive.
+	var lines strings.Builder
+	for line := range strings.SplitAfterSeq(s, "\n") {
+		lines.WriteString(redactSessionLogLine(line))
+	}
+
+	return lines.String()
+}
+
+// Scan the original text once so every field is covered without searching
+// replacement markers or changing byte offsets. Log envelopes can quote a whole
+// request, so command-line tokenization alone cannot find these nested fields.
+func redactCredentialFields(s string) string {
+	lower := lowerASCII(s)
+	var b strings.Builder
+	last := 0
+	for i := 0; i < len(s); {
+		prefixLen := 0
+		for _, prefix := range []string{
+			"password=", "pass=", "passwd=", "new_password=",
+			"old_password=", "confirmpassword=", "token_value=", "api_token=",
+		} {
+			if strings.HasPrefix(lower[i:], prefix) {
+				prefixLen = len(prefix)
 				break
 			}
-			idx := searchFrom + rel
-			valStart := idx + len(prefix)
-			valEnd := valStart
-			for valEnd < len(s) {
-				c := s[valEnd]
-				if c == '&' || c == ' ' || c == '\n' || c == '"' || c == '\'' || c == ',' {
-					break
+		}
+		if prefixLen == 0 {
+			i++
+			continue
+		}
+		start := i + prefixLen
+		end := start
+		var quote byte
+		if end < len(s) && (s[end] == '\'' || s[end] == '"') {
+			quote = s[end]
+			end++
+		}
+		for end < len(s) {
+			c := s[end]
+			if c == '\\' && end+1 < len(s) {
+				end += 2
+				continue
+			}
+			if quote != 0 {
+				end++
+				if c == quote {
+					quote = 0
 				}
-				valEnd++
+				continue
 			}
-			if valEnd > valStart {
-				s = s[:valStart] + "[REDACTED]" + s[valEnd:]
-				searchFrom = valStart + len("[REDACTED]")
-			} else {
-				// Empty value (e.g. `password=&`): advance past this
-				// occurrence so a later populated field is still redacted.
-				searchFrom = valStart
+			if strings.ContainsRune(" &\t\n\r\v\f\x00\"',", rune(c)) {
+				break
 			}
+			end++
+		}
+		if end > start && s[start:end] != redactedToken {
+			b.WriteString(s[last:start])
+			b.WriteString(redactedToken)
+			last = end
+		}
+		i = end
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// Credential names are ASCII. Unicode case folding can change byte lengths
+// (including invalid UTF-8 from logs), invalidating offsets into the input.
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
 		}
 	}
+	return string(b)
+}
 
-	// Redact API token values (long alphanumeric strings after token-like keys)
-	for _, prefix := range []string{"token_value=", "api_token="} {
-		lower := strings.ToLower(s)
-		if idx := strings.Index(lower, prefix); idx >= 0 {
-			valStart := idx + len(prefix)
-			valEnd := valStart
-			for valEnd < len(s) && s[valEnd] != ' ' && s[valEnd] != '\n' && s[valEnd] != '&' {
-				valEnd++
-			}
-			if valEnd > valStart {
-				s = s[:valStart] + "[REDACTED]" + s[valEnd:]
-			}
+func redactSessionLogLine(s string) string {
+	if !containsSessionLogTag(s) {
+		return s
+	}
+	// Scan the original text only, keeping replacements out of the search.
+	// Account names survive; only the credential after the colon is masked.
+	var b strings.Builder
+	last := 0
+	for i := 0; i < len(s); i++ {
+		keywordLen := 0
+		switch {
+		case strings.HasPrefix(s[i:], " NEW "):
+			keywordLen = len(" NEW ")
+		case strings.HasPrefix(s[i:], " PURGE "):
+			keywordLen = len(" PURGE ")
+		default:
+			continue
+		}
+		fieldStart := i + keywordLen
+		fieldEnd := fieldStart
+		for fieldEnd < len(s) && !strings.ContainsRune(" \t\n\r", rune(s[fieldEnd])) {
+			fieldEnd++
+		}
+		colon := strings.IndexByte(s[fieldStart:fieldEnd], ':')
+		// Keep the keyword's trailing space searchable: the malformed field
+		// may itself be NEW or PURGE, followed by a valid account:session.
+		i = fieldStart - 2
+		if colon < 0 {
+			continue
+		}
+		tokenStart := fieldStart + colon + 1
+		if tokenStart == fieldEnd {
+			continue
+		}
+		if s[tokenStart:fieldEnd] != redactedToken {
+			b.WriteString(s[last:tokenStart])
+			b.WriteString(redactedToken)
+			last = fieldEnd
+		}
+		i = fieldEnd - 1
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// cPanel session logs use both frontend service names and the shared server
+// daemon name. DAV and security purge logs also carry account:session pairs.
+func containsSessionLogTag(s string) bool {
+	for _, tag := range []string{"[cpaneld]", "[webmaild]", "[whostmgr]", "[whostmgrd]", "[cpsrvd]", "[cpdavd]", "[security]"} {
+		if strings.Contains(s, tag) {
+			return true
 		}
 	}
-
-	// Command-line style secrets (-pSECRET, KEY=VALUE assignments, URL
-	// userinfo) quoted in messages or details.
-	return RedactCommandLine(s)
+	return false
 }
 
 func filterChecks(findings []Finding, disabledChecks []string) []Finding {
@@ -666,17 +781,64 @@ func formatDispatchErrors(errs []error) error {
 	return fmt.Errorf("alert dispatch errors: %s", strings.Join(msgs, "; "))
 }
 
-// Dispatch sends alerts via all configured channels.
+// FillTimestamps stamps now on every finding that carries no Timestamp.
+// Realtime producers build findings without one; a zero time sorts before
+// every real event in a SIEM and makes the audit finding id collide across
+// occurrences, so each sink boundary fills it in.
+func FillTimestamps(findings []Finding, now time.Time) {
+	for i := range findings {
+		if findings[i].Timestamp.IsZero() {
+			findings[i].Timestamp = now
+		}
+	}
+}
+
+// Dispatch sends alerts via all configured channels without modifying findings.
 func Dispatch(cfg *config.Config, findings []Finding) error {
-	// Deduplicate
+	return DispatchWithSources(cfg, findings, nil)
+}
+
+// DispatchWithSources audits source observations even when notification policy
+// filters them out. Only findings reach notification channels and observers;
+// sources add audit records without changing alert or auto-response policy.
+// Both inputs remain caller-owned and must already carry the times used by
+// actions that reference them. Missing times are filled on copies for ad-hoc use.
+func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error {
+	return dispatchWithSources(cfg, findings, sources, findings)
+}
+
+// DispatchWithEnforcement offers central IP enforcement its own finding set
+// instead of the notification set. Suppression rules mute notifications but
+// must not exempt an attacker from central challenges and blocks.
+func DispatchWithEnforcement(cfg *config.Config, findings, sources, enforcement []Finding) error {
+	return dispatchWithSources(cfg, findings, sources, enforcement)
+}
+
+func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Finding) error {
+	// Deduplicate owns a copy, so stamping cannot race with callers sharing
+	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
+	now := auditNow()
+	FillTimestamps(findings, now)
+	sources = append([]Finding(nil), sources...)
+	FillTimestamps(sources, now)
 
 	// Audit log captures every (deduplicated) finding before
 	// FilterBlockedAlerts and the rate limiter, so SIEMs see the
 	// complete picture even when email/webhook are throttled or
 	// when "this IP is already blocked" suppression hides a finding
 	// from the operator-facing channels.
-	emitAudit(cfg, findings)
+	emitAuditWithSources(cfg, findings, sources)
+	// The central-intel consumer escalates findings whose IP is in the
+	// verified central scored-set.
+	enforcement = Deduplicate(enforcement)
+	FillTimestamps(enforcement, now)
+	for _, f := range enforcement {
+		callCentralHook(f)
+	}
+	if len(findings) == 0 {
+		return nil
+	}
 
 	// Publish to passive observers (e.g. SSE subscribers) immediately after
 	// auditing, before rate-limit and webhook delivery, so subscribers see
@@ -688,12 +850,9 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	}
 
 	// Offer every finding to the abuse reporter (it gates and minimizes
-	// internally, queueing only confirmed-abuse findings for the drain loop)
-	// and to the central-intel consumer (it escalates findings whose IP is in
-	// the verified central scored-set).
+	// internally, queueing only confirmed-abuse findings for the drain loop).
 	for _, f := range findings {
 		callReportHook(f)
-		callCentralHook(f)
 	}
 
 	var errs []error
@@ -725,40 +884,35 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		webhookFindings = findings
 	}
 
+	// Only routine findings spend the hourly budget. Urgent ones always go
+	// out, but they never carry routine findings from the same batch past the
+	// cap with them.
+	var reservation *rateLimitReservation
+	if hasRoutineFinding(emailFindings) || hasRoutineFinding(webhookFindings) {
+		var ok bool
+		reservation, ok = reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
+		if ok {
+			defer releaseRateLimit(reservation)
+		} else {
+			fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
+			emailFindings = urgentFindings(emailFindings)
+			webhookFindings = urgentFindings(webhookFindings)
+		}
+	}
+
 	if len(emailFindings) == 0 && len(webhookFindings) == 0 {
 		return formatDispatchErrors(errs)
 	}
 
-	// Critical realtime findings always get through. Reputation delivery is
-	// also check-keyed: its surface-based severity is presentation metadata and
-	// must not make sightings that previously bypassed this gate disappear.
-	bypassRateLimit := false
-	for _, f := range findings {
-		if f.Severity == Critical || f.Check == "ip_reputation" {
-			bypassRateLimit = true
-			break
-		}
-	}
-	var reservation *rateLimitReservation
-	if !bypassRateLimit {
-		var ok bool
-		reservation, ok = reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
-			return formatDispatchErrors(errs)
-		}
-		defer releaseRateLimit(reservation)
-	}
-
-	dispatched := false
+	routineDispatched := false
 
 	if len(emailFindings) > 0 {
 		subject := buildSubject(cfg.Hostname, emailFindings)
 		body := FormatAlert(cfg.Hostname, emailFindings)
 		if err := SendEmail(cfg, subject, body); err != nil {
 			addDispatchError(&errs, fmt.Errorf("email: %w", err))
-		} else {
-			dispatched = true
+		} else if hasRoutineFinding(emailFindings) {
+			routineDispatched = true
 		}
 	}
 
@@ -767,20 +921,45 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		body := FormatAlert(cfg.Hostname, webhookFindings)
 		if err := SendWebhook(cfg, subject, body); err != nil {
 			addDispatchError(&errs, fmt.Errorf("webhook: %w", err))
-		} else {
-			dispatched = true
+		} else if hasRoutineFinding(webhookFindings) {
+			routineDispatched = true
 		}
 	}
 
-	// Commit the rate-limit slot only after at least one channel
-	// accepted the message. Without this, a failed send burned the
-	// budget; the next non-critical alert was then throttled with no
-	// operator-facing trace.
-	if dispatched {
+	// An urgent-only email can succeed while the webhook carrying the routine
+	// findings fails. Spend the slot only if routine findings were delivered.
+	if routineDispatched && reservation != nil {
 		commitRateLimit(cfg.StatePath, reservation)
 	}
 
 	return formatDispatchErrors(errs)
+}
+
+// bypassesRateLimit reports whether a finding is delivered regardless of the
+// hourly budget. Reputation delivery is check-keyed: its surface-based severity
+// is presentation metadata and must not make sightings that previously
+// bypassed the budget disappear.
+func bypassesRateLimit(f Finding) bool {
+	return f.Severity == Critical || f.Check == "ip_reputation"
+}
+
+func hasRoutineFinding(findings []Finding) bool {
+	for _, f := range findings {
+		if !bypassesRateLimit(f) {
+			return true
+		}
+	}
+	return false
+}
+
+func urgentFindings(findings []Finding) []Finding {
+	var out []Finding
+	for _, f := range findings {
+		if bypassesRateLimit(f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // SendHeartbeat pings a dead man's switch URL.

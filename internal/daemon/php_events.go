@@ -110,9 +110,7 @@ func processPHPShieldEventPacket(data []byte, archivePath string, cfg *config.Co
 		if finding.Timestamp.IsZero() {
 			finding.Timestamp = time.Now()
 		}
-		select {
-		case alertCh <- finding:
-		default:
+		if !alert.TryEnqueue(alertCh, finding) {
 			fmt.Fprintln(os.Stderr, "Warning: alert channel full, dropping PHP Shield finding")
 		}
 	}
@@ -303,6 +301,7 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			Severity: alert.Critical,
 			Check:    "php_shield_block",
 			SourceIP: ip,
+			FilePath: script,
 			Message:  fmt.Sprintf("PHP Shield blocked execution from dangerous path: %s", script),
 			Details:  context,
 		}
@@ -314,6 +313,7 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			Severity: alert.Warning,
 			Check:    "php_shield_webshell",
 			SourceIP: ip,
+			FilePath: script,
 			Message:  fmt.Sprintf("PHP Shield observed a webshell command parameter: %s", script),
 			Details:  context,
 		}
@@ -322,6 +322,7 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			Severity: alert.Critical,
 			Check:    "php_shield_webshell",
 			SourceIP: ip,
+			FilePath: script,
 			Message:  fmt.Sprintf("PHP Shield blocked a webshell signature: %s", script),
 			Details:  context,
 		}
@@ -330,6 +331,7 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			Severity: alert.High,
 			Check:    "php_shield_eval",
 			SourceIP: ip,
+			FilePath: script,
 			Message:  fmt.Sprintf("PHP Shield detected eval() chain failure: %s", script),
 			Details:  context,
 		}

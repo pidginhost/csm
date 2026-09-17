@@ -1,17 +1,34 @@
 package checks
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
-	"time"
+
+	"github.com/pidginhost/csm/internal/actionlog"
 )
+
+// quarantineMoveChecks are the findings whose manual fix, and whose
+// full-scan quarantine, is a plain move of the named file into quarantine.
+// The automatic responder's broader set lives in autoQuarantineChecks; the
+// full-scan set must stay equal to this one (pinned by test).
+var quarantineMoveChecks = map[string]bool{
+	"webshell":               true,
+	"new_webshell_file":      true,
+	"obfuscated_php":         true,
+	"suspicious_php_content": true,
+	"new_php_in_languages":   true,
+	"new_php_in_upgrade":     true,
+	"phishing_page":          true,
+	"phishing_directory":     true,
+}
 
 // eximMsgIDRegex validates Exim message ID format. Exim 4.96 and older use
 // 6-6-2 ids; Exim 4.97 and newer use 6-11-4 ids.
@@ -41,6 +58,8 @@ type RemediationResult struct {
 	Action      string `json:"action"`      // human-readable description of what was done
 	Description string `json:"description"` // what fix was applied
 	Error       string `json:"error,omitempty"`
+	// Refused distinguishes an unchanged, ineligible target from an I/O failure.
+	Refused bool `json:"-"`
 	// RemediationStatus lets a caller that supports more than one successful
 	// disposition distinguish an in-place clean from whole-file quarantine.
 	// It is transport metadata, not part of the generic remediation API.
@@ -62,16 +81,17 @@ func FixDescription(checkType, message string, filePath ...string) string {
 		return ""
 	}
 
+	if quarantineMoveChecks[checkType] {
+		if path != "" {
+			return fmt.Sprintf("Quarantine %s to /opt/csm/quarantine/", path)
+		}
+		return ""
+	}
+
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
 		if path != "" {
 			return fmt.Sprintf("Set permissions to 644 on %s", path)
-		}
-	case "webshell", "new_webshell_file", "obfuscated_php", "php_dropper",
-		"suspicious_php_content", "new_php_in_languages", "new_php_in_upgrade",
-		"phishing_page", "phishing_directory":
-		if path != "" {
-			return fmt.Sprintf("Quarantine %s to /opt/csm/quarantine/", path)
 		}
 	case "backdoor_binary", "new_executable_in_config":
 		if path != "" {
@@ -97,21 +117,12 @@ func FixDescription(checkType, message string, filePath ...string) string {
 
 // HasFix returns true if the check type has a known automated fix.
 func HasFix(checkType string) bool {
-	if isHtaccessHardenedFinding(checkType) {
+	if isHtaccessHardenedFinding(checkType) || quarantineMoveChecks[checkType] {
 		return true
 	}
 	fixableChecks := map[string]bool{
 		"world_writable_php":       true,
 		"group_writable_php":       true,
-		"webshell":                 true,
-		"new_webshell_file":        true,
-		"obfuscated_php":           true,
-		"php_dropper":              true,
-		"suspicious_php_content":   true,
-		"new_php_in_languages":     true,
-		"new_php_in_upgrade":       true,
-		"phishing_page":            true,
-		"phishing_directory":       true,
 		"backdoor_binary":          true,
 		"new_executable_in_config": true,
 		"htaccess_injection":       true,
@@ -123,7 +134,10 @@ func HasFix(checkType string) bool {
 }
 
 // ApplyFix executes the remediation action for a finding.
-func ApplyFix(checkType, message, details string, filePath ...string) RemediationResult {
+func ApplyFix(ctx context.Context, checkType, message, details string, filePath ...string) RemediationResult {
+	if err := ctx.Err(); err != nil {
+		return RemediationResult{Error: err.Error()}
+	}
 	path := selectFindingPath(message, filePath...)
 	if isHtaccessHardenedFinding(checkType) {
 		// CleanHtaccessFile re-runs the full detector registry, so a single
@@ -131,15 +145,15 @@ func ApplyFix(checkType, message, details string, filePath ...string) Remediatio
 		return CleanHtaccessFile(path)
 	}
 
+	if quarantineMoveChecks[checkType] {
+		return fixQuarantine(path)
+	}
+
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
 		return fixPermissions(path, checkType)
-	case "webshell", "new_webshell_file", "obfuscated_php", "php_dropper",
-		"suspicious_php_content", "new_php_in_languages", "new_php_in_upgrade",
-		"phishing_page", "phishing_directory":
-		return fixQuarantine(path)
 	case "backdoor_binary", "new_executable_in_config":
-		return fixKillAndQuarantine(path, details)
+		return fixKillAndQuarantine(ctx, path, details)
 	case "htaccess_injection", "htaccess_handler_abuse":
 		return fixHtaccess(path, message)
 	case "email_phishing_content":
@@ -213,47 +227,24 @@ func fixQuarantine(path string) RemediationResult {
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
+	return quarantineResolvedTarget(path, info)
+}
 
-	_ = os.MkdirAll(quarantineDir, 0700)
-	safeName := quarantineSafeName(path)
-	ts := time.Now().Format("20060102-150405")
-	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
+// quarantineResolvedTarget quarantines the exact object admitted by the
+// caller's boundary check. Regular-file quarantine reopens the path and
+// verifies this identity before copying or unlinking it.
+func quarantineResolvedTarget(path string, info os.FileInfo) RemediationResult {
+
+	qPath := newQuarantinePath(quarantineDir, path)
 	var quarantineWarning string
 
-	// Directories use the standard rename (they're rare in quarantine
-	// remediation and harder to TOCTOU-swap atomically). Regular files
-	// go through the fd-based safe path which closes the detect-then-
-	// rename race window.
-	if info.IsDir() {
-		if err := os.Rename(path, qPath); err != nil {
-			return RemediationResult{Error: fmt.Sprintf("cannot quarantine directory: %v", err)}
-		}
-	} else if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
+	meta := quarantineMetadata(path, info, "Fixed via CSM Web UI")
+	if err := quarantineTarget(path, qPath, info, meta); err != nil {
 		var completed bool
 		quarantineWarning, completed = completedQuarantineWarning(err)
 		if !completed {
 			return RemediationResult{Error: err.Error()}
 		}
-	}
-
-	// Write metadata sidecar for restore
-	var uid, gid int
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		uid = int(stat.Uid)
-		gid = int(stat.Gid)
-	}
-	meta := map[string]interface{}{
-		"original_path": path,
-		"owner_uid":     uid,
-		"group_gid":     gid,
-		"mode":          info.Mode().String(),
-		"size":          info.Size(),
-		"quarantine_at": time.Now(),
-		"reason":        "Fixed via CSM Web UI",
-	}
-	metaData, _ := json.MarshalIndent(meta, "", "  ")
-	if err := os.WriteFile(qPath+".meta", metaData, 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "remediate: error writing quarantine metadata %s: %v\n", qPath+".meta", err)
 	}
 
 	description := fmt.Sprintf("Moved to quarantine: %s", qPath)
@@ -262,42 +253,72 @@ func fixQuarantine(path string) RemediationResult {
 	}
 	return RemediationResult{
 		Success:     true,
-		Action:      fmt.Sprintf("quarantined %s → %s", path, qPath),
+		Action:      fmt.Sprintf("quarantined %s -> %s", path, qPath),
 		Description: description,
 	}
 }
 
 // fixKillAndQuarantine kills any process using the file, then quarantines it.
-func fixKillAndQuarantine(path, details string) RemediationResult {
+func fixKillAndQuarantine(ctx context.Context, path, details string) RemediationResult {
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
+	resolvedPath, target, err := resolveExistingFixPath(path, effectiveFixRoots(fixQuarantineAllowedRoots, quarantineExtraRoots...))
+	if err != nil {
+		return RemediationResult{Error: err.Error()}
+	}
+	path = resolvedPath
 
 	// Try to extract and kill PID from details
 	pid := extractPID(details)
-	if pid != "" {
-		pidInt := 0
-		fmt.Sscanf(pid, "%d", &pidInt)
-		if pidInt > 1 {
+	killed := false
+	var signalErr error
+	if pidInt, ok := parseProcessPID(pid); ok {
+		pid = strconv.Itoa(pidInt)
+		signalErr = signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
 			uid := getProcessUID(pid)
-			if uid != "0" && uid != "" { // never kill root
-				_ = syscall.Kill(pidInt, syscall.SIGKILL)
+			if uid == "0" || uid == "" || !processUsesFileIdentity(pidInt, target) {
+				return errProcessNotEligible
 			}
+			return nil
+		})
+		recordKillAction(nil, pid, path, signalErr)
+		killed = signalErr == nil
+		if errors.Is(signalErr, errProcessNotEligible) || errors.Is(signalErr, os.ErrProcessDone) {
+			signalErr = nil
 		}
 	}
+	if err := ctx.Err(); err != nil && !killed {
+		return RemediationResult{Error: err.Error()}
+	}
 
-	// Then quarantine
-	result := fixQuarantine(path)
-	if result.Success && pid != "" {
-		result.Action = fmt.Sprintf("killed PID %s and %s", pid, result.Action)
-		result.Description = "Process killed and file quarantined"
+	// Quarantine the same object used for the process decision. If the path was
+	// replaced after validation, the pinned-identity quarantine refuses it.
+	result := quarantineResolvedTarget(path, target)
+	if signalErr != nil {
+		result.Success = false
+		if result.Error != "" {
+			result.Error += "; "
+		}
+		result.Error += "process was not stopped: " + signalErr.Error()
+	}
+	if killed {
+		if result.Success {
+			result.Action = fmt.Sprintf("killed PID %s and %s", pid, result.Action)
+			result.Description = "Process killed and file quarantined"
+		} else {
+			result.Action = fmt.Sprintf("killed PID %s; quarantine failed", pid)
+			result.Description = "Process killed, but the file was not quarantined"
+		}
 	}
 	return result
 }
 
 // fixHtaccess removes malicious directives from an .htaccess file while
 // preserving comments and known-safe directives (e.g., Wordfence, LiteSpeed).
-func fixHtaccess(path, message string) RemediationResult {
+func fixHtaccess(path, message string) (result RemediationResult) {
+	audit := newCleanAction(path)
+	defer func() { audit.finish(result.Error) }()
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path"}
 	}
@@ -316,11 +337,14 @@ func fixHtaccess(path, message string) RemediationResult {
 		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
 	}
 	defer target.Close()
+	audit.rec.Result = actionlog.Failed
 	data, err := io.ReadAll(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
 	}
 
+	audit.capture(target, data)
+	audit.rec.Result = actionlog.Refused
 	dangerous := []string{"auto_prepend_file", "auto_append_file", "eval(", "base64_decode",
 		"gzinflate", "str_rot13", "addhandler", "sethandler"}
 	safe := []string{
@@ -386,13 +410,20 @@ func fixHtaccess(path, message string) RemediationResult {
 		return RemediationResult{Error: "no malicious directives found to remove"}
 	}
 
-	if err := writeCleanedFileAtomic(target, []byte(strings.Join(cleaned, "\n"))); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("write failed: %v", err)}
+	backupPath := newQuarantinePath(htaccessBackupDirRoot, path)
+	meta := quarantineMetadata(path, target.Info, "Pre-clean .htaccess backup")
+	audit.rec.Result = actionlog.Failed
+	audit.rec.Reason = meta.Reason
+	if err := storeQuarantineBackup(backupPath, data, meta, 0600); err != nil {
+		return RemediationResult{Error: fmt.Sprintf("cannot create durable backup: %v", err)}
+	}
+	if err := audit.replace(target, []byte(strings.Join(cleaned, "\n")), backupPath); err != nil {
+		return RemediationResult{Error: fmt.Sprintf("write failed; backup retained at %s: %v", backupPath, err)}
 	}
 	return RemediationResult{
 		Success:     true,
 		Action:      fmt.Sprintf("removed %d malicious directive(s) from %s", removed, path),
-		Description: fmt.Sprintf("Cleaned .htaccess: removed %d line(s)", removed),
+		Description: fmt.Sprintf("Cleaned .htaccess: removed %d line(s) (backup: %s)", removed, backupPath),
 	}
 }
 
@@ -438,30 +469,30 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 
 	info, err := osFS.Lstat(cleanPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("file not found: %v", err)
+		return "", nil, fmt.Errorf("file not found: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return "", nil, fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", cleanPath)
+		return "", nil, refuseFileResponse(fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", cleanPath))
 	}
 
 	resolved, err := filepath.EvalSymlinks(cleanPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("cannot resolve path: %v", err)
+		return "", nil, fmt.Errorf("cannot resolve path: %w", err)
 	}
 	resolved, err = sanitizeFixPath(resolved, allowedRoots)
 	if err != nil {
 		return "", nil, err
 	}
 	if accountRoot := homeAccountRoot(cleanPath); accountRoot != "" && !isPathWithinOrEqual(resolved, accountRoot) {
-		return "", nil, fmt.Errorf("resolved path escapes account boundary: %s", resolved)
+		return "", nil, refuseFileResponse(fmt.Errorf("resolved path escapes account boundary: %s", resolved))
 	}
 
 	resolvedInfo, err := osFS.Lstat(resolved)
 	if err != nil {
-		return "", nil, fmt.Errorf("file not found: %v", err)
+		return "", nil, fmt.Errorf("file not found: %w", err)
 	}
 	if resolvedInfo.Mode()&os.ModeSymlink != 0 {
-		return "", nil, fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", resolved)
+		return "", nil, refuseFileResponse(fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", resolved))
 	}
 
 	return resolved, resolvedInfo, nil
@@ -469,18 +500,18 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 
 func sanitizeFixPath(path string, allowedRoots []string) (string, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("file path is required")
+		return "", refuseFileResponse(errors.New("file path is required"))
 	}
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("file path must be absolute")
+		return "", refuseFileResponse(errors.New("file path must be absolute"))
 	}
 	for _, root := range allowedRoots {
 		if fixTargetDepthBelow(path, root) >= fixTargetMinDepth(root) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("file path is outside the allowed remediation roots: %s", path)
+	return "", refuseFileResponse(fmt.Errorf("file path is outside the allowed remediation roots: %s", path))
 }
 
 // fixTargetDepthBelow returns how many path components path lies below
@@ -557,45 +588,27 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 		return RemediationResult{Error: fmt.Sprintf("spool message %s not found (already delivered or removed)", msgID)}
 	}
 
-	_ = os.MkdirAll(quarantineDir, 0700)
-	ts := time.Now().Format("20060102-150405")
+	base := newQuarantinePath(quarantineDir, "exim_"+msgID)
 	moved := 0
-
 	for _, suffix := range []string{"-H", "-D"} {
 		src := filepath.Join(spoolDir, msgID+suffix)
-		if _, err := osFS.Stat(src); err != nil {
+		info, err := os.Lstat(src)
+		if os.IsNotExist(err) {
 			continue
 		}
-		dst := filepath.Join(quarantineDir, fmt.Sprintf("%s_exim_%s%s", ts, msgID, suffix))
-		if err := os.Rename(src, dst); err != nil {
-			// Cross-device fallback
-			data, readErr := osFS.ReadFile(src)
-			if readErr != nil {
-				return RemediationResult{Error: fmt.Sprintf("cannot read %s: %v", src, readErr)}
-			}
-			if writeErr := os.WriteFile(dst, data, 0600); writeErr != nil {
-				return RemediationResult{Error: fmt.Sprintf("cannot write quarantine: %v", writeErr)}
-			}
-			os.Remove(src)
+		if err != nil {
+			return RemediationResult{Error: fmt.Sprintf("cannot inspect spool file after quarantining %d files: %v", moved, err)}
+		}
+		meta := quarantineMetadata(src, info, "Phishing email quarantined via CSM Web UI")
+		meta.MessageID, meta.SpoolDir = msgID, spoolDir
+		dst := base + suffix
+		if err := quarantineTarget(src, dst, info, meta); err != nil {
+			return RemediationResult{Error: fmt.Sprintf("spool quarantine stopped after %d files; inspect recovery copies under %s: %v", moved, quarantineDir, err)}
 		}
 		moved++
 	}
-
 	if moved == 0 {
 		return RemediationResult{Error: fmt.Sprintf("no spool files found for message %s", msgID)}
-	}
-
-	// Write metadata sidecar
-	meta := map[string]interface{}{
-		"message_id":    msgID,
-		"spool_dir":     spoolDir,
-		"quarantine_at": time.Now(),
-		"reason":        "Phishing email quarantined via CSM Web UI",
-	}
-	metaData, _ := json.MarshalIndent(meta, "", "  ")
-	metaPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_exim_%s.meta", ts, msgID))
-	if err := os.WriteFile(metaPath, metaData, 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "remediate: error writing spool quarantine metadata %s: %v\n", metaPath, err)
 	}
 
 	return RemediationResult{

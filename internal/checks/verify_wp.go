@@ -19,7 +19,7 @@ import (
 var wpVerifyAllowedRoots []string
 
 // wpVerifyTimeout bounds the synchronous wp-cli re-scan a Re-check click runs.
-const wpVerifyTimeout = 30 * time.Second
+var wpVerifyTimeout = 30 * time.Second
 
 // findingDetailPath extracts the "Path: <dir>" value emitted in a finding's
 // Details (outdated_plugins and the WordPress checks record the install path
@@ -52,6 +52,16 @@ const (
 // Localised packages legitimately ship their own root readme and license,
 // which carry no code, so those two are not reported.
 func wpChecksumModifiedCoreFile(line string) string {
+	rel := wpChecksumModifiedFilePath(line)
+	if rel == "readme.html" || rel == "license.txt" {
+		return ""
+	}
+	return rel
+}
+
+// Keep recognized but intentionally unreported mismatches distinct from command
+// failures when accounting for a completed installation scan.
+func wpChecksumModifiedFilePath(line string) string {
 	var rel string
 	if idx := strings.Index(line, wpChecksumMismatchCurrent); idx >= 0 {
 		rel = strings.TrimSpace(line[idx+len(wpChecksumMismatchCurrent):])
@@ -59,9 +69,6 @@ func wpChecksumModifiedCoreFile(line string) string {
 		if fields := strings.Fields(line[:idx]); len(fields) > 0 {
 			rel = fields[len(fields)-1]
 		}
-	}
-	if rel == "" || rel == "readme.html" || rel == "license.txt" {
-		return ""
 	}
 	return rel
 }

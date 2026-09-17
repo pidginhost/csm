@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -200,5 +201,79 @@ func TestCheckAdminEmailOverlap_TrustedDomainDoesNotSilenceDifferentDomain(t *te
 	findings := CheckAdminEmailOverlap(context.Background(), cfg, nil)
 	if len(findings) != 1 {
 		t.Fatalf("different domain must still alert, got %v", findings)
+	}
+}
+
+func TestBuildAdminOverlapFindings_StableKeyAcrossScans(t *testing.T) {
+	// Every scan refreshes the LastSeen stamp of each admin observation.
+	// The overlap itself is unchanged, so the finding has to keep one
+	// identity across scans; otherwise each run stores another copy and
+	// the operator sees one row per scan instead of one per overlap.
+	overlaps := func(seen time.Time) map[string][]store.AdminEmailEntry {
+		return map[string][]store.AdminEmailEntry{
+			"contractor@example.test": {
+				{Account: "alice", Schema: "alice_wp", LastSeen: seen},
+				{Account: "bob", Schema: "bob_wp", LastSeen: seen},
+			},
+		}
+	}
+	first := buildAdminOverlapFindings(overlaps(time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)))
+	second := buildAdminOverlapFindings(overlaps(time.Date(2026, 9, 5, 11, 30, 0, 0, time.UTC)))
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("got %d and %d findings, want 1 each", len(first), len(second))
+	}
+	if first[0].Key() != second[0].Key() {
+		t.Errorf("key changed across scans:\n first  = %q\n second = %q", first[0].Key(), second[0].Key())
+	}
+	if first[0].Fingerprint() != second[0].Fingerprint() {
+		t.Errorf("fingerprint changed across scans: %q vs %q", first[0].Fingerprint(), second[0].Fingerprint())
+	}
+}
+
+func TestBuildAdminOverlapFindings_KeyTracksAccountMembership(t *testing.T) {
+	// A third account joining the overlap is a new fact, not the same
+	// one seen again, so the identity must change with the account set.
+	seen := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	two := buildAdminOverlapFindings(map[string][]store.AdminEmailEntry{
+		"contractor@example.test": {
+			{Account: "alice", Schema: "alice_wp", LastSeen: seen},
+			{Account: "bob", Schema: "bob_wp", LastSeen: seen},
+		},
+	})
+	three := buildAdminOverlapFindings(map[string][]store.AdminEmailEntry{
+		"contractor@example.test": {
+			{Account: "alice", Schema: "alice_wp", LastSeen: seen},
+			{Account: "bob", Schema: "bob_wp", LastSeen: seen},
+			{Account: "carol", Schema: "carol_wp", LastSeen: seen},
+		},
+	})
+	if two[0].Key() == three[0].Key() {
+		t.Errorf("key ignored a new account joining the overlap: %q", two[0].Key())
+	}
+}
+
+func TestAdminOverlapDedupKeyIsBoundedAndUnambiguous(t *testing.T) {
+	// Delimiter concatenation cannot distinguish these two account lists.
+	// Keep the identity safe even if a future platform permits punctuation in
+	// account names or malformed persisted data reaches the finding builder.
+	one := adminOverlapDedupKey("contractor@example.test", []string{"alice,bob", "carol"})
+	two := adminOverlapDedupKey("contractor@example.test", []string{"alice", "bob", "carol"})
+	if one == two {
+		t.Fatalf("distinct account lists share dedup key %q", one)
+	}
+	if one == adminOverlapDedupKey("other@example.test", []string{"alice,bob", "carol"}) {
+		t.Fatalf("distinct administrator emails share dedup key %q", one)
+	}
+
+	many := make([]string, 3000)
+	for i := range many {
+		many[i] = fmt.Sprintf("account-%04d", i)
+	}
+	key := adminOverlapDedupKey("contractor@example.test", many)
+	if len(key) > 64 {
+		t.Fatalf("dedup key grows with the account set: len = %d", len(key))
+	}
+	if strings.Contains(key, "contractor@example.test") {
+		t.Fatalf("dedup key exposes its unhashed identity: %q", key)
 	}
 }

@@ -111,6 +111,22 @@ func (m *mockOS) Glob(pattern string) ([]string, error) {
 	return nil, nil
 }
 
+func mockPathInfo(name string, files []string) (os.FileInfo, error) {
+	clean := filepath.Clean(name)
+	for _, file := range files {
+		file = filepath.Clean(file)
+		if file == clean {
+			return fakeFileInfo{name: filepath.Base(clean)}, nil
+		}
+		if strings.HasPrefix(file, clean+string(filepath.Separator)) {
+			return accountScanFakeInfo{
+				name: filepath.Base(clean), mode: os.ModeDir | 0o755, isDir: true,
+			}, nil
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
 // ---------------------------------------------------------------------------
 // Mock CmdRunner
 // ---------------------------------------------------------------------------
@@ -392,6 +408,12 @@ func TestProviderInjectionOS(t *testing.T) {
 	}
 	if !called {
 		t.Error("mock was not called")
+	}
+}
+
+func TestMockOSLstatDefaultsToNotExist(t *testing.T) {
+	if _, err := (&mockOS{}).Lstat("/missing"); !os.IsNotExist(err) {
+		t.Fatalf("Lstat error = %v, want os.ErrNotExist", err)
 	}
 }
 

@@ -120,7 +120,8 @@ func checkWPSpamTaxonomy(user string, creds wpDBCreds, prefix string) []alert.Fi
 		Check:    "db_spam_taxonomy",
 		Message: fmt.Sprintf("%s spam taxonomy terms found in WordPress (account: %s)",
 			spamCountLabel(total, truncated), user),
-		Details: dbContentFindingDetails(creds.dbName, prefix, details...),
+		Details:  dbContentFindingDetails(creds, prefix, details...),
+		DedupKey: dbContentDedupKey(user, creds, prefix, details...),
 	}}
 }
 

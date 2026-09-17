@@ -1,6 +1,11 @@
 package health
 
-import "time"
+import (
+	"maps"
+	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
+)
 
 // Provider is the contract the daemon (or a stub for tests) implements
 // so the snapshot builder doesn't depend on internal/daemon directly.
@@ -22,6 +27,10 @@ type Provider interface {
 	DryRunBlocksCount() int
 	AutomationStatus() AutomationStatus
 	UpdateInfo() UpdateInfo
+	Mode() string
+	// CorrelationAttribution is nil until the first active-set merge.
+	CorrelationAttribution() *CorrelationAttribution
+	QueueStatuses() map[string]queuehealth.Status
 }
 
 // Build assembles a Snapshot from the provider plus the static version
@@ -34,27 +43,47 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 		uptime = int64(time.Since(started).Seconds())
 	}
 	caps := append([]string(nil), capabilities...)
+	var wordpress map[string]WPVerificationCounts
+	if wp, ok := p.(WordPressVerificationProvider); ok {
+		wordpress = maps.Clone(wp.WordPressVerification())
+	}
 	return Snapshot{
-		Version:              version,
-		Hostname:             p.Hostname(),
-		StartedAt:            started,
-		UptimeSec:            uptime,
-		LatestScan:           p.LatestScan(),
-		BaselineAt:           p.BaselineAt(),
-		BlocklistSize:        p.BlocklistSize(),
-		IncidentsOpen:        p.IncidentsOpen(),
-		BPFEnforcementActive: p.BPFEnforcementActive(),
-		HistoryCount:         p.HistoryCount(),
-		Severities:           cloneIntMap(p.SeverityCounts()),
-		Watchers:             cloneBoolMap(p.WatcherStatuses()),
-		StoreHealthy:         p.StoreHealthy(),
-		StoreSizeMB:          p.StoreSizeMB(),
-		ConfigHash:           p.ConfigHash(),
-		BinaryHash:           p.BinaryHash(),
-		Capabilities:         caps,
-		DryRunBlocks:         p.DryRunBlocksCount(),
-		Automation:           p.AutomationStatus(),
-		Update:               p.UpdateInfo(),
+		WordPressVerification:  wordpress,
+		Queues:                 maps.Clone(p.QueueStatuses()),
+		Version:                version,
+		Hostname:               p.Hostname(),
+		StartedAt:              started,
+		UptimeSec:              uptime,
+		LatestScan:             p.LatestScan(),
+		BaselineAt:             p.BaselineAt(),
+		BlocklistSize:          p.BlocklistSize(),
+		IncidentsOpen:          p.IncidentsOpen(),
+		BPFEnforcementActive:   p.BPFEnforcementActive(),
+		HistoryCount:           p.HistoryCount(),
+		Severities:             cloneIntMap(p.SeverityCounts()),
+		Watchers:               cloneBoolMap(p.WatcherStatuses()),
+		StoreHealthy:           p.StoreHealthy(),
+		StoreSizeMB:            p.StoreSizeMB(),
+		ConfigHash:             p.ConfigHash(),
+		BinaryHash:             p.BinaryHash(),
+		Capabilities:           caps,
+		DryRunBlocks:           p.DryRunBlocksCount(),
+		Automation:             p.AutomationStatus(),
+		Update:                 p.UpdateInfo(),
+		Mode:                   p.Mode(),
+		CorrelationAttribution: cloneCorrelationAttribution(p.CorrelationAttribution()),
+	}
+}
+
+func cloneCorrelationAttribution(in *CorrelationAttribution) *CorrelationAttribution {
+	if in == nil {
+		return nil
+	}
+	return &CorrelationAttribution{
+		Current:          cloneIntMap(in.Current),
+		Cumulative:       cloneIntMap(in.Cumulative),
+		ActiveSetUpdates: in.ActiveSetUpdates,
+		Since:            in.Since,
 	}
 }
 

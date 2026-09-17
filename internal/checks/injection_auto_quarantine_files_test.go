@@ -143,13 +143,13 @@ func TestAutoQuarantineFilesMovesStandaloneWebshell(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 
 	got := AutoQuarantineFiles(cfg, []alert.Finding{
 		{
-			Check:    "php_dropper",
+			Check:    "obfuscated_php",
 			Severity: alert.Critical,
 			FilePath: src,
 			Message:  "PHP dropper found",
@@ -184,7 +184,7 @@ func TestAutoQuarantineFilesMovesStandaloneWebshell(t *testing.T) {
 	}
 }
 
-func TestAutoQuarantineFilesMovesQuarantineDirectory(t *testing.T) {
+func TestAutoQuarantineFilesRefusesWholeDirectory(t *testing.T) {
 	tmp := t.TempDir()
 	qdir := filepath.Join(tmp, "quarantine")
 	withAutoRespQuarantineDir(t, qdir)
@@ -197,7 +197,7 @@ func TestAutoQuarantineFilesMovesQuarantineDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 
@@ -209,9 +209,12 @@ func TestAutoQuarantineFilesMovesQuarantineDirectory(t *testing.T) {
 		},
 	})
 	if len(got) != 1 {
-		t.Fatalf("expected 1 quarantine action, got %d: %+v", len(got), got)
+		t.Fatalf("expected 1 directory refusal, got %d: %+v", len(got), got)
 	}
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Errorf("source dir should be gone, stat err=%v", err)
+	if got[0].Check != "auto_response_paused" {
+		t.Fatalf("expected directory refusal, got %+v", got)
+	}
+	if data, err := os.ReadFile(filepath.Join(src, "shell.php")); err != nil || string(data) != "x" {
+		t.Fatalf("directory contents changed: %q, %v", data, err)
 	}
 }

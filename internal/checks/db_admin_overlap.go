@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -47,23 +48,36 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 	}
 	now := time.Now()
 
-	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
+	wpConfigs := adminOverlapWPConfigs(ctx)
 	for _, wpConfig := range wpConfigs {
 		if ctx.Err() != nil {
 			return nil
 		}
-		account := extractUser(filepath.Dir(wpConfig))
-		creds := parseWPConfig(wpConfig)
+		account := wpConfigUser(filepath.Dir(wpConfig))
+		creds, complete := parseWPConfigChecked(wpConfig)
+		if !complete {
+			markCheckIncomplete(ctx, "admin_overlap")
+			continue
+		}
 		if creds.dbName == "" {
+			markCheckIncomplete(ctx, "admin_overlap")
 			continue
 		}
 		prefix, ok := resolveTablePrefix(creds)
 		if !ok {
+			markCheckIncomplete(ctx, "admin_overlap")
 			continue
 		}
 		creds.tablePrefix = prefix
-		for _, email := range adminEmailsForSite(creds, prefix) {
-			_ = db.RecordAdminEmail(email, account, creds.dbName, now)
+		emails, err := adminEmailsForSite(creds, prefix)
+		if err != nil {
+			markCheckIncomplete(ctx, "admin_overlap")
+			continue
+		}
+		for _, email := range emails {
+			if err := db.RecordAdminEmail(email, account, creds.dbName, now); err != nil {
+				markCheckIncomplete(ctx, "admin_overlap")
+			}
 		}
 	}
 
@@ -72,7 +86,11 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 		min = cfg.Detection.AdminOverlapMinAccounts
 	}
 	overlaps, err := db.OverlappingAdminEmails(min, adminEmailRetention)
-	if err != nil || len(overlaps) == 0 {
+	if err != nil {
+		markCheckIncomplete(ctx, "admin_overlap")
+		return nil
+	}
+	if len(overlaps) == 0 {
 		return nil
 	}
 	overlaps = filterTrustedAdminOverlaps(overlaps, cfg)
@@ -82,14 +100,17 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 // adminEmailsForSite returns the lowercase admin emails currently
 // configured on the WordPress site. Uses the existing root-MySQL
 // helper so it works on cPanel hosts where wp-config passwords drift.
-func adminEmailsForSite(creds wpDBCreds, prefix string) []string {
+func adminEmailsForSite(creds wpDBCreds, prefix string) ([]string, error) {
 	query := fmt.Sprintf(
 		"SELECT DISTINCT LOWER(u.user_email) FROM `%susers` u "+
 			"JOIN `%susermeta` um ON u.ID = um.user_id "+
 			"WHERE um.meta_key = '%scapabilities' AND um.meta_value LIKE '%%administrator%%'",
 		prefix, prefix, prefix,
 	)
-	rows := runMySQLQueryRoot(creds.dbName, query)
+	rows, err := runMySQLQueryRootWithError(creds.dbName, query)
+	if err != nil {
+		return nil, err
+	}
 	var out []string
 	for _, row := range rows {
 		row = strings.TrimSpace(row)
@@ -97,13 +118,13 @@ func adminEmailsForSite(creds wpDBCreds, prefix string) []string {
 			out = append(out, row)
 		}
 	}
-	return out
+	return out, nil
 }
 
-// buildAdminOverlapFindings collapses each overlap entry into a single
-// Warning finding. Account lists are sorted for deterministic message
-// content so the dedup layer downstream treats two identical overlaps
-// emitted across scans as the same finding.
+// buildAdminOverlapFindings collapses each overlap entry into a single Warning
+// finding. The sorted, de-duplicated account set feeds both operator-facing
+// text and the explicit identity, so input order and multiple schemas owned by
+// one account cannot change the finding key.
 func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []alert.Finding {
 	emails := make([]string, 0, len(overlaps))
 	for email := range overlaps {
@@ -128,14 +149,30 @@ func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []al
 			fmt.Fprintf(&details, "- %s (schema %s, last seen %s)\n", o.Account, o.Schema, o.LastSeen.Format(time.RFC3339))
 		}
 		out = append(out, alert.Finding{
-			Severity:  alert.Warning,
-			Check:     "admin_cross_account_overlap",
+			Severity: alert.Warning,
+			Check:    "admin_cross_account_overlap",
+			// The overlap itself is the identity: this email on this set of
+			// accounts. Details carry each account's last-seen time, and
+			// Finding.Key() hashes Details, so without an explicit key every
+			// scan minted a new finding for an unchanged overlap.
+			DedupKey:  adminOverlapDedupKey(email, accounts),
 			Message:   fmt.Sprintf("Admin email %s appears on %d accounts: %s", email, len(accounts), strings.Join(accounts, ", ")),
 			Details:   details.String(),
 			Timestamp: time.Now(),
 		})
 	}
 	return out
+}
+
+// adminOverlapDedupKey identifies one overlap by its substance: the shared
+// email and the set of accounts carrying it. An email that spreads to another
+// account is a new situation and gets its own key; the same overlap re-observed
+// on the next scan keeps this one. accounts is already sorted and de-duplicated
+// by the caller.
+func adminOverlapDedupKey(email string, accounts []string) string {
+	identity := strings.Join(append([]string{email}, accounts...), "\x00")
+	digest := sha256.Sum256([]byte(identity))
+	return fmt.Sprintf("admin-overlap:%x", digest[:12])
 }
 
 func filterTrustedAdminOverlaps(overlaps map[string][]store.AdminEmailEntry, cfg *config.Config) map[string][]store.AdminEmailEntry {
@@ -180,4 +217,16 @@ func adminEmailDomain(email string) string {
 		return ""
 	}
 	return email[at+1:]
+}
+
+// adminOverlapWPConfigs lists the WordPress installs this check compares.
+// Overlap between a primary site and a subdomain install is the shape this
+// check exists to catch, so both must be discovered.
+func adminOverlapWPConfigs(ctx context.Context) []string {
+	installs := wpInstalls(ctx, "admin_overlap")
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
+	}
+	return out
 }

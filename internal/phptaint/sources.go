@@ -4,7 +4,21 @@ import (
 	"strings"
 
 	"github.com/VKCOM/php-parser/pkg/ast"
+
+	"github.com/pidginhost/csm/internal/cms"
 )
+
+// buildLocalPathConstants collects every bootstrap path constant declared by
+// the given CMS descriptors into a lookup set.
+func buildLocalPathConstants(descriptors []cms.Descriptor) map[string]bool {
+	out := make(map[string]bool)
+	for _, d := range descriptors {
+		for _, c := range d.PathConstants {
+			out[c] = true
+		}
+	}
+	return out
+}
 
 // alwaysRemote functions can only acquire content over the network.
 var alwaysRemote = map[string]bool{
@@ -33,11 +47,18 @@ var dualUse = map[string]bool{
 // nested remote scheme and is classified accordingly.
 var remoteSchemes = []string{"http://", "https://", "ftp://", "ftps://", "php://input", "data://"}
 
-// These are the specific PHP and WordPress constructs whose result is known to
-// be a local path. Arbitrary constants and calls remain undecidable: their
-// runtime value can be a remote URL.
+// These are the specific PHP and CMS constructs whose result is known to be a
+// local path. Arbitrary constants and calls remain undecidable: their runtime
+// value can be a remote URL.
+//
+// Every supported CMS defines filesystem path constants during bootstrap, and
+// all of them compile templates or caches by writing generated PHP under one
+// of those paths and including it afterwards. Without the constant, that read
+// is undecidable, the generated file looks remotely acquired, and the include
+// reports as remote execution on a stock installation. The constants come
+// from the supported CMS table so a CMS declared there cannot be missing here.
 var (
-	localPathConstants = map[string]bool{"abspath": true}
+	localPathConstants = buildLocalPathConstants(cms.All())
 	localPathResults   = map[string]bool{
 		"get_template_directory": true,
 		"realpath":               true,

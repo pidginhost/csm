@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -42,6 +43,7 @@ var bucketNames = []string{
 	"fw:rollback",
 	adminEmailsBucket,
 	"botverify",
+	botVerifyUnverifiableBucket,
 	prefsBucket,
 	"scan_jobs",
 	"scan_job_findings",
@@ -231,6 +233,52 @@ func (db *DB) HasBucket(name string) bool {
 		return nil
 	})
 	return found
+}
+
+// timeKeyFillPercent packs mostly ordered writes to buckets keyed by TimeKey.
+// Their split tail pages are rarely written again, so bbolt's default of 0.5
+// would leave them half empty.
+const timeKeyFillPercent = 0.9
+
+// timeKeyWriter picks the split point for one write transaction. bbolt applies
+// a bucket's FillPercent to every page it splits at commit, so the choice is
+// per transaction rather than per key. A few delayed keys cost less than half
+// empty tail pages; when most keys land before the stored tail, the balanced
+// default leaves room in the pages they split. Also balance when delayed
+// records carry at least half the inserted bytes: a minority of large records
+// can otherwise leave sparse pages throughout the backfill.
+type timeKeyWriter struct {
+	bucket     *bolt.Bucket
+	tail       []byte
+	older      int
+	total      int
+	olderBytes int
+	totalBytes int
+}
+
+func newTimeKeyWriter(b *bolt.Bucket) *timeKeyWriter {
+	tail, _ := b.Cursor().Last()
+	return &timeKeyWriter{bucket: b, tail: bytes.Clone(tail)}
+}
+
+func (w *timeKeyWriter) put(key, value []byte) error {
+	size := len(key) + len(value)
+	w.total++
+	w.totalBytes += size
+	if w.tail != nil && bytes.Compare(key, w.tail) <= 0 {
+		w.older++
+		w.olderBytes += size
+	}
+	return w.bucket.Put(key, value)
+}
+
+// settle sets the split point once every key of the transaction is known. It
+// must run before the transaction commits.
+func (w *timeKeyWriter) settle() {
+	w.bucket.FillPercent = timeKeyFillPercent
+	if w.older*2 > w.total || (w.olderBytes > 0 && w.olderBytes >= w.totalBytes-w.olderBytes) {
+		w.bucket.FillPercent = bolt.DefaultFillPercent
+	}
 }
 
 // TimeKey produces a fixed-width 28-byte key for chronological ordering.

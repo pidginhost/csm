@@ -21,6 +21,7 @@ func TestKeyForIgnoresResponseFindings(t *testing.T) {
 	for _, check := range []string{
 		"auto_block",
 		"auto_response",
+		"auto_response_paused",
 		"challenge_route",
 		"reputation_quota_exhausted",
 		"threat_feed_stale",

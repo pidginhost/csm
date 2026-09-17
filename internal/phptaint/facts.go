@@ -16,6 +16,22 @@ import (
 // evaluates the code in its second argument.
 var callSinks = map[string]int{"assert": 0, "create_function": 1}
 
+// alwaysBoolPredicates are PHP builtins whose return type is bool for every
+// input. A call to one cannot hand assert() a string to execute.
+var alwaysBoolPredicates = map[string]bool{
+	"is_array": true, "is_bool": true, "is_callable": true, "is_countable": true,
+	"is_double": true, "is_float": true, "is_int": true, "is_integer": true,
+	"is_iterable": true, "is_long": true, "is_null": true, "is_numeric": true,
+	"is_object": true, "is_resource": true, "is_scalar": true, "is_string": true,
+	"is_subclass_of": true, "is_a": true,
+	"array_key_exists": true, "in_array": true, "property_exists": true,
+	"method_exists": true, "function_exists": true, "class_exists": true,
+	"interface_exists": true, "defined": true, "file_exists": true,
+	"is_dir": true, "is_file": true, "is_readable": true, "is_writable": true,
+	"str_contains": true, "str_starts_with": true, "str_ends_with": true,
+	"ctype_digit": true, "ctype_alpha": true, "ctype_alnum": true,
+}
+
 // assertArgumentCouldBeString reports whether e's top-level shape permits a
 // string value. This is exactly what decides whether assert(e) can execute
 // code on any PHP version this analyzer targets: PHP 7 only ever evaluated a
@@ -29,6 +45,19 @@ var callSinks = map[string]int{"assert": 0, "create_function": 1}
 // the value actually passed to assert() is the bool && produces, not the
 // string one of its operands would have produced on its own.
 func assertArgumentCouldBeString(e ast.Vertex) bool {
+	// A call to a predicate returns a bool whatever its argument was, so the
+	// value assert() receives can never be a string. This stays shallow for
+	// the same reason as the operator cases: only the outermost node decides
+	// what assert() is actually handed.
+	if call, ok := e.(*ast.ExprFunctionCall); ok {
+		return !alwaysBoolPredicates[calleeName(call.Function)]
+	}
+	if _, ok := e.(*ast.ExprEmpty); ok {
+		return false
+	}
+	if _, ok := e.(*ast.ExprIsset); ok {
+		return false
+	}
 	switch e.(type) {
 	case *ast.ExprBinaryBooleanAnd, *ast.ExprBinaryBooleanOr,
 		*ast.ExprBinaryLogicalAnd, *ast.ExprBinaryLogicalOr, *ast.ExprBinaryLogicalXor,

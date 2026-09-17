@@ -3,7 +3,7 @@ package checks
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -13,10 +13,11 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 	"unicode"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/actionlog"
 )
 
 // CleanResult describes the outcome of a cleaning attempt.
@@ -26,6 +27,9 @@ type CleanResult struct {
 	BackupPath string
 	Removals   []string // descriptions of what was removed
 	Error      string
+	// Refused marks a safety refusal without changing the customer file.
+	// It consumes attempt capacity but does not indicate a broken action.
+	Refused bool
 }
 
 var (
@@ -72,51 +76,53 @@ var cleanMaxFileSize int64 = 8 << 20
 // 3. Append injection - remove malicious code after closing ?> or end of PSR-12 file
 // 4. Inline eval injection - remove eval(base64_decode(...)) single-line injections
 func CleanInfectedFile(path string) CleanResult {
-	result := CleanResult{Path: path}
+	return cleanInfectedFileIdentified(path, nil)
+}
+
+func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result CleanResult) {
+	result = CleanResult{Path: path}
+	audit := newCleanAction(path)
+	defer func() { audit.finish(result.Error) }()
 
 	target, err := openCleanTarget(path)
 	if err != nil {
+		result.Refused = errors.Is(fileResponseSourceError(err), errFileResponseRefused)
 		result.Error = fmt.Sprintf("cannot read file: %v", err)
 		return result
 	}
 	defer target.Close()
+	if expected != nil && (!sameFileIdentity(expected, target.Info) || !sameContentShape(expected, target.Info)) {
+		result.Refused = true
+		result.Error = "file changed before automatic cleaning"
+		return result
+	}
 
 	if sz := target.Info.Size(); sz > cleanMaxFileSize {
+		result.Refused = true
 		result.Error = fmt.Sprintf("file too large to clean (%d bytes > %d)", sz, cleanMaxFileSize)
 		return result
 	}
 
+	audit.rec.Result = actionlog.Failed
 	data, err := io.ReadAll(target.File)
 	if err != nil {
 		result.Error = fmt.Sprintf("cannot read file: %v", err)
 		return result
 	}
 
+	audit.capture(target, data)
 	// Create backup before any modification
 	backupDir := filepath.Join(quarantineDir, "pre_clean")
-	_ = os.MkdirAll(backupDir, 0700)
-	ts := time.Now().Format("20060102-150405")
-	safeName := quarantineSafeName(path)
-	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s", ts, safeName))
-	if err := os.WriteFile(backupPath, data, 0600); err != nil {
-		result.Error = fmt.Sprintf("cannot create backup: %v", err)
-		return result
-	}
-	result.BackupPath = backupPath
+	backupPath := newQuarantinePath(backupDir, path)
 
 	// Metadata sidecar derived from the same fd we read, so a directory
 	// race after open cannot change the metadata we record.
-	meta := map[string]interface{}{
-		"original_path":  path,
-		"owner_uid":      target.UID,
-		"group_gid":      target.GID,
-		"mode":           target.Info.Mode().String(),
-		"size":           target.Info.Size(),
-		"quarantined_at": time.Now(),
-		"reason":         "Pre-clean backup (surgical cleaning)",
+	meta := quarantineMetadata(path, target.Info, "Pre-clean backup (surgical cleaning)")
+	if err := storeQuarantineBackup(backupPath, data, meta, 0600); err != nil {
+		result.Error = fmt.Sprintf("cannot create durable backup: %v", err)
+		return result
 	}
-	metaData, _ := json.MarshalIndent(meta, "", "  ")
-	_ = os.WriteFile(backupPath+".meta", metaData, 0600)
+	result.BackupPath = backupPath
 
 	content := string(data)
 	originalLen := len(content)
@@ -152,11 +158,15 @@ func CleanInfectedFile(path string) CleanResult {
 
 	// If nothing was removed, file couldn't be cleaned
 	if len(removals) == 0 || len(content) == originalLen {
+		audit.rec.Result = actionlog.Refused
+		result.Refused = true
 		result.Error = "no known injection patterns found - file may need manual review"
 		return result
 	}
 
-	if err := writeCleanedFileAtomic(target, []byte(content)); err != nil {
+	audit.rec.Reason = strings.Join(removals, "; ")
+	if err := audit.replace(target, []byte(content), backupPath); err != nil {
+		result.Refused = errors.Is(err, errFileResponseRefused)
 		result.Error = fmt.Sprintf("cannot write cleaned file: %v", err)
 		return result
 	}
@@ -167,14 +177,16 @@ func CleanInfectedFile(path string) CleanResult {
 }
 
 type cleanTarget struct {
-	Path       string
-	DirFD      int
-	Name       string
-	File       *os.File
-	Info       os.FileInfo
-	UID        int
-	GID        int
-	OwnerKnown bool
+	Path            string
+	DirFD           int
+	Name            string
+	File            *os.File
+	Info            os.FileInfo
+	UID             int
+	GID             int
+	replacementInfo os.FileInfo
+	installed       bool
+	OwnerKnown      bool
 }
 
 func (t *cleanTarget) Close() {
@@ -200,7 +212,7 @@ func openCleanTarget(path string) (*cleanTarget, error) {
 		return nil, fmt.Errorf("stat parent directory: %w", err)
 	}
 	if parentInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing symlinked parent directory")
+		return nil, refuseFileResponse(errors.New("refusing symlinked parent directory"))
 	}
 
 	// Pin the immediate parent. A swap of that directory to a symlink
@@ -219,7 +231,7 @@ func openCleanTarget(path string) (*cleanTarget, error) {
 		return nil, pinErr
 	}
 
-	fd, err := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +249,7 @@ func openCleanTarget(path string) (*cleanTarget, error) {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("refusing non-regular file (mode=%v)", info.Mode())
+		return nil, refuseFileResponse(fmt.Errorf("refusing non-regular file (mode=%v)", info.Mode()))
 	}
 
 	target := &cleanTarget{
@@ -264,7 +276,7 @@ func verifyCleanParentStillPinned(dirFD int, want os.FileInfo) error {
 		return fmt.Errorf("stat opened parent directory: %w", err)
 	}
 	if !sameUnixStatIdentity(want, got) {
-		return fmt.Errorf("parent directory changed during cleaning")
+		return refuseFileResponse(errors.New("parent directory changed during cleaning"))
 	}
 	return nil
 }
@@ -281,6 +293,9 @@ func sameUnixStatIdentity(info os.FileInfo, stat unix.Stat_t) bool {
 	// both sides to uint64 is what makes the comparison portable.
 	return uint64(want.Dev) == uint64(stat.Dev) && uint64(want.Ino) == uint64(stat.Ino)
 }
+
+var closeCleanTemp = (*os.File).Close
+var syncCleanParent = unix.Fsync
 
 // writeCleanedFileAtomic stages cleaned content through a hidden sibling
 // name under the pinned parent directory and renames it over the original
@@ -312,6 +327,13 @@ func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
 	if err := tmp.Sync(); err != nil {
 		return err
 	}
+	replacementInfo, statErr := tmp.Stat()
+	if statErr != nil {
+		return statErr
+	}
+	if err := closeCleanTemp(tmp); err != nil {
+		return err
+	}
 
 	if err := verifyCleanTargetUnchanged(target); err != nil {
 		return err
@@ -321,6 +343,11 @@ func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
 		return err
 	}
 	removeTmp = false
+	target.installed = true
+	target.replacementInfo = replacementInfo
+	if err := syncCleanParent(target.DirFD); err != nil {
+		return fmt.Errorf("cleaned file installed but directory sync failed; recovery backup retained: %w", err)
+	}
 	return nil
 }
 
@@ -345,9 +372,9 @@ func createCleanTempFile(dirFD int) (*os.File, string, error) {
 }
 
 func verifyCleanTargetUnchanged(target *cleanTarget) error {
-	fd, err := unix.Openat(target.DirFD, target.Name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(target.DirFD, target.Name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return fmt.Errorf("open target before rename: %w", err)
+		return fmt.Errorf("open target before rename: %w", fileResponseSourceError(err))
 	}
 	// #nosec G115 -- unix.Openat returned a non-negative fd because err is nil.
 	file := os.NewFile(uintptr(fd), target.Path)
@@ -358,10 +385,10 @@ func verifyCleanTargetUnchanged(target *cleanTarget) error {
 		return fmt.Errorf("stat target before rename: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("refusing non-regular target before rename (mode=%v)", info.Mode())
+		return refuseFileResponse(fmt.Errorf("refusing non-regular target before rename (mode=%v)", info.Mode()))
 	}
 	if !sameFileIdentity(info, target.Info) || !sameCleanContentShape(info, target.Info) {
-		return fmt.Errorf("file changed during cleaning")
+		return refuseFileResponse(errors.New("file changed during cleaning"))
 	}
 	return nil
 }
@@ -660,6 +687,9 @@ func getLineContext(lines []string, idx, window int) string {
 
 // FormatCleanResult returns a human-readable summary of a clean operation.
 func FormatCleanResult(r CleanResult) string {
+	if r.Refused {
+		return fmt.Sprintf("REFUSED to clean %s: %s", r.Path, r.Error)
+	}
 	if r.Error != "" {
 		return fmt.Sprintf("FAILED to clean %s: %s", r.Path, r.Error)
 	}

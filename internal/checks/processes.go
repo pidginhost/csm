@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -61,20 +62,23 @@ var suspiciousCmdlinePatterns = []string{
 
 // EvaluateExec returns findings for a single execve event observed by the
 // BPF live backend. Inputs are the (UID, PID, comm, exe, parentComm)
-// tuple the kernel hook collects. Pure function: no IO. The legacy
-// periodic checks (CheckSuspiciousProcesses, CheckFakeKernelThreads) keep
-// using cmdline-aware detection that this function cannot replicate.
+// tuple the kernel hook collects. It stamps the detection time because these
+// findings enter the realtime bus directly. The legacy periodic checks
+// (CheckSuspiciousProcesses, CheckFakeKernelThreads) keep using cmdline-aware
+// detection that this function cannot replicate.
 func EvaluateExec(uid uint32, pid uint32, comm, exe, parentComm string) []alert.Finding {
 	var out []alert.Finding
 	pidInt := int(pid)
+	detectedAt := time.Now()
 
 	if uid != 0 && len(comm) >= 2 && comm[0] == '[' && comm[len(comm)-1] == ']' {
 		out = append(out, alert.Finding{
-			Severity: alert.Critical,
-			Check:    "fake_kernel_thread",
-			Message:  fmt.Sprintf("Non-root process masquerading as kernel thread: %s", comm),
-			Details:  fmt.Sprintf("PID: %d, UID: %d, exe: %s, parent: %s", pid, uid, exe, parentComm),
-			PID:      pidInt,
+			Severity:  alert.Critical,
+			Check:     "fake_kernel_thread",
+			Message:   fmt.Sprintf("Non-root process masquerading as kernel thread: %s", comm),
+			Details:   fmt.Sprintf("PID: %d, UID: %d, exe: %s, parent: %s", pid, uid, exe, parentComm),
+			PID:       pidInt,
+			Timestamp: detectedAt,
 		})
 	}
 
@@ -87,11 +91,12 @@ func EvaluateExec(uid uint32, pid uint32, comm, exe, parentComm string) []alert.
 	for _, s := range suspiciousExeNames {
 		if strings.Contains(exeNameLower, s) {
 			out = append(out, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "suspicious_process",
-				Message:  fmt.Sprintf("Suspicious process name: %s", exeName),
-				Details:  fmt.Sprintf("PID: %d, UID: %d, exe: %s, comm: %s, parent: %s", pid, uid, exe, comm, parentComm),
-				PID:      pidInt,
+				Severity:  alert.Critical,
+				Check:     "suspicious_process",
+				Message:   fmt.Sprintf("Suspicious process name: %s", exeName),
+				Details:   fmt.Sprintf("PID: %d, UID: %d, exe: %s, comm: %s, parent: %s", pid, uid, exe, comm, parentComm),
+				PID:       pidInt,
+				Timestamp: detectedAt,
 			})
 			break
 		}
@@ -100,11 +105,12 @@ func EvaluateExec(uid uint32, pid uint32, comm, exe, parentComm string) []alert.
 	for _, p := range suspiciousExePaths {
 		if strings.Contains(exe, p) {
 			out = append(out, alert.Finding{
-				Severity: alert.High,
-				Check:    "suspicious_process",
-				Message:  fmt.Sprintf("Process running from suspicious path: %s", exe),
-				Details:  fmt.Sprintf("PID: %d, UID: %d, comm: %s, parent: %s", pid, uid, comm, parentComm),
-				PID:      pidInt,
+				Severity:  alert.High,
+				Check:     "suspicious_process",
+				Message:   fmt.Sprintf("Process running from suspicious path: %s", exe),
+				Details:   fmt.Sprintf("PID: %d, UID: %d, comm: %s, parent: %s", pid, uid, comm, parentComm),
+				PID:       pidInt,
+				Timestamp: detectedAt,
 			})
 			break
 		}
@@ -158,11 +164,12 @@ func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Stor
 
 			pidInt, _ := strconv.Atoi(pid)
 			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "fake_kernel_thread",
-				Message:  fmt.Sprintf("Non-root process masquerading as kernel thread: [%s]", name),
-				Details:  fmt.Sprintf("PID: %s, UID: %d, exe: %s, cmdline: %s", pid, uidInt, exe, safeCmdStr),
-				PID:      pidInt,
+				Severity:  alert.Critical,
+				Check:     "fake_kernel_thread",
+				Timestamp: time.Now(),
+				Message:   fmt.Sprintf("Non-root process masquerading as kernel thread: [%s]", name),
+				Details:   fmt.Sprintf("PID: %s, UID: %d, exe: %s, cmdline: %s", pid, uidInt, exe, safeCmdStr),
+				PID:       pidInt,
 			})
 		}
 	}
@@ -206,11 +213,12 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 		for _, s := range suspiciousNames {
 			if strings.Contains(strings.ToLower(exeName), s) {
 				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "suspicious_process",
-					Message:  fmt.Sprintf("Suspicious process name: %s", exeName),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, safeCmdStr),
-					PID:      pidInt,
+					Severity:  alert.Critical,
+					Check:     "suspicious_process",
+					Message:   fmt.Sprintf("Suspicious process name: %s", exeName),
+					Timestamp: time.Now(),
+					Details:   fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, safeCmdStr),
+					PID:       pidInt,
 				})
 			}
 		}
@@ -220,11 +228,12 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 		for _, s := range suspiciousCmdline {
 			if strings.Contains(cmdLower, strings.ToLower(s)) {
 				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "suspicious_process",
-					Message:  fmt.Sprintf("Suspicious cmdline pattern: %s", s),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, safeCmdStr),
-					PID:      pidInt,
+					Severity:  alert.Critical,
+					Check:     "suspicious_process",
+					Message:   fmt.Sprintf("Suspicious cmdline pattern: %s", s),
+					Timestamp: time.Now(),
+					Details:   fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, safeCmdStr),
+					PID:       pidInt,
 				})
 				break
 			}
@@ -234,11 +243,12 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 		for _, s := range suspiciousPaths {
 			if strings.Contains(exe, s) {
 				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "suspicious_process",
-					Message:  fmt.Sprintf("Process running from suspicious path: %s", exe),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, safeCmdStr),
-					PID:      pidInt,
+					Severity:  alert.High,
+					Check:     "suspicious_process",
+					Message:   fmt.Sprintf("Process running from suspicious path: %s", exe),
+					Timestamp: time.Now(),
+					Details:   fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, safeCmdStr),
+					PID:       pidInt,
 				})
 				break
 			}

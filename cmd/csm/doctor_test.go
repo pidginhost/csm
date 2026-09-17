@@ -77,6 +77,7 @@ func TestBuildDoctorReport_ConfigErrorIsJSONFriendly(t *testing.T) {
 			t.Fatal("status should not be read when config is invalid")
 			return nil, nil
 		},
+		integrityOK,
 	)
 	if report.OverallStatus != "fail" {
 		t.Fatalf("OverallStatus = %q, want fail", report.OverallStatus)
@@ -93,6 +94,7 @@ func TestBuildDoctorReport_InvalidStatusJSONFails(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return validDoctorConfig(), nil },
 		func() ([]byte, error) { return []byte("{"), nil },
+		integrityOK,
 	)
 	if report.OverallStatus != "fail" {
 		t.Fatalf("OverallStatus = %q, want fail", report.OverallStatus)
@@ -110,6 +112,7 @@ func TestBuildDoctorReport_MissingSnapshotFails(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return validDoctorConfig(), nil },
 		func() ([]byte, error) { return payload, nil },
+		integrityOK,
 	)
 	if report.OverallStatus != "fail" {
 		t.Fatalf("OverallStatus = %q, want fail", report.OverallStatus)
@@ -129,6 +132,7 @@ func TestBuildDoctorReport_EmptyWatcherRegistryFails(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return validDoctorConfig(), nil },
 		func() ([]byte, error) { return payload, nil },
+		integrityOK,
 	)
 	if report.OverallStatus != "fail" {
 		t.Fatalf("OverallStatus = %q, want fail", report.OverallStatus)
@@ -165,6 +169,7 @@ func TestBuildDoctorReportIncludesConfigWarnings(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return cfg, nil },
 		func() ([]byte, error) { return payload, nil },
+		integrityOK,
 	)
 	if report.OverallStatus != "warn" {
 		t.Fatalf("OverallStatus = %q, want warn\n%s", report.OverallStatus, report.Human())
@@ -208,6 +213,7 @@ func TestBuildDoctorReportIncludesSSHLockoutWarning(t *testing.T) {
 	report := buildDoctorReport(
 		func() (*config.Config, error) { return cfg, nil },
 		func() ([]byte, error) { return payload, nil },
+		integrityOK,
 	)
 	for _, check := range report.Checks {
 		if check.Name == "config: firewall.tcp_in" && check.Status == "warn" && strings.Contains(check.Message, "sshd") {
@@ -226,6 +232,7 @@ func TestBuildDoctorReportStopsOnConfigValidationError(t *testing.T) {
 			t.Fatal("daemon status must not be read after config validation fails")
 			return nil, nil
 		},
+		integrityOK,
 	)
 	if report.OverallStatus != "fail" {
 		t.Fatalf("OverallStatus = %q, want fail", report.OverallStatus)

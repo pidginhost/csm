@@ -31,9 +31,9 @@ func TestParseModeStringShort(t *testing.T) {
 }
 
 func TestParseModeStringAllDashes(t *testing.T) {
-	// "----------" → fallback 0644 (all bits off → mode==0 → fallback)
-	if got := parseModeString("----------"); got != 0644 {
-		t.Errorf("got %04o, want fallback 0644", got)
+	// A recorded file with no permissions must not become readable.
+	if got := parseModeString("----------"); got != 0 {
+		t.Errorf("got %04o, want 0000", got)
 	}
 }
 

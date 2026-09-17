@@ -45,16 +45,17 @@ const incidentMergeWindow = 15 * time.Minute
 // severity, or kind) rewrites the whole incident blob to the store. A busy
 // incident under sustained attack would otherwise fsync a ~100-300KB blob on
 // every finding; instead those writes coalesce to at most one per window.
-// State-changing transitions always persist synchronously, so the only thing
-// at risk on a hard kill is up to one window of fingerprint bookkeeping.
+// State-changing transitions always persist synchronously. Quiet bookkeeping
+// waits for the next mutation or explicit flush; there is no periodic writer.
 const incidentPersistDebounce = 5 * time.Second
 
 // CorrelatorConfig is reserved for future tunables and the persistence
 // hook used by the daemon to write incidents to bbolt.
 type CorrelatorConfig struct {
-	// Persist is invoked after every create/update. Implementations
-	// must be quick and idempotent. nil means "in-memory only".
-	Persist func(Incident)
+	// Persist receives ordered immutable snapshots; bookkeeping may coalesce.
+	// Implementations must be quick and idempotent. Errors are logged and
+	// counted without rolling back in-memory transitions. nil is memory-only.
+	Persist func(Incident) error
 
 	// OpenThreshold is the number of correlated findings required before
 	// a thresholded finding opens an incident. Critical-severity findings and
@@ -91,8 +92,9 @@ type CorrelatorConfig struct {
 	// recorded the block: false means dry-run, transient failure, or an
 	// upstream gate refused, and the audit "credential_spray_block_requested"
 	// action is not appended in that case so operators cannot mistake a
-	// declined request for an enforced block.
-	OnSprayBlock func(ip, reason string) bool
+	// declined request for an enforced block. findingID identifies the latest
+	// eligible source observation, or is empty for an older unlinked timeline.
+	OnSprayBlock func(ip, reason string, ttl time.Duration, findingID string) bool
 
 	// AutoBlock turns on the generic incident-driven firewall hand-off
 	// for non-spray kinds. Independent of SpraySuppression; applies when
@@ -114,7 +116,8 @@ type CorrelatorConfig struct {
 	// disabled, and failed attempts must return false so the correlator
 	// can retry on the next finding instead of permanently latching the
 	// incident. nil disables the path even when AutoBlock is configured.
-	OnIncidentBlock func(ip, reason string) bool
+	// findingID carries the same source attribution as OnSprayBlock.
+	OnIncidentBlock func(ip, reason string, ttl time.Duration, findingID string) bool
 }
 
 // IncidentAutoBlockConfig drives the generic incident-driven firewall
@@ -130,6 +133,9 @@ type IncidentAutoBlockConfig struct {
 	// case-insensitive. Any other value is ignored so operator typos
 	// cannot accidentally engage blocking.
 	BlockAtSeverity string
+	// BlockExpiry is the operator's configured auto-response block duration,
+	// the first rung of the escalation ladder. Zero falls back to 24h.
+	BlockExpiry time.Duration
 	// Kinds, when non-empty, restricts the auto-block path to the
 	// listed incident kinds. Empty means "every kind that carries one
 	// unambiguous remote IP". Credential_spray is implicitly excluded
@@ -163,29 +169,24 @@ type counters struct {
 // Correlator groups findings into incidents. In-memory state; the
 // daemon is responsible for wiring it to a store via CorrelatorConfig.Persist.
 type Correlator struct {
-	mu sync.Mutex
-	// persistMu protects persistTail. Persist callbacks wait on the
-	// previously queued write instead of holding this lock, so re-entrant
-	// callbacks can still take c.mu while later writers are queued.
-	persistMu             sync.Mutex
-	persistTail           chan struct{}
-	cfg                   CorrelatorConfig
-	incidents             map[string]*Incident
-	byKey                 map[string]string
-	pending               map[string]pendingFinding
-	pendingSprayBlocks    map[string]struct{}
-	pendingIncidentBlocks map[string]struct{}
+	mu          sync.Mutex
+	persistence *persistQueue
+	cfg         CorrelatorConfig
+	incidents   map[string]*Incident
+	byKey       map[string]string
+	pending     map[string]pendingFinding
+	// A false pending value keeps the in-flight slot occupied but discards
+	// its result after an incident closes, even if it is reopened meanwhile.
+	pendingSprayBlocks    map[string]bool
+	pendingIncidentBlocks map[string]bool
 	openThreshold         int
 	now                   func() time.Time
 	counters              counters
 	spray                 *sprayDetector
-	// lastPersistAt records the wall-clock time of the most recent store
-	// write per incident id, used to debounce bookkeeping-only merges.
+	// lastPersistAt records the wall-clock time of the most recent scheduled
+	// store write per incident id, used to debounce bookkeeping-only merges.
 	// Written under c.mu; cleared when the incident leaves c.incidents.
 	lastPersistAt map[string]time.Time
-	// pendingPersist records incidents whose latest bookkeeping-only merge was
-	// intentionally not written because it landed inside the debounce window.
-	pendingPersist map[string]struct{}
 }
 
 // pendingFinding is a finding seen for a key that has not yet met the
@@ -205,25 +206,18 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 	}
 	c := &Correlator{
 		cfg:                   cfg,
-		persistTail:           closedPersistTail(),
+		persistence:           newPersistQueue(),
 		incidents:             map[string]*Incident{},
 		byKey:                 map[string]string{},
 		pending:               map[string]pendingFinding{},
-		pendingSprayBlocks:    map[string]struct{}{},
-		pendingIncidentBlocks: map[string]struct{}{},
+		pendingSprayBlocks:    map[string]bool{},
+		pendingIncidentBlocks: map[string]bool{},
 		openThreshold:         threshold,
 		now:                   time.Now,
 		lastPersistAt:         map[string]time.Time{},
-		pendingPersist:        map[string]struct{}{},
 	}
 	c.spray = newSprayDetector(cfg.SpraySuppression, incidentMergeWindow, func() time.Time { return c.now() }, cfg.IsWhitelisted)
 	return c
-}
-
-func closedPersistTail() chan struct{} {
-	done := make(chan struct{})
-	close(done)
-	return done
 }
 
 // OnFinding ingests a Finding. Returns the incident id (if attributable)
@@ -320,7 +314,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	}
 
 	if id, ok := c.byKey[keyStr]; ok {
-		if inc, exists := c.incidents[id]; exists && now.Sub(inc.UpdatedAt) <= incidentMergeWindow {
+		// A quiet interval must not erase an active incident's block ladder.
+		// Only closing the incident ends that episode, including after restore.
+		if inc, exists := c.incidents[id]; exists && (now.Sub(inc.UpdatedAt) <= incidentMergeWindow || inc.AutoBlock.Count > 0) {
 			c.mergeLocked(inc, f, now, true)
 			delete(c.pending, keyStr)
 			if cb := c.maybeBlockIncidentLocked(inc, now, "merge"); cb != nil {
@@ -700,11 +696,12 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	inc.Findings = appendCappedFingerprint(inc.Findings, f.Fingerprint())
 	ev := IncidentEvent{
-		Time:     f.Timestamp,
-		Kind:     "finding",
-		Check:    f.Check,
-		Severity: f.Severity.String(),
-		Message:  f.Message,
+		FindingID: alert.FindingID(f),
+		Time:      f.Timestamp,
+		Kind:      "finding",
+		Check:     f.Check,
+		Severity:  f.Severity.String(),
+		Message:   f.Message,
 	}
 	if f.Process != nil {
 		ev.PID = f.Process.PID
@@ -750,7 +747,6 @@ func (c *Correlator) persistAfterMergeLocked(inc *Incident, now time.Time, merge
 
 func (c *Correlator) markPersistedLocked(id string, at time.Time) {
 	c.lastPersistAt[id] = at
-	delete(c.pendingPersist, id)
 }
 
 // persistDebouncedLocked writes inc only when at least incidentPersistDebounce
@@ -759,7 +755,9 @@ func (c *Correlator) markPersistedLocked(id string, at time.Time) {
 // Caller holds c.mu.
 func (c *Correlator) persistDebouncedLocked(inc *Incident, now time.Time) {
 	if last, ok := c.lastPersistAt[inc.ID]; ok && now.Sub(last) < incidentPersistDebounce {
-		c.pendingPersist[inc.ID] = struct{}{}
+		if c.cfg.Persist != nil {
+			c.persistence.deferWrite(inc.ID)
+		}
 		return
 	}
 	c.markPersistedLocked(inc.ID, now)
@@ -770,13 +768,13 @@ func (c *Correlator) persistDebouncedLocked(inc *Incident, now time.Time) {
 // skipped by the debounce window. It is intentionally cheap when no incidents
 // are dirty and is used by shutdown hooks before the store closes.
 func (c *Correlator) FlushPendingPersists() int {
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	c.mu.Lock()
 	now := c.now()
-	for id := range c.pendingPersist {
+	for _, id := range c.persistence.deferredIDs() {
 		inc, ok := c.incidents[id]
 		if !ok {
-			delete(c.pendingPersist, id)
+			c.persistence.discardDeferred(id)
 			delete(c.lastPersistAt, id)
 			continue
 		}
@@ -787,9 +785,7 @@ func (c *Correlator) FlushPendingPersists() int {
 	}
 	c.mu.Unlock()
 
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return len(persist)
 }
 
@@ -934,45 +930,6 @@ func timelineTruncationMarker(count int, at time.Time) IncidentEvent {
 	}
 }
 
-type queuedPersist struct {
-	previous <-chan struct{}
-	done     chan struct{}
-	snap     Incident
-	persist  func(Incident)
-}
-
-// queuePersistLocked reserves this write's place in mutation order while
-// c.mu is still held. The returned callback must run after c.mu is released.
-func (c *Correlator) queuePersistLocked(snap Incident) (queuedPersist, bool) {
-	if snap.ID != "" {
-		// A queued full snapshot supersedes any bookkeeping-only merge that
-		// was skipped inside the debounce window.
-		delete(c.pendingPersist, snap.ID)
-	}
-	persist := c.cfg.Persist
-	if persist == nil {
-		return queuedPersist{}, false
-	}
-	snap = cloneIncident(snap)
-	done := make(chan struct{})
-	c.persistMu.Lock()
-	previous := c.persistTail
-	c.persistTail = done
-	c.persistMu.Unlock()
-	return queuedPersist{
-		previous: previous,
-		done:     done,
-		snap:     snap,
-		persist:  persist,
-	}, true
-}
-
-func (c *Correlator) runQueuedPersist(req queuedPersist) {
-	<-req.previous
-	defer close(req.done)
-	req.persist(req.snap)
-}
-
 // persistLocked invokes the Persist callback while temporarily releasing
 // the correlator mutex so a re-entrant Persist that reads Correlator
 // state does not deadlock. The caller MUST already hold c.mu; the
@@ -986,6 +943,63 @@ func (c *Correlator) persistLocked(snap Incident) {
 	c.mu.Unlock()
 	defer c.mu.Lock()
 	c.runQueuedPersist(req)
+}
+
+// RecordOperatorBlock notes on the incident that an operator blocked its
+// address from the incident view, and settles the automatic escalation ladder
+// to match: the hand-off has no business re-requesting a block for an address
+// the operator just blocked. A zero ttl is a permanent block, which the ladder
+// records as never lapsing.
+func (c *Correlator) RecordOperatorBlock(id, ip string, ttl time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inc, ok := c.incidents[id]
+	if !ok {
+		return ErrIncidentNotFound
+	}
+	ip = normalizeIncidentRemoteIP(ip)
+	if ip == "" || ip != incidentBlockCandidate(inc) {
+		return errors.New("incident: blocked address does not match incident source")
+	}
+	now := c.now()
+	if incidentStatusActive(inc.Status) {
+		count := inc.AutoBlock.Count
+		// Refreshing an existing block is not a recurrence after expiry.
+		if inc.AutoBlock.lapsed(now) {
+			count++
+		}
+		inc.AutoBlock = AutoBlockState{Count: count, LastAt: now}
+		if ttl > 0 {
+			inc.AutoBlock.ExpiresAt = now.Add(ttl)
+		}
+	} else {
+		// A closed record now carries an operator decision and must keep
+		// that decision for the operator retention window.
+		inc.UpdatedAt = now
+		inc.ClosedAt = now
+		inc.ClosedBy = "operator"
+	}
+	inc.Actions = append(inc.Actions, IncidentAction{
+		Time:    now,
+		Action:  "operator_block",
+		Result:  "ok",
+		Details: ip + " blocked by operator " + blockDurationLabel(ttl),
+	})
+	c.markPersistedLocked(id, now)
+	c.persistLocked(*inc)
+	return nil
+}
+
+// resetAutoBlockLocked ends the ladder and invalidates any callback still
+// running for this episode without releasing its concurrency guard early.
+func (c *Correlator) resetAutoBlockLocked(inc *Incident) {
+	inc.AutoBlock = AutoBlockState{}
+	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
+		c.pendingSprayBlocks[inc.ID] = false
+	}
+	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
+		c.pendingIncidentBlocks[inc.ID] = false
+	}
 }
 
 // SetStatus transitions an incident's status. On Resolved/Dismissed
@@ -1002,7 +1016,7 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 	if !ok {
 		return ErrIncidentNotFound
 	}
-	if inc.Status == status {
+	if inc.Status == status && (incidentStatusActive(status) || inc.ClosedBy == "operator") {
 		return nil
 	}
 	now := c.now()
@@ -1017,14 +1031,14 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 	})
 	c.counters.statusChangedTotal.Add(1)
 	if status == StatusResolved || status == StatusDismissed {
-		// Operator close: record provenance so reporting can distinguish
-		// from CloseStale's "auto:stale" attribution. Only set if the
-		// caller has not already assigned a closed reason (e.g. CloseStale
-		// reuses SetStatus internally and presets these fields).
-		if inc.ClosedAt.IsZero() {
-			inc.ClosedAt = now
-			inc.ClosedBy = "operator"
-		}
+		// SetStatus is an operator decision, including confirmation or
+		// dismissal of a record the daemon already closed.
+		inc.ClosedAt = now
+		inc.ClosedBy = "operator"
+		// Closing ends the episode. A later recurrence is new activity and
+		// starts at the bottom of the escalation ladder, rather than jumping
+		// to a permanent block off the back of a long-closed incident.
+		c.resetAutoBlockLocked(inc)
 		c.unbindLocked(id)
 		if c.spray != nil {
 			c.spray.UnbindIncident(id)
@@ -1069,7 +1083,7 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 	if len(idleThresholds) == 0 {
 		return 0, 0, 0, false
 	}
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	c.mu.Lock()
 	for id, inc := range c.incidents {
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
@@ -1098,6 +1112,7 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 		inc.UpdatedAt = now
 		inc.ClosedAt = now
 		inc.ClosedBy = "auto:stale"
+		c.resetAutoBlockLocked(inc)
 		inc.Actions = append(inc.Actions, IncidentAction{
 			Time:    now,
 			Action:  "incident_auto_closed",
@@ -1118,15 +1133,14 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 	}
 	c.mu.Unlock()
 
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return closed, dryRunCount, scanned, more
 }
 
 // closeIncidentLocked force-resolves an active incident with the given
 // attribution. Caller holds c.mu and must queue/run the persist of *inc.
 func (c *Correlator) closeIncidentLocked(inc *Incident, id string, now time.Time, by, detail string) {
+	c.resetAutoBlockLocked(inc)
 	from := inc.Status
 	inc.Status = StatusResolved
 	inc.UpdatedAt = now
@@ -1157,7 +1171,7 @@ func (c *Correlator) CloseStaleByAge(now time.Time, maxAge time.Duration, limit 
 	if maxAge <= 0 {
 		return 0, false
 	}
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	c.mu.Lock()
 	for id, inc := range c.incidents {
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
@@ -1177,9 +1191,7 @@ func (c *Correlator) CloseStaleByAge(now time.Time, maxAge time.Duration, limit 
 		closed++
 	}
 	c.mu.Unlock()
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return closed, more
 }
 
@@ -1211,7 +1223,7 @@ func (c *Correlator) EnforceActiveCap(now time.Time, maxActive, limit int) (clos
 	sort.Slice(active, func(i, j int) bool { return active[i].updated.Before(active[j].updated) })
 
 	overflow := len(active) - maxActive
-	var persist []queuedPersist
+	var persist []*queuedPersist
 	for _, a := range active {
 		if overflow <= 0 {
 			break
@@ -1232,9 +1244,7 @@ func (c *Correlator) EnforceActiveCap(now time.Time, maxActive, limit int) (clos
 		overflow--
 	}
 	c.mu.Unlock()
-	for _, req := range persist {
-		c.runQueuedPersist(req)
-	}
+	c.runQueuedPersists(persist)
 	return closed, more
 }
 
@@ -1269,27 +1279,31 @@ func (c *Correlator) IncrementCompactedTotal(n int) {
 // retention from the in-memory map. Store compaction removes the durable
 // records; this keeps API/control snapshots from serving stale incidents
 // until the next daemon restart.
-func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration) int {
+func (c *Correlator) PruneClosedOlderThan(now time.Time, retention ClosedRetention) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cutoff := now.Add(-retention)
 	pruned := 0
 	var prunedIDs []string
+	prunedSet := make(map[string]struct{})
 	for id, inc := range c.incidents {
-		if inc.Status != StatusResolved && inc.Status != StatusDismissed {
-			continue
-		}
-		if !inc.UpdatedAt.Before(cutoff) {
+		if !retention.Expired(*inc, now) {
 			continue
 		}
 		delete(c.incidents, id)
 		delete(c.lastPersistAt, id)
-		delete(c.pendingPersist, id)
-		c.unbindLocked(id)
+		c.persistence.discardDeferred(id)
+		prunedSet[id] = struct{}{}
 		if c.spray != nil {
 			prunedIDs = append(prunedIDs, id)
 		}
 		pruned++
+	}
+	// Walk the active index once. Scanning it for each expired record
+	// stalls all incident activity during a large retention backlog.
+	for key, id := range c.byKey {
+		if _, ok := prunedSet[id]; ok {
+			delete(c.byKey, key)
+		}
 	}
 	if c.spray != nil {
 		c.spray.UnbindIncidents(prunedIDs)
@@ -1310,7 +1324,7 @@ func (c *Correlator) Restore(incidents []Incident) {
 		inc := incidents[i]
 		c.incidents[inc.ID] = &inc
 		delete(c.lastPersistAt, inc.ID)
-		delete(c.pendingPersist, inc.ID)
+		c.persistence.discardDeferred(inc.ID)
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
 			continue
 		}
@@ -1541,6 +1555,11 @@ const establishedMailSourceMarker = "(established multi-mailbox source)"
 
 func incidentEventAutoBlockExcluded(ev IncidentEvent) bool {
 	switch strings.ToLower(strings.TrimSpace(ev.Check)) {
+	case "cpanel_file_upload", "cpanel_file_upload_realtime",
+		"cpanel_login", "cpanel_login_realtime", "ftp_login", "ftp_login_realtime",
+		"webmail_login_realtime", "pam_login":
+		// Retained incidents can still carry the old severity of audit events.
+		return true
 	case "ftp_login_after_bruteforce",
 		"mail_bruteforce_suspected",
 		"modsec_classifier_gap",
@@ -1574,16 +1593,26 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 	if inc == nil || c.cfg.OnIncidentBlock == nil {
 		return nil
 	}
-	if hasIncidentAction(inc.Actions, "incident_block_requested") {
+	if !inc.AutoBlock.lapsed(now) {
 		return nil
 	}
 	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
 		return nil
 	}
-	c.pendingIncidentBlocks[inc.ID] = struct{}{}
+	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
+		return nil
+	}
+	c.pendingIncidentBlocks[inc.ID] = true
+	prior := inc.AutoBlock
 	incidentID := inc.ID
+	attempt := inc.AutoBlock.Count + 1
+	ttl := blockTTLForAttempt(attempt, c.cfg.AutoBlock.BlockExpiry)
 	reason := "incident " + string(inc.Kind) + " " + inc.Severity.String() + " (" + why + ")"
+	if attempt > 1 {
+		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
+	}
 	onBlock := c.cfg.OnIncidentBlock
+	findingID := incidentBlockFindingID(inc, ip)
 	return func() {
 		var live bool
 		callbackReturned := false
@@ -1593,24 +1622,35 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		defer func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
+			valid := c.pendingIncidentBlocks[incidentID]
 			delete(c.pendingIncidentBlocks, incidentID)
-			if !callbackReturned || !live {
+			if !valid || !callbackReturned || !live {
 				return
 			}
 			current, ok := c.incidents[incidentID]
-			if !ok || hasIncidentAction(current.Actions, "incident_block_requested") {
+			if !ok || current != inc || !incidentStatusActive(current.Status) || current.AutoBlock != prior {
 				return
+			}
+			current.AutoBlock = AutoBlockState{Count: attempt, LastAt: now}
+			if ttl > 0 {
+				current.AutoBlock.ExpiresAt = now.Add(ttl)
 			}
 			current.Actions = append(current.Actions, IncidentAction{
 				Time:    now,
 				Action:  "incident_block_requested",
 				Result:  "ok",
-				Details: ip + " " + reason,
+				Details: ip + " " + reason + " " + blockDurationLabel(ttl),
 			})
 			c.markPersistedLocked(incidentID, c.now())
 			c.persistLocked(*current)
 		}()
-		live = onBlock(ip, reason)
+		c.mu.Lock()
+		valid := c.pendingIncidentBlocks[incidentID] && c.incidents[incidentID] == inc && incidentStatusActive(inc.Status) && inc.AutoBlock == prior
+		c.mu.Unlock()
+		if !valid {
+			return
+		}
+		live = onBlock(ip, reason, ttl, findingID)
 		callbackReturned = true
 	}
 }
@@ -1677,6 +1717,15 @@ func normalizeIncidentRemoteIP(raw string) string {
 	return ip.String()
 }
 
+// blockDurationLabel renders a block's lifetime for the incident action so an
+// operator reading the timeline can see the ladder escalating.
+func blockDurationLabel(ttl time.Duration) string {
+	if ttl <= 0 {
+		return "(permanent)"
+	}
+	return "(" + ttl.String() + ")"
+}
+
 func hasIncidentAction(actions []IncidentAction, action string) bool {
 	for _, a := range actions {
 		if a.Action == action {
@@ -1697,15 +1746,25 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 	if inc == nil || c.cfg.OnSprayBlock == nil {
 		return nil
 	}
-	if hasIncidentAction(inc.Actions, "credential_spray_block_requested") {
+	if !inc.AutoBlock.lapsed(now) {
 		return nil
 	}
 	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
 		return nil
 	}
-	c.pendingSprayBlocks[inc.ID] = struct{}{}
+	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
+		return nil
+	}
+	c.pendingSprayBlocks[inc.ID] = true
+	prior := inc.AutoBlock
+	attempt := inc.AutoBlock.Count + 1
+	ttl := blockTTLForAttempt(attempt, c.spray.cfg.BlockExpiry)
 	reason := "credential_spray: " + strconv.Itoa(hits) + " distinct mailboxes (" + why + ")"
+	if attempt > 1 {
+		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
+	}
 	onSprayBlock := c.cfg.OnSprayBlock
+	findingID := incidentBlockFindingID(inc, ip)
 	incidentID := inc.ID
 	return func() {
 		var live bool
@@ -1717,24 +1776,52 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		defer func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
+			valid := c.pendingSprayBlocks[incidentID]
 			delete(c.pendingSprayBlocks, incidentID)
-			if !callbackReturned || !live {
+			if !valid || !callbackReturned || !live {
 				return
 			}
 			current, ok := c.incidents[incidentID]
-			if !ok || hasIncidentAction(current.Actions, "credential_spray_block_requested") {
+			if !ok || current != inc || !incidentStatusActive(current.Status) || current.AutoBlock != prior {
 				return
+			}
+			current.AutoBlock = AutoBlockState{Count: attempt, LastAt: now}
+			if ttl > 0 {
+				current.AutoBlock.ExpiresAt = now.Add(ttl)
 			}
 			current.Actions = append(current.Actions, IncidentAction{
 				Time:    now,
 				Action:  "credential_spray_block_requested",
 				Result:  "ok",
-				Details: ip + " " + reason,
+				Details: ip + " " + reason + " " + blockDurationLabel(ttl),
 			})
 			c.markPersistedLocked(incidentID, c.now())
 			c.persistLocked(*current)
 		}()
-		live = onSprayBlock(ip, reason)
+		c.mu.Lock()
+		valid := c.pendingSprayBlocks[incidentID] && c.incidents[incidentID] == inc && incidentStatusActive(inc.Status) && inc.AutoBlock == prior
+		c.mu.Unlock()
+		if !valid {
+			return
+		}
+		live = onSprayBlock(ip, reason, ttl, findingID)
 		callbackReturned = true
 	}
+}
+
+// incidentBlockFindingID selects the latest eligible observation for this
+// source while the incident lock is held. Older timelines without an audit
+// identity remain unlinked; display text cannot reconstruct the original ID.
+func incidentBlockFindingID(inc *Incident, ip string) string {
+	ip = normalizeIncidentRemoteIP(ip)
+	if ip == "" {
+		return ""
+	}
+	for i := len(inc.Timeline) - 1; i >= 0; i-- {
+		ev := inc.Timeline[i]
+		if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && !incidentEventAutoBlockExcluded(ev) {
+			return ev.FindingID
+		}
+	}
+	return ""
 }

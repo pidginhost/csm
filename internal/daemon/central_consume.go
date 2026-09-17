@@ -1,14 +1,12 @@
 package daemon
 
 import (
-	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"log"
 	"net"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -26,8 +24,9 @@ const (
 )
 
 type centralQueuedAction struct {
-	decision reporting.Decision
-	ip       string
+	findingID string
+	decision  reporting.Decision
+	ip        string
 }
 
 // documentationNets are reserved/non-routable ranges (RFC 5737 documentation,
@@ -85,62 +84,21 @@ func (d *Daemon) startCentralConsume() func() {
 
 	store := reporting.NewCentralStore(reporting.NewPuller(nil, cc.SetURL, pubHex))
 	firebreak := d.centralFirebreak()
-	actions := make(chan centralQueuedAction, centralActionQueue)
-	var droppedActions atomic.Uint64
+	consumer := newCentralActionConsumer(d.stopCh, centralActionQueue, interval, store.Refresh, d.performCentralAction)
+	d.registerQueueSource("central", consumer)
 
 	alert.SetCentralHook(func(f alert.Finding) {
 		a, ok := d.planCentralAction(store, policy, threshold, firebreak, f)
 		if !ok {
 			return
 		}
-		select {
-		case actions <- a:
-		default:
-			droppedActions.Add(1)
-		}
+		consumer.enqueue(a)
 	})
 	log.Printf("central-intel: enabled (action=%s, threshold=%d, refresh=%s)", policy, threshold, interval)
 
 	return func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		logDropped := func() {
-			if n := droppedActions.Swap(0); n > 0 {
-				log.Printf("central-intel: action queue full; dropped %d action(s)", n)
-			}
-		}
-		go func() {
-			<-d.stopCh
-			cancel()
-		}()
 		defer alert.SetCentralHook(nil)
-
-		// Initial pull so the set is usable before the first interval.
-		if err := store.Refresh(ctx); err != nil {
-			log.Printf("central-intel: initial pull failed: %v", err)
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-d.stopCh:
-				logDropped()
-				return
-			default:
-			}
-			select {
-			case <-d.stopCh:
-				logDropped()
-				return
-			case a := <-actions:
-				d.performCentralAction(a)
-			case <-ticker.C:
-				logDropped()
-				if err := store.Refresh(ctx); err != nil {
-					log.Printf("central-intel: refresh failed: %v", err)
-				}
-			}
-		}
+		consumer.run()
 	}
 }
 
@@ -152,7 +110,9 @@ func (d *Daemon) applyCentral(store *reporting.CentralStore, action reporting.Ac
 	if !ok {
 		return
 	}
-	d.performCentralAction(a)
+	if err := d.performCentralAction(a); err != nil {
+		logCentralBlockFailure(a.ip, err)
+	}
 }
 
 func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporting.Action, threshold int, firebreak func(string) bool, f alert.Finding) (centralQueuedAction, bool) {
@@ -177,10 +137,10 @@ func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporti
 	if dec == reporting.DecisionIgnore {
 		return centralQueuedAction{}, false
 	}
-	return centralQueuedAction{decision: dec, ip: ip}, true
+	return centralQueuedAction{decision: dec, ip: ip, findingID: alert.FindingID(f)}, true
 }
 
-func (d *Daemon) performCentralAction(a centralQueuedAction) {
+func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 	switch a.decision {
 	case reporting.DecisionChallenge:
 		if d.ipList != nil {
@@ -193,23 +153,28 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) {
 			Reason:       "central-intel (locally corroborated)",
 			TTL:          centralBlockTTL,
 			Source:       checks.BlockSourceCentral,
+			FindingID:    a.findingID,
 		})
+		d.recordAppliedBlocks(res.Findings)
 		if err != nil {
-			logCentralBlockFailure(a.ip, err)
-			return
+			return err
 		}
 		log.Printf("central-intel: block %s outcome: %s", a.ip, res.Outcome)
-		d.recordAppliedBlocks(res.Findings)
 	}
+	return nil
 }
 
 func logCentralBlockFailure(ip string, err error) {
 	// Protected IPs are never blockable and a host without a firewall
 	// engine cannot block; both are expected, not failures.
-	if isProtectedIPRefusal(err) || errors.Is(err, checks.ErrNoIPBlocker) {
+	if isCentralBlockRefusal(err) {
 		return
 	}
 	log.Printf("central-intel: block %s failed: %v", ip, err)
+}
+
+func isCentralBlockRefusal(err error) bool {
+	return isProtectedIPRefusal(err) || errors.Is(err, checks.ErrNoIPBlocker)
 }
 
 // centralFirebreak returns a predicate that reports whether an IP must never be

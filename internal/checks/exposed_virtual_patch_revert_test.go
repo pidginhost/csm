@@ -97,6 +97,10 @@ func ai1wmSite(t *testing.T, root string) (archive, htaccess string) {
 func TestVirtualPatchExposedFile_DoesNotArchiveIdenticalPrePatchTwice(t *testing.T) {
 	root := vpTestEnv(t)
 	archive, htaccess := ai1wmSite(t, root)
+	original, err := os.Stat(htaccess)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if res := VirtualPatchExposedFile(archive); !res.Success {
 		t.Fatalf("first patch: %+v", res)
@@ -108,6 +112,10 @@ func TestVirtualPatchExposedFile_DoesNotArchiveIdenticalPrePatchTwice(t *testing
 
 	// The plugin rewrites its own .htaccess, wiping CSM's deny block.
 	mustWrite(t, htaccess, ai1wmPluginHtaccess)
+	// Identical recovery states include the original modification time.
+	if err := os.Chtimes(htaccess, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatal(err)
+	}
 
 	if res := VirtualPatchExposedFile(archive); !res.Success {
 		t.Fatalf("re-patch after revert: %+v", res)
@@ -167,7 +175,7 @@ func TestVirtualPatchExposedFile_ArchivesIdenticalContentAfterModeChange(t *test
 		if record.meta.Mode != "-rw-------" {
 			continue
 		}
-		if err := RestoreVirtualPatchBackup(record.itemPath, htaccess, record.meta); err != nil {
+		if err := RestoreVirtualPatchBackup(record.itemPath, virtualPatchRestoreTarget(t, htaccess), record.meta); err != nil {
 			t.Fatalf("restore mode-specific backup: %v", err)
 		}
 		info, err := os.Stat(htaccess)
@@ -192,17 +200,16 @@ func TestFindExistingPrePatchBackup_RejectsOversizedMetadata(t *testing.T) {
 	}
 
 	htaccess := filepath.Join(root, "site", ".htaccess")
-	state := htaccessState{
-		content: []byte("customer rules\n"),
-		existed: true,
-		uid:     os.Getuid(),
-		gid:     os.Getgid(),
-		mode:    0o644,
+	mustWrite(t, htaccess, "customer rules\n")
+	state, stateErr := readHtaccessState(htaccess, filepath.Dir(htaccess))
+	if stateErr != nil {
+		t.Fatal(stateErr)
 	}
 	block := buildDenyBlock("dump.sql", false)
 	patched := append(append([]byte(nil), state.content...), block...)
 	metaData, err := json.Marshal(QuarantineMeta{
 		OriginalPath:          htaccess,
+		OriginalModTime:       state.info.ModTime(),
 		Owner:                 state.uid,
 		Group:                 state.gid,
 		Mode:                  state.mode.String(),
@@ -238,17 +245,16 @@ func TestFindExistingPrePatchBackup_RejectsSymlinkedArchive(t *testing.T) {
 	}
 
 	htaccess := filepath.Join(root, "site", ".htaccess")
-	state := htaccessState{
-		content: []byte("customer rules\n"),
-		existed: true,
-		uid:     os.Getuid(),
-		gid:     os.Getgid(),
-		mode:    0o644,
+	mustWrite(t, htaccess, "customer rules\n")
+	state, stateErr := readHtaccessState(htaccess, filepath.Dir(htaccess))
+	if stateErr != nil {
+		t.Fatal(stateErr)
 	}
 	block := buildDenyBlock("dump.sql", false)
 	patched := patchedHtaccessContent(state.content, state.existed, block)
 	metaData, err := json.Marshal(QuarantineMeta{
 		OriginalPath:          htaccess,
+		OriginalModTime:       state.info.ModTime(),
 		Owner:                 state.uid,
 		Group:                 state.gid,
 		Mode:                  state.mode.String(),
@@ -273,6 +279,15 @@ func TestFindExistingPrePatchBackup_RejectsSymlinkedArchive(t *testing.T) {
 
 	if backup, found := findExistingPrePatchBackup(htaccess, state, patched); found {
 		t.Fatalf("symlinked archive cannot be a restorable rollback point: %+v", backup)
+	}
+	if removeErr := os.Remove(itemPath); removeErr != nil {
+		t.Fatal(removeErr)
+	}
+	if writeErr := os.WriteFile(itemPath, state.content, 0o640); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if backup, found := findExistingPrePatchBackup(htaccess, state, patched); !found || backup.itemPath != itemPath {
+		t.Fatalf("valid regular archive was not found: %+v, found=%v", backup, found)
 	}
 }
 
@@ -606,6 +621,11 @@ func TestVirtualPatchExposedFile_FailedParentRepatchKeepsSharedBackups(t *testin
 
 	mustWrite(t, pluginHtaccess, ai1wmPluginHtaccess)
 	mustWrite(t, parentHtaccess, parentRules)
+	for _, record := range append(pluginBackups, parentBackups...) {
+		if err := os.Chtimes(record.meta.OriginalPath, record.meta.OriginalModTime, record.meta.OriginalModTime); err != nil {
+			t.Fatal(err)
+		}
+	}
 	chownCalls := 0
 	chownFunc = func(*os.File, int, int) error {
 		chownCalls++
@@ -643,9 +663,19 @@ func TestRestoreVirtualPatchBackup_WorksAfterDedupedRepatch(t *testing.T) {
 	if res := VirtualPatchExposedFile(archive); !res.Success {
 		t.Fatalf("first patch: %+v", res)
 	}
+	original := prePatchBackupsForPath(t, htaccess)
+	if len(original) != 1 {
+		t.Fatalf("original backup count=%d, want 1", len(original))
+	}
 	mustWrite(t, htaccess, ai1wmPluginHtaccess)
+	if err := os.Chtimes(htaccess, original[0].meta.OriginalModTime, original[0].meta.OriginalModTime); err != nil {
+		t.Fatal(err)
+	}
 	if res := VirtualPatchExposedFile(archive); !res.Success {
 		t.Fatalf("re-patch: %+v", res)
+	}
+	if records := prePatchBackupsForPath(t, htaccess); len(records) != 1 || records[0].itemPath != original[0].itemPath {
+		t.Fatalf("matching recovery state was not reused: %+v", records)
 	}
 
 	entries, err := os.ReadDir(htaccessBackupDirRoot)
@@ -669,7 +699,7 @@ func TestRestoreVirtualPatchBackup_WorksAfterDedupedRepatch(t *testing.T) {
 		if meta.OriginalPath != htaccess {
 			continue
 		}
-		if err := RestoreVirtualPatchBackup(strings.TrimSuffix(metaPath, ".meta"), htaccess, meta); err != nil {
+		if err := RestoreVirtualPatchBackup(strings.TrimSuffix(metaPath, ".meta"), virtualPatchRestoreTarget(t, htaccess), meta); err != nil {
 			t.Fatalf("restore: %v", err)
 		}
 		restored = true

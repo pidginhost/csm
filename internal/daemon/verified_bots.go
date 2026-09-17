@@ -55,8 +55,9 @@ func (d *Daemon) reconcileVerifiedBots() {
 }
 
 func (d *Daemon) startBotVerifier(db *store.DB, entries []threatintel.BotEntry) {
-	bv := threatintel.NewAsyncBotVerifier(db.PutBotVerify)
+	bv := threatintel.NewAsyncBotVerifier(db.PutBotVerify, db)
 	bv.SetOperatorEntries(entries)
+	d.registerQueueSource("bot_verification", bv)
 	d.botVerifier = bv
 	d.wg.Add(1)
 	obs.Go("bot-verify", func() {

@@ -21,18 +21,27 @@ import (
 	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/atomicio"
 )
 
 // Engine manages the nftables firewall ruleset.
 // Manages the nftables ruleset via netlink.
 type Engine struct {
-	mu   sync.Mutex
-	conn *nftables.Conn
+	lifecycle     *Lifecycle
+	stateRevision uint64
+	stateReadErr  error
+	mu            sync.Mutex
+	conn          *nftables.Conn
 	// listTables, when set, replaces conn.ListTables (tests inject a
 	// failing listing).
 	listTables func() ([]*nftables.Table, error)
 	cfg        *FirewallConfig
+
+	// Captured only after our own successful ruleset transaction. Config-file
+	// hashes cannot authenticate the rules currently installed in the kernel.
+	appliedRuleset string
+	readRuleset    func() (string, error)
 
 	// dryRunRecorder is called by BlockIP when auto_response.dry_run is
 	// active. Set by SetDryRunRecorder after construction so the firewall
@@ -540,8 +549,6 @@ func cloneIPNetSlice(nets []*net.IPNet) []*net.IPNet {
 }
 
 // dosExemptIntervalElems builds nftables interval set elements from nets.
-// Each net produces two elements (start key + exclusive interval-end key).
-// Saturated ranges whose end has no successor (e.g. 0.0.0.0/0) are skipped.
 // Callers must pass nets from a single IP family (all IPv4 or all IPv6).
 func dosExemptIntervalElems(nets []*net.IPNet) []nftables.SetElement {
 	if len(nets) == 0 {
@@ -564,7 +571,7 @@ func dosExemptIntervalElems(nets []*net.IPNet) []nftables.SetElement {
 		}
 		elems = appendIntervalSetElements(elems, start, end)
 	}
-	return elems
+	return normalizeIntervalElements(elems)
 }
 
 // RefreshDOSExemptSets repopulates the dos_exempt_nets[6] interval sets with
@@ -574,6 +581,10 @@ func dosExemptIntervalElems(nets []*net.IPNet) []nftables.SetElement {
 func (e *Engine) RefreshDOSExemptSets(providerNets []*net.IPNet) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if err := e.lifecycleReadyLocked(); err != nil {
+		return err
+	}
 
 	if e.setDOSExempt == nil {
 		return fmt.Errorf("dos_exempt_nets set not initialized")
@@ -641,9 +652,26 @@ func (e *Engine) dosExemptV6Lookup(reg uint32) []expr.Any {
 // EMPTY blocked sets between the table-swap and the persisted-state
 // load; an attacker IP from state.json is blocked from the moment
 // the new table becomes the live one.
-func (e *Engine) Apply() error {
+func (e *Engine) Apply() (resultErr error) {
+	defer func() {
+		if e.shouldLegacyOutcome(resultErr) {
+			recordFirewallResult("apply", "csm", "", "", 0, actionlog.Applied, resultErr)
+		}
+	}()
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if err := e.lifecycleReadyLocked(); err != nil {
+		return err
+	}
+
+	if e.lifecycle != nil {
+		return e.applyDurableLocked()
+	}
+	return e.applyRulesetLocked("")
+}
+func (e *Engine) applyRulesetLocked(marker string) error {
 
 	// Compute the elements to seed each set from persisted state
 	// BEFORE touching nft. Pure computation; if state.json is
@@ -696,10 +724,17 @@ func (e *Engine) Apply() error {
 		return fmt.Errorf("queueing initial firewall state: %w", err)
 	}
 
+	if marker != "" {
+		e.conn.AddChain(&nftables.Chain{Name: marker, Table: e.table})
+	}
+
 	// Apply atomically - if this fails, nftables keeps whatever was running before
 	if err := e.conn.Flush(); err != nil {
 		return fmt.Errorf("applying ruleset: %w", err)
 	}
+	// A failed capture leaves monitoring visibly unbaselined; it must neither
+	// undo an applied firewall nor bless a later, possibly external edit.
+	e.appliedRuleset, _ = e.readRulesetLocked()
 
 	return nil
 }
@@ -782,7 +817,7 @@ func (e *Engine) createSets() error {
 		}
 	}
 
-	if err := e.conn.AddSet(e.setInfra, infraElements); err != nil {
+	if err := e.conn.AddSet(e.setInfra, normalizeIntervalElements(infraElements)); err != nil {
 		return fmt.Errorf("infra set: %w", err)
 	}
 
@@ -820,7 +855,7 @@ func (e *Engine) createSets() error {
 			countryElements = append(countryElements, loadCountryCIDRs(CountryDBDir(e.cfg, e.statePath), code)...)
 		}
 
-		if err := e.conn.AddSet(e.setCountry, countryElements); err != nil {
+		if err := e.conn.AddSet(e.setCountry, normalizeIntervalElements(countryElements)); err != nil {
 			fmt.Fprintf(os.Stderr, "firewall: warning creating country set: %v\n", err)
 			e.setCountry = nil
 		} else if len(countryElements) > 0 {
@@ -860,7 +895,7 @@ func (e *Engine) createSets() error {
 			Table: e.table, Name: "infra_ips6",
 			KeyType: nftables.TypeIP6Addr, Interval: true,
 		}
-		if err := e.conn.AddSet(e.setInfra6, infra6Elements); err != nil {
+		if err := e.conn.AddSet(e.setInfra6, normalizeIntervalElements(infra6Elements)); err != nil {
 			return fmt.Errorf("infra6 set: %w", err)
 		}
 
@@ -875,7 +910,7 @@ func (e *Engine) createSets() error {
 			for _, code := range e.cfg.CountryBlock {
 				country6Elements = append(country6Elements, loadCountryCIDRs6(CountryDBDir(e.cfg, e.statePath), code)...)
 			}
-			if err := e.conn.AddSet(e.setCountry6, country6Elements); err != nil {
+			if err := e.conn.AddSet(e.setCountry6, normalizeIntervalElements(country6Elements)); err != nil {
 				fmt.Fprintf(os.Stderr, "firewall: warning creating IPv6 country set: %v\n", err)
 				e.setCountry6 = nil
 			} else if len(country6Elements) > 0 {
@@ -1429,6 +1464,19 @@ func (e *Engine) createOutputChain() error {
 	// smtp_block still governs IPv4 mail.
 	if e.cfg.restrictedOutputNeedsIPv4Bypass() {
 		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainOut, Exprs: familyBypassRuleExprs(2)})
+	}
+
+	// Destination-scoped outbound allows. Deliberately emitted AFTER the
+	// smtp_block guard above: nftables takes the first verdict, so the drop on
+	// each smtp port is already decided and no range here can bypass it. The
+	// config validator rejects an overlapping range as well; rule order must
+	// not be the only guard between a config key and outbound mail.
+	for _, r := range e.cfg.TCPOutAllow {
+		exprs := buildOutAllowExprs(r, e.cfg.IPv6)
+		if exprs == nil {
+			continue
+		}
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainOut, Exprs: exprs})
 	}
 
 	// Allow configured outbound TCP ports (skip SMTP-blocked ports - handled above)
@@ -2002,6 +2050,77 @@ func buildFamilyPortRuleExprs(nfproto byte, port int, tcp bool) []expr.Any {
 	}
 }
 
+// buildOutAllowExprs builds one destination-scoped outbound accept rule:
+// nfproto guard, TCP, destination address, destination port range, accept.
+//
+// The neighbouring buildPortAllowExprs matches the SOURCE address because it
+// serves the input chain. This rule serves the output chain and matches the
+// DESTINATION, at offset 16 for IPv4 and 24 for IPv6.
+//
+// Returns nil when the rule cannot be expressed -- an unparseable destination,
+// or an IPv6 destination while dual-stack filtering is off. Callers must emit
+// nothing rather than a rule matching more than the operator asked for.
+func buildOutAllowExprs(r OutAllowRule, ipv6Enabled bool) []expr.Any {
+	network, err := ParseOutAllowDst(r.Dst)
+	if err != nil {
+		return nil
+	}
+	if !validOutAllowRange(r) {
+		return nil
+	}
+
+	var (
+		exprs  []expr.Any
+		addr   net.IP
+		mask   net.IPMask
+		offset uint32
+		length uint32
+	)
+	if ip4 := network.IP.To4(); ip4 != nil {
+		exprs, addr, mask, offset, length = ipv4NFProtoGuard(), ip4, network.Mask, 16, 4
+	} else {
+		if !ipv6Enabled {
+			return nil
+		}
+		exprs, addr, mask, offset, length = ipv6NFProtoGuard(), network.IP.To16(), network.Mask, 24, 16
+	}
+
+	exprs = append(exprs,
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+	)
+
+	// A zero-length prefix means every destination, and the honest encoding of
+	// that is no address match at all rather than a compare against nothing.
+	if ones, _ := mask.Size(); ones > 0 {
+		exprs = append(exprs, &expr.Payload{
+			DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: length,
+		})
+		if ones < int(length)*8 {
+			exprs = append(exprs, &expr.Bitwise{
+				SourceRegister: 1, DestRegister: 1, Len: length,
+				Mask: mask, Xor: make([]byte, length),
+			})
+		}
+		exprs = append(exprs, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: addr.Mask(mask)})
+	}
+
+	return append(exprs,
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(r.PortStart))},
+		&expr.Cmp{Op: expr.CmpOpLte, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(r.PortEnd))},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
+}
+
+// validOutAllowRange mirrors the config validator so a rule that slipped past
+// validation still emits nothing rather than a range that matches everything.
+func validOutAllowRange(r OutAllowRule) bool {
+	return r.PortStart >= 1 && r.PortStart <= 65535 &&
+		r.PortEnd >= 1 && r.PortEnd <= 65535 &&
+		r.PortStart <= r.PortEnd
+}
+
 func familyBypassRuleExprs(nfproto byte) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
@@ -2071,7 +2190,24 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 //
 // Operator-initiated commands (csm firewall block, Web UI manual block) must
 // call BlockIPForce instead, which skips the dry-run gate unconditionally.
-func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration) (BlockOutcome, error) {
+func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration) (outcome BlockOutcome, resultErr error) {
+	return e.BlockIPOutcomeWithFindingID(ip, reason, timeout, "")
+}
+
+// BlockIPOutcomeWithFindingID preserves the originating audit identity across
+// every automatic outcome without changing the block policy or result.
+func (e *Engine) BlockIPOutcomeWithFindingID(ip, reason string, timeout time.Duration, findingID string) (outcome BlockOutcome, resultErr error) {
+	return e.BlockIPRequest(ActionRequest{Operation: "block", Target: ip, Reason: reason, TTL: timeout, FindingID: findingID, Automatic: true, Actor: string(actionlog.Daemon)}, nil)
+}
+
+func (e *Engine) blockIPOutcomeRequest(req ActionRequest, budget *ScanAdmission) (outcome BlockOutcome, resultErr error) {
+	ip, reason, timeout, findingID := req.Target, req.Reason, req.TTL, req.FindingID
+	defer func() {
+		if e.shouldLegacyOutcome(resultErr) || (resultErr == nil && outcome != BlockOutcomeLive) {
+			recordBlockOutcome(ip, reason, timeout, outcome, resultErr, false, findingID)
+		}
+	}()
+
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return BlockOutcomeNoop, err
@@ -2137,15 +2273,19 @@ func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration)
 		e.recordDryRunBlock(ip, reason, timeout)
 		return BlockOutcomeDryRun, nil
 	}
-	allowlisted, err := e.blockIPLockedAuto(ip, reason, timeout)
-	if err != nil {
-		return BlockOutcomeNoop, err
-	}
-	if allowlisted {
+	if e.autoBlockVerifiedRange(ip) {
 		e.logAutoBlockSoftAllowed(ip)
 		return BlockOutcomeAllowlisted, nil
 	}
-	return BlockOutcomeLive, nil
+	lockedOutcome, err := e.blockIPLockedRequest(ip, reason, timeout, true, true, req, budget)
+	if err != nil {
+		return lockedOutcome, err
+	}
+	if lockedOutcome == BlockOutcomeAllowlisted {
+		e.logAutoBlockSoftAllowed(ip)
+		return BlockOutcomeAllowlisted, nil
+	}
+	return lockedOutcome, nil
 }
 
 func (e *Engine) autoResponseDryRunEnabled() bool {
@@ -2158,7 +2298,13 @@ func (e *Engine) autoResponseDryRunEnabled() bool {
 // BlockIPForce adds an IP to the blocked set unconditionally, bypassing the
 // auto_response.dry_run gate. Use this for operator-initiated commands (CLI,
 // Web UI manual block) where the operator has explicitly decided to block.
-func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) error {
+func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) (resultErr error) {
+	defer func() {
+		if e.shouldLegacyOutcome(resultErr) {
+			recordBlockOutcome(ip, reason, timeout, BlockOutcomeLive, resultErr, true, "")
+		}
+	}()
+
 	return e.blockIPLocked(ip, reason, timeout, false)
 }
 
@@ -2169,12 +2315,32 @@ func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) e
 // skips an already-blocked IP, so the kernel timeout would otherwise expire
 // the block the operator wanted made permanent. Returns an error if the IP is
 // not currently blocked (nothing to promote).
-func (e *Engine) PromoteToPermanentBlock(ip, reason string) error {
+func (e *Engine) PromoteToPermanentBlock(ip, reason string) (resultErr error) {
+	return e.PromoteToPermanentBlockWithFindingID(ip, reason, "")
+}
+
+// PromoteToPermanentBlockWithFindingID ties escalation to its triggering
+// observation while preserving the existing permanent-block transaction.
+func (e *Engine) PromoteToPermanentBlockWithFindingID(ip, reason, findingID string) (resultErr error) {
+	source := InferProvenance("permblock", reason)
+	defer func() {
+		if e.shouldLegacyOutcome(resultErr) {
+			recordFirewallFindingResult("permblock", ip, reason, source, 0, actionlog.Applied, resultErr, findingID)
+		}
+	}()
+
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return err
 	}
 	ip = canonical
+
+	// This path deliberately bypasses blockIPLocked, so it does not inherit
+	// that path's address guard. An entry that reached the set before the
+	// guard existed must not be made permanent here.
+	if isUnblockableAddress(ip) {
+		return ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -2214,7 +2380,11 @@ func (e *Engine) PromoteToPermanentBlock(ip, reason string) error {
 	// ExpiresAt left zero: permanent.
 	nextState := copyFirewallState(priorState)
 	upsertBlockedEntryInState(&nextState, entry)
-	if err := e.saveState(&nextState); err != nil {
+	if e.lifecycle != nil {
+		return e.runDurableLocked(ActionRequest{Operation: "promote", Target: ip, Reason: reason, FindingID: findingID, Automatic: findingID != ""}, nil, nextState)
+	}
+
+	if err := e.persistFirewallIntent(priorState, nextState); err != nil {
 		return fmt.Errorf("persisting permanent promotion for %s: %w", ip, err)
 	}
 
@@ -2238,7 +2408,8 @@ func (e *Engine) PromoteToPermanentBlock(ip, reason string) error {
 		}
 		return fmt.Errorf("promoting %s: flush: %w", ip, err)
 	}
-	AppendAudit(e.statePath, "permblock", ip, reason, entry.Source, 0)
+	source = entry.Source
+	e.legacyFileAuditLocked("permblock", ip, reason, entry.Source, 0)
 	return nil
 }
 
@@ -2260,37 +2431,44 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 	return err
 }
 
-func (e *Engine) blockIPLockedAuto(ip string, reason string, timeout time.Duration) (bool, error) {
-	canonical, err := canonicalFirewallIP(ip)
-	if err != nil {
-		return false, err
-	}
-	if e.autoBlockVerifiedRange(canonical) {
-		return true, nil
-	}
-	return e.blockIPLockedMaybeSoftAllowed(canonical, reason, timeout, true, true)
+func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool) (BlockOutcome, error) {
+	return e.blockIPLockedRequest(ip, reason, timeout, skipExisting, enforceSoftAllow, ActionRequest{Operation: "block", Target: ip, Reason: reason, TTL: timeout, Automatic: enforceSoftAllow}, nil)
 }
 
-func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool) (bool, error) {
+func (e *Engine) blockIPLockedRequest(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool, req ActionRequest, budget *ScanAdmission) (BlockOutcome, error) {
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
-		return false, err
+		return BlockOutcomeNoop, err
 	}
 	ip = canonical
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if enforceSoftAllow && e.operatorSoftAllowedLocked(ip) {
-		return true, nil
+	req.Target = ip
+	req = normalizeActionRequest(req)
+	if found, replayErr := e.replayActionLocked(req); found || replayErr != nil {
+		return BlockOutcomeNoop, replayErr
+	}
+	if readyErr := e.lifecycleReadyLocked(); readyErr != nil {
+		return BlockOutcomeNoop, readyErr
 	}
 
-	targetSet, key, alreadyBlocked, evictTempIP, err := e.blockIPTarget(ip, timeout, skipExisting)
+	priorState := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return BlockOutcomeNoop, e.stateReadErr
+	}
+	// Safety, capacity, eviction and the resulting state share one snapshot.
+	if enforceSoftAllow && (ipSetIndexContains(e.allowedIPIndex, ip) || ipSetIndexContains(e.portAllowedIndex, ip)) {
+		return BlockOutcomeAllowlisted, nil
+	}
+
+	targetSet, key, alreadyBlocked, evictTempIP, err := e.blockIPTargetFromState(ip, timeout, skipExisting, priorState)
 	if err != nil {
-		return false, err
+		return BlockOutcomeNoop, err
 	}
 	if alreadyBlocked {
-		return false, nil
+		return BlockOutcomeNoop, nil
 	}
 
 	// Persist to state BEFORE adding the kernel element. state.json is the
@@ -2315,11 +2493,10 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 	if evictTempIP != "" {
 		evictSet, evictKey, err = e.resolveIPSet(evictTempIP, e.setBlocked, e.setBlocked6)
 		if err != nil {
-			return false, fmt.Errorf("resolving temp block eviction target %s: %w", evictTempIP, err)
+			return BlockOutcomeNoop, fmt.Errorf("resolving temp block eviction target %s: %w", evictTempIP, err)
 		}
 	}
 
-	priorState := e.loadStateFile()
 	// A forced block over an address that is already blocked changes the
 	// timeout (deny over an auto-block, tempban over a permanent deny).
 	// nf_tables treats NEWSETELEM without NLM_F_EXCL on an existing key as
@@ -2334,7 +2511,7 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 		// recreating the state/kernel drift this path is meant to repair.
 		live, liveErr := e.isBlockedLiveLocked(ip)
 		if liveErr != nil {
-			return false, fmt.Errorf("checking existing block for %s: %w", ip, liveErr)
+			return BlockOutcomeNoop, fmt.Errorf("checking existing block for %s: %w", ip, liveErr)
 		}
 		replaceExisting = live
 	}
@@ -2343,31 +2520,41 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 		removeBlockedIPFromState(&nextState, evictTempIP)
 	}
 	upsertBlockedEntryInState(&nextState, entry)
-	if err := e.saveState(&nextState); err != nil {
-		return false, fmt.Errorf("persisting block for %s: %w", ip, err)
+	if e.lifecycle != nil {
+		if err := e.runDurableLocked(req, budget, nextState); err != nil {
+			if errors.Is(err, ErrActionAuditPending) {
+				return BlockOutcomeLive, err
+			}
+			return BlockOutcomeNoop, err
+		}
+		return BlockOutcomeLive, nil
+	}
+
+	if err := e.persistFirewallIntent(priorState, nextState); err != nil {
+		return BlockOutcomeNoop, fmt.Errorf("persisting block for %s: %w", ip, err)
 	}
 
 	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
 	if replaceExisting {
 		if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
 			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
-				return false, fmt.Errorf("replacing blocked element: %w (state restore failed: %v)", err, restoreErr)
+				return BlockOutcomeNoop, fmt.Errorf("replacing blocked element: %w (state restore failed: %v)", err, restoreErr)
 			}
-			return false, fmt.Errorf("replacing blocked element: %w", err)
+			return BlockOutcomeNoop, fmt.Errorf("replacing blocked element: %w", err)
 		}
 	}
 	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
 		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
-			return false, fmt.Errorf("adding to blocked set: %w (state restore failed: %v)", err, restoreErr)
+			return BlockOutcomeNoop, fmt.Errorf("adding to blocked set: %w (state restore failed: %v)", err, restoreErr)
 		}
-		return false, fmt.Errorf("adding to blocked set: %w", err)
+		return BlockOutcomeNoop, fmt.Errorf("adding to blocked set: %w", err)
 	}
 	if evictTempIP != "" {
 		if err := e.conn.SetDeleteElements(evictSet, []nftables.SetElement{{Key: evictKey}}); err != nil {
 			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
-				return false, fmt.Errorf("evicting temp block %s: %w (state restore failed: %v)", evictTempIP, err, restoreErr)
+				return BlockOutcomeNoop, fmt.Errorf("evicting temp block %s: %w (state restore failed: %v)", evictTempIP, err, restoreErr)
 			}
-			return false, fmt.Errorf("evicting temp block %s: %w", evictTempIP, err)
+			return BlockOutcomeNoop, fmt.Errorf("evicting temp block %s: %w", evictTempIP, err)
 		}
 	}
 	if err := e.conn.Flush(); err != nil {
@@ -2379,17 +2566,17 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 		}
 		if err != nil {
 			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
-				return false, fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
+				return BlockOutcomeNoop, fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
 			}
-			return false, fmt.Errorf("flushing: %w", err)
+			return BlockOutcomeNoop, fmt.Errorf("flushing: %w", err)
 		}
 	}
 	if evictTempIP != "" {
-		AppendAudit(e.statePath, "evict_temp", evictTempIP, "temp deny limit reached; evicted soonest-expiring entry", SourceSystem, 0)
+		e.legacyActionAuditLocked("evict_temp", evictTempIP, "temp deny limit reached; evicted soonest-expiring entry", SourceSystem, 0)
 	}
-	AppendAudit(e.statePath, "block", ip, reason, entry.Source, timeout)
+	e.legacyFileAuditLocked("block", ip, reason, entry.Source, timeout)
 
-	return false, nil
+	return BlockOutcomeLive, nil
 }
 
 // retryBlockAddAfterMissingElement re-queues a block batch without the
@@ -2470,6 +2657,14 @@ func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting 
 }
 
 func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, string, error) {
+	state := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return nil, nil, false, "", e.stateReadErr
+	}
+	return e.blockIPTargetFromState(ip, timeout, skipExisting, state)
+}
+
+func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipExisting bool, st FirewallState) (*nftables.Set, []byte, bool, string, error) {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return nil, nil, false, "", fmt.Errorf("invalid IP: %s", ip)
@@ -2507,13 +2702,18 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	if e.isLocalAddrLocked(ip) {
 		return nil, nil, false, "", ipProtectedErrorf("refusing to block local host IP: %s (own interface address)", ip)
 	}
+	// Loopback and link-local are excluded from the interface set above, so
+	// they need their own refusal: the panel's own proxied requests appear as
+	// loopback, and a WAF denial count for it must not become a block.
+	if isUnblockableAddress(ip) {
+		return nil, nil, false, "", ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+	}
 
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
 	if err != nil {
 		return nil, nil, false, "", err
 	}
 
-	st := e.loadStateFile()
 	cachedBlockMissingLive := false
 	if skipExisting && firewallStateHasBlocked(st, ip) {
 		liveBlocked, liveErr := e.isBlockedLiveLocked(ip)
@@ -2650,7 +2850,9 @@ func blockedStatePermTempCounts(state FirewallState, excludeIP string) (perm, te
 }
 
 // UnblockIP removes an IP from the blocked set and state.
-func (e *Engine) UnblockIP(ip string) error {
+func (e *Engine) UnblockIP(ip string) (resultErr error) {
+	defer func() { e.legacyFirewallFailure("unblock", ip, "", "", 0, resultErr) }()
+
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return err
@@ -2672,7 +2874,11 @@ func (e *Engine) UnblockIP(ip string) error {
 	priorState := e.loadStateFile()
 	nextState := copyFirewallState(priorState)
 	removeBlockedIPFromState(&nextState, ip)
-	if err := e.saveState(&nextState); err != nil {
+	if e.lifecycle != nil {
+		return e.runDurableLocked(ActionRequest{Operation: "unblock", Target: ip}, nil, nextState)
+	}
+
+	if err := e.persistFirewallIntent(priorState, nextState); err != nil {
 		return fmt.Errorf("persisting unblock for %s: %w", ip, err)
 	}
 
@@ -2686,7 +2892,7 @@ func (e *Engine) UnblockIP(ip string) error {
 		if isNftNotFound(err) {
 			// The delete target already disappeared from nft, so the
 			// persisted unblock is the only remaining state to keep.
-			AppendAudit(e.statePath, "unblock", ip, "", "", 0)
+			e.legacyActionAuditLocked("unblock", ip, "", "", 0)
 			return nil
 		}
 		if restoreErr := e.saveState(&priorState); restoreErr != nil {
@@ -2695,7 +2901,7 @@ func (e *Engine) UnblockIP(ip string) error {
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	AppendAudit(e.statePath, "unblock", ip, "", "", 0)
+	e.legacyActionAuditLocked("unblock", ip, "", "", 0)
 
 	return nil
 }
@@ -2996,7 +3202,11 @@ func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) er
 	return e.allowIP(ip, reason, timeout, "temp_allow")
 }
 
-func (e *Engine) allowIP(ip string, reason string, timeout time.Duration, action string) error {
+func (e *Engine) allowIP(ip string, reason string, timeout time.Duration, action string) (resultErr error) {
+	defer func() {
+		e.legacyFirewallFailure(action, ip, reason, InferProvenance(action, reason), timeout, resultErr)
+	}()
+
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return err
@@ -3024,12 +3234,17 @@ func (e *Engine) allowIP(ip string, reason string, timeout time.Duration, action
 	nextState := copyFirewallState(priorState)
 	removeBlockedIPFromState(&nextState, ip)
 	upsertAllowedEntryInState(&nextState, entry)
-	if err := e.saveState(&nextState); err != nil {
+	if e.lifecycle != nil {
+		return e.runDurableLocked(ActionRequest{Operation: action, Target: ip, Reason: reason, TTL: timeout}, nil, nextState)
+	}
+
+	if err := e.persistFirewallIntent(priorState, nextState); err != nil {
 		return fmt.Errorf("persisting %s for %s: %w", action, ip, err)
 	}
 
+	conn := e.newMutationConn()
 	if blockedSet != nil {
-		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
+		if err := conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
 			if restoreErr := e.saveState(&priorState); restoreErr != nil {
 				return fmt.Errorf("removing from blocked set: %w (state restore failed: %v)", err, restoreErr)
 			}
@@ -3037,48 +3252,44 @@ func (e *Engine) allowIP(ip string, reason string, timeout time.Duration, action
 			return fmt.Errorf("removing from blocked set: %w", err)
 		}
 	}
-	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
+	if err := conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
 		if restoreErr := e.saveState(&priorState); restoreErr != nil {
 			return fmt.Errorf("adding to allowed set: %w (state restore failed: %v)", err, restoreErr)
 		}
 		return fmt.Errorf("adding to allowed set: %w", err)
 	}
-	if err := e.conn.Flush(); err != nil {
-		retryErr := e.retryAllowAfterBenignFlushError(blockedSet, blockedKey, allowedSet, allowedKey, err)
+	if err := conn.Flush(); err != nil {
+		retryErr := e.retryAllowAfterBenignFlushError(allowedSet, allowedKey, err)
 		if retryErr == nil {
-			AppendAudit(e.statePath, action, ip, reason, entry.Source, timeout)
+			e.legacyActionAuditLocked(action, ip, reason, entry.Source, timeout)
 			return nil
 		}
 		if restoreErr := e.saveState(&priorState); restoreErr != nil {
 			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
 		}
 		if isNftNotFound(err) {
-			return fmt.Errorf("flushing: %w (retry failed: %v)", err, retryErr)
+			return fmt.Errorf("flushing: %w (retry failed: %w)", err, retryErr)
 		}
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	AppendAudit(e.statePath, action, ip, reason, entry.Source, timeout)
+	e.legacyActionAuditLocked(action, ip, reason, entry.Source, timeout)
 
 	return nil
 }
 
-func (e *Engine) retryAllowAfterBenignFlushError(blockedSet *nftables.Set, blockedKey []byte, allowedSet *nftables.Set, allowedKey []byte, flushErr error) error {
+func (e *Engine) retryAllowAfterBenignFlushError(allowedSet *nftables.Set, allowedKey []byte, flushErr error) error {
 	if !isNftNotFound(flushErr) {
 		return flushErr
 	}
-	if blockedSet != nil {
-		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
-			return fmt.Errorf("retry removing from blocked set: %w", err)
-		}
-		if err := e.conn.Flush(); err != nil && !isNftNotFound(err) {
-			return fmt.Errorf("retry flushing blocked delete: %w", err)
-		}
-	}
-	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
+	// Only the blocked delete can be absent when the allowed set exists.
+	// Retrying the add alone keeps the retry atomic and avoids a committed
+	// delete followed by a failed add.
+	conn := e.newMutationConn()
+	if err := conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
 		return fmt.Errorf("retry adding to allowed set: %w", err)
 	}
-	if err := e.conn.Flush(); err != nil {
+	if err := conn.Flush(); err != nil {
 		return fmt.Errorf("retry flushing allowed add: %w", err)
 	}
 	return nil
@@ -3091,145 +3302,89 @@ func (e *Engine) CleanExpiredAllows() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	state, ok := e.loadStateFileRawLocked()
+	prior, ok := e.loadStateFileRawLocked()
 	if !ok {
 		return 0
 	}
-	now := time.Now()
-	var active []AllowedEntry
-	expiredIPs := make(map[string]bool)
+	next := copyFirewallState(prior)
+	next.Allowed = nil
 	var expired []AllowedEntry
-	removed := 0
-
-	for _, entry := range state.Allowed {
-		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			expiredIPs[stateIPKey(entry.IP)] = true
+	expiredIPs := make(map[string]bool)
+	now := time.Now()
+	for _, entry := range prior.Allowed {
+		if !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
 			expired = append(expired, entry)
-			removed++
+			expiredIPs[stateIPKey(entry.IP)] = true
 		} else {
-			active = append(active, entry)
+			next.Allowed = append(next.Allowed, entry)
 		}
 	}
-
-	if removed > 0 {
-		// Only remove from nftables if no active entries remain for the IP
-		activeIPs := make(map[string]bool)
-		for _, entry := range active {
-			activeIPs[stateIPKey(entry.IP)] = true
-		}
-		queueFailedIPs := make(map[string]bool)
-		queuedDeletes := false
-		for ip := range expiredIPs {
-			if !activeIPs[ip] {
-				if set, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6); err == nil {
-					if err := e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}}); err != nil {
-						logNftSetOpErr("CleanExpiredAllows remove", ip, err)
-						queueFailedIPs[ip] = true
-					} else {
-						queuedDeletes = true
-					}
-				}
-			}
-		}
-		if queuedDeletes {
-			if err := e.conn.Flush(); err != nil {
-				// The netlink batch is atomic: a failed flush applied nothing,
-				// so keep every expired row in state and retry next tick.
-				fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-allow cleanup failed: %v\n", err)
-				return 0
-			}
-		}
-		// Drop state rows whose kernel element was removed (or had none to
-		// remove). Rows whose queue op failed stay in state so the next tick
-		// retries the kernel delete instead of wedging forever: the previous
-		// all-or-nothing handling kept already-flushed deletes in state, and
-		// re-deleting their missing elements failed every following tick.
-		dropped := make([]AllowedEntry, 0, len(expired))
+	if len(expired) == 0 {
+		return 0
+	}
+	for _, entry := range next.Allowed {
+		delete(expiredIPs, stateIPKey(entry.IP))
+	}
+	var removeIPs []string
+	for ip := range expiredIPs {
+		removeIPs = append(removeIPs, ip)
+	}
+	if err := e.commitAllowedRemovals(prior, next, removeIPs, ActionRequest{Operation: "temp_allow_expired", Target: "*", Actor: "daemon", Source: SourceSystem}); err != nil {
 		for _, entry := range expired {
-			if queueFailedIPs[stateIPKey(entry.IP)] {
-				active = append(active, entry)
-				continue
+			if e.lifecycle == nil {
+				recordFirewallFailure("temp_allow_expired", entry.IP, "", SourceSystem, 0, err)
 			}
-			dropped = append(dropped, entry)
 		}
-		state.Allowed = active
-		_ = e.saveState(&state)
-		for _, entry := range dropped {
-			AppendAudit(e.statePath, "temp_allow_expired", entry.IP, "", SourceSystem, 0)
-		}
-		return len(dropped)
+		fmt.Fprintf(os.Stderr, "firewall: expired-allow cleanup failed: %v\n", err)
+		return 0
 	}
-	return removed
+	for _, entry := range expired {
+		e.legacyActionAuditLocked("temp_allow_expired", entry.IP, "", SourceSystem, 0)
+	}
+	return len(expired)
 }
 
 // CleanExpiredSubnets removes expired temporary subnet blocks from nftables and state.
 func (e *Engine) CleanExpiredSubnets() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	state, ok := e.loadStateFileRawLocked()
+	prior, ok := e.loadStateFileRawLocked()
 	if !ok {
 		return 0
 	}
+	next := copyFirewallState(prior)
+	var active, expired []SubnetEntry
 	now := time.Now()
-	var active []SubnetEntry
-	var expired []SubnetEntry
-	removed := 0
-	queueFailedCIDRs := make(map[string]bool)
-	queuedDeletes := false
-
-	for _, entry := range state.BlockedNet {
-		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			if _, network, err := net.ParseCIDR(entry.CIDR); err == nil {
-				if set, start, end := e.resolveSubnetSet(network); set != nil {
-					if elements := intervalSetElements(start, end); len(elements) > 0 {
-						if err := e.conn.SetDeleteElements(set, elements); err != nil {
-							logNftSetOpErr("CleanExpiredSubnets remove", entry.CIDR, err)
-							queueFailedCIDRs[entry.CIDR] = true
-						} else {
-							queuedDeletes = true
-						}
-					}
-				}
-			}
+	for _, entry := range prior.BlockedNet {
+		if !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
 			expired = append(expired, entry)
-			removed++
-			continue
+		} else {
+			active = append(active, entry)
 		}
-		active = append(active, entry)
 	}
-
-	if removed > 0 {
-		if queuedDeletes {
-			if err := e.conn.Flush(); err != nil {
-				// The netlink batch is atomic: a failed flush applied nothing,
-				// so keep every expired row in state and retry next tick.
-				fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-subnet cleanup failed: %v\n", err)
-				return 0
-			}
-		}
-		// Keep queue-failed rows in state for a retry next tick; drop the
-		// rest. See CleanExpiredAllows for the wedge this avoids.
-		dropped := make([]SubnetEntry, 0, len(expired))
+	if len(expired) == 0 {
+		return 0
+	}
+	next.BlockedNet = active
+	if err := e.updateSubnetMutation(prior, next, ActionRequest{Operation: "temp_subnet_expired", Target: "*", Actor: "daemon", Source: SourceSystem}, nil); err != nil {
 		for _, entry := range expired {
-			if queueFailedCIDRs[entry.CIDR] {
-				active = append(active, entry)
-				continue
+			if e.lifecycle == nil {
+				recordFirewallFailure("temp_subnet_expired", entry.CIDR, "", SourceSystem, 0, err)
 			}
-			dropped = append(dropped, entry)
 		}
-		state.BlockedNet = active
-		_ = e.saveState(&state)
-		for _, entry := range dropped {
-			AppendAudit(e.statePath, "temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
-		}
-		return len(dropped)
+		fmt.Fprintf(os.Stderr, "firewall: expired-subnet cleanup failed: %v\n", err)
+		return 0
 	}
-	return removed
+	for _, entry := range expired {
+		e.legacyActionAuditLocked("temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
+	}
+	return len(expired)
 }
 
 // RemoveAllowIP removes an IP from the allowed set and state.
-func (e *Engine) RemoveAllowIP(ip string) error {
+func (e *Engine) RemoveAllowIP(ip string) (resultErr error) {
+	defer func() { e.legacyFirewallFailure("remove_allow", ip, "", "", 0, resultErr) }()
+
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return err
@@ -3239,26 +3394,27 @@ func (e *Engine) RemoveAllowIP(ip string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	targetSet, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6)
-	if err != nil {
+	prior := e.loadStateFile()
+	next := copyFirewallState(prior)
+	next.Allowed = nil
+	for _, entry := range prior.Allowed {
+		if !sameIPString(entry.IP, ip) {
+			next.Allowed = append(next.Allowed, entry)
+		}
+	}
+	if err := e.commitAllowedRemovals(prior, next, []string{ip}, ActionRequest{Operation: "remove_allow", Target: ip}); err != nil {
 		return err
 	}
 
-	if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
-		return fmt.Errorf("removing from allowed set: %w", err)
-	}
-	if err := e.conn.Flush(); err != nil {
-		return fmt.Errorf("flushing: %w", err)
-	}
-
-	e.removeAllowedState(ip)
-	AppendAudit(e.statePath, "remove_allow", ip, "", "", 0)
+	e.legacyActionAuditLocked("remove_allow", ip, "", "", 0)
 	return nil
 }
 
 // RemoveAllowIPBySource removes only allow entries from a specific source.
 // The IP is only removed from the nftables set if no other sources remain.
-func (e *Engine) RemoveAllowIPBySource(ip, source string) error {
+func (e *Engine) RemoveAllowIPBySource(ip, source string) (resultErr error) {
+	defer func() { e.legacyFirewallFailure("remove_allow", ip, "", source, 0, resultErr) }()
+
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return err
@@ -3268,27 +3424,28 @@ func (e *Engine) RemoveAllowIPBySource(ip, source string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	ipGone := e.removeAllowedStateBySource(ip, source)
+	prior := e.loadStateFile()
+	next := copyFirewallState(prior)
+	_, ipGone := removeAllowedSourceFromState(&next, ip, source)
+	var removeIPs []string
 	if ipGone {
-		targetSet, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6)
-		if err != nil {
-			return err
-		}
-		if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
-			return fmt.Errorf("removing from allowed set: %w", err)
-		}
-		if err := e.conn.Flush(); err != nil {
-			return fmt.Errorf("flushing: %w", err)
-		}
+		removeIPs = []string{ip}
+	}
+	if err := e.commitAllowedRemovals(prior, next, removeIPs, ActionRequest{Operation: "remove_allow", Target: ip, Reason: "source: " + source, Source: source}); err != nil {
+		return err
 	}
 
-	AppendAudit(e.statePath, "remove_allow", ip, "source: "+source, source, 0)
+	e.legacyActionAuditLocked("remove_allow", ip, "source: "+source, source, 0)
 	return nil
 }
 
 // AllowIPPort adds a port-specific IP allow. The rule is persisted to state
 // and applied on the next Apply(). For immediate effect, call Apply() after.
-func (e *Engine) AllowIPPort(ip string, port int, proto string, reason string) error {
+func (e *Engine) AllowIPPort(ip string, port int, proto string, reason string) (resultErr error) {
+	defer func() {
+		e.legacyFirewallFailure("allow_port", fmt.Sprintf("%s:%d/%s", ip, port, proto), reason, InferProvenance("allow_port", reason), 0, resultErr)
+	}()
+
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return err
@@ -3308,19 +3465,25 @@ func (e *Engine) AllowIPPort(ip string, port int, proto string, reason string) e
 	// Deduplicate
 	for _, existing := range st.PortAllowed {
 		if sameIPString(existing.IP, ip) && existing.Port == port && existing.Proto == proto {
-			return nil // already exists
+			return e.savePortPolicyLocked(&st, ActionRequest{Operation: "configure_port_allow", Target: fmt.Sprintf("%s:%d/%s", ip, port, proto), Reason: reason}) // Confirm durability even after a prior uncertain write.
 		}
 	}
 	st.PortAllowed = append(st.PortAllowed, PortAllowEntry{
 		IP: ip, Port: port, Proto: proto, Reason: reason, Source: InferProvenance("allow_port", reason),
 	})
-	_ = e.saveState(&st)
-	AppendAudit(e.statePath, "allow_port", fmt.Sprintf("%s:%d/%s", ip, port, proto), reason, InferProvenance("allow_port", reason), 0)
+	if err := e.savePortPolicyLocked(&st, ActionRequest{Operation: "configure_port_allow", Target: fmt.Sprintf("%s:%d/%s", ip, port, proto), Reason: reason}); err != nil {
+		return fmt.Errorf("persisting port allow change: %w", err)
+	}
+	e.legacyActionAuditLocked("allow_port", fmt.Sprintf("%s:%d/%s", ip, port, proto), reason, InferProvenance("allow_port", reason), 0)
 	return nil
 }
 
 // RemoveAllowIPPort removes a port-specific IP allow from state.
-func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) error {
+func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) (resultErr error) {
+	defer func() {
+		e.legacyFirewallFailure("remove_port_allow", fmt.Sprintf("%s:%d/%s", ip, port, proto), "", "", 0, resultErr)
+	}()
+
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return err
@@ -3344,13 +3507,17 @@ func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) error {
 		return fmt.Errorf("port allow not found: %s:%d/%s", ip, port, proto)
 	}
 	st.PortAllowed = remaining
-	_ = e.saveState(&st)
-	AppendAudit(e.statePath, "remove_port_allow", fmt.Sprintf("%s:%d/%s", ip, port, proto), "", "", 0)
+	if err := e.savePortPolicyLocked(&st, ActionRequest{Operation: "remove_port_allow", Target: fmt.Sprintf("%s:%d/%s", ip, port, proto)}); err != nil {
+		return fmt.Errorf("persisting port allow change: %w", err)
+	}
+	e.legacyActionAuditLocked("remove_port_allow", fmt.Sprintf("%s:%d/%s", ip, port, proto), "", "", 0)
 	return nil
 }
 
 // FlushBlocked removes all IPs from the blocked set and clears persisted state.
-func (e *Engine) FlushBlocked() error {
+func (e *Engine) FlushBlocked() (resultErr error) {
+	defer func() { e.legacyFirewallFailure("flush", "", "", "", 0, resultErr) }()
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -3360,7 +3527,11 @@ func (e *Engine) FlushBlocked() error {
 	priorState := e.loadStateFile()
 	nextState := copyFirewallState(priorState)
 	nextState.Blocked = nil
-	if err := e.saveState(&nextState); err != nil {
+	if e.lifecycle != nil {
+		return e.runDurableLocked(ActionRequest{Operation: "flush", Target: "*"}, nil, nextState)
+	}
+
+	if err := e.persistFirewallIntent(priorState, nextState); err != nil {
 		return fmt.Errorf("persisting flush: %w", err)
 	}
 
@@ -3375,7 +3546,7 @@ func (e *Engine) FlushBlocked() error {
 		return fmt.Errorf("flushing blocked set: %w", err)
 	}
 
-	AppendAudit(e.statePath, "flush", "", fmt.Sprintf("cleared %d entries", len(priorState.Blocked)), SourceSystem, 0)
+	e.legacyActionAuditLocked("flush", "", fmt.Sprintf("cleared %d entries", len(priorState.Blocked)), SourceSystem, 0)
 
 	return nil
 }
@@ -3388,8 +3559,28 @@ func (e *Engine) FlushBlocked() error {
 // daemon's own egress.
 // Must be called with e.mu held.
 func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
+	state := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return e.stateReadErr
+	}
+	return e.subnetSafetyGuardStateLocked(network, state)
+}
+
+func (e *Engine) subnetSafetyGuardStateLocked(network *net.IPNet, state FirewallState) error {
 	if ones, _ := network.Mask.Size(); ones == 0 {
 		return fmt.Errorf("refusing to block default route: %s", network.String())
+	}
+	// An unspecified host is not a usable target, but its containing range
+	// can be: operators may block 0.0.0.0/8 as a bogon range.
+	if ones, bits := network.Mask.Size(); ones == bits && network.IP.IsUnspecified() {
+		return fmt.Errorf("refusing to block non-routable range: %s", network.String())
+	}
+	// Checking only the first address misses larger ranges covering a local
+	// scope. Interface enumeration intentionally omits these scopes.
+	for _, protected := range protectedLocalRanges {
+		if network.Contains(protected.IP) || protected.Contains(network.IP) {
+			return fmt.Errorf("refusing to block subnet %s: overlaps protected range %s", network, protected)
+		}
 	}
 
 	for _, raw := range e.cfg.InfraIPs {
@@ -3419,7 +3610,6 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 		}
 	}
 
-	state := e.loadStateFile()
 	for _, entry := range state.Allowed {
 		if ip := net.ParseIP(entry.IP); ip != nil && network.Contains(ip) {
 			return fmt.Errorf("refusing to block subnet %s: contains allowed IP %s", network.String(), entry.IP)
@@ -3434,28 +3624,43 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 	return nil
 }
 
-func (e *Engine) subnetBlockPlanLocked(cidr string) (*net.IPNet, *nftables.Set, []nftables.SetElement, bool, error) {
+var protectedLocalRanges = func() []*net.IPNet {
+	ranges := []*net.IPNet{
+		{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+		{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)},
+		{IP: net.IPv4(224, 0, 0, 0), Mask: net.CIDRMask(24, 32)},
+		{IP: net.ParseIP("::1"), Mask: net.CIDRMask(128, 128)},
+		{IP: net.ParseIP("fe80::"), Mask: net.CIDRMask(10, 128)},
+	}
+	// Multicast flags vary independently of the link-local scope nibble.
+	for flags := byte(0); flags < 16; flags++ {
+		ip := make(net.IP, net.IPv6len)
+		ip[0], ip[1] = 0xff, flags<<4|2
+		ranges = append(ranges, &net.IPNet{IP: ip, Mask: net.CIDRMask(16, 128)})
+	}
+	return ranges
+}()
+
+func (e *Engine) subnetBlockPlanLocked(cidr string, state FirewallState) (*net.IPNet, bool, error) {
 	_, network, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, nil, nil, false, fmt.Errorf("invalid CIDR: %s", cidr)
+		return nil, false, fmt.Errorf("invalid CIDR: %s", cidr)
 	}
-	if err := e.subnetSafetyGuardLocked(network); err != nil {
-		return nil, nil, nil, false, err
+	if err := e.subnetSafetyGuardStateLocked(network, state); err != nil {
+		return nil, false, err
 	}
-	if e.isSubnetBlockedStateLocked(network.String()) {
-		return network, nil, nil, true, nil
+	for _, entry := range state.BlockedNet {
+		if entry.CIDR == network.String() {
+			return network, true, nil
+		}
 	}
 
-	targetSet, start, end := e.resolveSubnetSet(network)
+	targetSet, _, _ := e.resolveSubnetSet(network)
 	if targetSet == nil {
-		return nil, nil, nil, false, fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
+		return nil, false, fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
 	}
 
-	elements := intervalSetElements(start, end)
-	if len(elements) == 0 {
-		return nil, nil, nil, false, fmt.Errorf("CIDR has no safe interval end: %s", network.String())
-	}
-	return network, targetSet, elements, false, nil
+	return network, false, nil
 }
 
 // ValidateSubnetBlock runs the same safety and capability checks as
@@ -3464,21 +3669,78 @@ func (e *Engine) ValidateSubnetBlock(cidr string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	_, _, _, _, err := e.subnetBlockPlanLocked(cidr)
+	state := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return e.stateReadErr
+	}
+	_, _, err := e.subnetBlockPlanLocked(cidr, state)
 	return err
 }
 
 // BlockSubnet adds a CIDR range to the blocked subnets set (IPv4 or IPv6).
 // timeout 0 = permanent block.
-func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) error {
+func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) (resultErr error) {
+	return e.BlockSubnetWithFindingID(cidr, reason, timeout, "")
+}
+
+// BlockSubnetWithFindingID records a causal finding for an automatic subnet
+// decision. Manual and maintenance callers use BlockSubnet without one.
+func (e *Engine) BlockSubnetWithFindingID(cidr, reason string, timeout time.Duration, findingID string) (resultErr error) {
+	return e.BlockSubnetRequest(ActionRequest{Operation: "block_subnet", Target: cidr, Reason: reason, TTL: timeout, FindingID: findingID, Automatic: findingID != ""}, nil)
+}
+func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (resultErr error) {
+	cidr, reason, timeout, findingID := req.Target, req.Reason, req.TTL, req.FindingID
+
+	defer func() {
+		if e.shouldLegacyOutcome(resultErr) {
+			result, auditErr := actionlog.Applied, resultErr
+			if errors.Is(resultErr, ErrActionDryRun) {
+				result, auditErr = actionlog.DryRun, nil
+			}
+			recordFirewallFindingResult("block_subnet", cidr, reason, InferProvenance("block_subnet", reason), timeout, result, auditErr, findingID)
+		}
+	}()
+
+	_, network, parseErr := net.ParseCIDR(req.Target)
+	if parseErr != nil {
+		return fmt.Errorf("invalid CIDR: %s", req.Target)
+	}
+	req.Operation = "block_subnet"
+	req.Target = network.String()
+	req = normalizeActionRequest(req)
+	dryRun := req.Automatic && e.autoResponseDryRunEnabled()
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	network, targetSet, elements, alreadyBlocked, err := e.subnetBlockPlanLocked(cidr)
+	if found, replayErr := e.replayActionLocked(req); found || replayErr != nil {
+		return replayErr
+	}
+	if dryRun {
+		return ErrActionDryRun
+	}
+	if readyErr := e.lifecycleReadyLocked(); readyErr != nil {
+		return readyErr
+	}
+	priorState := e.loadStateFile()
+	if e.lifecycle != nil && e.stateReadErr != nil {
+		return e.stateReadErr
+	}
+	network, alreadyBlocked, err := e.subnetBlockPlanLocked(cidr, priorState)
 	if err != nil {
 		return err
 	}
+	cidr = network.String()
 	if alreadyBlocked {
+		if e.lifecycle != nil {
+			return nil
+		}
+		// A prior write may be visible despite a durability error, before the
+		// kernel changed. Retrying must reconcile that saved intent as well.
+		if err := e.updateSubnetMutation(priorState, priorState, req, budget); err != nil {
+			return err
+		}
+		e.legacyFileAuditLocked("block_subnet", network.String(), reason, InferProvenance("block_subnet", reason), timeout)
 		return nil
 	}
 
@@ -3496,27 +3758,13 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	// seeds the next Apply, so a crash between the kernel add and a later
 	// state write would otherwise leave a kernel block that silently
 	// disappears on restart. On kernel failure the prior state is restored.
-	priorState := e.loadStateFile()
 	nextState := copyFirewallState(priorState)
 	addSubnetEntryIfMissingInState(&nextState, entry)
-	if err := e.saveState(&nextState); err != nil {
-		return fmt.Errorf("persisting subnet block for %s: %w", network.String(), err)
+	if err := e.updateSubnetMutation(priorState, nextState, req, budget); err != nil {
+		return err
 	}
 
-	if err := e.conn.SetAddElements(targetSet, elements); err != nil {
-		if restoreErr := e.saveState(&priorState); restoreErr != nil {
-			return fmt.Errorf("adding to blocked_nets: %w (state restore failed: %v)", err, restoreErr)
-		}
-		return fmt.Errorf("adding to blocked_nets: %w", err)
-	}
-	if err := e.conn.Flush(); err != nil {
-		if restoreErr := e.saveState(&priorState); restoreErr != nil {
-			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
-		}
-		return fmt.Errorf("flushing: %w", err)
-	}
-
-	AppendAudit(e.statePath, "block_subnet", network.String(), reason, entry.Source, timeout)
+	e.legacyFileAuditLocked("block_subnet", network.String(), reason, entry.Source, timeout)
 	return nil
 }
 
@@ -3544,7 +3792,9 @@ func (e *Engine) BlockedSubnetCovering(ip string) (string, bool) {
 }
 
 // UnblockSubnet removes a CIDR range from the blocked subnets set (IPv4 or IPv6).
-func (e *Engine) UnblockSubnet(cidr string) error {
+func (e *Engine) UnblockSubnet(cidr string) (resultErr error) {
+	defer func() { e.legacyFirewallFailure("unblock_subnet", cidr, "", "", 0, resultErr) }()
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -3553,26 +3803,25 @@ func (e *Engine) UnblockSubnet(cidr string) error {
 		return fmt.Errorf("invalid CIDR: %s", cidr)
 	}
 
-	targetSet, start, end := e.resolveSubnetSet(network)
+	targetSet, _, _ := e.resolveSubnetSet(network)
 	if targetSet == nil {
 		return fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
 	}
 
-	elements := intervalSetElements(start, end)
-	if len(elements) == 0 {
-		e.removeSubnetState(network.String())
-		AppendAudit(e.statePath, "unblock_subnet", network.String(), "", "", 0)
-		return nil
+	prior := e.loadStateFile()
+	next := copyFirewallState(prior)
+	remaining := next.BlockedNet[:0]
+	for _, entry := range next.BlockedNet {
+		if entry.CIDR != network.String() {
+			remaining = append(remaining, entry)
+		}
 	}
-	if err := e.conn.SetDeleteElements(targetSet, elements); err != nil {
-		return fmt.Errorf("removing from blocked_nets: %w", err)
-	}
-	if err := e.conn.Flush(); err != nil {
-		return fmt.Errorf("flushing: %w", err)
+	next.BlockedNet = remaining
+	if err := e.updateSubnetMutation(prior, next, ActionRequest{Operation: "unblock_subnet", Target: network.String()}, nil); err != nil {
+		return err
 	}
 
-	e.removeSubnetState(network.String())
-	AppendAudit(e.statePath, "unblock_subnet", network.String(), "", "", 0)
+	e.legacyActionAuditLocked("unblock_subnet", network.String(), "", "", 0)
 	return nil
 }
 
@@ -3607,11 +3856,11 @@ func appendIntervalSetElements(dst []nftables.SetElement, start, end net.IP) []n
 	if start == nil || end == nil {
 		return dst
 	}
-	endMarker, ok := nextIPSafe(end)
+	endMarker, ok := nextIntervalKey(end)
 	if !ok {
-		// The interval end marker is exclusive. An all-ones end has no
-		// successor, so encoding it would either wrap or widen the range.
-		return dst
+		// nftables represents an interval through the last address with an
+		// open end. Wrapping its exclusive end to zero would change its meaning.
+		return append(dst, nftables.SetElement{Key: start})
 	}
 	return append(dst,
 		nftables.SetElement{Key: start},
@@ -3730,12 +3979,33 @@ func (e *Engine) refreshLocalAddrsLocked() {
 	e.localAddrsExpiresAt = time.Now().Add(localAddrsCacheTTL)
 }
 
+// isUnblockableAddress reports addresses that can never legitimately be
+// blocked, independent of what the interface enumeration returned.
+//
+// The local-address guard is built from localAddrGuardKey, which drops
+// loopback and link-local, so those were the one class the guard did not
+// cover -- and loopback is precisely what a control panel's own proxied
+// requests appear as. A block of 127.0.0.1 was therefore accepted rather than
+// refused; nothing broke only because the input chain accepts "iifname lo"
+// before reaching the blocked set, leaving an entry that looked effective
+// while doing nothing.
+func isUnblockableAddress(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	return parsed.IsLoopback() ||
+		parsed.IsUnspecified() ||
+		parsed.IsLinkLocalUnicast() ||
+		parsed.IsLinkLocalMulticast()
+}
+
 func localAddrGuardKey(raw string) (string, bool) {
 	parsed := net.ParseIP(raw)
 	if parsed == nil {
 		return "", false
 	}
-	if parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() {
+	if isUnblockableAddress(raw) {
 		return "", false
 	}
 	return parsed.String(), true
@@ -3833,6 +4103,12 @@ type initialBlockState struct {
 // into the same atomic netlink batch.
 func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 	state := e.loadStateFile()
+	if e.lifecycle != nil {
+		now := time.Now()
+		sets := desiredActionSets(state, e.cfg.IPv6, now)
+		return initialBlockState{blocked4: actionElements(sets["blocked_ips"], now), blocked6: actionElements(sets["blocked_ips6"], now), allowed4: actionElements(sets["allowed_ips"], now), allowed6: actionElements(sets["allowed_ips6"], now), blockedNet4: actionElements(sets["blocked_nets"], now), blockedNet6: actionElements(sets["blocked_nets6"], now)}
+	}
+
 	now := time.Now()
 	var ibs initialBlockState
 	restoredBlocked := make(map[string]bool)
@@ -3879,24 +4155,7 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 		}
 		restoredAllowed[key] = true
 	}
-	for _, entry := range state.BlockedNet {
-		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			continue
-		}
-		_, network, err := net.ParseCIDR(entry.CIDR)
-		if err != nil {
-			continue
-		}
-		end := lastIPInRange(network)
-		if end == nil {
-			continue
-		}
-		if start := network.IP.To4(); start != nil {
-			ibs.blockedNet4 = appendIntervalSetElements(ibs.blockedNet4, start, end)
-		} else if e.cfg.IPv6 {
-			ibs.blockedNet6 = appendIntervalSetElements(ibs.blockedNet6, network.IP.To16(), end)
-		}
-	}
+	ibs.blockedNet4, ibs.blockedNet6 = subnetIntervalElements(state.BlockedNet, e.cfg.IPv6, now)
 	return ibs
 }
 
@@ -3938,17 +4197,20 @@ func (e *Engine) queueInitialBlockStateLocked(ibs initialBlockState) error {
 // message can be before the receive path refuses it with ENOBUFS. At
 // ~28 bytes per element worst-case a 1000-element chunk is ~28 KB, well
 // under the default rmem and comfortably below any realistic rmem_max.
-// The batch size must stay even so interval sets (blocked_net, where each
-// CIDR expands to a consecutive {start, IntervalEnd} pair) never split a
-// pair across chunks.
+// The batch size must stay even so merged interval boundary pairs never
+// split across chunks. Only the final range can have an open upper end.
 func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement) error {
+	return addElementsChunked(e.conn, s, elems)
+}
+
+func addElementsChunked(conn *nftables.Conn, s *nftables.Set, elems []nftables.SetElement) error {
 	const chunk = 1000
 	for i := 0; i < len(elems); i += chunk {
 		end := i + chunk
 		if end > len(elems) {
 			end = len(elems)
 		}
-		if err := e.conn.SetAddElements(s, elems[i:end]); err != nil {
+		if err := conn.SetAddElements(s, elems[i:end]); err != nil {
 			op := fmt.Sprintf("add elements to set %q chunk %d-%d", s.Name, i, end)
 			logNftSetOpErr(op, "initial restore", err)
 			return fmt.Errorf("adding initial elements to set %q chunk %d-%d: %w", s.Name, i, end, err)
@@ -3990,6 +4252,11 @@ func (e *Engine) loadStateFile() FirewallState {
 // Expiry cleanup needs the stale rows so it can remove matching nftables
 // elements before writing the active state back.
 func (e *Engine) loadStateFileRawLocked() (FirewallState, bool) {
+	if e.lifecycle != nil {
+		state, _, err := e.readCommittedStateLocked()
+		return state, err == nil
+	}
+
 	stateFile := filepath.Join(e.statePath, "state.json")
 	data, err := os.ReadFile(stateFile) // #nosec G304 -- filepath.Join under operator-configured statePath.
 	if err != nil {
@@ -4013,6 +4280,14 @@ func (e *Engine) loadStateFileRawLocked() (FirewallState, bool) {
 // other index-backed lookups never report a stale block. Pruning
 // updates the index maps via rebuildIndexLocked.
 func (e *Engine) ensureStateCacheLocked() {
+	if e.lifecycle != nil {
+		state, _, err := e.readCommittedStateLocked()
+		if err == nil {
+			e.installCommittedCache(state)
+		}
+		return
+	}
+
 	stateFile := filepath.Join(e.statePath, "state.json")
 	info, statErr := os.Stat(stateFile)
 	if statErr == nil && e.stateCache != nil && e.stateCacheKey.matches(info) {
@@ -4202,14 +4477,17 @@ var writeFirewallStateJSON = atomicio.AtomicWriteJSON
 // keeps mutating the local FirewallState after saveState returns cannot
 // corrupt the cache.
 func (e *Engine) saveState(s *FirewallState) error {
+	if e.lifecycle != nil {
+		return e.runDurableLocked(ActionRequest{Operation: "state", Target: "*"}, nil, *s)
+	}
+
 	state := copyFirewallState(*s)
 	normalizeFirewallStateIPs(&state)
 	path := filepath.Join(e.statePath, "state.json")
 	if err := writeFirewallStateJSON(path, 0o600, &state); err != nil {
 		if firewallStateFileMatches(path, 0o600, &state) {
-			fmt.Fprintf(os.Stderr, "firewall: state.json committed with persistence warning: %v\n", err)
 			e.setStateCacheLocked(path, &state)
-			return nil
+			return &stateDurabilityError{cause: err}
 		}
 		fmt.Fprintf(os.Stderr, "firewall: persist state.json failed: %v\n", err)
 		e.clearStateCacheLocked()
@@ -4358,7 +4636,7 @@ func (e *Engine) saveBlockedEntry(entry BlockedEntry) error {
 	return e.saveState(&state)
 }
 
-func (e *Engine) removeBlockedState(ip string) {
+func (e *Engine) removeBlockedState(ip string) error {
 	state := e.loadStateFile()
 	var remaining []BlockedEntry
 	for _, entry := range state.Blocked {
@@ -4367,10 +4645,10 @@ func (e *Engine) removeBlockedState(ip string) {
 		}
 	}
 	state.Blocked = remaining
-	_ = e.saveState(&state)
+	return e.saveState(&state)
 }
 
-func (e *Engine) saveAllowedEntry(entry AllowedEntry) {
+func (e *Engine) saveAllowedEntry(entry AllowedEntry) error {
 	if entry.Source == "" {
 		entry.Source = InferProvenance("allow", entry.Reason)
 	}
@@ -4379,10 +4657,10 @@ func (e *Engine) saveAllowedEntry(entry AllowedEntry) {
 	}
 	state := e.loadStateFile()
 	upsertAllowedEntryInState(&state, entry)
-	_ = e.saveState(&state)
+	return e.saveState(&state)
 }
 
-func (e *Engine) removeAllowedState(ip string) {
+func (e *Engine) removeAllowedState(ip string) error {
 	state := e.loadStateFile()
 	var remaining []AllowedEntry
 	for _, entry := range state.Allowed {
@@ -4391,17 +4669,25 @@ func (e *Engine) removeAllowedState(ip string) {
 		}
 	}
 	state.Allowed = remaining
-	_ = e.saveState(&state)
+	return e.saveState(&state)
 }
 
-// removeAllowedStateBySource removes only entries matching ip+source.
-// Returns true if no entries remain for that IP (caller should remove from nftables).
-// Returns false if the IP was not in state at all (no action needed).
-func (e *Engine) removeAllowedStateBySource(ip, source string) bool {
+// removeAllowedStateBySource reports whether the final source was removed.
+func (e *Engine) removeAllowedStateBySource(ip, source string) (bool, error) {
 	state := e.loadStateFile()
-	var remaining []AllowedEntry
-	found := false
-	ipStillPresent := false
+	found, ipGone := removeAllowedSourceFromState(&state, ip, source)
+	if !found {
+		return false, nil
+	}
+	if err := e.saveState(&state); err != nil {
+		return false, err
+	}
+	return ipGone, nil
+}
+
+func removeAllowedSourceFromState(state *FirewallState, ip, source string) (found, ipGone bool) {
+	remaining := state.Allowed[:0]
+	ipGone = true
 	for _, entry := range state.Allowed {
 		if sameIPString(entry.IP, ip) && entry.Source == source {
 			found = true
@@ -4409,26 +4695,22 @@ func (e *Engine) removeAllowedStateBySource(ip, source string) bool {
 		}
 		remaining = append(remaining, entry)
 		if sameIPString(entry.IP, ip) {
-			ipStillPresent = true
+			ipGone = false
 		}
 	}
-	if !found {
-		return false // IP+source not in state, nothing to do
-	}
 	state.Allowed = remaining
-	_ = e.saveState(&state)
-	return !ipStillPresent
+	return found, ipGone
 }
 
-func (e *Engine) saveSubnetEntry(entry SubnetEntry) {
+func (e *Engine) saveSubnetEntry(entry SubnetEntry) error {
 	if entry.Source == "" {
 		entry.Source = InferProvenance("block_subnet", entry.Reason)
 	}
 	state := e.loadStateFile()
 	if !addSubnetEntryIfMissingInState(&state, entry) {
-		return
+		return nil
 	}
-	_ = e.saveState(&state)
+	return e.saveState(&state)
 }
 
 func (e *Engine) isSubnetBlockedStateLocked(cidr string) bool {
@@ -4437,7 +4719,7 @@ func (e *Engine) isSubnetBlockedStateLocked(cidr string) bool {
 	return ok
 }
 
-func (e *Engine) removeSubnetState(cidr string) {
+func (e *Engine) removeSubnetState(cidr string) error {
 	state := e.loadStateFile()
 	var remaining []SubnetEntry
 	for _, entry := range state.BlockedNet {
@@ -4446,7 +4728,7 @@ func (e *Engine) removeSubnetState(cidr string) {
 		}
 	}
 	state.BlockedNet = remaining
-	_ = e.saveState(&state)
+	return e.saveState(&state)
 }
 
 // IP helpers (nextIP, lastIPInRange, fileExistsFirewall) moved to ip_helpers.go (no build tag).

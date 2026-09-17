@@ -20,9 +20,10 @@ import (
 func TestCorrelator_ConcurrentOnFindingAndSetStatusRaceSafe(t *testing.T) {
 	var persistCalls int64
 	c := NewCorrelator(CorrelatorConfig{
-		Persist: func(Incident) {
+		Persist: func(Incident) error {
 			atomic.AddInt64(&persistCalls, 1)
 			runtime.Gosched()
+			return nil
 		},
 	})
 
@@ -114,7 +115,7 @@ func TestCorrelator_ConcurrentCloseSkipsStaleAutoBlock(t *testing.T) {
 		})
 	}
 	c = NewCorrelator(CorrelatorConfig{
-		Persist: func(Incident) {
+		Persist: func(Incident) error {
 			select {
 			case <-blockPersist:
 				blockOnce.Do(func() {
@@ -123,6 +124,7 @@ func TestCorrelator_ConcurrentCloseSkipsStaleAutoBlock(t *testing.T) {
 				})
 			default:
 			}
+			return nil
 		},
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,

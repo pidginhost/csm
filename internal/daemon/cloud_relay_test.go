@@ -126,13 +126,14 @@ func TestCloudRelay_MultipleCloudIPsTriggersCritical(t *testing.T) {
 }
 
 func TestCloudRelay_BareAuthUserAttributesToAccount(t *testing.T) {
+	withOwnerTable(t)
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()
 
 	lines := []string{
-		gceSendLine("maxwell", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204"),
-		gceSendLine("maxwell", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
-		gceSendLine("maxwell", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+		gceSendLine("alice", "11.113.0.203.bc.googleusercontent.com", "203.0.113.11"),
+		gceSendLine("alice", "12.113.0.203.bc.googleusercontent.com", "203.0.113.12"),
+		gceSendLine("alice", "13.113.0.203.bc.googleusercontent.com", "203.0.113.13"),
 	}
 
 	var got bool
@@ -148,8 +149,8 @@ func TestCloudRelay_BareAuthUserAttributesToAccount(t *testing.T) {
 			if f.Domain != "" {
 				t.Errorf("Domain = %q, want empty for bare AUTH user", f.Domain)
 			}
-			if f.TenantID != "maxwell" {
-				t.Errorf("TenantID = %q, want maxwell", f.TenantID)
+			if f.TenantID != "alice" {
+				t.Errorf("TenantID = %q, want alice", f.TenantID)
 			}
 		}
 	}

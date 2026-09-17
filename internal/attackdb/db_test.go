@@ -168,8 +168,8 @@ func TestRecordFinding_SustainedMarkerSurvivesLaterNonBruteEvent(t *testing.T) {
 		})
 	}
 	db.RecordFinding(alert.Finding{
-		Check:     "modsec_block",
-		Message:   "ModSecurity block from 203.0.113.14",
+		Check:     "http_scanner_profile",
+		Message:   "Scanner profile from 203.0.113.14",
 		Severity:  alert.High,
 		Timestamp: ts.Add(40 * time.Minute),
 	})

@@ -109,9 +109,16 @@ func (db *DB) SetEmailPWLastRefresh(t time.Time) error {
 // GetMetaString reads a string value from the meta bucket.
 // Returns an empty string if the key is not found.
 func (db *DB) GetMetaString(key string) string {
+	val, _ := db.ReadMetaString(key)
+	return val
+}
+
+// ReadMetaString distinguishes an absent key from a failed read for callers
+// that must not treat unavailable metadata as permission to repeat an action.
+func (db *DB) ReadMetaString(key string) (string, error) {
 	var val string
 
-	_ = db.bolt.View(func(tx *bolt.Tx) error {
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
 		v := b.Get([]byte(key))
 		if v == nil {
@@ -121,7 +128,7 @@ func (db *DB) GetMetaString(key string) string {
 		return nil
 	})
 
-	return val
+	return val, err
 }
 
 // SetMetaString writes a string value to the meta bucket.

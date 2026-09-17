@@ -3,15 +3,19 @@ package checks
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 const wpChecksumWorkers = 5 // concurrent wp core verify-checksums
@@ -453,8 +457,21 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 // Installations that pass verification have their core files cached in
 // GlobalCMSCache so the real-time scanner can skip signature matches
 // on known-clean CMS files.
-func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-	wpConfigs, _ := homeGlob(ctx, "public_html", "wp-config.php")
+func CheckWPCore(ctx context.Context, cfg *config.Config, _ *state.Store) (findings []alert.Finding) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if incompleteCollectorFrom(ctx) == nil {
+		ctx, _ = withIncompleteCheckCollector(ctx)
+	}
+	wpConfigs := wpCoreScanRoots(ctx)
+	coverage := newWPVerificationBatch(ctx, store.Global(), "core", logicalOwnerWPCoreVerification, wpConfigs)
+	defer func() {
+		err := coverage.finish(ctx, !checkMarkedIncomplete(ctx, "wp_core"))
+		if _, disabled := disabledLogicalOwners(cfg)[logicalOwnerWPCoreVerification]; !disabled {
+			findings = append(findings, wpVerificationFindings(ctx, coverage.db, "core", logicalOwnerWPCoreVerification, err)...)
+		}
+	}()
 	if len(wpConfigs) == 0 {
 		return nil
 	}
@@ -462,82 +479,151 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 	cache := GlobalCMSCache()
 
 	var mu sync.Mutex
-	var findings []alert.Finding
 	var wg sync.WaitGroup
 
-	// Bounded worker pool
-	jobs := make(chan string, len(wpConfigs))
+	batch := wpCoreBatches.begin(len(wpConfigs), wpChecksumWorkers)
+	defer batch.abandon(ctx)
+	jobs := make(chan int, len(wpConfigs))
 	for i := 0; i < wpChecksumWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for wpConfig := range jobs {
-				if ctx.Err() != nil {
-					return
-				}
-				wpPath := filepath.Dir(wpConfig)
-				user := extractUser(wpPath)
-
-				out, err := runCmdCombinedContext(ctx, "wp", "core", "verify-checksums",
-					"--path="+wpPath, "--allow-root")
-				if ctx.Err() != nil {
-					return
-				}
-
-				if err == nil {
-					// Verification passed - cache all core files
-					cacheWPCoreFiles(cache, wpPath)
-					continue
-				}
-
-				if out == nil {
-					continue
-				}
-
-				outStr := string(out)
-				for _, line := range strings.Split(outStr, "\n") {
-					if wpChecksumLineHasExtraneousCoreFile(line) {
-						mu.Lock()
-						findings = append(findings, alert.Finding{
-							Severity: alert.High,
-							Check:    "wp_core_integrity",
-							Message:  fmt.Sprintf("WordPress core integrity failure for %s", user),
-							Details:  fmt.Sprintf("Path: %s\n%s", wpPath, line),
-						})
-						mu.Unlock()
-						continue
+			for index := range jobs {
+				wpConfig, work := wpConfigs[index], batch.tasks[index]
+				work.admit()
+				stop := false
+				work.run(ctx, cmdTimeout, func() {
+					if parentErr := ctx.Err(); parentErr != nil {
+						work.withdraw(parentErr)
+						stop = true
+						return
 					}
-					// A shipped core file whose bytes changed is where backdoors
-					// are appended; that is worse than an extra file, and the
-					// path lets Re-check and the operator go straight to it.
-					if rel := wpChecksumModifiedCoreFile(line); rel != "" {
+					wpPath := filepath.Dir(wpConfig)
+					user := wpConfigUser(wpPath)
+
+					out, err := runCmdCombinedContext(ctx, "wp", "core", "verify-checksums",
+						"--path="+wpPath, "--allow-root")
+					work.progress()
+					if parentErr := ctx.Err(); parentErr != nil {
+						work.withdraw(parentErr)
+						stop = true
+						return
+					}
+
+					if err == nil {
+						coverage.record(wpPath, store.WPVerificationResult{State: "verified"})
+						// Verification passed - cache all core files
+						cacheWPCoreFiles(cache, wpPath)
+						return
+					}
+
+					coverage.record(wpPath, wpVerificationFailure(err, out))
+					// Partial integrity output cannot complete a command killed by a signal.
+					var commandExit *exec.ExitError
+					if errors.As(err, &commandExit) && commandExit.ExitCode() < 0 {
+						work.fail()
+					}
+					if out == nil {
+						work.fail()
+						return
+					}
+
+					outStr := string(out)
+					var extraneous []string
+					reported := false
+					for _, line := range strings.Split(outStr, "\n") {
+						reported = reported || wpChecksumModifiedFilePath(line) != "" || strings.Contains(line, "should not exist")
+						if wpChecksumLineHasExtraneousCoreFile(line) {
+							extraneous = append(extraneous, strings.TrimSpace(line))
+							continue
+						}
+						// A shipped core file whose bytes changed is where backdoors
+						// are appended; that is worse than an extra file, and the
+						// path lets Re-check and the operator go straight to it.
+						if rel := wpChecksumModifiedCoreFile(line); rel != "" {
+							mu.Lock()
+							findings = append(findings, alert.Finding{
+								Severity: wpCoreModifiedSeverity(wpCoreFilePathWithin(wpPath, rel), rel),
+								Check:    "wp_core_integrity",
+								Message:  fmt.Sprintf("WordPress core file modified for %s", user),
+								Details:  fmt.Sprintf("Path: %s\nFile: %s\n%s", wpPath, rel, line),
+								FilePath: wpCoreFilePathWithin(wpPath, rel),
+							})
+							mu.Unlock()
+						}
+					}
+					if len(extraneous) > 0 {
+						collapsed := wpCoreExtraneousFinding(user, wpPath, extraneous)
+						// No single file to name, so the install's owner carries
+						// the identity correlation needs.
+						if owner, ok := installOwner(wpConfig); ok {
+							collapsed.TenantID = owner
+						}
 						mu.Lock()
-						findings = append(findings, alert.Finding{
-							Severity: wpCoreModifiedSeverity(wpCoreFilePathWithin(wpPath, rel), rel),
-							Check:    "wp_core_integrity",
-							Message:  fmt.Sprintf("WordPress core file modified for %s", user),
-							Details:  fmt.Sprintf("Path: %s\nFile: %s\n%s", wpPath, rel, line),
-							FilePath: wpCoreFilePathWithin(wpPath, rel),
-						})
+						findings = append(findings, collapsed)
 						mu.Unlock()
 					}
+					if wpCoreVerificationCompleted(err, out) {
+						coverage.record(wpPath, store.WPVerificationResult{State: "modified"})
+					}
+					// wp-cli that ran and refused this tree answered the check.
+					if !reported && !commandRefused(err) {
+						work.fail()
+					}
+				})
+				if stop {
+					return
 				}
 			}
 		}()
 	}
 
-	for _, wpConfig := range wpConfigs {
+	for index := range wpConfigs {
 		if ctx.Err() != nil {
 			break
 		}
-		jobs <- wpConfig
+		jobs <- index
 	}
 	close(jobs)
 	wg.Wait()
+	batch.abandon(ctx)
 
 	fmt.Fprintf(os.Stderr, "CMS hash cache: %d verified core files cached\n", cache.Size())
 
 	return findings
+}
+
+// wpCoreExtraneousSampleLimit bounds how many wp-cli lines the collapsed
+// extra-file finding quotes. Enough to recognise the shape of the damage
+// without turning one broken install into a wall of text.
+const wpCoreExtraneousSampleLimit = 15
+
+// wpCoreExtraneousFinding collapses every "should not exist" line wp-cli
+// reported for one install into a single finding. The lines describe one
+// condition -- this core is not the release it claims to be -- and a core
+// rebuilt from an older release reports every file the newer one shipped, so
+// emitting them per file buries the rest of the scan. Identity is pinned to
+// the install so the row survives the operator deleting the files one by one.
+func wpCoreExtraneousFinding(user, wpPath string, lines []string) alert.Finding {
+	sorted := append([]string(nil), lines...)
+	sort.Strings(sorted)
+	var details strings.Builder
+	fmt.Fprintf(&details, "Path: %s\n", wpPath)
+	fmt.Fprintf(&details, "Core files reported as extraneous: %d\n", len(sorted))
+	for _, line := range firstN(sorted, wpCoreExtraneousSampleLimit) {
+		details.WriteString(line)
+		details.WriteString("\n")
+	}
+	if extra := len(sorted) - wpCoreExtraneousSampleLimit; extra > 0 {
+		fmt.Fprintf(&details, "... and %d more\n", extra)
+	}
+	return alert.Finding{
+		Severity: alert.High,
+		Check:    "wp_core_integrity",
+		Message:  fmt.Sprintf("WordPress core integrity failure for %s", user),
+		Details:  details.String(),
+		DedupKey: "extraneous:" + wpPath,
+	}
 }
 
 // cacheWPCoreFiles hashes all PHP files in wp-includes/ and wp-admin/
@@ -549,7 +635,7 @@ func cacheWPCoreFiles(cache *CMSHashCache, wpPath string) {
 	}
 	// Also cache root-level WP core files
 	rootFiles := []string{
-		"wp-config.php", "wp-cron.php", "wp-login.php", "wp-settings.php",
+		"wp-cron.php", "wp-login.php", "wp-settings.php",
 		"wp-load.php", "wp-blog-header.php", "wp-links-opml.php",
 		"wp-mail.php", "wp-signup.php", "wp-activate.php",
 		"wp-comments-post.php", "wp-trackback.php", "xmlrpc.php",
@@ -558,7 +644,9 @@ func cacheWPCoreFiles(cache *CMSHashCache, wpPath string) {
 	for _, name := range rootFiles {
 		path := filepath.Join(wpPath, name)
 		if hash := HashFile(path); hash != "" {
-			cache.Add(hash)
+			if info, err := osFS.Stat(path); err == nil {
+				cache.Add(hash, info.Size())
+			}
 		}
 	}
 
@@ -573,7 +661,7 @@ func cacheWPCoreFiles(cache *CMSHashCache, wpPath string) {
 			name := strings.ToLower(info.Name())
 			if strings.HasSuffix(name, ".php") || strings.HasSuffix(name, ".js") {
 				if hash := HashFile(path); hash != "" {
-					cache.Add(hash)
+					cache.Add(hash, info.Size())
 				}
 			}
 			return nil
@@ -589,4 +677,16 @@ func extractUser(path string) string {
 		}
 	}
 	return "unknown"
+}
+
+// wpCoreScanRoots lists the WordPress installs to verify. Discovery is shared
+// (wpinstalls.go): core files are tampered with in subdomain and nested
+// installs as readily as in a primary document root.
+func wpCoreScanRoots(ctx context.Context) []string {
+	installs := wpInstalls(ctx, "wp_core")
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
+	}
+	return out
 }

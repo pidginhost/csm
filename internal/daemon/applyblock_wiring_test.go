@@ -130,7 +130,9 @@ func TestPerformCentralActionBlockRecordsEvidenceAndOutcome(t *testing.T) {
 		log.SetFlags(prevFlags)
 	})
 
-	d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: "203.0.113.71"})
+	if err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: "203.0.113.71"}); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(blocker.calls) != 1 || blocker.calls[0].ip != "203.0.113.71" {
 		t.Fatalf("engine calls = %+v, want one central block", blocker.calls)
@@ -197,7 +199,7 @@ func TestIncidentSprayBlockRecordsEvidence(t *testing.T) {
 	cfg, blocker := applyWiringSetup(t)
 	d := New(cfg, nil, nil, "")
 
-	live, err := d.applyIncidentSprayBlock("203.0.113.72", "incident: account spray", time.Hour)
+	live, err := d.applyIncidentSprayBlock("203.0.113.72", "incident: account spray", time.Hour, "")
 	if err != nil {
 		t.Fatalf("applyIncidentSprayBlock: %v", err)
 	}
@@ -345,5 +347,19 @@ func TestRecordAppliedBlocksPersistsBeforeDispatchFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Applied-block alert dispatch error") {
 		t.Fatalf("dispatch failure not logged: %q", stderr)
+	}
+}
+
+func TestCentralVerifiedAuditFailureRetainsEvidence(t *testing.T) {
+	d, db, dispatched := lifecycleAuditDaemon(t, firewall.BlockOutcomeLive, firewall.ErrActionAuditPending)
+	err := d.performCentralAction(centralQueuedAction{decision: reporting.DecisionBlock, ip: "203.0.113.81"})
+	if !errors.Is(err, firewall.ErrActionAuditPending) {
+		t.Fatalf("audit degradation hidden: %v", err)
+	}
+	if _, total := db.ReadHistory(10, 0); total != 1 {
+		t.Fatalf("verified central block history=%d", total)
+	}
+	if *dispatched != 1 || d.blockDigest.Drain().Total != 1 {
+		t.Fatal("verified central block lost dispatch/digest")
 	}
 }

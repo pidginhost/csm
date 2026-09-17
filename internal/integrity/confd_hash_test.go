@@ -108,7 +108,7 @@ func TestVerify_NoConfDirStaysCompatible(t *testing.T) {
 
 func TestHashConfDir_EmptyWhenNoFragments(t *testing.T) {
 	dir := t.TempDir()
-	h, err := HashConfDir(dir)
+	h, err := HashConfDir(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestHashConfDir_EmptyWhenNoFragments(t *testing.T) {
 		t.Errorf("empty conf.d must hash to empty string, got %q", h)
 	}
 	// A non-existent dir is also empty, not an error.
-	h, err = HashConfDir(filepath.Join(dir, "nope"))
+	h, err = HashConfDir(filepath.Join(dir, "nope"), nil)
 	if err != nil || h != "" {
 		t.Errorf("missing conf.d: want (\"\", nil), got (%q, %v)", h, err)
 	}

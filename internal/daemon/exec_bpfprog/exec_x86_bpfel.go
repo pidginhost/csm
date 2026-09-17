@@ -13,6 +13,12 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type ExecCsmQueueStats struct {
+	_         structs.HostLayout
+	Lost      uint64
+	Submitted uint64
+}
+
 type ExecExecEvent struct {
 	_          structs.HostLayout
 	Uid        uint32
@@ -22,6 +28,16 @@ type ExecExecEvent struct {
 	ParentComm [16]uint8
 	Filename   [256]uint8
 }
+
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	ExecMapEvents     = "events"
+	ExecMapQueueStats = "queue_stats"
+	ExecProgCsmOnExec = "csm_on_exec"
+	ExecVarUnused     = "unused"
+)
 
 // LoadExec returns the embedded CollectionSpec for Exec.
 func LoadExec() (*ebpf.CollectionSpec, error) {
@@ -43,7 +59,7 @@ func LoadExec() (*ebpf.CollectionSpec, error) {
 //	*ExecMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func LoadExecObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func LoadExecObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := LoadExec()
 	if err != nil {
 		return err
@@ -72,7 +88,8 @@ type ExecProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type ExecMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
+	Events     *ebpf.MapSpec `ebpf:"events"`
+	QueueStats *ebpf.MapSpec `ebpf:"queue_stats"`
 }
 
 // ExecVariableSpecs contains global variables before they are loaded into the kernel.
@@ -102,12 +119,14 @@ func (o *ExecObjects) Close() error {
 //
 // It can be passed to LoadExecObjects or ebpf.CollectionSpec.LoadAndAssign.
 type ExecMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
+	Events     *ebpf.Map `ebpf:"events"`
+	QueueStats *ebpf.Map `ebpf:"queue_stats"`
 }
 
 func (m *ExecMaps) Close() error {
 	return _ExecClose(
 		m.Events,
+		m.QueueStats,
 	)
 }
 

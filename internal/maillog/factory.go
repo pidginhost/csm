@@ -17,7 +17,7 @@ import (
 //	          but units are configured.
 //	file    - error if the file doesn't exist.
 //	journal - error if the journal reader is unavailable (default builds).
-func New(cfg config.MailLogsConfig, platformDefaultFile string) (Reader, error) {
+func New(cfg config.MailLogsConfig, platformDefaultFile string, queue *Queue) (Reader, error) {
 	path := cfg.File
 	if path == "" {
 		path = platformDefaultFile
@@ -28,22 +28,22 @@ func New(cfg config.MailLogsConfig, platformDefaultFile string) (Reader, error) 
 		if _, err := os.Stat(path); err != nil {
 			return nil, fmt.Errorf("mail_logs.source=file but %s: %w", path, err)
 		}
-		return NewFileReader(path), nil
+		return NewFileReader(path, queue), nil
 	case "journal":
 		if len(cfg.Units) == 0 {
 			return nil, fmt.Errorf("mail_logs.source=journal requires units")
 		}
-		return NewJournalReader(cfg.Units), nil
+		return NewJournalReader(cfg.Units, queue), nil
 	case "auto":
 		if path != "" {
 			if _, err := os.Stat(path); err == nil {
-				return NewFileReader(path), nil
+				return NewFileReader(path, queue), nil
 			}
 		}
 		if len(cfg.Units) == 0 {
 			return nil, errors.New("mail_logs.source=auto: log file not found and no units configured for journal fallback")
 		}
-		return NewJournalReader(cfg.Units), nil
+		return NewJournalReader(cfg.Units, queue), nil
 	default:
 		return nil, fmt.Errorf("mail_logs.source=%q: unknown", cfg.Source)
 	}

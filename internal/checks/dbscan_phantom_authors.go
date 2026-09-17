@@ -73,7 +73,15 @@ func checkWPPhantomAuthors(user string, creds wpDBCreds, postsPrefix, usersPrefi
 			Check:    "db_phantom_post_author",
 			Message: fmt.Sprintf("%d published %s are attributed to a non-existent user (account: %s, author ID %d)",
 				count, postNoun, user, authorID),
-			Details: dbContentFindingDetails(creds.dbName, postsPrefix,
+			Details: dbContentFindingDetails(creds, postsPrefix,
+				fmt.Sprintf("post_author = %d has no row in %susers.\n"+
+					"A small number can remain after an administrator deletes a user directly in SQL. "+
+					"Large groups can indicate hidden or injected content.",
+					authorID, usersPrefix)),
+			// Crossing into a content farm must alert even if the orphan group
+			// was baselined or dismissed. Counts within either tier stay stable.
+			DedupKey: dbContentDedupKey(user, creds, postsPrefix,
+				"farm="+strconv.FormatBool(count >= phantomAuthorFarmSize),
 				fmt.Sprintf("post_author = %d has no row in %susers.\n"+
 					"A small number can remain after an administrator deletes a user directly in SQL. "+
 					"Large groups can indicate hidden or injected content.",

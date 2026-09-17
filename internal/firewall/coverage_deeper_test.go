@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -169,7 +170,15 @@ func (f *failEngine) RemoveAllowIPBySource(ip string, source string) error {
 func TestDynDNSResolverResolveHostFailedLookup(t *testing.T) {
 	eng := &mockEngine{}
 	d := NewDynDNSResolver([]string{"this-hostname-does-not-exist.invalid"}, eng)
+	lookups := 0
+	d.lookupFn = func(_ context.Context, host string) ([]string, error) {
+		lookups++
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
 	d.resolveAll()
+	if lookups != 1 {
+		t.Fatalf("lookups = %d, want one failed lookup", lookups)
+	}
 	// Should not panic, and should not add any IPs.
 	if len(eng.allowed) != 0 {
 		t.Errorf("failed lookup should not add IPs, got %v", eng.allowed)

@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	bpfprog "github.com/pidginhost/csm/internal/daemon/af_alg_bpfprog"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 type afAlgBPF struct {
@@ -48,14 +49,14 @@ func tryStartBPFLSM(_ context.Context, alertCh chan<- alert.Finding, cfg *config
 
 	l, err := link.AttachLSM(link.LSMOptions{Program: objs.CsmBlockAfAlg})
 	if err != nil {
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("attach lsm/socket_create: %w", err)
 	}
 
-	reader, err := bpf.NewReader[checks.AFAlgEvent](objs.Events, decodeAFAlgEvent)
+	reader, err := bpf.NewReader[checks.AFAlgEvent](objs.Events, objs.QueueStats, decodeAFAlgEvent)
 	if err != nil {
 		_ = l.Close()
-		objs.Close()
+		_ = objs.Close()
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
 
@@ -71,14 +72,18 @@ func tryStartBPFLSM(_ context.Context, alertCh chan<- alert.Finding, cfg *config
 func (a *afAlgBPF) Mode() string       { return "bpf-lsm" }
 func (a *afAlgBPF) EventCount() uint64 { return a.count.Load() }
 
+func (a *afAlgBPF) QueueStatuses(now time.Time) map[string]queuehealth.Status {
+	return a.reader.QueueStatuses(now)
+}
+
 func (a *afAlgBPF) Run(ctx context.Context) {
+	stopReader := a.reader.Start(ctx)
 	defer func() {
-		_ = a.reader.Close()
 		_ = a.link.Close()
-		a.objs.Close()
+		stopReader()
+		_ = a.objs.Close()
 	}()
 
-	go a.reader.Run(ctx)
 	errorsCh := a.reader.Errors()
 	eventsCh := a.reader.Events()
 	for {
@@ -91,12 +96,14 @@ func (a *afAlgBPF) Run(ctx context.Context) {
 				continue
 			}
 			emitBPFReaderError(a.alertCh, "AF_ALG", err)
-		case ev, ok := <-eventsCh:
+		case work, ok := <-eventsCh:
 			if !ok {
 				return
 			}
-			a.count.Add(1)
-			a.handle(ev)
+			work.Process(func(ev checks.AFAlgEvent) {
+				a.count.Add(1)
+				a.handle(ev)
+			})
 		}
 	}
 }
@@ -106,6 +113,7 @@ func (a *afAlgBPF) handle(ev checks.AFAlgEvent) {
 		Severity:  alert.Critical,
 		Check:     "af_alg_socket_use",
 		Message:   fmt.Sprintf("AF_ALG socket opened by uid=%s exe=%s", ev.UID, ev.Exe),
+		TenantID:  checks.AFAlgOwner(ev),
 		Timestamp: time.Now(),
 		Details: fmt.Sprintf(
 			"Live BPF LSM detection: uid=%s comm=%q exe=%q pid=%s\n"+
@@ -116,9 +124,7 @@ func (a *afAlgBPF) handle(ev checks.AFAlgEvent) {
 			ev.UID, ev.Comm, ev.Exe, ev.PID,
 		),
 	}
-	select {
-	case a.alertCh <- finding:
-	default:
+	if !alert.TryEnqueue(a.alertCh, finding) {
 		csmlog.Warn("af_alg bpf: alert channel full; finding dropped", "uid", ev.UID, "exe", ev.Exe)
 	}
 	reactToAFAlgEvent(a.cfg, ev)
@@ -138,10 +144,12 @@ func decodeAFAlgEvent(b []byte) (checks.AFAlgEvent, error) {
 	// b[8:12] = ppid, b[28:44] = parent_comm; both retained kernel-side, dropped here.
 	comm := nullTerm(b[12:28])
 	exe := nullTerm(b[44 : 44+256])
+	detectedAt := time.Now()
 	return checks.AFAlgEvent{
-		PID:  strconv.FormatUint(uint64(pid), 10),
-		UID:  strconv.FormatUint(uint64(uid), 10),
-		Comm: comm,
-		Exe:  exe,
+		Timestamp: fmt.Sprintf("%d.%09d", detectedAt.Unix(), detectedAt.Nanosecond()),
+		PID:       strconv.FormatUint(uint64(pid), 10),
+		UID:       strconv.FormatUint(uint64(uid), 10),
+		Comm:      comm,
+		Exe:       exe,
 	}, nil
 }

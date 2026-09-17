@@ -212,6 +212,9 @@ $table_prefix = 'wp_; DROP TABLE wp_users; --';
 	opened := false
 	m := &mockOS{
 		glob: func(string) ([]string, error) { return nil, nil },
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/attacker/public_html/wp-config.php"})
+		},
 		open: func(path string) (*os.File, error) {
 			if path != "/home/attacker/public_html/wp-config.php" {
 				return nil, os.ErrNotExist

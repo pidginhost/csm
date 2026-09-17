@@ -37,7 +37,7 @@ func TestBlockSessionAttackerIPs_RoutesThroughRealBlocker(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	before := time.Now()
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1")
+	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", "")
 
 	if blocker.outcomeHits != 1 {
 		t.Fatalf("expected exactly one real firewall block call, got %d", blocker.outcomeHits)
@@ -79,7 +79,7 @@ func TestBlockSessionAttackerIPs_DryRunDoesNotFakeBlock(t *testing.T) {
 	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeDryRun}
 	swapBlocker(t, blocker)
 
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1")
+	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", "")
 
 	for _, a := range actions {
 		if strings.HasPrefix(a.Message, "AUTO-BLOCK:") && strings.Contains(a.Message, "blocked") {
@@ -97,7 +97,7 @@ func TestBlockSessionAttackerIPs_ReturnedActionsStayVolatile(t *testing.T) {
 	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive}
 	swapBlocker(t, blocker)
 
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1")
+	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", "")
 	if len(actions) == 0 {
 		t.Fatal("precondition: expected auto-block action")
 	}
@@ -122,8 +122,9 @@ func TestBlockSessionAttackerIPs_ReturnedActionsStayVolatile(t *testing.T) {
 // a hijack finding drives a real firewall block of the attacker IP found in an
 // active WordPress session.
 func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
-	wpConfig := t.TempDir() + "/wp-config.php"
-	if err := os.WriteFile(wpConfig, []byte(
+	const wpConfig = "/home/alice/public_html/wp-config.php"
+	wpConfigFixture := t.TempDir() + "/wp-config.php"
+	if err := os.WriteFile(wpConfigFixture, []byte(
 		"<?php\n"+
 			"define( 'DB_NAME', 'db1' );\n"+
 			"define( 'DB_USER', 'u' );\n"+
@@ -142,9 +143,12 @@ func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
 		},
 		open: func(name string) (*os.File, error) {
 			if name == wpConfig {
-				return os.Open(wpConfig)
+				return os.Open(wpConfigFixture)
 			}
 			return nil, os.ErrNotExist
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
 		},
 	})
 
@@ -173,7 +177,7 @@ func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
 		Check:   "db_siteurl_hijack",
 		Details: "Database: db1\nsiteurl = http://evil",
 	}
-	actions := handleSiteurlHijack(cfg, f)
+	actions := handleSiteurlHijack(cfg, f, true)
 
 	if blocker.outcomeHits == 0 {
 		t.Fatal("attacker session IP was never sent to the firewall engine")

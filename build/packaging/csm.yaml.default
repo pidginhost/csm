@@ -35,6 +35,8 @@ webui:
   enabled: true
   listen: "0.0.0.0:9443"
   auth_token: ""  # auto-generated on install
+  session_lifetime: "24h"
+  session_idle_timeout: "30m"
   # metrics_token gates GET /metrics (Prometheus). Set a long random
   # string here so a scraper does NOT need the admin auth_token. Leave
   # empty to fall back to admin-token/UI-session auth. See the Metrics docs.
@@ -74,6 +76,12 @@ integrity:
   config_hash: ""
   confd_hash: ""
   immutable: true  # apply chattr +i to /opt/csm/csm during install and rehash
+
+# conf.d drop-in policy. Fragments listed here are left out of confd_hash
+# because their owning integration rewrites them on its own schedule;
+# every other fragment stays covered. Bare filenames only.
+confd:
+  integrity_exempt: []
 
 signatures:
   rules_dir: "/opt/csm/rules"
@@ -330,6 +338,9 @@ auto_response:
   enabled: false              # must be explicitly enabled
   kill_processes: false       # auto-kill fake kernel threads, reverse shells
   quarantine_files: false     # auto-move webshells/backdoors to /opt/csm/quarantine/
+  max_file_actions_per_hour: 50         # shared quarantine and file-cleaning attempt budget
+  max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
+  max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: false            # auto-block attacker IPs via nftables
   block_expiry: "24h"         # how long IPs stay blocked
   http_asn_crawl_tempban: "24h"  # ban duration for http_asn_crawl findings
@@ -454,13 +465,34 @@ firewall:
     - 873
     - 6277                      # DCC   (SpamAssassin)
     - 24441                     # Pyzor (SpamAssassin)
+  # IPv6. false lets every IPv6 packet bypass the firewall: the blanket
+  # accept sits ahead of the blocked sets and the port rules, and the
+  # blocked-IP sets are IPv4-only, so a blocked attacker can return over
+  # IPv6. The empty lists below inherit the IPv4 policy above.
+  ipv6: true
+  tcp6_in: []
+  tcp6_out: []
+  udp6_in: []
+  udp6_out: []
   restricted_tcp:               # ports only accessible from infra_ips
     - 2086
     - 2087
     - 2325
     - 9443                      # CSM web UI
+  required_tcp_out: []          # outbound ports a service on this host needs; checked, never merged
   passive_ftp_start: 49152
   passive_ftp_end: 65534
+  # Destination-scoped outbound TCP. tcp_out holds single ports only, so a
+  # port RANGE can only be expressed here -- needed when this host is an FTP
+  # CLIENT and must open passive data connections to a known source.
+  # dst takes an IP or CIDR; 0.0.0.0/0 means any IPv4 destination and ::/0
+  # means any IPv6 destination. Either warns; IPv6 requires ipv6: true.
+  # Emitted after smtp_block; overlaps with smtp_ports are rejected when on.
+  tcp_out_allow: []
+  # tcp_out_allow:
+  #   - dst: 203.0.113.10/32
+  #     port_start: 49152
+  #     port_end: 65534
   conn_rate_limit: 200          # new connections per minute per IP (CGNAT-tolerant)
   syn_flood_protection: true
   conn_limit: 400               # max concurrent connections per IP (0 = disabled)

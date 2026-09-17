@@ -5,6 +5,7 @@
 
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
+#include "../bpf_headers/csm_ringbuf.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 
@@ -33,7 +34,7 @@ int csm_on_exec(struct trace_event_raw_sched_process_exec *ctx) {
         return 0;
     }
 
-    struct exec_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    struct exec_event *e = csm_ringbuf_reserve(&events, sizeof(*e));
     if (!e) {
         return 0;
     }
@@ -59,7 +60,7 @@ int csm_on_exec(struct trace_event_raw_sched_process_exec *ctx) {
     const char *fname = (const char *)((char *)ctx + (dl_filename & 0xffff));
     bpf_probe_read_kernel_str(&e->filename, sizeof(e->filename), fname);
 
-    bpf_ringbuf_submit(e, 0);
+    csm_ringbuf_submit(e);
     return 0;
 }
 

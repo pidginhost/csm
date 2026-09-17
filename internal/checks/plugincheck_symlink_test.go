@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,9 @@ func TestFindAllWPInstalls_CollapsesWWWSymlink(t *testing.T) {
 			case "/home/alice/public_html", "/home/alice/shop":
 				return accountScanFakeInfo{name: filepath.Base(name), mode: os.ModeDir | 0755, isDir: true}, nil
 			}
+			if filepath.Base(name) == "wp-config.php" {
+				return accountScanFakeInfo{name: "wp-config.php"}, nil
+			}
 			return nil, os.ErrNotExist
 		},
 		readlink: func(name string) (string, error) {
@@ -43,7 +47,7 @@ func TestFindAllWPInstalls_CollapsesWWWSymlink(t *testing.T) {
 		},
 	})
 
-	results := findAllWPInstalls()
+	results := findAllWPInstalls(context.Background())
 	want := map[string]bool{
 		"/home/alice/public_html/wp-config.php": true,
 		"/home/alice/shop/wp-config.php":        true,
@@ -59,8 +63,7 @@ func TestFindAllWPInstalls_CollapsesWWWSymlink(t *testing.T) {
 }
 
 // A document-root symlink that escapes the account home must never redirect the
-// discovered path; the original path is kept so wp-cli is not pointed outside
-// the account.
+// discovered path or leave the unresolved alias available to wp-cli.
 func TestCanonicalWPInstallPath_EscapeSymlinkNotRedirected(t *testing.T) {
 	withMockOS(t, &mockOS{
 		lstat: func(name string) (os.FileInfo, error) {
@@ -77,8 +80,8 @@ func TestCanonicalWPInstallPath_EscapeSymlinkNotRedirected(t *testing.T) {
 		},
 	})
 	const in = "/home/alice/www/wp-config.php"
-	if got := canonicalWPInstallPath(in); got != in {
-		t.Errorf("escape symlink must keep original path, got %q", got)
+	if got, err := canonicalWPInstallPath(in); err == nil || got != "" {
+		t.Errorf("escape symlink = (%q, %v), want rejection", got, err)
 	}
 }
 
@@ -93,7 +96,7 @@ func TestCanonicalWPInstallPath_RealDirUnchanged(t *testing.T) {
 		},
 	})
 	const in = "/home/alice/shop/wp-config.php"
-	if got := canonicalWPInstallPath(in); got != in {
-		t.Errorf("real directory must be unchanged, got %q", got)
+	if got, err := canonicalWPInstallPath(in); err != nil || got != in {
+		t.Errorf("real directory = (%q, %v), want unchanged path", got, err)
 	}
 }

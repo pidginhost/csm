@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,15 +10,52 @@ import (
 )
 
 type fakeFindingStore struct {
-	findings  []alert.Finding
-	dismissed map[string]bool
+	findings    []alert.Finding
+	dismissed   map[string]bool
+	latestCalls int
+	demoted     map[string]alert.Severity
+	promoted    map[string]bool
 }
 
-func (s *fakeFindingStore) LatestFindings() []alert.Finding { return s.findings }
-func (s *fakeFindingStore) DismissFinding(key string)       { s.dismissed[key] = true }
-func (s *fakeFindingStore) DismissLatestFinding(key string) { s.dismissed[key] = true }
+type rejectingFindingStore struct {
+	findings []alert.Finding
+}
 
-func TestReverifyStaleContentFindings(t *testing.T) {
+func (s *rejectingFindingStore) LatestFindings() []alert.Finding { return s.findings }
+func (*rejectingFindingStore) DismissFindingIfLatest(alert.Finding) bool {
+	return false
+}
+func (*rejectingFindingStore) DemoteLatestFinding(alert.Finding, alert.Severity) bool {
+	return false
+}
+func (*rejectingFindingStore) RestoreLatestFindingSeverity(alert.Finding) bool {
+	return false
+}
+
+func (s *fakeFindingStore) LatestFindings() []alert.Finding {
+	s.latestCalls++
+	return s.findings
+}
+func (s *fakeFindingStore) DismissFindingIfLatest(f alert.Finding) bool {
+	s.dismissed[f.Key()] = true
+	return true
+}
+func (s *fakeFindingStore) DemoteLatestFinding(f alert.Finding, sev alert.Severity) bool {
+	if s.demoted == nil {
+		s.demoted = map[string]alert.Severity{}
+	}
+	s.demoted[f.Key()] = sev
+	return true
+}
+func (s *fakeFindingStore) RestoreLatestFindingSeverity(f alert.Finding) bool {
+	if s.promoted == nil {
+		s.promoted = map[string]bool{}
+	}
+	s.promoted[f.Key()] = true
+	return true
+}
+
+func TestReverifyStaleFindings(t *testing.T) {
 	tmp := t.TempDir()
 	withQuarantineAllowedRoots(t, tmp)
 
@@ -47,7 +85,7 @@ func TestReverifyStaleContentFindings(t *testing.T) {
 		dismissed: map[string]bool{},
 	}
 
-	got := ReverifyStaleContentFindings(store)
+	got := ReverifyStaleFindings(store)
 	if len(got) != 1 {
 		t.Fatalf("expected exactly 1 dismissal, got %d: %+v", len(got), got)
 	}
@@ -59,5 +97,26 @@ func TestReverifyStaleContentFindings(t *testing.T) {
 	}
 	if store.dismissed[modF.Key()] {
 		t.Error("modified-since-detection finding must NOT be dismissed")
+	}
+}
+
+func TestReverifyStatsCountOnlyAppliedMutations(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+	malicious := filepath.Join(tmp, "live.php")
+	if err := os.WriteFile(malicious, []byte("<?php eval(base64_decode($_POST['x'])); system($_GET['c']);"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &rejectingFindingStore{findings: []alert.Finding{
+		{Check: "suspicious_php_content", Message: "gone", FilePath: filepath.Join(tmp, "gone.php"), ContentSHA256: "old"},
+		{Check: "obfuscated_php", Message: "live", FilePath: malicious, ContentSHA256: FileContentSHA256(malicious), Severity: alert.Warning, DemotedFrom: alert.Critical},
+	}}
+
+	outcomes, stats, complete := ReverifyStaleFindingsStats(context.Background(), store)
+	if !complete || len(outcomes) != 0 {
+		t.Fatalf("rejected mutations changed outcomes: complete=%v outcomes=%+v", complete, outcomes)
+	}
+	if stats.Considered != 2 || stats.Cleared != 0 || stats.Promoted != 0 || stats.Demoted != 0 {
+		t.Fatalf("stats counted decisions the store rejected: %+v", stats)
 	}
 }

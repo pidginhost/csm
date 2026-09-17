@@ -61,6 +61,23 @@ func longestNeedle(groups ...[][]byte) int {
 // the point; a scanner that decided what to examine from a path would be
 // telling an attacker where to hide.
 func MayBePHPSource(prefix []byte) bool {
+	// The open-tag list ends in the bare two-byte "<?" so short_open_tag
+	// sources are admitted. Two bytes are short enough to occur by chance:
+	// across a 64KB peek roughly two thirds of binary files carry the
+	// sequence somewhere, and each one was then reported as PHP a scan had
+	// failed to examine -- 45,038 claimed skips over eight weeks on a live
+	// host, whose examples were .jpg, .png, .mo and .zip.
+	//
+	// PHP source is text where it opens, so the tag has to appear before
+	// the first NUL byte. Media, archives and compiled catalogs put a NUL
+	// in their header and only carry the sequence later, which is what
+	// rules them out. Truncating rather than rejecting outright keeps a
+	// dropper that opens with a tag and embeds a binary payload further
+	// down -- still a PHP file the scan could not examine, and still worth
+	// naming.
+	if i := bytes.IndexByte(prefix, 0); i >= 0 {
+		prefix = prefix[:i]
+	}
 	return containsAnyFold(prefix, phpOpenTags)
 }
 

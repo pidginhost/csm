@@ -6,16 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"sync"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/corpusgate"
 )
 
-// The shipped corpus gate compiles malware.yar only, so the rules that run in
-// realtime and in finding re-check had never been measured against clean code.
-// This is the same measurement for the other engine.
+// Measure the production YAML rules against the same public corpus as YARA.
 //
 // Point YARA_FP_CORPUS at a tree of unpacked WordPress core and plugins:
 //
@@ -36,12 +34,8 @@ const (
 var yamlCorpusBaseline = map[string]int{
 	// A security plugin's own login handling.
 	"credential_logger": 1,
-	// Registration mail in Elementor and WooCommerce add-ons.
-	"credential_mailer": 4,
 	// The PHPMailer SMTP class shipped in WordPress core.
 	"mailer_exim_exploit": 1,
-	// The FTP sockets class shipped in WordPress core.
-	"network_http_tunnel": 1,
 	// A scanner plugin's engine and core comment handling.
 	"spam_comment_injector": 3,
 	// Minified plugin JavaScript naming a card field near a network call.
@@ -49,7 +43,10 @@ var yamlCorpusBaseline = map[string]int{
 }
 
 func TestRepositoryYAMLRulesAgainstCleanCorpus(t *testing.T) {
-	root := os.Getenv("YARA_FP_CORPUS")
+	root, rootErr := corpusgate.Root("YARA_FP_CORPUS")
+	if rootErr != nil {
+		t.Fatal(rootErr)
+	}
 	if root == "" {
 		t.Skip("YARA_FP_CORPUS not set")
 	}
@@ -67,18 +64,26 @@ func TestRepositoryYAMLRulesAgainstCleanCorpus(t *testing.T) {
 		t.Fatalf("corpus scanned %d files, below the %d-file floor -- check YARA_FP_CORPUS", scanned, minYAMLCorpusFiles)
 	}
 
-	var regressions []string
-	for name, count := range hits {
-		if count > yamlCorpusBaseline[name] {
-			regressions = append(regressions, name)
+	for _, rule := range scanner.rules {
+		if _, found := hits[rule.Name]; !found {
+			hits[rule.Name] = 0
 		}
 	}
-	sort.Strings(regressions)
-	for _, name := range regressions {
-		t.Errorf("rule %s fired %d times on clean third-party code (baseline %d), first at %s",
-			name, hits[name], yamlCorpusBaseline[name], examples[name])
+	report := corpusgate.Report{Engine: "yaml", Scanned: scanned, Hits: hits, Thresholds: yamlCorpusBaseline}
+	if err := report.Save(); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("scanned %d files; %d rules fired", scanned, len(hits))
+	if err := report.Validate(); err != nil {
+		t.Error(err)
+	}
+	fired := 0
+	for rule, count := range hits {
+		if count > 0 {
+			fired++
+			t.Logf("rule %s hits=%d threshold=%d example=%s", rule, count, yamlCorpusBaseline[rule], examples[rule])
+		}
+	}
+	t.Logf("scanned %d files; %d rules fired", scanned, fired)
 }
 
 func TestScanCleanCorpusYAMLReturnsWalkError(t *testing.T) {
@@ -189,4 +194,30 @@ func readYAMLCorpusFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("reading %s: file grew beyond the %d-byte scan limit", path, yamlCorpusMaxFileBytes)
 	}
 	return data, nil
+}
+
+func TestCleanCorpusGateRejectsAlwaysMatchingRule(t *testing.T) {
+	rules := t.TempDir()
+	body := "version: 1\nrules:\n  - name: bad_detector\n    severity: critical\n    file_types: ['*']\n    patterns: ['<?php']\n    min_match: 1\n"
+	if err := os.WriteFile(filepath.Join(rules, "bad.yml"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	scanner := NewScanner(rules)
+	if err := scanner.LoadError(); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "clean.php"), []byte("<?php echo 'clean';"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	hits, _, scanned, err := scanCleanCorpusYAML(t, root, scanner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned != 1 || hits["bad_detector"] != 1 {
+		t.Fatalf("bad rule did not run: scanned=%d hits=%v", scanned, hits)
+	}
+	if err := (corpusgate.Report{Engine: "yaml", Scanned: scanned, Hits: hits}).Validate(); err == nil {
+		t.Fatal("bad detector passed corpus gate")
+	}
 }

@@ -119,7 +119,7 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 	}
 
 	var findings []alert.Finding
-	wpConfigs, _ := accountHomeGlob("*/public_html/wp-config.php")
+	wpConfigs := dbObjectWPConfigs(ctx)
 	if len(wpConfigs) == 0 {
 		return nil
 	}
@@ -132,17 +132,26 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 		if ctx.Err() != nil {
 			return findings
 		}
-		account := extractUser(filepath.Dir(wpConfig))
-		creds := parseWPConfig(wpConfig)
-		if creds.dbName == "" || creds.dbUser == "" {
+		account := wpConfigUser(filepath.Dir(wpConfig))
+		creds, complete := parseWPConfigChecked(wpConfig)
+		if !complete {
+			markCheckIncomplete(ctx, "db_objects")
 			continue
 		}
-		hits := scanDBObjects(account, creds)
+		if creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_objects")
+			continue
+		}
+		var installFindings []alert.Finding
+		hits, err := dbObjectScanner(account, creds)
+		if err != nil {
+			markCheckIncomplete(ctx, "db_objects")
+		}
 		for _, h := range hits {
 			if !h.IsMalw && allowlist[allowlistKey(h)] {
 				continue
 			}
-			findings = append(findings, h.toFinding())
+			installFindings = append(installFindings, h.toFinding())
 		}
 		// Retro-scan: when a trigger gates a privileged action on a
 		// secret token in display_name, find users whose display_name
@@ -152,15 +161,34 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 			if h.Kind != dbObjectTrigger {
 				continue
 			}
-			tokens := extractMagicTokens(h.Body)
+			tokens := magicTokensOf(h.Body)
 			if len(tokens) == 0 {
 				continue
 			}
-			findings = append(findings, scanMagicTokenUsers(account, creds.dbName, creds.tablePrefix, tokens)...)
+			tokenFindings, err := magicTokenScanner(account, creds.dbName, creds.tablePrefix, tokens)
+			if err != nil {
+				markCheckIncomplete(ctx, "db_objects")
+			}
+			installFindings = append(installFindings, tokenFindings...)
 		}
+		// The display label may be a lookup sentinel; only a resolved
+		// account root owner is stamped, per install, before merging.
+		owner, ok := installOwner(wpConfig)
+		if ok {
+			installFindings = stampTenantIDIfEmpty(installFindings, owner)
+		}
+		findings = append(findings, installFindings...)
 	}
 	return findings
 }
+
+// Per-install scan boundaries. Tests replace them with inert scanners to
+// prove ownership stamping for every finding name the check owns.
+var (
+	dbObjectScanner   = scanDBObjects
+	magicTokenScanner = scanMagicTokenUsers
+	magicTokensOf     = extractMagicTokens
+)
 
 // scanDBObjects runs the three INFORMATION_SCHEMA queries and
 // classifies every row. Pure function over the cmdExec injector --
@@ -173,18 +201,22 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 // miss persistence objects on the very platform we care most about.
 // The existing db-clean code (db_clean.go: findCredsForAccount)
 // hits the same constraint and reaches the same conclusion.
-func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
+func scanDBObjects(account string, creds wpDBCreds) ([]dbObjectFinding, error) {
 	if creds.dbName == "" {
-		return nil
+		return nil, nil
 	}
 	schema := creds.dbName
 	schemaLit := mysqlSchemaLiteral(schema)
 	var hits []dbObjectFinding
 
 	// TRIGGERS
-	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
+	rows, err := runMySQLQueryRootWithError(schema, fmt.Sprintf(
 		`SELECT TRIGGER_NAME, ACTION_STATEMENT FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = %s`,
-		schemaLit)) {
+		schemaLit))
+	if err != nil {
+		return hits, err
+	}
+	for _, row := range rows {
 		name, body := splitTabRow(row)
 		if name == "" {
 			continue
@@ -193,9 +225,13 @@ func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
 	}
 
 	// EVENTS
-	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
+	rows, err = runMySQLQueryRootWithError(schema, fmt.Sprintf(
 		`SELECT EVENT_NAME, EVENT_DEFINITION FROM INFORMATION_SCHEMA.EVENTS WHERE EVENT_SCHEMA = %s`,
-		schemaLit)) {
+		schemaLit))
+	if err != nil {
+		return hits, err
+	}
+	for _, row := range rows {
 		name, body := splitTabRow(row)
 		if name == "" {
 			continue
@@ -204,9 +240,13 @@ func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
 	}
 
 	// ROUTINES (procedures + functions)
-	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
+	rows, err = runMySQLQueryRootWithError(schema, fmt.Sprintf(
 		`SELECT ROUTINE_NAME, ROUTINE_TYPE, ROUTINE_DEFINITION FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = %s`,
-		schemaLit)) {
+		schemaLit))
+	if err != nil {
+		return hits, err
+	}
+	for _, row := range rows {
 		name, rtype, body := splitTabRow3(row)
 		if name == "" {
 			continue
@@ -218,7 +258,7 @@ func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
 		hits = append(hits, classifyDBObject(account, schema, kind, name, body))
 	}
 
-	return hits
+	return hits, nil
 }
 
 // classifyDBObject decides whether a row matches the malware
@@ -440,9 +480,9 @@ func validMagicToken(tok string) bool {
 // [A-Za-z0-9_]+ before concatenation. Anything outside those character
 // classes causes the scan to skip the query entirely rather than emit a
 // half-built SQL statement against an untrusted prefix.
-func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) []alert.Finding {
+func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) ([]alert.Finding, error) {
 	if len(tokens) == 0 || tablePrefix == "" || !validTablePrefix.MatchString(tablePrefix) {
-		return nil
+		return nil, nil
 	}
 	var findings []alert.Finding
 	for _, tok := range tokens {
@@ -453,7 +493,10 @@ func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) [
 			"SELECT ID, user_login, user_email, display_name FROM `%susers` WHERE display_name LIKE '%%%s%%'",
 			tablePrefix, tok,
 		)
-		rows := runMySQLQueryRoot(schema, query)
+		rows, err := runMySQLQueryRootWithError(schema, query)
+		if err != nil {
+			return findings, err
+		}
 		for _, row := range rows {
 			parts := strings.SplitN(row, "\t", 4)
 			if len(parts) < 4 {
@@ -469,5 +512,17 @@ func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) [
 			})
 		}
 	}
-	return findings
+	return findings, nil
+}
+
+// dbObjectWPConfigs lists the WordPress installs this check scans. Discovery is
+// shared (wpinstalls.go): a subdomain or nested install carries the same
+// injected objects as a primary one.
+func dbObjectWPConfigs(ctx context.Context) []string {
+	installs := wpInstalls(ctx, "db_objects")
+	out := make([]string, 0, len(installs))
+	for _, in := range installs {
+		out = append(out, in.ConfigPath)
+	}
+	return out
 }

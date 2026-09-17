@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/sshdconf"
 	"golang.org/x/text/language"
 )
@@ -34,6 +35,17 @@ func (v ValidationResult) String() string {
 // Validate checks the config for errors, warnings, and emits OK for valid sections.
 func Validate(cfg *Config) []ValidationResult {
 	var results []ValidationResult
+	for index, pattern := range cfg.AccountRoots {
+		if err := platform.ValidateAccountRootPattern(pattern); err != nil {
+			results = append(results, ValidationResult{"error", fmt.Sprintf("account_roots[%d]", index), err.Error()})
+		}
+	}
+
+	if cfg.ObserveMode() {
+		results = append(results, ValidationResult{"ok", "mode", "observe (CSM does not change host state on this host)"})
+	} else {
+		results = append(results, ValidationResult{"ok", "mode", ModeEnforce})
+	}
 
 	// --- Hostname ---
 	if cfg.Hostname == "" || cfg.Hostname == "SET_HOSTNAME_HERE" {
@@ -144,6 +156,17 @@ func Validate(cfg *Config) []ValidationResult {
 		if len(cc) != 2 {
 			results = append(results, ValidationResult{"error", "suppressions.trusted_countries", fmt.Sprintf("invalid country code: %q (expected 2-letter ISO code)", cc)})
 		}
+	}
+	// Credentials only authorize a download; they say nothing about whether a
+	// database exists. Checking them instead of the database let a wrong key
+	// pass validation while no database was ever fetched, so the setting was
+	// inert and reported healthy. Check what the daemon actually reads.
+	if len(cfg.Suppressions.TrustedCountries) > 0 && !geoIPCityDatabasePresent(cfg.StatePath) {
+		remedy := "Provision that database, or set geoip.account_id and geoip.license_key and run csm update-geoip"
+		if cfg.GeoIP.AccountID != "" && cfg.GeoIP.LicenseKey != "" {
+			remedy = "Credentials are set but no database has been downloaded; run csm update-geoip and check it reports success"
+		}
+		results = append(results, ValidationResult{"warn", "suppressions.trusted_countries", "configured but no GeoLite2-City database is installed, so country lookups return nothing and no address is ever treated as trusted. " + remedy})
 	}
 
 	// --- Block digest ---
@@ -269,6 +292,8 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "retention.compact_fill_ratio", fmt.Sprintf("compact_fill_ratio must be in (0, 1], got %v", cfg.Retention.CompactFillRatio)})
 	}
 
+	results = append(results, confdResults(cfg)...)
+
 	// --- Firewall ---
 	if cfg.Firewall != nil {
 		for _, e := range validateDOSExemptRanges(cfg.Firewall.DOSExemptRanges) {
@@ -292,6 +317,7 @@ func Validate(cfg *Config) []ValidationResult {
 			}
 		}
 		results = append(results, firewallLockoutResults(cfg)...)
+		results = append(results, firewallEgressResults(cfg)...)
 		results = append(results, firewallValueResults(cfg.Firewall)...)
 	}
 	results = append(results, centralActionResults(cfg)...)
@@ -408,6 +434,15 @@ func Validate(cfg *Config) []ValidationResult {
 	// --- AutoResponse.PHPRelay bounds ---
 	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute != 0 && (cfg.AutoResponse.PHPRelay.MaxActionsPerMinute < 1 || cfg.AutoResponse.PHPRelay.MaxActionsPerMinute > 600) {
 		results = append(results, ValidationResult{"error", "auto_response.php_relay.max_actions_per_minute", fmt.Sprintf("max_actions_per_minute must be between 1 and 600, got %d", cfg.AutoResponse.PHPRelay.MaxActionsPerMinute)})
+	}
+	for key, value := range map[string]int{
+		"max_file_actions_per_hour":             cfg.AutoResponse.MaxFileActionsPerHour,
+		"max_file_actions_per_account_per_hour": cfg.AutoResponse.MaxFileActionsPerAccountPerHour,
+		"max_file_action_failures_per_hour":     cfg.AutoResponse.MaxFileActionFailuresPerHour,
+	} {
+		if value < 0 || value > MaxFileResponseLimit {
+			results = append(results, ValidationResult{"error", "auto_response." + key, fmt.Sprintf("must be between 0 and %d (0 uses the default)", MaxFileResponseLimit)})
+		}
 	}
 	if cfg.AutoResponse.MaxBlocksPerHour < 0 {
 		results = append(results, ValidationResult{"error", "auto_response.max_blocks_per_hour", fmt.Sprintf("max_blocks_per_hour must be >= 0 (0 uses default %d), got %d", DefaultMaxBlocksPerHour, cfg.AutoResponse.MaxBlocksPerHour)})
@@ -700,6 +735,33 @@ func validateWarnings(cfg *Config) []ValidationResult {
 	return results
 }
 
+// confdResults rejects integrity_exempt entries that can never match a
+// fragment. The digest compares bare filenames, so a path, a glob or a file
+// the loader would not merge leaves the operator believing a fragment is
+// exempt while every rewrite of it still fails the next restart.
+func confdResults(cfg *Config) []ValidationResult {
+	var results []ValidationResult
+	for _, entry := range cfg.ConfD.IntegrityExempt {
+		if err := validateExemptFragmentName(entry); err != nil {
+			results = append(results, ValidationResult{"error", "confd.integrity_exempt", err.Error()})
+		}
+	}
+	return results
+}
+
+func validateExemptFragmentName(name string) error {
+	if name == "" {
+		return errors.New("entries must be conf.d fragment filenames, got an empty entry")
+	}
+	if strings.ContainsAny(name, `/\*?[`) || name == "." || name == ".." {
+		return fmt.Errorf("%q is not a bare fragment filename; list the file name only, without directories or wildcards", name)
+	}
+	if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+		return fmt.Errorf("%q is not a .yaml or .yml fragment, so conf.d never loads it", name)
+	}
+	return nil
+}
+
 // firewallValueResults rejects firewall values the engine would otherwise
 // accept and quietly reinterpret: a port outside 1-65535 cannot select the
 // intended service, an inverted passive-FTP range opens nothing, and a
@@ -718,6 +780,7 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 		{"firewall.udp_out", fw.UDPOut},
 		{"firewall.tcp6_in", fw.TCP6In},
 		{"firewall.tcp6_out", fw.TCP6Out},
+		{"firewall.required_tcp_out", fw.RequiredTCPOut},
 		{"firewall.udp6_in", fw.UDP6In},
 		{"firewall.udp6_out", fw.UDP6Out},
 		{"firewall.restricted_tcp", fw.RestrictedTCP},
@@ -778,6 +841,66 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 		}
 	}
 
+	results = append(results, outAllowResults(fw)...)
+
+	return results
+}
+
+// outAllowResults validates firewall.tcp_out_allow. A malformed entry emits no
+// nftables rule at all, so every shape error is reported rather than left to
+// fail open as "the fetch just does not work".
+func outAllowResults(fw *firewall.FirewallConfig) []ValidationResult {
+	var results []ValidationResult
+	for i, r := range fw.TCPOutAllow {
+		prefix := fmt.Sprintf("entry %d (dst %q)", i, r.Dst)
+
+		network, err := firewall.ParseOutAllowDst(r.Dst)
+		if err != nil {
+			results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: %v", prefix, err)})
+			continue
+		}
+		switch {
+		case !validPort(r.PortStart):
+			results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: port_start %d is out of range (1-65535)", prefix, r.PortStart)})
+			continue
+		case !validPort(r.PortEnd):
+			results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: port_end %d is out of range (1-65535)", prefix, r.PortEnd)})
+			continue
+		case r.PortStart > r.PortEnd:
+			results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: range starts at %d but ends at %d, so it matches nothing",
+					prefix, r.PortStart, r.PortEnd)})
+			continue
+		}
+
+		// The output chain emits the smtp_block drop before these rules, so an
+		// overlap cannot actually bypass it. Rejected anyway: rule ordering
+		// must not be the only guard between a config key and outbound mail.
+		if fw.SMTPBlock {
+			for _, port := range fw.SMTPPorts {
+				if port >= r.PortStart && port <= r.PortEnd {
+					results = append(results, ValidationResult{"error", "firewall.tcp_out_allow",
+						fmt.Sprintf("%s: range %d-%d covers smtp port %d while smtp_block is on",
+							prefix, r.PortStart, r.PortEnd, port)})
+					break
+				}
+			}
+		}
+
+		if ones, bits := network.Mask.Size(); ones == 0 && bits > 0 {
+			results = append(results, ValidationResult{"warn", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: opens ports %d-%d (%d ports) to every destination; scope it to the hosts this server dials",
+					prefix, r.PortStart, r.PortEnd, r.PortEnd-r.PortStart+1)})
+		}
+
+		if network.IP.To4() == nil && !fw.IPv6 {
+			results = append(results, ValidationResult{"warn", "firewall.tcp_out_allow",
+				fmt.Sprintf("%s: IPv6 destination emits no rule while firewall.ipv6 is off", prefix)})
+		}
+	}
 	return results
 }
 
@@ -1570,4 +1693,15 @@ func validateFirewallConfig(cfg *Config) error {
 		return nil
 	}
 	return errors.New(strings.Join(errs, "; "))
+}
+
+// geoIPCityDatabasePresent reports whether the City database the daemon loads
+// exists. The daemon opens only the state-path copy, so that is the location
+// that decides whether a country lookup can resolve anything.
+func geoIPCityDatabasePresent(statePath string) bool {
+	if statePath == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(statePath, "geoip", "GeoLite2-City.mmdb"))
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }

@@ -1,12 +1,38 @@
 package checks
 
 import (
+	"encoding/hex"
 	"net/netip"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func FuzzParsePluginNoticeRow(f *testing.F) {
+	f.Add("litespeed.admin_display.messages\t0\tx")
+	f.Add(pluginNoticeQueryRow("litespeed.cdn_setup._summary", "<script\nsrc=https://loader.example.com/x.js></script>"))
+	f.Add("litespeed.admin_display.msg_pin\t1\tx0g")
+	f.Add("litespeed.admin_display.messages\t65537\tx")
+	f.Fuzz(func(t *testing.T, line string) {
+		option, value, complete := parsePluginNoticeRow(line)
+		if !complete {
+			if option != "" || value != "" {
+				t.Fatal("incomplete row exposed partial option data")
+			}
+			return
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		size, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || int64(len(value)) != size || len(value) > maxPluginNoticeBytes {
+			t.Fatal("complete row has missing or excessive bytes")
+		}
+		if option != parts[0] || !strings.EqualFold("x"+hex.EncodeToString([]byte(value)), parts[2]) {
+			t.Fatal("complete row changed stored bytes")
+		}
+	})
+}
 
 // These are fuzz targets for the string parsers that accept external input
 // (log lines, finding messages, wp-config bodies, /proc/net/tcp rows).
@@ -16,6 +42,38 @@ import (
 // Run the seed corpus with `go test -run=Fuzz`. Run actual fuzzing with
 // `go test -fuzz=FuzzFoo -fuzztime=30s ./internal/checks/` during
 // investigation.
+
+func FuzzPHPTerminatesImmediately(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"<?php exit('Access denied'); __halt_compiler(); ?>",
+		"<?php\vexit(); ?><?php echo 1;",
+		`<?php exit("{${print('EXECUTED')}}");`,
+		`<?php exit('a' . print('EXECUTED'));`,
+		"<?php exit(<<<X\ndata\nX\n);",
+		"<?php // guard\nexit();",
+		"<?php __halt_compiler();",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, body string) {
+		if !PHPTerminatesImmediately([]byte(body)) {
+			return
+		}
+		if !IsBenignPHPStubBytesComplete([]byte(body), false) {
+			t.Fatal("immediate terminator rejected by the shared stub parser")
+		}
+		if !PHPTerminatesImmediately([]byte(body + "<?php echo 1;")) {
+			t.Fatal("an accepted partial terminator depended on the unseen suffix")
+		}
+		for _, space := range []string{"\v", "\f"} {
+			invalidTag := strings.Replace(body, "<?php", "<?php"+space, 1)
+			if PHPTerminatesImmediately([]byte(invalidTag)) {
+				t.Fatal("an invalid opening tag was accepted")
+			}
+		}
+	})
+}
 
 func FuzzArchiveEntrySignalsSiteBackup(f *testing.F) {
 	f.Add("mysite-2024-01-01/wp-config.php")
@@ -108,12 +166,67 @@ func FuzzSplitValiasDests(f *testing.F) {
 		`local@example.test,"|/usr/bin/handler --arg=a,b"`,
 		`"unterminated,attacker@external.test,|/tmp/run`,
 		`'quoted@example.test',plain@example.test`,
+		`"|\"/usr/local/cpanel/bin/autorespond\" \"a,b\"", "|/home/bob/relay"`,
 		"",
 	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
 		_ = splitValiasDests(input)
+		// A quoted command can contain commas and escaped quotes without
+		// inventing destinations or absorbing the next forwarder.
+		command := "|/home/bob/" + input + "/relay"
+		escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(command)
+		got := splitValiasDests(`"` + escaped + `", second@example.test`)
+		if len(got) != 2 || got[0] != command || got[1] != "second@example.test" {
+			t.Fatalf("quoted pipe did not round-trip: input=%q destinations=%q", command, got)
+		}
+	})
+}
+
+func FuzzFirstPipeCommandWord(f *testing.F) {
+	for _, seed := range []string{
+		"/usr/local/cpanel/bin/autorespond bob@example.test",
+		`"\x2fusr/local/cpanel/bin/autorespond"`,
+		`"\57usr/local/cpanel/bin/autorespond"`,
+		`"\0\x\777\b\f\n\r\t\v\"\\"`,
+		`/usr/local/cpanel/bin/auto'respond'`,
+		"\u00a0/usr/local/cpanel/bin/autorespond",
+		"|\x00",
+		"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		word := firstPipeCommandWord(input)
+		if strings.IndexByte(word, 0) >= 0 {
+			t.Fatalf("command word contains NUL: %q", word)
+		}
+		// A non-ASCII byte before an absolute path makes it a different,
+		// relative executable; it cannot identify a cPanel built-in.
+		if isSafePipe("|\u00a0" + input) {
+			t.Fatalf("relative executable treated as a built-in: %q", input)
+		}
+	})
+}
+
+func FuzzParseValiasEntries(f *testing.F) {
+	for _, seed := range []string{
+		"bob@example.test: \"|/usr/local/cpanel/bin/autorespond bob@example.test /home/bob/.autorespond\"\n",
+		"list-admin@example.test: \"|/usr/local/cpanel/3rdparty/mailman/mail/wrapper mailowner list_example.test\"\n",
+		"*: :fail: No Such User Here\n# comment\nplain: a@example.test, \"|/tmp/run --to a,b\"\n",
+		"@: x\nbob@: y\n",
+		"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		entries, _ := ParseValiasEntries(strings.NewReader(input), "example.test")
+		for _, e := range entries {
+			if e.LocalPart == "" || e.Domain == "" || e.Dest == "" {
+				t.Fatalf("entry with empty field: %+v", e)
+			}
+		}
 	})
 }
 

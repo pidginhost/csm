@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -123,14 +124,16 @@ func TestExtractFilePath(t *testing.T) {
 // --- AutoKillProcesses ----------------------------------------------------
 
 func TestAutoKillProcesses_Disabled(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = false
-	if actions := AutoKillProcesses(cfg, []alert.Finding{{Severity: alert.Critical, Check: "fake_kernel_thread"}}); len(actions) != 0 {
+	if actions := AutoKillProcesses(context.Background(), cfg, []alert.Finding{{Severity: alert.Critical, Check: "fake_kernel_thread"}}); len(actions) != 0 {
 		t.Errorf("expected no actions when disabled, got %d", len(actions))
 	}
 }
 
 func TestAutoKillProcesses_SkipsNonCritical(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(string) ([]byte, error) { return []byte("Uid:\t1000\n"), nil },
 		readlink: func(string) (string, error) { return "/home/alice/.bad", nil },
@@ -142,12 +145,13 @@ func TestAutoKillProcesses_SkipsNonCritical(t *testing.T) {
 		{Severity: alert.Warning, Check: "fake_kernel_thread", PID: 12345},
 		{Severity: alert.Critical, Check: "webshell", PID: 12346},
 	}
-	if actions := AutoKillProcesses(cfg, findings); len(actions) != 0 {
+	if actions := AutoKillProcesses(context.Background(), cfg, findings); len(actions) != 0 {
 		t.Errorf("expected 0 actions, got %d", len(actions))
 	}
 }
 
 func TestAutoKillProcesses_SkipsRootProcess(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(string) ([]byte, error) { return []byte("Name:\ttest\nUid:\t0\t0\t0\t0\n"), nil },
 	})
@@ -155,12 +159,13 @@ func TestAutoKillProcesses_SkipsRootProcess(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.KillProcesses = true
 	findings := []alert.Finding{{Severity: alert.Critical, Check: "fake_kernel_thread", PID: 12345}}
-	if actions := AutoKillProcesses(cfg, findings); len(actions) != 0 {
+	if actions := AutoKillProcesses(context.Background(), cfg, findings); len(actions) != 0 {
 		t.Errorf("expected 0 for root, got %d", len(actions))
 	}
 }
 
 func TestAutoKillProcesses_SkipsSafeProcess(t *testing.T) {
+	withSimulatedProcessSignal(t)
 	withMockOS(t, &mockOS{
 		readFile: func(string) ([]byte, error) { return []byte("Name:\ttest\nUid:\t1000\t1000\t1000\t1000\n"), nil },
 		readlink: func(string) (string, error) { return "/usr/sbin/sshd", nil },
@@ -169,7 +174,7 @@ func TestAutoKillProcesses_SkipsSafeProcess(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.KillProcesses = true
 	findings := []alert.Finding{{Severity: alert.Critical, Check: "fake_kernel_thread", PID: 12345}}
-	if actions := AutoKillProcesses(cfg, findings); len(actions) != 0 {
+	if actions := AutoKillProcesses(context.Background(), cfg, findings); len(actions) != 0 {
 		t.Errorf("expected 0 for safe, got %d", len(actions))
 	}
 }

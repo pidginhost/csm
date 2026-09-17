@@ -41,6 +41,10 @@ csm firewall update-geoip           # Download country CIDR blocks
 csm firewall lookup <ip>            # GeoIP + block status lookup
 ```
 
+Address lookups report country, city, ASN, organization, and network when the
+local databases supply them. Country-block matches retain all matching countries
+and do not prevent ASN or city enrichment. Missing fields are omitted.
+
 ## API
 
 ```

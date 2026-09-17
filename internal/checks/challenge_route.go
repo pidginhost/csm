@@ -266,6 +266,11 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	routed := make(map[string]bool)
 
 	for _, f := range findings {
+		// Challenge timeouts can hard-block too, so gated authentication
+		// checks must honor the same opt-in as direct firewall responses.
+		if cpanelWebmailFailureChecks[f.Check] && !cfg.AutoResponse.BlockCpanelLogins {
+			continue
+		}
 		if isHardBlockCheck(f.Check) {
 			continue
 		}
@@ -297,7 +302,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		addChallengeIP(f.Check, ip, f.Message, challengeDuration)
+		addChallengeIP(f.Check, ip, f.Message, challengeDuration, alert.FindingID(f))
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
 		recordChallengeRouteStat(ip, f.Check, time.Now())
@@ -317,9 +322,15 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	return actions
 }
 
-func addChallengeIP(check, ip, reason string, duration time.Duration) {
+func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string) {
 	if check == "http_claimed_bot_unverified" {
 		challengeIPList.AddNonEscalating(ip, reason, duration)
+		return
+	}
+	if list, ok := challengeIPList.(interface {
+		AddWithFindingID(string, string, time.Duration, string)
+	}); ok {
+		list.AddWithFindingID(ip, reason, duration, findingID)
 		return
 	}
 	challengeIPList.Add(ip, reason, duration)

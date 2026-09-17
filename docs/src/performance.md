@@ -30,6 +30,11 @@ The **Performance** page (`/performance`) shows real-time metrics:
 - MySQL and Redis health
 - WordPress performance indicators
 
+PHP worker counts include LiteSpeed and PHP-FPM pool workers. The PHP-FPM
+master is excluded from these request-worker counts; security process checks
+continue to inspect it. Database memory comes from the MySQL or MariaDB server
+process, independent of its PID-file location or wrapper-related arguments.
+
 The findings list also exposes admin-only fixes, per-row and as a **Bulk fix**
 dropdown that applies one fix to every matching finding at once:
 

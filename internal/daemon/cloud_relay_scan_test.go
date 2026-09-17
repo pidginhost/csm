@@ -96,14 +96,15 @@ func TestScanRetro_FiresOnRotatingIPFleet(t *testing.T) {
 }
 
 func TestScanRetro_BareAuthUserAttributesToAccount(t *testing.T) {
+	withOwnerTable(t)
 	base := time.Now().Add(-2 * time.Hour)
 	var lines []string
 	for i := 0; i < 18; i++ {
 		lines = append(lines, eximLine(
 			base.Add(time.Duration(i)*2*time.Minute),
-			"maxwell",
-			"ec2-13-38-71-129.eu-west-3.compute.amazonaws.com",
-			"13.38.71.129",
+			"alice",
+			"ec2-192-0-2-10.eu-west-3.compute.amazonaws.com",
+			"192.0.2.10",
 			"spam",
 		))
 	}
@@ -122,8 +123,8 @@ func TestScanRetro_BareAuthUserAttributesToAccount(t *testing.T) {
 		if f.Domain != "" {
 			t.Errorf("Domain = %q, want empty for bare AUTH user", f.Domain)
 		}
-		if f.TenantID != "maxwell" {
-			t.Errorf("TenantID = %q, want maxwell", f.TenantID)
+		if f.TenantID != "alice" {
+			t.Errorf("TenantID = %q, want alice", f.TenantID)
 		}
 	})
 }

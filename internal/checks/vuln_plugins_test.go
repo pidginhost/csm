@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"maps"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -72,10 +73,10 @@ func TestLoadPluginVulnFeed_Embedded(t *testing.T) {
 	}
 	// virtual_patch drives what the unprotected annotation claims, so it must
 	// name exactly the CVEs configs/csm_modsec_custom.conf actually blocks:
-	// the Ultimate Member privilege escalation and the wp-file-manager
-	// connector.minimal.php upload. Marking one CSM does not patch overstates
+	// the Ultimate Member privilege escalation, the wp-file-manager
+	// connector.minimal.php upload, and the LiteSpeed Cache role simulation. Marking one CSM does not patch overstates
 	// the gap; leaving one unmarked understates it.
-	want := map[string]bool{"CVE-2023-3460": true, "CVE-2020-25213": true}
+	want := map[string]bool{"CVE-2023-3460": true, "CVE-2020-25213": true, "CVE-2024-28000": true}
 	if !maps.Equal(patched, want) {
 		t.Fatalf("feed marks %v as virtually patched, want %v", patched, want)
 	}
@@ -281,12 +282,17 @@ func TestCheckVulnerablePluginsHandlesEmptyFreshCache(t *testing.T) {
 func TestCheckVulnerablePluginsRefreshesItsSharedInventory(t *testing.T) {
 	db := setupPluginStore(t)
 	wpConfig := "/home/alice/public_html/wp-config.php"
-	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
-		if pattern == "/home/*/public_html/wp-config.php" {
-			return []string{wpConfig}, nil
-		}
-		return nil, nil
-	}})
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
+		},
+	})
 	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		command := strings.Join(args, " ")
 		if strings.Contains(command, "plugin list") {
@@ -309,5 +315,73 @@ func TestCheckVulnerablePluginsRefreshesItsSharedInventory(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Details, "inactive") {
 		t.Fatalf("inactive refreshed plugin was not annotated: %+v", findings[0])
+	}
+}
+
+func TestCheckVulnerablePluginsEvaluatesCacheAfterDiscoveryGap(t *testing.T) {
+	db := setupPluginStore(t)
+	if err := db.SetSitePlugins("/home/alice/public_html", store.SitePlugins{
+		Account: "alice",
+		Domain:  "alice.example",
+		Plugins: []store.SitePluginEntry{{
+			Slug:             "ultimate-member",
+			Status:           "active",
+			InstalledVersion: "2.4.1",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{
+		readFile: func(string) ([]byte, error) { return nil, os.ErrPermission },
+		glob:     func(string) ([]string, error) { return nil, nil },
+	})
+
+	findings := CheckVulnerablePlugins(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "ultimate-member") {
+		t.Fatalf("cached vulnerable plugin was hidden by the discovery gap: %+v", findings)
+	}
+}
+
+// LiteSpeed Cache is the entry point for the admin-notice injection campaign
+// tracked by db_options_plugin_notice_injection. The stored payload is only
+// the symptom: until the plugin is updated the same site is rewritten at
+// will, so the vulnerable range has to alert on its own.
+func TestEmbeddedFeedCoversLiteSpeedCacheInjectionRange(t *testing.T) {
+	feed, err := loadPluginVulnFeed(pluginVulnFeedData)
+	if err != nil {
+		t.Fatalf("embedded feed must parse: %v", err)
+	}
+	want := map[string]string{
+		"CVE-2023-40000": "5.7.0.1",
+		"CVE-2024-28000": "6.4",
+		"CVE-2024-44000": "6.5.0.1",
+	}
+	got := map[string]string{}
+	for _, v := range feed {
+		if v.Slug == "litespeed-cache" {
+			got[v.CVE] = v.FixedIn
+		}
+	}
+	for cve, fixed := range want {
+		if got[cve] != fixed {
+			t.Errorf("litespeed-cache %s fixed_in = %q, want %q", cve, got[cve], fixed)
+		}
+	}
+
+	// The version seen injected on production must match, and a patched copy
+	// of the same plugin must stay silent.
+	var stored, patchedSilent bool
+	for _, v := range feed {
+		if v.Slug != "litespeed-cache" || v.CVE != "CVE-2023-40000" {
+			continue
+		}
+		stored = matchPluginVuln("5.4", v)
+		patchedSilent = !matchPluginVuln("7.8.1", v)
+	}
+	if !stored {
+		t.Error("litespeed-cache 5.4 not matched by the CVE-2023-40000 range")
+	}
+	if !patchedSilent {
+		t.Error("litespeed-cache 7.8.1 matched a range it is patched against")
 	}
 }

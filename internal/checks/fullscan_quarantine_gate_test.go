@@ -145,9 +145,9 @@ func TestQuarantineFindingFile_DoesNotMoveWordPressFileWhenCleaningFails(t *test
 		t.Fatal(err)
 	}
 
-	oldMax := cleanMaxFileSize
-	cleanMaxFileSize = 1
-	t.Cleanup(func() { cleanMaxFileSize = oldMax })
+	oldStore := storeQuarantineBackup
+	storeQuarantineBackup = func(string, []byte, QuarantineMeta, os.FileMode) error { return os.ErrPermission }
+	t.Cleanup(func() { storeQuarantineBackup = oldStore })
 
 	result, eligible := QuarantineFindingFile(alert.Finding{
 		Severity: alert.Critical,

@@ -53,10 +53,7 @@ func NewPasswordHijackDetector(cfg *config.Config, alertCh chan<- alert.Finding,
 // dispatcher stops draining, a plain send would otherwise wedge d.wg.Wait().
 // Callers must NOT hold d.mu while calling this.
 func (d *PasswordHijackDetector) emit(f alert.Finding) {
-	select {
-	case d.alertCh <- f:
-	case <-d.stopCh:
-	}
+	alert.Enqueue(d.alertCh, f, d.stopCh)
 }
 
 // HandlePasswordChange records a WHM password change from a non-infra IP.

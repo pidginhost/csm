@@ -22,6 +22,9 @@ func wpCoreCheckMocks(t *testing.T, wpOutput string) {
 			}
 			return nil, nil
 		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{"/home/alice/public_html/wp-config.php"})
+		},
 	})
 	withMockCmd(t, &mockCmd{
 		runContext: func(_ context.Context, name string, _ ...string) ([]byte, error) {
@@ -61,8 +64,40 @@ func TestCheckWPCoreReportsModifiedCoreFile(t *testing.T) {
 	if f.FilePath != "/home/alice/public_html/wp-includes/plugin.php" {
 		t.Errorf("FilePath = %q, want the modified core file", f.FilePath)
 	}
-	if !strings.Contains(f.Details, "Path: /home/alice/public_html") {
-		t.Errorf("Details must carry the install path for Re-check: %q", f.Details)
+	if !strings.HasPrefix(f.Details, "Path: /home/alice/public_html\n") {
+		t.Errorf("Details must start with the install path for Re-check: %q", f.Details)
+	}
+}
+
+func TestCheckWPCoreKeepsModifiedFilesSeparateFromCollapsedExtras(t *testing.T) {
+	wpCoreCheckMocks(t,
+		"Warning: File should not exist: wp-includes/blocks/leftover.php\n"+
+			"Warning: File doesn't verify against checksum: wp-includes/plugin.php\n"+
+			"Warning: File doesn't verify against checksum: wp-includes/version.php\n")
+
+	got := coreIntegrityFindings(CheckWPCore(context.Background(), &config.Config{}, nil))
+	if len(got) != 3 {
+		t.Fatalf("findings = %d, want one collapsed extra and two modified files: %+v", len(got), got)
+	}
+	modified := map[string]bool{}
+	extraneous := 0
+	for _, f := range got {
+		if f.FilePath == "" {
+			extraneous++
+			continue
+		}
+		modified[f.FilePath] = true
+	}
+	if extraneous != 1 {
+		t.Errorf("collapsed extraneous findings = %d, want 1", extraneous)
+	}
+	for _, path := range []string{
+		"/home/alice/public_html/wp-includes/plugin.php",
+		"/home/alice/public_html/wp-includes/version.php",
+	} {
+		if !modified[path] {
+			t.Errorf("modified core file lost its actionable finding: %s", path)
+		}
 	}
 }
 
@@ -189,5 +224,112 @@ func TestVerifyWPCoreStillHasModifiedFileUnresolved(t *testing.T) {
 	res := VerifyFinding("wp_core_integrity", "WordPress core file modified for frank", "Path: "+dir)
 	if !res.Checked || res.Resolved {
 		t.Fatalf("a still-modified core file must verify unresolved, got %+v", res)
+	}
+}
+
+// A modified core file in a subdomain or nested install is exactly the
+// compromise wp_core_integrity exists to catch, and public_html-only discovery
+// never saw it.
+func TestCheckWPCore_DiscoversNestedAndAddonInstalls(t *testing.T) {
+	old := osFS
+	osFS = &mockOSGlobRoots{files: []string{
+		"/home/alice/public_html/wp-config.php",
+		"/home/alice/public_html/blog/wp-config.php",
+		"/home/alice/shop.example.com/wp-config.php",
+	}}
+	t.Cleanup(func() { osFS = old })
+
+	if got := wpCoreScanRoots(context.Background()); len(got) != 3 {
+		t.Errorf("core-check roots = %v, want all three installs", got)
+	}
+}
+
+// A core that was rebuilt from an older release leaves every file the newer
+// release shipped behind, and wp-cli names each one on its own line. Those
+// lines describe one condition -- this install's core is not the release it
+// claims -- so they belong in one finding, not one per file. On a production
+// host a single such install produced 1238 rows and buried everything else.
+func TestCheckWPCoreCollapsesExtraneousFilesIntoOneFinding(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 1200; i++ {
+		fmt.Fprintf(&b, "Warning: File should not exist: wp-includes/blocks/block-%03d/style.css\n", i)
+	}
+	b.WriteString("Error: WordPress installation doesn't verify against checksums.\n")
+	wpCoreCheckMocks(t, b.String())
+
+	got := coreIntegrityFindings(CheckWPCore(context.Background(), &config.Config{}, nil))
+	if len(got) != 1 {
+		t.Fatalf("findings = %d, want 1", len(got))
+	}
+	f := got[0]
+	if !strings.HasPrefix(f.Details, "Path: /home/alice/public_html\n") {
+		t.Errorf("collapsed Details must start with the install path for Re-check: %q", f.Details)
+	}
+	if !strings.Contains(f.Details, "1200") {
+		t.Errorf("Details must state how many files were reported: %q", f.Details)
+	}
+	if n := strings.Count(f.Details, "should not exist"); n > wpCoreExtraneousSampleLimit {
+		t.Errorf("Details listed %d sample lines, want at most %d", n, wpCoreExtraneousSampleLimit)
+	}
+	if n := strings.Count(f.Details, "should not exist"); n == 0 {
+		t.Error("Details must show at least a sample of the reported files")
+	}
+}
+
+// The set of extra files shifts as an operator deletes them one by one. That
+// is progress on the same condition, not a new one, so the row has to keep its
+// identity instead of stacking a fresh copy on every scan.
+func TestCheckWPCoreExtraneousFindingKeepsIdentityAsFilesChange(t *testing.T) {
+	run := func(extra string) alert.Finding {
+		t.Helper()
+		wpCoreCheckMocks(t, "Warning: File should not exist: wp-includes/blocks/avatar.php\n"+extra)
+		got := coreIntegrityFindings(CheckWPCore(context.Background(), &config.Config{}, nil))
+		if len(got) != 1 {
+			t.Fatalf("findings = %d, want 1", len(got))
+		}
+		return got[0]
+	}
+	first := run("Warning: File should not exist: wp-includes/blocks/heading/style.css\n")
+	second := run("")
+	if first.Key() != second.Key() {
+		t.Errorf("key changed as the file set shrank:\n first  = %q\n second = %q", first.Key(), second.Key())
+	}
+}
+
+// Two installs failing the same way are two conditions to fix, so collapsing
+// must be per install, never server-wide.
+func TestCheckWPCoreExtraneousFindingIsPerInstall(t *testing.T) {
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if strings.Contains(pattern, "wp-config.php") {
+				return []string{
+					"/home/alice/public_html/wp-config.php",
+					"/home/bob/public_html/wp-config.php",
+				}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{
+				"/home/alice/public_html/wp-config.php",
+				"/home/bob/public_html/wp-config.php",
+			})
+		},
+	})
+	withMockCmd(t, &mockCmd{
+		runContext: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "wp" {
+				return []byte("Warning: File should not exist: wp-includes/blocks/avatar.php\n"), fmt.Errorf("exit status 1")
+			}
+			return nil, nil
+		},
+	})
+
+	got := coreIntegrityFindings(CheckWPCore(context.Background(), &config.Config{}, nil))
+	if len(got) != 2 {
+		t.Fatalf("findings = %d, want one per install", len(got))
+	}
+	if got[0].Key() == got[1].Key() {
+		t.Errorf("both installs share one identity: %q", got[0].Key())
 	}
 }

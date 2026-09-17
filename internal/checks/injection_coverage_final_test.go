@@ -418,9 +418,10 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 
 	// Temporary wp-config on disk; parseWPConfig uses osFS.Open → real file.
 	tmpDir := t.TempDir()
-	wpConfigPath := filepath.Join(tmpDir, "wp-config.php")
+	wpConfigFixture := filepath.Join(tmpDir, "wp-config.php")
+	const wpConfigPath = "/home/alice/public_html/wp-config.php"
 	wpCfg := "<?php\ndefine('DB_NAME', 'targetdb');\ndefine('DB_USER', 'wpu');\ndefine('DB_PASSWORD', 'wpp');\ndefine('DB_HOST', 'localhost');\n$table_prefix = 'wp_';\n"
-	if err := os.WriteFile(wpConfigPath, []byte(wpCfg), 0644); err != nil {
+	if err := os.WriteFile(wpConfigFixture, []byte(wpCfg), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -433,9 +434,12 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 		},
 		open: func(name string) (*os.File, error) {
 			if name == wpConfigPath {
-				return os.Open(wpConfigPath)
+				return os.Open(wpConfigFixture)
 			}
 			return nil, os.ErrNotExist
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfigPath})
 		},
 	})
 
@@ -475,7 +479,7 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 		Check:   "db_options_injection",
 		Details: "Database: targetdb\nOption: blogname",
 	}
-	actions := handleMaliciousOption(cfg, f)
+	actions := handleMaliciousOption(cfg, f, true)
 	if len(actions) == 0 {
 		t.Fatal("expected auto-response actions for malicious option, got none")
 	}
@@ -511,9 +515,10 @@ func TestHandleSiteurlHijack_SuspiciousSessionsEmitBlocks(t *testing.T) {
 	swapBlocker(t, &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive})
 
 	tmpDir := t.TempDir()
-	wpConfigPath := filepath.Join(tmpDir, "wp-config.php")
+	wpConfigFixture := filepath.Join(tmpDir, "wp-config.php")
+	const wpConfigPath = "/home/bob/public_html/wp-config.php"
 	wpCfg := "<?php\ndefine('DB_NAME', 'hijackeddb');\ndefine('DB_USER', 'wpu');\ndefine('DB_PASSWORD', 'wpp');\ndefine('DB_HOST', 'localhost');\n$table_prefix = 'wp_';\n"
-	if err := os.WriteFile(wpConfigPath, []byte(wpCfg), 0644); err != nil {
+	if err := os.WriteFile(wpConfigFixture, []byte(wpCfg), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -526,9 +531,12 @@ func TestHandleSiteurlHijack_SuspiciousSessionsEmitBlocks(t *testing.T) {
 		},
 		open: func(name string) (*os.File, error) {
 			if name == wpConfigPath {
-				return os.Open(wpConfigPath)
+				return os.Open(wpConfigFixture)
 			}
 			return nil, os.ErrNotExist
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfigPath})
 		},
 	})
 
@@ -558,7 +566,7 @@ func TestHandleSiteurlHijack_SuspiciousSessionsEmitBlocks(t *testing.T) {
 		Check:   "db_siteurl_hijack",
 		Details: "Database: hijackeddb\nSiteURL: http://phishing.example/",
 	}
-	actions := handleSiteurlHijack(cfg, f)
+	actions := handleSiteurlHijack(cfg, f, true)
 	if len(actions) == 0 {
 		t.Fatal("expected actions for siteurl hijack with suspicious sessions")
 	}

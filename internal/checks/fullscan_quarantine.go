@@ -22,7 +22,6 @@ var eligibleFullScanChecks = map[string]bool{
 	"webshell":               true,
 	"new_webshell_file":      true,
 	"obfuscated_php":         true,
-	"php_dropper":            true,
 	"suspicious_php_content": true,
 	"new_php_in_languages":   true,
 	"new_php_in_upgrade":     true,
@@ -61,7 +60,7 @@ func QuarantineFindingFile(f alert.Finding) (RemediationResult, bool) {
 				Description:       fmt.Sprintf("Removed: %s (backup: %s)", strings.Join(clean.Removals, "; "), clean.BackupPath),
 				RemediationStatus: "cleaned",
 			}, true
-		case clean.Error == "":
+		case clean.Refused || clean.Error == "":
 			// Nothing the cleaner recognises: a core file with no removable
 			// injection is an operator decision, not a move.
 			return RemediationResult{}, false

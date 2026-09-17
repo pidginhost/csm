@@ -2,6 +2,7 @@ package maillog
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -21,7 +22,8 @@ func TestReadBoundedLine_TruncatesOversizedLine(t *testing.T) {
 	huge := strings.Repeat("a", max*4) + "\nnext\n"
 	r := bufio.NewReader(strings.NewReader(huge))
 
-	got, truncated, err := readBoundedLine(r, max)
+	var pending pendingLogLine
+	got, truncated, err := pending.read(context.Background(), r, max)
 	if err != nil {
 		t.Fatalf("err on first line: %v", err)
 	}
@@ -34,11 +36,11 @@ func TestReadBoundedLine_TruncatesOversizedLine(t *testing.T) {
 	if got != strings.Repeat("a", max) {
 		t.Errorf("got %q, want capped prefix", got)
 	}
-	next, _, err := readBoundedLine(r, max)
+	next, truncated, err := pending.read(context.Background(), r, max)
 	if err != nil {
 		t.Fatalf("err on second line: %v", err)
 	}
-	if next != "next\n" {
+	if truncated || next != "next\n" {
 		t.Errorf("next line = %q, want %q (reader frame misaligned)", next, "next\n")
 	}
 }
@@ -47,7 +49,8 @@ func TestReadBoundedLine_TruncatesOversizedLine(t *testing.T) {
 // through unchanged with truncated=false.
 func TestReadBoundedLine_PassesNormalLine(t *testing.T) {
 	r := bufio.NewReader(strings.NewReader("hello world\n"))
-	got, truncated, err := readBoundedLine(r, 1024)
+	var pending pendingLogLine
+	got, truncated, err := pending.read(context.Background(), r, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,19 +62,25 @@ func TestReadBoundedLine_PassesNormalLine(t *testing.T) {
 	}
 }
 
-// TestReadBoundedLine_EOFWithoutNewline: a final line that lacks a
-// terminating newline returns io.EOF with the data so far.
+// EOF retains the prefix until a later append completes the record.
 func TestReadBoundedLine_EOFWithoutNewline(t *testing.T) {
-	r := bufio.NewReader(strings.NewReader("trailing"))
-	got, truncated, err := readBoundedLine(r, 1024)
+	input := bytes.NewBufferString("trailing")
+	r := bufio.NewReader(input)
+	var pending pendingLogLine
+	got, truncated, err := pending.read(context.Background(), r, 1024)
 	if err != io.EOF {
 		t.Errorf("err = %v, want EOF", err)
 	}
 	if truncated {
 		t.Error("under-cap trailing data should not be truncated")
 	}
-	if got != "trailing" {
-		t.Errorf("got %q, want %q", got, "trailing")
+	if got != "" {
+		t.Errorf("incomplete record returned as %q", got)
+	}
+	input.WriteString(" suffix\n")
+	got, truncated, err = pending.read(context.Background(), r, 1024)
+	if err != nil || truncated || got != "trailing suffix\n" {
+		t.Fatalf("completed record = %q, truncated=%v, error=%v", got, truncated, err)
 	}
 }
 
@@ -82,7 +91,7 @@ func TestFileReader_StreamsLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
@@ -110,9 +119,10 @@ func TestFileReader_StreamsLines(t *testing.T) {
 		if !ok {
 			t.Fatal("channel closed before line received")
 		}
-		if line.Message == "" {
-			t.Fatalf("expected non-empty line, got %+v", line)
+		if line.Source != "file" || line.Message != "Jan  2 10:00:00 host postfix: hello\n" {
+			t.Fatalf("unexpected mail line: %+v", line)
 		}
+		line.Process(func(Line) bool { return true })
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for line")
 	}
@@ -125,7 +135,7 @@ func TestFileReader_SkipsOversizedLineAndContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
@@ -162,6 +172,7 @@ func TestFileReader_SkipsOversizedLineAndContinues(t *testing.T) {
 		if line.Message != "Jan  2 10:00:01 host dovecot: after\n" {
 			t.Fatalf("line = %q, want post-oversize line", line.Message)
 		}
+		line.Process(func(Line) bool { return true })
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for post-oversize line")
 	}
@@ -174,7 +185,7 @@ func TestFileReader_RotationReadsReplacementFromStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 
@@ -199,13 +210,14 @@ func TestFileReader_RotationReadsReplacementFromStart(t *testing.T) {
 		if line.Message != want {
 			t.Fatalf("line = %q, want rotated replacement line %q", line.Message, want)
 		}
+		line.Process(func(Line) bool { return true })
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for rotated line")
 	}
 }
 
 func TestFileReader_MissingFileReturnsError(t *testing.T) {
-	r := NewFileReader(filepath.Join(t.TempDir(), "missing"))
+	r := NewFileReader(filepath.Join(t.TempDir(), "missing"), NewQueue())
 	out, err := r.Run(context.Background())
 	if err == nil {
 		t.Fatal("expected missing file error")
@@ -222,7 +234,7 @@ func TestFileReader_ContextCancelClosesChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewFileReader(path)
+	r := NewFileReader(path, NewQueue())
 	ctx, cancel := context.WithCancel(context.Background())
 	out, err := r.Run(ctx)
 	if err != nil {

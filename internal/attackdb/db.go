@@ -3,14 +3,18 @@ package attackdb
 import (
 	"bufio"
 	"fmt"
+	"io"
+	"maps"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/netutil"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // AttackType categorises observed attacks for grouping and scoring.
@@ -26,6 +30,10 @@ const (
 	AttackSPAM        AttackType = "spam"
 	AttackCPanelLogin AttackType = "cpanel_login"
 	AttackFileUpload  AttackType = "file_upload"
+
+	// AttackAuthSuccess marks an event that followed a SUCCESSFUL
+	// authentication. Recorded for correlation; carries no score.
+	AttackAuthSuccess AttackType = "auth_success"
 	AttackReputation  AttackType = "reputation"
 	AttackOther       AttackType = "other"
 )
@@ -57,7 +65,6 @@ var checkToAttack = map[string]AttackType{
 	"webshell":                 AttackWebshell,
 	"new_webshell_file":        AttackWebshell,
 	"obfuscated_php":           AttackWebshell,
-	"php_dropper":              AttackWebshell,
 	"suspicious_php_content":   AttackWebshell,
 	"new_php_in_languages":     AttackWebshell,
 	"new_php_in_upgrade":       AttackWebshell,
@@ -97,27 +104,53 @@ var checkToAttack = map[string]AttackType{
 	"mail_per_account":     AttackSPAM,
 	"exim_frozen_realtime": AttackSPAM,
 
-	// WAF
-	"modsec_block": AttackWAFBlock,
-	"waf_block":    AttackWAFBlock,
+	// WAF: no emitted check maps here today. The two names this table once
+	// listed were never emitted by any release, so WAF blocks have never
+	// built local reputation through this database; mapping the real
+	// ModSecurity block names is a scoring decision recorded in the roadmap.
 
 	// cPanel/webmail login
-	"cpanel_login":           AttackCPanelLogin,
-	"cpanel_login_realtime":  AttackCPanelLogin,
-	"cpanel_multi_ip_login":  AttackCPanelLogin,
-	"webmail_login_realtime": AttackCPanelLogin,
-	"ftp_login":              AttackCPanelLogin,
-	"ftp_login_realtime":     AttackCPanelLogin,
-	"pam_login":              AttackCPanelLogin,
-
-	// File upload
-	"cpanel_file_upload_realtime": AttackFileUpload,
+	// Successful, post-authentication events. They are RECORDED, because they
+	// are evidence when correlated with other findings on the same account,
+	// but they carry no attack weight: scoring them made an account owner an
+	// attacker for using cPanel, FTP or File Manager normally. One successful
+	// File Manager upload alone added 20 points that never decayed, and the
+	// resulting score fed the reputation path that kept re-blocking the owner.
+	//
+	// cpanel_multi_ip_login stays a real attack type: several addresses inside
+	// a window is correlation evidence rather than one successful login.
+	"cpanel_login":                AttackAuthSuccess,
+	"cpanel_login_realtime":       AttackAuthSuccess,
+	"webmail_login_realtime":      AttackAuthSuccess,
+	"ftp_login":                   AttackAuthSuccess,
+	"ftp_login_realtime":          AttackAuthSuccess,
+	"pam_login":                   AttackAuthSuccess,
+	"cpanel_file_upload_realtime": AttackAuthSuccess,
+	"cpanel_multi_ip_login":       AttackCPanelLogin,
 
 	// Reputation - known malicious IPs from threat database
 	"ip_reputation": AttackReputation,
 	// NOTE: "local_threat_score" is intentionally excluded - it is a derived
 	// finding, not a raw attack. Recording it would create a feedback loop
 	// that inflates EventCount by +1 every 10-minute cycle.
+}
+
+// MappedChecks lists every check name the attack database records, sorted.
+// The slice is the caller's own copy.
+func MappedChecks() []string {
+	out := make([]string, 0, len(checkToAttack))
+	for name := range checkToAttack {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AttackTypeFor reports the attack type a check name records under, and
+// whether the name is mapped at all.
+func AttackTypeFor(check string) (AttackType, bool) {
+	kind, ok := checkToAttack[check]
+	return kind, ok
 }
 
 // Event is a single observed attack incident.
@@ -139,6 +172,7 @@ type IPRecord struct {
 	EventCount            int                `json:"event_count"`
 	AttackCounts          map[AttackType]int `json:"attack_counts"`
 	Accounts              map[string]int     `json:"accounts"`
+	AuthSuccessAccounts   map[string]int     `json:"auth_success_accounts,omitempty"`
 	ThreatScore           int                `json:"threat_score"`
 	AutoBlocked           bool               `json:"auto_blocked"`
 	BruteForceWindowStart time.Time          `json:"brute_force_window_start,omitempty"`
@@ -148,15 +182,24 @@ type IPRecord struct {
 
 // DB is the in-memory attack database backed by JSON files.
 type DB struct {
-	mu            sync.RWMutex
-	records       map[string]*IPRecord
-	deletedIPs    map[string]struct{}
-	dirtyIPs      map[string]struct{}
-	pendingEvents []Event
-	dbPath        string
-	dirty         bool
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
+	flushMu          sync.Mutex
+	mu               sync.RWMutex
+	records          map[string]*IPRecord
+	deletedIPs       map[string]struct{}
+	dirtyIPs         map[string]struct{}
+	pendingEvents    []Event
+	eventHealthOnce  sync.Once
+	eventQueue       *eventQueue
+	openEvents       func(string) (io.WriteCloser, error)
+	recordHealthOnce sync.Once
+	recordQueue      *recordQueue
+	saveRecord       func(*store.DB, store.IPRecord) error
+	deleteRecord     func(*store.DB, string) error
+	writeRecords     func(string, []byte) error
+	dbPath           string
+	dirty            bool
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
 }
 
 // markDirtyLocked records that ip's record changed and must be persisted on the
@@ -168,6 +211,7 @@ func (db *DB) markDirtyLocked(ip string) {
 	}
 	db.dirtyIPs[ip] = struct{}{}
 	db.dirty = true
+	db.queueRecordLocked(ip)
 }
 
 func (db *DB) markDeletedLocked(ip string) {
@@ -177,6 +221,7 @@ func (db *DB) markDeletedLocked(ip string) {
 	db.deletedIPs[ip] = struct{}{}
 	delete(db.dirtyIPs, ip)
 	db.dirty = true
+	db.queueRecordLocked(ip)
 }
 
 var (
@@ -256,7 +301,7 @@ func (db *DB) SeedFromPermanentBlocklist(statePath string) int {
 		}
 		db.records[ip].ThreatScore = ComputeScore(db.records[ip])
 
-		db.pendingEvents = append(db.pendingEvents, Event{
+		db.queueEventLocked(Event{
 			Timestamp:  now,
 			IP:         ip,
 			AttackType: AttackOther,
@@ -302,16 +347,7 @@ func NewForTest(records map[string]*IPRecord) *DB {
 		stopCh:     make(chan struct{}),
 	}
 	for k, v := range records {
-		cp := *v
-		cp.AttackCounts = make(map[AttackType]int, len(v.AttackCounts))
-		for ak, av := range v.AttackCounts {
-			cp.AttackCounts[ak] = av
-		}
-		cp.Accounts = make(map[string]int, len(v.Accounts))
-		for ak, av := range v.Accounts {
-			cp.Accounts[ak] = av
-		}
-		db.records[k] = &cp
+		db.records[k] = cloneIPRecord(v)
 	}
 	return db
 }
@@ -330,6 +366,9 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	}
 
 	account := extractFindingAccount(f)
+	// Attribute the original finding, then redact before truncation can remove
+	// the service tag or other context needed to recognize a credential.
+	f = alert.SanitizeFinding(f)
 
 	event := Event{
 		Timestamp:  f.Timestamp,
@@ -365,9 +404,15 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	}
 	if account != "" {
 		rec.Accounts[account]++
+		if attackType == AttackAuthSuccess {
+			if rec.AuthSuccessAccounts == nil {
+				rec.AuthSuccessAccounts = make(map[string]int)
+			}
+			rec.AuthSuccessAccounts[account]++
+		}
 	}
 	rec.ThreatScore = computeScoreAt(rec, now)
-	db.pendingEvents = append(db.pendingEvents, event)
+	db.queueEventLocked(event)
 	delete(db.deletedIPs, ip)
 	db.markDirtyLocked(ip)
 	db.mu.Unlock()
@@ -393,17 +438,7 @@ func (db *DB) LookupIP(ip string) *IPRecord {
 	if !ok {
 		return nil
 	}
-	// Return a copy to avoid races
-	cp := *rec
-	cp.AttackCounts = make(map[AttackType]int, len(rec.AttackCounts))
-	for k, v := range rec.AttackCounts {
-		cp.AttackCounts[k] = v
-	}
-	cp.Accounts = make(map[string]int, len(rec.Accounts))
-	for k, v := range rec.Accounts {
-		cp.Accounts[k] = v
-	}
-	return &cp
+	return cloneIPRecord(rec)
 }
 
 // TopAttackers returns the top N IPs by threat score.
@@ -413,16 +448,7 @@ func (db *DB) TopAttackers(n int) []*IPRecord {
 
 	all := make([]*IPRecord, 0, len(db.records))
 	for _, rec := range db.records {
-		cp := *rec
-		cp.AttackCounts = make(map[AttackType]int, len(rec.AttackCounts))
-		for k, v := range rec.AttackCounts {
-			cp.AttackCounts[k] = v
-		}
-		cp.Accounts = make(map[string]int, len(rec.Accounts))
-		for k, v := range rec.Accounts {
-			cp.Accounts[k] = v
-		}
-		all = append(all, &cp)
+		all = append(all, cloneIPRecord(rec))
 	}
 
 	// Sort by threat score descending, then event count
@@ -436,15 +462,21 @@ func (db *DB) TopAttackers(n int) []*IPRecord {
 
 // Flush saves all pending data to disk. Called on daemon shutdown.
 func (db *DB) Flush() error {
+	// Keep snapshots and disk writes in the same order. A command can flush
+	// alongside the background saver; an older write must not undo its delete.
+	db.flushMu.Lock()
+	defer db.flushMu.Unlock()
+
 	db.mu.Lock()
 	events := db.pendingEvents
+	eventBatch := db.eventHealth().detach()
 	db.pendingEvents = nil
 	dirty := db.dirty
 	db.dirty = false
 	db.mu.Unlock()
 
 	if len(events) > 0 {
-		db.appendEvents(events)
+		db.appendEvents(events, eventBatch)
 	}
 	if dirty {
 		db.saveRecords()
@@ -590,6 +622,23 @@ func (db *DB) RemoveIP(ip string) {
 	db.mu.Unlock()
 }
 
+// ForgetIP atomically removes all scoring records for a parsed IP, including
+// legacy imports stored under equivalent spellings. Event history is retained.
+// The returned records are detached, so later findings cannot change them.
+func (db *DB) ForgetIP(ip net.IP) []*IPRecord {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	var removed []*IPRecord
+	for key, rec := range db.records {
+		if ip.Equal(net.ParseIP(key)) {
+			removed = append(removed, rec)
+			delete(db.records, key)
+			db.markDeletedLocked(key)
+		}
+	}
+	return removed
+}
+
 // PruneExpired removes records older than 90 days.
 func (db *DB) PruneExpired() {
 	db.pruneExpired()
@@ -620,16 +669,7 @@ func (db *DB) AllRecords() []*IPRecord {
 	defer db.mu.RUnlock()
 	result := make([]*IPRecord, 0, len(db.records))
 	for _, rec := range db.records {
-		cp := *rec
-		cp.AttackCounts = make(map[AttackType]int, len(rec.AttackCounts))
-		for k, v := range rec.AttackCounts {
-			cp.AttackCounts[k] = v
-		}
-		cp.Accounts = make(map[string]int, len(rec.Accounts))
-		for k, v := range rec.Accounts {
-			cp.Accounts[k] = v
-		}
-		result = append(result, &cp)
+		result = append(result, cloneIPRecord(rec))
 	}
 	return result
 }
@@ -646,4 +686,19 @@ func (db *DB) FormatTopLine() string {
 		}
 	}
 	return fmt.Sprintf("%d IPs tracked, %d auto-blocked", total, blocked)
+}
+
+// Snapshots must detach all count maps from concurrent recording.
+func cloneIPRecord(rec *IPRecord) *IPRecord {
+	cp := *rec
+	cp.AttackCounts = maps.Clone(rec.AttackCounts)
+	cp.Accounts = maps.Clone(rec.Accounts)
+	if cp.AttackCounts == nil {
+		cp.AttackCounts = make(map[AttackType]int)
+	}
+	if cp.Accounts == nil {
+		cp.Accounts = make(map[string]int)
+	}
+	cp.AuthSuccessAccounts = maps.Clone(rec.AuthSuccessAccounts)
+	return &cp
 }

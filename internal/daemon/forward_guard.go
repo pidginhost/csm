@@ -23,8 +23,8 @@ const forwardGuardRefreshInterval = 15 * time.Minute
 // is only active on cPanel/exim; elsewhere Reconcile/RefreshBadIPs are no-ops.
 func (d *Daemon) forwardGuardReconciler() guard.Reconciler {
 	return guard.Reconciler{
-		Guard:  adapter.NewEximAdapter(),
-		Active: platform.Detect().IsCPanel(),
+		Guard:  adapter.NewEximServiceAdapter(),
+		Active: platform.Detect().IsCPanel() && !d.currentCfg().ObserveMode(),
 		BadIPs: d.forwardGuardBadIPs,
 	}
 }

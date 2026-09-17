@@ -314,13 +314,14 @@ func TestEmailRateLimitPopulatesMailboxAndDomain(t *testing.T) {
 }
 
 func TestEmailRateLimitBareUserAttributesToAccount(t *testing.T) {
+	withOwnerTable(t)
 	resetEmailRateTracking()
 	cfg := &config.Config{}
 	cfg.EmailProtection.RateWindowMin = 60
 	cfg.EmailProtection.RateWarnThreshold = 1
 	cfg.EmailProtection.RateCritThreshold = 100
 
-	findings := checkEmailRate("maxwell", cfg)
+	findings := checkEmailRate("alice", cfg)
 	if len(findings) == 0 {
 		t.Fatal("expected at least one rate finding at warn threshold")
 	}
@@ -331,12 +332,12 @@ func TestEmailRateLimitBareUserAttributesToAccount(t *testing.T) {
 	if f.Domain != "" {
 		t.Errorf("Domain = %q, want empty for bare account", f.Domain)
 	}
-	if f.TenantID != "maxwell" {
-		t.Errorf("TenantID = %q, want maxwell", f.TenantID)
+	if f.TenantID != "alice" {
+		t.Errorf("TenantID = %q, want alice", f.TenantID)
 	}
 	k := incident.KeyFor(f)
-	if k.Account != "maxwell" {
-		t.Errorf("KeyFor.Account = %q, want maxwell", k.Account)
+	if k.Account != "alice" {
+		t.Errorf("KeyFor.Account = %q, want alice", k.Account)
 	}
 	if k.RemoteIP != "" {
 		t.Errorf("RemoteIP = %q, want empty (account beats IP fallback)", k.RemoteIP)

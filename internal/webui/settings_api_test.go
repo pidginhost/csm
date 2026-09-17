@@ -674,6 +674,58 @@ auto_response:
 	}
 }
 
+func TestSettingsPOSTCarriesConfdPolicyWithResignedHash(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+auto_response:
+  enabled: true
+  block_ips: false
+  netblock_threshold: 3
+  max_blocks_per_hour: 50
+confd:
+  integrity_exempt:
+    - 10-runtime.yaml
+`
+	s, _, confDir := newSettingsTestServerWithConfDir(t, "tok", body, map[string]string{
+		"10-runtime.yaml": "thresholds:\n  mail_queue_warn: 150\n",
+	})
+
+	// A previous main-config re-sign may have updated the on-disk exemption
+	// policy while a restart-required live snapshot still carries the old one.
+	staleLive := *config.Active()
+	staleLive.ConfD.IntegrityExempt = nil
+	config.SetActive(&staleLive)
+
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", ""))
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true}}`)
+	postReq.Header.Set("If-Match", getW.Header().Get("ETag"))
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+
+	live := config.Active()
+	if !reflect.DeepEqual(live.ConfD.IntegrityExempt, []string{"10-runtime.yaml"}) {
+		t.Fatalf("live exemption list = %v", live.ConfD.IntegrityExempt)
+	}
+	currentHash, err := integrity.HashConfDir(confDir, live.ConfD.IntegrityExempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentHash != live.Integrity.ConfdHash {
+		t.Fatalf("live confd state is inconsistent: computed %q, stored %q", currentHash, live.Integrity.ConfdHash)
+	}
+}
+
 func TestSettingsPOSTRejectsStaleConfdHashAfterFragmentChange(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:

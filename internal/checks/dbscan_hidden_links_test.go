@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -303,41 +302,6 @@ func TestCSSOffScreen_LengthSyntax(t *testing.T) {
 				t.Fatalf("offScreen(%q) = %t, want %t", tt.style, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestHiddenLinkCandidatePatternCoversParsedStyles(t *testing.T) {
-	candidate := regexp.MustCompilePOSIX(hiddenLinkCandidatePattern)
-	for _, style := range []string{
-		"display:none",
-		"display:/**/none",
-		"display:/* theme fallback */none",
-		"visibility: hidden!important",
-		"opacity:0.0",
-		"opacity:.0",
-		"opacity:-.0",
-		"opacity:-0.1",
-		"opacity:-10%",
-		"opacity:-1e400",
-		"opacity:.00",
-		"left:-100em",
-		"left:calc(-9999px)",
-		"MARGIN-LEFT: -9999PX",
-	} {
-		t.Run(style, func(t *testing.T) {
-			if !candidate.MatchString(strings.ToLower(style)) {
-				t.Fatalf("candidate query misses supported style %q", style)
-			}
-		})
-	}
-	for _, markup := range []string{
-		`<div style="display&#58;none">`,
-		`<div style="d&#105;splay:none">`,
-		`<div style="display:n&#111;ne">`,
-	} {
-		if !candidate.MatchString(strings.ToLower(markup)) {
-			t.Errorf("candidate query misses encoded style %q", markup)
-		}
 	}
 }
 
@@ -751,10 +715,13 @@ func TestCheckWPHiddenLinks_QueryIncludesEverySupportedStyle(t *testing.T) {
 				t.Errorf("query missing %q: %s", want, query)
 			}
 		}
-		// The prefilter runs against every published post of every install on
-		// the host, so it must read each column once.
-		if got := strings.Count(query, "REGEXP"); got != 1 {
-			t.Errorf("query scans the column %d times, want 1: %s", got, query)
+		// Encodings use normalized text; comments must retain their bodies.
+		// Both passes are guarded, and plain declarations bypass them.
+		if got := strings.Count(query, "REGEXP"); got != 4 {
+			t.Errorf("query has %d regex passes, want two guarded passes per sample: %s", got, query)
+		}
+		if got := strings.Count(query, "THEN REVERSE("); got != 4 {
+			t.Errorf("query has %d guarded regex subjects, want two per sample: %s", got, query)
 		}
 	}
 }

@@ -90,6 +90,30 @@ var callbackDecoderNames = map[string]struct{}{
 // line also carries a request superglobal (the RCE shape).
 var reVarVarCall = regexp.MustCompile(`(?:\$\$\w+|\$\{[^}]{1,64}\})\s*\(`)
 
+// Goto-obfuscation discrimination. A label an obfuscator generates carries no
+// meaning: it is short, or it is a stem plus a counter. A hand-written state
+// machine names its labels after what they mean, which is why WordPress core's
+// HTML5 insertion-mode labels must not count.
+var reGotoLabel = regexp.MustCompile(`(?i)\bgoto\s+([A-Za-z_][A-Za-z0-9_]{0,63})\s*;`)
+
+// reGotoExecSink is the evidence half of the goto heuristic, kept in step with
+// the php_goto_obfuscation signature in configs/. call_user_func is absent on
+// purpose: plugin loaders dispatch their own callables through it.
+var reGotoExecSink = regexp.MustCompile(`(?i)\b(?:eval|assert|create_function|system|exec|passthru|shell_exec|proc_open|popen|pcntl_exec|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|hex2bin|convert_uudecode)(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\r\n]*[\r\n]|#[^\r\n]*[\r\n])*\(` +
+	`|(?-i:\$_(?:GET|POST|REQUEST|COOKIE|FILES)\b)` +
+	`|\$[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^\]\r\n]+\])*(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\r\n]*[\r\n]|#[^\r\n]*[\r\n])*(?:\)(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\r\n]*[\r\n]|#[^\r\n]*[\r\n])*)?\(` +
+	`|\b(?:include|require)(?:_once)?\b(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\r\n]*[\r\n]|#[^\r\n]*[\r\n])*(?:\(\s*)?\$`)
+
+// gotoLabelIsGenerated reports whether a goto label looks machine-generated.
+// Digits are the strongest tell (lbl0, x9k, a1); anything shorter than four
+// characters cannot carry meaning either.
+func gotoLabelIsGenerated(label string) bool {
+	if len(label) < 4 {
+		return true
+	}
+	return strings.ContainsAny(label, "0123456789")
+}
+
 // includeDangerWrappers are stream wrappers / remote schemes that, as an
 // include/require target, mean remote-file inclusion or php://input code
 // execution. Matched on the comment-stripped (strings preserved) source.
@@ -2337,9 +2361,32 @@ func analyzePHPCode(path, content string, readOK bool) phpAnalysisResult {
 	}
 
 	// --- High: Goto obfuscation (LEVIATHAN signature) ---
-	gotoCount := countOccurrences(contentLower, "goto ")
-	if gotoCount > 10 {
-		indicators = append(indicators, fmt.Sprintf("excessive goto statements (%d found - obfuscation pattern)", gotoCount))
+	// Counting goto statements alone measures the wrong thing. WordPress
+	// core's HTML API drives the HTML5 insertion-mode state machine with goto
+	// and names every label after its spec section, so a plain count reports
+	// authentic core on every site of every account. A descriptive label is
+	// evidence against obfuscation: an obfuscator emits generated labels
+	// precisely because they carry no meaning.
+	//
+	// Label shape is not enough on its own either. Commercial obfuscators
+	// sold to plugin vendors emit the same generated labels, and their
+	// output carries no payload: a paid-for plugin looked exactly like a
+	// dropper. Malware still has to decode, execute, or read request input
+	// somewhere, so both branches want a sink. This mirrors the evidence
+	// the php_goto_obfuscation signature requires.
+	var generatedGotos, alphaGotos int
+	for _, m := range reGotoLabel.FindAllStringSubmatch(content, -1) {
+		if gotoLabelIsGenerated(m[1]) {
+			generatedGotos++
+		} else {
+			alphaGotos++
+		}
+	}
+	switch {
+	case generatedGotos > 8 && reGotoExecSink.MatchString(content):
+		indicators = append(indicators, fmt.Sprintf("goto obfuscation (%d generated labels)", generatedGotos))
+	case alphaGotos > 10 && reGotoExecSink.MatchString(content):
+		indicators = append(indicators, fmt.Sprintf("goto obfuscation (%d labels reaching an execution sink)", alphaGotos))
 	}
 
 	// --- High: Hex-encoded string construction ---
@@ -2889,9 +2936,15 @@ func containsAny(strs []string, substrs ...string) bool {
 // accepted on faith.
 const benignPHPStubMaxScan = 4 * 1024 * 1024
 
+// MaxInertPHPScanBytes is the largest file the inert-content recognizers read
+// in full. Translation caches and comment-only stubs need every byte to prove
+// that no code follows; a proven PHP terminator can still be accepted from an
+// incomplete prefix because its tail is unreachable.
+const MaxInertPHPScanBytes = benignPHPStubMaxScan
+
 // IsBenignPHPStub reports whether the reachable code region of a PHP
 // file consists only of whitespace and comments, or terminates with a
-// no-argument die / exit / __halt_compiler before any other statement.
+// literal-argument die / exit, or __halt_compiler before any other statement.
 // Files matching either shape cannot execute attacker-controlled code
 // via a web request: PHP either runs to EOF emitting nothing, or hits
 // the terminator and stops with the remaining bytes unreachable.
@@ -2941,9 +2994,10 @@ func IsBenignPHPStub(path string) bool {
 //     newline or "?>"), and balanced block comments ("/* ... */"). A "/*"
 //     without a matching "*/" inside the scanned window is rejected -- we
 //     cannot prove the rest of the file is comment.
-//   - Accept the no-argument forms of die, exit, and __halt_compiler as
-//     terminators. Once seen, the rest of the buffer is treated as
-//     unreachable.
+//   - Accept die, exit, and __halt_compiler as terminators. die and exit may
+//     carry a single literal argument (a non-interpolating string or a
+//     decimal integer); __halt_compiler takes none. Once seen, the rest of
+//     the buffer is treated as unreachable.
 //   - Reject any closing "?>" tag (would allow HTML escape and a later
 //     "<?php" re-entry that this gate does not analyse).
 //   - Reject any other identifier (return, if, system, eval, function,
@@ -2958,8 +3012,8 @@ func IsBenignPHPStubBytes(buf []byte) bool {
 
 // IsBenignPHPStubBytesComplete is like IsBenignPHPStubBytes, but complete
 // tells the parser whether buf contains the entire file. Comment-only stubs
-// require a complete buffer; no-argument terminators do not, because bytes
-// after them are unreachable to PHP.
+// require a complete buffer; terminators do not, because bytes after them are
+// unreachable to PHP.
 func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 	if len(buf) >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF {
 		buf = buf[3:]
@@ -2973,7 +3027,7 @@ func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 		return false
 	}
 	i += len(opener)
-	if i < len(buf) && !isPHPSpace(buf[i]) {
+	if i < len(buf) && !isPHPOpenTagSpace(buf[i]) {
 		return false
 	}
 	for i < len(buf) {
@@ -3008,15 +3062,107 @@ func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 				i++
 			}
 			word := strings.ToLower(string(buf[start:i]))
-			return isNoArgPHPTerminator(buf, i, word, complete)
+			return isPHPTerminatorStatement(buf, i, word, complete)
 		}
 		return false
 	}
 	return complete
 }
 
+// PHPTerminatesImmediately recognizes a leading exit, die, or __halt_compiler
+// in unencoded PHP source, with at most one plain literal argument. Callers
+// must establish that PHP source conversion is disabled before using this
+// to suppress findings: conversion can remove even a raw terminator keyword.
+// Only the opening tag and whitespace may precede it. Unlike the broader
+// stub parser, it never accepts comments before the terminator. A completed
+// terminator can be recognized from a partial head; EOF alone is not proof.
+func PHPTerminatesImmediately(buf []byte) bool {
+	_, ok := PHPTerminatesImmediatelyAt(buf)
+	return ok
+}
+
+// PHPTerminatesImmediatelyAt is PHPTerminatesImmediately plus the offset just
+// past the terminator statement, so a caller can judge the unreachable tail.
+func PHPTerminatesImmediatelyAt(buf []byte) (int, bool) {
+	buf = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF})
+	i := skipPHPSpace(buf, 0)
+	const opener = "<?php"
+	if !bytes.HasPrefix(buf[i:], []byte(opener)) {
+		return 0, false
+	}
+	i += len(opener)
+	// PHP needs whitespace after the opening tag. Without it the tag is
+	// literal text, the file never enters code mode here, and a later
+	// `<?php` block is what actually runs.
+	if i >= len(buf) || !isPHPOpenTagSpace(buf[i]) {
+		return 0, false
+	}
+	i = skipPHPSpace(buf, i)
+	start := i
+	for i < len(buf) && isIdentCont(buf[i]) {
+		i++
+	}
+	if i == start || !isIdentStart(buf[start]) {
+		return 0, false
+	}
+	word := strings.ToLower(string(buf[start:i]))
+	if !isPHPTerminatorStatement(buf, i, word, false) {
+		return 0, false
+	}
+	return phpTerminatorStatementEnd(buf, i, word), true
+}
+
+// phpTerminatorStatementEnd returns the offset where the file's unreachable
+// bytes begin. Past the validated terminator it also consumes any further
+// terminator statements and the closing tag, because a state file commonly
+// opens `exit('...'); __halt_compiler(); ?>` before its data.
+func phpTerminatorStatementEnd(buf []byte, i int, word string) int {
+	for {
+		i = skipPHPSpace(buf, i)
+		if i < len(buf) && buf[i] == '(' {
+			if next, ok := consumeEmptyPHPParens(buf, i); ok {
+				i = next
+			} else if next, ok := consumeLiteralPHPParens(buf, i); ok {
+				i = next
+			}
+		}
+		i = skipPHPSpace(buf, i)
+		if i < len(buf) && buf[i] == ';' {
+			i++
+		}
+		i = skipPHPSpace(buf, i)
+		if i+1 < len(buf) && buf[i] == '?' && buf[i+1] == '>' {
+			i += 2
+			// PHP swallows one newline directly after the closing tag.
+			if i < len(buf) && buf[i] == '\n' {
+				i++
+			} else if i+1 < len(buf) && buf[i] == '\r' && buf[i+1] == '\n' {
+				i += 2
+			}
+			return i
+		}
+		start := i
+		for i < len(buf) && isIdentCont(buf[i]) {
+			i++
+		}
+		if i == start || !isIdentStart(buf[start]) {
+			return start
+		}
+		next := strings.ToLower(string(buf[start:i]))
+		if next != "die" && next != "exit" && next != "__halt_compiler" {
+			return start
+		}
+	}
+}
+
 func isPHPSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
+}
+
+// PHP's long opening tag excludes the form feed and vertical tab accepted
+// by generic whitespace scanners. Accepting either would hide later PHP blocks.
+func isPHPOpenTagSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 func isIdentStart(c byte) bool {
@@ -3047,7 +3193,10 @@ func skipPHPLineComment(buf []byte, i int) int {
 	return i
 }
 
-func isNoArgPHPTerminator(buf []byte, i int, word string, complete bool) bool {
+// isPHPTerminatorStatement reports whether the identifier at word, which
+// starts the first statement of the buffer, ends execution. __halt_compiler
+// takes no argument; die and exit may print one literal before stopping.
+func isPHPTerminatorStatement(buf []byte, i int, word string, complete bool) bool {
 	if word != "die" && word != "exit" && word != "__halt_compiler" {
 		return false
 	}
@@ -3075,9 +3224,69 @@ func isNoArgPHPTerminator(buf []byte, i int, word string, complete bool) bool {
 	}
 	next, ok := consumeEmptyPHPParens(buf, i)
 	if !ok {
-		return false
+		if next, ok = consumeLiteralPHPParens(buf, i); !ok {
+			return false
+		}
 	}
 	return phpTerminatorStatementEnds(buf, next, complete)
+}
+
+// consumeLiteralPHPParens accepts `( <literal> )` where the literal is a
+// single-quoted string, a double-quoted string that interpolates nothing, or
+// a decimal integer. exit and die evaluate their argument before stopping, so
+// a literal is the only shape that proves no other code runs.
+func consumeLiteralPHPParens(buf []byte, i int) (int, bool) {
+	if i >= len(buf) || buf[i] != '(' {
+		return i, false
+	}
+	i = skipPHPSpace(buf, i+1)
+	if i >= len(buf) {
+		return i, false
+	}
+	if isPHPQuote(buf[i]) {
+		end, ok := endOfPHPLiteralString(buf, i)
+		if !ok {
+			return i, false
+		}
+		i = end
+	} else {
+		start := i
+		for i < len(buf) && buf[i] >= '0' && buf[i] <= '9' {
+			i++
+		}
+		if i == start {
+			return i, false
+		}
+	}
+	i = skipPHPSpace(buf, i)
+	if i >= len(buf) || buf[i] != ')' {
+		return i, false
+	}
+	return skipPHPSpace(buf, i+1), true
+}
+
+// endOfPHPLiteralString returns the index just past the string literal that
+// starts at i. It fails on a string the buffer does not terminate and on a
+// double-quoted string carrying a variable, because PHP evaluates `$x` and
+// `{$x}` inside double quotes. Keep literals plain ASCII without escape or
+// encoding-shift bytes: the shared stub parser also runs without an encoding
+// policy, and source conversion can expose expressions inside such strings.
+func endOfPHPLiteralString(buf []byte, i int) (int, bool) {
+	quote := buf[i]
+	for j := i + 1; j < len(buf); j++ {
+		if buf[j] < ' ' || buf[j] > '~' || strings.ContainsRune("\\+=&~", rune(buf[j])) {
+			return j, false
+		}
+		switch buf[j] {
+		case '$':
+			if quote == '"' {
+				return j, false
+			}
+		case quote:
+			return j + 1, true
+		}
+	}
+	return len(buf), false
 }
 
 func consumeEmptyPHPParens(buf []byte, i int) (int, bool) {

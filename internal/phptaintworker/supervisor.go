@@ -74,7 +74,8 @@ type SupervisorConfig struct {
 // used again. Replacement is lazy, so a scan with no further candidates pays
 // nothing for the last file's failure.
 type Supervisor struct {
-	cfg SupervisorConfig
+	cfg    SupervisorConfig
+	health *requestQueue
 
 	mu          sync.Mutex
 	child       *child
@@ -106,7 +107,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 	if cfg.Timeout <= 0 {
 		return nil, errors.New("phptaintworker: timeout must be positive")
 	}
-	return &Supervisor{cfg: cfg, now: time.Now}, nil
+	return &Supervisor{cfg: cfg, now: time.Now, health: newRequestQueue()}, nil
 }
 
 // SetMode is a test seam for the helper child, which selects its behaviour
@@ -143,13 +144,23 @@ func (s *Supervisor) Stop() error {
 // Analyze runs one analysis in the worker. It never returns a status a caller
 // could read as clean unless the worker actually produced one.
 func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
+	work := s.health.begin()
+	completed := false
+	defer func() { work.finishCaller(completed) }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	work.start()
+	report := s.analyzeLocked(ctx, src, work)
+	completed = true
+	return report
+}
 
+func (s *Supervisor) analyzeLocked(ctx context.Context, src []byte, work *requestWork) phptaint.Report {
 	if s.stopped {
 		return gap(phptaint.StatusWorkerFailure, "supervisor stopped")
 	}
 	if s.breakerOpenLocked() {
+		work.fail()
 		return gap(phptaint.StatusWorkerFailure, fmt.Sprintf(
 			"worker failed %d times in a row; not analyzed, next attempt after %s",
 			s.consecutive, breakerCooldown))
@@ -164,12 +175,16 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 		return gap(phptaint.StatusCanceled, ctxErr.Error())
 	}
 	if startErr := s.ensureChildLocked(); startErr != nil {
+		work.fail()
 		s.recordFailureLocked()
 		return gap(phptaint.StatusWorkerFailure, startErr.Error())
 	}
 
-	report, err := s.roundTripLocked(ctx, req)
+	report, err := s.roundTripLocked(ctx, req, work)
 	if err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			work.fail()
+		}
 		// The child is not trusted after any failure: it may be mid-parse and
 		// spinning, or it may have left a partial frame in the pipe that would
 		// desynchronise every later request.
@@ -191,6 +206,9 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 		return gap(phptaint.StatusWorkerFailure, err.Error())
 	}
 	s.consecutive = 0
+	if report.Status == phptaint.StatusPanic {
+		work.fail()
+	}
 	return report
 }
 
@@ -230,23 +248,33 @@ func (s *Supervisor) breakerOpenLocked() bool {
 // configured timeout. The pipe round trip runs on its own goroutine because the
 // child may stop before reading the complete request or never answer. The
 // goroutine ends when killLocked closes the pipes.
-func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame) (phptaint.Report, error) {
+func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame, work *requestWork) (phptaint.Report, error) {
 	c := s.child
 	type result struct {
 		frame phptaintipc.Frame
 		err   error
 	}
+	deadline := time.Now().Add(s.cfg.Timeout)
 	timer := time.NewTimer(s.cfg.Timeout)
 	defer timer.Stop()
+	if parent, ok := ctx.Deadline(); ok && parent.Before(deadline) {
+		deadline = parent
+	}
+	work.beginRPC(deadline)
+	defer work.progress()
 
 	done := make(chan result, 1)
 	go func() {
+		completed := false
+		defer func() { work.finishRPC(completed) }()
 		if err := phptaintipc.WriteFrame(c.stdin, req); err != nil {
 			done <- result{err: fmt.Errorf("phptaintworker: write request: %w", err)}
+			completed = true
 			return
 		}
 		f, err := phptaintipc.ReadFrame(c.stdout)
 		done <- result{frame: f, err: err}
+		completed = true
 	}()
 
 	select {
@@ -255,6 +283,7 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame)
 	case <-ctx.Done():
 		return phptaint.Report{}, ctx.Err()
 	case res := <-done:
+		work.progress()
 		if res.err != nil {
 			return phptaint.Report{}, fmt.Errorf("phptaintworker: read reply: %w", res.err)
 		}

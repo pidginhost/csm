@@ -133,7 +133,7 @@ func TestVerifyFindingInputUsesStoredFingerprint(t *testing.T) {
 	s.store.ClearLatestFindings()
 	s.store.SetLatestFindings([]alert.Finding{f})
 
-	in, key := s.verifyFindingInput(verifyFindingRequest{
+	in, key, stored, found := s.verifyFindingInput(verifyFindingRequest{
 		Key:           f.Key(),
 		Check:         f.Check,
 		Message:       f.Message,
@@ -143,6 +143,9 @@ func TestVerifyFindingInputUsesStoredFingerprint(t *testing.T) {
 	})
 	if key != f.Key() {
 		t.Fatalf("key = %q, want %q", key, f.Key())
+	}
+	if !found || stored.Key() != f.Key() {
+		t.Fatalf("stored snapshot = (%+v, %v), want the stored finding", stored, found)
 	}
 	if in.ContentSHA256 != f.ContentSHA256 || in.DetectLogic != f.DetectLogic {
 		t.Fatalf("fingerprint = (%q, %q), want stored (%q, %q)", in.ContentSHA256, in.DetectLogic, f.ContentSHA256, f.DetectLogic)
@@ -154,7 +157,7 @@ func TestVerifyFindingInputUsesStoredFingerprint(t *testing.T) {
 
 func TestVerifyFindingInputIgnoresClientFingerprintWithoutStoredFinding(t *testing.T) {
 	s := newTestServer(t, "tok")
-	in, _ := s.verifyFindingInput(verifyFindingRequest{
+	in, _, _, found := s.verifyFindingInput(verifyFindingRequest{
 		Check:         "suspicious_php_content",
 		Message:       "Suspicious PHP content detected: /home/alice/public_html/shell.php",
 		FilePath:      "/home/alice/public_html/shell.php",
@@ -162,6 +165,11 @@ func TestVerifyFindingInputIgnoresClientFingerprintWithoutStoredFinding(t *testi
 	})
 	if in.ContentSHA256 != "" || in.DetectLogic != "" {
 		t.Fatalf("client fingerprint was trusted: %+v", in)
+	}
+	// No stored snapshot means no severity change can be applied: there is
+	// nothing to write the change against.
+	if found {
+		t.Fatalf("found = true without a stored finding")
 	}
 }
 

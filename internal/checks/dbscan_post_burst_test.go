@@ -93,3 +93,21 @@ func TestPostBurst_MalformedRows(t *testing.T) {
 		t.Errorf("malformed rows produced findings: %d", len(got))
 	}
 }
+
+// The burst finding is one row per site. Its details state the site's age in
+// days, which advances every day, so an identity derived from them would file
+// a new copy of the same unchanged burst every night.
+func TestPostBurst_IdentitySurvivesTheSiteAgeing(t *testing.T) {
+	today := burstFindings(t, 2900, 17, 508)
+	tomorrow := burstFindings(t, 2901, 17, 508)
+	if len(today) != 1 || len(tomorrow) != 1 {
+		t.Fatalf("got %d and %d findings, want 1 each", len(today), len(tomorrow))
+	}
+	if today[0].Details == tomorrow[0].Details {
+		t.Fatal("test is not exercising the ageing detail line: details are identical")
+	}
+	if today[0].Key() != tomorrow[0].Key() {
+		t.Errorf("identity changed as the site aged one day:\n today    = %q\n tomorrow = %q",
+			today[0].Key(), tomorrow[0].Key())
+	}
+}

@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -23,80 +25,176 @@ import (
 // manager closes the old sinks and rebuilds.
 
 var (
-	auditMu          sync.Mutex
-	auditSinks       []AuditSink
-	auditFingerprint string
+	auditMu             sync.Mutex
+	auditSinks          []*managedAuditSink
+	auditFingerprint    string
+	auditNow            = time.Now
+	openJSONLAuditSink  = func(path string) (AuditSink, error) { return NewJSONLSink(path) }
+	openSyslogAuditSink = func(cfg SyslogConfig) (AuditSink, error) { return NewSyslogSink(cfg) }
 )
 
-// emitAudit ships every finding through every configured audit-log
-// sink. Called from Dispatch BEFORE rate-limit checks so the audit
-// trail is complete even when email/webhook are throttled.
+type managedAuditSink struct {
+	name       string
+	open       func() (AuditSink, error)
+	sink       AuditSink
+	retryAt    time.Time
+	retryDelay time.Duration
+	failed     bool
+	// Keep successful observation IDs across batches and transient sink
+	// failures. Each destination owns its receipts so a failed destination
+	// can receive a replay without duplicating the healthy destination.
+	delivered map[[sha256.Size]byte]*list.Element
+	recent    list.List
+}
+
+// Bound replay receipts independently of traffic volume. Evicted observations
+// can be emitted again; distinct observations are never dropped by this cache.
+const auditReceiptCap = 16384
+
+func (s *managedAuditSink) remember(id [sha256.Size]byte) {
+	if s.delivered == nil {
+		s.delivered = make(map[[sha256.Size]byte]*list.Element)
+	}
+	if s.recent.Len() == auditReceiptCap {
+		oldest := s.recent.Back()
+		delete(s.delivered, oldest.Value.([sha256.Size]byte))
+		s.recent.Remove(oldest)
+	}
+	s.delivered[id] = s.recent.PushFront(id)
+}
+
+// auditObservationKey distinguishes original evidence that the legacy action
+// ID omits. For example, a process scan can report several PIDs with the same
+// message and timestamp. Keep action IDs stable and hash scalar source evidence
+// before redaction, without retaining its raw text or mutable enrichment.
+func auditObservationKey(f Finding) [sha256.Size]byte {
+	var data []byte
+	for _, field := range []string{
+		f.Timestamp.UTC().Format(time.RFC3339Nano), f.Check, f.Severity.String(),
+		f.Message, f.FilePath, f.Details, strconv.Itoa(f.PID), f.SourceIP,
+		f.TenantID, f.Domain, f.Mailbox, f.DedupKey, f.CoverageScope,
+	} {
+		// Quote preserves boundaries and invalid UTF-8 from raw log input.
+		data = strconv.AppendQuote(data, field)
+	}
+	return sha256.Sum256(data)
+}
+
+// emitAudit records findings before email/webhook throttling. The manager lock
+// covers the whole batch, including reconfiguration, so Close cannot invalidate
+// a sink held by another dispatcher. Observers run outside the lock because
+// they can dispatch findings themselves.
 func emitAudit(cfg *config.Config, findings []Finding) {
+	emitAuditWithSources(cfg, findings, nil)
+}
+
+func emitAuditWithSources(cfg *config.Config, findings, sources []Finding) {
 	if cfg == nil {
 		return
 	}
-	ensureAuditSinks(cfg)
-
-	auditMu.Lock()
-	sinks := append([]AuditSink(nil), auditSinks...)
-	auditMu.Unlock()
-
 	for _, f := range findings {
-		// Observer fan-out runs first so the incident correlator sees
-		// every finding even when no audit sinks are configured.
 		notifyFindingObservers(f)
-		if len(sinks) == 0 {
-			continue
+	}
+	if len(sources) > 0 {
+		// Notification dedup uses condition keys. Audit joins need every
+		// distinct observation, including repeats with a new timestamp.
+		combined := make([]Finding, 0, len(sources)+len(findings))
+		seen := make(map[[sha256.Size]byte]bool, len(sources)+len(findings))
+		for _, batch := range [][]Finding{sources, findings} {
+			for _, f := range batch {
+				id := auditObservationKey(f)
+				if !seen[id] {
+					seen[id] = true
+					combined = append(combined, f)
+				}
+			}
 		}
+		findings = combined
+	}
+	auditMu.Lock()
+	defer auditMu.Unlock()
+	ensureAuditSinksLocked(cfg)
+	for _, f := range findings {
 		ev := NewAuditEvent(cfg.Hostname, f)
-		for _, s := range sinks {
-			if err := s.Emit(ev); err != nil {
-				fmt.Fprintf(os.Stderr, "[audit-log] %s emit failed: %v\n", s.Name(), err)
+		id := auditObservationKey(f)
+		for _, s := range auditSinks {
+			if receipt, delivered := s.delivered[id]; delivered {
+				// Retained findings can be replayed every scan amid realtime
+				// churn. Keep their receipts hot without growing the cache.
+				s.recent.MoveToFront(receipt)
+				continue
+			}
+			if s.sink == nil {
+				auditEventsDropped.With(s.name).Inc()
+				continue
+			}
+			if err := s.sink.Emit(ev); err != nil {
+				auditEventsDropped.With(s.name).Inc()
+				_ = s.sink.Close()
+				s.sink = nil
+				s.fail("emit", err)
+			} else {
+				s.retryDelay = 0
+				s.remember(id)
 			}
 		}
 	}
 }
 
-// ensureAuditSinks (re)builds the active sink set when the relevant
-// config sub-block has changed since the last build. On the
-// happy-path steady state this is a fingerprint compare and a return.
 func ensureAuditSinks(cfg *config.Config) {
-	fp := auditConfigFingerprint(cfg)
 	auditMu.Lock()
 	defer auditMu.Unlock()
-	if fp == auditFingerprint && auditSinks != nil {
-		return
-	}
-	// Config changed -- shut down the old sinks before building new
-	// ones so file descriptors / sockets are released cleanly.
-	for _, s := range auditSinks {
-		_ = s.Close()
-	}
-	auditSinks = nil
+	ensureAuditSinksLocked(cfg)
+}
 
-	if cfg.Alerts.AuditLog.File.Enabled && cfg.Alerts.AuditLog.File.Path != "" {
-		s, err := NewJSONLSink(cfg.Alerts.AuditLog.File.Path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[audit-log] jsonl init failed: %v\n", err)
-		} else {
-			auditSinks = append(auditSinks, s)
+func ensureAuditSinksLocked(cfg *config.Config) {
+	fp := auditConfigFingerprint(cfg)
+	if fp != auditFingerprint {
+		closeAuditSinksLocked()
+		if cfg.Alerts.AuditLog.File.Enabled {
+			path := cfg.Alerts.AuditLog.File.Path
+			auditSinks = append(auditSinks, &managedAuditSink{name: "jsonl", open: func() (AuditSink, error) { return openJSONLAuditSink(path) }})
 		}
-	}
-	if cfg.Alerts.AuditLog.Syslog.Enabled {
-		s, err := NewSyslogSink(SyslogConfig{
-			Network:   cfg.Alerts.AuditLog.Syslog.Network,
-			Address:   cfg.Alerts.AuditLog.Syslog.Address,
-			Facility:  cfg.Alerts.AuditLog.Syslog.Facility,
-			Hostname:  cfg.Hostname,
-			TLSCAFile: cfg.Alerts.AuditLog.Syslog.TLSCAFile,
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[audit-log] syslog init failed: %v\n", err)
-		} else {
-			auditSinks = append(auditSinks, s)
+		if cfg.Alerts.AuditLog.Syslog.Enabled {
+			sc := SyslogConfig{
+				Network:   cfg.Alerts.AuditLog.Syslog.Network,
+				Address:   cfg.Alerts.AuditLog.Syslog.Address,
+				Facility:  cfg.Alerts.AuditLog.Syslog.Facility,
+				Hostname:  cfg.Hostname,
+				TLSCAFile: cfg.Alerts.AuditLog.Syslog.TLSCAFile,
+			}
+			auditSinks = append(auditSinks, &managedAuditSink{name: "syslog", open: func() (AuditSink, error) { return openSyslogAuditSink(sc) }})
 		}
+		auditFingerprint = fp
 	}
-	auditFingerprint = fp
+	for _, s := range auditSinks {
+		if s.sink != nil || auditNow().Before(s.retryAt) {
+			continue
+		}
+		sink, err := s.open()
+		if err != nil {
+			s.fail("init", err)
+			continue
+		}
+		s.sink = sink
+		auditSinkDegraded.With(s.name).Set(0)
+		if s.failed {
+			fmt.Fprintf(os.Stderr, "[audit-log] %s recovered\n", s.name)
+		}
+		s.failed = false
+	}
+}
+
+func (s *managedAuditSink) fail(phase string, err error) {
+	if s.retryDelay == 0 {
+		s.retryDelay = time.Second
+	} else {
+		s.retryDelay = min(2*s.retryDelay, time.Minute)
+	}
+	s.retryAt = auditNow().Add(s.retryDelay)
+	s.failed = true
+	auditSinkDegraded.With(s.name).Set(1)
+	fmt.Fprintf(os.Stderr, "[audit-log] %s %s failed; retry after %s: %v\n", s.name, phase, s.retryDelay, err)
 }
 
 // auditConfigFingerprint reduces the audit-log sub-block to a stable
@@ -120,14 +218,20 @@ func auditConfigFingerprint(cfg *config.Config) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// CloseAuditSinks shuts down every active sink. Called from the
-// daemon at shutdown so file descriptors / sockets are released
-// before the process exits. Safe to call when no sinks are open.
+// CloseAuditSinks waits for in-flight emissions and releases active sinks.
+// A later dispatch can initialize them again.
 func CloseAuditSinks() {
 	auditMu.Lock()
 	defer auditMu.Unlock()
+	closeAuditSinksLocked()
+}
+
+func closeAuditSinksLocked() {
 	for _, s := range auditSinks {
-		_ = s.Close()
+		if s.sink != nil {
+			_ = s.sink.Close()
+		}
+		auditSinkDegraded.With(s.name).Set(0)
 	}
 	auditSinks = nil
 	auditFingerprint = ""

@@ -1,9 +1,10 @@
 ## Audit Log
 
-CSM ships every deduplicated finding to one or more SIEM-friendly
-sinks before the operator-alert rate limiter runs, so Splunk, Loki,
-Elastic, and friends always see the complete picture even when
-email and webhook traffic is throttled.
+CSM ships source observations and notification findings to one or more
+SIEM-friendly sinks, deduplicated by observation identity within each batch
+and against each destination's recent successful deliveries.
+Audit records include sources suppressed by notification filtering or
+rate limits, so SIEM correlation can still identify the original observation.
 
 Two sink types ship today, both opt-in via `csm.yaml`. They can be
 enabled together or independently.
@@ -34,6 +35,43 @@ can pin on `v: 1` and ignore unknown keys.
 (timestamp, check, severity, message, file path). Two emits of the
 same finding produce the same ID, so downstream dedup works across
 re-runs.
+
+Firewall actions caused by a finding carry this same identity in the action
+log, including failed and refused attempts. The identity is captured before
+reason text is shortened and survives queued retries, challenge timeouts,
+central-intelligence decisions, and permanent-block promotion. Subnet and
+incident escalation link the latest known contributing finding. Older stored
+evidence without an identity and manual or maintenance operations remain
+unlinked; CSM does not reconstruct an identity from display text. Database
+session blocks link the original database finding, not a synthetic IP candidate.
+
+The daemon audits source observations even when they repeat an earlier finding
+or are filtered from operator notifications. Distinct observations keep their
+own identities; recent replays of the same observation are suppressed per sink.
+Receipts are kept in bounded memory and survive temporary sink failures. A
+destination that missed a record can receive its replay without duplicating a
+healthy destination's record. Replays refresh their receipt's position, keeping
+recently replayed observations ahead of inactive receipts.
+Receipt matching includes original details, scanner identity and source
+attribution; distinct findings can share a legacy `finding_id` and still need
+separate records.
+Process enrichment alone does not create a new observation. Restarting or
+reconfiguring sinks clears receipts; observations no longer in the receipt cache
+can be emitted again. The legacy `finding_id` remains an action correlation key;
+collectors must not treat it alone as a unique-record key.
+Notification suppression and downstream finding observers keep their existing
+behavior. Audit delivery still depends on the configured sink and scan findings
+reaching the dispatcher.
+
+The `ts` field records when CSM raised the finding, including process
+monitoring, automatic actions, scanner health, and mail relay storage errors.
+It is independent of when a sink delivers the event. A producer that builds
+a finding without a time gets the moment the daemon received it, so `ts` is
+never the zero time.
+
+Alert dispatch fills missing times on its own copy of the findings. Reusing
+an unstamped input for a later occurrence gets a fresh time and finding id;
+replaying a finding with an existing time preserves its time and id.
 
 ### Process context
 
@@ -84,7 +122,18 @@ alerts:
 The default path is created with mode `0640` and the parent dir
 with `0750`. The packaged logrotate fragment uses `copytruncate`
 mode so the daemon's open file descriptor stays valid across
-rotation -- no SIGHUP needed.
+rotation -- no SIGHUP needed. It rotates daily and keeps 14 compressed
+rotations. The 100 MB threshold permits early rotation when the host runs
+logrotate more often than daily; it does not cap growth between runs. The sink
+never drops records to stay under that size, because a detection flood would
+otherwise blind the audit trail until the next rotation. On busy hosts, run
+logrotate more often than daily so the size trigger can take effect.
+Installation and upgrades refresh the fragment, including upgrades through
+`csm rehash`.
+
+If you move the audit log off the default path, add your own
+logrotate stanza for it: the packaged fragment names the default
+path only.
 
 Tail it for an interactive view:
 
@@ -124,6 +173,27 @@ Automated tests cover RFC 5424 output and UDP, TCP, TLS, Unix datagram,
 and Unix stream framing. Validate the chosen receiver configuration in a
 staging environment before production rollout.
 
+### Delivery failures and recovery
+
+Each enabled destination retries independently after an open or write failure.
+The delay starts at one second and doubles up to one minute. A later dispatch
+retries a missing destination once its delay has elapsed; a quiet daemon waits
+until another finding arrives. Healthy destinations stay open during retries.
+Reloading audit configuration waits for in-flight writes before replacing sinks.
+
+Failures and recovery are logged to journald. Monitor
+`csm_audit_sink_degraded{sink="jsonl"}` and
+`csm_audit_sink_degraded{sink="syslog"}` on `/metrics`: one means a configured
+destination failed, zero means it is healthy or disabled. These values are
+initialized when the audit pipeline first runs. Syslog health reflects local
+connection/write results, not an acknowledgement from the receiving SIEM.
+
+`csm_audit_events_dropped_total{sink}` counts events whose destination was
+unavailable or whose write failed. Failed deliveries are not replayed
+automatically; use the backfill command below to recover stored findings.
+Backoff resets after a successful delivery, and configuration changes take
+effect on the next dispatch.
+
 ### Backfill
 
 When you first turn on the audit log, the SIEM has no history. Use
@@ -144,8 +214,8 @@ Requires a running daemon.
 
 ### What gets logged
 
-Every finding the alert pipeline produces, after deduplication but
-before:
+Source observations and notification findings reaching the audit dispatcher,
+deduplicated by observation identity within each batch, before:
 
 - the per-account rate limiter (so audit signal is not lost when
   email and webhook are throttled);
@@ -159,8 +229,33 @@ webhook stream. Plan SIEM retention accordingly.
 
 ### What does not get logged
 
+Before a record is written, its message and details replace recognized
+password fields, API tokens, command-line secrets and cPanel session
+identifiers with `[REDACTED]`. Session redaction covers cPanel, WHM,
+Webmail, the shared server daemon, DAV and security purge log lines. It
+keeps the account name beside a session identifier, leaves unrelated
+lines of a multiline finding alone, and leaves already redacted text
+unchanged when it runs again. Repeated and quoted values are all
+covered, including the displayed form of NUL-separated arguments.
+
+The same redaction runs on email digests, on new finding history in
+both the bbolt and the legacy JSONL backend, and therefore on the
+history the web UI serves and exports as CSV. Attack event messages are
+redacted before truncation, so a truncated line cannot hide a
+credential behind a cut service tag; attack events store no finding
+details. Account and IP attribution is read from the original finding,
+and finding IDs are computed from it too, so audit records still
+correlate with remediation records. Other structured fields are copied
+unchanged.
+
+Two limits are worth knowing. Records written by earlier versions are
+not rewritten, so an existing log keeps whatever it already holds. The
+active-finding snapshot and the pending queues are process-local state
+that is read back and compared by the daemon itself, so they are not
+redacted.
+
 The audit log is not a replacement for `csm.history` (the bbolt
-history bucket). Only findings that pass through `alert.Dispatch()`
+history bucket). Only findings that pass through the audit dispatcher
 are emitted. Internal state changes -- daemon startup, reload events,
 config changes -- live in journald via `csm.service` and are not
 mirrored here.

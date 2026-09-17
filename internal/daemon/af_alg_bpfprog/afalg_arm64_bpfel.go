@@ -23,6 +23,22 @@ type AFAlgAfAlgEvent struct {
 	Exe        [256]uint8
 }
 
+type AFAlgCsmQueueStats struct {
+	_         structs.HostLayout
+	Lost      uint64
+	Submitted uint64
+}
+
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	AFAlgMapEvents         = "events"
+	AFAlgMapQueueStats     = "queue_stats"
+	AFAlgProgCsmBlockAfAlg = "csm_block_af_alg"
+	AFAlgVarUnused         = "unused"
+)
+
 // LoadAFAlg returns the embedded CollectionSpec for AFAlg.
 func LoadAFAlg() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_AFAlgBytes)
@@ -43,7 +59,7 @@ func LoadAFAlg() (*ebpf.CollectionSpec, error) {
 //	*AFAlgMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func LoadAFAlgObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func LoadAFAlgObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := LoadAFAlg()
 	if err != nil {
 		return err
@@ -72,7 +88,8 @@ type AFAlgProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type AFAlgMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
+	Events     *ebpf.MapSpec `ebpf:"events"`
+	QueueStats *ebpf.MapSpec `ebpf:"queue_stats"`
 }
 
 // AFAlgVariableSpecs contains global variables before they are loaded into the kernel.
@@ -102,12 +119,14 @@ func (o *AFAlgObjects) Close() error {
 //
 // It can be passed to LoadAFAlgObjects or ebpf.CollectionSpec.LoadAndAssign.
 type AFAlgMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
+	Events     *ebpf.Map `ebpf:"events"`
+	QueueStats *ebpf.Map `ebpf:"queue_stats"`
 }
 
 func (m *AFAlgMaps) Close() error {
 	return _AFAlgClose(
 		m.Events,
+		m.QueueStats,
 	)
 }
 

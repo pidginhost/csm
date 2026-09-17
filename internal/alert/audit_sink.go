@@ -51,11 +51,21 @@ type AuditSink interface {
 // NewAuditEvent builds a versioned audit event from a Finding. hostname
 // comes from cfg.Hostname (or os.Hostname() fallback); the caller is
 // responsible for picking a stable value across emits.
+//
+// The finding is redacted here because this is the one constructor both
+// audit sinks build from. Redaction used to run only while rendering
+// the email digest, so secrets a watcher had copied out of a raw log
+// line -- cPanel session identifiers, password fields -- were written
+// to audit.jsonl and shipped to syslog in the clear.
 func NewAuditEvent(hostname string, f Finding) AuditEvent {
+	// Remediation records hash the original finding, so redaction must not
+	// change the ID used to join those records to this event.
+	id := FindingID(f)
+	f = SanitizeFinding(f)
 	return AuditEvent{
 		V:         AuditSchemaVersion,
 		Timestamp: f.Timestamp.UTC(),
-		FindingID: makeFindingID(f),
+		FindingID: id,
 		Severity:  f.Severity.String(),
 		Check:     f.Check,
 		Message:   f.Message,
@@ -69,7 +79,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 	}
 }
 
-// makeFindingID hashes the canonical fields of a Finding to a stable
+// FindingID hashes the canonical fields of a Finding to a stable
 // 16-hex-char ID. Two emits of the same finding (same timestamp + the
 // same other fields) produce the same ID, so downstream dedup works
 // across re-runs.
@@ -77,7 +87,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 // The hash inputs use a "|" separator so the byte-for-byte
 // concatenation cannot collide via field-boundary ambiguity (e.g. a
 // Check name that ends in the same chars another field starts with).
-func makeFindingID(f Finding) string {
+func FindingID(f Finding) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(f.Timestamp.UTC().Format(time.RFC3339Nano)))
 	_, _ = h.Write([]byte("|"))

@@ -56,6 +56,11 @@ type Store struct {
 	savedHash            string // hash of last saved state
 	throttleReservations map[string]struct{}
 
+	pendingHealthOnce sync.Once
+	pendingQueue      *pendingQueue
+	readPendingFile   func(string) ([]byte, error)
+	writePendingFile  func(string, os.FileMode, any) error
+
 	// LatestFindings holds the full output of the most recent scan cycle.
 	// This is what the Findings page shows - "what's wrong right now" -
 	// separate from the alert dedup state above which controls "what to email."
@@ -98,6 +103,7 @@ func Open(path string) (*Store, error) {
 		s.latestFindings = findings
 	}
 
+	s.observePendingQueue()
 	return s, nil
 }
 
@@ -585,7 +591,7 @@ func (s *Store) appendHistoryFile(findings []alert.Finding) {
 	defer func() { _ = f.Close() }()
 
 	for _, finding := range findings {
-		line, err := json.Marshal(finding)
+		line, err := json.Marshal(alert.SanitizeFinding(finding))
 		if err != nil {
 			continue
 		}
@@ -941,36 +947,211 @@ func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Fin
 // derivedChecks with derive(merged): the correlation findings a tier cycle
 // rebuilds from the merged set. One file write per cycle instead of two.
 func (s *Store) PurgeAndMergeFindingsDerived(purgeChecks []string, findings []alert.Finding, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
+	s.PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks, findings, nil, derivedChecks, derive)
+}
+
+// PurgeAndMergeFindingsDerivedWithGaps preserves current findings for path
+// aliases captured when the completed scan observed a coverage gap. Callers
+// must supply both lexical and resolved aliases they accepted at scan time;
+// preservation is evaluated under latestMu without resolving them again.
+func (s *Store) PurgeAndMergeFindingsDerivedWithGaps(purgeChecks []string, findings []alert.Finding, preserveAliasesByCheck map[string]map[string]bool, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
+	s.PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks, findings, &ScanCoverage{PreservePaths: preserveAliasesByCheck}, derivedChecks, derive)
+}
+
+// PurgeAndMergeFindingsDerivedWithCoverage applies file gaps and completed
+// scanner scopes against current state in the same transaction as correlation.
+func (s *Store) PurgeAndMergeFindingsDerivedWithCoverage(purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 
-	merged := purgeAndMergeLatest(s.latestFindings, purgeChecks, findings)
+	merged := purgeAndMergeLatestWithCoverage(s.latestFindings, purgeChecks, findings, coverage, true)
 	if derive != nil {
-		merged = purgeAndMergeLatest(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)))
+		merged = purgeAndMergeLatestWithCoverage(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)), coverage, false)
 	}
 	s.latestFindings = merged
 	s.latestScanTime = time.Now()
 	s.persistLatestLocked()
 }
 
+// earliestObservation resolves the first-seen time a re-reported finding
+// keeps. The stored row wins because it was there first; a row written before
+// FirstSeen existed contributes its Timestamp instead, so upgrading does not
+// reset the history of every long-lived finding. A finding nobody stored
+// before starts from its own timestamp.
+func earliestObservation(stored, reported alert.Finding) time.Time {
+	candidates := []time.Time{stored.FirstSeen, stored.Timestamp, reported.FirstSeen, reported.Timestamp}
+	var earliest time.Time
+	for _, t := range candidates {
+		if t.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || t.Before(earliest) {
+			earliest = t
+		}
+	}
+	return earliest
+}
+
 // purgeAndMergeLatest drops findings owned by purgeChecks (and the timeout
 // findings those runners produced), merges findings by key, and returns the
 // ordered, capped result.
-func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings []alert.Finding) []alert.Finding {
+func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings []alert.Finding, preservePathsByCheck map[string]map[string]bool) []alert.Finding {
+	return purgeAndMergeLatestWithCoverage(current, purgeChecks, findings, &ScanCoverage{PreservePaths: preservePathsByCheck}, true)
+}
+
+func purgeAndMergeLatestWithCoverage(current []alert.Finding, purgeChecks []string, findings []alert.Finding, coverage *ScanCoverage, retireScopes bool) []alert.Finding {
+	if coverage == nil {
+		coverage = &ScanCoverage{}
+	}
+	preservePathsByCheck := coverage.PreservePaths
 	remove := make(map[string]bool, len(purgeChecks))
 	for _, c := range purgeChecks {
 		remove[c] = true
 	}
 	existing := make(map[string]alert.Finding, len(current)+len(findings))
+	// Owner replacement removes old rows from the output, but a key reported
+	// again in this merge must inherit its pre-purge observation. This history
+	// lasts only for this merge; resolved keys leave no tombstone behind.
+	observations := make(map[string]time.Time, len(current)+len(findings))
+	preserveAliases := normalizedPreservePathAliases(preservePathsByCheck)
+	preservationActive := preservePathsByCheck != nil
+	mismatchedCarryKeys := make(map[string]struct{})
+	holdChecks := make(map[string]bool)
+	if preservationActive {
+		for _, f := range findings {
+			if !f.ScanCarryForward {
+				continue
+			}
+			if pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
+				continue
+			}
+			// Carry-forward and preservation metadata must describe the same
+			// scope. If they ever disagree, retain the whole owner rather than
+			// choosing between a purge and a stale resurrection.
+			holdChecks[f.Check] = true
+			mismatchedCarryKeys[f.Key()] = struct{}{}
+		}
+	}
+	protectedKeys := make(map[string]struct{})
+	scopeProtectedKeys := make(map[string]struct{})
 	for _, f := range current {
-		if !shouldPurgeLatestFinding(f, remove) {
-			existing[f.Key()] = f
+		key := f.Key()
+		observations[key] = earliestObservation(alert.Finding{}, f)
+		// A finding this package demoted is waiting on the re-verifier, which
+		// reads the file, not on a scan that merely did not raise it again.
+		// Purging it here would discard the demotion state and let the same
+		// file come back at full severity on the next detection, so the
+		// demotion has to outlive a negative scan. A fresh finding normally
+		// replaces it below; a protected snapshot stays authoritative against a
+		// colliding finding from another path.
+		preserved := holdChecks[f.Check] || pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check])
+		retire := shouldPurgeLatestFinding(f, remove) || (retireScopes && coverage.completed(f))
+		if preserved || isAutomaticallyDemotedFinding(f) || !retire {
+			existing[key] = f
+			if coverage.unexamined(f) {
+				scopeProtectedKeys[key] = struct{}{}
+			}
+			if preserved {
+				protectedKeys[key] = struct{}{}
+			}
 		}
 	}
 	for _, f := range findings {
-		existing[f.Key()] = f
+		// Marked carry-forward state came from the scanner's earlier snapshot.
+		// The current set under latestMu is authoritative: overwriting it would
+		// undo a concurrent update, and inserting it when absent would resurrect
+		// a concurrent dismissal. A genuinely fresh detection has no marker.
+		if preservationActive && f.ScanCarryForward {
+			continue
+		}
+		key := f.Key()
+		if _, staleSnapshot := mismatchedCarryKeys[key]; staleSnapshot {
+			continue
+		}
+		if _, currentIsAuthoritative := protectedKeys[key]; currentIsAuthoritative &&
+			!pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
+			continue
+		}
+		f.ScanCarryForward = false
+		f.FirstSeen = earliestObservation(alert.Finding{FirstSeen: observations[key]}, f)
+		observations[key] = f.FirstSeen
+		existing[key] = f
+		if pathMatchesPreservedAliases(f.FilePath, preserveAliases[f.Check]) {
+			protectedKeys[key] = struct{}{}
+		}
 	}
-	return orderAndCapLatest(existing)
+	// Protect only previously admitted unexamined findings. New partial
+	// detections compete for the remaining slots; protecting them too would
+	// let a persistently incomplete scanner grow the active set without bound.
+	// Refreshes of retained keys keep their protection and original first-seen.
+	for key := range scopeProtectedKeys {
+		protectedKeys[key] = struct{}{}
+	}
+	return orderAndCapLatestPreserving(existing, protectedKeys)
+}
+
+func normalizedPreservePathAliases(pathsByCheck map[string]map[string]bool) map[string]map[string]struct{} {
+	if len(pathsByCheck) == 0 {
+		return nil
+	}
+	aliasesByCheck := make(map[string]map[string]struct{}, len(pathsByCheck))
+	for check, paths := range pathsByCheck {
+		if len(paths) == 0 {
+			continue
+		}
+		aliases := make(map[string]struct{}, len(paths)*2)
+		for path := range paths {
+			// The scanner already captured both lexical and symlink-resolved
+			// identities at gap time. Re-resolving here would let a symlink
+			// retarget between scan and merge change which file is protected.
+			if alias := normalizedLatestFindingPath(path); alias != "" {
+				aliases[alias] = struct{}{}
+			}
+		}
+		aliasesByCheck[check] = aliases
+	}
+	return aliasesByCheck
+}
+
+func pathMatchesPreservedAliases(path string, preserved map[string]struct{}) bool {
+	if path == "" || len(preserved) == 0 {
+		return false
+	}
+	for _, alias := range latestFindingPathAliases(path) {
+		if _, ok := preserved[alias]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func latestFindingPathAliases(path string) []string {
+	if path == "" {
+		return nil
+	}
+	lexical := filepath.Clean(path)
+	if absolute, err := filepath.Abs(lexical); err == nil {
+		lexical = filepath.Clean(absolute)
+	}
+	aliases := []string{lexical}
+	if real, err := filepath.EvalSymlinks(lexical); err == nil {
+		real = filepath.Clean(real)
+		if real != lexical {
+			aliases = append(aliases, real)
+		}
+	}
+	return aliases
+}
+
+func normalizedLatestFindingPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	lexical := filepath.Clean(path)
+	if absolute, err := filepath.Abs(lexical); err == nil {
+		lexical = filepath.Clean(absolute)
+	}
+	return lexical
 }
 
 // latestFindingsCap bounds the active set to keep memory and the persisted
@@ -981,6 +1162,10 @@ const latestFindingsCap = 15000
 // severity first, then most recent, then key. Map iteration order used to
 // decide both the file bytes and which findings a full set dropped.
 func orderAndCapLatest(existing map[string]alert.Finding) []alert.Finding {
+	return orderAndCapLatestPreserving(existing, nil)
+}
+
+func orderAndCapLatestPreserving(existing map[string]alert.Finding, protected map[string]struct{}) []alert.Finding {
 	merged := make([]alert.Finding, 0, len(existing))
 	for _, f := range existing {
 		merged = append(merged, f)
@@ -994,10 +1179,40 @@ func orderAndCapLatest(existing map[string]alert.Finding) []alert.Finding {
 		}
 		return merged[i].Key() < merged[j].Key()
 	})
-	if len(merged) > latestFindingsCap {
-		merged = merged[:latestFindingsCap]
+	if len(merged) <= latestFindingsCap {
+		return merged
 	}
-	return merged
+	protectedCount := 0
+	for _, f := range merged {
+		if _, ok := protected[f.Key()]; ok {
+			protectedCount++
+		}
+	}
+	if protectedCount == 0 {
+		return merged[:latestFindingsCap]
+	}
+
+	// A preservation transaction must not retire an unexamined finding merely
+	// because newly merged, higher-severity findings reached the normal cap.
+	// Keep every protected identity, then fill the remaining slots in the same
+	// deterministic priority order. In the pathological case that protected
+	// state alone exceeds the cap, the coverage invariant wins temporarily.
+	unprotectedSlots := latestFindingsCap - protectedCount
+	if unprotectedSlots < 0 {
+		unprotectedSlots = 0
+	}
+	capped := make([]alert.Finding, 0, max(latestFindingsCap, protectedCount))
+	for _, f := range merged {
+		if _, ok := protected[f.Key()]; ok {
+			capped = append(capped, f)
+			continue
+		}
+		if unprotectedSlots > 0 {
+			capped = append(capped, f)
+			unprotectedSlots--
+		}
+	}
+	return capped
 }
 
 // latestFindingsWriter writes the persisted file; a seam for tests.
@@ -1112,6 +1327,116 @@ func (s *Store) DismissLatestFinding(key string) {
 	}
 	s.latestFindings = filtered
 	s.persistLatestLocked()
+}
+
+// DemoteLatestFinding conditionally lowers a finding's severity in the latest
+// scan results. The expected snapshot prevents a completed scan or realtime
+// alert from being overwritten by an older re-verification result.
+//
+// Check, Message and Details never change. Finding.Key() hashes those fields,
+// so an explanation written into the finding would orphan every dismissal,
+// suppression and alert-dedup entry already keyed to it. DemotedFrom records
+// only the severity needed to reverse the operation.
+func (s *Store) DemoteLatestFinding(expected alert.Finding, severity alert.Severity) bool {
+	if severity != alert.Warning || expected.Severity < alert.High || expected.Severity > alert.Critical {
+		return false
+	}
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	for i := range s.latestFindings {
+		current := &s.latestFindings[i]
+		if current.Key() != expected.Key() || current.Severity <= severity {
+			continue
+		}
+		if !sameLatestFindingSnapshot(*current, expected) {
+			return false
+		}
+		current.DemotedFrom = current.Severity
+		current.Severity = severity
+		s.latestFindings = orderAndCapLatest(findingsByKey(s.latestFindings))
+		s.persistLatestLocked()
+		return true
+	}
+	return false
+}
+
+// DismissFindingIfLatest clears only the finding snapshot that was actually
+// verified. A realtime alert or completed scan may refresh the same key while
+// verification is in flight; that newer evidence must remain active.
+func (s *Store) DismissFindingIfLatest(expected alert.Finding) bool {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	for i := range s.latestFindings {
+		if !sameLatestFindingSnapshot(s.latestFindings[i], expected) {
+			continue
+		}
+		s.mu.Lock()
+		if entry, exists := s.entries[expected.Key()]; exists {
+			entry.IsBaseline = true
+			s.dirty = true
+		}
+		s.mu.Unlock()
+		s.latestFindings = append(s.latestFindings[:i], s.latestFindings[i+1:]...)
+		s.persistLatestLocked()
+		return true
+	}
+	return false
+}
+
+// RestoreLatestFindingSeverity reverses an automatic demotion after the exact
+// verifier that owns the finding reports the content as live again.
+func (s *Store) RestoreLatestFindingSeverity(expected alert.Finding) bool {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	for i := range s.latestFindings {
+		current := &s.latestFindings[i]
+		if current.Key() != expected.Key() || !isAutomaticallyDemotedFinding(*current) {
+			continue
+		}
+		if !sameLatestFindingSnapshot(*current, expected) {
+			return false
+		}
+		current.Severity = current.DemotedFrom
+		current.DemotedFrom = alert.Warning
+		s.latestFindings = orderAndCapLatest(findingsByKey(s.latestFindings))
+		s.persistLatestLocked()
+		return true
+	}
+	return false
+}
+
+func isAutomaticallyDemotedFinding(f alert.Finding) bool {
+	return f.Severity == alert.Warning &&
+		f.DemotedFrom >= alert.High && f.DemotedFrom <= alert.Critical
+}
+
+// sameLatestFindingSnapshot reports whether the stored finding is still the one
+// verification looked at. Any field the verifier's decision rested on must
+// match, or a newer detection would be silently overwritten by a stale verdict.
+func sameLatestFindingSnapshot(current, expected alert.Finding) bool {
+	if current.Key() != expected.Key() ||
+		current.Check != expected.Check ||
+		current.Message != expected.Message ||
+		current.Details != expected.Details ||
+		current.Severity != expected.Severity ||
+		!current.Timestamp.Equal(expected.Timestamp) ||
+		current.FilePath != expected.FilePath ||
+		current.ContentSHA256 != expected.ContentSHA256 ||
+		current.DetectLogic != expected.DetectLogic {
+		return false
+	}
+	return current.DemotedFrom == expected.DemotedFrom
+}
+
+func findingsByKey(findings []alert.Finding) map[string]alert.Finding {
+	keyed := make(map[string]alert.Finding, len(findings))
+	for _, finding := range findings {
+		keyed[finding.Key()] = finding
+	}
+	return keyed
 }
 
 // DismissFinding marks a finding as baseline (acknowledged/dismissed).

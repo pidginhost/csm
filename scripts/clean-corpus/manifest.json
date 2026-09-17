@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "sources": [
+    {
+      "id": "elementor",
+      "cms": "wordpress",
+      "version": "3.29.2",
+      "url": "https://downloads.wordpress.org/plugin/elementor.3.29.2.zip",
+      "sha256": "6bf6ea3513f9c412799acb1353f9854712195c7d3395ca55dfdfc37ca7b356ec",
+      "license": "GPL-3.0-only",
+      "license_file": "elementor/license.txt",
+      "files": 2021
+    },
+    {
+      "id": "woocommerce",
+      "cms": "wordpress",
+      "version": "9.9.5",
+      "url": "https://downloads.wordpress.org/plugin/woocommerce.9.9.5.zip",
+      "sha256": "9afd8ef47ce5286412053083cd74c3d5abf0388e8e4a723902162259977241c2",
+      "license": "GPL-3.0-or-later",
+      "license_file": "woocommerce/license.txt",
+      "files": 4927
+    },
+    {
+      "id": "wordpress",
+      "cms": "wordpress",
+      "version": "6.8.2",
+      "url": "https://wordpress.org/wordpress-6.8.2.zip",
+      "sha256": "46bbc3d5807e7aba4fb64aada0d5d99e41b4e80c4373b5ce0269898eca798ac7",
+      "license": "GPL-2.0-or-later",
+      "license_file": "wordpress/license.txt",
+      "files": 3230
+    }
+  ],
+  "pending": [
+    {
+      "cms": "joomla",
+      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through variables', 'Content rules versus archive containers'), then add and measure the pinned source."
+    },
+    {
+      "cms": "opencart",
+      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through variables', 'Content rules versus archive containers'), then add and measure the pinned source."
+    },
+    {
+      "cms": "drupal",
+      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through variables', 'Content rules versus archive containers'), then add and measure the pinned source."
+    },
+    {
+      "cms": "magento",
+      "reason": "No pinned archive inventory or license-path evidence is recorded in the current corpus-growth item; source and measure it under 'Clean corpus growth and per-detector false-positive tracking' after all three preceding precision items."
+    }
+  ]
+}

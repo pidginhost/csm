@@ -43,7 +43,7 @@ func TestQuarantineFileTOCTOUSafe_CopiesMultiLinkFile(t *testing.T) {
 		t.Fatal(mkErr)
 	}
 
-	err = quarantineFileTOCTOUSafe(src, qPath, info)
+	err = quarantineFileTOCTOUSafe(src, qPath, info, []byte("{}"))
 	if err == nil || !strings.Contains(err.Error(), "hard link") {
 		t.Fatalf("surviving hard link not reported: err=%v", err)
 	}
@@ -93,15 +93,15 @@ func TestQuarantineFileTOCTOUSafe_CopiesLinkAddedAfterFstat(t *testing.T) {
 	}
 
 	oldCopy := quarantineCopyByFD
-	quarantineCopyByFD = func(fd *os.File, dst string) error {
+	quarantineCopyByFD = func(fd *os.File, dst string, metadata []byte) error {
 		if linkErr := os.Link(src, other); linkErr != nil {
 			return linkErr
 		}
-		return oldCopy(fd, dst)
+		return oldCopy(fd, dst, metadata)
 	}
 	t.Cleanup(func() { quarantineCopyByFD = oldCopy })
 
-	err = quarantineFileTOCTOUSafe(src, qPath, info)
+	err = quarantineFileTOCTOUSafe(src, qPath, info, []byte("{}"))
 	if err == nil || !strings.Contains(err.Error(), "hard link") {
 		t.Fatalf("link added after fstat was not reported: %v", err)
 	}
@@ -144,12 +144,12 @@ func TestQuarantineCallersTreatRemainingLinksAsCompleted(t *testing.T) {
 		src, other := linkedQuarantineFixture(t, []byte("<?php /* linked */"))
 		qdir := filepath.Join(filepath.Dir(src), "quarantine")
 		withAutoRespQuarantineDir(t, qdir)
-		cfg := &config.Config{}
+		cfg := &config.Config{StatePath: t.TempDir()}
 		cfg.AutoResponse.Enabled = true
 		cfg.AutoResponse.QuarantineFiles = true
 
 		actions := AutoQuarantineFiles(cfg, []alert.Finding{{
-			Check: "php_dropper", Severity: alert.Critical, FilePath: src, Message: "linked dropper",
+			Check: "webshell", Severity: alert.Critical, FilePath: src, Message: "linked dropper",
 		}})
 		if len(actions) != 1 || !strings.Contains(actions[0].Details, "hard link") {
 			t.Fatalf("completed hard-link quarantine actions = %+v, want one warning action", actions)

@@ -74,11 +74,19 @@ func main() {
 
 	cmd := os.Args[1]
 
+	// Operator commands change host state too, so they record to the same
+	// stream. The daemon installs its own sink with the daemon actor.
+	if cmd != "daemon" {
+		installCLIActionLog()
+	}
+
 	switch cmd {
 	case "version":
 		fmt.Printf("csm %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
 	case "daemon":
 		runDaemon()
+	case "forward-guard-worker":
+		runForwardGuardWorker()
 	case "yara-worker":
 		runYaraWorker()
 	case "phptaint-worker":
@@ -141,6 +149,16 @@ func main() {
 		runPHPRelay()
 	case "doctor":
 		runDoctor()
+	case "systemd-roots":
+		runSystemdRoots()
+	case "privileges":
+		runPrivileges()
+	case "actions":
+		runActions()
+	case "selftest":
+		runSelfTest()
+	case "verify-release":
+		runVerifyRelease()
 	case "backup":
 		runBackup()
 	case "forensic-snapshot":
@@ -163,7 +181,11 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `csm - Continuous Security Monitor
+	writeUsage(os.Stderr)
+}
+
+func writeUsage(w io.Writer) {
+	fmt.Fprintf(w, `csm - Continuous Security Monitor
 
 Usage: csm <command>
 
@@ -179,6 +201,7 @@ Commands:
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
   baseline      Reset state - mark current state as "known good" (use --confirm if history exists)
+  rehash        Re-sign binary, csm.yaml and conf.d hashes after an intentional change (no scan)
   validate      Validate config (--deep for connectivity probes)
   config        Config display (config show [--no-redact] [--json])
   verify        Verify binary + config integrity
@@ -198,12 +221,17 @@ Commands:
   incidents     List, show, and update correlated security incidents
   enable        Enable optional features (--php-shield)
   disable       Disable optional features (--php-shield)
+  systemd-roots Print a validated systemd drop-in for account write access
+  privileges    Print what CSM does that needs privilege, and the key that stops each one (--json, --markdown)
+  actions       Print what CSM did to this host (--since, --op, --limit, --json)
+  selftest      Scan a bundle of known samples and report what the installed rules catch (--json)
   doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   forensic-snapshot <account> --out <archive.tar.gz>  Evidence archive for incident handoff (triggers/admins/sessions/mtimes)
   restore <archive>  Extract backup archive into csm.yaml + conf.d + state
   webserver-integration  Install/upgrade/remove challenge reverse-proxy snippets
   pam ...       Install or remove the pam_csm.so PAM hook (csm pam --help)
+  phprelay ...  PHP mail relay guard controls (status, ignore-script, unignore, dry-run, thaw)
   report enroll Generate an abuse-reporting node key pair
   virtual-patch Deny HTTP access to confirmed web-exposed files (--apply; needs manual/auto mode)
   version       Version info + build hash
@@ -285,11 +313,23 @@ func prepareDaemonState(cfg *config.Config, legacyStateDir string) (bool, *state
 	return migrated, lock, nil
 }
 
+// initDaemonPlatform installs the operator's web_server: overrides and only
+// then initialises Sentry. The order is the point: Sentry tags its scope with
+// platform.Detect(), which caches the detection for the whole process, and a
+// detection cached before the overrides silently pins the probe's (possibly
+// wrong) webserver and log paths for every watcher. The error, if any, is
+// Sentry's; the overrides report their own failure.
+func initDaemonPlatform(cfg *config.Config, version, buildHash string) error {
+	daemon.InstallPlatformOverrides(cfg)
+	return obs.Init(cfg, version, buildHash)
+}
+
 func runDaemon() {
 	cfg := loadConfigLite()
 
-	// Initialize Sentry before any goroutines spawn. No-op if disabled.
-	if err := obs.Init(cfg, Version, BuildHash); err != nil {
+	// Platform overrides first, then Sentry, before any goroutines spawn.
+	// Sentry is a no-op if disabled; see initDaemonPlatform for the order.
+	if err := initDaemonPlatform(cfg, Version, BuildHash); err != nil {
 		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", err)
 	}
 
@@ -318,12 +358,6 @@ func runDaemon() {
 		fatal(1, "Daemon startup aborted due to config errors\n")
 	}
 
-	// The operator's web_server: overrides must be in force before anything
-	// detects the platform; the snippet refresh below is the first such
-	// call, and a detection cached without them would silently pin the
-	// probe's (possibly wrong) webserver and log paths for the whole run.
-	daemon.InstallPlatformOverrides(cfg)
-
 	// Binary-swap upgrades never re-run the installer, so a stale challenge
 	// snippet survives until it breaks webserver reloads host-wide.
 	if _, err := prepareChallengeConf(cfg); err != nil {
@@ -332,7 +366,7 @@ func runDaemon() {
 
 	// Initialize signature scanner. A corrupt rules file that disables
 	// detection must be loud, not silently swallowed by best-effort load.
-	scanner := signatures.Init(cfg.Signatures.RulesDir)
+	scanner := signatures.Init(cfg.Signatures.RulesDir, cfg.Signatures.DisabledRules...)
 	if err := scanner.LoadError(); err != nil {
 		fmt.Fprintf(os.Stderr, "[WARN] signature rules failed to load cleanly: %v\n", err)
 	}
@@ -397,37 +431,18 @@ func runYaraWorker() {
 	// The worker is a separate process that hosts YARA-X for the
 	// supervisor. Use the supervisor's config so both agree on the
 	// Sentry DSN and tags; failures to init are non-fatal.
-	cfg := loadConfigLite()
-	if err := obs.Init(cfg, Version, BuildHash); err != nil {
-		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", err)
+	workerCfg, cfg, err := yaraWorkerConfig(os.Args[2:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "yara-worker:", err)
+		os.Exit(1)
 	}
-
-	socketPath := "/var/run/csm/yara-worker.sock"
-	rulesDir := ""
-
-	args := os.Args[2:]
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--socket":
-			if i+1 < len(args) {
-				socketPath = args[i+1]
-				i++
-			}
-		case "--rules-dir":
-			if i+1 < len(args) {
-				rulesDir = args[i+1]
-				i++
-			}
-		}
+	if initErr := obs.Init(cfg, Version, BuildHash); initErr != nil {
+		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", initErr)
 	}
-
-	err := yaraworker.Run(context.Background(), yaraworker.Config{
-		SocketPath: socketPath,
-		RulesDir:   rulesDir,
-		ErrorLog: func(err error) {
-			fmt.Fprintln(os.Stderr, "yara-worker:", err)
-		},
-	})
+	workerCfg.ErrorLog = func(err error) {
+		fmt.Fprintln(os.Stderr, "yara-worker:", err)
+	}
+	err = yaraworker.Run(context.Background(), workerCfg)
 	obs.Flush()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yara-worker:", err)
@@ -724,7 +739,11 @@ func printStatusHuman(s control.StatusResult) {
 	fmt.Printf("history count:    %d\n", s.HistoryCount)
 	fmt.Printf("dropped alerts:   %d\n", s.DroppedAlerts)
 	if s.Snapshot != nil {
+		if s.Snapshot.Mode != "" {
+			fmt.Printf("mode:             %s\n", s.Snapshot.Mode)
+		}
 		printAutomationStatusHuman(s.Snapshot.Automation)
+		printWPVerificationHuman(s.Snapshot.WordPressVerification)
 	}
 }
 
@@ -904,6 +923,10 @@ func runRehash() {
 		fmt.Fprintf(os.Stderr, "Error updating systemd service: %v\n", err)
 		os.Exit(1)
 	}
+	// Package and standalone upgrades run rehash without rerunning install.
+	if err := deployLogrotate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: logrotate config not installed: %v\n", err)
+	}
 
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)
@@ -939,6 +962,7 @@ func runValidate() {
 	}
 
 	printResults(config.Validate(cfg))
+	printResults(validateDisabledRules(cfg.Signatures.RulesDir, cfg.Signatures.DisabledRules))
 
 	if deep {
 		fmt.Println("---")

@@ -2408,7 +2408,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 	s := newTestServer(t, tok)
 	mux := s.httpSrv.Handler
 
-	cookie := &http.Cookie{Name: "csm_auth", Value: tok}
+	cookie := testBrowserCookie(t, s, tok)
 
 	cases := []struct {
 		method string
@@ -5501,5 +5501,23 @@ func TestModSecPageHasFilterControls(t *testing.T) {
 	}
 	if strings.Contains(jsText, `No ModSecurity blocks observed in the last 24 hours.`) {
 		t.Error("modsec.js still hard-codes the empty-state block window")
+	}
+}
+
+func TestAuthenticatedActivityHasThreatBadgesAndChartLabel(t *testing.T) {
+	threat, err := os.ReadFile("../../ui/static/js/threat.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := regexp.MustCompile(`var order=\[([^\]]+)\]`).FindSubmatch(threat)
+	if len(order) != 2 || !strings.Contains(string(order[1]), "'auth_success'") {
+		t.Fatal("threat type badge list omits authenticated activity")
+	}
+	dashboard, err := os.ReadFile("../../ui/static/js/dashboard.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`auth_success:\s*'Authenticated Activity'`).Match(dashboard) {
+		t.Fatal("dashboard chart has no authenticated activity label")
 	}
 }

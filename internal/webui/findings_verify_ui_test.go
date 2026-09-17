@@ -31,6 +31,14 @@ func TestFindingsJSWiresVerifyAction(t *testing.T) {
 		// Content fingerprints stay server-owned; the browser sends identity
 		// and path context only.
 		"file_path: row.getAttribute('data-filepath') || ''",
+		// A demotion is neither "resolved" nor "still present": reporting it
+		// as the latter told an operator who had just cleaned a file that
+		// nothing happened, and left the old severity on screen.
+		"data.severity_change === 'demoted'",
+		"'Demoted: '",
+		"data.severity_change === 'restored'",
+		"'Restored: '",
+		"'Severity unchanged: '",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("findings.js missing verify-action fragment %q", want)

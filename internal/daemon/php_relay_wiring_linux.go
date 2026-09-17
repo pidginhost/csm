@@ -18,6 +18,13 @@ import (
 // paths directly to eximAuditWriterAt.
 const phpRelayAuditPath = "/var/log/csm/php_relay_audit.jsonl"
 
+type phpRelayPaths struct {
+	cpanelConfig string
+	spool        string
+	historyLog   string
+	auditLog     string
+}
+
 // startPHPRelayLinux completes the PHP-relay wiring after the platform
 // gate (in startPHPRelay) has confirmed cPanel + located exim. It is
 // split out from daemon.go so the heavy linux-only types stay in this
@@ -28,8 +35,19 @@ const phpRelayAuditPath = "/var/log/csm/php_relay_audit.jsonl"
 // only reloads policies (handled in daemon.go where d.policies is
 // already wired). Callers must not invoke this twice.
 func startPHPRelayLinux(d *Daemon) {
+	startPHPRelayLinuxAt(d, phpRelayPaths{
+		cpanelConfig: "/var/cpanel/cpanel.config",
+		spool:        "/var/spool/exim/input",
+		historyLog:   "/var/log/exim_mainlog",
+		auditLog:     phpRelayAuditPath,
+	})
+}
+
+// Explicit paths let startup tests exercise the real workers without touching
+// the host's cPanel configuration, mail spool or audit log.
+func startPHPRelayLinuxAt(d *Daemon, paths phpRelayPaths) {
 	// 1. cPanel hourly limit + Path 2b derivation.
-	limit, status := readCpanelHourlyLimit("/var/cpanel/cpanel.config")
+	limit, status := readCpanelHourlyLimit(paths.cpanelConfig)
 	switch status {
 	case cpanelLimitMissing, cpanelLimitUnparsable:
 		emitPHPRelayFinding(d, alert.Warning, "email_php_relay_cpanel_limit_unreadable",
@@ -71,12 +89,10 @@ func startPHPRelayLinux(d *Daemon) {
 	bdb := store.Global()
 	persister := newMsgIndexPersister(bdb, 4096, 100*time.Millisecond)
 	persister.SetErrorCallback(func(f alert.Finding) {
-		select {
-		case d.alertCh <- f:
-		default:
-		}
+		alert.TryEnqueue(d.alertCh, f)
 	})
 	persister.SetMetrics(prMetrics)
+	d.registerQueueSource("phprelay.index", persister)
 	persister.Start()
 	d.phpRelayShutdown = append(d.phpRelayShutdown, persister.Stop)
 	idx := newMsgIDIndex(persister, 200_000)
@@ -95,7 +111,7 @@ func startPHPRelayLinux(d *Daemon) {
 	// 8. Controller (constructed before the freezer so DryRunFn can
 	// thread the runtime/bbolt/yaml precedence into freeze decisions).
 	runner := defaultRunner{}
-	auditor := newStructuredAuditor(eximAuditWriterAt(d.cfg, phpRelayAuditPath))
+	auditor := newStructuredAuditor(eximAuditWriterAt(d.cfg, paths.auditLog))
 	controller := &PHPRelayController{
 		eng:          eng,
 		msgIndex:     idx,
@@ -114,33 +130,36 @@ func startPHPRelayLinux(d *Daemon) {
 
 	// 9. Spool pipeline (Flow A) + autoFreezer (post-emit hook).
 	pipeline := newSpoolPipeline(eng, domains, pol, idx, ignores, func(f alert.Finding) {
-		select {
-		case d.alertCh <- f:
-		default:
-		}
+		alert.TryEnqueue(d.alertCh, f)
 	})
-	freezer := newAutoFreezer(psw, d.cfg, "/var/spool/exim/input", eximBinary,
+	freezer := newAutoFreezer(psw, d.cfg, paths.spool, eximBinary,
 		runner, auditor, prMetrics, controller.DryRunFn())
 	d.autoFreezer = freezer
 
 	// 10. Startup walker BEFORE the watcher to rebuild script state for
 	// messages already on the spool when the daemon starts.
-	runStartupSpoolWalker("/var/spool/exim/input", pipeline)
+	runStartupSpoolWalker(paths.spool, pipeline)
 
+	var previousWatcher *spoolWatcher
 	watcherFn := func(ctx context.Context) {
-		w, err := newSpoolWatcher("/var/spool/exim/input", pipeline.OnFile)
+		w, err := newSpoolWatcher(paths.spool, pipeline.OnFile)
 		if err != nil {
 			d.MarkWatcher("phprelay", false)
 			emitPHPRelayFinding(d, alert.Critical, "email_php_relay_watcher_failed", err.Error())
 			return
 		}
+		if previousWatcher != nil {
+			w.inheritQueueHealth(previousWatcher)
+		}
+		previousWatcher = w
+		d.registerQueueSource("phprelay", w)
 		d.MarkWatcher("phprelay", true)
 		w.SetMetrics(prMetrics)
 		w.SetOverflowHandler(func() {
 			emitPHPRelayFinding(d, alert.Critical, "email_php_relay_inotify_overflow",
 				"inotify queue overflow; running bounded recovery scan")
 			const phpRelayOverflowScanMax = 1000
-			n, truncated := runRecoveryScan("/var/spool/exim/input", phpRelayOverflowScanMax, pipeline.OnFile)
+			n, truncated := runRecoveryScan(paths.spool, phpRelayOverflowScanMax, pipeline.OnFile)
 			if truncated {
 				emitPHPRelayFinding(d, alert.Critical, "email_php_relay_overflow_scan_truncated",
 					fmt.Sprintf("overflow recovery capped at %d files; older messages skipped (Path 2b backstops)", phpRelayOverflowScanMax))
@@ -169,11 +188,8 @@ func startPHPRelayLinux(d *Daemon) {
 	d.wg.Add(1)
 	obs.Go("php-relay-history-scan", func() {
 		defer d.wg.Done()
-		ScanEximHistoryForPHPRelayAccountVolume(ctx, "/var/log/exim_mainlog", eng, time.Now(), func(f alert.Finding) {
-			select {
-			case d.alertCh <- f:
-			default:
-			}
+		ScanEximHistoryForPHPRelayAccountVolume(ctx, paths.historyLog, eng, time.Now(), func(f alert.Finding) {
+			alert.TryEnqueue(d.alertCh, f)
 		})
 	})
 
@@ -231,19 +247,15 @@ func runPHPRelayFlowE(
 	}
 }
 
-// emitPHPRelayFinding sends a finding through the daemon alert pipeline,
-// dropping silently if the channel buffer is full (matches the existing
-// startup-time alert pattern in daemon.go).
+// Nonblocking delivery keeps a full findings channel from stopping mail
+// supervision; the shared queue tracker retains any delivery loss.
 func emitPHPRelayFinding(d *Daemon, sev alert.Severity, check, msg string) {
-	select {
-	case d.alertCh <- alert.Finding{
+	alert.TryEnqueue(d.alertCh, alert.Finding{
 		Severity:  sev,
 		Check:     check,
 		Message:   msg,
 		Timestamp: time.Now(),
-	}:
-	default:
-	}
+	})
 }
 
 // stopChContext bridges the daemon's stopCh (chan struct{}) to a

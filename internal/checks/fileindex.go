@@ -16,9 +16,9 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-// fileIndexScanCount tracks the number of CheckFileIndex invocations.
-// Every 6th scan forces a full directory rescan, bypassing the mtime cache
-// to catch writes that don't update parent directory mtime (e.g. hard links).
+// fileIndexScanCount schedules a full walk at startup and every sixth scan.
+// Failed or interrupted walks reset it so retries cannot trust cached mtimes
+// for directories that have become unreadable.
 var fileIndexScanCount int32
 
 // fileIndexShrinkSkips counts consecutive scans whose current index shrank far
@@ -73,25 +73,6 @@ func evaluateFileIndexShrink(prevLen, curLen int) (isShrink, promote bool) {
 	return true, false
 }
 
-func acquireFileIndexLiveScan(ctx context.Context) bool {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if ctx.Err() != nil {
-		return false
-	}
-	select {
-	case fileIndexLiveScanGate <- struct{}{}:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-func releaseFileIndexLiveScan() {
-	<-fileIndexLiveScanGate
-}
-
 // suspiciousExtensions are file extensions worth reading in a web root. Being
 // listed here only routes a file into content analysis; the verdict is still
 // the content scanner's. ".phps" earns its place despite a stock handler
@@ -106,20 +87,26 @@ var suspiciousExtensions = map[string]bool{
 // Directories with unchanged mtime are skipped during scanning.
 type dirMtimeCache map[string]int64
 
-func loadDirCache(stateDir string) dirMtimeCache {
+func loadDirCache(stateDir string) (dirMtimeCache, error) {
 	cache := make(dirMtimeCache)
 	data, err := osFS.ReadFile(filepath.Join(stateDir, "dircache.json"))
-	if err == nil {
-		_ = json.Unmarshal(data, &cache)
+	if os.IsNotExist(err) {
+		return cache, nil
 	}
-	return cache
+	if err != nil {
+		return cache, err
+	}
+	err = json.Unmarshal(data, &cache)
+	return cache, err
 }
 
-func saveDirCache(stateDir string, cache dirMtimeCache) {
+func saveDirCache(stateDir string, cache dirMtimeCache) error {
 	data, _ := json.Marshal(cache)
 	tmpPath := filepath.Join(stateDir, "dircache.json.tmp")
-	_ = os.WriteFile(tmpPath, data, 0600)
-	_ = os.Rename(tmpPath, filepath.Join(stateDir, "dircache.json"))
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, filepath.Join(stateDir, "dircache.json"))
 }
 
 // dirChanged returns true if the directory mtime has changed since last scan.
@@ -219,45 +206,53 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		return checkFileIndexAnalyzeNewFiles(ctx, cfg, currentEntries)
 	}
 
-	if !acquireFileIndexLiveScan(ctx) {
-		return nil
-	}
-	defer releaseFileIndexLiveScan()
+	return fileIndexQueues.run(ctx, func(work *fileIndexWork) []alert.Finding {
+		return checkFileIndexLive(ctx, cfg, work)
+	})
+}
 
+func checkFileIndexLive(ctx context.Context, cfg *config.Config, work *fileIndexWork) []alert.Finding {
+	ctx = context.WithValue(ctx, fileIndexWorkKey{}, work)
 	scanNum := atomic.AddInt32(&fileIndexScanCount, 1)
-	forceFullScan := scanNum%6 == 0 // full rescan every 6th cycle
+	forceFullScan := scanNum == 1 || scanNum%6 == 0
+	defer func() {
+		work.local()
+		if ctx.Err() != nil {
+			atomic.StoreInt32(&fileIndexScanCount, 0)
+		}
+	}()
 
 	indexDir := cfg.StatePath
 	currentPath := filepath.Join(indexDir, "fileindex.current")
 	previousPath := filepath.Join(indexDir, "fileindex.previous")
 
 	// Load caches
-	dirCache := loadDirCache(indexDir)
+	dirCache, err := loadDirCache(indexDir)
+	work.observe(err)
 
 	// Build a set of previous entries grouped by directory ancestry, so
 	// unchanged dirs can carry forward their whole subtree without ReadDir.
-	previousEntries := loadIndex(previousPath)
+	previousEntries, err := loadIndex(previousPath)
+	work.observe(err)
 	prevByDir := groupEntriesByUploadDir(previousEntries)
 
-	// Build current index
-	currentEntries := buildFileIndex(ctx, dirCache, prevByDir, forceFullScan)
+	// Track completeness locally as well as in the runner: direct calls must
+	// not replace the baseline with a partial walk either.
+	indexCtx, completion := withIncompleteCheckCollector(ctx)
+	work.execution()
+	currentEntries := buildFileIndex(indexCtx, dirCache, prevByDir, forceFullScan)
+	incomplete := completion.contains("file_index")
+	if incomplete {
+		work.fail()
+		atomic.StoreInt32(&fileIndexScanCount, 0)
+		markCheckIncomplete(ctx, "file_index")
+	}
 
 	// A cancelled scan produced a partial index. Do not write or promote it:
 	// the partial set or its mtimes would make the next scan compare against
 	// stale cache state instead of the last complete baseline.
-	if ctx.Err() != nil {
-		return nil
-	}
-
-	// Save updated dir cache
-	saveDirCache(indexDir, dirCache)
-
-	// Write current index (atomic)
-	writeIndex(currentPath, currentEntries)
-
-	// First run - save baseline
-	if _, err := osFS.Stat(previousPath); os.IsNotExist(err) {
-		copyFile(currentPath, previousPath)
+	if err := ctx.Err(); err != nil {
+		work.withdraw(err)
 		return nil
 	}
 
@@ -273,6 +268,25 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		}
 	}
 
+	if incomplete {
+		// Publishing partial entries or mtimes would let the next cached
+		// walk retire findings for directories we still have not read.
+		return checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
+	}
+
+	work.local()
+	// Save updated dir cache
+	work.observe(saveDirCache(indexDir, dirCache))
+
+	// Write current index (atomic)
+	work.observe(writeIndex(currentPath, currentEntries))
+
+	// First run - save baseline
+	if _, err := osFS.Stat(previousPath); os.IsNotExist(err) {
+		work.observe(copyFile(currentPath, previousPath))
+		return nil
+	}
+
 	// A large shrink (mass deletion, a WP install removed, or a transient read
 	// failure) must not instantly flush the baseline: promoting an empty or
 	// much-smaller index would make every surviving file look "new" next cycle
@@ -282,14 +296,16 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	// baseline so they do not alert repeatedly while the deletion guard is still
 	// preserving the removed paths against recovery floods.
 	if isShrink, promote := evaluateFileIndexShrink(len(previousEntries), len(currentEntries)); isShrink {
+		work.execution()
 		findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
+		work.local()
 		if promote {
 			fmt.Fprintf(os.Stderr, "file_index: shrink persisted %d scans; adopting smaller index (%d entries, was %d) as new baseline\n",
 				fileIndexShrinkPromoteThreshold, len(currentEntries), len(previousEntries))
-			copyFile(currentPath, previousPath)
+			work.observe(copyFile(currentPath, previousPath))
 		} else {
 			if len(newFiles) > 0 {
-				writeIndex(previousPath, mergeIndexEntries(previousEntries, newFiles))
+				work.observe(writeIndex(previousPath, mergeIndexEntries(previousEntries, newFiles)))
 			}
 			fmt.Fprintf(os.Stderr, "file_index: current index (%d) shrank vs previous (%d); preserving prior baseline this cycle\n",
 				len(currentEntries), len(previousEntries))
@@ -297,8 +313,10 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		return findings
 	}
 
+	work.execution()
 	findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
-	copyFile(currentPath, previousPath)
+	work.local()
+	work.observe(copyFile(currentPath, previousPath))
 	return findings
 }
 
@@ -357,7 +375,11 @@ func checkFileIndexAnalyzeNewFiles(ctx context.Context, cfg *config.Config, newF
 			// WordPress "silence is golden" index.php, or BackWPup's
 			// "<?php //<json>" working files) and is suppressed; any
 			// real code surfaces, malicious or merely present.
-			if sev, ck, msg, hash := classifyUploadPHPWithFingerprint(path); sev >= 0 {
+			sev, ck, msg, hash, readOK := classifyUploadPHPWithFingerprint(path)
+			if !readOK {
+				reportFileIndexFailure(ctx)
+			}
+			if sev >= 0 {
 				severity = sev
 				check = ck
 				message = msg
@@ -370,7 +392,11 @@ func checkFileIndexAnalyzeNewFiles(ctx context.Context, cfg *config.Config, newF
 		// PHP files in wp-content/languages and wp-content/upgrade: content-first.
 		// Path-only Critical buried real alerts under location noise (WPML
 		// translation queues, WP auto-update staging). See classifySensitiveDirPHP.
-		if sev, ck, msg, hash := classifySensitiveDirPHPWithFingerprint(path, name); sev >= 0 {
+		sev, ck, msg, hash, readOK := classifySensitiveDirPHPWithFingerprint(path, name)
+		if !readOK {
+			reportFileIndexFailure(ctx)
+		}
+		if sev >= 0 {
 			severity = sev
 			check = ck
 			message = msg
@@ -432,19 +458,19 @@ func checkFileIndexAnalyzeNewFiles(ctx context.Context, cfg *config.Config, newF
 // which is intentionally NOT in any of those maps -- a clean file is a
 // visibility signal, not an attack. Mirrors the realtime path at fanotify.go.
 func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string) {
-	sev, check, message, _ := classifySensitiveDirPHPWithFingerprint(path, name)
+	sev, check, message, _, _ := classifySensitiveDirPHPWithFingerprint(path, name)
 	return sev, check, message
 }
 
-func classifySensitiveDirPHPWithFingerprint(path, name string) (alert.Severity, string, string, string) {
+func classifySensitiveDirPHPWithFingerprint(path, name string) (alert.Severity, string, string, string, bool) {
 	nameLower := strings.ToLower(name)
 	if !phpPathExecutes(path, nameLower) {
-		return -1, "", "", ""
+		return -1, "", "", "", true
 	}
 	isLanguages := strings.Contains(path, "/wp-content/languages/")
 	isUpgrade := strings.Contains(path, "/wp-content/upgrade/")
 	if !isLanguages && !isUpgrade {
-		return -1, "", "", ""
+		return -1, "", "", "", true
 	}
 	locLabel := "wp-content/languages"
 	if isUpgrade {
@@ -452,34 +478,34 @@ func classifySensitiveDirPHPWithFingerprint(path, name string) (alert.Severity, 
 	}
 	result, contentSHA256 := analyzePHPContentWithFingerprint(path)
 	if result.severity >= 0 {
-		return result.severity, result.check, fmt.Sprintf("%s: %s", result.message, path), contentSHA256
+		return result.severity, result.check, fmt.Sprintf("%s: %s", result.message, path), contentSHA256, result.readOK
 	}
 	// Fail closed: an unreadable body (attacker racing the scanner with rm or
 	// chmod 000) must not be demoted to a clean Warning. Mirrors classifyUploadPHP.
 	if !result.readOK {
 		return alert.High, "new_php_in_sensitive_dir",
-			fmt.Sprintf("New unreadable PHP file in %s: %s", locLabel, path), ""
+			fmt.Sprintf("New unreadable PHP file in %s: %s", locLabel, path), "", false
 	}
 	// A zero-byte body reaching here was verified stable across the read (a
 	// truncation under the scanner fails the post-read stat and is handled
 	// above), so it holds no code and is visibility, not an attack.
 	if result.empty {
 		return alert.Warning, "new_php_in_sensitive_dir_clean",
-			fmt.Sprintf("New empty PHP file in %s (no content): %s", locLabel, path), ""
+			fmt.Sprintf("New empty PHP file in %s (no content): %s", locLabel, path), "", true
 	}
 	// Content-verified inert stub (e.g. the "silence is golden" index.php) is
 	// suppressed; any real code surfaces as a non-actionable visibility Warning.
 	if IsBenignPHPStub(path) {
-		return -1, "", "", ""
+		return -1, "", "", "", true
 	}
 	// WordPress 6.5+ auto-generates *.l10n.php translation caches as pure data
 	// return arrays. Recognized by content structure (not filename), they carry
 	// no executable construct, so suppress rather than warn on every locale file.
 	if isWPTranslationCache(path) {
-		return -1, "", "", ""
+		return -1, "", "", "", true
 	}
 	return alert.Warning, "new_php_in_sensitive_dir_clean",
-		fmt.Sprintf("New PHP file in %s (content clean): %s", locLabel, path), ""
+		fmt.Sprintf("New PHP file in %s (content clean): %s", locLabel, path), "", true
 }
 
 // groupEntriesByUploadDir groups index entries by each ancestor directory.
@@ -508,9 +534,9 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		return nil
 	}
 
-	homeDirs, err := GetScanHomeDirs(ctx)
+	homeDirs, err := fileIndexHomeDirs(ctx)
 	if err != nil {
-		return nil
+		markCheckIncomplete(ctx, "file_index")
 	}
 
 	var subtreeChanges *subtreeChangeTracker
@@ -540,7 +566,10 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 			filepath.Join(homeDir, "public_html", "wp-content", "upgrade"),
 			filepath.Join(homeDir, "public_html", "wp-content", "mu-plugins"),
 		}
-		subDirs, _ := osFS.ReadDir(homeDir)
+		subDirs, err := osFS.ReadDir(homeDir)
+		if err != nil && !os.IsNotExist(err) {
+			markCheckIncomplete(ctx, "file_index")
+		}
 		for _, sd := range subDirs {
 			if ctx.Err() != nil {
 				return entries
@@ -551,6 +580,8 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 				uploadsPath := filepath.Join(homeDir, sd.Name(), "wp-content", "uploads")
 				if info, err := osFS.Stat(uploadsPath); err == nil && info.IsDir() {
 					uploadDirs = append(uploadDirs, uploadsPath)
+				} else if err != nil && !os.IsNotExist(err) {
+					markCheckIncomplete(ctx, "file_index")
 				}
 				// Also track sensitive dirs for addon domains
 				for _, subDir := range []string{"languages", "upgrade", "mu-plugins"} {
@@ -560,6 +591,8 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 					sensitiveDir := filepath.Join(homeDir, sd.Name(), "wp-content", subDir)
 					if info, err := osFS.Stat(sensitiveDir); err == nil && info.IsDir() {
 						sensitiveWPDirs = append(sensitiveWPDirs, sensitiveDir)
+					} else if err != nil && !os.IsNotExist(err) {
+						markCheckIncomplete(ctx, "file_index")
 					}
 				}
 			}
@@ -602,6 +635,18 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 	return entries
 }
 
+func fileIndexHomeDirs(ctx context.Context) ([]os.DirEntry, error) {
+	if AccountFromContext(ctx) != "" {
+		return GetScanHomeDirs(ctx)
+	}
+	homes, err := readAccountHomes()
+	entries := make([]os.DirEntry, 0, len(homes))
+	for _, home := range homes {
+		entries = append(entries, rootedDirEntry{DirEntry: home.Entry, root: home.Root})
+	}
+	return entries, err
+}
+
 // scanDirForPHP recursively reads directories for PHP-executable files.
 // If directory mtime is unchanged, carries forward previous entries.
 func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, overlay phpHandlerOverlay, entries *[]string) {
@@ -623,6 +668,8 @@ func scanDirForPHPContextWithTracker(ctx context.Context, dir string, maxDepth i
 
 	if htaccess, err := osFS.ReadFile(filepath.Join(dir, ".htaccess")); err == nil {
 		overlay = overlay.mergeHtaccess(htaccess)
+	} else if !os.IsNotExist(err) {
+		markCheckIncomplete(ctx, "file_index")
 	}
 	if ctx.Err() != nil {
 		return
@@ -652,6 +699,9 @@ func scanDirForPHPContextWithTracker(ctx context.Context, dir string, maxDepth i
 
 	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			markCheckIncomplete(ctx, "file_index")
+		}
 		return
 	}
 
@@ -715,6 +765,9 @@ func scanDirForExecutablesContextWithTracker(ctx context.Context, dir string, ma
 
 	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			markCheckIncomplete(ctx, "file_index")
+		}
 		return
 	}
 
@@ -729,6 +782,9 @@ func scanDirForExecutablesContextWithTracker(ctx context.Context, dir string, ma
 		}
 		info, err := entry.Info()
 		if err != nil {
+			if !os.IsNotExist(err) {
+				reportFileIndexFailure(ctx)
+			}
 			continue
 		}
 		if info.Mode()&0111 != 0 {
@@ -772,6 +828,9 @@ func scanDirForSuspiciousExtContextWithTracker(ctx context.Context, dir string, 
 
 	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			markCheckIncomplete(ctx, "file_index")
+		}
 		return
 	}
 
@@ -821,27 +880,37 @@ func isSuspiciousPHPName(name string) bool {
 	return false
 }
 
-func writeIndex(path string, entries []string) {
+func writeIndex(path string, entries []string) error {
 	tmpPath := path + ".tmp"
 	// #nosec G304 -- path is filepath.Join under operator-configured StatePath.
 	f, err := os.Create(tmpPath)
 	if err != nil {
-		return
+		return err
 	}
+	defer func() { _ = f.Close() }()
 
 	w := bufio.NewWriter(f)
 	for _, e := range entries {
-		_, _ = w.WriteString(e + "\n")
+		if _, err := w.WriteString(e + "\n"); err != nil {
+			return err
+		}
 	}
-	_ = w.Flush()
-	_ = f.Close()
-	_ = os.Rename(tmpPath, path)
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
-func loadIndex(path string) []string {
+func loadIndex(path string) ([]string, error) {
 	f, err := osFS.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 
@@ -854,13 +923,13 @@ func loadIndex(path string) []string {
 			entries = append(entries, line)
 		}
 	}
-	return entries
+	return entries, scanner.Err()
 }
 
-func copyFile(src, dst string) {
+func copyFile(src, dst string) error {
 	data, err := osFS.ReadFile(src)
 	if err != nil {
-		return
+		return err
 	}
-	_ = os.WriteFile(dst, data, 0600)
+	return os.WriteFile(dst, data, 0600)
 }

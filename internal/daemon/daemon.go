@@ -41,6 +41,7 @@ import (
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/phptaintworker"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/sdnotify"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
@@ -65,6 +66,7 @@ type Daemon struct {
 	logWatchers      []*LogWatcher
 	logWatchersMu    sync.Mutex
 	fileMonitor      *FileMonitor
+	fileMonitorMu    sync.RWMutex
 	hijackDetector   *PasswordHijackDetector
 	pamListener      *PAMListener
 	controlListener  *ControlListener
@@ -77,15 +79,23 @@ type Daemon struct {
 	ipList           *challenge.IPList
 	challengeGate    challenge.PortGate
 	fwEngine         *firewall.Engine
-	baselineMu       sync.Mutex // serialises CmdBaseline handler runs
-	geoipDB          *geoip.DB
-	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
-	version          string
-	blockDigest      *blockdigest.Collector
-	alertCh          chan alert.Finding
+	// fwActions retains the durable-action boundary even after failed startup,
+	// so pending actions remain recoverable while the firewall is unmanaged.
+	fwActions      firewallActionBoundary
+	fwStartupError string     // finalized before status servers start
+	baselineMu     sync.Mutex // serialises CmdBaseline handler runs
+	geoipDB        *geoip.DB
+	geoipMu        sync.Mutex // protects geoipDB for publishGeoIP
+	version        string
+	blockDigest    *blockdigest.Collector
+	alertCh        chan alert.Finding
+	alertQueue     *queuehealth.Tracker
+	queueSourcesMu sync.RWMutex
+	queueSources   map[string]queueSource
 	// alertHold, while open, keeps the dispatcher draining alertCh into its
 	// batch without dispatching, so realtime producers (which never block)
-	// lose nothing during the synchronous startup baseline. Closed by
+	// lose nothing during the synchronous startup baseline. The ingest queue
+	// health is held with it, so the baseline is not reported as a stall. Closed by
 	// releaseAlertDispatch once the baseline has published; nil means the
 	// dispatcher never holds.
 	alertHold        chan struct{}
@@ -94,6 +104,7 @@ type Daemon struct {
 	stopCh           chan struct{}
 	scanCtx          context.Context
 	scanCancel       context.CancelFunc // cancels in-flight periodic scans on shutdown
+	modsecReload     checks.ModSecReloadReconciler
 	abuseReportStop  chan struct{}
 	abuseReportDone  chan struct{}
 	wg               sync.WaitGroup
@@ -201,6 +212,9 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	// Remediation records what it wrote here, so the sensitive-file detectors
 	// can tell CSM's own change from a third party's after a restart.
 	checks.SetSelfWriteStore(store)
+	if store != nil {
+		d.registerQueueSource("state", store)
+	}
 	d.smtpAuthTracker = newSMTPAuthTracker(
 		cfg.Thresholds.SMTPBruteForceThreshold,
 		cfg.Thresholds.SMTPBruteForceSubnetThresh,
@@ -507,6 +521,10 @@ func firewallMetricsRuleCounts() firewall.RuleCounts {
 
 func (d *Daemon) setFirewallEngine(engine *firewall.Engine) {
 	d.fwEngine = engine
+	d.fwActions = nil
+	if boundary, ok := any(engine).(firewallActionBoundary); ok {
+		d.fwActions = boundary
+	}
 	setFirewallMetricsEngine(engine)
 }
 
@@ -538,6 +556,11 @@ func (d *Daemon) registerFirewallMetrics() {
 
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
+	d.alertQueue = queuehealth.New(cap(d.alertCh), time.Minute)
+	defer alert.RegisterQueue(d.alertCh, d.alertQueue)()
+	if err := d.checkObserveStartupRecovery(); err != nil {
+		return err
+	}
 	d.startTime = time.Now()
 	defer alert.ClosePhpanelQueues()
 	if d.store != nil {
@@ -579,8 +602,7 @@ func (d *Daemon) Run() error {
 
 	// Initialize the findings broadcast bus so passive observers (SSE, etc.)
 	// can subscribe before any findings are dispatched.
-	d.findingBus = broadcast.NewBus(64)
-	alert.FindingBus = d.findingBus
+	d.installFindingBus()
 
 	// Install config-supplied platform overrides BEFORE the first Detect()
 	// call so every check sees the merged view. The daemon command installs
@@ -604,6 +626,10 @@ func (d *Daemon) Run() error {
 	// so the LiteSpeed classifier can tell pass-action vendor rules apart
 	// from real denies on the very first parsed line.
 	d.initModSecRegistry()
+
+	// Startup rollback can restore config and restart before reaching the
+	// watchers or integrity verification, so its sink must already be ready.
+	d.installActionLog()
 
 	// Wire the firewall tentative-apply manager. Recovery has to run
 	// before integrity.Verify because a pending rollback whose deadline
@@ -653,22 +679,7 @@ func (d *Daemon) Run() error {
 		return err
 	}
 
-	// Self-heal the auditd rules file. Package upgrades sometimes ship
-	// a new csm binary without re-running auditd.Deploy() (postinstall
-	// hooks differ across apt/dnf and across operator deploy automation),
-	// which leaves new rules — including detection layers like
-	// csm_af_alg_socket — silently inactive on the upgraded host. The
-	// startup compare-and-redeploy here closes that gap. Errors are
-	// non-fatal: if auditd is absent or augenrules fails, the rest of
-	// CSM still runs.
-	if redeployed, err := auditd.EnsureDeployed(); err != nil {
-		csmlog.Warn("auditd rules ensure failed", "err", err)
-	} else if redeployed {
-		csmlog.Info("auditd rules redeployed (drift from embedded constant)")
-	}
-
-	// Deploy WHM plugin and configs if cPanel is present
-	deployConfigs()
+	d.applyStartupIntegrations()
 
 	// Initialize signature scanners and threat DB (fast, no I/O scan)
 	d.registerBuildInfo()
@@ -694,13 +705,7 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
 	}
 	if adb := attackdb.Init(d.cfg.StatePath); adb != nil {
-		// Seed from permanent blocklist on first run (when attack DB is empty)
-		if adb.TotalIPs() == 0 {
-			if n := adb.SeedFromPermanentBlocklist(d.cfg.StatePath); n > 0 {
-				fmt.Fprintf(os.Stderr, "[%s] Attack DB seeded %d IPs from permanent blocklist\n", ts(), n)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "[%s] Attack DB initialized (%s)\n", ts(), adb.FormatTopLine())
+		d.prepareAttackDatabase(adb)
 	}
 
 	// Install operator verified-bot ranges before the firewall engine is
@@ -809,6 +814,8 @@ func (d *Daemon) Run() error {
 	// still running on a large host.
 	d.wg.Add(1)
 	obs.Go("watchdog-notifier", d.watchdogNotifier)
+	d.wg.Add(1)
+	obs.Go("queue-health", d.monitorQueueHealth)
 
 	if sent, err := sdnotify.Ready(); err != nil {
 		fmt.Fprintf(os.Stderr, "sd_notify READY failed: %v\n", err)
@@ -856,47 +863,7 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	d.store.AppendHistory(initialFindings)
-	newFindings := d.store.FilterNew(initialFindings)
-	suppressions := d.store.LoadSuppressions()
-	initialAutoResponseFindings := initialFindings
-	if len(suppressions) > 0 {
-		initialAutoResponseFindings = filterUnsuppressedFindings(d.store, initialFindings, suppressions)
-		newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
-	}
-
-	// Permission auto-fix runs on ALL findings (not just new) because
-	// it's safe/idempotent and should fix baseline findings too.
-	permActions, permFixedKeys := checks.AutoFixPermissions(initialCfg, initialAutoResponseFindings)
-
-	// Challenge routing runs on ALL findings unconditionally when enabled, so an
-	// eligible IP is on the challenge list before AutoBlockIPs (below, guarded by
-	// newFindings) checks membership. Not folded into ChallengeThenBlock here:
-	// challenge must route even with no new findings (re-establishing challenges
-	// on restart) while the block stage stays gated on new findings.
-	challengeActions := checks.ChallengeRouteIPs(initialCfg, initialAutoResponseFindings)
-
-	// Other auto-response only on new findings
-	if len(newFindings) > 0 {
-		killActions := checks.AutoKillProcesses(initialCfg, newFindings)
-		quarantineActions := checks.AutoQuarantineFiles(initialCfg, newFindings)
-		blockActions := checks.AutoBlockIPs(initialCfg, initialAutoResponseFindings)
-		d.observeBlocks(blockActions)
-		newFindings = append(newFindings, killActions...)
-		newFindings = append(newFindings, quarantineActions...)
-		newFindings = append(newFindings, permActions...)
-		newFindings = append(newFindings, challengeActions...)
-		newFindings = append(newFindings, blockActions...)
-		// Cross-account correlation runs on the initial batch too, not
-		// just on subsequent ticks. Otherwise three account compromises
-		// landing in the first scan slip past with no synthetic alert.
-		newFindings = expandWithCorrelation(newFindings, time.Now())
-		co := IncidentCorrelator()
-		for _, f := range newFindings {
-			_, _, _ = co.OnFinding(f)
-		}
-		_ = alert.Dispatch(initialCfg, operatorAlertableFindings(newFindings))
-	}
+	newFindings, permFixedKeys := d.respondToInitialScan(initialCfg, initialFindings)
 
 	// Remove auto-fixed findings before storing to UI
 	if len(permFixedKeys) > 0 {
@@ -943,15 +910,14 @@ func (d *Daemon) Run() error {
 			defer d.wg.Done()
 			cfg := d.currentCfg()
 			retro := ScanEximHistoryForCloudRelay(cfg, "", time.Now(), 24*time.Hour)
-			for _, f := range retro {
+			for i, f := range retro {
 				// Enqueue the finding FIRST; only after it is
 				// accepted by the dispatcher do we trigger the
 				// account-suspend side-effect. This prevents a
 				// silent mailbox suspension if the daemon begins
 				// shutting down between these two operations.
-				select {
-				case d.alertCh <- f:
-				case <-d.stopCh:
+				if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+					alert.RecordQueueLoss(d.alertCh, uint64(len(retro[i+1:])))
 					return
 				}
 				sender := extractSenderFromCloudRelayMessage(f.Message)
@@ -993,15 +959,14 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	// Auto-clear stale content findings when the detection logic has changed
-	// since the last start (new signatures, YARA rules, or heuristic version).
-	// Runs in a goroutine so it does not block startup; it only dismisses
-	// findings that the re-verifier confirms are no longer flagged AND whose
-	// bytes have not changed since detection.
+	// Auto-clear stale content and web-exposure findings when their re-check
+	// logic has changed since the last start.
+	// Runs in a goroutine so it does not block startup; each allowlisted family
+	// keeps its own fail-closed dismissal invariant.
 	if db := store.Global(); db != nil && d.store != nil {
-		token := checks.ContentDetectionVersion()
-		d.startContentReverifySweepIfChanged(db, token, func() []checks.ContentReverifyDismissal {
-			return checks.ReverifyStaleContentFindings(d.store)
+		token := checks.FindingReverifyVersion()
+		d.startContentReverifySweepIfChanged(db, token, func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+			return checks.ReverifyStaleFindingsStats(d.scanContext(), d.store)
 		})
 	}
 
@@ -1032,6 +997,7 @@ func (d *Daemon) Run() error {
 				"backend", mon.Mode(),
 				"state", kstate.String(),
 			)
+			d.registerBackendQueues("bpf.af_alg", mon)
 			d.wg.Add(1)
 			obs.Go("af-alg-listener", func() {
 				defer d.wg.Done()
@@ -1047,6 +1013,7 @@ func (d *Daemon) Run() error {
 	d.startPHPRelay()
 
 	if mon := StartConnectionTracker(d.alertCh, d.cfg); mon != nil {
+		d.registerBackendQueues("bpf.connection", mon)
 		csmlog.Info("connection_tracker: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("connection-tracker", func() {
@@ -1059,6 +1026,7 @@ func (d *Daemon) Run() error {
 	}
 
 	if mon := StartExecMonitor(d.alertCh, d.cfg); mon != nil {
+		d.registerBackendQueues("bpf.execution", mon)
 		csmlog.Info("exec_monitor: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("exec-monitor", func() {
@@ -1071,6 +1039,7 @@ func (d *Daemon) Run() error {
 	}
 
 	if mon := StartSensitiveFileMonitor(d.alertCh, d.cfg, d.store); mon != nil {
+		d.registerBackendQueues("bpf.sensitive_files", mon)
 		csmlog.Info("sensitive_files: started", "backend", mon.Mode())
 		d.wg.Add(1)
 		obs.Go("sensitive-files", func() {
@@ -1204,8 +1173,8 @@ func (d *Daemon) Run() error {
 		}
 		d.challengeGate = nil
 	}
-	if d.fileMonitor != nil {
-		d.fileMonitor.Stop()
+	if fm := d.getFileMonitor(); fm != nil {
+		fm.Stop()
 	}
 	if sw := d.getSpoolWatcher(); sw != nil {
 		sw.Stop()
@@ -1224,6 +1193,7 @@ func (d *Daemon) Run() error {
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 
 	d.wg.Wait()
+	stopProcessCtx()
 	csmlog.Info("workers drained", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
@@ -1251,46 +1221,81 @@ func (d *Daemon) Run() error {
 }
 
 type contentLogicVersionStore interface {
-	EnsureContentLogicVersion(token string) (bool, error)
+	ContentLogicVersionChanged(token string) (bool, error)
+	SetContentLogicVersion(token string) error
 }
 
-func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() []checks.ContentReverifyDismissal) {
-	changed, err := db.EnsureContentLogicVersion(token)
+func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool)) {
+	changed, err := db.ContentLogicVersionChanged(token)
 	if err != nil {
-		csmlog.Warn("content logic version check failed", "err", err)
+		csmlog.Warn("finding re-verification version check failed", "err", err)
 		return
 	}
 	if changed {
-		d.startContentReverifySweep(run)
+		d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+			dismissed, stats, complete := run()
+			if !complete {
+				return dismissed, stats, false
+			}
+			if err := db.SetContentLogicVersion(token); err != nil {
+				csmlog.Warn("finding re-verification version update failed", "err", err)
+				return dismissed, stats, false
+			}
+			return dismissed, stats, true
+		})
 	}
 }
 
-func (d *Daemon) startContentReverifySweep(run func() []checks.ContentReverifyDismissal) {
+func (d *Daemon) startContentReverifySweep(run func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool)) {
 	d.wg.Add(1)
 	obs.Go("content-reverify-sweep", func() {
 		defer d.wg.Done()
-		dismissed := run()
-		for _, dm := range dismissed {
-			csmlog.Info("stale content finding auto-cleared",
+		outcomes, stats, complete := run()
+		for _, dm := range outcomes {
+			csmlog.Info(contentReverifyOutcomeMessage(dm),
 				"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
 		}
-		if len(dismissed) > 0 {
-			csmlog.Info("content re-verification sweep complete", "cleared", len(dismissed))
+		if !complete {
+			csmlog.Info("finding re-verification sweep will retry on next start")
+			return
 		}
+		// Always log the summary. A sweep that produced nothing used to log
+		// nothing at all, which made "ran and found nothing" indistinguishable
+		// from "never ran" and from "failed on every finding" -- and that
+		// ambiguity cost more than one wrong conclusion about why findings
+		// were not draining.
+		csmlog.Info("finding re-verification sweep complete",
+			"considered", stats.Considered, "cleared", stats.Cleared, "demoted", stats.Demoted,
+			"promoted", stats.Promoted, "unchecked", stats.Unchecked,
+			"unchecked_reason", stats.TopUncheckedReason)
 	})
+}
+
+func contentReverifyOutcomeMessage(outcome checks.ContentReverifyDismissal) string {
+	switch {
+	case outcome.Promoted:
+		return "finding severity restored after re-verification"
+	case outcome.Demoted:
+		return "remediated finding demoted"
+	default:
+		return "stale finding auto-cleared"
+	}
 }
 
 // DroppedAlerts returns the total number of alerts dropped due to
 // channel backpressure since the daemon started.
 func (d *Daemon) DroppedAlerts() int64 {
+	if d.alertQueue != nil {
+		return int64(d.alertQueue.Snapshot(time.Now()).DroppedTotal) // #nosec G115 -- a daemon cannot produce MaxInt64 findings within its lifetime.
+	}
 	return atomic.LoadInt64(&d.droppedAlerts)
 }
 
 func (d *Daemon) scanContext() context.Context {
 	if d.scanCtx != nil {
-		return d.scanCtx
+		return checks.WithModSecReload(d.scanCtx, &d.modsecReload)
 	}
-	return context.Background()
+	return checks.WithModSecReload(context.Background(), &d.modsecReload)
 }
 
 // FindingBus returns the per-daemon broadcast.Bus used by passive
@@ -1313,6 +1318,9 @@ const alertHoldMaxBatch = 5000
 // goroutine starts.
 func (d *Daemon) holdAlertDispatch() {
 	d.alertHold = make(chan struct{})
+	if d.alertQueue != nil {
+		d.alertQueue.Hold(time.Now())
+	}
 }
 
 // releaseAlertDispatch lets the dispatcher start dispatching its batches.
@@ -1321,7 +1329,12 @@ func (d *Daemon) releaseAlertDispatch() {
 	if d.alertHold == nil {
 		return
 	}
-	d.alertReleaseOnce.Do(func() { close(d.alertHold) })
+	d.alertReleaseOnce.Do(func() {
+		if d.alertQueue != nil {
+			d.alertQueue.Release(time.Now())
+		}
+		close(d.alertHold)
+	})
 }
 
 func (d *Daemon) alertDispatcher() {
@@ -1342,7 +1355,9 @@ func (d *Daemon) alertDispatcher() {
 			return
 
 		case f := <-d.alertCh:
+			alert.StartQueued(f)
 			if held != nil && len(batch) >= alertHoldMaxBatch {
+				alert.RejectQueued(f)
 				heldDropped++
 				atomic.AddInt64(&d.droppedAlerts, 1)
 				continue
@@ -1374,6 +1389,7 @@ func (d *Daemon) drainAlertChannel(batch []alert.Finding) []alert.Finding {
 			if !ok {
 				return batch
 			}
+			alert.StartQueued(f)
 			batch = append(batch, f)
 		default:
 			return batch
@@ -1397,9 +1413,11 @@ func (d *Daemon) flushPendingAlertsOnShutdown() {
 // the next start releases the dispatcher. Nothing here is marked sent via
 // store.Update, so the replay's dispatch is not suppressed.
 func (d *Daemon) persistPendingFindingsOnShutdown(batch []alert.Finding) {
+	defer alert.FinishQueued(batch)
 	if len(batch) == 0 {
 		return
 	}
+	alert.FillTimestamps(batch, time.Now())
 	d.store.AppendHistory(batch)
 	if err := d.store.AppendPendingFindings(batch); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Could not park %d pending finding(s) for the next start: %v\n", ts(), len(batch), err)
@@ -1432,6 +1450,12 @@ func operatorAlertableFindings(findings []alert.Finding) []alert.Finding {
 }
 
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {
+	defer alert.FinishQueued(findings)
+	// Realtime producers may hand over findings without a Timestamp; stamp
+	// them once here so history, incidents, the latest set and every alert
+	// sink see the same time.
+	alert.FillTimestamps(findings, time.Now())
+	auditSources := append([]alert.Finding(nil), findings...)
 	// Snapshot the live config once at the top of the batch. Every
 	// cfg.X read below picks up the last-reloaded value (ROADMAP
 	// item 7); taking one snapshot avoids the weirder case of a
@@ -1441,16 +1465,13 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	findings = alert.Deduplicate(findings)
 	suppressions := d.store.LoadSuppressions()
-	autoResponseFindings := findings
-	if len(suppressions) > 0 {
-		autoResponseFindings = filterUnsuppressedFindings(d.store, findings, suppressions)
-	}
+	remediableFindings := filterUnsuppressedFindings(d.store, findings, suppressions)
 
 	// Record ALL findings in attack database (before filtering -
 	// repeated attacks from the same IP must still be counted even if
-	// the alert is suppressed by FilterNew).
+	// the alert is suppressed by FilterNew or a suppression rule).
 	if adb := attackdb.Global(); adb != nil {
-		for _, f := range autoResponseFindings {
+		for _, f := range findings {
 			adb.RecordFinding(f)
 		}
 	}
@@ -1462,8 +1483,11 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	// Challenge routing runs FIRST - claims eligible IPs before hard-blocking.
 	// One ordered helper guarantees that ordering on every auto-response path.
-	challengeActions, blockActions := checks.ChallengeThenBlock(cfg, autoResponseFindings)
-	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, autoResponseFindings)
+	// Suppression rules do not gate IP responses: they mute a check, and a
+	// check-wide rule would otherwise leave every attacker it reports
+	// unblocked. An IP false positive belongs on the allowlist.
+	challengeActions, blockActions := checks.ChallengeThenBlock(cfg, findings)
+	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, remediableFindings)
 
 	// Mark auto-blocked IPs in attack database
 	if adb := attackdb.Global(); adb != nil {
@@ -1480,54 +1504,64 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	// Filter through state - only new findings get alerted and logged
-	newFindings := d.store.FilterNew(findings)
+	unfilteredNew := d.store.FilterNew(findings)
 
-	// Filter out suppressed findings - prevents email/webhook alerts for
-	// paths the admin has explicitly suppressed (e.g. false positives).
+	// responseFindings is every new observation and action, suppressed or not:
+	// incidents and central enforcement act on it. newFindings drops what
+	// suppression rules match, which mutes notifications and remediation.
 	// Suppressions are stored in state/suppressions.json, not in rule files.
-	if len(suppressions) > 0 {
-		newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
-	}
-
-	// Append auto-response actions to new findings for alerting
-	newFindings = append(newFindings, blockActions...)
-	newFindings = append(newFindings, challengeActions...)
-	newFindings = append(newFindings, permActions...)
+	responseFindings := append([]alert.Finding(nil), unfilteredNew...)
+	responseFindings = append(responseFindings, blockActions...)
+	responseFindings = append(responseFindings, challengeActions...)
+	responseFindings = append(responseFindings, permActions...)
 
 	// PHP-relay AutoFreeze: emit any new findings produced by post-emit
 	// freeze decisions back into the dispatched batch so operators see
 	// the action outcome alongside the original finding. Nil-guard for
 	// non-cPanel / non-linux hosts where wiring is skipped.
 	if d.autoFreezer != nil {
-		if freezeFindings := d.autoFreezer.Apply(autoResponseFindings); len(freezeFindings) > 0 {
-			newFindings = append(newFindings, freezeFindings...)
+		if freezeFindings := d.autoFreezer.Apply(remediableFindings); len(freezeFindings) > 0 {
+			responseFindings = append(responseFindings, freezeFindings...)
 		}
 	}
 
-	if len(newFindings) == 0 {
+	if len(responseFindings) == 0 {
+		_ = alert.DispatchWithSources(cfg, nil, auditSources)
 		d.store.Update(findings)
 		return
 	}
 
-	// Log to history
+	// Copy: with no rules the filter returns its input, and both slices grow.
+	newFindings := append([]alert.Finding(nil), filterUnsuppressedFindings(d.store, responseFindings, suppressions)...)
 	d.store.AppendHistory(newFindings)
 	d.observeBlocks(blockActions)
 
-	// Kill, quarantine, and DB cleanup only run on NEW findings
-	killActions := checks.AutoKillProcesses(cfg, newFindings)
+	// Kill and quarantine only run on new, unsuppressed findings.
+	killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
-	dbCleanActions := checks.AutoRespondDBMalware(cfg, newFindings)
-	newFindings = append(newFindings, killActions...)
-	newFindings = append(newFindings, quarantineActions...)
-	newFindings = append(newFindings, dbCleanActions...)
+	// Database response also discovers attacker session IPs. Suppressions
+	// stop SQL writes and session revocation, but not those IP blocks.
+	dbActions := autoRespondDBMalware(cfg, unfilteredNew, func(f alert.Finding) bool {
+		return !d.store.IsSuppressed(f, suppressions)
+	})
+	for _, actions := range [][]alert.Finding{killActions, quarantineActions, dbActions} {
+		responseFindings = append(responseFindings, actions...)
+		newFindings = append(newFindings, filterUnsuppressedFindings(d.store, actions, suppressions)...)
+	}
 
-	// Correlation
+	// Correlation derives notifications, so it reads only unsuppressed
+	// findings; its derived findings still reach incidents and enforcement.
+	uncorrelated := len(newFindings)
 	newFindings = expandWithCorrelation(newFindings, time.Now())
+	responseFindings = append(responseFindings, newFindings[uncorrelated:]...)
 
 	co := IncidentCorrelator()
-	for _, f := range newFindings {
+	for _, f := range alert.Deduplicate(responseFindings) {
 		_, _, _ = co.OnFinding(f)
 	}
+	// Derived findings may themselves be suppressed. Keep them in the
+	// response set while applying their rules before notification fanout.
+	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 
 	// Broadcast findings (no-op; dashboard uses polling)
 	if d.webServer != nil {
@@ -1538,7 +1572,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// informational or fully automated (no human action needed).
 	// These are all visible in the web UI for forensics.
 	alertable := operatorAlertableFindings(newFindings)
-	if err := alert.Dispatch(cfg, alertable); err != nil {
+	auditSources = append(auditSources, responseFindings...)
+	if err := alert.DispatchWithEnforcement(cfg, alertable, auditSources, responseFindings); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -1546,9 +1581,65 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.store.MarkAlerted(newFindings)
 }
 
+// respondToInitialScan records the baseline scan, runs its auto-response and
+// dispatches the resulting alerts. It returns the alerted findings and the keys
+// of findings the permission auto-fix repaired.
+func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []alert.Finding) ([]alert.Finding, []string) {
+	d.store.AppendHistory(initialFindings)
+	unfilteredNew := d.store.FilterNew(initialFindings)
+	suppressions := d.store.LoadSuppressions()
+	// Copy: with no rules the filter returns its input, and newFindings grows.
+	newFindings := append([]alert.Finding(nil), filterUnsuppressedFindings(d.store, unfilteredNew, suppressions)...)
+
+	// Permission auto-fix runs on ALL findings (not just new) because
+	// it's safe/idempotent and should fix baseline findings too.
+	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, filterUnsuppressedFindings(d.store, initialFindings, suppressions))
+
+	// Challenge routing runs on ALL findings unconditionally when enabled, so an
+	// eligible IP is on the challenge list before AutoBlockIPs (below, guarded by
+	// new findings) checks membership. Not folded into ChallengeThenBlock here:
+	// challenge must route even with no new findings (re-establishing challenges
+	// on restart) while the block stage stays gated on new findings. As in
+	// dispatchBatch, suppression rules do not gate IP responses.
+	challengeActions := checks.ChallengeRouteIPs(cfg, initialFindings)
+
+	// Other auto-response only on new findings. As in dispatchBatch,
+	// responseFindings keeps suppressed observations for incidents and
+	// central enforcement while newFindings carries what may notify.
+	var responseFindings []alert.Finding
+	if len(unfilteredNew) > 0 {
+		killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
+		quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
+		blockActions := checks.AutoBlockIPs(cfg, initialFindings)
+		d.observeBlocks(blockActions)
+		responseFindings = append(responseFindings, unfilteredNew...)
+		for _, actions := range [][]alert.Finding{killActions, quarantineActions, permActions, challengeActions, blockActions} {
+			responseFindings = append(responseFindings, actions...)
+			newFindings = append(newFindings, filterUnsuppressedFindings(d.store, actions, suppressions)...)
+		}
+		// Cross-account correlation runs on the initial batch too, not
+		// just on subsequent ticks. Otherwise three account compromises
+		// landing in the first scan slip past with no synthetic alert.
+		uncorrelated := len(newFindings)
+		newFindings = expandWithCorrelation(newFindings, time.Now())
+		responseFindings = append(responseFindings, newFindings[uncorrelated:]...)
+		co := IncidentCorrelator()
+		for _, f := range alert.Deduplicate(responseFindings) {
+			_, _, _ = co.OnFinding(f)
+		}
+	}
+	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
+	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
+	_ = alert.DispatchWithEnforcement(cfg, operatorAlertableFindings(newFindings), initialAuditSources, responseFindings)
+	return newFindings, permFixedKeys
+}
+
 // autoFixWPCron lets daemon wiring tests avoid real wp-config.php and crontab
 // edits; the checks package covers those side effects directly.
 var autoFixWPCron = checks.AutoFixWPCron
+
+// Database wiring tests exercise suppression policy without a live MySQL host.
+var autoRespondDBMalware = checks.AutoRespondDBMalwareWithPolicy
 
 // processScanFindings handles the output of a deep or periodic scan: it persists
 // the findings to the latest-findings surface, runs the auto-responses that act
@@ -1557,7 +1648,11 @@ var autoFixWPCron = checks.AutoFixWPCron
 // they never page an operator; that is exactly why the WP-Cron auto-fix runs
 // here and not in dispatchBatch, which only ever sees what the channel carries.
 func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, label string) {
-	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
+	d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, nil, label)
+}
+
+func (d *Daemon) processScanFindingsWithCoverage(cfg *config.Config, findings []alert.Finding, purgeChecks []string, coverage *state.ScanCoverage, label string) {
+	checks.StoreLatestScanFindingsWithCoverage(d.store, purgeChecks, findings, coverage)
 	d.applyWPCronAutoFix(cfg, findings)
 	d.enqueueScanAlerts(findings, label)
 }
@@ -1592,24 +1687,19 @@ func (d *Daemon) enqueueScanAlertsWithin(findings []alert.Finding, label string,
 		if !scanFindingIsAlertable(f) {
 			continue
 		}
-		select {
-		case d.alertCh <- f:
+		err := alert.EnqueueWithin(d.alertCh, f, d.stopCh, timeout)
+		if err == nil {
 			continue
-		default:
 		}
-		timer := time.NewTimer(timeout)
-		select {
-		case d.alertCh <- f:
-			timer.Stop()
-		case <-d.stopCh:
-			timer.Stop()
-			return
-		case <-timer.C:
-			dropped := countAlertableScanFindings(findings[i:])
-			atomic.AddInt64(&d.droppedAlerts, int64(dropped))
+		remaining := countAlertableScanFindings(findings[i+1:])
+		// EnqueueWithin already counted the rejected send, including shutdown.
+		alert.RecordQueueLoss(d.alertCh, uint64(remaining)) // #nosec G115 -- countAlertableScanFindings returns a nonnegative count bounded by the slice length.
+		dropped := remaining + 1
+		atomic.AddInt64(&d.droppedAlerts, int64(dropped))
+		if errors.Is(err, alert.ErrQueueTimeout) {
 			fmt.Fprintf(os.Stderr, "[%s] alert channel jammed for %s, dropping %d remaining %s findings (first: %s)\n", ts(), timeout, dropped, label, f.Check)
-			return
 		}
+		return
 	}
 }
 
@@ -1700,6 +1790,18 @@ func (d *Daemon) deepScanner() {
 		case <-d.stopCh:
 			return
 		case <-time.After(interval):
+			// Re-verify findings whose condition someone else resolved. The
+			// startup sweep is gated on the re-check logic version, which only
+			// moves on deploy: an operator cleaning a file, or a virtual patch
+			// closing an exposure, changes the world without changing CSM, and
+			// a finding gated only on that would keep its severity until the
+			// next upgrade happened to land.
+			if d.store != nil {
+				d.startContentReverifySweep(func() ([]checks.ContentReverifyDismissal, checks.ReverifySweepStats, bool) {
+					return checks.ReverifyStaleFindingsStats(d.scanContext(), d.store)
+				})
+			}
+
 			// Update threat intelligence feeds (once per day)
 			if db := checks.GetThreatDB(); db != nil {
 				_ = db.UpdateFeeds()
@@ -1720,18 +1822,19 @@ func (d *Daemon) deepScanner() {
 			// update would catch the new patterns.
 			cfg := d.currentCfg()
 			rescan := d.forceFullRescan.CompareAndSwap(true, false)
+			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 			var findings []alert.Finding
 			var purgeChecks []string
 			switch {
 			case rescan:
-				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 				observeSignatureRescan()
-			case d.fileMonitor != nil:
-				findings, purgeChecks = checks.RunReducedDeepWithContext(d.scanContext(), cfg, d.store)
+			case d.getFileMonitor() != nil:
+				findings, purgeChecks = checks.RunReducedDeepWithContext(scanCtx, cfg, d.store)
 			default:
-				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 			}
-			d.processScanFindings(cfg, findings, purgeChecks, "deep")
+			d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, gaps.Snapshot(), "deep")
 		}
 	}
 }
@@ -1754,14 +1857,12 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	var err error
 	cfg, err = d.verifyPeriodicIntegritySnapshot(cfg)
 	if err != nil {
-		select {
-		case d.alertCh <- alert.Finding{
+		if !alert.TryEnqueue(d.alertCh, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "integrity",
 			Message:   fmt.Sprintf("BINARY/CONFIG TAMPER DETECTED: %v", err),
 			Timestamp: time.Now(),
-		}:
-		default:
+		}) {
 			atomic.AddInt64(&d.droppedAlerts, 1)
 			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping integrity finding\n", ts())
 		}
@@ -1777,8 +1878,9 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		sdb.PurgeDryRunBlocksOlderThan(time.Now().Add(-7 * 24 * time.Hour))
 	}
 
-	findings, purgeChecks := checks.RunTierWithContext(d.scanContext(), cfg, d.store, tier)
-	d.processScanFindings(cfg, findings, purgeChecks, "periodic")
+	scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
+	findings, purgeChecks := checks.RunTierWithContext(scanCtx, cfg, d.store, tier)
+	d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, gaps.Snapshot(), "periodic")
 }
 
 func (d *Daemon) verifyPeriodicIntegritySnapshot(cfg *config.Config) (*config.Config, error) {
@@ -1810,6 +1912,9 @@ func (d *Daemon) heartbeat() {
 		case <-ticker.C:
 			alert.SendHeartbeat(d.currentCfg())
 			d.hijackDetector.Cleanup()
+			// Failed startup can leave only the recovery boundary available.
+			// Settle pending outcomes before attempting cleanup mutations.
+			recoverFirewallActions(d.fwActions)
 			// Clean expired temporary allows
 			if d.fwEngine != nil {
 				d.fwEngine.CleanExpiredAllows()
@@ -1831,15 +1936,12 @@ func (d *Daemon) heartbeat() {
 func (d *Daemon) startPHPRelay() {
 	info := platform.Detect()
 	if !info.IsCPanel() {
-		select {
-		case d.alertCh <- alert.Finding{
+		alert.TryEnqueue(d.alertCh, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "email_php_relay_disabled",
 			Message:   "php_relay disabled: not a cPanel host",
 			Timestamp: time.Now(),
-		}:
-		default:
-		}
+		})
 		return
 	}
 	if !d.cfg.EmailProtection.PHPRelay.Enabled {
@@ -1848,15 +1950,12 @@ func (d *Daemon) startPHPRelay() {
 	if path, err := exec.LookPath("exim"); err == nil {
 		eximBinary = path
 	} else {
-		select {
-		case d.alertCh <- alert.Finding{
+		alert.TryEnqueue(d.alertCh, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "email_php_relay_no_exim",
 			Message:   "php_relay auto-action disabled: exim binary not in PATH",
 			Timestamp: time.Now(),
-		}:
-		default:
-		}
+		})
 	}
 	// Bridge to the linux-only wiring (Phase O2). On non-linux GOOS
 	// the stub in php_relay_wiring_other.go is a no-op.
@@ -1994,44 +2093,7 @@ func (d *Daemon) startLogWatchers() {
 		logFiles = append(logFiles, logFile{"", eximMainlogPath, eximHandler})
 	}
 
-	// Mail-log reader: factory selects file vs journal based on cfg.MailLogs.
-	// Replaces the old cPanel-only /var/log/maillog registration; now works
-	// on all platforms using the platform-default path or journal fallback.
-	{
-		mailReader, mlErr := maillog.New(d.cfg.MailLogs, hostInfo.MailLogPath())
-		if mlErr != nil {
-			csmlog.Warn("mail log reader disabled", "err", mlErr)
-			d.MarkWatcher("maillog", false)
-		} else {
-			// A file-backed reader can go dark if its log path disappears
-			// mid-run (syslog->journald migration). Surface that instead of
-			// silently tailing a dead fd: mark the watcher unhealthy and
-			// emit a finding so the operator knows mail detection degraded.
-			if fr, ok := mailReader.(*maillog.FileReader); ok {
-				fr.SetOnGone(d.handleMailLogSourceGone)
-				fr.SetOnRestored(d.handleMailLogSourceRestored)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			go func() { <-d.stopCh; cancel() }()
-			mailLines, mlErr := mailReader.Run(ctx)
-			if mlErr != nil {
-				cancel()
-				csmlog.Warn("mail log reader failed to start", "err", mlErr)
-				d.MarkWatcher("maillog", false)
-			} else {
-				d.MarkWatcher("maillog", true)
-				d.wg.Add(1)
-				obs.Go("maillog-consumer", func() {
-					defer d.wg.Done()
-					for line := range mailLines {
-						if !d.dispatchMailLogLine(line, mailHandler) {
-							return
-						}
-					}
-				})
-			}
-		}
-	}
+	d.startMailLogReader(hostInfo.MailLogPath(), mailHandler)
 
 	// Only receive PHP Shield events if enabled AND actually installed. A stale
 	// php_shield.enabled flag (e.g. after an upgrade wiped /opt/csm) would
@@ -2264,10 +2326,10 @@ func (d *Daemon) emitAuthBackendFindings() bool {
 	if d.authBackend == nil {
 		return true
 	}
-	for _, f := range d.authBackend.Observe() {
-		select {
-		case d.alertCh <- f:
-		case <-d.stopCh:
+	findings := d.authBackend.Observe()
+	for i, f := range findings {
+		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false
 		}
 	}
@@ -2279,13 +2341,15 @@ func (d *Daemon) handleMailLogSourceGone(err error) {
 	finding := alert.Finding{
 		Severity:  alert.Warning,
 		Check:     "mail_log_source_unavailable",
-		Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded until it returns or the daemon restarts", err),
+		Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded while attachment is retried", err),
 		Timestamp: time.Now(),
 	}
 	select {
-	case d.alertCh <- finding:
 	case <-d.stopCh:
+		return
 	default:
+	}
+	if !alert.TryEnqueue(d.alertCh, finding) {
 		atomic.AddInt64(&d.droppedAlerts, 1)
 		fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping maillog source finding\n", ts())
 	}
@@ -2297,10 +2361,9 @@ func (d *Daemon) handleMailLogSourceRestored() {
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) bool {
 	findings := handler(line.Message, d.currentCfg())
-	for _, f := range findings {
-		select {
-		case d.alertCh <- f:
-		case <-d.stopCh:
+	for i, f := range findings {
+		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
+			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false
 		}
 	}
@@ -2388,7 +2451,7 @@ func (d *Daemon) startWebUI() {
 	d.logWatchersMu.Lock()
 	numWatchers := len(d.logWatchers)
 	d.logWatchersMu.Unlock()
-	srv.SetHealthInfo(d.fileMonitor != nil, numWatchers)
+	srv.SetHealthInfo(d.getFileMonitor() != nil, numWatchers)
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}
@@ -2446,7 +2509,7 @@ func (d *Daemon) startFileMonitor() {
 		return
 	}
 	fm.registerMetrics()
-	d.fileMonitor = fm
+	d.setFileMonitor(fm)
 	d.wg.Add(1)
 	obs.Go("fanotify", func() {
 		defer d.wg.Done()
@@ -2481,6 +2544,7 @@ func (d *Daemon) startSpoolWatcher() {
 	// Create orchestrator with both engines
 	scanners := []emailav.Scanner{clamScanner, yaraScanner}
 	orch := emailav.NewOrchestrator(scanners, d.cfg.EmailAV.ScanTimeoutDuration())
+	d.registerQueueSource("email_av", orch)
 
 	// Create quarantine
 	quar := emailav.NewQuarantine("/opt/csm/quarantine/email")
@@ -2578,6 +2642,9 @@ func (d *Daemon) runSpoolWatcherLoopWithFactory(current spoolWatcherRuntime, res
 
 func (d *Daemon) setSpoolWatcher(sw *SpoolWatcher) {
 	d.spoolWatcherMu.Lock()
+	if d.spoolWatcher != nil {
+		sw.inheritQueueHealth(d.spoolWatcher)
+	}
 	d.spoolWatcher = sw
 	d.spoolWatcherMu.Unlock()
 	d.syncEmailAVWebState()
@@ -2598,6 +2665,7 @@ func (d *Daemon) startForwarderWatcher() {
 		return
 	}
 	d.forwarderWatcher = fw
+	d.registerQueueSource("forwarder", fw)
 	d.wg.Add(1)
 	obs.Go("forwarder-watcher", func() {
 		defer d.wg.Done()
@@ -2779,7 +2847,9 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			Reason:       fmt.Sprintf("challenge timeout: %s", truncateStr(e.Reason, 100)),
 			TTL:          expiry,
 			Source:       checks.BlockSourceChallenge,
+			FindingID:    e.FindingID,
 		})
+		recorded = append(recorded, res.Findings...)
 		if err != nil {
 			// Own-interface / infra IPs are never blockable, and a host
 			// without a firewall engine cannot escalate; both are expected
@@ -2787,11 +2857,12 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) {
 				fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
 			}
-			continue
+			if res.Outcome != firewall.BlockOutcomeLive || !errors.Is(err, firewall.ErrActionAuditPending) {
+				continue
+			}
 		}
 		observeChallengeEscalated(res.Outcome)
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, res.Outcome))
-		recorded = append(recorded, res.Findings...)
 	}
 	d.recordAppliedBlocks(recorded)
 }
@@ -2804,6 +2875,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 // sink sees the same single copy, and a failure in one sink does not skip the
 // sinks that follow it.
 func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
+	alert.FillTimestamps(findings, time.Now())
 	findings = alert.Deduplicate(findings)
 	if len(findings) == 0 {
 		return
@@ -2822,7 +2894,11 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 	if d.store != nil {
 		d.store.AppendHistory(findings)
 	}
-	if err := alert.Dispatch(d.currentCfg(), findings); err != nil {
+	alertable := findings
+	if d.store != nil {
+		alertable = filterUnsuppressedFindings(d.store, findings, d.store.LoadSuppressions())
+	}
+	if err := alert.DispatchWithEnforcement(d.currentCfg(), alertable, findings, findings); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Applied-block alert dispatch error: %v\n", ts(), err)
 	}
 }
@@ -2830,19 +2906,18 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 // applyIncidentSprayBlock is the incident correlator's firewall hand-off,
 // routed through the chokepoint so spray blocks leave evidence and reach
 // the digest.
-func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duration) (bool, error) {
+func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duration, findingID string) (bool, error) {
 	res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
 		IP:           ip,
 		EngineReason: reason,
 		Reason:       reason,
 		TTL:          timeout,
 		Source:       checks.BlockSourceIncident,
+		FindingID:    findingID,
 	})
-	if err != nil {
-		return false, err
-	}
 	d.recordAppliedBlocks(res.Findings)
-	return res.Outcome == firewall.BlockOutcomeLive, nil
+	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))
+	return live, err
 }
 
 var (
@@ -3025,122 +3100,6 @@ func (d *Daemon) doGeoIPUpdate() {
 	}
 }
 
-func (d *Daemon) startFirewall() {
-	effectiveFirewall := config.EffectiveFirewallConfig(d.cfg)
-	if effectiveFirewall == nil || !effectiveFirewall.Enabled {
-		return
-	}
-
-	engine, err := firewall.NewEngine(effectiveFirewall, d.cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Firewall engine init error: %v\n", ts(), err)
-		return
-	}
-
-	// Wire dry-run + verdict callbacks BEFORE Apply() and before the
-	// engine is exposed via d.fwEngine / checks.SetIPBlocker. The
-	// auto_response.dry_run safety default is "on": if any code path
-	// reaches engine.BlockIP while these callbacks are still nil, the
-	// engine treats dry-run as off and the block lands live, defeating
-	// the operator's stated intent. Wiring before exposure removes the
-	// boot-time race window entirely.
-	engine.SetDryRunRecorder(func(ip, reason string, timeout time.Duration) {
-		if db := store.Global(); db != nil {
-			db.RecordDryRunBlock(ip, reason, timeout)
-		}
-	})
-	engine.SetDryRunEnabledFunc(d.autoResponseDryRunEnabled)
-	engine.SetVerdictAsker(d.askVerdictCallback)
-	// The auto-block path skips published-crawler IPs so a high-volume bot is
-	// never re-added to blocked_ips behind the operator allowlist. Built-in and
-	// operator verified_bots ranges both flow through this lookup.
-	engine.SetSoftAllowChecker(func(ip string) bool {
-		parsed := net.ParseIP(ip)
-		return parsed != nil && threatintel.IPInAnyVerifiedBotRange(parsed)
-	})
-
-	// Push the mail-provider ranges loaded by initMailRanges() into the engine
-	// before Apply() so the dos_exempt_nets interval sets are populated in the
-	// first nftables transaction. initMailRanges() runs before startFirewall()
-	// so ProviderNets() always returns the cached or embedded snapshot here.
-	engine.SetDOSExemptProviderNets(mailranges.ProviderNets())
-
-	if err := engine.Apply(); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)
-		return
-	}
-
-	// Apply does not consult the verdict callback. Install the shutdown
-	// context only after a successful firewall setup so a failed init
-	// does not leave behind a stopCh waiter.
-	verdictCtx, cancelVerdict := context.WithCancel(context.Background())
-	go func() {
-		<-d.stopCh
-		cancelVerdict()
-	}()
-	engine.SetShutdownContext(verdictCtx)
-
-	d.setFirewallEngine(engine)
-
-	// Set firewall engine for auto-blocking
-	checks.SetIPBlocker(engine)
-	// Prune auto-response subnet blocks that now intersect the DoS-exempt set.
-	// The mail-provider cache is loaded (initMailRanges ran before startFirewall)
-	// and Apply has completed, so the exempt set is current.
-	checks.PruneExemptAutoSubnets(d.cfg, engine)
-	// Wire the incident firewall hand-off through the ApplyBlock chokepoint
-	// so the correlator distinguishes live mutation from dry-run and no-op
-	// outcomes AND spray blocks leave the standard evidence trail.
-	SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
-
-	fwState, _ := firewall.LoadState(d.cfg.StatePath)
-	csmlog.Info("firewall active",
-		"blocked_ips", len(fwState.Blocked),
-		"allowed_ips", len(fwState.Allowed),
-	)
-
-	// Start Dynamic DNS resolver if configured. The same resolver
-	// loop also services hostnames listed under infra_ips so they get
-	// DNS-refreshed into the engine's infra-block guard; otherwise the
-	// hostname entries would only protect operators whose IPs never
-	// move, which defeats the point of listing them by name.
-	infraHosts := infraHostnames(effectiveFirewall.InfraIPs)
-	dynHosts := append([]string{}, effectiveFirewall.DynDNSHosts...)
-	for _, h := range infraHosts {
-		if !containsString(dynHosts, h) {
-			dynHosts = append(dynHosts, h)
-		}
-	}
-	if len(dynHosts) > 0 {
-		resolver := firewall.NewDynDNSResolver(dynHosts, engine)
-		resolver.SetInfraEngine(engine)
-		for _, h := range infraHosts {
-			resolver.RegisterInfraHost(h)
-		}
-		resolver.SetFindingSink(func(host string) {
-			select {
-			case d.alertCh <- dynDNSUnresolvableFinding(host):
-			default:
-				atomic.AddInt64(&d.droppedAlerts, 1)
-				fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping dyndns guard finding: %s\n", ts(), host)
-			}
-		})
-		d.wg.Add(1)
-		obs.Go("dyndns-resolver", func() {
-			defer d.wg.Done()
-			resolver.Run(d.stopCh)
-		})
-		csmlog.Info("DynDNS resolver active", "hosts", len(dynHosts), "infra_hosts", len(infraHosts))
-	}
-
-	// Start Cloudflare IP whitelist refresh if configured
-	if d.cfg.Cloudflare.Enabled {
-		d.wg.Add(1)
-		obs.Go("cloudflare-refresh", d.cloudflareRefreshLoop)
-		csmlog.Info("cloudflare IP whitelist enabled", "refresh_hours", d.cfg.Cloudflare.RefreshHours)
-	}
-}
-
 func (d *Daemon) autoResponseDryRunEnabled() bool {
 	return d.activeOrStartupCfg().AutoResponseDryRunEnabled()
 }
@@ -3187,8 +3146,21 @@ func (d *Daemon) cloudflareRefreshLoop() {
 
 	interval := time.Duration(d.cfg.Cloudflare.RefreshHours) * time.Hour
 
+	// Every fetch is cancelled by shutdown. Without this the startup fetch runs
+	// before the select below is ever reached, so a host that cannot reach
+	// cloudflare.com holds shutdown for the HTTP timeout.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-d.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	// Fetch immediately on startup
-	d.refreshCloudflareIPs()
+	d.refreshCloudflareIPs(ctx)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -3198,7 +3170,7 @@ func (d *Daemon) cloudflareRefreshLoop() {
 		case <-d.stopCh:
 			return
 		case <-ticker.C:
-			d.refreshCloudflareIPs()
+			d.refreshCloudflareIPs(ctx)
 		}
 	}
 }
@@ -3207,8 +3179,8 @@ func (d *Daemon) cloudflareRefreshLoop() {
 // can feed the refresh an unusable result.
 var fetchCloudflareIPs = firewall.FetchCloudflareIPs
 
-func (d *Daemon) refreshCloudflareIPs() {
-	ipv4, ipv6, err := fetchCloudflareIPs()
+func (d *Daemon) refreshCloudflareIPs(ctx context.Context) {
+	ipv4, ipv6, err := fetchCloudflareIPs(ctx)
 	if err != nil {
 		csmlog.Error("cloudflare IP fetch error", "err", err)
 	}
@@ -3448,6 +3420,40 @@ func (d *Daemon) reloadSignatures() {
 		}
 	}
 	d.reportRealtimeRuleCoverage(yamlRuleCount(), yaraRules, yaraActive)
+}
+
+// The startup integrations are indirected so the observe-mode gate around them
+// can be tested without a host to write to or a web server to reload.
+var (
+	ensureAuditdRules     = auditd.EnsureDeployed
+	deployHostConfigs     = deployConfigs
+	reconcileModSecReload = (*checks.ModSecReloadReconciler).Reconcile
+)
+
+// applyStartupIntegrations refreshes the host-side files CSM owns: the auditd
+// rules, the WHM plugin, the ModSecurity section and the deploy script. None
+// of them has a switch of its own, so observe mode is what turns them off.
+//
+// Self-healing the auditd rules matters because package upgrades sometimes
+// ship a new csm binary without re-running auditd.Deploy() (postinstall hooks
+// differ across apt/dnf and across operator deploy automation), which leaves
+// new rules -- including detection layers like csm_af_alg_socket -- silently
+// inactive on the upgraded host. Errors are non-fatal: if auditd is absent or
+// augenrules fails, the rest of CSM still runs.
+func (d *Daemon) applyStartupIntegrations() {
+	if d.cfg.ObserveMode() {
+		csmlog.Info("observe mode: skipping host integration deploy (auditd rules, WHM plugin, ModSecurity section, deploy script)")
+		return
+	}
+	if redeployed, err := ensureAuditdRules(); err != nil {
+		csmlog.Warn("auditd rules ensure failed", "err", err)
+	} else if redeployed {
+		csmlog.Info("auditd rules redeployed (drift from embedded constant)")
+	}
+	deployHostConfigs()
+	if err := reconcileModSecReload(&d.modsecReload, d.cfg.ModSec.ReloadCommand); err != nil {
+		csmlog.Warn("CSM ModSecurity rule activation could not be confirmed", "err", err)
+	}
 }
 
 // deployConfigs writes embedded config files to their system locations on startup.

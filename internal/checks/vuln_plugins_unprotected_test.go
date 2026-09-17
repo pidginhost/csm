@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -312,12 +313,17 @@ func TestModsecDisabledScopesForFindings_ReadsOnlyCandidateSites(t *testing.T) {
 func TestCheckVulnerablePluginsAnnotatesUnprotectedSites(t *testing.T) {
 	db := setupPluginStore(t)
 	wpConfig := "/home/alice/public_html/wp-config.php"
-	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
-		if pattern == "/home/*/public_html/wp-config.php" {
-			return []string{wpConfig}, nil
-		}
-		return nil, nil
-	}})
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
+		},
+	})
 	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		command := strings.Join(args, " ")
 		if strings.Contains(command, "plugin list") {
@@ -360,12 +366,17 @@ func TestCheckVulnerablePluginsAnnotatesUnprotectedSites(t *testing.T) {
 func TestCheckVulnerablePluginsDoesNotClaimMissingPatchForUncoveredCVE(t *testing.T) {
 	db := setupPluginStore(t)
 	wpConfig := "/home/alice/public_html/wp-config.php"
-	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
-		if pattern == "/home/*/public_html/wp-config.php" {
-			return []string{wpConfig}, nil
-		}
-		return nil, nil
-	}})
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
+		},
+	})
 	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		command := strings.Join(args, " ")
 		if strings.Contains(command, "plugin list") {
@@ -409,12 +420,17 @@ func TestCheckVulnerablePluginsDoesNotClaimMissingPatchForUncoveredCVE(t *testin
 func TestCheckVulnerablePluginsLeavesInactiveInstallsAlone(t *testing.T) {
 	db := setupPluginStore(t)
 	wpConfig := "/home/alice/public_html/wp-config.php"
-	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
-		if pattern == "/home/*/public_html/wp-config.php" {
-			return []string{wpConfig}, nil
-		}
-		return nil, nil
-	}})
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/home/*/public_html/wp-config.php" {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			return mockPathInfo(name, []string{wpConfig})
+		},
+	})
 	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		command := strings.Join(args, " ")
 		if strings.Contains(command, "plugin list") {

@@ -54,16 +54,74 @@ type Scanner struct {
 	version  int
 	rulesDir string
 	loadErr  error
+	// disabled holds the rule names the operator switched off, and
+	// disabledUnmatched the subset that matched nothing in the loaded
+	// ruleset. A name nobody recognises is almost always a typo, and a
+	// typo here reads as "the rule is off" while it keeps firing.
+	disabled          []string
+	disabledUnmatched []string
+	disabledCount     int
 }
 
 // NewScanner creates a scanner that loads rules from the given directory.
 // Returns a scanner with no rules if the directory doesn't exist (not an error).
 // Any load error is retained (see LoadError) so a best-effort init does not
 // hide a corrupt rules directory that silently disabled all detection.
-func NewScanner(rulesDir string) *Scanner {
-	s := &Scanner{rulesDir: rulesDir}
+// Rule names in disabled are not loaded. This is the same operator setting
+// that filters YARA-Forge downloads, applied to the rules CSM ships, so a
+// misfiring signature can be switched off without editing rule files on a
+// production host.
+func NewScanner(rulesDir string, disabled ...string) *Scanner {
+	s := &Scanner{rulesDir: rulesDir, disabled: normalizeDisabled(disabled)}
+	s.disabledUnmatched = append([]string(nil), s.disabled...)
 	_ = s.Reload() // best-effort load on init; error retained via LoadError()
 	return s
+}
+
+// normalizeDisabled lowercases and de-duplicates the configured names, and
+// drops empty entries. Rule names in the shipped files are lowercase, and an
+// operator who types one in mixed case means the same rule.
+func normalizeDisabled(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		trimmed := strings.ToLower(strings.TrimSpace(name))
+		if trimmed == "" {
+			continue
+		}
+		if _, dup := seen[trimmed]; dup {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+// DisabledRules returns the rule names this scanner was told to switch off.
+func (s *Scanner) DisabledRules() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.disabled...)
+}
+
+// DisabledRulesWithoutMatch returns the configured names that matched no rule
+// in the last load attempt. Config validation surfaces these: silently accepting
+// a name nobody recognises is how an operator ends up believing a rule is off.
+func (s *Scanner) DisabledRulesWithoutMatch() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.disabledUnmatched...)
+}
+
+// DisabledRuleCount counts rules omitted from the installed ruleset by config.
+func (s *Scanner) DisabledRuleCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.disabledCount
 }
 
 // LoadError returns the error from the most recent Reload, or nil if the last
@@ -97,6 +155,12 @@ func (s *Scanner) Reload() error {
 	var allRules []Rule
 	maxVersion := 0
 	fileCount := 0
+	disabledCount := 0
+	disabled := make(map[string]struct{}, len(s.disabled))
+	for _, name := range s.disabled {
+		disabled[name] = struct{}{}
+	}
+	disabledSeen := make(map[string]struct{}, len(disabled))
 	// One corrupt or unreadable file must not abort the whole load: an
 	// attacker or a fat-fingered operator dropping one bad file would
 	// otherwise silently disable every other signature. Bad files/rules are
@@ -135,6 +199,11 @@ func (s *Scanner) Reload() error {
 		rulesBeforeFile := len(allRules)
 		for i := range rf.Rules {
 			rule := &rf.Rules[i]
+			if _, off := disabled[strings.ToLower(rule.Name)]; off {
+				disabledSeen[strings.ToLower(rule.Name)] = struct{}{}
+				disabledCount++
+				continue
+			}
 			if err := rule.compile(); err != nil {
 				loadErrs = append(loadErrs, fmt.Errorf("compiling rule %q in %s: %w", rule.Name, path, err))
 				fmt.Fprintf(os.Stderr, "signatures: skipping rule %q in %s: %v\n", rule.Name, path, err)
@@ -163,11 +232,21 @@ func (s *Scanner) Reload() error {
 		return nil
 	}
 
-	// Nothing usable parsed. Preserve any previously-installed rules rather
-	// than wiping detection because the operator broke the only file.
-	if len(allRules) == 0 {
+	var unmatched []string
+	for _, name := range s.disabled {
+		if _, seen := disabledSeen[name]; !seen {
+			unmatched = append(unmatched, name)
+		}
+	}
+	// Keep the old set on failure, but publish a clean load that config
+	// intentionally emptied. Retaining old rules in that case scans a set
+	// that is no longer on disk.
+	if len(allRules) == 0 && (disabledCount == 0 || len(loadErrs) > 0) {
 		err := errors.Join(append(loadErrs, fmt.Errorf("no signature rules loaded from %s", s.rulesDir))...)
-		s.setLoadErr(err)
+		s.mu.Lock()
+		s.loadErr = err
+		s.disabledUnmatched = unmatched
+		s.mu.Unlock()
 		return err
 	}
 
@@ -175,7 +254,13 @@ func (s *Scanner) Reload() error {
 	s.rules = allRules
 	s.version = maxVersion
 	s.loadErr = errors.Join(loadErrs...)
+	s.disabledUnmatched = unmatched
+	s.disabledCount = disabledCount
 	s.mu.Unlock()
+
+	if len(disabledSeen) > 0 {
+		fmt.Fprintf(os.Stderr, "signatures: %d rule(s) disabled by configuration\n", len(disabledSeen))
+	}
 
 	fmt.Fprintf(os.Stderr, "signatures: loaded %d rules (version %d) from %s\n", len(allRules), maxVersion, s.rulesDir)
 
@@ -371,6 +456,17 @@ func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
 	}
 	ext := filepath.Ext(path)
 	return s.ScanContentWithSize(buf, ext, contentSize)
+}
+
+// RuleNames returns the names of the loaded rules.
+func (s *Scanner) RuleNames() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	names := make([]string, 0, len(s.rules))
+	for _, r := range s.rules {
+		names = append(names, r.Name)
+	}
+	return names
 }
 
 // RuleCount returns the number of loaded rules.

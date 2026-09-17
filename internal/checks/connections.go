@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -44,7 +45,7 @@ var serverLocalPorts = map[uint16]bool{
 
 // EvaluateConnection returns a populated alert.Finding and true when the
 // connection should be reported, or a zero finding and false when it should
-// be ignored. Pure function: no IO, no clock. Used by the BPF live backend
+// be ignored. Host-interface lookups are cached. Used by the BPF live backend
 // (per-event) and the polling backend (per row of /proc/net/tcp[6]).
 func EvaluateConnection(
 	cfg *config.Config,
@@ -59,6 +60,14 @@ func EvaluateConnection(
 		return alert.Finding{}, false
 	}
 	if dstIP == nil || dstIP.IsLoopback() || dstIP.IsUnspecified() {
+		return alert.Finding{}, false
+	}
+	// Panel front ends proxy to their own backend over the machine's public
+	// address rather than loopback, so the packet never leaves the host and is
+	// no more an outbound connection than the loopback case above. Left
+	// reported, the proxy hop is classed as C2 traffic and drives the host's
+	// own address to a critical local threat score.
+	if netutil.IsHostAddress(dstIP.String()) {
 		return alert.Finding{}, false
 	}
 	if serverLocalPorts[localPort] {
@@ -184,6 +193,7 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 		if lookup := CurrentASNLookup(); lookup != nil && cfg.Detection.BadASNOutbound.Enabled {
 			asn, org := lookup(dstIP.String())
 			if f, ok := EvaluateBadASNOutbound(cfg, dstIP, asn, org); ok {
+				AttributeSocketOwner(&f, uidU32)
 				f.Timestamp = time.Now()
 				findings = append(findings, f)
 			}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -16,10 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	maxRestoreEntrySize    = 1 << 30
-	maxRestoreManifestSize = 64 << 10
-)
+const maxRestoreManifestSize = 64 << 10
 
 var renameRestorePath = os.Rename
 
@@ -32,12 +30,16 @@ var renameRestorePath = os.Rename
 // with `../` components or absolute paths are rejected, and existing
 // symlinks under the configured destination trees are not followed.
 func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
+	maxBytes, err := backupArchiveLimit(dst.MaxBytes)
+	if err != nil {
+		return err
+	}
 	stageRoot, err := restoreStagingRoot(dst)
 	if err != nil {
 		return fmt.Errorf("creating restore staging directory: %w", err)
 	}
 	defer os.RemoveAll(stageRoot)
-	staged, err := extractBackupArchive(archive, stageRoot)
+	staged, err := extractBackupArchive(archive, stageRoot, maxBytes)
 	if err != nil {
 		return err
 	}
@@ -78,23 +80,28 @@ type stagedBackupRestore struct {
 	hasState  bool
 }
 
-func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err error) {
+func extractBackupArchive(archive, stageRoot string, maxBytes int64) (_ stagedBackupRestore, err error) {
 	staged := stagedBackupRestore{root: stageRoot}
 	f, err := os.Open(archive) // #nosec G304 G703 -- operator-supplied archive path.
 	if err != nil {
 		return staged, err
 	}
 	defer f.Close()
-	gr, err := gzip.NewReader(f)
+	compressed := bufio.NewReader(f)
+	gr, err := gzip.NewReader(compressed)
 	if err != nil {
 		return staged, err
 	}
+	// ByteReader input and single-member mode leave trailing compressed data
+	// available for validation instead of silently consuming another member.
+	gr.Multistream(false)
 	defer func() {
 		if closeErr := gr.Close(); err == nil && closeErr != nil {
 			err = closeErr
 		}
 	}()
-	tr := tar.NewReader(gr)
+	budget := &backupSizeReader{LimitedReader: io.LimitedReader{R: gr, N: maxBytes}}
+	tr := tar.NewReader(budget)
 	seen := make(map[string]struct{})
 	manifestSeen := false
 	for {
@@ -103,7 +110,7 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 			if !manifestSeen {
 				return staged, errors.New("backup manifest is missing")
 			}
-			return staged, nil
+			return staged, verifyBackupArchiveEnd(gr, compressed)
 		}
 		if nextErr != nil {
 			return staged, nextErr
@@ -112,8 +119,8 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeDir {
 			continue
 		}
-		if hdr.Typeflag == tar.TypeReg && (hdr.Size < 0 || hdr.Size > maxRestoreEntrySize) {
-			return staged, fmt.Errorf("rejecting archive entry %q with size %d", hdr.Name, hdr.Size)
+		if hdr.Typeflag == tar.TypeReg && (hdr.Size < 0 || hdr.Size > budget.N) {
+			return staged, fmt.Errorf("rejecting archive entry %q with size %d: %w", hdr.Name, hdr.Size, errBackupSizeLimit)
 		}
 
 		// Defense in depth: reject path traversal before cleaning so
@@ -176,6 +183,9 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 			continue // unknown entries skipped
 		}
 
+		if err := requireBackupSpace(stageRoot, hdr.Size); err != nil {
+			return staged, err
+		}
 		out, err := openRestoreTarget(anchor, target)
 		if err != nil {
 			return staged, fmt.Errorf("rejecting archive entry %q: %w", hdr.Name, err)
@@ -190,6 +200,22 @@ func extractBackupArchive(archive, stageRoot string) (_ stagedBackupRestore, err
 			return staged, closeErr
 		}
 	}
+}
+
+func verifyBackupArchiveEnd(gr *gzip.Reader, compressed *bufio.Reader) error {
+	// Tar EOF precedes the gzip trailer. Reading to gzip EOF checks its CRC
+	// and length; one extra byte is enough to reject unsupported tar padding.
+	if n, err := io.CopyN(io.Discard, gr, 1); n != 0 {
+		return errors.New("backup contains data after tar end")
+	} else if err != io.EOF {
+		return fmt.Errorf("validating backup gzip trailer: %w", err)
+	}
+	if _, err := compressed.ReadByte(); err == nil {
+		return errors.New("backup contains trailing compressed data or another gzip member")
+	} else if err != io.EOF {
+		return fmt.Errorf("checking backup compressed end: %w", err)
+	}
+	return nil
 }
 
 func isTransientBackupStateEntry(name string) bool {
@@ -398,6 +424,13 @@ func prepareRestoreReplacement(source, target string, isDir bool) (string, error
 		return "", err
 	}
 	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return "", err
+	}
+	if spaceErr := requireBackupSpace(parent, info.Size()); spaceErr != nil {
+		return "", spaceErr
+	}
 	out, err := os.CreateTemp(parent, ".csm-restore-new-*")
 	if err != nil {
 		return "", err
@@ -451,6 +484,9 @@ func copyRestoreTree(source, target string) error {
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("restore staging contains symlink %s", current)
+		}
+		if spaceErr := requireBackupSpace(filepath.Dir(destination), info.Size()); spaceErr != nil {
+			return spaceErr
 		}
 		in, err := sourceRoot.Open(rel)
 		if err != nil {
@@ -668,31 +704,9 @@ func acquireStoppedDaemonStateLock(stateDir string) (*state.LockFile, error) {
 }
 
 func runRestore() {
-	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: csm restore <archive.tar.gz>")
-		os.Exit(1)
-	}
-
-	// Parse the archive path skipping known two-part flags (--config, --config-dir).
-	var archive string
-	skip := false
-	for _, arg := range os.Args[2:] {
-		if skip {
-			skip = false
-			continue
-		}
-		if arg == "--config" || arg == "--config-dir" {
-			skip = true
-			continue
-		}
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
-		archive = arg
-		break
-	}
-	if archive == "" {
-		fmt.Fprintln(os.Stderr, "Usage: csm restore <archive.tar.gz>")
+	archive, maxBytes, err := parseBackupRestoreArgs(os.Args[2:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm restore: %v\nUsage: csm restore <archive.tar.gz> [--max-bytes <bytes>]\n", err)
 		os.Exit(1)
 	}
 
@@ -705,6 +719,7 @@ func runRestore() {
 		ConfigPath: cfg.ConfigFile,
 		ConfDir:    cfg.ConfigDir,
 		StateDir:   cfg.StatePath,
+		MaxBytes:   maxBytes,
 	}
 	if err := restoreBackupArchiveGuarded(archive, dst); err != nil {
 		// Keep the refusal wording aligned with `csm store import`.

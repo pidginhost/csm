@@ -2,7 +2,9 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -46,13 +48,14 @@ import (
 
 type opencartCreds struct {
 	// ctx ties every query for this install to the runner's deadline.
-	ctx      context.Context
-	dbName   string
-	dbUser   string
-	dbPass   string
-	dbHost   string
-	dbPrefix string
-	path     string
+	ctx        context.Context
+	dbName     string
+	dbUser     string
+	dbPass     string
+	dbHost     string
+	dbPrefix   string
+	path       string
+	queryState *dbQueryState
 }
 
 func (c opencartCreds) asWPDBCreds() wpDBCreds {
@@ -63,6 +66,8 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 		dbHost:      c.dbHost,
 		tablePrefix: c.dbPrefix,
 		queryCtx:    c.ctx,
+		queryOwner:  "db_content_opencart",
+		queryState:  c.queryState,
 	}
 }
 
@@ -70,42 +75,61 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 // four canonical attacker-touched tables. Mirrors the other CMS
 // scanners; the discovery and credentials parsing are the only
 // OC-specific bits.
+// scanOpenCartInstall scans one discovered install and stamps its findings
+// with the owner resolved from the configuration path. The display label
+// stays as before; an install outside every account root is not stamped.
+func scanOpenCartInstall(ctx context.Context, path string, store *state.Store) []alert.Finding {
+	matched, err := looksLikeOpenCart(ctx, path)
+	if err != nil {
+		markCheckIncomplete(ctx, "db_content_opencart")
+		return nil
+	}
+	if !matched {
+		return nil
+	}
+	account := extractUser(filepath.Dir(path))
+	creds, err := parseOpenCartConfig(ctx, path)
+	if err != nil || creds.dbName == "" || creds.dbUser == "" {
+		markCheckIncomplete(ctx, "db_content_opencart")
+		return nil
+	}
+	creds.ctx = ctx
+	creds.queryState = new(dbQueryState)
+	prefix := creds.dbPrefix
+	if prefix == "" {
+		prefix = "oc_"
+	}
+	creds.dbPrefix = prefix
+
+	var findings []alert.Finding
+	findings = append(findings, scanOpenCartSettings(account, creds)...)
+	findings = append(findings, scanOpenCartContentTable(account, creds, "product_description", "description")...)
+	findings = append(findings, scanOpenCartContentTable(account, creds, "information_description", "description")...)
+	findings = append(findings, scanOpenCartAdmins(store, account, creds)...)
+	if owner, ok := installOwner(path); ok {
+		findings = stampTenantIDIfEmpty(findings, owner)
+	}
+	return findings
+}
+
 func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var findings []alert.Finding
 
-	configs := cmsDiscover("*/public_html/config.php", "*/*/config.php")
+	configs := cmsDiscover(ctx, "db_content_opencart", "*/public_html/config.php", "*/*/config.php")
 	if len(configs) == 0 {
 		return nil
 	}
 
 	// Rank by mtime desc so recently touched OpenCart installs are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, configs, accountScanMaxFiles(ctx, cfg)) {
+	for _, path := range rankCMSConfigs(ctx, "db_content_opencart", configs, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
-		if !looksLikeOpenCart(path) {
-			continue
-		}
-		account := extractUser(filepath.Dir(path))
-		creds := parseOpenCartConfig(path)
-		if creds.dbName == "" {
-			continue
-		}
-		creds.ctx = ctx
-		prefix := creds.dbPrefix
-		if prefix == "" {
-			prefix = "oc_"
-		}
-		creds.dbPrefix = prefix
-
-		findings = append(findings, scanOpenCartSettings(account, creds)...)
-		findings = append(findings, scanOpenCartContentTable(account, creds, "product_description", "description")...)
-		findings = append(findings, scanOpenCartContentTable(account, creds, "information_description", "description")...)
-		findings = append(findings, scanOpenCartAdmins(store, account, creds)...)
+		findings = append(findings, scanOpenCartInstall(ctx, path, store)...)
 	}
 	return findings
 }
@@ -114,22 +138,25 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.
 // reference DB_DRIVER. The admin-side file is what distinguishes
 // OpenCart from arbitrary PHP sites that happen to ship a
 // config.php at the document root.
-func looksLikeOpenCart(rootConfig string) bool {
-	if !configContainsDBDriver(rootConfig) {
-		return false
+func looksLikeOpenCart(ctx context.Context, rootConfig string) (bool, error) {
+	matched, err := configContainsDBDriver(ctx, rootConfig)
+	if err != nil || !matched {
+		return false, err
 	}
-	publicHTML := filepath.Dir(rootConfig)
-	adminConfig := filepath.Join(publicHTML, "admin", "config.php")
-	return configContainsDBDriver(adminConfig)
+	adminConfig := filepath.Join(filepath.Dir(rootConfig), "admin", "config.php")
+	matched, err = configContainsDBDriver(ctx, adminConfig)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return matched, err
 }
 
-func configContainsDBDriver(path string) bool {
-	// #nosec G304 -- path resolved via osFS.Glob over /home/*/public_html or its admin/ subdir; not attacker-controlled.
-	data, err := osFS.ReadFile(path)
+func configContainsDBDriver(ctx context.Context, path string) (bool, error) {
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return false
+		return false, err
 	}
-	return strings.Contains(string(data), "DB_DRIVER")
+	return strings.Contains(string(data), "DB_DRIVER"), nil
 }
 
 // parseOpenCartConfig extracts the DB_* defines from a config.php.
@@ -137,12 +164,11 @@ func configContainsDBDriver(path string) bool {
 // have the same `define('KEY', 'value')` shape WP uses, and the
 // helper already strips comments and walks past the key's closing
 // quote correctly.
-func parseOpenCartConfig(path string) opencartCreds {
+func parseOpenCartConfig(ctx context.Context, path string) (opencartCreds, error) {
 	creds := opencartCreds{path: path}
-	// #nosec G304 -- same Glob-resolved path.
-	data, err := osFS.ReadFile(path)
+	data, err := readCMSConfig(ctx, path)
 	if err != nil {
-		return creds
+		return creds, err
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if v := extractDefine(line, "DB_HOSTNAME"); v != "" {
@@ -164,7 +190,7 @@ func parseOpenCartConfig(path string) opencartCreds {
 	if creds.dbHost == "" {
 		creds.dbHost = "localhost"
 	}
-	return creds
+	return creds, nil
 }
 
 // scanOpenCartSettings walks oc_setting k/v rows. The value column
@@ -175,7 +201,7 @@ func scanOpenCartSettings(account string, creds opencartCreds) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT `key`, value FROM %ssetting WHERE %s",
 		creds.dbPrefix, paramsLikeClause("value"))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		key, body := splitTabRow(row)
@@ -218,7 +244,7 @@ func scanOpenCartContentTable(account string, creds opencartCreds, table, valueC
 	query := fmt.Sprintf(
 		"SELECT %s, %s FROM %s%s WHERE language_id = 1 AND %s",
 		idCol, valueCol, creds.dbPrefix, table, paramsLikeClause(valueCol))
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
+	rows, _ := runCMSQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
 	for _, row := range rows {
 		id, body := splitTabRow(row)
@@ -246,8 +272,8 @@ func scanOpenCartAdmins(store *state.Store, account string, creds opencartCreds)
 	query := fmt.Sprintf(
 		"SELECT user_id, username, email FROM %suser",
 		creds.dbPrefix)
-	rows := runMySQLQuery(creds.asWPDBCreds(), withRowLimit(query))
-	return cmsAdminFindings(store, "opencart", "opencart_admin_injection", account, rows, func(fields []string) (string, string) {
+	rows, complete := runCMSQuery(creds.asWPDBCreds(), query)
+	return cmsAdminFindings(store, "opencart", "opencart_admin_injection", account, creds.asWPDBCreds(), rows, complete, func(fields []string) (string, string) {
 		return fmt.Sprintf("OpenCart admin account on %s: user_id=%s", account, fields[0]),
 			fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, strings.Join(fields, "\t"))
 	})
