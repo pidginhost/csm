@@ -238,6 +238,7 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	panicIdentity := alert.Finding{Check: "check_panic", DedupKey: fmt.Sprintf("account-scan:%q:%s", AccountFromContext(ctx), c.name)}
 
 	execution := executeCheckAsync(cctx, "account-scan-exec", func() []alert.Finding {
 		return c.fn(cctx, cfg, store)
@@ -248,16 +249,20 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 	case outcome := <-execution.done:
 		execution.received()
 		if outcome.panicErr != "" {
-			// The stack trace differs on every run, so identity is the check
-			// alone, kept apart from the scheduled runner's panic identity.
+			// Keep stack churn out of identity without merging failures from
+			// different accounts or the scheduled runner.
 			return []alert.Finding{{
 				Severity:  alert.High,
 				Check:     "check_panic",
+				TenantID:  AccountFromContext(ctx),
 				Message:   fmt.Sprintf("Account scan check '%s' stopped after an internal panic", c.name),
 				Details:   outcome.panicErr,
-				DedupKey:  "account-scan:" + c.name,
+				DedupKey:  panicIdentity.DedupKey,
 				Timestamp: time.Now(),
 			}}
+		}
+		if store != nil && cctx.Err() == nil {
+			store.RearmFindings([]string{panicIdentity.Key()})
 		}
 		return outcome.findings
 	case <-cctx.Done():

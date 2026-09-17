@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"os"
@@ -66,7 +67,7 @@ func TestPHPTaintScanIncompleteIdentityIgnoresCounts(t *testing.T) {
 		t.Fatalf("want routine and analyzer-defeat findings, got %d and %d", len(first), len(second))
 	}
 	assertSameHealthIdentity(t, first[0], second[0])
-	assertSameHealthIdentity(t, first[1], second[1])
+	assertDistinctHealthIdentity(t, first[1], second[1])
 	assertDistinctHealthIdentity(t, first[0], first[1])
 
 	// A cycle that loses only unreadable ranges reports the same degraded
@@ -74,6 +75,214 @@ func TestPHPTaintScanIncompleteIdentityIgnoresCounts(t *testing.T) {
 	unknownOnly := newPHPTaintGapCollector()
 	unknownOnly.recordUnknownRange("/home/exampleuser/public_html")
 	assertSameHealthIdentity(t, first[0], unknownOnly.findings()[0])
+}
+
+func TestPHPTaintAnalyzerDefeatIdentityTracksEveryPath(t *testing.T) {
+	build := func(paths ...string) alert.Finding {
+		g := newPHPTaintGapCollector()
+		for _, path := range paths {
+			g.record(path, phptaint.StatusPanic.String())
+		}
+		return g.findings()[0]
+	}
+	prefix := "/home/exampleuser/public_html/" + strings.Repeat("a", phpTaintExampleMaxBytes)
+	first := build(prefix+"first.php", prefix+"second.php")
+	reordered := build(prefix+"second.php", prefix+"first.php")
+	if first.Key() != reordered.Key() || first.Fingerprint() != reordered.Fingerprint() {
+		t.Fatal("scan order changed the identity of the same analyzer failures")
+	}
+	changed := build(prefix+"first.php", prefix+"third.php")
+	if first.Details != changed.Details {
+		t.Fatal("fixture must hide the changed path outside the display example")
+	}
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	st.Update([]alert.Finding{first})
+	st.DismissFinding(first.Key())
+	if fresh := st.FilterNew([]alert.Finding{reordered, changed}); len(fresh) != 1 || fresh[0].Key() != changed.Key() {
+		t.Fatalf("dismissal must cover only the same failing files, got %+v", fresh)
+	}
+}
+
+func TestPHPTaintAnalyzerDefeatIdentityIncludesSnapshot(t *testing.T) {
+	withPHPTaintAnalyzer(t, func(context.Context, []byte) phptaint.Report {
+		return phptaint.Report{Status: phptaint.StatusPanic}
+	})
+	build := func(content string) alert.Finding {
+		g := newPHPTaintGapCollector()
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+		analyzePHPTaintSnapshot(context.Background(), "/home/exampleuser/public_html/app.php", digest, []byte(content), g)
+		return g.findings()[0]
+	}
+	first := build("<?php /* first input */")
+	if first.Key() != build("<?php /* first input */").Key() {
+		t.Fatal("identical analyzer input changed identity")
+	}
+	assertDistinctHealthIdentity(t, first, build("<?php /* different input */"))
+}
+
+func TestPHPTaintAnalyzerDefeatIdentitySurvivesPathRetentionLimits(t *testing.T) {
+	for _, unstable := range []bool{false, true} {
+		t.Run(fmt.Sprint(unstable), func(t *testing.T) {
+			build := func(path string) alert.Finding {
+				g := newPHPTaintGapCollector()
+				if unstable {
+					g.resolveAliases = func(string) ([]string, bool) { return nil, false }
+				} else {
+					for i := 0; i < maxPHPTaintGapPaths; i++ {
+						g.paths[fmt.Sprint(i)] = struct{}{}
+					}
+				}
+				g.record(path, phptaint.StatusTimeout.String())
+				if !g.pathsIncomplete() {
+					t.Fatal("fixture did not exhaust path retention")
+				}
+				found := g.findings()
+				return found[len(found)-1]
+			}
+			assertDistinctHealthIdentity(t, build("/home/exampleuser/public_html/first.php"), build("/home/exampleuser/public_html/second.php"))
+		})
+	}
+}
+
+func TestPHPTaintAnalyzerDefeatIdentityIncludesOverflow(t *testing.T) {
+	build := func(last string) alert.Finding {
+		g := newPHPTaintGapCollector()
+		for i := 0; i < maxPHPTaintGapPaths; i++ {
+			g.record(fmt.Sprintf("/home/exampleuser/public_html/file-%d.php", i), phptaint.StatusPanic.String())
+		}
+		g.record(last, phptaint.StatusPanic.String())
+		if len(g.defeatInputs) != maxPHPTaintGapPaths || g.defeatOverflow == nil {
+			t.Fatal("defeat evidence was not bounded with overflow preserved")
+		}
+		return g.findings()[0]
+	}
+	first := build("/home/exampleuser/public_html/first.php")
+	second := build("/home/exampleuser/public_html/second.php")
+	if first.Details != second.Details {
+		t.Fatal("overflow fixture changed displayed details")
+	}
+	assertDistinctHealthIdentity(t, first, second)
+}
+
+func TestScanHealthDismissalRearmsAfterRecovery(t *testing.T) {
+	for _, check := range []string{"php_taint_scan_incomplete", "js_taint_scan_incomplete", "yara_scan_incomplete", "db_content_scan_incomplete", "email_password_audit_incomplete"} {
+		t.Run(check, func(t *testing.T) {
+			dir := t.TempDir()
+			st, err := state.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := "coverage_gap"
+			if check == "db_content_scan_incomplete" {
+				identity = dbContentHostCoverageDedupKey
+			}
+			f := alert.Finding{Check: check, DedupKey: identity, Message: "Incomplete scan", Severity: alert.Warning}
+			st.Update([]alert.Finding{f})
+			StoreLatestScanFindings(st, []string{check}, []alert.Finding{f})
+			st.DismissFinding(f.Key())
+			st.DismissLatestFinding(f.Key())
+			// Other tiers and a skipped owner do not prove recovery. Updating
+			// the dispatch batch alone must not clear the dismissal either.
+			st.Update(nil)
+			StoreLatestScanFindings(st, []string{"unrelated_check"}, nil)
+			StoreLatestScanFindings(st, nil, nil)
+			StoreLatestScanFindings(st, []string{check}, []alert.Finding{f})
+			if fresh := st.FilterNew([]alert.Finding{f}); len(fresh) != 0 {
+				t.Fatalf("ongoing condition re-armed: %+v", fresh)
+			}
+			st.DismissLatestFinding(f.Key())
+			StoreLatestScanFindings(st, []string{check}, nil)
+			// Reopen before Close so a missing recovery save cannot be hidden
+			// by the normal shutdown flush.
+			reopened, err := state.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Close(); err != nil {
+				t.Fatal(err)
+			}
+			st = reopened
+			t.Cleanup(func() { _ = st.Close() })
+			if fresh := st.FilterNew([]alert.Finding{f}); len(fresh) != 1 {
+				t.Fatalf("resolved coverage gap stayed dismissed after restart: %+v", fresh)
+			}
+		})
+	}
+}
+
+func TestDatabaseHealthRecoveryPreservesUnexaminedInstallDismissal(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	limit := alert.Finding{Check: "db_content_scan_incomplete", DedupKey: "example-install", Message: "Multisite limit"}
+	st.SetBaseline([]alert.Finding{limit})
+	StoreLatestScanFindings(st, []string{limit.Check}, []alert.Finding{{
+		Check: limit.Check, DedupKey: dbContentHostCoverageDedupKey, Message: "Install unreachable",
+	}})
+	if fresh := st.FilterNew([]alert.Finding{limit}); len(fresh) != 0 {
+		t.Fatal("missing install result cleared its existing limit acknowledgment")
+	}
+}
+
+func TestAccountScanPanicIdentityIncludesAccount(t *testing.T) {
+	check := namedCheck{"example_check", func(context.Context, *config.Config, *state.Store) []alert.Finding {
+		panic("crafted input")
+	}}
+	run := func(account string) alert.Finding {
+		ctx := ContextWithAccountScope(context.Background(), account)
+		return runAccountScanCheck(ctx, check, &config.Config{}, nil, time.Second)[0]
+	}
+	first, second := run("exampleuser"), run("otheruser")
+	assertDistinctHealthIdentity(t, first, second)
+	if first.TenantID != "exampleuser" || second.TenantID != "otheruser" {
+		t.Fatalf("panic findings lost account attribution: %+v, %+v", first, second)
+	}
+}
+
+func TestCheckPanicDismissalRearmsOnlyAfterItsCheckReturns(t *testing.T) {
+	for _, account := range []string{"", "exampleuser"} {
+		t.Run("scope="+account, func(t *testing.T) {
+			st, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			ctx := ContextWithAccountScope(context.Background(), account)
+			run := func(ctx context.Context, name string, fn func(context.Context, *config.Config, *state.Store) []alert.Finding) []alert.Finding {
+				check := namedCheck{name, fn}
+				if account != "" {
+					return runAccountScanCheck(ctx, check, &config.Config{}, st, time.Second)
+				}
+				found, _ := runParallelWithContext(ctx, &config.Config{}, st, []namedCheck{check}, "test", true)
+				return found
+			}
+			panics := func(context.Context, *config.Config, *state.Store) []alert.Finding { panic("crafted input") }
+			clean := func(context.Context, *config.Config, *state.Store) []alert.Finding { return nil }
+			first := run(ctx, "example_check", panics)
+			if len(first) != 1 || first[0].Check != "check_panic" {
+				t.Fatalf("panic not reported: %+v", first)
+			}
+			st.Update(first)
+			st.DismissFinding(first[0].Key())
+			run(ctx, "other_check", clean)
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			run(cancelled, "example_check", clean)
+			if fresh := st.FilterNew(run(ctx, "example_check", panics)); len(fresh) != 0 {
+				t.Fatal("unrelated or cancelled check re-armed a dismissal")
+			}
+			run(ctx, "example_check", clean)
+			if fresh := st.FilterNew(run(ctx, "example_check", panics)); len(fresh) != 1 {
+				t.Fatal("a recovered check's next panic stayed dismissed")
+			}
+		})
+	}
 }
 
 func TestJSTaintScanIncompleteIdentityIgnoresCounts(t *testing.T) {
