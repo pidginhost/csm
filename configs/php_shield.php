@@ -365,14 +365,22 @@ function csm_shield_load_config() {
  * root-only.
  */
 function csm_shield_log($event_type, $script, $details) {
+    // Capture content evidence before sending: the daemon may receive this
+    // after the file changes. A missing or incomplete read earns no suppression.
+    $digest = '-';
+    if ($event_type === 'WEBSHELL_PARAM' && function_exists('hash') && function_exists('file_get_contents')) {
+        $source = @file_get_contents($script, false, null, 0, 65537);
+        if ($source !== false && strlen($source) <= 65536) $digest = hash('sha256', $source);
+    }
     $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';
     $uri = isset($_SERVER['REQUEST_URI']) ? substr($_SERVER['REQUEST_URI'], 0, 200) : '-';
     $ua = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 100) : '-';
     $clean = function($value) { return str_replace(array("\r", "\n"), ' ', $value); };
 
-    $line = sprintf("[%s] %s ip=%s script=%s uri=%s ua=%s details=%s\n",
+    $line = sprintf("[%s] %s sha256=%s ip=%s script=%s uri=%s ua=%s details=%s\n",
         date('Y-m-d H:i:s'),
         $clean($event_type),
+        $digest,
         $clean($ip),
         $clean($script),
         $clean($uri),

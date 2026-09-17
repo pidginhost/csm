@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,6 +156,10 @@ require getenv('CSM_SHIELD_TEST_FILE');
 		// carries, so it is logged on its name alone.
 		{"strong_param_name_always_logged", "wp-content/plugins/foo/api4.php",
 			"<?php echo 'SAFE';", "cmd", "1", false, true},
+		{"front_controller_parameter", "index.php",
+			"<?php echo 'SAFE';", "cmd", "id", false, true},
+		{"oversized_parameter_source", "index.php",
+			"<?php echo 'SAFE'; /*" + strings.Repeat("x", 65536) + "*/", "cmd", "id", false, true},
 
 		// A packed webshell builds its sink name at runtime, so source
 		// inspection finds nothing and this event is the only trace. It hands
@@ -214,6 +220,15 @@ require getenv('CSM_SHIELD_TEST_FILE');
 					logged := false
 					if data, readErr := os.ReadFile(logPath); readErr == nil {
 						logged = strings.Contains(string(data), "ua=shield-test details=")
+						if strings.Contains(string(data), "WEBSHELL_PARAM") {
+							digest := "-"
+							if len(tc.body) <= 65536 {
+								digest = fmt.Sprintf("%x", sha256.Sum256([]byte(tc.body)))
+							}
+							if !strings.Contains(string(data), "WEBSHELL_PARAM sha256="+digest+" ip=") {
+								t.Errorf("parameter event lacks its bounded source fingerprint: %q", data)
+							}
+						}
 					} else if !os.IsNotExist(readErr) {
 						t.Fatal(readErr)
 					}

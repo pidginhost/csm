@@ -9,6 +9,10 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ## [Unreleased]
 
+### Security
+
+- PHP Shield keeps command observations for modified or unverified scripts even when requests are rewritten. Quieted probes remain in the local event archive for investigation.
+
 ### Fixed
 
 - Restart advice now reflects reclaimable space in the state database, so a large file that is still mostly in use no longer triggers it.
@@ -16,7 +20,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - OWASP CRS attack rules logged by LiteSpeed are now recognised as attacks instead of unclassified, and an unclassified ModSecurity rule is reported once per day for the host instead of once for every source address.
 - A critical finding no longer carries the warnings batched with it past the hourly alert limit. Only delivered non-critical alerts count against that limit.
 - The YARA-X worker crash alert now reports the current scanning outage without claiming recovery. It distinguishes scanning becoming available after a restart from worker health recovering after the replacement stays up for 30 seconds.
-- PHP Shield no longer reports a webshell command parameter when a scanner probes a script that does not exist and the site's front controller answers instead. A parameter sent to the script the request names is still reported.
+- PHP Shield quiets mismatched scanner probes only when the executing script matches verified CMS content. Requests naming the executing script and observations without content verification still alert.
 
 ## [3.39.0] - 2026-09-16
 

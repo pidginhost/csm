@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/phpshield"
@@ -98,7 +99,7 @@ func listenPHPShieldEventSocket(path string) (phpEventPacketListener, error) {
 	return &phpEventUnixgramListener{UnixConn: conn, path: path, info: info}, nil
 }
 
-func processPHPShieldEventPacket(data []byte, archivePath string, cfg *config.Config, alertCh chan<- alert.Finding) (bool, error) {
+func processPHPShieldEventPacket(data []byte, archivePath string, _ *config.Config, alertCh chan<- alert.Finding) (bool, error) {
 	if len(data) == 0 || len(data) > phpEventMaxBytes {
 		return false, nil
 	}
@@ -106,16 +107,16 @@ func processPHPShieldEventPacket(data []byte, archivePath string, cfg *config.Co
 	if line == "" || strings.ContainsAny(line, "\r\n") {
 		return false, nil
 	}
-	findings := parsePHPShieldLogLine(line, cfg)
-	if len(findings) == 0 {
+	finding, quiet := parsePHPShieldEventLine(line)
+	if finding == nil {
 		return false, nil
 	}
 	_, archiveErr := appendPHPShieldEventArchive(archivePath, line)
-	for _, finding := range findings {
+	if !quiet {
 		if finding.Timestamp.IsZero() {
 			finding.Timestamp = time.Now()
 		}
-		if !alert.TryEnqueue(alertCh, finding) {
+		if !alert.TryEnqueue(alertCh, *finding) {
 			fmt.Fprintln(os.Stderr, "Warning: alert channel full, dropping PHP Shield finding")
 		}
 	}
@@ -258,31 +259,48 @@ func parsePHPShieldLogLine(line string, _ *config.Config) []alert.Finding { //no
 // parsePHPShieldLine parses a line from the PHP shield event log and returns
 // a finding if it represents a security event.
 //
-// Format: [2026-03-25 10:00:00] EVENT_TYPE ip=X script=Y uri=Z ua=A details=B
+// Format: [2026-03-25 10:00:00] EVENT_TYPE sha256=H ip=X script=Y uri=Z ua=A details=B
+// Older Shields omit sha256; those observations cannot be quieted.
 func parsePHPShieldLine(line string) *alert.Finding {
+	finding, quiet := parsePHPShieldEventLine(line)
+	if quiet {
+		return nil
+	}
+	return finding
+}
+
+// Keep the observation even when its alert is quiet: a route mismatch does
+// not prove the requested file was absent, or that downstream CMS code is safe.
+func parsePHPShieldEventLine(line string) (*alert.Finding, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" || !strings.HasPrefix(line, "[") {
-		return nil
+		return nil, false
 	}
 
 	// Extract event type (first word after the timestamp bracket)
 	closeBracket := strings.Index(line, "]")
 	if closeBracket < 0 || closeBracket+2 >= len(line) {
-		return nil
+		return nil, false
 	}
 	rest := strings.TrimSpace(line[closeBracket+1:])
 	fields := strings.SplitN(rest, " ", 2)
 	if len(fields) < 1 {
-		return nil
+		return nil, false
 	}
 	eventType := fields[0]
 
 	// Extract key=value pairs. The URI and user agent are what identify the
 	// request: "/alfacgiapi/perl.alfa" from a "Mozlila" agent names the scanner,
 	// where the bare parameter name does not. Both were parsed and discarded.
-	var ip, script, uri, ua, details string
+	var digest, ip, script, uri, ua, details string
 	if len(fields) > 1 {
 		kvPart := fields[1]
+		// Only the producer's first field is content evidence. A URI or user
+		// agent containing sha256= must not forge proof for a legacy event.
+		if first, rest, ok := strings.Cut(kvPart, " "); ok && strings.HasPrefix(first, "sha256=") {
+			digest = strings.TrimPrefix(first, "sha256=")
+			kvPart = rest
+		}
 		for _, kv := range splitKV(kvPart) {
 			switch kv[0] {
 			case "ip":
@@ -309,14 +327,15 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			FilePath: script,
 			Message:  fmt.Sprintf("PHP Shield blocked execution from dangerous path: %s", script),
 			Details:  context,
-		}
+		}, false
 	case "WEBSHELL_PARAM":
 		// Observation, not a denial: for a document-root script the Shield never
 		// reaches its deny branch, so nothing was blocked. Every public site
 		// receives these daily, and rating them Critical buries the real blocks.
-		if !phpShieldRequestReachedScript(script, uri) {
-			return nil
-		}
+		// A rewrite can reach a real shell, even one called index.php. Use the
+		// scanner's verified content cache and PHP's event-time fingerprint;
+		// reopening the path here could inspect a replacement file instead.
+		quiet := !phpShieldRequestReachedScript(script, uri) && checks.IsVerifiedCMSHash(digest)
 		return &alert.Finding{
 			Severity: alert.Warning,
 			Check:    "php_shield_webshell",
@@ -324,7 +343,7 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			FilePath: script,
 			Message:  fmt.Sprintf("PHP Shield observed a webshell command parameter: %s", script),
 			Details:  context,
-		}
+		}, quiet
 	case "BLOCK_WEBSHELL":
 		// Not gated on the request path: the Shield blocks on the executing
 		// script's own source, so a rewrite into a planted shell is still a
@@ -336,7 +355,7 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			FilePath: script,
 			Message:  fmt.Sprintf("PHP Shield blocked a webshell signature: %s", script),
 			Details:  context,
-		}
+		}, false
 	case "EVAL_FATAL":
 		return &alert.Finding{
 			Severity: alert.High,
@@ -345,20 +364,21 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			FilePath: script,
 			Message:  fmt.Sprintf("PHP Shield detected eval() chain failure: %s", script),
 			Details:  context,
-		}
+		}, false
 	}
 
-	return nil
+	return nil, false
 }
 
 // phpShieldRequestReachedScript reports whether the request URI names the
 // script that executed, i.e. whether a command parameter was delivered to the
 // script the client asked for.
 //
-// Scanners send cmd= to paths that do not exist. The CMS rewrite rules (or a
-// 404 handler) answer with the site's front controller, so the Shield sees the
-// parameter on index.php although the probed script was never there. That is
-// not a webshell observation. The request names the executing script when a
+// Scanners send cmd= to paths that do not exist. CMS rewrite rules (or a
+// 404 handler) can answer with the site's front controller. This is only a
+// routing hint: a rewritten request can also execute a real shell. The caller
+// must establish content evidence before quieting an alert, and still archive
+// the observation. The request names the executing script when a
 // leading run of its path segments is a trailing part of the script path (this
 // covers PATH_INFO such as /shell.php/extra), or when it names the directory
 // holding the script, which is then served as its directory index. A request
@@ -374,25 +394,31 @@ func parsePHPShieldLine(line string) *alert.Finding {
 // the event is kept: silence has to be earned by a path that clearly names a
 // different script.
 func phpShieldRequestReachedScript(script, uri string) bool {
-	if script == "" || uri == "" || uri == "-" {
+	if !path.IsAbs(script) || uri == "" || uri == "-" {
 		return true
 	}
 	rawPath, _, hasQuery := strings.Cut(uri, "?")
 	if !strings.HasPrefix(rawPath, "/") {
-		scheme, rest, ok := strings.Cut(rawPath, "://")
-		if !ok || scheme == "" {
+		parsed, err := url.ParseRequestURI(uri)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
 			return true
 		}
-		slash := strings.IndexByte(rest, '/')
-		if slash < 0 {
+		if strings.HasPrefix(parsed.Host, "[") && net.ParseIP(parsed.Hostname()) == nil {
+			return true
+		}
+		rawPath = parsed.EscapedPath()
+		if rawPath == "" {
 			rawPath = "/"
-		} else {
-			rawPath = rest[slash:]
 		}
 	}
 	decoded, err := url.PathUnescape(rawPath)
 	if err != nil {
 		return true
+	}
+	for _, c := range decoded {
+		if c <= ' ' || c == 0x7f || c == '\\' || c == '#' {
+			return true
+		}
 	}
 	requested := path.Clean(decoded)
 	script = path.Clean(script)
@@ -472,7 +498,12 @@ func splitKV(s string) [][2]string {
 			}
 		}
 
-		val := strings.TrimSpace(s[valStart:valEnd])
+		val := s[valStart:valEnd]
+		// Preserve the URI byte count and ambiguous whitespace. Trimming a
+		// truncated path can make it look complete enough to suppress an alert.
+		if key != "uri=" {
+			val = strings.TrimSpace(val)
+		}
 		keyName := strings.TrimSuffix(key, "=")
 		result = append(result, [2]string{keyName, val})
 	}
