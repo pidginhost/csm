@@ -143,3 +143,14 @@ test('bulk permanent block posts the permanent action', async () => {
     assert.equal(request.url, '/api/v1/threat/bulk-action');
     assert.equal(request.body.action, 'block_permanent');
 });
+
+test('bulk timed block shows refused permanent blocks', async () => {
+    const toasts = [];
+    const { context } = threatPage({
+        post() { return Promise.resolve({ count: 0, warnings: ['192.0.2.20: permanently blocked; unblock first'] }); },
+        toast(message, kind) { toasts.push({ message, kind }); }
+    });
+    await context.bulkBlock(false);
+    assert.ok(toasts.some(t => t.kind === 'warning' && /permanently blocked/.test(t.message)));
+    assert.ok(!toasts.some(t => t.kind === 'success'), 'all-refused action must not show success');
+});

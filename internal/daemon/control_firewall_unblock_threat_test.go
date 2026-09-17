@@ -74,3 +74,23 @@ func TestDropAutoBlockThreatRowWithoutStoreClearsTemporaryOnly(t *testing.T) {
 		t.Fatal("operator threat was removed by storeless unblock")
 	}
 }
+
+func TestMappedUnblockClearsTimedOperatorThreat(t *testing.T) {
+	sdb, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := store.Global()
+	store.SetGlobal(sdb)
+	t.Cleanup(func() { store.SetGlobal(previous); _ = sdb.Close() })
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+	const ip = "192.0.2.131"
+	checks.GetThreatDB().AddOperatorTemporary(ip, "operator block", 24*time.Hour)
+	dropAutoBlockThreatRow("::ffff:192.0.2.131")
+	if _, ok := sdb.GetPermanentBlock(ip); ok {
+		t.Fatal("mapped unblock left persistent operator evidence")
+	}
+	if _, ok := checks.GetThreatDB().Lookup(ip); ok {
+		t.Fatal("mapped unblock left in-memory operator evidence")
+	}
+}

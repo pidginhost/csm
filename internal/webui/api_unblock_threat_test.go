@@ -79,13 +79,16 @@ func TestAPIUnblockBulkDropsAutoBlockThreatRows(t *testing.T) {
 func TestAPIUnblockBulkUndoRestoresAutoBlockThreatRows(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
-	blocker := newFullBlocker()
+	blocker := newTTLBlocker()
+	blocker.statePath = s.cfg.StatePath
 	s.blocker = blocker
 
 	ip := "203.0.113.32"
 	tdb := checks.GetThreatDB()
 	tdb.AddTemporary(ip, "web_attack", time.Hour)
-	blocker.blocked[ip] = "web_attack"
+	if err := blocker.BlockIPForce(ip, "web_attack", time.Hour); err != nil {
+		t.Fatal(err)
+	}
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"ips": []string{ip},

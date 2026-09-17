@@ -122,6 +122,7 @@ type Server struct {
 	incidentCorrelator *incident.Correlator
 
 	// Rate limiting
+	threatActionMu   sync.Mutex // serialize operator block, clear and undo decisions
 	loginMu          sync.Mutex
 	loginAttempts    map[string][]time.Time
 	apiMu            sync.Mutex

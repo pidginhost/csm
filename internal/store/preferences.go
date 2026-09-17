@@ -120,12 +120,13 @@ func (db *DB) DeleteOperatorPref(opkey, ns string) error {
 
 // UndoEntry is one record in the bulk-action undo queue.
 type UndoEntry struct {
-	ID         string    `json:"id"`          // matches the seq encoded in the bbolt key
-	RecordedAt time.Time `json:"recorded_at"` // wall time the entry was written
-	Action     string    `json:"action"`      // e.g. "threat_bulk_block"
-	Inverse    string    `json:"inverse"`     // inverse action key the runner will dispatch
-	Payload    []byte    `json:"payload"`     // opaque JSON the runner understands
-	Summary    string    `json:"summary"`     // human-readable label for the banner
+	Targets    []string  `json:"targets,omitempty"` // IPs whose later edits invalidate this action
+	ID         string    `json:"id"`                // matches the seq encoded in the bbolt key
+	RecordedAt time.Time `json:"recorded_at"`       // wall time the entry was written
+	Action     string    `json:"action"`            // e.g. "threat_bulk_block"
+	Inverse    string    `json:"inverse"`           // inverse action key the runner will dispatch
+	Payload    []byte    `json:"payload"`           // opaque JSON the runner understands
+	Summary    string    `json:"summary"`           // human-readable label for the banner
 }
 
 // AppendUndoEntry queues an undo entry for opkey. The entry's ID and
@@ -334,4 +335,47 @@ func bucketOrCreate(tx *bolt.Tx, name string) (*bolt.Bucket, error) {
 		return b, nil
 	}
 	return nil, fmt.Errorf("bucket %s not initialised", name)
+}
+
+// InvalidateUndoTargets retires actions superseded by a later decision about
+// any of their IPs, across operators. Invalidate the whole action so a stale
+// bulk undo cannot silently restore only part of an operator's decision.
+func (db *DB) InvalidateUndoTargets(ips []string) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error { return invalidateUndoTargets(tx, ips) })
+}
+
+func invalidateUndoTargets(tx *bolt.Tx, ips []string) error {
+	b := tx.Bucket([]byte(prefsBucket))
+	if b == nil {
+		return nil
+	}
+	targets := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		targets[ip] = true
+	}
+	var keys [][]byte
+	if err := b.ForEach(func(k, v []byte) error {
+		if !bytes.Contains(k, []byte(":undo:")) {
+			return nil
+		}
+		entry, err := decodeUndoEntry(v)
+		if err != nil {
+			return nil //nolint:nilerr // Corrupt entries cannot execute.
+		}
+		for _, ip := range entry.Targets {
+			if targets[ip] {
+				keys = append(keys, append([]byte(nil), k...))
+				break
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := b.Delete(key); err != nil {
+			return err
+		}
+	}
+	return nil
 }

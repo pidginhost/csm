@@ -241,7 +241,7 @@ func (db *ThreatDB) AddPermanent(ip, reason string) {
 // ttl <= 0 is ignored because auto-block evidence must never become a
 // never-expiring threat row.
 func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
-	db.addExpiring(ip, reason, ttl, func(expiresAt time.Time) {
+	db.addExpiring(ip, reason, ttl, false, func(expiresAt time.Time) {
 		if sdb := store.Global(); sdb != nil {
 			_ = sdb.AddTempBlock(ip, reason, expiresAt)
 		}
@@ -253,25 +253,25 @@ func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
 // but lapses with the block, so a mistaken 24h block of a customer address
 // does not leave it permanently malicious.
 func (db *ThreatDB) AddOperatorTemporary(ip, reason string, ttl time.Duration) {
-	db.addExpiring(ip, reason, ttl, func(expiresAt time.Time) {
+	db.addExpiring(ip, reason, ttl, true, func(expiresAt time.Time) {
 		if sdb := store.Global(); sdb != nil {
 			_ = sdb.AddOperatorTempBlock(ip, reason, expiresAt)
 		}
 	})
 }
 
-func (db *ThreatDB) addExpiring(ip, reason string, ttl time.Duration, persist func(time.Time)) {
+func (db *ThreatDB) addExpiring(ip, reason string, ttl time.Duration, operator bool, persist func(time.Time)) {
 	if ttl <= 0 {
 		return
 	}
 	expiresAt := time.Now().Add(ttl)
 
 	db.mu.Lock()
-	if _, exists := db.badIPs[ip]; exists {
+	if source, exists := db.badIPs[ip]; exists {
 		cur, isTemp := db.badIPExpiry[ip]
-		if !isTemp {
-			// Permanent or feed evidence outlives any temp block; a temp
-			// write must not attach an expiry that later hides it.
+		if !isTemp && (!operator || !isFeedSourceName(source)) {
+			// Keep permanent local evidence. Operator decisions must also
+			// survive feed withdrawal; feedIPs retains independent coverage.
 			db.mu.Unlock()
 			return
 		}

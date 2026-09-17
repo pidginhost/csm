@@ -94,3 +94,30 @@ func TestThreatDBLookupMatchReportsLifetime(t *testing.T) {
 		t.Fatal("unknown IP reported as a threat match")
 	}
 }
+
+func TestOperatorTemporarySurvivesFeedRemoval(t *testing.T) {
+	withTestThreatStore(t)
+	db := newTestThreatDB(t)
+	const ip = "192.0.2.70"
+	db.feedIPs = map[string]map[string]struct{}{"cins-army": {ip: {}}}
+	db.badIPs[ip] = "cins-army"
+	db.AddOperatorTemporary(ip, "Manually blocked via CSM Web UI", 24*time.Hour)
+	entry, found := store.Global().GetPermanentBlock(ip)
+	if !found || entry.Source != store.ThreatSourceOperator || entry.ExpiresAt.IsZero() {
+		t.Fatalf("operator evidence missing behind feed: found=%v entry=%+v", found, entry)
+	}
+	delete(db.feedIPs["cins-army"], ip)
+	db.rebuildFeedLookup(map[string]bool{"cins-army": true})
+	if match, ok := db.LookupMatch(ip); !ok || match.ExpiresAt.IsZero() {
+		t.Fatalf("feed withdrawal erased timed operator evidence: %+v, %v", match, ok)
+	}
+	restarted := newTestThreatDB(t)
+	restarted.loadPermanentBlocklist()
+	if match, ok := restarted.LookupMatch(ip); !ok || !match.ExpiresAt.Equal(entry.ExpiresAt) {
+		t.Fatalf("restart lost original expiry: %+v, %v", match, ok)
+	}
+	db.badIPExpiry[ip] = time.Now().Add(-time.Second)
+	if _, ok := db.LookupMatch(ip); ok {
+		t.Fatal("operator evidence survived its deadline")
+	}
+}

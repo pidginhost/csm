@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -32,9 +33,12 @@ const maxUndoPayloadSize = 4 * 1024 * 1024
 // generate: a list of IPs plus an optional reason and timeout. Future undo
 // kinds can add their own payload structs alongside this one.
 type undoPayloadIPs struct {
-	IPs     []string `json:"ips"`
-	Reason  string   `json:"reason,omitempty"`
-	Timeout string   `json:"timeout,omitempty"` // ParseDuration-compatible
+	BlockSnapshot  bool                             `json:"block_snapshot,omitempty"`
+	RestoreBlocks  map[string]firewall.BlockedEntry `json:"restore_blocks,omitempty"`
+	ExpectedBlocks map[string]firewall.BlockedEntry `json:"expected_blocks,omitempty"`
+	IPs            []string                         `json:"ips"`
+	Reason         string                           `json:"reason,omitempty"`
+	Timeout        string                           `json:"timeout,omitempty"` // ParseDuration-compatible
 	// RestoreThreats carries the threat-DB rows a bulk action removed so the
 	// matching undo can put them back exactly.
 	RestoreThreats []undoThreatRow `json:"restore_threats,omitempty"`
@@ -73,6 +77,7 @@ func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary strin
 		return ""
 	}
 	entry, err := sdb.AppendUndoEntry(opkey, store.UndoEntry{
+		Targets: payload.IPs,
 		Action:  action,
 		Inverse: inverse,
 		Payload: raw,
@@ -197,6 +202,9 @@ type undoRunResponse struct {
 // is empty) and dispatches its inverse. Each successful undo also writes a
 // "undo_<original>" audit entry so the trail records the reversal.
 func (s *Server) apiUndoRun(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -224,7 +232,7 @@ func (s *Server) apiUndoRun(w http.ResponseWriter, r *http.Request) {
 	if req.ID == "" {
 		entry, ok, err = sdb.LatestUndoEntry(opkey)
 		if err == nil && ok {
-			_, _, err = sdb.ConsumeUndoEntry(opkey, entry.ID)
+			entry, ok, err = sdb.ConsumeUndoEntry(opkey, entry.ID)
 		}
 	} else {
 		entry, ok, err = sdb.ConsumeUndoEntry(opkey, req.ID)
@@ -263,7 +271,11 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 	case undoInverseThreatBlock:
 		// Original action blocked IPs; inverse unblocks them and puts back
 		// the evidence that was on file before the block.
-		resp.Count = s.undoBulkBlock(payload)
+		count, err := s.undoBulkBlock(payload)
+		if err != nil {
+			return undoRunResponse{}, err
+		}
+		resp.Count = count
 	case undoInverseThreatUnblock:
 		// Original unblocked IPs; inverse re-blocks them with the saved reason.
 		// The payload is self-written state, so a bad timeout falls back to
@@ -286,6 +298,15 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 	case undoInverseThreatUnwhitelist:
 		resp.Count = s.undoBulkUnwhitelist(payload.IPs)
 	case undoInverseFirewallUnblock:
+		if payload.BlockSnapshot {
+			count, err := s.undoSnapshotBlocks(payload, false)
+			if err != nil {
+				return undoRunResponse{}, err
+			}
+			resp.Count = count
+			break
+		}
+
 		reason := payload.Reason
 		if reason == "" {
 			reason = "Undo: re-block via CSM Web UI"
@@ -346,7 +367,7 @@ func restoreUndoThreatRows(rows []undoThreatRow) {
 		if row.ExpiresAt.IsZero() {
 			continue
 		}
-		ttl := row.ExpiresAt.Sub(now)
+		ttl := time.Until(row.ExpiresAt)
 		if ttl <= 0 {
 			continue // already lapsed; nothing worth restoring
 		}
@@ -372,25 +393,29 @@ func shouldRestoreUndoThreatAsPermanent(row undoThreatRow, now time.Time) bool {
 	return !legacy.Expired(now)
 }
 
-func (s *Server) undoBulkBlock(payload undoPayloadIPs) int {
+func (s *Server) undoBulkBlock(payload undoPayloadIPs) (int, error) {
+	if payload.BlockSnapshot {
+		return s.undoSnapshotBlocks(payload, true)
+	}
+	if s.blocker == nil {
+		return 0, fmt.Errorf("firewall engine not available")
+	}
 	count := 0
 	for _, ip := range payload.IPs {
 		if _, err := parseAndValidateIP(ip); err != nil {
 			continue
 		}
-		if s.blocker != nil {
-			_ = s.blocker.UnblockIP(ip)
+		if err := s.blocker.UnblockIP(ip); err != nil {
+			continue
 		}
 		if tdb := checks.GetThreatDB(); tdb != nil {
 			tdb.RemovePermanent(ip)
 		}
+		restoreUndoThreatRows(threatRowsForIP(payload.RestoreThreats, ip))
 		flushCphulk(ip)
 		count++
 	}
-	// Evidence the block replaced goes back with its original lifetime; the
-	// removal above cleared the rows the block wrote, so nothing shadows it.
-	restoreUndoThreatRows(payload.RestoreThreats)
-	return count
+	return count, nil
 }
 
 func (s *Server) undoBulkReblock(ips []string, reason string, timeout time.Duration) (int, error) {

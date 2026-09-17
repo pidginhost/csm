@@ -1,6 +1,9 @@
 package store
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -140,5 +143,62 @@ func TestRemoveTemporaryBlockDropsTimedOperatorRows(t *testing.T) {
 	}
 	if count := db.getCounter("threats:count"); count != 1 {
 		t.Fatalf("threats:count = %d, want 1", count)
+	}
+}
+
+func TestPermanentWebUIReasonsSurviveFlatFileMigration(t *testing.T) {
+	path := t.TempDir()
+	dir := filepath.Join(path, "threat_db")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data := "192.0.2.120 # Permanently blocked via CSM Web UI [2026-09-17]\n192.0.2.121 # Bulk permanently blocked via CSM Web UI [2026-09-17]\n"
+	if err := os.WriteFile(filepath.Join(dir, "permanent.txt"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, ip := range []string{"192.0.2.120", "192.0.2.121"} {
+		entry, ok := db.GetPermanentBlock(ip)
+		if !ok || entry.Expired(time.Now()) {
+			t.Fatalf("permanent operator decision discarded by migration: %+v", entry)
+		}
+	}
+}
+
+func TestThreatChangesInvalidateUndoAcrossOperators(t *testing.T) {
+	for _, remove := range []bool{false, true} {
+		t.Run(fmt.Sprint(remove), func(t *testing.T) {
+			db := openThreatTestDB(t)
+			const ip = "192.0.2.127"
+			for _, operator := range []string{"first", "second"} {
+				if _, err := db.AppendUndoEntry(operator, UndoEntry{Inverse: "test", Targets: []string{ip}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.AppendUndoEntry("unrelated", UndoEntry{Inverse: "test", Targets: []string{"192.0.2.128"}}); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if remove {
+				err = db.RemovePermanentBlock(ip)
+			} else {
+				err = db.AddOperatorTempBlock(ip, "operator block", time.Now().Add(time.Hour))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, operator := range []string{"first", "second"} {
+				if _, ok, err := db.LatestUndoEntry(operator); err != nil || ok {
+					t.Fatalf("stale undo survived for %s: present=%v err=%v", operator, ok, err)
+				}
+			}
+			if _, ok, err := db.LatestUndoEntry("unrelated"); err != nil || !ok {
+				t.Fatalf("unrelated undo invalidated: present=%v err=%v", ok, err)
+			}
+		})
 	}
 }

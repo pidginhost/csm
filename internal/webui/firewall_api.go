@@ -25,6 +25,9 @@ import (
 // older builds a stale auto-block row could outlive the firewall block and
 // ip_reputation would re-flag the IP into a new block loop.
 func dropAutoBlockThreatRow(ip string) {
+	if parsed := net.ParseIP(ip); parsed != nil {
+		ip = parsed.String()
+	}
 	if sdb := store.Global(); sdb != nil {
 		_, _ = sdb.RemoveTemporaryBlock(ip)
 	}
@@ -198,6 +201,9 @@ func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
 
 // apiFirewallAllowIP adds a firewall allow rule, temporary when duration > 0.
 func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -465,6 +471,9 @@ func (s *Server) apiFirewallRemoveSubnet(w http.ResponseWriter, r *http.Request)
 
 // apiFirewallFlush clears all blocked IPs.
 func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return

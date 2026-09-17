@@ -2,10 +2,26 @@ package firewall
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// ErrPermanentBlock requires an explicit unblock before a timed Web UI block.
+var ErrPermanentBlock = errors.New("IP is permanently blocked; unblock it explicitly before applying a timed block")
+
+// ErrLongerBlock requires an explicit unblock before shortening a timed block.
+var ErrLongerBlock = errors.New("IP has a longer block; unblock it explicitly before shortening its lifetime")
+
+// ErrBlockChanged prevents undo from replacing a later firewall decision.
+var ErrBlockChanged = errors.New("block changed since the action; undo is no longer available")
+
+// SameBlockedEntry compares snapshots without relying on time.Time locations.
+func SameBlockedEntry(a, b BlockedEntry) bool {
+	return a.IP == b.IP && a.Reason == b.Reason && a.Source == b.Source &&
+		a.BlockedAt.Equal(b.BlockedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
+}
 
 // LoadState reads the authoritative firewall state file directly without requiring
 // a running engine. A missing state file is a valid fresh-host state and returns

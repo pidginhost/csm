@@ -586,7 +586,7 @@ function updateBulkButtons() {
         blockBtn.classList.remove('d-none');
         blockPermBtn.classList.remove('d-none');
         wlBtn.classList.remove('d-none');
-        blockBtn.textContent = 'Block Selected (' + count + ')';
+        blockBtn.textContent = 'Block 24h (' + count + ')';
         blockPermBtn.textContent = 'Block Permanently (' + count + ')';
         wlBtn.textContent = 'Whitelist Selected (' + count + ')';
     } else {
@@ -612,12 +612,13 @@ function bulkBlock(permanent) {
     if (ips.length === 0) return Promise.resolve();
     var question = permanent ?
         'Block ' + ips.length + ' IP(s) permanently?\n\nThe firewall blocks never expire and the IPs stay in the threat database until you clear them.' :
-        'Block ' + ips.length + ' IP(s) for 24 hours?\n\nThis will block them in the firewall and add them to the threat database for the same 24 hours.';
+        'Block ' + ips.length + ' IP(s) for 24 hours?\n\nThis will block them in the firewall and add them to the threat database for the same 24 hours. Permanent and longer blocks are skipped; unblock them explicitly before changing their lifetime.';
     var label = permanent ? 'Permanently blocked ' : 'Blocked ';
     return CSM.confirm(question).then(function() {
         return CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: permanent ? 'block_permanent' : 'block' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
-            CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
+            if (data.count > 0) CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
+            if (data.warnings && data.warnings.length) CSM.toast(data.warnings.join('\n'), 'warning');
             if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: label + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();

@@ -26,6 +26,8 @@ const (
 var legacyOperatorReasonPrefixes = []string{
 	"Manually blocked via CSM Web UI",
 	"Bulk blocked via CSM Web UI",
+	"Permanently blocked via CSM Web UI",
+	"Bulk permanently blocked via CSM Web UI",
 }
 
 // PermanentBlockEntry represents an IP blocked by the threat system.
@@ -109,6 +111,9 @@ func (db *DB) addExpiringThreat(ip, reason, source string, expiresAt time.Time) 
 		return nil
 	}
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats"))
 
 		entry := PermanentBlockEntry{
@@ -153,6 +158,9 @@ func (db *DB) addExpiringThreat(ip, reason, source string, expiresAt time.Time) 
 // and bless historical auto-block poison as permanent.
 func (db *DB) putThreatEntry(entry PermanentBlockEntry) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{entry.IP}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats"))
 
 		isNew := b.Get([]byte(entry.IP)) == nil
@@ -227,6 +235,9 @@ func (db *DB) PruneExpiredThreats() int {
 // RemovePermanentBlock removes an IP from the permanent block list and decrements the count.
 func (db *DB) RemovePermanentBlock(ip string) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats"))
 		if b.Get([]byte(ip)) == nil {
 			return nil
@@ -256,6 +267,9 @@ func (e PermanentBlockEntry) TiedToFirewallBlock() bool {
 func (db *DB) RemoveTemporaryBlock(ip string) (bool, error) {
 	removed := false
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats"))
 		v := b.Get([]byte(ip))
 		if v == nil {
@@ -322,6 +336,9 @@ func (db *DB) AllPermanentBlocks() []PermanentBlockEntry {
 // AddWhitelistEntry adds an IP to the whitelist.
 func (db *DB) AddWhitelistEntry(ip string, expiresAt time.Time, permanent bool) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats:whitelist"))
 
 		entry := WhitelistEntry{
@@ -340,6 +357,9 @@ func (db *DB) AddWhitelistEntry(ip string, expiresAt time.Time, permanent bool) 
 // RemoveWhitelistEntry removes an IP from the whitelist.
 func (db *DB) RemoveWhitelistEntry(ip string) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats:whitelist"))
 		return b.Delete([]byte(ip))
 	})

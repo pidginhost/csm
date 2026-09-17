@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/threat"
 )
 
@@ -150,6 +152,9 @@ func (s *Server) apiThreatDBStats(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/threat/whitelist-ip - mark an IP as a known customer
 // Unblocks, removes from threat DB + attack DB, adds to whitelist.
 func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != "POST" {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -237,6 +242,9 @@ func (s *Server) apiThreatWhitelist(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/threat/unwhitelist-ip - remove an IP from the whitelist
 func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != "POST" {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -305,6 +313,9 @@ func (s *Server) apiThreatBlockIPPermanent(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) operatorBlockIP(w http.ResponseWriter, r *http.Request, permanent bool) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != "POST" {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -342,10 +353,15 @@ func (s *Server) operatorBlockIP(w http.ResponseWriter, r *http.Request, permane
 		return
 	}
 	// Operator-initiated: bypass auto_response.dry_run gate.
-	if err := blockIPForOperator(s.blocker, req.IP, reason, ttl); err != nil {
-		writeJSONError(w, fmt.Sprintf("block failed: %v", err), http.StatusInternalServerError)
+	if err := s.blockIPPreservingLifetime(req.IP, reason, ttl); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, firewall.ErrPermanentBlock) || errors.Is(err, firewall.ErrLongerBlock) {
+			status = http.StatusConflict
+		}
+		writeJSONError(w, fmt.Sprintf("block failed: %v", err), status)
 		return
 	}
+	invalidateIPUndo(req.IP)
 	if permanent {
 		actions = append(actions, "blocked in firewall permanently")
 	} else {
@@ -385,6 +401,9 @@ func (s *Server) operatorBlockIP(w http.ResponseWriter, r *http.Request, permane
 // POST /api/v1/threat/clear-ip - unblock + clear from all DBs without whitelisting.
 // For dynamic IP customers: one-time cleanup, IP can be re-blocked later.
 func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != "POST" {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -442,6 +461,9 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/threat/temp-whitelist-ip - whitelist for a specified duration.
 func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != "POST" {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -516,6 +538,9 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 
 // POST /api/v1/threat/bulk-action - block or whitelist multiple IPs at once.
 func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -551,6 +576,10 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 		blockTTL = 0
 	}
 
+	priorBlocks := make(map[string]firewall.BlockedEntry)
+	expectedBlocks := make(map[string]firewall.BlockedEntry)
+	seen := make(map[string]bool, len(req.IPs))
+
 	count := 0
 	succeeded := make([]string, 0, len(req.IPs))
 	var removedThreats []undoThreatRow
@@ -561,13 +590,27 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		ipStr = parsedIP.String()
+		if seen[ipStr] {
+			continue
+		}
+		seen[ipStr] = true
+
 		switch {
 		case blockAction:
 			// Mirror the single-IP block flow.
 			// Operator-initiated bulk block: bypass auto_response.dry_run gate.
-			if err := blockIPForOperator(s.blocker, ipStr, blockReason, blockTTL); err != nil {
+			before, after, err := s.blockIPForUndo(ipStr, blockReason, blockTTL)
+			if err != nil {
+				warnings = append(warnings, ipStr+": "+err.Error())
 				continue
 			}
+			if before != nil {
+				priorBlocks[ipStr] = *before
+			}
+			if after != nil {
+				expectedBlocks[ipStr] = *after
+			}
+			invalidateIPUndo(ipStr)
 			// Capture whatever evidence is already on file so the undo
 			// restores it instead of dropping an older permanent row this
 			// block did not create.
@@ -643,7 +686,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			action = "threat_bulk_whitelist"
 		}
 		undoToken = s.recordUndoEntry(r, action, inverse, summary,
-			undoPayloadIPs{IPs: succeeded, RestoreThreats: removedThreats})
+			undoPayloadIPs{IPs: succeeded, RestoreThreats: removedThreats, BlockSnapshot: blockAction, RestoreBlocks: priorBlocks, ExpectedBlocks: expectedBlocks})
 	}
 
 	writeJSON(w, map[string]interface{}{

@@ -1710,6 +1710,7 @@ paths:
     post:
       operationId: post_threat_block_ip
       summary: "post /api/v1/threat/block-ip (scope: admin)"
+      description: Block for 24 hours. Refuses to shorten a permanent or longer block; unblock explicitly first.
       x-csm-scope: admin
       security:
         - bearerAuth: []
@@ -1724,6 +1725,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }
+        "409":
+          description: An existing permanent or longer block must be explicitly unblocked first.
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/threat/block-ip-permanent":

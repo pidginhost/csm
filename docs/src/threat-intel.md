@@ -143,6 +143,17 @@ an operator clears it. When an address is no longer blocked but still holds
 permanent evidence, the lookup says so, because that address is flagged
 again the next time it is seen.
 
+The 24 hour action refuses to shorten an existing permanent or longer
+firewall block. Unblock explicitly before changing that lifetime. Bulk
+requests skip those addresses and report warnings. Existing permanent
+threat evidence remains until cleared; feed updates do not remove a timed
+operator record before its expiry.
+
+Bulk undo restores each prior firewall lifetime, using the original deadline
+for timed blocks. Expired blocks stay expired, and a later block, clear, or
+whitelist decision invalidates the older undo action. Only successful
+firewall reversals restore the corresponding threat evidence.
+
 ## API Endpoints
 
 ```

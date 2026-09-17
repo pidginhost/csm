@@ -1169,6 +1169,9 @@ func (s *Server) apiAccounts(w http.ResponseWriter, _ *http.Request) {
 // apiBlockIP blocks an IP via the firewall engine.
 // POST /api/v1/block-ip  body: {"ip": "1.2.3.4", "reason": "..."}
 func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1238,6 +1241,9 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 // apiUnblockIP removes an IP from the firewall + cphulk.
 // POST /api/v1/unblock-ip  body: {"ip": "1.2.3.4"}
 func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1251,11 +1257,13 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	req.IP = parsedIP.String()
 	if s.blocker == nil {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
 		return
@@ -1275,6 +1283,9 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 
 // apiUnblockBulk unblocks multiple IPs at once.
 func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
+	s.threatActionMu.Lock()
+	defer s.threatActionMu.Unlock()
+
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1298,6 +1309,9 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	priorBlocks := make(map[string]firewall.BlockedEntry)
+	seen := make(map[string]bool, len(req.IPs))
+
 	succeeded := 0
 	unblocked := make([]string, 0, len(req.IPs))
 	removedThreats := make([]undoThreatRow, 0, len(req.IPs))
@@ -1307,8 +1321,17 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		ip = parsed.String()
-		if err := s.blocker.UnblockIP(ip); err != nil {
+		if seen[ip] {
 			continue
+		}
+		seen[ip] = true
+
+		before, err := s.unblockIPForUndo(ip)
+		if err != nil {
+			continue
+		}
+		if before != nil {
+			priorBlocks[ip] = *before
 		}
 		if row, ok := captureUndoThreatRow(ip, true); ok {
 			removedThreats = append(removedThreats, row)
@@ -1326,9 +1349,9 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("Unblocked %d IPs", succeeded),
 			undoPayloadIPs{
 				IPs:            unblocked,
-				Reason:         "Undo: re-block via CSM Web UI",
-				Timeout:        "24h",
 				RestoreThreats: removedThreats,
+				BlockSnapshot:  true,
+				RestoreBlocks:  priorBlocks,
 			})
 	}
 

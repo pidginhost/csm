@@ -884,6 +884,17 @@ POST /api/v1/threat/unwhitelist-ip     Remove from whitelist
 POST /api/v1/threat/bulk-action        Bulk block (24h or permanent) / whitelist across many IPs
 ```
 
+The 24 hour endpoint returns `409 Conflict` when the address already has a
+permanent or longer firewall block. Unblock it explicitly before shortening
+its lifetime. Bulk actions use `action: "block"`, `"block_permanent"`, or
+`"whitelist"`; refused blocks are excluded from `count` and explained in
+`warnings`. Repeated canonical IPs count once. Permanence cannot be selected
+through an extra request field.
+
+Bulk undo restores the original per-IP firewall deadlines. A later change
+to any target invalidates that undo action; it cannot restore dismissed
+evidence or replace the later decision.
+
 ## Firewall
 
 ```

@@ -11,6 +11,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Security
 
+- Timed blocks in the web interface no longer shorten existing permanent or longer blocks. Undo respects later operator decisions.
 - A self-deleting file in WordPress update staging can no longer escape its alert by breaking the location where an installed copy of it would be looked for.
 - Translation files with concealed executable content no longer qualify as harmless data.
 
@@ -20,6 +21,8 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- Unblocking an IPv4-mapped address now clears the same temporary evidence as its IPv4 form.
+- Manual block evidence survives threat-feed changes and migration, and bulk undo restores each address's prior block lifetime without reviving expired evidence. Duplicate selections no longer leave block records behind after undo.
 - A 24 hour manual block from the web interface no longer marks the address as malicious forever. The threat record now expires with the firewall block, so a mistaken block of a customer address stops re-blocking it a day later. Blocks recorded before this release are left as they are, and the IP lookup now explains when an address is no longer blocked but still carries a permanent threat record.
 - WAF attacker reports for link-local addresses no longer advise a block the firewall refuses, and subnet blocks rejected by safety guards are logged as refused rather than failed.
 - Restart advice now reflects reclaimable space in the state database, so a large file that is still mostly in use no longer triggers it.
