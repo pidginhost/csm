@@ -154,3 +154,38 @@ func TestYaraWorkerReadyProcess(t *testing.T) {
 	}
 	t.Fatal("missing worker socket")
 }
+
+// A worker that crashes after a healthy start is offline until the supervisor
+// brings back one that stays up. The watcher follows that, so a crash loop
+// keeps doctor failing instead of reporting the boot-time success.
+func TestYaraWorkerCrashLoopReportsWatcherState(t *testing.T) {
+	d := &Daemon{cfg: &config.Config{}, binaryPath: "/usr/local/bin/csm", stopCh: make(chan struct{})}
+	cfg := d.yaraSupervisorConfig()
+	if cfg.OnRestart == nil || cfg.OnStable == nil {
+		t.Fatal("supervisor is not wired to report worker crashes and recovery")
+	}
+	d.MarkWatcher(yaraWorkerWatcher, true)
+
+	cfg.OnRestart(139, 0, 5*time.Second)
+	if attached, ok := d.WatcherStatuses()[yaraWorkerWatcher]; !ok || attached {
+		t.Fatalf("crashed worker watcher recorded=%t attached=%t, want failure", ok, attached)
+	}
+
+	cfg.OnStable()
+	if !d.WatcherStatuses()[yaraWorkerWatcher] {
+		t.Fatal("worker that stayed up was not recorded as recovered")
+	}
+}
+
+// During shutdown the worker exits on purpose; that must not flip the watcher.
+func TestYaraWorkerWatcherIgnoresShutdownExit(t *testing.T) {
+	d := &Daemon{cfg: &config.Config{}, binaryPath: "/usr/local/bin/csm", stopCh: make(chan struct{})}
+	cfg := d.yaraSupervisorConfig()
+	d.MarkWatcher(yaraWorkerWatcher, true)
+	close(d.stopCh)
+
+	cfg.OnRestart(0, 0, time.Minute)
+	if !d.WatcherStatuses()[yaraWorkerWatcher] {
+		t.Fatal("shutdown exit marked the worker watcher failed")
+	}
+}

@@ -302,6 +302,9 @@ Operator view:
   limited to one per minute) and restart with exponential backoff
   (1 s, 2 s, 4 s, capped at 60 s). Restarts reset to 1 s after the
   worker stays up for 30 s.
+- `csm doctor` reports `watcher: yara_worker` as failed from a crash until
+  a restarted worker has stayed up for 30 s, so a worker that keeps
+  crashing shortly after each restart keeps doctor failing.
 - A `csm update-rules` run that completes triggers the supervisor's
   in-process `Reload` (the worker recompiles). Escalate to a full
   worker restart from Go code via `Supervisor.RestartWorker()`.

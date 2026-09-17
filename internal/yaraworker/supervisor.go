@@ -56,6 +56,11 @@ type SupervisorConfig struct {
 	// emitter.
 	OnRestart func(exitCode int, signal syscall.Signal, runDuration time.Duration)
 
+	// OnStable is called each time a worker has stayed up for StableDuration
+	// after becoming ready. A restart that passes its readiness probe and
+	// dies again soon after never reports stable.
+	OnStable func()
+
 	// Logf is an optional structured-log hook. Supervisor internals log
 	// restarts + transient errors here. Nil is fine.
 	Logf func(format string, args ...any)
@@ -78,6 +83,11 @@ type Supervisor struct {
 	stopped bool
 
 	running atomic.Bool
+
+	// callbackMu serializes OnRestart and OnStable. waitForChild clears cmd
+	// before OnRestart runs, so a stable check that loses the race to a crash
+	// sees a different child and cannot report the dead worker as stable.
+	callbackMu sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -443,7 +453,9 @@ func (s *Supervisor) supervise() {
 		s.mu.Unlock()
 
 		if s.cfg.OnRestart != nil {
+			s.callbackMu.Lock()
 			s.cfg.OnRestart(exitCode, sig, runDuration)
+			s.callbackMu.Unlock()
 		}
 
 		// A stable exit already reset the delay. Short-lived workers and
@@ -596,7 +608,27 @@ func (s *Supervisor) spawnAndWaitReady() error {
 		s.mu.Unlock()
 		return err
 	}
+	s.reportStableAfter(cmd)
 	return nil
+}
+
+// reportStableAfter calls OnStable once cmd has stayed the current worker for
+// StableDuration without the supervisor stopping.
+func (s *Supervisor) reportStableAfter(cmd *exec.Cmd) {
+	if s.cfg.OnStable == nil {
+		return
+	}
+	ctx := s.ctx
+	time.AfterFunc(s.cfg.StableDuration, func() {
+		s.callbackMu.Lock()
+		defer s.callbackMu.Unlock()
+		s.mu.Lock()
+		current := s.cmd == cmd && !s.stopped
+		s.mu.Unlock()
+		if current && ctx.Err() == nil {
+			s.cfg.OnStable()
+		}
+	})
 }
 
 func (s *Supervisor) waitForReady(client *yaraipc.Client) error {
