@@ -82,10 +82,16 @@ migration stage.
 
 ## Mutation failures
 
-Subnet blocks refuse ranges overlapping loopback or link-local scopes, plus
-unspecified individual addresses and default routes. Other ranges beginning
-at zero, such as `0.0.0.0/8`, remain blockable. Refusing a permanent promotion
-leaves the prior temporary block and its expiry unchanged.
+Subnet blocks refuse ranges overlapping loopback or link-local scopes,
+infrastructure, host interface addresses, or full-IP and port-specific allows,
+plus unspecified individual addresses and default routes. Other ranges beginning
+at zero, such as `0.0.0.0/8`, remain blockable. All these safety refusals are
+recorded as refused in the action log, like single-address refusals. Invalid
+targets and storage or kernel errors remain failures. Refusing a permanent
+promotion leaves the prior temporary block and its expiry unchanged.
+
+WAF attacker reports for link-local addresses stay visible but advise
+investigating the traffic source instead of a block CSM would refuse.
 
 Integrity checks compare live rule structure with the snapshot captured after
 CSM last applied the firewall. Editing or rehashing configuration alone never

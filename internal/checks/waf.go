@@ -1211,7 +1211,13 @@ func wafAttackerIsReportable(ip string) bool {
 
 // wafBlockAdvice is the operator guidance attached to a WAF attacker finding.
 func wafBlockAdvice(ip string, count int) string {
-	return fmt.Sprintf("IP %s has been blocked %d times by ModSecurity. Consider permanent block via CSM.", ip, count)
+	details := fmt.Sprintf("IP %s has been blocked %d times by ModSecurity.", ip, count)
+	// The firewall refuses link-local blocks, so advising one sends the
+	// operator to an action that cannot succeed.
+	if parsed := net.ParseIP(ip); parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() {
+		return details + " Review the source of this link-local traffic; CSM does not block link-local addresses."
+	}
+	return details + " Consider permanent block via CSM."
 }
 
 // modsecAuditLogPaths yields the audit log candidates; a seam for tests.
