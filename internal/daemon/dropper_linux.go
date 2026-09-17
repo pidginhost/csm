@@ -218,13 +218,26 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	var stable bool
 	c.Head, c.Size, stable = readDropperHead(event.fd, st, readFromFd)
 	c.ContentMayExecute = !stable
-	// Only known install/atomic staging shapes need a digest for cross-filesystem
-	// copy-delete matching. A separate CLOSE_WRITE refresh normally follows
-	// FAN_CREATE with the final bytes, so create-only snapshots keep identity
-	// and a bounded head without hashing the same file twice.
-	needsDigest := atomicWriteRenameCandidate(c.Path) != "" ||
-		len(wpUpgradeInstallDestinations(c.Path, c.Docroot)) > 0
-	if needsDigest && (event.mask&FAN_CREATE == 0 || event.mask&FAN_CLOSE_WRITE != 0) {
+	// Copy exceptions must check even CREATE snapshots: a benign CLOSE_WRITE
+	// cannot erase an earlier payload. Blank snapshots carry no such evidence.
+	wpCopy := len(wpUpgradeCopyDestinations(c.Path, c.Docroot)) > 0
+	if wpCopy && (!stable || !dropperContentIsInert(c.Head, c.Size)) {
+		// Keep only the proof and hash, not a large translation body in each
+		// tracker entry. Both must describe the same complete snapshot.
+		body := readCompleteFromFd(event.fd, dropperDigestMax)
+		var after unix.Stat_t
+		if body != nil && stable && bytes.HasPrefix(body, c.Head) && int64(len(body)) == c.Size &&
+			unix.Fstat(event.fd, &after) == nil && after.Mode == st.Mode {
+			c.Digest, c.DigestKnown = sha256.Sum256(body), true
+			if filepath.Base(c.Path) == "version-current.php" {
+				c.WPInstallData = checks.IsWPVersionDataBytesComplete(body, true)
+			} else {
+				c.WPInstallData = checks.IsWPTranslationCacheBytesComplete(body, true)
+			}
+		}
+		c.WPInstallUnsafe = !c.WPInstallData || c.Mode&0o111 != 0
+	} else if !wpCopy && !c.WritePending && (atomicWriteRenameCandidate(c.Path) != "" ||
+		len(wpUpgradeRenameCandidates(c.Path, c.Docroot)) > 0) {
 		c.Digest, c.DigestKnown = digestFromFD(event.fd, st.Size)
 	}
 

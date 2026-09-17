@@ -75,6 +75,27 @@ func FuzzPHPTerminatesImmediately(f *testing.F) {
 	})
 }
 
+func FuzzWPVersionData(f *testing.F) {
+	for _, seed := range []string{
+		"", "<?php $wp_version = '7.1';",
+		"<?php $wp_version = '7.1'; $required_php_extensions = ['json'];",
+		"<?php $wp_version = phpversion();",
+		"<?php $wp_version = '7.1'; #[Example] function example() {} print(123);",
+		"<?php $wp_version = '7.1'; /* unterminated",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, body string) {
+		if IsWPVersionDataBytesComplete([]byte(body), false) {
+			t.Fatal("incomplete version data accepted")
+		}
+		if IsWPVersionDataBytesComplete([]byte(body), true) &&
+			IsWPVersionDataBytesComplete([]byte(body+"\n/**/system($_POST['c']);"), true) {
+			t.Fatal("executable suffix accepted as version data")
+		}
+	})
+}
+
 func FuzzArchiveEntrySignalsSiteBackup(f *testing.F) {
 	f.Add("mysite-2024-01-01/wp-config.php")
 	f.Add("site/sites/default/settings.php")

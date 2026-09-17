@@ -45,7 +45,13 @@ type dropperCandidate struct {
 	ContentMayExecute bool
 	Digest            [32]byte
 	DigestKnown       bool
-	Head              []byte
+	// WPInstallData proves the complete, stable snapshot used for Digest was
+	// a translation return literal or version assignments, with no payload.
+	WPInstallData bool
+	// Sticky across rewrites: data copied later cannot erase an earlier
+	// nonempty snapshot that carried code or whose full content was unknown.
+	WPInstallUnsafe bool
+	Head            []byte
 	// Parent identifies the real, non-symlink directory that contained the
 	// candidate while its event fd was open. The later probe uses this stable
 	// identity instead of inferring directory removal from two path stats.
@@ -195,6 +201,9 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.PHPExecutable = prev.PHPExecutable || next.PHPExecutable
 	merged.ContentSuspicious = prev.ContentSuspicious || next.ContentSuspicious
 	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
+	merged.WPInstallUnsafe = prev.WPInstallUnsafe || next.WPInstallUnsafe
+	// CREATE may reach an analyzer after CLOSE_WRITE for the same inode.
+	merged.WritePending = prev.WritePending && next.WritePending
 	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
 	if !merged.BirthKnown {
 		switch {
@@ -604,17 +613,16 @@ func wpUpgradeRenameCandidates(path, configuredDocroot string) []string {
 // wp-includes/version.php to upgrade/version-current.php, reads it, deletes
 // it, and later installs the same file as wp-includes/version.php.
 //
-// These paths only say where to look. A vanished file is cleared only when a
-// destination holds its exact bytes (same inode, or same size and full
-// SHA-256), so its content still sits on disk where every scan covers it. An
-// attacker who drops and deletes a file in the same places without leaving an
-// identical copy at the destination is still reported at full severity: the
-// new shapes deliberately do not join the structural demotion that the
-// package-tree shape gets in assessDropper.
+// Copy destinations also require a complete data-only snapshot. An identical
+// payload planted in languages/ or version.php does not prove updater activity.
 func wpUpgradeInstallDestinations(path, configuredDocroot string) []string {
 	if dests := wpUpgradeRenameCandidates(path, configuredDocroot); dests != nil {
 		return dests
 	}
+	return wpUpgradeCopyDestinations(path, configuredDocroot)
+}
+
+func wpUpgradeCopyDestinations(path, configuredDocroot string) []string {
 	wpRoot, rest, ok := wpUpgradeStagedPath(path, configuredDocroot)
 	if !ok {
 		return nil
@@ -623,7 +631,7 @@ func wpUpgradeInstallDestinations(path, configuredDocroot string) []string {
 	switch {
 	case len(parts) == 1 && parts[0] == "version-current.php":
 		return []string{filepath.Join(wpRoot, "wp-includes", "version.php")}
-	case len(parts) == 2:
+	case len(parts) == 2 && strings.HasSuffix(parts[1], ".l10n.php"):
 		// Clean already rejected empty, "." and ".." components.
 		languages := filepath.Join(wpRoot, "wp-content", "languages")
 		return []string{
@@ -639,7 +647,15 @@ func dropperRenameTargetAllowed(c dropperCandidate, target string) bool {
 	if atomicTarget := atomicWriteRenameCandidate(c.Path); atomicTarget != "" && target == atomicTarget {
 		return true
 	}
-	for _, candidate := range wpUpgradeInstallDestinations(c.Path, c.Docroot) {
+	for _, candidate := range wpUpgradeRenameCandidates(c.Path, c.Docroot) {
+		if target == candidate {
+			return true
+		}
+	}
+	if !c.WPInstallData || c.WPInstallUnsafe || !c.DigestKnown || c.WritePending || c.ContentSuspicious || c.Mode&0o111 != 0 {
+		return false
+	}
+	for _, candidate := range wpUpgradeCopyDestinations(c.Path, c.Docroot) {
 		if target == candidate {
 			return true
 		}

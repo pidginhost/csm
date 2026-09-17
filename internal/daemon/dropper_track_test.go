@@ -272,6 +272,16 @@ func TestDropperTrackerCreateThenCloseWithoutBirthTime(t *testing.T) {
 	}
 }
 
+func TestDropperMergeLateCreateRetainsCloseEvidence(t *testing.T) {
+	closed := freshDropperCandidate(time.Now())
+	created := closed
+	created.Observed = closed.Observed.Add(time.Second)
+	created.WritePending = true
+	if mergeDropperCandidate(closed, created).WritePending {
+		t.Fatal("a delayed CREATE erased the already observed CLOSE_WRITE")
+	}
+}
+
 func TestDropperTrackerRefreshDoesNotAdmitUnknownFile(t *testing.T) {
 	tr := newDropperTracker(time.Minute)
 	if tr.Refresh(freshDropperCandidate(time.Unix(1_770_000_000, 0))) {
@@ -704,6 +714,7 @@ func TestAssessDropper(t *testing.T) {
 		}, dropperProbe{Conclusive: true}, dropperDemotedWPUpgrade},
 		{"language pack copied into languages dir", func(c *dropperCandidate) {
 			c.Path = "/home/alice/public_html/wp-content/upgrade/wordpress-seo-28.5-ro_ro/wordpress-seo-ro_RO.l10n.php"
+			c.WPInstallData = true
 		}, dropperProbe{
 			Conclusive:   true,
 			RenamedTo:    "/home/alice/public_html/wp-content/languages/plugins/wordpress-seo-ro_RO.l10n.php",
@@ -711,6 +722,7 @@ func TestAssessDropper(t *testing.T) {
 		}, dropperBenign},
 		{"core version probe matches installed version file", func(c *dropperCandidate) {
 			c.Path = "/home/alice/public_html/wp-content/upgrade/version-current.php"
+			c.WPInstallData = true
 		}, dropperProbe{
 			Conclusive:   true,
 			RenamedTo:    "/home/alice/public_html/wp-includes/version.php",
@@ -718,6 +730,7 @@ func TestAssessDropper(t *testing.T) {
 		}, dropperBenign},
 		{"flat upgrade dropper with different installed copy", func(c *dropperCandidate) {
 			c.Path = "/home/alice/public_html/wp-content/upgrade/wordpress-seo-28.5-ro_ro/wordpress-seo-ro_RO.l10n.php"
+			c.WPInstallData = true
 		}, dropperProbe{
 			Conclusive: true,
 			RenamedTo:  "/home/alice/public_html/wp-content/languages/plugins/wordpress-seo-ro_RO.l10n.php",

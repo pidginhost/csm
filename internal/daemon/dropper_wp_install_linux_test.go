@@ -5,8 +5,11 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
@@ -48,7 +51,7 @@ func writeWPInstallFile(t *testing.T, path, content string) {
 // the event fd is still open. That reproduces the production race in which the
 // updater has already removed the staged file, and possibly its directory,
 // by the time a worker reaches the event.
-func (r *wpInstallRun) observe(t *testing.T, path string, beforeObserve func()) {
+func (r *wpInstallRun) observe(t *testing.T, path string, beforeObserve func()) *dropperCandidate {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
@@ -58,11 +61,13 @@ func (r *wpInstallRun) observe(t *testing.T, path string, beforeObserve func()) 
 	if beforeObserve != nil {
 		beforeObserve()
 	}
-	if c := r.fm.observeDropperCandidate(fileEvent{
+	c := r.fm.observeDropperCandidate(fileEvent{
 		path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
-	}, "pid=4242 cmd=lsphp uid=1000"); c == nil {
+	}, "pid=4242 cmd=lsphp uid=1000")
+	if c == nil {
 		t.Fatalf("staged PHP %s was not admitted", path)
 	}
+	return c
 }
 
 func (r *wpInstallRun) probeAndFlush() {
@@ -210,6 +215,238 @@ func TestDropperUnreachableInstallDestinationStillCritical(t *testing.T) {
 			}
 			r.probeAndFlush()
 			assertSingleCriticalDropper(t, *r.alerts, dropper)
+		})
+	}
+}
+
+func TestDropperWPPreplantedCopyStillCritical(t *testing.T) {
+	for _, tc := range []struct {
+		name, staged, installed, body string
+		executable, suspicious        bool
+	}{
+		{"arbitrary PHP", "stage/shell.php", "wp-content/languages/shell.php", testDropperPHP, false, false},
+		{"translation extension", "stage/example-ro_RO.l10n.php", "wp-content/languages/plugins/example-ro_RO.l10n.php", testDropperPHP, false, false},
+		{"translation trailing code", "stage/example-ro_RO.l10n.php", "wp-content/languages/themes/example-ro_RO.l10n.php", testL10nCache + strings.Repeat(" ", dropperTrackedHeadMax) + "system($_POST['c']);", false, false},
+		{"version probe", "version-current.php", "wp-includes/version.php", testDropperPHP, false, false},
+		{"version trailing code", "version-current.php", "wp-includes/version.php", testVersionPHP + "system($_POST['c']);", false, false},
+		{"translation attribute", "stage/example-ro_RO.l10n.php", "wp-content/languages/example-ro_RO.l10n.php", "<?php #[Example] function example() {} system($_POST['c']);\nreturn [];", false, false},
+		{"version attribute", "version-current.php", "wp-includes/version.php", testVersionPHP + "#[Example] function example() {} system($_POST['c']);", false, false},
+		{"executable translation", "stage/example-ro_RO.l10n.php", "wp-content/languages/example-ro_RO.l10n.php", testL10nCache, true, false},
+		{"content verdict", "stage/example-ro_RO.l10n.php", "wp-content/languages/example-ro_RO.l10n.php", testL10nCache, false, true},
+		{"oversize snapshot", "stage/example-ro_RO.l10n.php", "wp-content/languages/example-ro_RO.l10n.php", testL10nCache + strings.Repeat(" ", dropperDigestMax), false, false},
+	} {
+		for _, hardlink := range []bool{false, true} {
+			name := "copy"
+			if hardlink {
+				name = "hardlink"
+			}
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				docroot := t.TempDir()
+				staged := filepath.Join(docroot, "wp-content", "upgrade", tc.staged)
+				installed := filepath.Join(docroot, tc.installed)
+				writeWPInstallFile(t, installed, tc.body)
+				if hardlink {
+					if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Link(installed, staged); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					writeWPInstallFile(t, staged, tc.body)
+				}
+				if tc.executable {
+					if err := os.Chmod(staged, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				r := newWPInstallRun(t, docroot)
+				c := r.observe(t, staged, nil)
+				if tc.suspicious {
+					// Model the content pass flagging this exact admitted snapshot.
+					c.ContentSuspicious = true
+					if !r.fm.dropper.tr.Refresh(*c) {
+						t.Fatal("content verdict did not reach the tracked candidate")
+					}
+				}
+				if err := os.Remove(staged); err != nil {
+					t.Fatal(err)
+				}
+				r.probeAndFlush()
+				assertSingleCriticalDropper(t, *r.alerts, staged)
+			})
+		}
+	}
+}
+
+func TestDropperLargeLanguagePackCopy(t *testing.T) {
+	docroot := t.TempDir()
+	staged := filepath.Join(docroot, "wp-content", "upgrade", "stage", "example-ro_RO.l10n.php")
+	installed := filepath.Join(docroot, "wp-content", "languages", "themes", "example-ro_RO.l10n.php")
+	body := string(wpTranslationCacheOfSize(256 << 10))
+	writeWPInstallFile(t, staged, body)
+	r := newWPInstallRun(t, docroot)
+	r.observe(t, staged, nil)
+	writeWPInstallFile(t, installed, body)
+	if err := os.Remove(staged); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	if len(*r.alerts) != 0 {
+		t.Fatalf("complete large translation raised %+v", *r.alerts)
+	}
+}
+
+func TestDropperWPDataRename(t *testing.T) {
+	for _, tc := range []struct{ staged, installed, body string }{
+		{"stage/example-ro_RO.l10n.php", "wp-content/languages/example-ro_RO.l10n.php", testL10nCache},
+		{"version-current.php", "wp-includes/version.php", testVersionPHP},
+	} {
+		t.Run(tc.staged, func(t *testing.T) {
+			docroot := t.TempDir()
+			staged := filepath.Join(docroot, "wp-content", "upgrade", tc.staged)
+			installed := filepath.Join(docroot, tc.installed)
+			writeWPInstallFile(t, staged, tc.body)
+			if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			r := newWPInstallRun(t, docroot)
+			r.observe(t, staged, nil)
+			if err := os.Rename(staged, installed); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			if len(*r.alerts) != 0 {
+				t.Fatalf("data installed by rename raised %+v", *r.alerts)
+			}
+		})
+	}
+}
+
+func TestDropperWPRewriteCannotErasePayload(t *testing.T) {
+	docroot := t.TempDir()
+	staged := filepath.Join(docroot, "wp-content", "upgrade", "stage", "example-ro_RO.l10n.php")
+	installed := filepath.Join(docroot, "wp-content", "languages", "example-ro_RO.l10n.php")
+	writeWPInstallFile(t, staged, testDropperPHP)
+	writeWPInstallFile(t, installed, testL10nCache)
+	r := newWPInstallRun(t, docroot)
+	r.observe(t, staged, nil)
+	writeWPInstallFile(t, staged, testL10nCache)
+	r.observe(t, staged, nil)
+	if err := os.Remove(staged); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	assertSingleCriticalDropper(t, *r.alerts, staged)
+}
+
+func TestDropperWPCreateThenCloseKeepsDataProof(t *testing.T) {
+	docroot := t.TempDir()
+	staged := filepath.Join(docroot, "wp-content", "upgrade", "stage", "example-ro_RO.l10n.php")
+	installed := filepath.Join(docroot, "wp-content", "languages", "example-ro_RO.l10n.php")
+	writeWPInstallFile(t, staged, "")
+	r := newWPInstallRun(t, docroot)
+	f, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE}, ""); c == nil {
+		t.Fatal("create was not admitted")
+	}
+	// Some writers close the empty file before reopening it for the data.
+	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, ""); c == nil {
+		t.Fatal("empty close was not admitted")
+	}
+	writeWPInstallFile(t, staged, testL10nCache)
+	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, ""); c == nil {
+		t.Fatal("close was not admitted")
+	}
+	writeWPInstallFile(t, installed, testL10nCache)
+	if err := os.Remove(staged); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	if len(*r.alerts) != 0 {
+		t.Fatalf("create/close translation raised %+v", *r.alerts)
+	}
+}
+
+func TestDropperWPCreatePayloadCannotBeClearedByClose(t *testing.T) {
+	docroot := t.TempDir()
+	staged := filepath.Join(docroot, "wp-content", "upgrade", "stage", "example-ro_RO.l10n.php")
+	installed := filepath.Join(docroot, "wp-content", "languages", "example-ro_RO.l10n.php")
+	writeWPInstallFile(t, staged, testDropperPHP)
+	r := newWPInstallRun(t, docroot)
+	f, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE}, ""); c == nil {
+		t.Fatal("create was not admitted")
+	}
+	writeWPInstallFile(t, staged, testL10nCache)
+	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, ""); c == nil {
+		t.Fatal("close was not admitted")
+	}
+	writeWPInstallFile(t, installed, testL10nCache)
+	if err := os.Remove(staged); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	assertSingleCriticalDropper(t, *r.alerts, staged)
+}
+
+func TestDropperWPLateCreateKeepsDataProof(t *testing.T) {
+	docroot := t.TempDir()
+	staged := filepath.Join(docroot, "wp-content", "upgrade", "stage", "example-ro_RO.l10n.php")
+	installed := filepath.Join(docroot, "wp-content", "languages", "example-ro_RO.l10n.php")
+	writeWPInstallFile(t, staged, testL10nCache)
+	r := newWPInstallRun(t, docroot)
+	f, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	for _, mask := range []uint64{FAN_CLOSE_WRITE, FAN_CREATE} {
+		if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: mask}, ""); c == nil {
+			t.Fatal("update was not admitted")
+		}
+	}
+	writeWPInstallFile(t, installed, testL10nCache)
+	if err := os.Remove(staged); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	if len(*r.alerts) != 0 {
+		t.Fatalf("late CREATE turned an installed data file into %+v", *r.alerts)
+	}
+}
+
+func TestDropperInstallDestinationDisappearsDuringDigest(t *testing.T) {
+	for _, errno := range []error{unix.ENOENT, unix.ENOTDIR, unix.ELOOP, unix.EACCES, unix.EIO} {
+		t.Run(errno.Error(), func(t *testing.T) {
+			c := freshDropperCandidate(time.Now())
+			c.Path = filepath.Join(c.Docroot, "wp-content/upgrade/version-current.php")
+			c.WPInstallData = true
+			calls := 0
+			target, _, found, err := dropperFindRenameTargetWithStat(c, func(path string, digest bool) (dropperPathState, error) {
+				calls++
+				if digest {
+					return dropperPathState{}, errno
+				}
+				return dropperPathState{mode: unix.S_IFREG, file: dropperFileState{
+					Path: path, Device: c.Device, Inode: c.Inode + 1, Size: c.Size,
+				}}, nil
+			})
+			if calls != 2 || found || target != "" {
+				t.Fatalf("calls=%d, found=%v, target=%q", calls, found, target)
+			}
+			wantErr := errno == unix.EACCES || errno == unix.EIO
+			if (err != nil) != wantErr {
+				t.Fatalf("err=%v, want inconclusive=%v", err, wantErr)
+			}
 		})
 	}
 }
