@@ -26,6 +26,8 @@ const (
 var legacyOperatorReasonPrefixes = []string{
 	"Manually blocked via CSM Web UI",
 	"Bulk blocked via CSM Web UI",
+	"Permanently blocked via CSM Web UI",
+	"Bulk permanently blocked via CSM Web UI",
 }
 
 // PermanentBlockEntry represents an IP blocked by the threat system.
@@ -91,17 +93,34 @@ func (db *DB) AddPermanentBlock(ip, reason string) error {
 // temp expiry already on file. Only increments threats:count if the key is
 // new.
 func (db *DB) AddTempBlock(ip, reason string, expiresAt time.Time) error {
+	return db.addExpiringThreat(ip, reason, ThreatSourceAutoBlock, expiresAt)
+}
+
+// AddOperatorTempBlock records a timed operator block (for example the Web
+// UI 24h block) with the same expiry as the firewall block. The row carries
+// the operator source but lapses with the block, so a mistaken timed block
+// cannot turn into permanent reputation evidence. Same guards as
+// AddTempBlock: zero expiry ignored, permanent rows never downgraded, longer
+// live expiries never shortened.
+func (db *DB) AddOperatorTempBlock(ip, reason string, expiresAt time.Time) error {
+	return db.addExpiringThreat(ip, reason, ThreatSourceOperator, expiresAt)
+}
+
+func (db *DB) addExpiringThreat(ip, reason, source string, expiresAt time.Time) error {
 	if expiresAt.IsZero() {
 		return nil
 	}
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats"))
 
 		entry := PermanentBlockEntry{
 			IP:        ip,
 			Reason:    reason,
 			BlockedAt: time.Now(),
-			Source:    ThreatSourceAutoBlock,
+			Source:    source,
 			ExpiresAt: expiresAt,
 		}
 
@@ -112,7 +131,7 @@ func (db *DB) AddTempBlock(ip, reason string, expiresAt time.Time) error {
 				if cur.ExpiresAt.IsZero() {
 					return nil
 				}
-				if !expiresAt.IsZero() && cur.ExpiresAt.After(expiresAt) {
+				if cur.ExpiresAt.After(expiresAt) {
 					return nil
 				}
 			}
@@ -139,6 +158,9 @@ func (db *DB) AddTempBlock(ip, reason string, expiresAt time.Time) error {
 // and bless historical auto-block poison as permanent.
 func (db *DB) putThreatEntry(entry PermanentBlockEntry) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{entry.IP}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats"))
 
 		isNew := b.Get([]byte(entry.IP)) == nil
@@ -213,6 +235,9 @@ func (db *DB) PruneExpiredThreats() int {
 // RemovePermanentBlock removes an IP from the permanent block list and decrements the count.
 func (db *DB) RemovePermanentBlock(ip string) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats"))
 		if b.Get([]byte(ip)) == nil {
 			return nil
@@ -224,16 +249,27 @@ func (db *DB) RemovePermanentBlock(ip string) error {
 	})
 }
 
-// RemoveAutoBlock deletes the threat row for ip only when it was written by
-// the temporary auto-block path (Source == autoblock). Operator rows and
-// legacy no-source rows are left untouched, so a firewall-only unblock never
-// silently clears an operator's deliberate permanent block. Stale auto-block
-// rows would otherwise keep re-flagging the IP via ip_reputation. Returns
-// whether a row was removed. The read and delete run in one transaction so a
-// concurrent upgrade to an operator row cannot be clobbered.
-func (db *DB) RemoveAutoBlock(ip string) (bool, error) {
+// TiedToFirewallBlock reports whether the entry only lives as long as a
+// firewall block: auto-block rows and any row carrying an expiry (timed
+// operator blocks). Never-expiring operator rows and legacy no-source rows
+// are standalone evidence.
+func (e PermanentBlockEntry) TiedToFirewallBlock() bool {
+	return e.Source == ThreatSourceAutoBlock || !e.ExpiresAt.IsZero()
+}
+
+// RemoveTemporaryBlock deletes the threat row for ip only when it is tied to
+// a firewall block (see TiedToFirewallBlock). Never-expiring operator rows
+// and legacy no-source rows are left untouched, so a firewall-only unblock
+// never silently clears an operator's deliberate permanent block. Stale
+// timed rows would otherwise keep re-flagging the IP via ip_reputation.
+// Returns whether a row was removed. The read and delete run in one
+// transaction so a concurrent upgrade to a permanent row cannot be clobbered.
+func (db *DB) RemoveTemporaryBlock(ip string) (bool, error) {
 	removed := false
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats"))
 		v := b.Get([]byte(ip))
 		if v == nil {
@@ -243,7 +279,7 @@ func (db *DB) RemoveAutoBlock(ip string) (bool, error) {
 		if json.Unmarshal(v, &entry) != nil {
 			return nil //nolint:nilerr // skip corrupt entry
 		}
-		if entry.Source != ThreatSourceAutoBlock {
+		if !entry.TiedToFirewallBlock() {
 			return nil
 		}
 		if err := b.Delete([]byte(ip)); err != nil {
@@ -300,6 +336,9 @@ func (db *DB) AllPermanentBlocks() []PermanentBlockEntry {
 // AddWhitelistEntry adds an IP to the whitelist.
 func (db *DB) AddWhitelistEntry(ip string, expiresAt time.Time, permanent bool) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats:whitelist"))
 
 		entry := WhitelistEntry{
@@ -318,6 +357,9 @@ func (db *DB) AddWhitelistEntry(ip string, expiresAt time.Time, permanent bool) 
 // RemoveWhitelistEntry removes an IP from the whitelist.
 func (db *DB) RemoveWhitelistEntry(ip string) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
+			return err
+		}
 		b := tx.Bucket([]byte("threats:whitelist"))
 		return b.Delete([]byte(ip))
 	})

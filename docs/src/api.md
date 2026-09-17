@@ -875,13 +875,25 @@ GET  /api/v1/threat/ip           IP threat lookup (?ip=)
 GET  /api/v1/threat/events       IP event history (?ip=&limit=)
 GET  /api/v1/threat/whitelist    Whitelisted IPs
 GET  /api/v1/threat/db-stats     Attack database statistics
-POST /api/v1/threat/block-ip     Block IP permanently
+POST /api/v1/threat/block-ip     Block IP for 24 hours
+POST /api/v1/threat/block-ip-permanent Block IP with no expiry
 POST /api/v1/threat/whitelist-ip       Permanent whitelist
 POST /api/v1/threat/temp-whitelist-ip  Temporary whitelist (with expiry)
 POST /api/v1/threat/clear-ip           Clear IP from attack database
 POST /api/v1/threat/unwhitelist-ip     Remove from whitelist
-POST /api/v1/threat/bulk-action        Bulk block/clear/whitelist across many IPs
+POST /api/v1/threat/bulk-action        Bulk block (24h or permanent) / whitelist across many IPs
 ```
+
+The 24 hour endpoint returns `409 Conflict` when the address already has a
+permanent or longer firewall block. Unblock it explicitly before shortening
+its lifetime. Bulk actions use `action: "block"`, `"block_permanent"`, or
+`"whitelist"`; refused blocks are excluded from `count` and explained in
+`warnings`. Repeated canonical IPs count once. Permanence cannot be selected
+through an extra request field.
+
+Bulk undo restores the original per-IP firewall deadlines. A later change
+to any target invalidates that undo action; it cannot restore dismissed
+evidence or replace the later decision.
 
 ## Firewall
 

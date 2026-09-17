@@ -24,6 +24,31 @@ function verdictBadge(v,score){
 
 var _checkNames = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || {};
 
+// blockStatusRows renders the Block Status rows of the IP lookup card. An IP
+// that is no longer blocked but still carries permanent threat evidence keeps
+// scoring 100 and gets flagged again on its next sighting, so the card says so
+// instead of showing a bare "Not blocked" next to "In Threat DB: Yes".
+function blockStatusRows(intel){
+    var html='';
+    if(intel.currently_blocked){
+        var blockType=intel.block_permanent?'<span class="badge bg-dark">Permanent</span>':'<span class="badge bg-warning">Temporary</span>';
+        html+='<tr><td class="text-muted">Block Status</td><td><span class="badge bg-secondary">Blocked</span> '+blockType+'</td></tr>';
+        if(intel.block_reason)html+='<tr><td class="text-muted">Block Reason</td><td class="small">'+CSM.esc(intel.block_reason)+'</td></tr>';
+        if(intel.blocked_at)html+='<tr><td class="text-muted">Blocked At</td><td>'+fmtDate(intel.blocked_at)+'</td></tr>';
+        if(intel.block_expires_at && !intel.block_permanent)html+='<tr><td class="text-muted">Expires At</td><td>'+fmtDate(intel.block_expires_at)+'</td></tr>';
+        return html;
+    }
+    var note='Not blocked';
+    if(intel.in_threat_db && intel.threat_db_permanent){
+        note='Not blocked (permanent threat entry: flagged again on next sighting)';
+    } else if(intel.in_threat_db && intel.threat_db_expires_at){
+        note='Not blocked (threat entry until '+fmtDate(intel.threat_db_expires_at)+')';
+    } else if(intel.in_threat_db){
+        note='Not blocked (listed by a threat feed)';
+    }
+    return html+'<tr><td class="text-muted">Block Status</td><td>'+CSM.esc(note)+'</td></tr>';
+}
+
 function typeBadges(counts){
     if(!counts)return '-';
     var html='';
@@ -284,6 +309,7 @@ function loadTopAttackers() {
         if(!r.currently_blocked){
             html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h"><i class="ti ti-shield-lock"></i></button>';
         }
+        html+='<button class="btn btn-ghost-danger btn-sm quick-block-perm-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block permanently"><i class="ti ti-lock"></i></button>';
         html+='<button class="btn btn-ghost-success btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist"><i class="ti ti-shield-check"></i></button>';
         html+='</td>';
         html+='</tr>';
@@ -327,7 +353,13 @@ function loadTopAttackers() {
     document.querySelectorAll('.quick-block-btn').forEach(function(btn){
         btn.addEventListener('click',function(e){
             e.stopPropagation();
-            blockIP(this.getAttribute('data-ip'));
+            blockIP(this.getAttribute('data-ip'),false);
+        });
+    });
+    document.querySelectorAll('.quick-block-perm-btn').forEach(function(btn){
+        btn.addEventListener('click',function(e){
+            e.stopPropagation();
+            blockIP(this.getAttribute('data-ip'),true);
         });
     });
     document.querySelectorAll('.quick-wl-btn').forEach(function(btn){
@@ -385,15 +417,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         html+='<tr><td class="text-muted">AbuseIPDB Score</td><td>'+(intel.abuse_score>=0?intel.abuse_score+'/100':'Not cached')+'</td></tr>';
         if(intel.abuse_category)html+='<tr><td class="text-muted">AbuseIPDB Category</td><td>'+CSM.esc(intel.abuse_category)+'</td></tr>';
         html+='<tr><td class="text-muted">In Threat DB</td><td>'+(intel.in_threat_db?'<span class="badge bg-danger">Yes</span> ('+CSM.esc(intel.threat_db_source)+')':'No')+'</td></tr>';
-        if(intel.currently_blocked){
-            var blockType=intel.block_permanent?'<span class="badge bg-dark">Permanent</span>':'<span class="badge bg-warning">Temporary</span>';
-            html+='<tr><td class="text-muted">Block Status</td><td><span class="badge bg-secondary">Blocked</span> '+blockType+'</td></tr>';
-            if(intel.block_reason)html+='<tr><td class="text-muted">Block Reason</td><td class="small">'+CSM.esc(intel.block_reason)+'</td></tr>';
-            if(intel.blocked_at)html+='<tr><td class="text-muted">Blocked At</td><td>'+fmtDate(intel.blocked_at)+'</td></tr>';
-            if(intel.block_expires_at && !intel.block_permanent)html+='<tr><td class="text-muted">Expires At</td><td>'+fmtDate(intel.block_expires_at)+'</td></tr>';
-        } else {
-            html+='<tr><td class="text-muted">Block Status</td><td>Not blocked</td></tr>';
-        }
+        html+=blockStatusRows(intel);
         if(intel.attack_record){
             var rec=intel.attack_record;
             html+='<tr><td class="text-muted">Events</td><td>'+rec.event_count+'</td></tr>';
@@ -406,6 +430,9 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         html+='<div class="mt-3 d-flex gap-2 flex-wrap">';
         if(!intel.currently_blocked){
             html+='<button class="btn btn-danger btn-sm block-ip-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Block this IP in the firewall for 24 hours"><i class="ti ti-shield-lock"></i>&nbsp;Block (24h)</button>';
+        }
+        if(!intel.currently_blocked || !intel.block_permanent){
+            html+='<button class="btn btn-outline-danger btn-sm block-ip-perm-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Block this IP in the firewall with no expiry and keep it in the threat database"><i class="ti ti-lock"></i>&nbsp;Block permanently</button>';
         }
         html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Unblock IP and remove from all threat databases"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
         html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Temporarily allow this IP for a set number of hours"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
@@ -433,7 +460,9 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         result.innerHTML=html;
         // Bind action buttons after DOM insertion
         var blockBtn=result.querySelector('.block-ip-btn');
-        if(blockBtn) blockBtn.addEventListener('click',function(){blockIP(this.getAttribute('data-ip'));});
+        if(blockBtn) blockBtn.addEventListener('click',function(){blockIP(this.getAttribute('data-ip'),false);});
+        var blockPermBtn=result.querySelector('.block-ip-perm-btn');
+        if(blockPermBtn) blockPermBtn.addEventListener('click',function(){blockIP(this.getAttribute('data-ip'),true);});
         var clearBtn=result.querySelector('.clear-ip-btn');
         if(clearBtn) clearBtn.addEventListener('click',function(){clearIP(this.getAttribute('data-ip'));});
         var tempBtn=result.querySelector('.temp-wl-btn');
@@ -487,11 +516,19 @@ function removeWhitelist(ip) {
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
-function blockIP(ip) {
-    CSM.confirm('Block '+ip+' for 24 hours?\n\nThis will block the IP in the firewall and add it to the threat database.').then(function() {
-        CSM.post('/api/v1/threat/block-ip',{ip:ip}).then(function(data){
+// blockIP blocks for 24 hours by default. A permanent block is a separate,
+// explicitly confirmed operator action: it never expires in the firewall and
+// keeps the IP in the threat database for good.
+function blockIP(ip, permanent) {
+    var url=permanent?'/api/v1/threat/block-ip-permanent':'/api/v1/threat/block-ip';
+    var question=permanent?
+        'Block '+ip+' permanently?\n\nThe firewall block never expires and the IP stays in the threat database until you clear it.':
+        'Block '+ip+' for 24 hours?\n\nThis will block the IP in the firewall and add it to the threat database for the same 24 hours.';
+    var done=permanent?'IP '+ip+' blocked permanently.':'IP '+ip+' blocked for 24h.';
+    return CSM.confirm(question).then(function() {
+        return CSM.post(url,{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
-            CSM.toast('IP '+ip+' blocked for 24h.\n\nActions: '+(data.actions||[]).join(', '),'success');
+            CSM.toast(done+'\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
@@ -543,14 +580,18 @@ function getSelectedIPs() {
 function updateBulkButtons() {
     var count = document.querySelectorAll('.bulk-ip-cb:checked').length;
     var blockBtn = document.getElementById('bulk-block-btn');
+    var blockPermBtn = document.getElementById('bulk-block-perm-btn');
     var wlBtn = document.getElementById('bulk-whitelist-btn');
     if (count > 0) {
         blockBtn.classList.remove('d-none');
+        blockPermBtn.classList.remove('d-none');
         wlBtn.classList.remove('d-none');
-        blockBtn.textContent = 'Block Selected (' + count + ')';
+        blockBtn.textContent = 'Block 24h (' + count + ')';
+        blockPermBtn.textContent = 'Block Permanently (' + count + ')';
         wlBtn.textContent = 'Whitelist Selected (' + count + ')';
     } else {
         blockBtn.classList.add('d-none');
+        blockPermBtn.classList.add('d-none');
         wlBtn.classList.add('d-none');
     }
 }
@@ -564,19 +605,33 @@ document.getElementById('select-all-attackers').addEventListener('change', funct
     updateBulkButtons();
 });
 
-// Bulk block
-document.getElementById('bulk-block-btn').addEventListener('click', function() {
+// Bulk block. The permanent variant is its own button and its own confirm so
+// a 24h block is never turned into a permanent one by a stray click.
+function bulkBlock(permanent) {
     var ips = getSelectedIPs();
-    if (ips.length === 0) return;
-    CSM.confirm('Block ' + ips.length + ' IP(s) for 24 hours?\n\nThis will block them in the firewall and add to the threat database.').then(function() {
-        CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'block' }).then(function(data) {
+    if (ips.length === 0) return Promise.resolve();
+    var question = permanent ?
+        'Block ' + ips.length + ' IP(s) permanently?\n\nThe firewall blocks never expire and the IPs stay in the threat database until you clear them.' :
+        'Block ' + ips.length + ' IP(s) for 24 hours?\n\nThis will block them in the firewall and add them to the threat database for the same 24 hours. Permanent and longer blocks are skipped; unblock them explicitly before changing their lifetime.';
+    var label = permanent ? 'Permanently blocked ' : 'Blocked ';
+    return CSM.confirm(question).then(function() {
+        return CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: permanent ? 'block_permanent' : 'block' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
-            CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
-            if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Blocked ' + data.count + ' IP(s)' });
+            if (data.count > 0) CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
+            if (data.warnings && data.warnings.length) CSM.toast(data.warnings.join('\n'), 'warning');
+            if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: label + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+}
+
+document.getElementById('bulk-block-btn').addEventListener('click', function() {
+    bulkBlock(false);
+});
+
+document.getElementById('bulk-block-perm-btn').addEventListener('click', function() {
+    bulkBlock(true);
 });
 
 // Bulk whitelist

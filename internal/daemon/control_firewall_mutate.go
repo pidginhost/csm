@@ -19,8 +19,11 @@ import (
 // ip_reputation would re-flag the IP into a new block loop. Clearing the
 // persisted row when present and the in-memory temp copy stops that.
 func dropAutoBlockThreatRow(ip string) {
+	if parsed := net.ParseIP(ip); parsed != nil {
+		ip = parsed.String()
+	}
 	if sdb := store.Global(); sdb != nil {
-		_, _ = sdb.RemoveAutoBlock(ip)
+		_, _ = sdb.RemoveTemporaryBlock(ip)
 	}
 	if tdb := checks.GetThreatDB(); tdb != nil {
 		tdb.RemoveTemporary(ip)

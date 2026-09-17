@@ -2308,6 +2308,19 @@ func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) (
 	return e.blockIPLocked(ip, reason, timeout, false)
 }
 
+// BlockIPForcePreserveLifetime is the Web UI timed-block path. The guard
+// and replacement share the engine lock, including concurrent CLI promotions.
+func (e *Engine) BlockIPForcePreserveLifetime(ip, reason string, timeout time.Duration) (resultErr error) {
+	defer func() {
+		if e.shouldLegacyOutcome(resultErr) {
+			recordBlockOutcome(ip, reason, timeout, BlockOutcomeLive, resultErr, true, "")
+		}
+	}()
+	_, err := e.blockIPLockedRequestGuarded(ip, reason, timeout, false, false,
+		ActionRequest{Operation: "block", Target: ip, Reason: reason, TTL: timeout}, nil, true)
+	return err
+}
+
 // PromoteToPermanentBlock upgrades an existing temporary block on ip to a
 // permanent one: it clears the kernel timeout by deleting the timed element
 // and re-adding it without a timeout, and zeroes ExpiresAt in state. The
@@ -2436,6 +2449,10 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 }
 
 func (e *Engine) blockIPLockedRequest(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool, req ActionRequest, budget *ScanAdmission) (BlockOutcome, error) {
+	return e.blockIPLockedRequestGuarded(ip, reason, timeout, skipExisting, enforceSoftAllow, req, budget, false)
+}
+
+func (e *Engine) blockIPLockedRequestGuarded(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool, req ActionRequest, budget *ScanAdmission, preserveLifetime bool) (BlockOutcome, error) {
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
 		return BlockOutcomeNoop, err
@@ -2445,6 +2462,11 @@ func (e *Engine) blockIPLockedRequest(ip string, reason string, timeout time.Dur
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	return e.blockIPRequestLocked(ip, reason, timeout, skipExisting, enforceSoftAllow, req, budget, preserveLifetime)
+}
+
+// blockIPRequestLocked runs with e.mu held, including snapshot-checked undo.
+func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool, req ActionRequest, budget *ScanAdmission, preserveLifetime bool) (BlockOutcome, error) {
 	req.Target = ip
 	req = normalizeActionRequest(req)
 	if found, replayErr := e.replayActionLocked(req); found || replayErr != nil {
@@ -2458,6 +2480,32 @@ func (e *Engine) blockIPLockedRequest(ip string, reason string, timeout time.Dur
 	if e.lifecycle != nil && e.stateReadErr != nil {
 		return BlockOutcomeNoop, e.stateReadErr
 	}
+	if preserveLifetime && timeout > 0 {
+		if e.stateReadErr != nil {
+			return BlockOutcomeNoop, e.stateReadErr
+		}
+		if entry, found := blockedStateEntry(priorState, ip); found {
+			if entry.ExpiresAt.IsZero() {
+				return BlockOutcomeNoop, ErrPermanentBlock
+			}
+			if time.Until(entry.ExpiresAt) > timeout {
+				return BlockOutcomeNoop, ErrLongerBlock
+			}
+		} else {
+			set, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+			if err != nil {
+				return BlockOutcomeNoop, err
+			}
+			live, temporary, classified := e.liveBlockElementKindLocked(set, key)
+			if !classified {
+				return BlockOutcomeNoop, fmt.Errorf("cannot verify existing block lifetime for %s", ip)
+			}
+			if live && !temporary {
+				return BlockOutcomeNoop, ErrPermanentBlock
+			}
+		}
+	}
+
 	// Safety, capacity, eviction and the resulting state share one snapshot.
 	if enforceSoftAllow && (ipSetIndexContains(e.allowedIPIndex, ip) || ipSetIndexContains(e.portAllowedIndex, ip)) {
 		return BlockOutcomeAllowlisted, nil
@@ -2862,6 +2910,10 @@ func (e *Engine) UnblockIP(ip string) (resultErr error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	return e.unblockIPLocked(ip)
+}
+
+func (e *Engine) unblockIPLocked(ip string) error {
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
 	if err != nil {
 		return err

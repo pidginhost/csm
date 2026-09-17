@@ -74,6 +74,18 @@ func (e *Engine) BlockIPOutcome(_ string, _ string, _ time.Duration) (BlockOutco
 func (e *Engine) BlockIPForce(_ string, _ string, _ time.Duration) error {
 	return ErrUnsupportedPlatform
 }
+func (e *Engine) BlockIPForcePreserveLifetime(_ string, _ string, _ time.Duration) error {
+	return ErrUnsupportedPlatform
+}
+func (e *Engine) BlockIPForUndo(_ string, _ string, _ time.Duration) (*BlockedEntry, *BlockedEntry, error) {
+	return nil, nil, ErrUnsupportedPlatform
+}
+func (e *Engine) UnblockIPForUndo(_ string) (*BlockedEntry, error) {
+	return nil, ErrUnsupportedPlatform
+}
+func (e *Engine) RestoreBlockIfUnchanged(_ string, _, _ *BlockedEntry) error {
+	return ErrUnsupportedPlatform
+}
 func (e *Engine) PromoteToPermanentBlock(_ string, _ string) error {
 	return ErrUnsupportedPlatform
 }

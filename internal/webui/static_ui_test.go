@@ -2433,6 +2433,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		{"POST", "/api/v1/threat/whitelist-ip"},
 		{"POST", "/api/v1/threat/unwhitelist-ip"},
 		{"POST", "/api/v1/threat/block-ip"},
+		{"POST", "/api/v1/threat/block-ip-permanent"},
 		{"POST", "/api/v1/threat/clear-ip"},
 		{"POST", "/api/v1/threat/temp-whitelist-ip"},
 		{"POST", "/api/v1/threat/bulk-action"},
@@ -5407,7 +5408,10 @@ func TestDestructiveActionsConfirmAndOfferUndo(t *testing.T) {
 	}
 	threatText := string(threat)
 	for _, want := range []string{
-		"if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Blocked '",
+		// The bulk block label names the lifetime the operator chose, so the
+		// undo banner does not call a permanent block a 24h one.
+		"var label = permanent ? 'Permanently blocked ' : 'Blocked ';",
+		"if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: label + data.count + ' IP(s)' });",
 		"if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Whitelisted '",
 	} {
 		if !strings.Contains(threatText, want) {

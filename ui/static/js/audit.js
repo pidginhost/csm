@@ -1,14 +1,15 @@
 // CSM Audit Log page
 
 var actionBadges = {
-    block_ip:          'bg-red',
-    unblock_ip:        'bg-green',
-    dismiss:           'bg-yellow',
-    fix:               'bg-blue',
-    whitelist_ip:      'bg-teal',
-    clear_ip:          'bg-cyan',
-    restore:           'bg-orange',
-    temp_whitelist_ip: 'bg-purple'
+    block_ip:           'bg-red',
+    block_ip_permanent: 'bg-red',
+    unblock_ip:         'bg-green',
+    dismiss:            'bg-yellow',
+    fix:                'bg-blue',
+    whitelist_ip:       'bg-teal',
+    clear_ip:           'bg-cyan',
+    restore:            'bg-orange',
+    temp_whitelist_ip:  'bg-purple'
 };
 
 var _auditTable = null;

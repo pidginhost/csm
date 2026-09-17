@@ -300,6 +300,17 @@ range (built-in or `reputation.verified_bots`). Precedence:
   (`csm firewall deny`, Web UI manual block) still applies, because operator
   commands go through `BlockIPForce` and bypass the soft-allow gate.
 
+An operator block carries the lifetime the operator chose. `csm firewall
+deny` and the Web UI permanent block never expire; the Web UI 24 hour block
+expires in the firewall and takes its threat-database evidence with it, so
+the address does not keep scoring as malicious after the block is gone.
+
+The Web UI 24 hour action refuses to shorten a permanent or longer block;
+unblock explicitly before changing its lifetime. Undo of a bulk block or
+unblock restores each original deadline, including permanent blocks, and
+never extends an expired block. A later operator decision supersedes the
+older undo action.
+
 ## Lockout warnings
 
 Config validation warns when an enabled firewall would cut off the management

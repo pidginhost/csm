@@ -129,10 +129,30 @@ wiring are read at daemon startup, so changes to this block require a restart.
 
 The **Threat Intel** page (`/threat`) provides:
 - IP lookup with composite scoring
+- Two separate block actions per IP: a 24 hour block and a confirmed
+  permanent block, singly or over a selection of attackers
 - Top attackers with GeoIP enrichment
 - Attack type breakdown chart
 - Hourly trend chart
 - Whitelist management (permanent and temporary)
+
+A 24 hour block records threat evidence that expires with the firewall
+block, so a mistaken block of a customer address stops counting against it
+once the block lapses. A permanent block records evidence that stays until
+an operator clears it. When an address is no longer blocked but still holds
+permanent evidence, the lookup says so, because that address is flagged
+again the next time it is seen.
+
+The 24 hour action refuses to shorten an existing permanent or longer
+firewall block. Unblock explicitly before changing that lifetime. Bulk
+requests skip those addresses and report warnings. Existing permanent
+threat evidence remains until cleared; feed updates do not remove a timed
+operator record before its expiry.
+
+Bulk undo restores each prior firewall lifetime, using the original deadline
+for timed blocks. Expired blocks stay expired, and a later block, clear, or
+whitelist decision invalidates the older undo action. Only successful
+firewall reversals restore the corresponding threat evidence.
 
 ## API Endpoints
 
@@ -143,7 +163,8 @@ GET  /api/v1/threat/ip               IP threat lookup
 GET  /api/v1/threat/events           IP event history
 GET  /api/v1/threat/whitelist        Whitelisted IPs
 GET  /api/v1/threat/db-stats         Attack database statistics
-POST /api/v1/threat/block-ip         Block IP permanently
+POST /api/v1/threat/block-ip         Block IP for 24 hours
+POST /api/v1/threat/block-ip-permanent  Block IP with no expiry
 POST /api/v1/threat/whitelist-ip     Permanent whitelist
 POST /api/v1/threat/temp-whitelist-ip  Temporary whitelist
 POST /api/v1/threat/clear-ip         Clear from attack DB
