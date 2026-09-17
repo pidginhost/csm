@@ -310,7 +310,7 @@ YARA-X rules cannot express nesting, so multi-string rules state how their evide
 
 ## Alert Rate Limiting
 
-Default: 30 operator alert dispatches/hour (configurable via `max_per_hour`). **CRITICAL findings and threat-intel reputation sightings always get through** by email or generic webhook regardless of the rate limit. Other lower-severity alerts are rate-limited.
+Default: 30 operator alert dispatches/hour (configurable via `max_per_hour`). **CRITICAL findings and threat-intel reputation sightings always get through** by email or generic webhook regardless of the rate limit, and they do not count against it. Other lower-severity alerts are rate-limited, including when they are batched with a CRITICAL finding: once the budget is spent, only the urgent findings in that batch are sent.
 
 ## Suppressions
 
