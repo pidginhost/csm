@@ -655,6 +655,27 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 	return findings
 }
 
+// FTPLoginFinding builds the finding for a successful pure-ftpd login line,
+// reporting false when the line is not a login or the client address is
+// loopback, infrastructure, or unusable. The daemon's realtime log watcher
+// calls it so a login seen live and the same line re-read by CheckFTPLogins
+// carry one identity; without that the state store sees two findings and the
+// operator gets one login reported twice. It has no brute-force history, so
+// the escalation to ftp_login_after_bruteforce stays with the scheduled check.
+func FTPLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	if !strings.Contains(line, "is now logged in") {
+		return alert.Finding{}, false
+	}
+	ip := extractIPFromLog(line)
+	if ignoredFTPClientIP(ip, cfg.InfraIPs) {
+		return alert.Finding{}, false
+	}
+	return ftpLoginFinding(ip, line, 0), true
+}
+
 // ftpLoginFinding builds the finding for a successful FTP login from a
 // non-infra, non-loopback IP. A login from a source that has already crossed
 // the brute-force threshold is a likely cracked credential and pages as

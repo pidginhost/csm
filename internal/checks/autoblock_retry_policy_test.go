@@ -12,7 +12,7 @@ func TestAutoBlockRetryPolicyWithdrawalIsNotLoss(t *testing.T) {
 	cfg := autoBlockQueueFixture(t, func() error { t.Error("withdrawn evidence reached firewall"); return nil })
 	cfg.AutoResponse.BlockCpanelLogins = false
 	seed := &blockState{}
-	for _, check := range []string{"", "ftp_login_realtime", "cpanel_file_upload_realtime", "webmail_login_realtime", "api_auth_failure_realtime", "mail_account_compromised"} {
+	for _, check := range []string{"", "ftp_login", "cpanel_file_upload_realtime", "webmail_login_realtime", "api_auth_failure_realtime", "mail_account_compromised"} {
 		seed.Pending = append(seed.Pending, pendingIP{IP: "192.0.2.140", Reason: "old decision", Check: check, Severity: alert.High, QueuedAt: time.Now()})
 	}
 	if err := writeBlockState(cfg.StatePath, seed); err != nil {
@@ -52,7 +52,7 @@ func TestAutoBlockRetryIdentityIncludesEligibility(t *testing.T) {
 			refused := allowed
 			refused.Reason = "withdrawn"
 			if difference == "check" {
-				refused.Check = "ftp_login_realtime"
+				refused.Check = "ftp_login"
 			} else {
 				refused.Severity = alert.High
 			}

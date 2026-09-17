@@ -287,8 +287,7 @@ Incidents and central threat responses receive new findings, including suppresse
 | `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity |
 | `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox. Only Critical findings block; the established multi-mailbox High advisory is visibility only |
 | `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
-| `ssh_login_unknown_ip` | SSH login from an IP with no prior history |
-| `ssh_login_realtime` | SSH login anomaly detected by realtime watcher |
+| `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
 | `ip_reputation` | IP flagged by AbuseIPDB / rspamd / upstream threat-intel |
 | `local_threat_score` | IP crosses the aggregated internal attack-history threshold |

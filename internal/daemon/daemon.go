@@ -1434,6 +1434,15 @@ func isOperatorAlertableCheck(check string) bool {
 		return false // Operational email authentication issues are informational.
 	case "email_auth_failure_realtime", "pam_bruteforce", "exim_frozen_realtime":
 		return false // Failed logins and frozen bounces need no operator action.
+	case "ftp_login", "cpanel_file_upload_realtime":
+		// On shared hosting every customer connects from a non-infra address,
+		// so a successful FTP login or a File Manager write is ordinary use of
+		// a core feature. Their value is correlation with other evidence on
+		// the same account, which the findings page, history, incidents and
+		// the attack database all still get. The brute-force escalations
+		// (ftp_auth_failure_realtime, ftp_bruteforce,
+		// ftp_login_after_bruteforce) stay alertable.
+		return false
 	default:
 		return true
 	}

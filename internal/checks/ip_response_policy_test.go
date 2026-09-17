@@ -38,7 +38,7 @@ func TestIPResponseAnswersFinding(t *testing.T) {
 		// when their source address is already blocked.
 		{"blocked webshell observation", cfg, alert.Finding{Check: "php_shield_webshell", Severity: alert.Critical}, true, false},
 		{"blocked cpanel login", cfg, alert.Finding{Check: "cpanel_login", Severity: alert.Warning}, true, false},
-		{"blocked ftp login", cfg, alert.Finding{Check: "ftp_login_realtime", Severity: alert.Warning}, true, false},
+		{"blocked ftp login", cfg, alert.Finding{Check: "ftp_login", Severity: alert.Warning}, true, false},
 		{"blocked unknown check", cfg, alert.Finding{Check: "not_a_registered_check", Severity: alert.High}, true, false},
 	}
 	for _, tt := range tests {

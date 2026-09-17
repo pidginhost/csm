@@ -610,7 +610,7 @@ func TestLoadInitializesNilMaps(t *testing.T) {
 func TestAppendEventsFallback(t *testing.T) {
 	db := newTestDB(t)
 	events := []Event{
-		{Timestamp: time.Now(), IP: "1.1.1.1", AttackType: AttackBruteForce, CheckName: "ssh_login_realtime", Severity: 2},
+		{Timestamp: time.Now(), IP: "1.1.1.1", AttackType: AttackBruteForce, CheckName: "ssh_login_unknown_ip", Severity: 2},
 		{Timestamp: time.Now(), IP: "2.2.2.2", AttackType: AttackWebshell, CheckName: "webshell", Severity: 3},
 	}
 	db.appendEvents(events, nil)

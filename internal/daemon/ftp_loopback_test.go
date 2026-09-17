@@ -34,8 +34,8 @@ func TestParseFTPLogLineStillReportsRemote(t *testing.T) {
 	if len(login) != 1 {
 		t.Fatalf("remote login: got %d findings, want 1", len(login))
 	}
-	if login[0].Check != "ftp_login_realtime" {
-		t.Errorf("check = %q, want ftp_login_realtime", login[0].Check)
+	if login[0].Check != "ftp_login" {
+		t.Errorf("check = %q, want ftp_login", login[0].Check)
 	}
 	if !strings.Contains(login[0].Message, "198.51.100.7") {
 		t.Errorf("message = %q, want it to name the source IP", login[0].Message)

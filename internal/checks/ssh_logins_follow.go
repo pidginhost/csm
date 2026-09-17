@@ -71,7 +71,7 @@ func checkSSHLoginsFollow(cfg *config.Config, store *state.Store) []alert.Findin
 		if at, ok := syslogLineTime(line, now); ok && at.Before(cutoff) {
 			continue
 		}
-		if f, ok := sshAcceptedLoginFinding(line, cfg); ok {
+		if f, ok := SSHAcceptedLoginFinding(line, cfg); ok {
 			findings = append(findings, f)
 		}
 	}

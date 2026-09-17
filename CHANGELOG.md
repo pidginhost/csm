@@ -22,6 +22,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- A successful FTP login and a cPanel File Manager write are no longer emailed, and one FTP or SSH login is now reported once instead of twice by the realtime watcher and the periodic check. They stay on the findings page, in history and in correlation, and failed authentication, brute force and a login from a brute-force source still alert.
 - Pruning old firewall action records and daily finding totals now removes every expired entry. Some were skipped and left behind, so the state database kept growing.
 - Unblocking an IPv4-mapped address now clears the same temporary evidence as its IPv4 form.
 - Manual block evidence survives threat-feed changes and migration, and bulk undo restores each address's prior block lifetime without reviving expired evidence. Duplicate selections no longer leave block records behind after undo.

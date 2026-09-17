@@ -146,8 +146,8 @@ var hardBlockPrefixes = []string{
 //     the gate could catch.
 //   - cpanel_file_upload / cpanel_file_upload_realtime: same; post-auth.
 //   - cpanel_multi_ip_login / whm_password_change: multi-vector audit.
-//   - ftp_login / ftp_login_realtime / ssh_login_realtime /
-//     ssh_login_unknown_ip: no browser at the other end of FTP or SSH.
+//   - ftp_login / ssh_login_unknown_ip: no browser at the other end of
+//     FTP or SSH.
 //   - webmail_login_realtime: same as cpanel_login_realtime; post-auth.
 //   - dns_connection / user_outbound_connection: recursive resolvers and
 //     egress targets have no client browser.

@@ -1596,7 +1596,7 @@ func TestParseFTPLogLine_SuccessfulLogin(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
 	}
-	if findings[0].Check != "ftp_login_realtime" {
+	if findings[0].Check != "ftp_login" {
 		t.Errorf("check = %q", findings[0].Check)
 	}
 }

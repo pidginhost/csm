@@ -699,7 +699,6 @@ Attribution gaps:
 | `ftp_bruteforce` | ignored | attacker-side |  |
 | `ftp_login` | ignored | informational |  |
 | `ftp_login_after_bruteforce` | security event |  |  |
-| `ftp_login_realtime` | ignored | informational |  |
 | `full_scan_file_too_large` | ignored | self-health |  |
 | `group_writable_php` | ignored | posture |  |
 | `htaccess_auto_prepend` | security event |  |  |
@@ -820,7 +819,6 @@ Attribution gaps:
 | `smtp_probe_abuse` | ignored | attacker-side |  |
 | `smtp_subnet_spray` | ignored | attacker-side |  |
 | `ssh_keys` | ignored | host-scope |  |
-| `ssh_login_realtime` | ignored | informational |  |
 | `ssh_login_unknown_ip` | ignored | informational |  |
 | `sshd_config_change` | ignored | host-scope |  |
 | `ssl_cert_issued` | ignored | informational |  |

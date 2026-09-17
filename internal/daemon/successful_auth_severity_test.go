@@ -59,16 +59,16 @@ func TestSuccessfulFTPLoginIsNotHighSeverity(t *testing.T) {
 
 	var got *alert.Finding
 	for _, f := range parseFTPLogLine(line, cfg) {
-		if f.Check == "ftp_login_realtime" {
+		if f.Check == "ftp_login" {
 			finding := f
 			got = &finding
 		}
 	}
 	if got == nil {
-		t.Fatal("ftp_login_realtime was not produced for a successful login line")
+		t.Fatal("ftp_login was not produced for a successful login line")
 	}
 	if got.Severity == alert.Critical || got.Severity == alert.High {
-		t.Errorf("ftp_login_realtime severity = %v; a successful login must not be Critical or High", got.Severity)
+		t.Errorf("ftp_login severity = %v; a successful login must not be Critical or High", got.Severity)
 	}
 }
 

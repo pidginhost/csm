@@ -217,7 +217,6 @@ var alwaysBlockChecks = map[string]bool{
 	"mail_account_compromised":    true,
 	"admin_panel_bruteforce":      true,
 	"ssh_login_unknown_ip":        true,
-	"ssh_login_realtime":          true,
 	"pam_bruteforce":              true,
 	"credential_stuffing":         true,
 	"c2_connection":               true,
@@ -240,7 +239,7 @@ var alwaysBlockChecks = map[string]bool{
 // one such Warning turns a legitimate customer logging in from a new country
 // into a 24h lockout.
 //
-// cpanel_file_upload_realtime, ftp_login_realtime and webmail_login_realtime
+// cpanel_file_upload_realtime, ftp_login and webmail_login_realtime
 // were missed at the time and caused exactly that. A customer was blocked one
 // second after uploading a file in File Manager, and five addresses were
 // blocked for logging in to FTP successfully. The handler skips 401 and 403,
