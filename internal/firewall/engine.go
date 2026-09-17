@@ -3573,13 +3573,13 @@ func (e *Engine) subnetSafetyGuardStateLocked(network *net.IPNet, state Firewall
 	// An unspecified host is not a usable target, but its containing range
 	// can be: operators may block 0.0.0.0/8 as a bogon range.
 	if ones, bits := network.Mask.Size(); ones == bits && network.IP.IsUnspecified() {
-		return fmt.Errorf("refusing to block non-routable range: %s", network.String())
+		return ipProtectedErrorf("refusing to block non-routable range: %s", network.String())
 	}
 	// Checking only the first address misses larger ranges covering a local
 	// scope. Interface enumeration intentionally omits these scopes.
 	for _, protected := range protectedLocalRanges {
 		if network.Contains(protected.IP) || protected.Contains(network.IP) {
-			return fmt.Errorf("refusing to block subnet %s: overlaps protected range %s", network, protected)
+			return ipProtectedErrorf("refusing to block subnet %s: overlaps protected range %s", network, protected)
 		}
 	}
 

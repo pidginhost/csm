@@ -84,8 +84,12 @@ migration stage.
 
 Subnet blocks refuse ranges overlapping loopback or link-local scopes, plus
 unspecified individual addresses and default routes. Other ranges beginning
-at zero, such as `0.0.0.0/8`, remain blockable. Refusing a permanent promotion
-leaves the prior temporary block and its expiry unchanged.
+at zero, such as `0.0.0.0/8`, remain blockable. These refusals are recorded as
+refused in the action log, like single-address refusals. Refusing a permanent
+promotion leaves the prior temporary block and its expiry unchanged.
+
+WAF attacker reports for link-local addresses stay visible but advise
+investigating the traffic source instead of a block CSM would refuse.
 
 Integrity checks compare live rule structure with the snapshot captured after
 CSM last applied the firewall. Editing or rehashing configuration alone never
