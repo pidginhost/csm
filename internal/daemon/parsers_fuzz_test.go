@@ -13,6 +13,7 @@ package daemon
 // corpus). Long fuzzing is expected to happen nightly or on-demand.
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -281,6 +282,11 @@ func FuzzParsePHPShieldLogLine(f *testing.F) {
 		`{"time":"2026-04-10T15:15:05Z"}`,
 		"not json",
 		`{"malformed`,
+		`[2026-09-17 10:00:00] WEBSHELL_PARAM ip=192.0.2.10 script=/home/u/public_html/index.php uri=/~u/x%zz/../?cmd=id ua=curl details=cmd`,
+		`[2026-09-17 10:00:00] WEBSHELL_PARAM ip=192.0.2.10 script=/home/u/public_html/index.php uri=http://example.test ua=curl details=cmd`,
+		`[2026-09-17 10:00:00] WEBSHELL_PARAM ip=192.0.2.10 script= uri=/~ ua= details=`,
+		`[2026-09-17 10:00:00] WEBSHELL_PARAM sha256=- ip=192.0.2.10 script=/home/u/public_html/addon/index.php uri=/missing%00.php?cmd=id ua=curl details=cmd`,
+		`[2026-09-17 10:00:00] WEBSHELL_PARAM sha256=- ip=192.0.2.10 script=/home/u/public_html/index.php uri=http:///missing.php?cmd=id ua=curl details=cmd`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -293,5 +299,21 @@ func FuzzParsePHPShieldLogLine(f *testing.F) {
 			}
 		}()
 		_ = parsePHPShieldLogLine(line, cfg)
+	})
+}
+
+func FuzzPHPShieldRequestReachedScript(f *testing.F) {
+	f.Add("/home/exampleuser/public_html/addon/index.php", "/index.php/extra?cmd=id")
+	f.Add("/home/exampleuser/public_html/shell.php", "/%7eexampleuser/shell.php?cmd=id")
+	f.Add("/home/exampleuser/public_html/index.php", "/x/%2e%2e/missing.php?cmd=id")
+	f.Fuzz(func(t *testing.T, script, uri string) {
+		_ = phpShieldRequestReachedScript(script, uri)
+		// Whatever the path bytes, a URI naming that same script must never
+		// be treated as a mismatched probe.
+		script = "/" + script
+		direct := (&url.URL{Path: script}).EscapedPath() + "?cmd=id"
+		if !phpShieldRequestReachedScript(script, direct) {
+			t.Fatalf("direct request %q does not name %q", direct, script)
+		}
 	})
 }

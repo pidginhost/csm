@@ -7,19 +7,19 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-const scannerLine = "[2026-09-01 19:12:47] WEBSHELL_PARAM ip=45.138.16.110 " +
-	"script=/home/example/public_html/index.php uri=/alfacgiapi/perl.alfa " +
+const scannerLine = "[2026-09-01 19:12:47] WEBSHELL_PARAM ip=198.51.100.44 " +
+	"script=/home/example/public_html/alfacgiapi/perl.php uri=/alfacgiapi/perl.php?cmd=id " +
 	"ua=Mozlila/5.0 (Linux; Android 7.0) AppleWebKit/537.36 details=cmd"
 
 // The Shield sends the request URI, and it is the field that identifies what
-// hit the site: "/alfacgiapi/perl.alfa" is a known scanner path, while the bare
+// hit the site: "/alfacgiapi/perl.php" is a known webshell path, while the bare
 // parameter name "cmd" says nothing an operator can act on.
 func TestParsePHPShieldLineKeepsRequestURI(t *testing.T) {
 	f := parsePHPShieldLine(scannerLine)
 	if f == nil {
 		t.Fatal("expected a finding")
 	}
-	if !strings.Contains(f.Details, "/alfacgiapi/perl.alfa") {
+	if !strings.Contains(f.Details, "/alfacgiapi/perl.php?cmd=id") {
 		t.Errorf("details %q dropped the request URI the Shield reported", f.Details)
 	}
 }
@@ -43,7 +43,7 @@ func TestParsePHPShieldLineSetsSourceIP(t *testing.T) {
 	if f == nil {
 		t.Fatal("expected a finding")
 	}
-	if f.SourceIP != "45.138.16.110" {
+	if f.SourceIP != "198.51.100.44" {
 		t.Errorf("SourceIP = %q, want the reporting IP", f.SourceIP)
 	}
 }
@@ -60,7 +60,7 @@ func TestParsePHPShieldLineObservedParamRanksBelowBlocks(t *testing.T) {
 		t.Errorf("observed webshell parameter -> severity %v, want below Critical", observed.Severity)
 	}
 
-	blocked := parsePHPShieldLine("[2026-09-01 19:12:47] BLOCK_WEBSHELL ip=45.138.16.110 " +
+	blocked := parsePHPShieldLine("[2026-09-01 19:12:47] BLOCK_WEBSHELL ip=198.51.100.44 " +
 		"script=/home/example/public_html/wp-content/x.php uri=/x.php ua=curl details=sig")
 	if blocked == nil {
 		t.Fatal("expected a finding")
@@ -90,8 +90,8 @@ func TestParsePHPShieldLineBlockPathStaysCritical(t *testing.T) {
 // alert naming the IP, not fifty.
 func TestPHPShieldFindingsDedupPerSourceIP(t *testing.T) {
 	first := parsePHPShieldLine(scannerLine)
-	second := parsePHPShieldLine("[2026-09-01 19:12:48] WEBSHELL_PARAM ip=45.138.16.110 " +
-		"script=/home/other/public_html/index.php uri=/alfacgiapi/perl.alfa ua=Mozlila/5.0 details=cmd")
+	second := parsePHPShieldLine("[2026-09-01 19:12:48] WEBSHELL_PARAM ip=198.51.100.44 " +
+		"script=/home/other/public_html/alfacgiapi/perl.php uri=/alfacgiapi/perl.php?cmd=id ua=Mozlila/5.0 details=cmd")
 	if first == nil || second == nil {
 		t.Fatal("expected findings")
 	}
@@ -100,7 +100,7 @@ func TestPHPShieldFindingsDedupPerSourceIP(t *testing.T) {
 	}
 
 	other := parsePHPShieldLine("[2026-09-01 19:12:48] WEBSHELL_PARAM ip=203.0.113.9 " +
-		"script=/home/other/public_html/index.php uri=/x ua=curl details=cmd")
+		"script=/home/other/public_html/x.php uri=/x.php?cmd=id ua=curl details=cmd")
 	if other == nil {
 		t.Fatal("expected a finding")
 	}

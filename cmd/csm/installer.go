@@ -1465,11 +1465,17 @@ function csm_deny() {
     exit;
 }
 function csm_log_event($type, $script, $details) {
+    // Bind quieting evidence to this event, not a later read by the daemon.
+    $digest = '-';
+    if ($type === 'WEBSHELL_PARAM' && function_exists('hash') && function_exists('file_get_contents')) {
+        $source = @file_get_contents($script, false, null, 0, 65537);
+        if ($source !== false && strlen($source) <= 65536) $digest = hash('sha256', $source);
+    }
     $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';
     $uri = isset($_SERVER['REQUEST_URI']) ? substr($_SERVER['REQUEST_URI'], 0, 200) : '-';
     $ua = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 100) : '-';
     $clean = function($value) { return str_replace(array("\r", "\n"), ' ', $value); };
-    $line = sprintf("[%s] %s ip=%s script=%s uri=%s ua=%s details=%s\n", date('Y-m-d H:i:s'), $clean($type), $clean($ip), $clean($script), $clean($uri), $clean($ua), $clean($details));
+    $line = sprintf("[%s] %s sha256=%s ip=%s script=%s uri=%s ua=%s details=%s\n", date('Y-m-d H:i:s'), $clean($type), $digest, $clean($ip), $clean($script), $clean($uri), $clean($ua), $clean($details));
     $socket = @stream_socket_client('udg://' . CSM_SHIELD_SOCKET, $errno, $errstr, 0.05);
     if ($socket === false) { if (!defined('CSM_SHIELD_LOG_WARNED')) { define('CSM_SHIELD_LOG_WARNED', true); error_log('CSM PHP Shield: event socket unavailable'); } return; }
     @stream_set_blocking($socket, false);
