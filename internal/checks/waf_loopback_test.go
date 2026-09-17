@@ -68,6 +68,12 @@ func TestWAFFindingAdviceOnlyForRemoteAttackers(t *testing.T) {
 		{"169.254.1.1", false},
 		{"::ffff:169.254.1.1", false},
 		{"fe80::1", false},
+		{"224.0.0.1", false},
+		{"::ffff:224.0.0.1", false},
+		{"ff02::1", false},
+		{"ff12::1", false},
+		{"224.0.1.1", true},
+		{"ff03::1", true},
 	} {
 		t.Run(tc.ip, func(t *testing.T) {
 			t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
@@ -91,6 +97,9 @@ func TestWAFFindingAdviceOnlyForRemoteAttackers(t *testing.T) {
 			}
 			if got := strings.Contains(f.Details, "Consider permanent block"); got != tc.advise {
 				t.Errorf("block advice = %v, want %v: %q", got, tc.advise, f.Details)
+			}
+			if !tc.advise && !strings.Contains(f.Details, "Review the source of this link-local traffic") {
+				t.Errorf("missing link-local guidance: %q", f.Details)
 			}
 		})
 	}

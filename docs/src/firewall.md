@@ -82,10 +82,12 @@ migration stage.
 
 ## Mutation failures
 
-Subnet blocks refuse ranges overlapping loopback or link-local scopes, plus
-unspecified individual addresses and default routes. Other ranges beginning
-at zero, such as `0.0.0.0/8`, remain blockable. These refusals are recorded as
-refused in the action log, like single-address refusals. Refusing a permanent
+Subnet blocks refuse ranges overlapping loopback or link-local scopes,
+infrastructure, host interface addresses, or full-IP and port-specific allows,
+plus unspecified individual addresses and default routes. Other ranges beginning
+at zero, such as `0.0.0.0/8`, remain blockable. All these safety refusals are
+recorded as refused in the action log, like single-address refusals. Invalid
+targets and storage or kernel errors remain failures. Refusing a permanent
 promotion leaves the prior temporary block and its expiry unchanged.
 
 WAF attacker reports for link-local addresses stay visible but advise

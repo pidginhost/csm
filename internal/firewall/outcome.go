@@ -2,10 +2,11 @@ package firewall
 
 import "errors"
 
-// ErrIPProtected wraps the guard rejections for IPs that automated firewall
-// actions must never block: the host's own interface addresses and operator
-// infra_ips. Callers check errors.Is(err, ErrIPProtected) to treat the refusal
-// as an expected no-op; they neither record a block nor log it as a failure.
+// ErrIPProtected identifies safety refusals for IP and subnet blocks, including
+// local scopes, the host's own addresses, operator infra_ips, default routes,
+// and subnets overlapping allowed addresses. Callers check
+// errors.Is(err, ErrIPProtected) to treat the refusal as an expected no-op;
+// they neither record a block nor log it as a failure.
 // The triggering finding or incident is unaffected, so suspicious activity
 // attributed to a protected address is still surfaced.
 var ErrIPProtected = errors.New("ip is protected from auto-block")

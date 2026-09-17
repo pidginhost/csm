@@ -3568,7 +3568,7 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 
 func (e *Engine) subnetSafetyGuardStateLocked(network *net.IPNet, state FirewallState) error {
 	if ones, _ := network.Mask.Size(); ones == 0 {
-		return fmt.Errorf("refusing to block default route: %s", network.String())
+		return ipProtectedErrorf("refusing to block default route: %s", network.String())
 	}
 	// An unspecified host is not a usable target, but its containing range
 	// can be: operators may block 0.0.0.0/8 as a bogon range.
@@ -3586,19 +3586,19 @@ func (e *Engine) subnetSafetyGuardStateLocked(network *net.IPNet, state Firewall
 	for _, raw := range e.cfg.InfraIPs {
 		if _, infraNet, cidrErr := net.ParseCIDR(raw); cidrErr == nil {
 			if network.Contains(infraNet.IP) || infraNet.Contains(network.IP) {
-				return fmt.Errorf("refusing to block subnet %s: overlaps infra range %s", network.String(), raw)
+				return ipProtectedErrorf("refusing to block subnet %s: overlaps infra range %s", network.String(), raw)
 			}
 			continue
 		}
 		if infraIP := net.ParseIP(raw); infraIP != nil && network.Contains(infraIP) {
-			return fmt.Errorf("refusing to block subnet %s: contains infra IP %s", network.String(), raw)
+			return ipProtectedErrorf("refusing to block subnet %s: contains infra IP %s", network.String(), raw)
 		}
 	}
 
 	for host, set := range e.infraResolved {
 		for key := range set {
 			if ip := net.ParseIP(key); ip != nil && network.Contains(ip) {
-				return fmt.Errorf("refusing to block subnet %s: contains infra IP %s (resolved from %s)", network.String(), key, host)
+				return ipProtectedErrorf("refusing to block subnet %s: contains infra IP %s (resolved from %s)", network.String(), key, host)
 			}
 		}
 	}
@@ -3606,18 +3606,18 @@ func (e *Engine) subnetSafetyGuardStateLocked(network *net.IPNet, state Firewall
 	e.refreshLocalAddrsLocked()
 	for key := range e.localAddrs {
 		if ip := net.ParseIP(key); ip != nil && network.Contains(ip) {
-			return fmt.Errorf("refusing to block subnet %s: contains local host IP %s", network.String(), key)
+			return ipProtectedErrorf("refusing to block subnet %s: contains local host IP %s", network.String(), key)
 		}
 	}
 
 	for _, entry := range state.Allowed {
 		if ip := net.ParseIP(entry.IP); ip != nil && network.Contains(ip) {
-			return fmt.Errorf("refusing to block subnet %s: contains allowed IP %s", network.String(), entry.IP)
+			return ipProtectedErrorf("refusing to block subnet %s: contains allowed IP %s", network.String(), entry.IP)
 		}
 	}
 	for _, entry := range state.PortAllowed {
 		if ip := net.ParseIP(entry.IP); ip != nil && network.Contains(ip) {
-			return fmt.Errorf("refusing to block subnet %s: contains port-allowed IP %s", network.String(), entry.IP)
+			return ipProtectedErrorf("refusing to block subnet %s: contains port-allowed IP %s", network.String(), entry.IP)
 		}
 	}
 
