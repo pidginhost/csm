@@ -72,10 +72,11 @@ func (e *dropperEngine) admit(c dropperCandidate) bool {
 	if !shouldTrackDropper(c, e.selfPID, e.ttl) {
 		return false
 	}
-	// A file whose whole content carries no executable statement cannot be a
-	// dropper payload. ContentSuspicious wins: a realtime content or signature
-	// hit already found structure, and no later heuristic may demote that.
-	if !c.WritePending && !c.ContentSuspicious && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
+	// A file whose whole content carries no executable statement, or is a
+	// known capability test script, cannot be a dropper payload.
+	// ContentSuspicious wins: a realtime content or signature hit already
+	// found structure, and no later heuristic may demote that.
+	if !c.WritePending && !c.ContentSuspicious && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
 		return false
 	}
 	return e.tr.Observe(c)

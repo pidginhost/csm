@@ -26,6 +26,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - PHP Shield no longer reports a webshell command parameter when a scanner probes a missing script and the site's verified, unmodified front controller answers instead. Modified or unverified scripts still alert, and quieted probes stay in the local event archive.
 - WordPress translation and core updates no longer raise critical self-deleting file alerts when the updater copies a staged file into place and removes the original, including when file events arrive out of order. Only complete translation or version data qualifies, and a file removed from the same staging paths without an identical installed copy is still reported.
 - A firewall log read while other requests were still writing it no longer raises a self-deleting file warning once a later complete read shows it holds only data.
+- The upload execution test script Really Simple Security creates and deletes no longer raises a critical self-deleting file alert, while any other content under that name still does.
 
 ## [3.39.0] - 2026-09-16
 

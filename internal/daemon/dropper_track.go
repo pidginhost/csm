@@ -187,7 +187,7 @@ func candidateKey(c dropperCandidate) dropperCandidateKey {
 
 func ownDropperCandidate(c dropperCandidate) dropperCandidate {
 	// Torn bytes that already look like code are evidence, not noise.
-	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsInert(c)
+	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsHarmless(c)
 	if len(c.Head) > dropperTrackedHeadMax {
 		c.Head = c.Head[:dropperTrackedHeadMax]
 	}
@@ -516,7 +516,7 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if c.ContentSuspicious {
 		return dropperSuspect
 	}
-	if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
+	if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
 		return dropperBenign
 	}
 	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {

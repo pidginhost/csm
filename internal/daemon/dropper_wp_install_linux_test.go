@@ -450,3 +450,43 @@ func TestDropperInstallDestinationDisappearsDuringDigest(t *testing.T) {
 		})
 	}
 }
+
+func TestDropperUploadExecutionProbeCopy(t *testing.T) {
+	for _, body := range rssslProbeBodies {
+		docroot := t.TempDir()
+		probe := filepath.Join(docroot, "wp-content", "uploads", "code-execution.php")
+		writeWPInstallFile(t, probe, body)
+		r := newWPInstallRun(t, docroot)
+		r.observeCloseWrite(t, probe)
+		if err := os.Remove(probe); err != nil {
+			t.Fatal(err)
+		}
+		r.probeAndFlush()
+		if len(*r.alerts) != 0 {
+			t.Fatalf("upload execution test script raised %+v, want no finding", *r.alerts)
+		}
+	}
+}
+
+func TestDropperUploadExecutionProbeNameStillCritical(t *testing.T) {
+	for name, writes := range map[string][]string{
+		"payload":                {testDropperPHP},
+		"probe with payload":     {rssslProbeBodies[1] + testDropperPHP},
+		"payload rewritten away": {testDropperPHP, rssslProbeBodies[1]},
+	} {
+		t.Run(name, func(t *testing.T) {
+			docroot := t.TempDir()
+			probe := filepath.Join(docroot, "wp-content", "uploads", "code-execution.php")
+			r := newWPInstallRun(t, docroot)
+			for _, body := range writes {
+				writeWPInstallFile(t, probe, body)
+				r.observeCloseWrite(t, probe)
+			}
+			if err := os.Remove(probe); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			assertSingleCriticalDropper(t, *r.alerts, probe)
+		})
+	}
+}
