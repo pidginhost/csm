@@ -870,6 +870,18 @@ sentry:
   debug: false                          # SDK debug logs to stderr
 ```
 
+## Blocked-source alert suppression
+
+`suppressions.suppress_blocked_alerts` mutes single-source attack notifications
+when that address is already blocked or was blocked in the same batch. An active
+challenge also mutes checks eligible for challenge routing; it does not cover
+FTP or mail authentication failures, or checks configured to require a hard block.
+The same policy applies to daemon alerts and `csm scan --alert`.
+
+Compromise evidence, successful logins, suspicious mail content and findings
+that summarize multiple sources remain visible. Blocking one address does not
+resolve those findings. This setting does not remove findings from the audit log.
+
 ## TLS Certificates
 
 The Web UI serves over HTTPS. Configure TLS certificates under `webui`:

@@ -9,6 +9,10 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ## [Unreleased]
 
+### Security
+
+- Blocked-source alert suppression now keeps suspicious mail and distributed-attack evidence visible.
+
 ### Fixed
 
 - Restart advice now reflects reclaimable space in the state database, so a large file that is still mostly in use no longer triggers it.
@@ -17,6 +21,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - A critical finding no longer carries the warnings batched with it past the hourly alert limit. Only delivered non-critical alerts count against that limit.
 - The YARA-X worker crash alert now reports the current scanning outage without claiming recovery. It distinguishes scanning becoming available after a restart from worker health recovering after the replacement stays up for 30 seconds.
 - Suppressing alerts for blocked addresses now also covers brute force, scanner and other attack alerts whose source was blocked or challenged, not only reputation alerts. Alerts that point at a compromise, or at a successful login, still go out.
+- Standalone scan alerts now apply the same blocked-source suppression as daemon alerts.
 
 ## [3.39.0] - 2026-09-16
 

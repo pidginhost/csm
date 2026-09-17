@@ -34,6 +34,25 @@ func (b *alertSuppressionBlocker) IsBlocked(ip string) bool {
 	return b.blocked[ip]
 }
 
+func TestNewDoesNotReplaceIPResponsePolicy(t *testing.T) {
+	var calls int
+	previous := alert.SetIPResponsePolicy(func(_ *config.Config, _ alert.Finding, _ bool) bool {
+		calls++
+		return false
+	})
+	t.Cleanup(func() { alert.SetIPResponsePolicy(previous) })
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	_ = New(cfg, nil, nil, "")
+	got := alert.FilterBlockedAlerts(cfg, []alert.Finding{
+		{Check: "ftp_auth_failure_realtime", SourceIP: "203.0.113.40"},
+		{Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.40 (expires in 24h0m0s)"},
+	})
+	if len(got) != 1 || calls == 0 {
+		t.Fatalf("New replaced the process policy: calls=%d findings=%+v", calls, got)
+	}
+}
+
 func TestDispatchBatchSuppressesReputationAfterSameBatchBlock(t *testing.T) {
 	previousActive := config.Active()
 	config.SetActive(nil)
@@ -170,10 +189,6 @@ func TestDispatchBatchSuppressesAttackerFindingAfterSameBatchBlock(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = findingState.Close() })
-
-	// New must wire the policy; start from an unwired alert package.
-	previousPolicy := alert.SetIPResponsePolicy(nil)
-	t.Cleanup(func() { alert.SetIPResponsePolicy(previousPolicy) })
 
 	d := New(cfg, findingState, nil, "")
 	d.dispatchBatch([]alert.Finding{{

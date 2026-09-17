@@ -13,14 +13,14 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
-// State files drive suppression of reputation and auto-block alerts.
+// State files drive suppression of handled attacks and auto-block alerts.
 // Parse failures must degrade open so corrupt state never hides
 // operator-facing findings; warning logs keep the corruption visible.
 // Missing state files stay silent because they are normal before the
 // first block.
 
-// FilterBlockedAlerts removes reputation and auto-block alerts for IPs
-// that are currently blocked in CSM firewall (either just blocked or previously blocked).
+// FilterBlockedAlerts removes attack alerts answered by a source IP's block
+// or challenge, along with the corresponding automatic action alerts.
 func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	if !cfg.Suppressions.SuppressBlockedAlerts {
 		return findings
@@ -401,8 +401,8 @@ var (
 
 // SetIPResponsePolicy installs or clears the policy FilterBlockedAlerts
 // consults and returns the previous one. The check classification lives in
-// the checks package, which imports this one, so the daemon wires it at
-// startup.
+// the checks package, which imports this one and registers it at package
+// initialization so every dispatch path uses the same policy.
 func SetIPResponsePolicy(p IPResponsePolicy) IPResponsePolicy {
 	ipResponsePolicyMu.Lock()
 	defer ipResponsePolicyMu.Unlock()
