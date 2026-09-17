@@ -168,17 +168,16 @@ func TestRunRetentionOnce_ZeroDaysSkipsThatBucket(t *testing.T) {
 // fillHistory writes padded history rows until the state db passes minBytes,
 // then optionally deletes them, leaving a file that is large but either
 // densely used or mostly free pages.
+//
+// bbolt doubles the file when its data outgrows it, so the batch that crosses
+// minBytes leaves the data only just past half the file. Deleting that would
+// free about half the file, which sits on the compaction fill threshold and
+// flips with the page size. Writing half as many batches again keeps the
+// file size and makes deleted data the clear majority.
 func fillHistory(t *testing.T, db *store.DB, minBytes int64, deleteAll bool) {
 	t.Helper()
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	for batch := 0; ; batch++ {
-		size, err := db.Size()
-		if err != nil {
-			t.Fatalf("Size: %v", err)
-		}
-		if size >= minBytes {
-			break
-		}
+	appendBatch := func(batch int) {
 		findings := make([]alert.Finding, 0, 500)
 		for i := range 500 {
 			findings = append(findings, alert.Finding{
@@ -192,9 +191,29 @@ func fillHistory(t *testing.T, db *store.DB, minBytes int64, deleteAll bool) {
 			t.Fatalf("AppendHistory: %v", err)
 		}
 	}
+	batches := 0
+	for {
+		size, err := db.Size()
+		if err != nil {
+			t.Fatalf("Size: %v", err)
+		}
+		if size >= minBytes {
+			break
+		}
+		appendBatch(batches)
+		batches++
+	}
+	for extra := 0; extra < batches/2; extra++ {
+		appendBatch(batches + extra)
+	}
 	if deleteAll {
 		if _, err := db.SweepHistoryOlderThan(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("SweepHistoryOlderThan: %v", err)
+		}
+		size, _ := db.Size()
+		free, _ := db.FreeBytes()
+		if free*3 < size*2 {
+			t.Fatalf("fixture not mostly free after delete: size=%d free=%d", size, free)
 		}
 	}
 }
