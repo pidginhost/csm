@@ -363,21 +363,26 @@ func stagedPackageName(slug string, pkg wpStagedPackage) string {
 // that cannot be verified file by file. Every file of the package lands on
 // the same finding. The staging directory name is random per upload, so the
 // alert identity is the site, package and reason: uploading the same
-// unverifiable release again is a repeat, not a new condition.
+// unverifiable release again is a repeat, not a new condition. Incomplete
+// headers cannot identify a release, so those warnings stay upload-specific.
 func (fm *FileMonitor) alertStagedPackage(pkg wpStagedPackage, info stagedPackageInfo, reason, procInfo string) {
 	what := stagedPackageWhat(info, pkg)
 	state := "new install"
 	if info.installed {
 		state = "updates installed " + strings.TrimSuffix(what, " "+info.identity.Version)
 	}
-	fm.sendFileFinding(alert.Finding{
-		Severity: alert.Warning,
-		Check:    "php_in_sensitive_dir_realtime",
-		Message:  fmt.Sprintf("WordPress package staged, not verified against wordpress.org: %s", pkg.dir),
-		Details:  fmt.Sprintf("%s; %s; %s. Content findings are reported separately for individual files.", what, state, reason),
-		DedupKey: fmt.Sprintf("staged-package site=%q type=%s name=%q version=%q reason=%q",
+	var dedupKey string
+	if info.identity.Kind != wpcheck.KindNone && info.identity.Version != "" {
+		dedupKey = fmt.Sprintf("staged-package site=%q type=%s name=%q version=%q reason=%q",
 			pkg.wpRoot, stagedPackageKind(info.identity.Kind), stagedPackageName(info.identity.Slug, pkg),
-			info.identity.Version, reason),
+			info.identity.Version, reason)
+	}
+	fm.sendFileFinding(alert.Finding{
+		Severity:    alert.Warning,
+		Check:       "php_in_sensitive_dir_realtime",
+		Message:     fmt.Sprintf("WordPress package staged, not verified against wordpress.org: %s", pkg.dir),
+		Details:     fmt.Sprintf("%s; %s; %s. Content findings are reported separately for individual files.", what, state, reason),
+		DedupKey:    dedupKey,
 		FilePath:    pkg.dir,
 		ProcessInfo: procInfo,
 	})
@@ -432,14 +437,19 @@ func (fm *FileMonitor) alertStagedFileMismatch(stagedPath string, pkg wpStagedPa
 	}
 	// Identify the file by its place in the package, not the random staging
 	// directory, and by its digest so different bytes stay a new finding.
+	// An absent digest is not evidence of equal content across uploads.
 	file := strings.TrimPrefix(stagedPath, pkg.dir+"/")
+	var dedupKey string
+	if v.Digest != "" {
+		dedupKey = fmt.Sprintf("staged-file site=%q type=%s name=%q version=%q file=%q verdict=%s digest=%q",
+			pkg.wpRoot, stagedPackageKind(v.Kind), stagedPackageName(v.Slug, pkg), v.Version, file, v.Verdict, v.Digest)
+	}
 	fm.sendFileFinding(alert.Finding{
-		Severity: alert.Warning,
-		Check:    "php_in_sensitive_dir_realtime",
-		Message:  message,
-		Details:  details,
-		DedupKey: fmt.Sprintf("staged-file site=%q type=%s name=%q version=%q file=%q verdict=%s digest=%q",
-			pkg.wpRoot, stagedPackageKind(v.Kind), stagedPackageName(v.Slug, pkg), v.Version, file, v.Verdict, v.Digest),
+		Severity:    alert.Warning,
+		Check:       "php_in_sensitive_dir_realtime",
+		Message:     message,
+		Details:     details,
+		DedupKey:    dedupKey,
 		FilePath:    reportPath,
 		ProcessInfo: procInfo,
 	})

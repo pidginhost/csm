@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/state"
@@ -148,7 +149,7 @@ func TestStagedFileWarningKeepsIdentityAcrossStagingDirs(t *testing.T) {
 		if !strings.Contains(first.Message, "could not be verified") {
 			t.Fatalf("Message = %q, want the unverifiable variant", first.Message)
 		}
-		requireRepeat(t, first, second)
+		requireDistinct(t, first, second)
 		requireDistinct(t, first, stagedFileFinding(t, "acme-forms-q3m8z1", "includes/admin.php", wpcheck.VerdictUnverifiable, ""))
 	})
 	t.Run("mismatch", func(t *testing.T) {
@@ -162,6 +163,170 @@ func TestStagedFileWarningKeepsIdentityAcrossStagingDirs(t *testing.T) {
 		file := stagedFileFinding(t, "acme-forms-x7k2p9", "includes/loader.php", wpcheck.VerdictUnverifiable, "")
 		requireDistinct(t, unavailablePackageFinding(t, stagedDedupSite, "acme-forms-x7k2p9", "acme-forms", "3.1.0"), file)
 	})
+}
+
+func requireNotDismissed(t *testing.T, first, second alert.Finding) {
+	t.Helper()
+	st := openDedupState(t)
+	st.Update([]alert.Finding{first})
+	st.DismissFinding(first.Key())
+	if fresh := st.FilterNew([]alert.Finding{second}); len(fresh) != 1 {
+		t.Fatalf("new evidence inherited a dismissed identity: %+v", second)
+	}
+}
+
+func TestStagedPackageIncompleteIdentityCannotCrossUploads(t *testing.T) {
+	for _, verdict := range []wpcheck.Verdict{wpcheck.VerdictUnknown, wpcheck.VerdictUnavailable, wpcheck.VerdictNoVersion} {
+		t.Run(verdict.String(), func(t *testing.T) {
+			var findings []alert.Finding
+			for _, staging := range []string{"first", "second"} {
+				path := stagedDedupPath(stagedDedupSite, staging, "acme-forms", "loader.php")
+				v := stagedDedupPlugin("acme-forms", "", verdict, path)
+				switch verdict {
+				case wpcheck.VerdictUnknown:
+					v = wpcheck.Verification{}
+				case wpcheck.VerdictUnavailable:
+					v.Kind = wpcheck.KindTheme
+				}
+				f := stagedDedupFinding(t, path, v, 0)
+				if f.DedupKey != "" {
+					t.Errorf("incomplete header pins identity %q", f.DedupKey)
+				}
+				findings = append(findings, f)
+			}
+			requireNotDismissed(t, findings[0], findings[1])
+		})
+	}
+}
+
+// The first warning may be a dismissed repeat. A later header or reason
+// must still reach persistent dedup, even within the per-directory cooldown.
+func TestStagedPackageLateIdentityEscapesDirectoryCooldown(t *testing.T) {
+	for _, change := range []string{"version", "type", "reason", "missing-version"} {
+		t.Run(change, func(t *testing.T) {
+			fm, ch := newStagedPackageMonitor(t, nil)
+			fm.wpPending = newStagedPackageQueue(0)
+			path := stagedDedupPath(stagedDedupSite, "same-staging", "acme-forms", "loader.php")
+			v := stagedDedupPlugin("acme-forms", "3.1.0", wpcheck.VerdictUnavailable, path)
+			if change == "missing-version" {
+				v.Version, v.Verdict = "", wpcheck.VerdictNoVersion
+			}
+			fm.handleStagedPackageFile(path, v, "")
+			first := drainFindings(ch)
+			if len(first) != 1 {
+				t.Fatalf("initial findings = %+v", first)
+			}
+			switch change {
+			case "version", "missing-version":
+				v.Version = "3.2.0"
+			case "type":
+				v.Kind = wpcheck.KindTheme
+			case "reason":
+				v.Verdict = wpcheck.VerdictPending
+			}
+			fm.handleStagedPackageFile(path, v, "")
+			second := drainFindings(ch)
+			if len(second) != 1 {
+				t.Fatalf("changed %s was lost to directory cooldown: %+v", change, second)
+			}
+			requireNotDismissed(t, first[0], second[0])
+			fm.handleStagedPackageFile(path, v, "")
+			if got := drainFindings(ch); len(got) != 0 {
+				t.Fatalf("unchanged package bypassed cooldown: %+v", got)
+			}
+		})
+	}
+}
+
+func TestStagedFileMissingDigestCannotInheritDismissal(t *testing.T) {
+	first := stagedFileFinding(t, "first", "loader.php", wpcheck.VerdictUnverifiable, "")
+	second := stagedFileFinding(t, "second", "loader.php", wpcheck.VerdictUnverifiable, "")
+	if second.DedupKey != "" {
+		t.Errorf("unhashed file pins identity %q", second.DedupKey)
+	}
+	requireNotDismissed(t, first, second)
+}
+
+func TestStagedPackageLateThemeHeaderDoesNotSilenceNewUpload(t *testing.T) {
+	site := filepath.Join(t.TempDir(), "public_html")
+	cache := wpcheck.NewCache(t.TempDir())
+	fm, ch := newStagedPackageMonitor(t, cache)
+	var previous alert.Finding
+	for _, staging := range []string{"first", "second"} {
+		path := stagedDedupPath(site, staging, "example-theme", "functions.php")
+		style := filepath.Join(filepath.Dir(path), "style.css")
+		// The name can be readable before the version line has been written.
+		writeStagedFile(t, style, "/* Theme Name: Example Theme\n")
+		analyzeStaged(t, fm, path)
+		if staging == "first" {
+			got := drainFindings(ch)
+			if len(got) != 1 {
+				t.Fatalf("initial upload findings = %+v", got)
+			}
+			previous = got[0]
+			continue
+		}
+		writeStagedFile(t, style, "/* Theme Name: Example Theme\nVersion: 2.0\n*/")
+		analyzeStaged(t, fm, filepath.Join(filepath.Dir(path), "index.php"))
+		st := openDedupState(t)
+		st.Update([]alert.Finding{previous})
+		st.DismissFinding(previous.Key())
+		if got := st.FilterNew(drainFindings(ch)); len(got) == 0 {
+			t.Fatal("new release was silenced by the previous upload's partial header")
+		}
+	}
+}
+
+func TestStagedFileUnhashedBytesCannotInheritDismissal(t *testing.T) {
+	site := filepath.Join(t.TempDir(), "public_html")
+	cache := wpcheck.NewCache(t.TempDir())
+	if err := cache.PersistChecksums("7.1", "en_US", nil, map[string]string{"extra.php": strings.Repeat("a", 32)}); err != nil {
+		t.Fatal(err)
+	}
+	fm, ch := newStagedPackageMonitor(t, cache)
+	var findings []alert.Finding
+	for _, staging := range []string{"first", "second"} {
+		path := stagedDedupPath(site, staging, "wordpress", "extra.php")
+		writeStagedFile(t, filepath.Join(filepath.Dir(path), "wp-includes", "version.php"), "<?php $wp_version = '7.1';")
+		// Exceed the verifier's complete-file bound; different uploads carry
+		// different bytes but both have an empty comparison digest.
+		fd := writeStagedFile(t, path, cleanStagedPHP+strings.Repeat("// padding\n", 300000)+"// "+staging)
+		fm.analyzeFile(fileEvent{path: path, fd: fd})
+		got := drainFindings(ch)
+		if len(got) != 1 || !strings.Contains(got[0].Message, "could not be verified") || got[0].DedupKey != "" {
+			t.Fatalf("unhashed file must keep its upload identity: %+v", got)
+		}
+		findings = append(findings, got[0])
+	}
+	requireNotDismissed(t, findings[0], findings[1])
+}
+
+func TestStagedContentCannotInheritPackageDismissal(t *testing.T) {
+	for _, verdict := range []wpcheck.Verdict{wpcheck.VerdictUnavailable, wpcheck.VerdictPending, wpcheck.VerdictNoVersion, wpcheck.VerdictUnverifiable, wpcheck.VerdictMismatch} {
+		t.Run(verdict.String(), func(t *testing.T) {
+			site := filepath.Join(t.TempDir(), "public_html")
+			path := stagedDedupPath(site, "chosen-by-uploader", "acme-forms", "loader.php")
+			pkg := parseWPStagedPackage(path)
+			fake := &fakeWPVerifier{
+				describe: describeStagedPlugin(pkg.dir, "acme-forms", "3.1.0", verdict),
+				verify:   func(wpcheck.Verification) wpcheck.Verdict { return verdict },
+			}
+			fm, ch := newStagedPackageMonitor(t, fake)
+			fm.wpPending = newStagedPackageQueue(0)
+			analyzeStaged(t, fm, path)
+			first := drainFindings(ch)
+			if len(first) != 1 || first[0].Severity != alert.Warning {
+				t.Fatalf("expected a warning to dismiss: %+v", first)
+			}
+			fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, "<?php system($_GET['cmd']);")})
+			fm.drainStagedPackages(time.Now().Add(stagedPackageTimeout + time.Second))
+			got := drainFindings(ch)
+			if len(got) != 1 || got[0].Severity != alert.Critical || got[0].DedupKey != "" {
+				t.Fatalf("content-positive event must keep its own finding: %+v", got)
+			}
+			requireNotDismissed(t, first[0], got[0])
+		})
+	}
 }
 
 // Content findings are never folded into a package identity: each staged

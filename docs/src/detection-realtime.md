@@ -31,12 +31,18 @@ moved the tree into place. A file the official package does not ship gets its
 own warning, naming the installed path when it still exists. Themes, packages
 not published on wordpress.org, a full verification queue, and a package whose
 checksums do not arrive within 60 seconds raise one warning per staging
-directory. WordPress picks a new staging directory for every upload, so these
-warnings are identified by site, package type, name, version and reason, and a
-per-file warning by its place in the package and its digest. Uploading the same
-release to the same site again is a repeat and follows the normal 24-hour
-reminder; a different version, site or reason alerts at once. Content findings
-inside staging keep their own per-file identity and alert every time.
+directory. WordPress picks a new staging directory for every upload. Once the
+package type and version are known, these warnings are identified by site,
+package type, name, version and reason. Uploading the same declared release to
+the same site again is a repeat and follows the normal 24-hour reminder. This
+groups checksum-availability warnings; it does not establish that the package
+contents are unchanged or safe. Incomplete headers keep an upload-specific
+warning, and a later change of type, version or reason can raise a new warning
+in the same directory. Per-file checksum warnings repeat across uploads only
+when their package identity, relative path and complete digest match; files
+that could not be hashed keep their upload-specific warning. Content findings
+inside staging keep their own per-file identity and normal alert cooldowns;
+package-warning dismissal does not dismiss them.
 
 **Detects:**
 - Webshell creation (PHP files in web directories)
