@@ -4,7 +4,9 @@ package daemon
 
 import (
 	"bytes"
+	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -21,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
 // dropperDigestMax bounds how many bytes the admission hash covers. A
@@ -231,6 +234,9 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 			c.Digest, c.DigestKnown = sha256.Sum256(body), true
 			if filepath.Base(c.Path) == "version-current.php" {
 				c.WPInstallData = checks.IsWPVersionDataBytesComplete(body, true)
+				if c.WPInstallData {
+					c.WPCoreRelease = fm.wpCoreReleaseOf(body)
+				}
 			} else {
 				c.WPInstallData = checks.IsWPTranslationCacheBytesComplete(body, true)
 			}
@@ -294,11 +300,36 @@ func readDropperHead(fd int, before unix.Stat_t, read func(int, int) []byte) ([]
 	return head, current.Size, false
 }
 
+func (fm *FileMonitor) newDropperFSProbe() *dropperFSProbe {
+	return &dropperFSProbe{quarantines: fm.dropperQuarantines, coreChecksums: fm.wpCache}
+}
+
+// wpCoreReleaseOf names the release a version-probe data snapshot declares.
+// Asking the cache now starts a missing checksum download in the background,
+// so the deletion probe normally finds it cached; the analyzer never waits.
+func (fm *FileMonitor) wpCoreReleaseOf(body []byte) *wpcheck.Verification {
+	if fm.wpCache == nil {
+		return nil
+	}
+	version, locale, err := wpcheck.ParseVersionContent(body)
+	if err != nil {
+		return nil
+	}
+	// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
+	sum := md5.Sum(body)
+	v := &wpcheck.Verification{
+		Kind: wpcheck.KindCore, Version: version, Locale: locale,
+		Rel: "wp-includes/version.php", Digest: hex.EncodeToString(sum[:]), Staged: true,
+	}
+	fm.wpCache.Verify(*v)
+	return v
+}
+
 // dropperProbeLoop probes overdue candidates for deletion and flushes findings.
 // It also refreshes the cached docroot set so account changes are picked up.
 func (fm *FileMonitor) dropperProbeLoop() {
 	defer fm.wg.Done()
-	prober := &dropperFSProbe{quarantines: fm.dropperQuarantines}
+	prober := fm.newDropperFSProbe()
 	ticker := time.NewTicker(dropperProbeInterval(fm.dropper.ttl))
 	defer ticker.Stop()
 	refresh := time.NewTicker(5 * time.Minute)

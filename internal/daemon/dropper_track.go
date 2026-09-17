@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/queuehealth"
+	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
 // dropperCandidate captures the fstat/read state of a file at close-write
@@ -56,7 +57,11 @@ type dropperCandidate struct {
 	// Sticky across rewrites: data copied later cannot erase an earlier
 	// nonempty snapshot that carried code or whose full content was unknown.
 	WPInstallUnsafe bool
-	Head            []byte
+	// WPCoreRelease names the WordPress release a version-probe data snapshot
+	// declares, with that snapshot's digest in the form wordpress.org
+	// publishes. It belongs to the same snapshot as WPInstallData.
+	WPCoreRelease *wpcheck.Verification
+	Head          []byte
 	// Parent identifies the real, non-symlink directory that contained the
 	// candidate while its event fd was open. The later probe uses this stable
 	// identity instead of inferring directory removal from two path stats.
@@ -438,6 +443,10 @@ type dropperProbe struct {
 	// QuarantineMatched requires an exact ledger identity/fingerprint match,
 	// not merely a prior quarantine entry for the same path.
 	QuarantineMatched bool
+	// OfficialWPCoreFile reports that the candidate's WPCoreRelease digest
+	// equals the wordpress.org checksum for that release. Checksums that are
+	// not cached yet leave it false.
+	OfficialWPCoreFile bool
 }
 
 type dropperVerdict int
@@ -515,6 +524,9 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	}
 	if c.ContentSuspicious {
 		return dropperSuspect
+	}
+	if dropperOfficialVersionProbe(c, p) {
+		return dropperBenign
 	}
 	if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
 		return dropperBenign
@@ -658,7 +670,7 @@ func dropperRenameTargetAllowed(c dropperCandidate, target string) bool {
 			return true
 		}
 	}
-	if !c.WPInstallData || c.WPInstallUnsafe || !c.DigestKnown || c.WritePending || c.ContentSuspicious || c.Mode&0o111 != 0 {
+	if !dropperWPCopyDataEligible(c) {
 		return false
 	}
 	for _, candidate := range wpUpgradeCopyDestinations(c.Path, c.Docroot) {
@@ -667,6 +679,24 @@ func dropperRenameTargetAllowed(c dropperCandidate, target string) bool {
 		}
 	}
 	return false
+}
+
+// dropperWPCopyDataEligible reports whether every snapshot of c was complete
+// translation or version data with nothing that could have run.
+func dropperWPCopyDataEligible(c dropperCandidate) bool {
+	return c.WPInstallData && !c.WPInstallUnsafe && c.DigestKnown && !c.WritePending &&
+		!c.ContentSuspicious && c.Mode&0o111 == 0
+}
+
+// dropperOfficialVersionProbe covers a core update that stops after reading
+// the new version file, for example on a failed PHP or database requirement.
+// The installed version file then belongs to the old release and cannot match,
+// so the removed probe must itself be the official file of the release it
+// declares.
+func dropperOfficialVersionProbe(c dropperCandidate, p dropperProbe) bool {
+	return p.OfficialWPCoreFile && c.WPCoreRelease != nil && dropperWPCopyDataEligible(c) &&
+		filepath.Base(c.Path) == "version-current.php" &&
+		len(wpUpgradeCopyDestinations(c.Path, c.Docroot)) > 0
 }
 
 // dropperRenameMatch reports whether a probe of a rename-destination path

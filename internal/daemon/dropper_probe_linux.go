@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
 // dropperFSProbe resolves a tracked candidate against the live filesystem for
@@ -16,6 +18,11 @@ import (
 // rather than reporting a phantom self-delete.
 type dropperFSProbe struct {
 	quarantines *dropperQuarantineLedger
+	// coreChecksums compares a version probe with the official file of the
+	// release it declares. Nil leaves every such probe unverified.
+	coreChecksums interface {
+		Verify(wpcheck.Verification) wpcheck.Verdict
+	}
 }
 
 func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
@@ -42,6 +49,9 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 	} else if ok {
 		result.RenamedTo = target
 		result.RenameTarget = &ts
+	}
+	if c.WPCoreRelease != nil && p.coreChecksums != nil {
+		result.OfficialWPCoreFile = p.coreChecksums.Verify(*c.WPCoreRelease) == wpcheck.VerdictVerified
 	}
 	var dst unix.Stat_t
 	if derr := unix.Stat(c.Docroot, &dst); derr != nil && errors.Is(derr, unix.ENOENT) {
