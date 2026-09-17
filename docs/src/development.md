@@ -302,9 +302,15 @@ Operator view:
   limited to one per minute) and restart with exponential backoff
   (1 s, 2 s, 4 s, capped at 60 s). Restarts reset to 1 s after the
   worker stays up for 30 s.
+- `csm doctor` reports `watcher: yara_worker` as failed from a crash until
+  a restarted worker has stayed up for 30 s, so a worker that keeps
+  crashing shortly after each restart keeps doctor failing. This also
+  covers crashes between initial readiness and backend activation.
+  Shutdown waits for any in-flight recovery callback to finish.
 - A `csm update-rules` run that completes triggers the supervisor's
   in-process `Reload` (the worker recompiles). Escalate to a full
-  worker restart from Go code via `Supervisor.RestartWorker()`.
+  worker restart from Go code via `Supervisor.RestartWorker()`. An explicit
+  restart also marks the watcher failed until the replacement stays up.
 
 Emailav under worker mode: the IPC wire format carries string-valued
 rule metadata on every match (`yaraipc.Match.Meta` /

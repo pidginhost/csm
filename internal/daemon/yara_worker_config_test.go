@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -153,4 +154,116 @@ func TestYaraWorkerReadyProcess(t *testing.T) {
 		}
 	}
 	t.Fatal("missing worker socket")
+}
+
+// A worker that crashes after a healthy start is offline until the supervisor
+// brings back one that stays up. The watcher follows that, so a crash loop
+// keeps doctor failing instead of reporting the boot-time success.
+func TestYaraWorkerCrashLoopReportsWatcherState(t *testing.T) {
+	d := &Daemon{cfg: &config.Config{}, binaryPath: "/usr/local/bin/csm", stopCh: make(chan struct{})}
+	cfg := d.yaraSupervisorConfig()
+	if cfg.OnRestart == nil || cfg.OnStable == nil {
+		t.Fatal("supervisor is not wired to report worker crashes and recovery")
+	}
+	d.MarkWatcher(yaraWorkerWatcher, true)
+
+	cfg.OnRestart(139, 0, 5*time.Second)
+	if attached, ok := d.WatcherStatuses()[yaraWorkerWatcher]; !ok || attached {
+		t.Fatalf("crashed worker watcher recorded=%t attached=%t, want failure", ok, attached)
+	}
+
+	cfg.OnStable()
+	if !d.WatcherStatuses()[yaraWorkerWatcher] {
+		t.Fatal("worker that stayed up was not recorded as recovered")
+	}
+
+	// Alert throttling must never throttle the health transition.
+	cfg.OnRestart(139, 0, 5*time.Second)
+	if d.WatcherStatuses()[yaraWorkerWatcher] {
+		t.Fatal("rate-limited crash left the worker watcher healthy")
+	}
+}
+
+// During shutdown the worker exits on purpose; that must not flip the watcher.
+func TestYaraWorkerWatcherIgnoresShutdownExit(t *testing.T) {
+	d := &Daemon{cfg: &config.Config{}, binaryPath: "/usr/local/bin/csm", stopCh: make(chan struct{})}
+	cfg := d.yaraSupervisorConfig()
+	d.MarkWatcher(yaraWorkerWatcher, true)
+	close(d.stopCh)
+
+	cfg.OnRestart(0, 0, time.Minute)
+	if !d.WatcherStatuses()[yaraWorkerWatcher] {
+		t.Fatal("shutdown exit marked the worker watcher failed")
+	}
+
+	d.MarkWatcher(yaraWorkerWatcher, false)
+	cfg.OnStable()
+	if d.WatcherStatuses()[yaraWorkerWatcher] {
+		t.Fatal("shutdown recovery marked the worker watcher healthy")
+	}
+}
+
+// Start launches supervision before returning to the daemon. A crash in that
+// window must not be erased when boot or boot-retry activation catches up.
+func TestYaraWorkerActivationPreservesCrashState(t *testing.T) {
+	// macOS's default temporary directory exceeds the Unix socket path limit.
+	t.Setenv("TMPDIR", "/tmp")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CSM_DAEMON_TEST_EXECUTABLE", executable)
+	t.Setenv("CSM_DAEMON_TEST_YARA_WORKER", "1")
+	dir := t.TempDir()
+	worker := filepath.Join(dir, "worker")
+	if writeErr := os.WriteFile(worker, []byte("#!/bin/sh\nexec \"$CSM_DAEMON_TEST_EXECUTABLE\" -test.run=^TestYaraWorkerReadyProcess$ -- \"$@\"\n"), 0700); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	d := &Daemon{cfg: &config.Config{}, binaryPath: worker, stopCh: make(chan struct{})}
+	cfg := d.yaraSupervisorConfig()
+	cfg.SocketPath = filepath.Join(dir, "worker.sock")
+	cfg.MinRestartInterval = time.Hour
+	crashed := make(chan struct{})
+	cfg.OnRestart = func(code int, sig syscall.Signal, ranFor time.Duration) {
+		d.onYaraWorkerRestart(code, sig, ranFor)
+		close(crashed)
+	}
+	sup, err := yaraworker.NewSupervisor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.yaraSup = sup
+	t.Cleanup(func() {
+		close(d.stopCh)
+		d.stopYaraBackend()
+	})
+	if startErr := sup.Start(context.Background()); startErr != nil {
+		t.Fatal(startErr)
+	}
+	child, err := os.FindProcess(sup.ChildPID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-crashed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker crash was not reported")
+	}
+	if attached, recorded := d.WatcherStatuses()[yaraWorkerWatcher]; !recorded || attached {
+		t.Fatal("worker crash did not publish a failed watcher")
+	}
+	failedAt := d.WatcherChangedAt()[yaraWorkerWatcher]
+	if failedAt.IsZero() {
+		t.Fatal("worker crash did not record the outage timestamp")
+	}
+	d.activateYaraBackend(sup)
+	if attached, recorded := d.WatcherStatuses()[yaraWorkerWatcher]; !recorded || attached {
+		t.Fatal("backend activation overwrote the crashed worker's failed state")
+	}
+	if got := d.WatcherChangedAt()[yaraWorkerWatcher]; !got.Equal(failedAt) {
+		t.Fatal("backend activation reset the worker outage timestamp")
+	}
 }
