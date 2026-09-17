@@ -3,6 +3,8 @@ package yaraworker
 import (
 	"context"
 	"os"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -17,6 +19,64 @@ func TestSupervisorScanBytesCheckedBeforeStartErrors(t *testing.T) {
 	}
 	if _, err := sup.ScanBytesChecked([]byte("x")); err == nil {
 		t.Fatal("ScanBytesChecked before Start must fail closed with an error")
+	}
+}
+
+// The crash finding describes the outage at exit. Scans can resume before
+// OnStable restores worker health, so that health delay is not scan downtime.
+func TestSupervisorScanAvailabilityAcrossRestart(t *testing.T) {
+	crashed := make(chan struct{})
+	var stable atomic.Bool
+	sup, err := NewSupervisor(SupervisorConfig{
+		BinaryPath:         os.Args[0],
+		SocketPath:         shortSockPath(t),
+		StartTimeout:       3 * time.Second,
+		MinRestartInterval: 20 * time.Millisecond,
+		StableDuration:     time.Hour,
+		ClientTimeout:      2 * time.Second,
+		Env:                helperEnv("normal"),
+		OnStable:           func() { stable.Store(true) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup.cfg.OnRestart = func(int, syscall.Signal, time.Duration) {
+		if pid := sup.ChildPID(); pid != 0 {
+			t.Errorf("crash callback still reports child %d", pid)
+		}
+		if _, err := sup.ScanBytesChecked([]byte("payload")); err == nil {
+			t.Error("byte scan succeeded during the crash callback")
+		}
+		if _, err := sup.ScanFileChecked("/unused", 1024); err == nil {
+			t.Error("file scan succeeded during the crash callback")
+		}
+		close(crashed)
+	}
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sup.Stop() }()
+	child, err := os.FindProcess(sup.ChildPID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-crashed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker crash was not reported")
+	}
+	waitFor(t, "scanning after restart", func() bool {
+		_, err := sup.ScanBytesChecked([]byte("payload"))
+		return err == nil
+	})
+	if _, err := sup.ScanFileChecked("/unused", 1024); err != nil {
+		t.Fatalf("file scan after restart: %v", err)
+	}
+	if stable.Load() {
+		t.Fatal("worker reported stable before scan availability was checked")
 	}
 }
 

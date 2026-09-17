@@ -146,7 +146,11 @@ func TestOnYaraWorkerRestartMessageDoesNotClaimRecovery(t *testing.T) {
 				t.Errorf("message claims %q before any restart: %s", claim, f.Message)
 			}
 		}
-		for _, want := range []string{"exit=139", "signal=segmentation fault", "after 5s", "offline", "stays up"} {
+		for _, want := range []string{
+			"exit=139", "signal=segmentation fault", "after 5s",
+			"YARA scanning is offline; supervisor will attempt a restart.",
+			"Worker health remains failed until a restarted worker stays up for " + d.yaraSupervisorConfig().StableDuration.String(),
+		} {
 			if !strings.Contains(f.Message, want) {
 				t.Errorf("message missing %q: %s", want, f.Message)
 			}
