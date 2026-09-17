@@ -61,6 +61,7 @@ func TestPHPExecutableContentFindsPayloadsCarriedByImages(t *testing.T) {
 		"jpeg_appended_shell":       append(testJPEG(t), []byte("<?php system($_GET['cmd']); ?>")...),
 		"gif_appended_shell":        append(testGIF(t), []byte("<?php passthru($_REQUEST['c']); ?>")...),
 		"short_echo_tag_with_sink":  append(testGIF(t), []byte("<?= shell_exec('id') ?>")...),
+		"minified_include":          append(testPNG(t), []byte("<?php include'payload.dat';")...),
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {

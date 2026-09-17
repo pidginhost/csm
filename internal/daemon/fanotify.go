@@ -1186,6 +1186,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	contentPath := atomicWriteContentPath(path)
 	name := filepath.Base(contentPath)
 	nameLower := strings.ToLower(name)
+	imageInHostedTree := contenttype.IsImageExt(filepath.Ext(nameLower)) && fm.underAccountOrConfiguredDocRoot(contentPath)
 
 	// Resolve process info from PID (best-effort - process may have exited)
 	procInfo := resolveProcessInfo(event.pid)
@@ -1319,7 +1320,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 					fmt.Sprintf("Size: %d", cfgStat.Size), path, procInfo)
 			}
 		}
-		return
+		if !imageInHostedTree {
+			return
+		}
 	}
 
 	// Executables in /tmp or /dev/shm - detect dropped malware/miners
@@ -1355,9 +1358,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 				}
 			}
 		}
-		// Fall through to PHP content checks below for executable PHP and
-		// source-view .phps files in /tmp.
-		if !isPHPSourceExtension(nameLower) {
+		// Hosted images still need payload checks when the configured root
+		// lives in a temporary directory, as do PHP source files anywhere.
+		if !isPHPSourceExtension(nameLower) && !imageInHostedTree {
 			return
 		}
 	}
@@ -1494,6 +1497,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// PHP carried inside an image file (uses event fd for content).
 	if contenttype.IsImageExt(filepath.Ext(nameLower)) {
+		// Handler-mapped images previously entered through dropperOnly and
+		// received the full PHP scan. Content admission must retain it.
+		if event.phpExecutable && fm.checkPHPContent(event.fd, path, procInfo) {
+			markDropperContentSuspicious()
+			return
+		}
 		if fm.checkImagePayload(event.fd, path, procInfo) {
 			markDropperContentSuspicious()
 		}
@@ -1857,12 +1866,9 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, scannedIdentity(fd))
 }
 
-// imagePayloadHeadBytes and imagePayloadTailBytes bound the realtime read of
-// an image write. The head carries the container magic and, for the sizes a
-// plugin asset directory actually holds, the whole file. The tail covers the
-// padding trick: filler in front of the payload so a bounded head read never
-// reaches it. The two windows are equal so a file up to their sum is read
-// end to end; above that the middle is left to the deep scan, which reads up
+// Images fitting the combined read budget are scanned in one piece so a
+// payload cannot straddle two independently evaluated windows. Larger files
+// get a head and tail window; the middle is left to the deep scan, subject
 // to thresholds.full_scan_max_file_mb.
 const (
 	imagePayloadHeadBytes = 65536
@@ -1884,15 +1890,24 @@ const (
 // in their description chunks, so an execution, inclusion or remote-fetch
 // construct is required alongside it.
 func (fm *FileMonitor) checkImagePayload(fd int, path, procInfo string) bool {
-	recordReadTruncation(fd, imagePayloadHeadBytes, "image_payload")
-	head := readFromFd(fd, imagePayloadHeadBytes)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Size <= 0 {
+		return false
+	}
+	const readBudget = imagePayloadHeadBytes + imagePayloadTailBytes
+	headBytes := imagePayloadHeadBytes
+	if st.Size <= readBudget {
+		headBytes = int(st.Size)
+	}
+	recordReadTruncation(fd, readBudget, "image_payload")
+	head := readFromFd(fd, headBytes)
 	if len(head) == 0 {
 		return false
 	}
 	container, _ := contenttype.ImageContainer(head)
 
 	evidence, found := phpExecutableContent(head)
-	if !found {
+	if !found && st.Size > readBudget {
 		// The container verdict came from the head, so the tail is examined
 		// for the payload alone.
 		if tail := readTailFromFd(fd, imagePayloadTailBytes); tail != nil {

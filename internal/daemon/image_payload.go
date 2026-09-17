@@ -22,7 +22,7 @@ var imagePayloadConstructs = []struct {
 }{
 	{"code execution sink", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_>:$])(?:eval|assert|create_function|call_user_func(?:_array)?)\s*\(`)},
 	{"command execution sink", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_>:$])(?:system|exec|shell_exec|passthru|proc_open|popen|pcntl_exec)\s*\(`)},
-	{"file inclusion sink", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_>:$])(?:include|require)(?:_once)?\s*[\s(]\s*[@$'"]`)},
+	{"file inclusion sink", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_>:$])(?:include|require)(?:_once)?\s*(?:\(\s*)?(?:@\s*)?[$'"]`)},
 	{"file write sink", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_>:$])(?:file_put_contents|fwrite|fputs|move_uploaded_file)\s*\(`)},
 	{"remote code fetch", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_>:$])(?:curl_init|curl_exec|curl_setopt(?:_array)?|fsockopen|stream_context_create)\s*\(`)},
 	{"remote code fetch", regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_>:$])(?:file_get_contents|fopen|readfile)\s*\(\s*['"]?(?:https?|ftp|php):`)},

@@ -116,14 +116,14 @@ func TestIsImageExtCoversTheContainersWeRecognize(t *testing.T) {
 }
 
 func TestHasPHPOpenTagRecognizesTheTagsAWebServerExecutes(t *testing.T) {
-	for _, sample := range []string{"<?php echo 1;", "<?PHP echo 1;", "x<?= $a ?>", "\n<?php\n"} {
+	for _, sample := range []string{"<?php echo 1;", "<?PHP echo 1;", "x<?= $a ?>", "\n<?php\n", "<?php"} {
 		if !HasPHPOpenTag([]byte(sample)) {
 			t.Errorf("HasPHPOpenTag(%q) = false, want true", sample)
 		}
 	}
 	// The bare short tag is off by default and is the XML declaration's
 	// opener, so it is not treated as PHP.
-	for _, sample := range []string{"<?xml version=\"1.0\"?>", "<? echo 1;", "phpinfo();", "", "<?phpx"} {
+	for _, sample := range []string{"<?xml version=\"1.0\"?>", "<? echo 1;", "phpinfo();", "", "<?phpx", "<?php-example", "<?php/* comment */", "<?php\v", "<?php\f"} {
 		if HasPHPOpenTag([]byte(sample)) {
 			t.Errorf("HasPHPOpenTag(%q) = true, want false", sample)
 		}

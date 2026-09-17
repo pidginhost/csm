@@ -22,13 +22,13 @@ const referencedPayloadWindow = 300
 // nonExecutablePayloadLiteral matches a quoted path whose extension belongs to
 // an image, archive or opaque data file. The extension list mirrors the one in
 // the backdoor_include_nonexecutable rules; source partials (.php, .html,
-// .tpl, .svg) are deliberately absent, because including those is templating.
+// .tpl, .txt, .svg) are deliberately absent, because including those is templating.
 var nonExecutablePayloadLiteral = regexp.MustCompile(
-	`(?i)['"]([^'"\r\n]{1,240}\.(?:png|jpe?g|gif|bmp|ico|cur|webp|tiff?|zip|rar|tar|gz|bz2|7z|txt|log|dat|bin|cache|bak|old|csv|pdf|woff2?|ttf|eot|otf))['"]`,
+	`(?i)['"]([^'"\r\n]{1,240}\.(?:png|jp(?:eg?|g)|gif|bmp|ico|cur|webp|tiff?|zip|rar|tar|gz|bz2|7z|log|dat|bin|cache|bak|old|csv|pdf|woff2?|ttf|eot|otf))['"]`,
 )
 
 // includeKeyword matches a PHP inclusion keyword in statement position.
-var includeKeyword = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_$>])(?:include|require)(?:_once)?[\s(]`)
+var includeKeyword = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_$>])(?:include|require)(?:_once)?[\s('$"]`)
 
 // ReferencedPayloadPaths returns the non-executable files that PHP content
 // pulls in through include or require, in the order they appear and without
@@ -50,15 +50,35 @@ func ReferencedPayloadPaths(content []byte) []string {
 	if !contenttype.HasPHPOpenTag(content) {
 		return nil
 	}
-	keywords := includeKeyword.FindAllIndex(content, -1)
-	if len(keywords) == 0 {
+	keyword := includeKeyword.FindIndex(content)
+	if keyword == nil {
 		return nil
 	}
 
 	var paths []string
 	seen := make(map[string]bool)
-	for _, literal := range nonExecutablePayloadLiteral.FindAllSubmatchIndex(content, -1) {
-		if !nearKeyword(keywords, literal[0], literal[1]) {
+	// Advance both cursors monotonically. Materializing every match before
+	// enforcing the output cap wastes memory; restarting the keyword search
+	// for each repeated literal makes enrichment quadratic on hostile input.
+	for offset := 0; offset < len(content); {
+		literal := nonExecutablePayloadLiteral.FindSubmatchIndex(content[offset:])
+		if literal == nil {
+			break
+		}
+		for i := range literal {
+			literal[i] += offset
+		}
+		offset = literal[1]
+		for keyword[1] <= literal[0]-referencedPayloadWindow {
+			next := keyword[1]
+			keyword = includeKeyword.FindIndex(content[next:])
+			if keyword == nil {
+				return paths
+			}
+			keyword[0] += next
+			keyword[1] += next
+		}
+		if keyword[0] >= literal[1]+referencedPayloadWindow {
 			continue
 		}
 		path := string(content[literal[2]:literal[3]])
@@ -72,22 +92,6 @@ func ReferencedPayloadPaths(content []byte) []string {
 		}
 	}
 	return paths
-}
-
-// nearKeyword reports whether any keyword occurrence overlaps the window
-// around [start, end). Matches arrive in offset order, so the scan stops at
-// the first keyword past the window instead of walking every occurrence in a
-// large file for every literal in it.
-func nearKeyword(keywords [][]int, start, end int) bool {
-	for _, keyword := range keywords {
-		if keyword[0] >= end+referencedPayloadWindow {
-			return false
-		}
-		if keyword[1] > start-referencedPayloadWindow {
-			return true
-		}
-	}
-	return false
 }
 
 // ReferencedPayloadDetail renders ReferencedPayloadPaths as a line to append

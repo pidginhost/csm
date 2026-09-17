@@ -156,10 +156,14 @@ nothing about its name says so.
 Its other half is the loader: a PHP file that includes or requires a
 non-executable file while reading request input. The extension list covers
 images, archives and opaque data files; source partials such as `.html`,
-`.tpl` and `.svg` are deliberately absent, because including those is
-templating. Findings from either rule name the non-executable files the
-matched content pulls in, so remediation is not left hunting for the payload
-after the loader is cleaned up.
+`.tpl`, `.txt` and `.svg` are deliberately absent, because including those
+can be ordinary templating. Literal targets must end the include statement;
+an image named later in a rendered HTML expression is not an include target.
+Encoded targets remain suspicious regardless of the hidden extension.
+Findings include up to five distinct non-executable path literals near an
+include or require. These are candidate payload references: proximity does
+not prove variable identity, and concatenated paths may be partial. Extraction
+advances through the content once and stops when the output cap is reached.
 
 Scheduled YARA sweeps scan regular, non-empty files under configured
 `account_roots`, or cPanel `/home/*/public_html` roots when no override is

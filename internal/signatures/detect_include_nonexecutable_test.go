@@ -12,6 +12,10 @@ import "testing"
 // drift from the other on the same shapes.
 func includeLoaderPositives() map[string]string {
 	return map[string]string{
+		"minified_include":     `<?php if($_COOKIE['x'])include'assets/payload.png';`,
+		"jpe_payload":          `<?php if($_COOKIE['x']) include 'assets/payload.jpe';`,
+		"closing_tag":          `<?php if($_COOKIE['x']) include 'assets/payload.png' ?>`,
+		"string_concatenation": `<?php if($_COOKIE['x']) include './assets/' . 'payload.png';`,
 		// The incident shape: cookie gate, absolute path in a local, include
 		// of that local, all on the first line of an otherwise normal theme
 		// file.
@@ -66,6 +70,10 @@ if (isset($_GET['run'])) {
 
 func includeLoaderNegatives() map[string]string {
 	return map[string]string{
+		"text_partial":                   `<?php if (isset($_GET['terms'])) { include 'terms.txt'; }`,
+		"include_result_used_with_image": `<?php if ($_GET['preview']) { $out = (include 'layout.php') . '<img src="icon.png">'; }`,
+		"include_helper":                 `<?php if ($_GET['preview']) { include_asset('icon.png'); }`,
+		"include_result_concatenation":   `<?php if ($_GET['preview']) { $out = include('layout.php') . '/icons/sprite.png'; }`,
 		// Ordinary templating: an HTML partial pulled in behind a request
 		// check. The target is source, not an opaque payload container.
 		"html_partial_behind_request_check": `<?php
