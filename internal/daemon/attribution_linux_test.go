@@ -137,7 +137,8 @@ func TestFanotifyFindingsAttributeByPath(t *testing.T) {
 	names := []string{
 		"cgi_backdoor_realtime", "cgi_suspicious_location_realtime", "credential_log_realtime",
 		"executable_in_tmp_realtime", "htaccess_injection_realtime", "phishing_kit_realtime",
-		"phishing_realtime", "php_dropper_realtime", "signature_match_realtime",
+		"phishing_realtime", "php_dropper_realtime", "php_in_image_realtime",
+		"signature_match_realtime",
 	}
 	total, stamped := realtimeEmissionSites(t, names)
 	sort.Strings(names)

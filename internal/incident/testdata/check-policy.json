@@ -191,6 +191,7 @@
       "php_config_realtime",
       "php_config_scan_incomplete",
       "php_dropper_realtime",
+      "php_in_image_realtime",
       "php_in_sensitive_dir_realtime",
       "php_in_uploads_realtime",
       "php_remote_taint",

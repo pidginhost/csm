@@ -146,6 +146,21 @@ Place `.yar` or `.yara` files alongside YAML rules in `/opt/csm/rules/`. CSM com
 - Scheduled deep-scan filesystem sweeps
 - Email attachment scanning
 
+Scans hand every file to YARA-X regardless of its name, so a rule may decide
+on the leading bytes rather than the extension. The bundled rule for PHP
+carried inside an image does exactly that: it requires a genuine PNG, JPEG,
+GIF, WebP, ICO, BMP or TIFF container, a PHP opening tag, and an execution or
+remote-fetch construct beside it. A picture is a working payload store, and
+nothing about its name says so.
+
+Its other half is the loader: a PHP file that includes or requires a
+non-executable file while reading request input. The extension list covers
+images, archives and opaque data files; source partials such as `.html`,
+`.tpl` and `.svg` are deliberately absent, because including those is
+templating. Findings from either rule name the non-executable files the
+matched content pulls in, so remediation is not left hunting for the payload
+after the loader is cleaned up.
+
 Scheduled YARA sweeps scan regular, non-empty files under configured
 `account_roots`, or cPanel `/home/*/public_html` roots when no override is
 configured. Files larger than `thresholds.full_scan_max_file_mb`, symlinks,

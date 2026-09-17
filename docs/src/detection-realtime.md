@@ -50,6 +50,8 @@ directory, repeated after the normal alert cooldown if activity continues.
 - SEO spam: gambling/togel dofollow link injection in PHP/HTML files
 - Phishing pages and credential harvest logs
 - Phishing kit ZIP archives
+- PHP carried inside a file served as an image. Image writes under an account or configured document root are now inspected, which they were not before: a valid PNG with PHP appended or stored in a metadata chunk renders normally, passes an upload filter that trusts `getimagesize`, and runs the moment any PHP file includes its path. Both the head and the tail of the file are examined, so padding in front of the payload does not hide it. A PHP opening tag alone is not enough -- a screenshot quoting one in its description chunk stays quiet -- and a file that only wears an image name while holding PHP source is reported the same way. Finding: `php_in_image_realtime`.
+- A PHP file that includes or requires an image, archive or other non-executable file while also reading request input. That pairing is the loader half of the technique above: the payload lives in the picture and the one-line loader elsewhere. The literal path, a concatenated path, a path held in a local, an encoded path and a suppressed `@include` all match, in either statement order. Ordinary templating that pulls in `.html`, `.tpl` or `.svg` partials is outside the rule.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 

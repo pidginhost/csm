@@ -11,6 +11,8 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Security
 
+- Executable code hidden inside a working image file is now detected. Image writes under hosted document roots were never inspected in real time and no rule looked past a file's name, so a picture could carry a backdoor indefinitely.
+- A PHP file that pulls in an image, an archive or another non-executable file while reading request input is now reported, together with the file it pulls in. That one line is the loader half of the technique above and was previously indistinguishable from ordinary templating.
 - A self-deleting file in WordPress update staging can no longer escape its alert by breaking the location where an installed copy of it would be looked for.
 - Translation files with concealed executable content no longer qualify as harmless data.
 
