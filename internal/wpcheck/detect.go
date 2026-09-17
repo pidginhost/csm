@@ -88,6 +88,10 @@ var (
 	reValidLocale  = regexp.MustCompile(`^[a-z]{2,3}(?:_[A-Za-z0-9]{2,10}){0,2}$`)
 )
 
+// Release identifiers are retained per candidate and used in request URLs
+// and cache filenames. Bound their bytes as well as the number of lookups.
+const maxCoreVersionLength = 64
+
 // ParseVersionContent extracts the WP version and locale from version.php content.
 // Locale defaults to "en_US" if $wp_local_package is not present. A version or
 // locale outside the shapes WordPress ships is an error: the install is then
@@ -97,6 +101,9 @@ func ParseVersionContent(data []byte) (version, locale string, err error) {
 	m := reVersion.FindSubmatch(data)
 	if m == nil {
 		return "", "", errors.New("wp_version not found in version.php")
+	}
+	if len(m[1]) > maxCoreVersionLength {
+		return "", "", errors.New("wp_version in version.php is too long")
 	}
 	version = string(m[1])
 	if !reValidVersion.MatchString(version) {

@@ -74,10 +74,9 @@ Strictness parity is not enforced across the rulesets: the parity check
 compares rule names, not how strict each side is.
 
 Complete blank files are excluded from dropper alerts after a close-write
-observation. Metadata-only changes during the read, such as an unlink, are
-retried only while content metadata, executable mode and the retained bytes
-remain unchanged. An observed write stays inconclusive even if a subsequent
-read could catch a quiet interval. A later complete close-write snapshot
+observation. Any content or metadata change during the read, including an
+unlink, leaves the snapshot uncertain. WordPress data and its checksum are
+read within the same stat interval. A later complete close-write snapshot
 cannot rule out code that ran during an earlier unstable read. That
 uncertainty and code seen in any read remain attached to the tracked file.
 Concurrent firewall-log writes can therefore still produce a warning when
@@ -85,7 +84,8 @@ the log is replaced, or a critical finding when it is deleted.
 
 Core-release checksum downloads are non-blocking and bounded, including
 their retry timers. Repeated misses and streams of distinct release names
-share an admission budget. When that budget is exhausted, cached checksums
+share an admission budget. Release identifiers longer than 64 bytes are
+rejected before retention or lookup. When that budget is exhausted, cached checksums
 remain usable; an uncached file stays unverified and receives the normal
 dropper assessment. A later observation can request checksums again after
 the budget recovers.

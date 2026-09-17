@@ -577,6 +577,31 @@ func TestDropperCoreVersionProbeOfAbortedUpdate(t *testing.T) {
 	}
 }
 
+func TestDropperCoreVersionProbeRejectsOversizedRelease(t *testing.T) {
+	docroot := t.TempDir()
+	path := filepath.Join(docroot, "wp-content", "upgrade", "version-current.php")
+	body := "<?php $wp_version = '" + strings.Repeat("9", 1<<20) + "';"
+	writeWPInstallFile(t, path, body)
+	r := newWPInstallRun(t, docroot)
+	lookups := 0
+	r.fm.wpCache = &fakeWPVerifier{verify: func(wpcheck.Verification) wpcheck.Verdict {
+		lookups++
+		return wpcheck.VerdictPending
+	}}
+	c := r.observe(t, path, nil)
+	if !c.WPInstallData {
+		t.Fatal("fixture must reach release parsing as complete version data")
+	}
+	if c.WPCoreRelease != nil || lookups != 0 {
+		t.Fatal("oversized release retained or sent to the checksum cache")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	assertSingleCriticalDropper(t, *r.alerts, path)
+}
+
 func TestDropperCoreVersionProbeWithoutOfficialMatchStillCritical(t *testing.T) {
 	const official = "<?php\n$wp_version = '7.1';\n$wp_local_package = 'ro_RO';\n"
 	for _, tc := range []struct {

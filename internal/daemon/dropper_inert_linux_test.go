@@ -27,7 +27,7 @@ func TestDropperInertReadRejectsConcurrentGrowth(t *testing.T) {
 	if err := unix.Fstat(fd, &before); err != nil {
 		t.Fatal(err)
 	}
-	head, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+	head, _, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
 		head := readFromFd(fd, maxBytes)
 		if _, err := f.WriteString("<?php echo 1;"); err != nil {
 			t.Fatal(err)
@@ -36,6 +36,79 @@ func TestDropperInertReadRejectsConcurrentGrowth(t *testing.T) {
 	})
 	if stable {
 		t.Fatalf("prefix of a growing file accepted as a stable snapshot: head=%q", head)
+	}
+}
+
+// A writer can restore both bytes and mtime after executing transient code.
+// Even unlink's ctime change cannot prove that no write occurred in the same
+// interval; accepting a quiet retry would erase the only remaining evidence.
+func TestDropperHeadRejectsRestoredContentAndMtime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "version-current.php")
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(testVersionPHP); err != nil {
+		t.Fatal(err)
+	}
+	fd := int(f.Fd())
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	_, _, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
+		head := readFromFd(fd, maxBytes)
+		reads++
+		if reads == 1 {
+			if _, err := f.WriteAt([]byte(testDropperPHP), 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteAt([]byte(testVersionPHP), 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path, time.Unix(before.Atim.Sec, before.Atim.Nsec), time.Unix(before.Mtim.Sec, before.Mtim.Nsec)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return head
+	})
+	if stable {
+		t.Fatal("restoring bytes and mtime hid a write behind the unlink")
+	}
+}
+
+// Whole-file proof must still cover changes after the observation's opening
+// stat, even if the inner complete reader finds a quiet interval.
+func TestDropperSnapshotBindsCompleteReadToOpeningStat(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "version-*.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(testDropperPHP); err != nil {
+		t.Fatal(err)
+	}
+	fd := int(f.Fd())
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		t.Fatal(err)
+	}
+	body, _, stable := readDropperSnapshot(fd, before, dropperDigestMax, func(fd, maxBytes int) []byte {
+		if _, err := f.WriteAt([]byte(testVersionPHP), 0); err != nil {
+			t.Fatal(err)
+		}
+		return readCompleteFromFd(fd, maxBytes)
+	})
+	if string(body) != testVersionPHP {
+		t.Fatal("fixture did not produce a complete benign rewrite")
+	}
+	if stable {
+		t.Fatal("complete read erased evidence from the opening stat")
 	}
 }
 
@@ -132,52 +205,40 @@ func TestDropperInertRefreshDoesNotForgetCode(t *testing.T) {
 	}
 }
 
-// The plugin temp-file false positive: WP All Import recreates a zero-byte
-// index.php guard in a scratch directory roughly once a second and removes
-// the whole directory again. The unlink bumps the inode's ctime, so when it
-// lands between the two stats that bracket the head read the snapshot looks
-// racy even though no byte was ever written. Marking such a candidate
-// "content may execute" is sticky, so the empty-guard gate could never fire
-// and every one of those files was reported.
-func TestDropperInertHeadSnapshotSurvivesMetadataOnlyChange(t *testing.T) {
+// Rename and unlink change ctime. They cannot prove that no writer also
+// replaced and restored the content during the same read interval.
+func TestDropperSnapshotRetainsMetadataUncertainty(t *testing.T) {
 	for _, content := range []string{"", wordfenceWAFHead} {
-		for _, changes := range []int{1, 2} {
-			t.Run(fmt.Sprintf("bytes=%d/changes=%d", len(content), changes), func(t *testing.T) {
+		for _, operation := range []string{"rename", "unlink"} {
+			t.Run(fmt.Sprintf("bytes=%d/%s", len(content), operation), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "index.php")
-				f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				f, err := os.Open(path)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer func() { _ = f.Close() }()
-				if _, err := f.WriteString(content); err != nil {
-					t.Fatal(err)
-				}
 				fd := int(f.Fd())
 				var before unix.Stat_t
-				if err := unix.Fstat(fd, &before); err != nil {
+				if err = unix.Fstat(fd, &before); err != nil {
 					t.Fatal(err)
 				}
-				reads := 0
-				head, size, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+				head, size, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
 					got := readFromFd(fd, maxBytes)
-					reads++
-					if reads < changes {
-						if err := os.Rename(path, path+".moved"); err != nil {
-							t.Fatal(err)
-						}
-						path += ".moved"
-					} else if reads == changes {
-						if err := os.Remove(path); err != nil {
-							t.Fatal(err)
-						}
+					if operation == "rename" {
+						err = os.Rename(path, path+".moved")
+					} else {
+						err = os.Remove(path)
+					}
+					if err != nil {
+						t.Fatal(err)
 					}
 					return got
 				})
-				if reads != changes+1 {
-					t.Fatalf("metadata changes were not retried: reads=%d", reads)
-				}
-				if !stable || string(head) != content || size != int64(len(content)) {
-					t.Fatalf("metadata change poisoned the snapshot: stable=%v head=%q size=%d", stable, head, size)
+				if stable || string(head) != content || size != int64(len(content)) {
+					t.Fatalf("metadata uncertainty lost: stable=%v size=%d", stable, size)
 				}
 			})
 		}
@@ -198,7 +259,7 @@ func TestDropperInertHeadSnapshotStaysUnstableWhileWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	reads := 0
-	_, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+	_, _, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
 		got := readFromFd(fd, maxBytes)
 		reads++
 		if _, err := f.WriteString("<?php echo 1;"); err != nil {
@@ -232,7 +293,7 @@ func TestDropperInertHeadSnapshotRetainsWriteEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			reads := 0
-			_, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+			_, _, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
 				head := readFromFd(fd, maxBytes)
 				reads++
 				if reads == 1 {

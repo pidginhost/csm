@@ -14,6 +14,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - A self-deleting file in WordPress update staging can no longer escape its alert by breaking the location where an installed copy of it would be looked for.
 - Translation files with concealed executable content no longer qualify as harmless data.
 - Self-deleting file detection retains uncertainty from concurrent writes, and WordPress checksum lookups have bounded background work and retries.
+- Self-deleting file detection preserves evidence of changes throughout content verification, and rejects oversized WordPress release identifiers before retaining or requesting checksums.
 
 ### Fixed
 

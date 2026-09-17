@@ -46,3 +46,17 @@ func TestChecksumAPIURLEscapesQueryValues(t *testing.T) {
 		t.Fatalf("query values not escaped: %s", u)
 	}
 }
+
+func TestParseVersionContentRejectsOversizedRelease(t *testing.T) {
+	for _, version := range []string{strings.Repeat("9", 65), "7.1-" + strings.Repeat("a", 61)} {
+		v, locale, err := ParseVersionContent([]byte("<?php $wp_version = '" + version + "';"))
+		if err == nil || v != "" || locale != "" {
+			t.Fatal("oversized release accepted for retained verification and checksum requests")
+		}
+	}
+	version := "7.1-" + strings.Repeat("a", 60)
+	v, locale, err := ParseVersionContent([]byte("<?php $wp_version = '" + version + "';"))
+	if err != nil || v != version || locale != "en_US" {
+		t.Fatal("bounded release identifier was rejected")
+	}
+}
