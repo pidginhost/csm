@@ -513,7 +513,7 @@ func filterChecks(findings []Finding, disabledChecks []string) []Finding {
 
 	disabled := make(map[string]bool, len(disabledChecks))
 	for _, check := range disabledChecks {
-		check = strings.TrimSpace(check)
+		check = config.CanonicalCheckName(strings.TrimSpace(check))
 		if check != "" {
 			disabled[check] = true
 		}
@@ -524,7 +524,7 @@ func filterChecks(findings []Finding, disabledChecks []string) []Finding {
 
 	filtered := make([]Finding, 0, len(findings))
 	for _, f := range findings {
-		if !disabled[f.Check] {
+		if !disabled[config.CanonicalCheckName(f.Check)] {
 			filtered = append(filtered, f)
 		}
 	}
@@ -804,17 +804,24 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 // Both inputs remain caller-owned and must already carry the times used by
 // actions that reference them. Missing times are filled on copies for ad-hoc use.
 func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, findings)
+	return dispatchWithSources(cfg, findings, sources, findings, nil)
 }
 
 // DispatchWithEnforcement offers central IP enforcement its own finding set
 // instead of the notification set. Suppression rules mute notifications but
 // must not exempt an attacker from central challenges and blocks.
 func DispatchWithEnforcement(cfg *config.Config, findings, sources, enforcement []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, enforcement)
+	return dispatchWithSources(cfg, findings, sources, enforcement, nil)
 }
 
-func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Finding) error {
+// DispatchWithNotificationFilter keeps operator policy separate from the
+// phpanel and SSE data streams. Notification observers, audit sources and
+// central enforcement retain their independent policy boundaries.
+func DispatchWithNotificationFilter(cfg *config.Config, findings, sources, enforcement []Finding, filter func([]Finding) []Finding) error {
+	return dispatchWithSources(cfg, findings, sources, enforcement, filter)
+}
+
+func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Finding, notificationFilter func([]Finding) []Finding) error {
 	// Deduplicate owns a copy, so stamping cannot race with callers sharing
 	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
@@ -822,13 +829,20 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 	FillTimestamps(findings, now)
 	sources = append([]Finding(nil), sources...)
 	FillTimestamps(sources, now)
+	notifications := findings
+	if notificationFilter != nil {
+		notifications = notificationFilter(findings)
+		// Audit every observation, while registered notification observers
+		// retain the same suppression policy as operator notifications.
+		sources = append(sources, findings...)
+	}
 
 	// Audit log captures every (deduplicated) finding before
 	// FilterBlockedAlerts and the rate limiter, so SIEMs see the
 	// complete picture even when email/webhook are throttled or
 	// when "this IP is already blocked" suppression hides a finding
 	// from the operator-facing channels.
-	emitAuditWithSources(cfg, findings, sources)
+	emitAuditWithSources(cfg, notifications, sources)
 	// The central-intel consumer escalates findings whose IP is in the
 	// verified central scored-set.
 	enforcement = Deduplicate(enforcement)
@@ -851,7 +865,7 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 
 	// Offer every finding to the abuse reporter (it gates and minimizes
 	// internally, queueing only confirmed-abuse findings for the drain loop).
-	for _, f := range findings {
+	for _, f := range notifications {
 		callReportHook(f)
 	}
 
@@ -866,6 +880,8 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 			addDispatchError(&errs, err)
 		}
 	}
+
+	findings = notifications
 
 	// Filter out blocked IP alerts if configured
 	findings = FilterBlockedAlerts(cfg, findings)

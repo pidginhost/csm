@@ -257,6 +257,7 @@ var cpanelWebmailFailureChecks = map[string]bool{
 
 // blockableCheck reports whether a finding's check may drive a firewall block.
 func blockableCheck(check string, blockCpanelLogins bool) bool {
+	check = config.CanonicalCheckName(check)
 	if alwaysBlockChecks[check] {
 		return true
 	}

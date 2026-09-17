@@ -3,10 +3,13 @@ package checks
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // logFileOS serves the same content for every Open, which is what the
@@ -19,6 +22,89 @@ func logFileOS(t *testing.T, content string) *mockOS {
 		t.Fatalf("write log: %v", err)
 	}
 	return &mockOS{open: func(string) (*os.File, error) { return os.Open(path) }}
+}
+
+func TestLoginIdentityUsesCompleteLogRecord(t *testing.T) {
+	// A long syslog host field puts the session PID beyond display truncation.
+	host := strings.Repeat("hostlabel.", 20) + "example"
+	for _, tt := range []struct {
+		name  string
+		line  string
+		build func(string, *config.Config) (alert.Finding, bool)
+	}{
+		{"FTP", strings.Replace(ftpSuccessLine, "host", host, 1), FTPLoginFinding},
+		{"SSH", strings.Replace(sshSuccessLine, "host", host, 1), SSHAcceptedLoginFinding},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			first, ok := tt.build(tt.line, nil)
+			if !ok {
+				t.Fatal("first login not reported")
+			}
+			secondLine := strings.NewReplacer("[1234]", "[1235]", "[4242]", "[4243]").Replace(tt.line)
+			second, ok := tt.build(secondLine, nil)
+			if !ok {
+				t.Fatal("second login not reported")
+			}
+			st := newTestStore(t)
+			st.Update([]alert.Finding{first})
+			if got := st.FilterNew([]alert.Finding{first, second}); len(got) != 1 || got[0].Key() != second.Key() {
+				t.Fatalf("distinct session lost inside reminder window: %+v", got)
+			}
+		})
+	}
+}
+
+func TestLoginIdentityStoreBackedFallback(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		line  string
+		build func(string, *config.Config) (alert.Finding, bool)
+		scan  func(context.Context, *config.Config, *state.Store) []alert.Finding
+	}{
+		{"FTP", ftpSuccessLine, FTPLoginFinding, CheckFTPLogins},
+		{"SSH", sshSuccessLine, SSHAcceptedLoginFinding, CheckSSHLogins},
+	} {
+		for _, realtimeFirst := range []bool{false, true} {
+			t.Run(tt.name+map[bool]string{false: "/scheduled", true: "/realtime"}[realtimeFirst], func(t *testing.T) {
+				line := strings.Replace(tt.line, "Apr 12 10:00:00", time.Now().Format("Jan _2 15:04:05"), 1)
+				path := t.TempDir() + "/log"
+				withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(path) }})
+				st := newTestStore(t)
+				cfg := &config.Config{}
+				if got := tt.scan(context.Background(), cfg, st); len(got) != 0 {
+					t.Fatalf("missing log: %+v", got)
+				}
+				appendLines(t, path, line)
+				live, ok := tt.build(line, cfg)
+				if !ok {
+					t.Fatal("login not parsed")
+				}
+				if realtimeFirst {
+					st.Update([]alert.Finding{live})
+				}
+				got := tt.scan(context.Background(), cfg, st)
+				if len(got) != 1 || got[0].Key() != live.Key() {
+					t.Fatalf("fallback lost login: %+v", got)
+				}
+				wantNew := 1
+				if realtimeFirst {
+					wantNew = 0
+				}
+				if fresh := st.FilterNew(got); len(fresh) != wantNew {
+					t.Fatalf("fresh=%+v, want %d", fresh, wantNew)
+				}
+				st.Update(got)
+				if fresh := st.FilterNew([]alert.Finding{live}); len(fresh) != 0 {
+					t.Fatal("realtime rediscovery duplicated login")
+				}
+				second := strings.NewReplacer("[1234]", "[1235]", "[4242]", "[4243]").Replace(line)
+				appendLines(t, path, second)
+				if fresh := st.FilterNew(tt.scan(context.Background(), cfg, st)); len(fresh) != 1 {
+					t.Fatalf("second login lost: %+v", fresh)
+				}
+			})
+		}
+	}
 }
 
 const ftpSuccessLine = `Apr 12 10:00:00 host pure-ftpd[1234]: (alice@198.51.100.7) [INFO] alice is now logged in`

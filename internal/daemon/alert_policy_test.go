@@ -23,6 +23,7 @@ func TestOperatorAlertPolicy(t *testing.T) {
 		{check: "pam_bruteforce", want: false},
 		{check: "exim_frozen_realtime", want: false},
 		{check: "ftp_login", want: false},
+		{check: "ftp_login_realtime", want: false},
 		{check: "cpanel_file_upload_realtime", want: false},
 		{check: "ftp_auth_failure_realtime", want: true},
 		{check: "ftp_login_after_bruteforce", want: true},

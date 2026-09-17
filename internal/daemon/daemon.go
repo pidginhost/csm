@@ -1425,7 +1425,7 @@ func (d *Daemon) persistPendingFindingsOnShutdown(batch []alert.Finding) {
 }
 
 func isOperatorAlertableCheck(check string) bool {
-	switch check {
+	switch config.CanonicalCheckName(check) {
 	case "modsec_block_realtime", "modsec_warning_realtime", "modsec_block_escalation", "modsec_csm_block_escalation":
 		return false // Fully automated and visible on the ModSecurity page.
 	case "outdated_plugins":
@@ -1577,12 +1577,10 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		d.webServer.Broadcast(newFindings)
 	}
 
-	// Dispatch via email/webhook - filter out findings that are
-	// informational or fully automated (no human action needed).
-	// These are all visible in the web UI for forensics.
-	alertable := operatorAlertableFindings(newFindings)
+	// Apply notification policy after the phpanel stream and passive
+	// observers receive the findings, so muting email does not lose evidence.
 	auditSources = append(auditSources, responseFindings...)
-	if err := alert.DispatchWithEnforcement(cfg, alertable, auditSources, responseFindings); err != nil {
+	if err := alert.DispatchWithNotificationFilter(cfg, newFindings, auditSources, responseFindings, operatorAlertableFindings); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -1639,7 +1637,7 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	}
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
-	_ = alert.DispatchWithEnforcement(cfg, operatorAlertableFindings(newFindings), initialAuditSources, responseFindings)
+	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, operatorAlertableFindings)
 	return newFindings, permFixedKeys
 }
 

@@ -181,6 +181,7 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 	return alert.Finding{
 		Severity: alert.Critical,
 		Check:    "ssh_login_unknown_ip",
+		DedupKey: loginRecordKey(line),
 		Message:  fmt.Sprintf("SSH login from non-infra IP: %s (user: %s)", ip, user),
 		Details:  truncateString(line, 200),
 		SourceIP: ip,

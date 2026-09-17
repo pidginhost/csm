@@ -692,6 +692,7 @@ func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 		return alert.Finding{
 			Severity: alert.Critical,
 			Check:    "ftp_login_after_bruteforce",
+			DedupKey: loginRecordKey(line),
 			SourceIP: ip,
 			Message:  msg,
 			Details:  truncate(line, 200),
@@ -701,6 +702,7 @@ func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Warning,
 		Check:    "ftp_login",
+		DedupKey: loginRecordKey(line),
 		SourceIP: ip,
 		Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
 		Details:  truncate(line, 200),

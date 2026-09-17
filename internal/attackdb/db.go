@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -147,7 +148,7 @@ func MappedChecks() []string {
 // AttackTypeFor reports the attack type a check name records under, and
 // whether the name is mapped at all.
 func AttackTypeFor(check string) (AttackType, bool) {
-	kind, ok := checkToAttack[check]
+	kind, ok := checkToAttack[config.CanonicalCheckName(check)]
 	return kind, ok
 }
 
@@ -353,7 +354,7 @@ func NewForTest(records map[string]*IPRecord) *DB {
 // RecordFinding records an attack event from a finding.
 // Fire-and-forget: never blocks, never panics.
 func (db *DB) RecordFinding(f alert.Finding) {
-	attackType, ok := checkToAttack[f.Check]
+	attackType, ok := AttackTypeFor(f.Check)
 	if !ok {
 		return // not an attack-related check
 	}
