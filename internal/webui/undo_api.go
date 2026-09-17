@@ -261,8 +261,9 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 	}
 	switch entry.Inverse {
 	case undoInverseThreatBlock:
-		// Original action blocked IPs; inverse unblocks them.
-		resp.Count = s.undoBulkBlock(payload.IPs)
+		// Original action blocked IPs; inverse unblocks them and puts back
+		// the evidence that was on file before the block.
+		resp.Count = s.undoBulkBlock(payload)
 	case undoInverseThreatUnblock:
 		// Original unblocked IPs; inverse re-blocks them with the saved reason.
 		// The payload is self-written state, so a bad timeout falls back to
@@ -305,7 +306,10 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 	return resp, nil
 }
 
-func captureUndoThreatRow(ip string, autoBlockOnly bool) (undoThreatRow, bool) {
+// captureUndoThreatRow snapshots the live threat row for ip. With
+// temporaryOnly set it captures only rows tied to a firewall block, which is
+// exactly the set a firewall unblock drops.
+func captureUndoThreatRow(ip string, temporaryOnly bool) (undoThreatRow, bool) {
 	sdb := store.Global()
 	if sdb == nil {
 		return undoThreatRow{}, false
@@ -314,7 +318,7 @@ func captureUndoThreatRow(ip string, autoBlockOnly bool) (undoThreatRow, bool) {
 	if !ok || entry.Expired(time.Now()) {
 		return undoThreatRow{}, false
 	}
-	if autoBlockOnly && entry.Source != store.ThreatSourceAutoBlock {
+	if temporaryOnly && !entry.TiedToFirewallBlock() {
 		return undoThreatRow{}, false
 	}
 	return undoThreatRow{
@@ -346,6 +350,13 @@ func restoreUndoThreatRows(rows []undoThreatRow) {
 		if ttl <= 0 {
 			continue // already lapsed; nothing worth restoring
 		}
+		// A timed operator block keeps its operator source: restoring it as
+		// auto-block evidence would let the auto-block cleanup paths delete
+		// an operator's deliberate block.
+		if row.Source == store.ThreatSourceOperator {
+			tdb.AddOperatorTemporary(row.IP, row.Reason, ttl)
+			continue
+		}
 		tdb.AddTemporary(row.IP, row.Reason, ttl)
 	}
 }
@@ -361,9 +372,9 @@ func shouldRestoreUndoThreatAsPermanent(row undoThreatRow, now time.Time) bool {
 	return !legacy.Expired(now)
 }
 
-func (s *Server) undoBulkBlock(ips []string) int {
+func (s *Server) undoBulkBlock(payload undoPayloadIPs) int {
 	count := 0
-	for _, ip := range ips {
+	for _, ip := range payload.IPs {
 		if _, err := parseAndValidateIP(ip); err != nil {
 			continue
 		}
@@ -376,6 +387,9 @@ func (s *Server) undoBulkBlock(ips []string) int {
 		flushCphulk(ip)
 		count++
 	}
+	// Evidence the block replaced goes back with its original lifetime; the
+	// removal above cleared the rows the block wrote, so nothing shadows it.
+	restoreUndoThreatRows(payload.RestoreThreats)
 	return count
 }
 

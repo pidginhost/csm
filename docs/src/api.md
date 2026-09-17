@@ -875,12 +875,13 @@ GET  /api/v1/threat/ip           IP threat lookup (?ip=)
 GET  /api/v1/threat/events       IP event history (?ip=&limit=)
 GET  /api/v1/threat/whitelist    Whitelisted IPs
 GET  /api/v1/threat/db-stats     Attack database statistics
-POST /api/v1/threat/block-ip     Block IP permanently
+POST /api/v1/threat/block-ip     Block IP for 24 hours
+POST /api/v1/threat/block-ip-permanent Block IP with no expiry
 POST /api/v1/threat/whitelist-ip       Permanent whitelist
 POST /api/v1/threat/temp-whitelist-ip  Temporary whitelist (with expiry)
 POST /api/v1/threat/clear-ip           Clear IP from attack database
 POST /api/v1/threat/unwhitelist-ip     Remove from whitelist
-POST /api/v1/threat/bulk-action        Bulk block/clear/whitelist across many IPs
+POST /api/v1/threat/bulk-action        Bulk block (24h or permanent) / whitelist across many IPs
 ```
 
 ## Firewall

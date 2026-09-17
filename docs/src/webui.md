@@ -34,7 +34,7 @@ scope. The header links to session management.
 | **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
 | **Email** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
-| **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN, top attackers, attack type charts, trends |
+| **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN, 24 hour and permanent block actions (single and bulk), top attackers, attack type charts, trends |
 | **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
 | **Incidents** | `/incident` | Correlated incident list with detail panel plus forensic timeline search by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |

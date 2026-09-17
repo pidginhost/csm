@@ -26,7 +26,7 @@ import (
 // ip_reputation would re-flag the IP into a new block loop.
 func dropAutoBlockThreatRow(ip string) {
 	if sdb := store.Global(); sdb != nil {
-		_, _ = sdb.RemoveAutoBlock(ip)
+		_, _ = sdb.RemoveTemporaryBlock(ip)
 	}
 	if tdb := checks.GetThreatDB(); tdb != nil {
 		tdb.RemoveTemporary(ip)

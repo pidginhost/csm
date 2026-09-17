@@ -140,16 +140,32 @@ func (db *ThreatDB) IsConfigWhitelisted(ip string) bool {
 	return db.configWhitelist[ip]
 }
 
+// ThreatMatch describes why an IP is flagged: which source named it, and
+// whether that evidence is permanent (re-flags the address on every future
+// sighting) or lapses with the block that recorded it.
+type ThreatMatch struct {
+	Source    string
+	Permanent bool
+	ExpiresAt time.Time // zero unless the entry lapses
+}
+
 // Lookup checks if an IP is in the local threat database.
 // Returns (source, true) if found, ("", false) if unknown.
 // Whitelisted IPs always return false.
 func (db *ThreatDB) Lookup(ip string) (string, bool) {
+	match, ok := db.LookupMatch(ip)
+	return match.Source, ok
+}
+
+// LookupMatch is Lookup plus the lifetime of the matched evidence, so the
+// Web UI can explain why an unblocked IP still scores as malicious.
+func (db *ThreatDB) LookupMatch(ip string) (ThreatMatch, bool) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	// Never flag whitelisted IPs
 	if db.whitelist[ip] || db.configWhitelist[ip] {
-		return "", false
+		return ThreatMatch{}, false
 	}
 
 	// Check exact IP match. Lapsed temp entries no longer count as
@@ -158,11 +174,17 @@ func (db *ThreatDB) Lookup(ip string) (string, bool) {
 	// removed by the periodic prune; until then, fall through to the
 	// feed data and CIDR ranges.
 	if source, ok := db.badIPs[ip]; ok {
-		if exp, hasExp := db.badIPExpiry[ip]; !hasExp || time.Now().Before(exp) {
-			return source, true
+		exp, hasExp := db.badIPExpiry[ip]
+		if !hasExp {
+			// Feed-owned entries are refreshed from upstream, so only local
+			// rows (operator or legacy) count as permanent local evidence.
+			return ThreatMatch{Source: source, Permanent: !isFeedSourceName(source)}, true
+		}
+		if time.Now().Before(exp) {
+			return ThreatMatch{Source: source, ExpiresAt: exp}, true
 		}
 		if feed, ok := db.feedSourceLocked(ip); ok {
-			return feed, true
+			return ThreatMatch{Source: feed}, true
 		}
 	}
 
@@ -171,12 +193,12 @@ func (db *ThreatDB) Lookup(ip string) (string, bool) {
 	if parsed != nil {
 		for _, cidr := range db.badNets {
 			if cidr.Contains(parsed) {
-				return "threat-feed-cidr", true
+				return ThreatMatch{Source: "threat-feed-cidr"}, true
 			}
 		}
 	}
 
-	return "", false
+	return ThreatMatch{}, false
 }
 
 // AddPermanent adds an IP to the permanent local blocklist.
@@ -219,6 +241,26 @@ func (db *ThreatDB) AddPermanent(ip, reason string) {
 // ttl <= 0 is ignored because auto-block evidence must never become a
 // never-expiring threat row.
 func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
+	db.addExpiring(ip, reason, ttl, func(expiresAt time.Time) {
+		if sdb := store.Global(); sdb != nil {
+			_ = sdb.AddTempBlock(ip, reason, expiresAt)
+		}
+	})
+}
+
+// AddOperatorTemporary records a timed operator block (the Web UI 24h block)
+// for the lifetime of its firewall block. The evidence is operator-sourced
+// but lapses with the block, so a mistaken 24h block of a customer address
+// does not leave it permanently malicious.
+func (db *ThreatDB) AddOperatorTemporary(ip, reason string, ttl time.Duration) {
+	db.addExpiring(ip, reason, ttl, func(expiresAt time.Time) {
+		if sdb := store.Global(); sdb != nil {
+			_ = sdb.AddOperatorTempBlock(ip, reason, expiresAt)
+		}
+	})
+}
+
+func (db *ThreatDB) addExpiring(ip, reason string, ttl time.Duration, persist func(time.Time)) {
 	if ttl <= 0 {
 		return
 	}
@@ -243,18 +285,17 @@ func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
 	db.badIPExpiry[ip] = expiresAt
 	db.mu.Unlock()
 
-	if sdb := store.Global(); sdb != nil {
-		_ = sdb.AddTempBlock(ip, reason, expiresAt)
-	}
+	persist(expiresAt)
 	// Flat-file fallback (pre-migration) deliberately does not persist:
 	// permanent.txt has no expiry column, so a line there would recreate
 	// the forever-row this method exists to avoid. The firewall keeps the
 	// block itself across restarts.
 }
 
-// RemoveTemporary removes only temporary auto-block evidence for ip. It leaves
-// operator/local permanent evidence untouched and restores feed ownership when
-// the IP is independently present in a threat feed.
+// RemoveTemporary removes evidence that only lives as long as a firewall
+// block: auto-block rows and timed operator blocks. It leaves permanent
+// evidence untouched and restores feed ownership when the IP is
+// independently present in a threat feed.
 func (db *ThreatDB) RemoveTemporary(ip string) {
 	db.mu.Lock()
 	if _, isTemp := db.badIPExpiry[ip]; isTemp {
@@ -424,6 +465,20 @@ func (db *ThreatDB) PruneExpiredThreats() int {
 			time.Now().Format("2006-01-02 15:04:05"), removed)
 	}
 	return removed
+}
+
+// isFeedSourceName reports whether a match source names a threat feed
+// rather than local evidence.
+func isFeedSourceName(source string) bool {
+	if source == "threat-feed-cidr" {
+		return true
+	}
+	for _, feed := range threatFeeds {
+		if feed.name == source {
+			return true
+		}
+	}
+	return false
 }
 
 // feedSourceLocked reports which feed lists ip, if any. Caller holds db.mu.

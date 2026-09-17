@@ -23,6 +23,12 @@ type IPIntelligence struct {
 	// ThreatDB (feeds + permanent blocklist)
 	InThreatDB     bool   `json:"in_threat_db"`
 	ThreatDBSource string `json:"threat_db_source,omitempty"`
+	// ThreatDBPermanent marks local evidence that never lapses, so an
+	// unblocked IP keeps scoring as malicious and is flagged again on its
+	// next sighting. ThreatDBExpiresAt is set when the evidence lapses
+	// with the block that recorded it.
+	ThreatDBPermanent bool       `json:"threat_db_permanent,omitempty"`
+	ThreatDBExpiresAt *time.Time `json:"threat_db_expires_at,omitempty"`
 
 	// AbuseIPDB cache
 	AbuseScore    int    `json:"abuse_score"`
@@ -70,10 +76,7 @@ func Lookup(ip, statePath string) *IPIntelligence {
 
 	// 2. ThreatDB (feeds + permanent)
 	if tdb := checks.GetThreatDB(); tdb != nil {
-		if source, found := tdb.Lookup(ip); found {
-			intel.InThreatDB = true
-			intel.ThreatDBSource = source
-		}
+		applyThreatDBMatch(intel, tdb)
 	}
 
 	// 3. AbuseIPDB from pre-loaded cache
@@ -112,10 +115,7 @@ func LookupBatch(ips []string, statePath string) []*IPIntelligence {
 
 		// ThreatDB
 		if tdb := checks.GetThreatDB(); tdb != nil {
-			if source, found := tdb.Lookup(ip); found {
-				intel.InThreatDB = true
-				intel.ThreatDBSource = source
-			}
+			applyThreatDBMatch(intel, tdb)
 		}
 
 		// AbuseIPDB from pre-loaded cache
@@ -131,6 +131,21 @@ func LookupBatch(ips []string, statePath string) []*IPIntelligence {
 		results[i] = intel
 	}
 	return results
+}
+
+// applyThreatDBMatch copies the threat-DB match and its lifetime onto intel.
+func applyThreatDBMatch(intel *IPIntelligence, tdb *checks.ThreatDB) {
+	match, found := tdb.LookupMatch(intel.IP)
+	if !found {
+		return
+	}
+	intel.InThreatDB = true
+	intel.ThreatDBSource = match.Source
+	intel.ThreatDBPermanent = match.Permanent
+	if !match.ExpiresAt.IsZero() {
+		t := match.ExpiresAt
+		intel.ThreatDBExpiresAt = &t
+	}
 }
 
 func computeVerdict(intel *IPIntelligence) {

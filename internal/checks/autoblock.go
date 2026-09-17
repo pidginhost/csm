@@ -1165,7 +1165,7 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		work.startCleanup(ip)
 		cleanupFailed := false
 		if sdb != nil {
-			if _, err := sdb.RemoveAutoBlock(ip); err != nil {
+			if _, err := sdb.RemoveTemporaryBlock(ip); err != nil {
 				cleanupFailed = true
 				work.cleanupOutcome(ip, true)
 				work.observe(err)

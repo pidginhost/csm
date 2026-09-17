@@ -20,7 +20,7 @@ import (
 // persisted row when present and the in-memory temp copy stops that.
 func dropAutoBlockThreatRow(ip string) {
 	if sdb := store.Global(); sdb != nil {
-		_, _ = sdb.RemoveAutoBlock(ip)
+		_, _ = sdb.RemoveTemporaryBlock(ip)
 	}
 	if tdb := checks.GetThreatDB(); tdb != nil {
 		tdb.RemoveTemporary(ip)
