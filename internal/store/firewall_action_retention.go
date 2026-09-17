@@ -163,12 +163,18 @@ func undeliveredFirewallAuditIDs(index firewallJournalIndex) map[string]bool {
 func deleteFirewallAction(tx *bolt.Tx, entry firewallActionHistoryEntry) error {
 	if b := tx.Bucket([]byte(firewallAuditBucket)); b != nil {
 		prefix := append([]byte(entry.id), 0)
+		// Collect first: acknowledgement rewrites an audit leaf in this
+		// transaction, and a bbolt cursor that deletes and then steps with
+		// Next skips keys in a bucket already written by the transaction.
+		var keys [][]byte
 		cursor := b.Cursor()
 		for key, _ := cursor.Seek(prefix); key != nil && bytes.HasPrefix(key, prefix); key, _ = cursor.Next() {
-			if len(key) != len(prefix)+20 {
-				continue
+			if len(key) == len(prefix)+20 {
+				keys = append(keys, append([]byte(nil), key...))
 			}
-			if err := cursor.Delete(); err != nil {
+		}
+		for _, key := range keys {
+			if err := b.Delete(key); err != nil {
 				return err
 			}
 		}

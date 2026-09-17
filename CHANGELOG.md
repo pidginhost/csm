@@ -16,6 +16,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- Pruning old firewall action records and daily finding totals now removes every expired entry. Some were skipped and left behind, so the state database kept growing.
 - WAF attacker reports for link-local addresses no longer advise a block the firewall refuses, and subnet blocks rejected by safety guards are logged as refused rather than failed.
 - Restart advice now reflects reclaimable space in the state database, so a large file that is still mostly in use no longer triggers it.
 - `csm doctor` and the components view now keep reporting the YARA-X scanning worker as failed while it keeps crashing after restarts, instead of only when it cannot start at all. A restarted worker counts as recovered once it stays up for 30 seconds.

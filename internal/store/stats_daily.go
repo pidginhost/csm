@@ -66,12 +66,16 @@ func pruneStatsDaily(tx *bolt.Tx, now time.Time) error {
 		return nil
 	}
 	cutoff := now.AddDate(0, 0, -(dailyRetentionDays - 1)).Format("2006-01-02")
+	// Collect first: the caller has just written today's row in this
+	// transaction, and a bbolt cursor that deletes and then steps with Next
+	// skips keys in a bucket already written by the transaction.
+	var stale [][]byte
 	c := b.Cursor()
-	for k, _ := c.First(); k != nil; k, _ = c.Next() {
-		if string(k) >= cutoff {
-			break
-		}
-		if err := c.Delete(); err != nil {
+	for k, _ := c.First(); k != nil && string(k) < cutoff; k, _ = c.Next() {
+		stale = append(stale, append([]byte(nil), k...))
+	}
+	for _, k := range stale {
+		if err := b.Delete(k); err != nil {
 			return err
 		}
 	}
