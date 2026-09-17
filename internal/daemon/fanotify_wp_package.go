@@ -320,10 +320,7 @@ func stagedPackageReason(v wpcheck.Verification) string {
 }
 
 func stagedPackageWhat(info stagedPackageInfo, pkg wpStagedPackage) string {
-	name := info.identity.Slug
-	if name == "" {
-		name = pkg.unpacked
-	}
+	name := stagedPackageName(info.identity.Slug, pkg)
 	var what string
 	switch info.identity.Kind {
 	case wpcheck.KindCore:
@@ -341,19 +338,54 @@ func stagedPackageWhat(info stagedPackageInfo, pkg wpStagedPackage) string {
 	return what
 }
 
+func stagedPackageKind(kind wpcheck.PackageKind) string {
+	switch kind {
+	case wpcheck.KindCore:
+		return "core"
+	case wpcheck.KindPlugin:
+		return "plugin"
+	case wpcheck.KindTheme:
+		return "theme"
+	}
+	return "package"
+}
+
+// stagedPackageName is the package's own name: its slug once a header named
+// it, otherwise the unpacked directory the archive created.
+func stagedPackageName(slug string, pkg wpStagedPackage) string {
+	if slug == "" {
+		return pkg.unpacked
+	}
+	return slug
+}
+
 // alertStagedPackage raises the one directory-level finding for a package
-// that cannot be verified file by file. Dedup is keyed on the directory, so
-// every file of the package lands on the same finding.
+// that cannot be verified file by file. Every file of the package lands on
+// the same finding. The staging directory name is random per upload, so the
+// alert identity is the site, package and reason: uploading the same
+// unverifiable release again is a repeat, not a new condition. Incomplete
+// headers cannot identify a release, so those warnings stay upload-specific.
 func (fm *FileMonitor) alertStagedPackage(pkg wpStagedPackage, info stagedPackageInfo, reason, procInfo string) {
 	what := stagedPackageWhat(info, pkg)
 	state := "new install"
 	if info.installed {
 		state = "updates installed " + strings.TrimSuffix(what, " "+info.identity.Version)
 	}
-	fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
-		fmt.Sprintf("WordPress package staged, not verified against wordpress.org: %s", pkg.dir),
-		fmt.Sprintf("%s; %s; %s. Content findings are reported separately for individual files.", what, state, reason),
-		pkg.dir, procInfo)
+	var dedupKey string
+	if info.identity.Kind != wpcheck.KindNone && info.identity.Version != "" {
+		dedupKey = fmt.Sprintf("staged-package site=%q type=%s name=%q version=%q reason=%q",
+			pkg.wpRoot, stagedPackageKind(info.identity.Kind), stagedPackageName(info.identity.Slug, pkg),
+			info.identity.Version, reason)
+	}
+	fm.sendFileFinding(alert.Finding{
+		Severity:    alert.Warning,
+		Check:       "php_in_sensitive_dir_realtime",
+		Message:     fmt.Sprintf("WordPress package staged, not verified against wordpress.org: %s", pkg.dir),
+		Details:     fmt.Sprintf("%s; %s; %s. Content findings are reported separately for individual files.", what, state, reason),
+		DedupKey:    dedupKey,
+		FilePath:    pkg.dir,
+		ProcessInfo: procInfo,
+	})
 }
 
 // stagedFileInstalledPath is where WordPress puts a staged file once the
@@ -403,7 +435,24 @@ func (fm *FileMonitor) alertStagedFileMismatch(stagedPath string, pkg wpStagedPa
 	if moved {
 		details += fmt.Sprintf(" Staged at %s, since installed.", stagedPath)
 	}
-	fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime", message, details, reportPath, procInfo)
+	// Identify the file by its place in the package, not the random staging
+	// directory, and by its digest so different bytes stay a new finding.
+	// An absent digest is not evidence of equal content across uploads.
+	file := strings.TrimPrefix(stagedPath, pkg.dir+"/")
+	var dedupKey string
+	if v.Digest != "" {
+		dedupKey = fmt.Sprintf("staged-file site=%q type=%s name=%q version=%q file=%q verdict=%s digest=%q",
+			pkg.wpRoot, stagedPackageKind(v.Kind), stagedPackageName(v.Slug, pkg), v.Version, file, v.Verdict, v.Digest)
+	}
+	fm.sendFileFinding(alert.Finding{
+		Severity:    alert.Warning,
+		Check:       "php_in_sensitive_dir_realtime",
+		Message:     message,
+		Details:     details,
+		DedupKey:    dedupKey,
+		FilePath:    reportPath,
+		ProcessInfo: procInfo,
+	})
 }
 
 // redescribeStaged retries identifying a file queued before its package

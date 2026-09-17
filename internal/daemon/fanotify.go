@@ -2242,7 +2242,13 @@ func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message
 }
 
 func (fm *FileMonitor) sendFileFinding(finding alert.Finding) {
-	if !fm.shouldAlert(finding.Check, finding.FilePath) {
+	dedupPath := finding.FilePath
+	if finding.DedupKey != "" {
+		// A later header or digest can change a staged finding's identity
+		// within the path cooldown. Let persistent dedup see that evidence.
+		dedupPath = finding.Key()
+	}
+	if !fm.shouldAlert(finding.Check, dedupPath) {
 		return
 	}
 	finding.Timestamp = time.Now()
