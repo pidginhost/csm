@@ -80,6 +80,11 @@ func (s *phpLiteralScanner) skipTrivia() {
 			s.i++
 			continue
 		}
+		// PHP 8 attributes start with #[ and can precede executable
+		// declarations and statements on the same line. They are not comments.
+		if c == '#' && s.i+1 < len(s.buf) && s.buf[s.i+1] == '[' {
+			return
+		}
 		if c == '#' || (c == '/' && s.i+1 < len(s.buf) && s.buf[s.i+1] == '/') {
 			s.i = skipPHPLineComment(s.buf, s.i)
 			continue

@@ -79,6 +79,12 @@ func TestIsWPTranslationCache_RealShape(t *testing.T) {
 	}
 }
 
+func TestIsWPTranslationCache_AttributeIsNotComment(t *testing.T) {
+	if IsWPTranslationCacheBytesComplete([]byte("<?php #[Example] function example() {} system($_POST['c']);\nreturn [];"), true) {
+		t.Fatal("PHP attribute concealed executable statements before the return")
+	}
+}
+
 func TestIsWPTranslationCache_ArrayKeywordSyntax(t *testing.T) {
 	src := "<?php\nreturn array('a' => 'one', 'b' => array('c' => 'two'));\n"
 	if !IsWPTranslationCacheBytesComplete([]byte(src), true) {

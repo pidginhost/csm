@@ -58,10 +58,15 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 }
 
 // dropperFindRenameTarget snapshots the install destinations WordPress and the
-// atomic-write helper may move a staged file to. A matching destination wins;
-// otherwise the first regular destination is returned as replacement evidence.
+// atomic-write helper may move or copy a staged file to. A matching destination
+// wins; otherwise the first regular destination is returned as replacement
+// evidence.
 func dropperFindRenameTarget(c dropperCandidate) (string, dropperFileState, bool, error) {
-	targets := wpUpgradeRenameCandidates(c.Path, c.Docroot)
+	return dropperFindRenameTargetWithStat(c, statPathToFileState)
+}
+
+func dropperFindRenameTargetWithStat(c dropperCandidate, stat func(string, bool) (dropperPathState, error)) (string, dropperFileState, bool, error) {
+	targets := wpUpgradeInstallDestinations(c.Path, c.Docroot)
 	if atomic := atomicWriteRenameCandidate(c.Path); atomic != "" {
 		targets = append(targets, atomic)
 	}
@@ -69,8 +74,13 @@ func dropperFindRenameTarget(c dropperCandidate) (string, dropperFileState, bool
 	var firstState dropperFileState
 	var transientErr error
 	for _, target := range targets {
-		state, err := statPathToFileState(target, false)
-		if errors.Is(err, unix.ENOENT) {
+		if !dropperRenameTargetAllowed(c, target) {
+			continue
+		}
+		state, err := stat(target, false)
+		// An unreachable destination cannot prove a benign move. Treating it
+		// as transient would let a broken install path exhaust probe retries.
+		if dropperInstallPathUnreachable(err) {
 			continue
 		}
 		if err != nil {
@@ -84,7 +94,10 @@ func dropperFindRenameTarget(c dropperCandidate) (string, dropperFileState, bool
 			return target, state.file, true, nil
 		}
 		if c.DigestKnown && c.Size == state.file.Size {
-			state, err = statPathToFileState(target, true)
+			state, err = stat(target, true)
+			if dropperInstallPathUnreachable(err) {
+				continue
+			}
 			if err != nil {
 				transientErr = err
 				continue
@@ -104,4 +117,8 @@ func dropperFindRenameTarget(c dropperCandidate) (string, dropperFileState, bool
 		return firstTarget, firstState, true, nil
 	}
 	return "", dropperFileState{}, false, nil
+}
+
+func dropperInstallPathUnreachable(err error) bool {
+	return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP)
 }
