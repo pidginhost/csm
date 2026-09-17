@@ -281,6 +281,9 @@ func FuzzParsePHPShieldLogLine(f *testing.F) {
 		`{"time":"2026-04-10T15:15:05Z"}`,
 		"not json",
 		`{"malformed`,
+		`[2026-09-17 10:00:00] WEBSHELL_PARAM ip=192.0.2.10 script=/home/u/public_html/index.php uri=/~u/x%zz/../?cmd=id ua=curl details=cmd`,
+		`[2026-09-17 10:00:00] WEBSHELL_PARAM ip=192.0.2.10 script=/home/u/public_html/index.php uri=http://example.test ua=curl details=cmd`,
+		`[2026-09-17 10:00:00] WEBSHELL_PARAM ip=192.0.2.10 script= uri=/~ ua= details=`,
 	}
 	for _, s := range seeds {
 		f.Add(s)

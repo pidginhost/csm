@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +22,9 @@ const (
 	phpEventMaxBytes        = 64 * 1024
 	phpEventArchiveMaxBytes = 10 * 1024 * 1024
 	phpEventSocketMode      = 0o222
+	// phpShieldURIMaxBytes is the length the Shield cuts REQUEST_URI to before
+	// sending it.
+	phpShieldURIMaxBytes = 200
 )
 
 var (
@@ -309,6 +314,9 @@ func parsePHPShieldLine(line string) *alert.Finding {
 		// Observation, not a denial: for a document-root script the Shield never
 		// reaches its deny branch, so nothing was blocked. Every public site
 		// receives these daily, and rating them Critical buries the real blocks.
+		if !phpShieldRequestReachedScript(script, uri) {
+			return nil
+		}
 		return &alert.Finding{
 			Severity: alert.Warning,
 			Check:    "php_shield_webshell",
@@ -318,6 +326,9 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			Details:  context,
 		}
 	case "BLOCK_WEBSHELL":
+		// Not gated on the request path: the Shield blocks on the executing
+		// script's own source, so a rewrite into a planted shell is still a
+		// stopped webshell.
 		return &alert.Finding{
 			Severity: alert.Critical,
 			Check:    "php_shield_webshell",
@@ -338,6 +349,78 @@ func parsePHPShieldLine(line string) *alert.Finding {
 	}
 
 	return nil
+}
+
+// phpShieldRequestReachedScript reports whether the request URI names the
+// script that executed, i.e. whether a command parameter was delivered to the
+// script the client asked for.
+//
+// Scanners send cmd= to paths that do not exist. The CMS rewrite rules (or a
+// 404 handler) answer with the site's front controller, so the Shield sees the
+// parameter on index.php although the probed script was never there. That is
+// not a webshell observation. The request names the executing script when a
+// leading run of its path segments is a trailing part of the script path (this
+// covers PATH_INFO such as /shell.php/extra), or when it names the directory
+// holding the script, which is then served as its directory index. A request
+// for "/" therefore still fires on the document-root index.php: the client did
+// ask for that script, and a shell injected into index.php is reached exactly
+// that way.
+//
+// A leading /~user segment is dropped as well, since that is how a userdir URL
+// maps onto the account's document root.
+//
+// When the path cannot be judged (no URI, a form other than an origin or
+// absolute path, a bad escape, or a path cut short by the Shield's truncation)
+// the event is kept: silence has to be earned by a path that clearly names a
+// different script.
+func phpShieldRequestReachedScript(script, uri string) bool {
+	if script == "" || uri == "" || uri == "-" {
+		return true
+	}
+	rawPath, _, hasQuery := strings.Cut(uri, "?")
+	if !strings.HasPrefix(rawPath, "/") {
+		scheme, rest, ok := strings.Cut(rawPath, "://")
+		if !ok || scheme == "" {
+			return true
+		}
+		slash := strings.IndexByte(rest, '/')
+		if slash < 0 {
+			rawPath = "/"
+		} else {
+			rawPath = rest[slash:]
+		}
+	}
+	decoded, err := url.PathUnescape(rawPath)
+	if err != nil {
+		return true
+	}
+	requested := path.Clean(decoded)
+	script = path.Clean(script)
+
+	candidates := []string{requested}
+	if first, rest, _ := strings.Cut(requested[1:], "/"); strings.HasPrefix(first, "~") {
+		candidates = append(candidates, "/"+rest)
+	}
+	for _, candidate := range candidates {
+		if phpShieldPathNamesScript(script, candidate) {
+			return true
+		}
+	}
+	return !hasQuery && len(uri) >= phpShieldURIMaxBytes
+}
+
+// phpShieldPathNamesScript applies the matching rule described on
+// phpShieldRequestReachedScript to one cleaned request path.
+func phpShieldPathNamesScript(script, requested string) bool {
+	if strings.HasSuffix(path.Dir(script), strings.TrimSuffix(requested, "/")) {
+		return true
+	}
+	for end := len(requested); end > 0; end = strings.LastIndexByte(requested[:end], '/') {
+		if strings.HasSuffix(script, requested[:end]) {
+			return true
+		}
+	}
+	return false
 }
 
 // phpShieldDetails renders the context an operator needs to judge a Shield
