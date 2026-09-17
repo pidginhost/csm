@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+func FuzzModSecRuleFileConfidence(f *testing.F) {
+	f.Add(211999, "Unknown vendor rule", "", `[file "/rules/anomaly-content-type.conf"]`)
+	f.Add(942190, "", "", liteSpeedTriggerLineCRSSQLi)
+	f.Add(942100, "SQL Injection Attack Detected", "attack-sqli", `[file "/rules/REQUEST-949-BLOCKING-EVALUATION.conf"]`)
+	f.Add(949110, "Inbound Anomaly Score Exceeded", "anomaly-evaluation", `[file "/rules/REQUEST-942-APPLICATION-ATTACK-SQLI.conf"]`)
+	f.Add(900100, "", "", `] at [unclosed`)
+	f.Fuzz(func(t *testing.T, rule int, msg, tags, line string) {
+		baseline := classifyModSecConfidence(rule, msg, tags, "")
+		got := classifyModSecConfidence(rule, msg, tags, extractModSecRuleFile(line))
+		// File evidence may promote any class to high. It must never turn
+		// an unknown deny into low-confidence policy or demote an attack.
+		if got != baseline && got != modsecConfHigh {
+			t.Fatalf("rule file changed confidence from %v to %v: %q", baseline, got, line)
+		}
+	})
+}
+
 func FuzzDropperContentIsInert(f *testing.F) {
 	for _, head := range []string{"", "<?php // guard", "<?php # guard\r", "<?php /*", "<?php ?><?=1?>", "<?php // +AAo-echo 1;", "<?php /* \xc2\xa0 */", "<?php // =0Aecho 1;", "<?php //AAAPD9waHAgZWNobyAxOyAg"} {
 		f.Add([]byte(head))

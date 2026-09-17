@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -129,6 +130,32 @@ func TestExtractModSecRuleFile(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := extractModSecRuleFile(tc.line); got != tc.want {
 				t.Errorf("extractModSecRuleFile() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestModSecRuleFilePolicyTextCannotSuppressEscalation(t *testing.T) {
+	for _, file := range []string{
+		"anomaly.conf", "content-type.conf", "not allowed by policy.conf",
+		"REQUEST-949-BLOCKING-EVALUATION.conf", "", "[unclosed",
+	} {
+		t.Run(file, func(t *testing.T) {
+			resetModSecState()
+			t.Cleanup(resetModSecState)
+			installModSecRegistryForTest(t, map[int]string{942190: "deny"})
+			line := strings.Replace(liteSpeedTriggerLineCRSSQLi, "REQUEST-942-APPLICATION-ATTACK-SQLI.conf", file, 1)
+			counts := map[string]int{}
+			for range modsecDefaultEscalationHits {
+				for _, finding := range parseModSecLogLineDeduped(line, &config.Config{}) {
+					counts[finding.Check]++
+				}
+			}
+			if counts["modsec_block_escalation"] != 1 || counts["modsec_low_confidence_burst"] != 0 {
+				t.Fatalf("policy text in rule file suppressed escalation: %v", counts)
+			}
+			if counts["modsec_classifier_gap"] != 1 {
+				t.Fatalf("unknown rule gap count = %d, want 1", counts["modsec_classifier_gap"])
 			}
 		})
 	}
