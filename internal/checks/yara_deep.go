@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/jstaint"
 	"github.com/pidginhost/csm/internal/phptaint"
+	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yara"
@@ -95,6 +96,15 @@ func resetDeepScanCursor(db *store.DB, check string) {
 	if err := db.PutScanCursor(next); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: cursor reset: %v\n", check, err)
 	}
+}
+
+// scheduledYARADetails describes one deep-scan match. A loader is only half
+// a backdoor: the payload it pulls in lives elsewhere and survives a clean-up
+// of the matched file alone, so any non-executable file this content includes
+// is named alongside the rule.
+func scheduledYARADetails(ruleName string, content []byte) string {
+	return fmt.Sprintf("Scheduled deep scan matched YARA rule %s", ruleName) +
+		signatures.ReferencedPayloadDetail(content)
 }
 
 type yaraDeepScanEntry struct {
@@ -643,7 +653,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 					Severity:      yaraMatchSeverity(match.Meta["severity"]),
 					Check:         "yara_match_scheduled",
 					Message:       fmt.Sprintf("YARA rule match [%s]: %s", match.RuleName, path),
-					Details:       fmt.Sprintf("Scheduled deep scan matched YARA rule %s", match.RuleName),
+					Details:       scheduledYARADetails(match.RuleName, data),
 					FilePath:      path,
 					ContentSHA256: yaraSHA256,
 					DetectLogic:   ContentDetectionVersion(),

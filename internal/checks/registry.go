@@ -145,6 +145,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "obfuscated_php", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "obfuscated_php_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "php_dropper_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
+	{Name: "php_in_image_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "php_in_sensitive_dir_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "php_in_uploads_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "self_deleting_dropper_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},

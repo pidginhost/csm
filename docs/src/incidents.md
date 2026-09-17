@@ -794,6 +794,7 @@ Attribution gaps:
 | `php_config_realtime` | ignored | posture |  |
 | `php_config_scan_incomplete` | ignored | self-health |  |
 | `php_dropper_realtime` | security event |  |  |
+| `php_in_image_realtime` | security event |  |  |
 | `php_in_sensitive_dir_realtime` | security event |  |  |
 | `php_in_uploads_realtime` | security event |  |  |
 | `php_remote_taint` | security event |  |  |

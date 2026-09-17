@@ -878,6 +878,17 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
+	// Images in an account or explicitly configured document tree. A real
+	// image container is a working payload store: PHP appended to a valid
+	// PNG still opens as a picture, and a one-line include elsewhere in the
+	// site executes it. Admitting the write is what lets checkImagePayload
+	// look at the bytes; the extension only routes the event, and the
+	// verdict comes from the container magic, so a renamed payload is still
+	// caught by the other branches.
+	if fm.underAccountOrConfiguredDocRoot(path) && contenttype.IsImageExt(filepath.Ext(lower)) {
+		return true
+	}
+
 	// Credential log files - known phishing harvest filenames
 	base := filepath.Base(lower)
 	if credentialLogNames[base] {
@@ -1175,6 +1186,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	contentPath := atomicWriteContentPath(path)
 	name := filepath.Base(contentPath)
 	nameLower := strings.ToLower(name)
+	imageInHostedTree := contenttype.IsImageExt(filepath.Ext(nameLower)) && fm.underAccountOrConfiguredDocRoot(contentPath)
 
 	// Resolve process info from PID (best-effort - process may have exited)
 	procInfo := resolveProcessInfo(event.pid)
@@ -1308,7 +1320,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 					fmt.Sprintf("Size: %d", cfgStat.Size), path, procInfo)
 			}
 		}
-		return
+		if !imageInHostedTree {
+			return
+		}
 	}
 
 	// Executables in /tmp or /dev/shm - detect dropped malware/miners
@@ -1344,9 +1358,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 				}
 			}
 		}
-		// Fall through to PHP content checks below for executable PHP and
-		// source-view .phps files in /tmp.
-		if !isPHPSourceExtension(nameLower) {
+		// Hosted images still need payload checks when the configured root
+		// lives in a temporary directory, as do PHP source files anywhere.
+		if !isPHPSourceExtension(nameLower) && !imageInHostedTree {
 			return
 		}
 	}
@@ -1478,6 +1492,20 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// HTML phishing page detection (uses event fd for content, unix.Fstat for size)
 	if strings.HasSuffix(nameLower, ".html") || strings.HasSuffix(nameLower, ".htm") {
 		fm.checkHTMLPhishing(event.fd, path, procInfo)
+		return
+	}
+
+	// PHP carried inside an image file (uses event fd for content).
+	if contenttype.IsImageExt(filepath.Ext(nameLower)) {
+		// Handler-mapped images previously entered through dropperOnly and
+		// received the full PHP scan. Content admission must retain it.
+		if event.phpExecutable && fm.checkPHPContent(event.fd, path, procInfo) {
+			markDropperContentSuspicious()
+			return
+		}
+		if fm.checkImagePayload(event.fd, path, procInfo) {
+			markDropperContentSuspicious()
+		}
 		return
 	}
 
@@ -1838,6 +1866,69 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, scannedIdentity(fd))
 }
 
+// Images fitting the combined read budget are scanned in one piece so a
+// payload cannot straddle two independently evaluated windows. Larger files
+// get a head and tail window; the middle is left to the deep scan, subject
+// to thresholds.full_scan_max_file_mb.
+const (
+	imagePayloadHeadBytes = 65536
+	imagePayloadTailBytes = 65536
+)
+
+// checkImagePayload looks for executable PHP inside a file served as an image.
+// Returns true when a finding was raised.
+//
+// Two shapes reach the same verdict. A polyglot is a genuine image container
+// with PHP appended or stored in a metadata chunk: it renders in a browser,
+// passes an upload filter that trusts getimagesize, and executes the moment
+// any PHP file includes its path. A file that only wears an image name and
+// holds PHP source is the same backdoor without the disguise. Neither is
+// legitimate under a served tree, so the container is reported as context
+// rather than used as a gate.
+//
+// A PHP opening tag by itself is not evidence. Plugin screenshots quote one
+// in their description chunks, so an execution, inclusion or remote-fetch
+// construct is required alongside it.
+func (fm *FileMonitor) checkImagePayload(fd int, path, procInfo string) bool {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Size <= 0 {
+		return false
+	}
+	const readBudget = imagePayloadHeadBytes + imagePayloadTailBytes
+	headBytes := imagePayloadHeadBytes
+	if st.Size <= readBudget {
+		headBytes = int(st.Size)
+	}
+	recordReadTruncation(fd, readBudget, "image_payload")
+	head := readFromFd(fd, headBytes)
+	if len(head) == 0 {
+		return false
+	}
+	container, _ := contenttype.ImageContainer(head)
+
+	evidence, found := phpExecutableContent(head)
+	if !found && st.Size > readBudget {
+		// The container verdict came from the head, so the tail is examined
+		// for the payload alone.
+		if tail := readTailFromFd(fd, imagePayloadTailBytes); tail != nil {
+			evidence, found = phpExecutableContent(tail)
+		}
+	}
+	if !found {
+		return false
+	}
+
+	describedContainer := container
+	if describedContainer == "" {
+		describedContainer = "none (file is not a valid image)"
+	}
+	fm.sendAlertWithPath(alert.Critical, "php_in_image_realtime",
+		fmt.Sprintf("Executable PHP inside image file: %s", path),
+		fmt.Sprintf("Container: %s\nEvidence: %s\nRemediation: this path is the payload; find and remove the PHP file that includes it", describedContainer, evidence),
+		path, procInfo)
+	return true
+}
+
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:
 // brand impersonation + credential input + redirect/exfiltration.
 // Uses event fd for content read and unix.Fstat for size (TOCTOU-safe).
@@ -2119,6 +2210,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 			if !suppressed {
 				details := fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
 					m.Category, m.Description, strings.Join(m.Matched, ", "))
+				details += signatures.ReferencedPayloadDetail(data)
 				finding := alert.Finding{
 					Severity:    sev,
 					Check:       "signature_match_realtime",
@@ -2161,7 +2253,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 		if len(matches) > 0 {
 			fm.sendAlertWithPath(alert.Critical, "yara_match_realtime",
 				fmt.Sprintf("YARA rule match [%s]: %s", matches[0].RuleName, path),
-				fmt.Sprintf("Matched %d YARA rule(s)", len(matches)), path, procInfo)
+				fmt.Sprintf("Matched %d YARA rule(s)", len(matches))+signatures.ReferencedPayloadDetail(data), path, procInfo)
 			return true
 		}
 	}

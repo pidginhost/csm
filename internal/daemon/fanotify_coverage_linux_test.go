@@ -66,9 +66,13 @@ func TestIsInterestingAllBranches(t *testing.T) {
 		{"/home/a/mail/evil.php", true, "php in mail"},
 		{"/home/a/.gnupg/evil.php", true, "php in .gnupg"},
 		{"/home/a/.cagefs/evil.php", true, "php in .cagefs"},
+		// Images under a hosted tree carry payloads: a valid picture with PHP
+		// appended runs when any PHP file includes its path.
+		{"/home/a/image.jpg", true, "jpg under an account root"},
+		{"/home/a/public_html/assets/logo.png", true, "png under a document root"},
+		{"/usr/share/icons/app.png", false, "png outside hosted trees"},
 		// Uninteresting
 		{"/home/a/style.css", false, "css file"},
-		{"/home/a/image.jpg", false, "jpg file"},
 	}
 
 	for _, tc := range cases {

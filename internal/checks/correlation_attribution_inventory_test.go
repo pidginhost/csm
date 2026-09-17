@@ -110,6 +110,7 @@ var attributionEvidence = map[string]string{
 	"phishing_kit_realtime":            "TestFanotifyFindingsAttributeByPath",
 	"phishing_realtime":                "TestFanotifyFindingsAttributeByPath",
 	"php_dropper_realtime":             "TestFanotifyFindingsAttributeByPath",
+	"php_in_image_realtime":            "TestFanotifyFindingsAttributeByPath",
 	"signature_match_realtime":         "TestFanotifyFindingsAttributeByPath",
 	"yara_match_realtime":              "TestYARARealtimeFindingAttributesByPath",
 	"self_deleting_dropper_realtime":   "TestDropperEngineFindingAttributesByPath",

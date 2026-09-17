@@ -61,6 +61,8 @@ package-warning dismissal does not dismiss them.
 - SEO spam: gambling/togel dofollow link injection in PHP/HTML files
 - Phishing pages and credential harvest logs
 - Phishing kit ZIP archives
+- PHP carried inside a file served as an image. Image writes under an account or configured document root are inspected, including hosted `.config` directories and roots located in temporary directories. Images up to 128 KiB are inspected in one piece; larger files get a 64 KiB head and a 64 KiB tail scan. Payloads outside those windows require a deep scan, subject to `thresholds.full_scan_max_file_mb`. A PHP opening tag alone is not enough -- a screenshot quoting one in its description chunk stays quiet -- and a file that only wears an image name while holding PHP source is reported the same way. Finding: `php_in_image_realtime`.
+- A PHP file that includes or requires an image, archive or other non-executable file while also reading request input. That pairing is the loader half of the technique above: the payload lives in the picture and the one-line loader elsewhere. Literal targets ending an include statement, concatenated paths, paths held in a local, encoded paths and suppressed `@include` statements match in either statement order. Ordinary templating that pulls in `.html`, `.tpl`, `.txt` or `.svg` partials is outside the extension-based rule. Encoded targets still count because the source hides their extension.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
@@ -68,6 +70,15 @@ Completed upload execution probes remain tracked until the deletion check so
 combined or out-of-order create and close-write events preserve completion
 evidence. A probe without a completed write, or with earlier unsafe or
 uncertain content, remains reportable.
+Image writes use the existing notification-only fanotify instance, its 16,384
+event queue and 4-16 analyzer workers. They create no permission-event holds
+and do not enter the mail scanner. Thumbnail and WebP bursts fill the same
+queue as other writes: excess events are closed immediately and their parent
+directories enter the existing capped recovery tracker. Recovery rescans
+recent surviving files; kernel queue loss and exhausted recovery coverage
+still rely on the next deep scan. Queue health and content-read truncation
+remain visible through the existing metrics. Mail permission holds retain
+their separate hold budget and watchdog.
 
 Both the real-time and the scheduled WordPress admin-creation signature
 require an administrator role token plus literal or request-derived
