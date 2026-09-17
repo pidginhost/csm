@@ -44,15 +44,15 @@ func TestSupervisorScanAvailabilityAcrossRestart(t *testing.T) {
 		if pid := sup.ChildPID(); pid != 0 {
 			t.Errorf("crash callback still reports child %d", pid)
 		}
-		if _, err := sup.ScanBytesChecked([]byte("payload")); err == nil {
+		if _, scanErr := sup.ScanBytesChecked([]byte("payload")); scanErr == nil {
 			t.Error("byte scan succeeded during the crash callback")
 		}
-		if _, err := sup.ScanFileChecked("/unused", 1024); err == nil {
+		if _, scanErr := sup.ScanFileChecked("/unused", 1024); scanErr == nil {
 			t.Error("file scan succeeded during the crash callback")
 		}
 		close(crashed)
 	}
-	if err := sup.Start(context.Background()); err != nil {
+	if err = sup.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = sup.Stop() }()
