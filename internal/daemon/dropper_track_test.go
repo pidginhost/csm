@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
 func TestDropperDocrootFor(t *testing.T) {
@@ -1078,5 +1079,53 @@ func TestDropperTrackerCapBoundsMemory(t *testing.T) {
 	}
 	if tr.overflowDropped() != 2 {
 		t.Errorf("overflowDropped = %d, want 2", tr.overflowDropped())
+	}
+}
+
+// Official release evidence only covers the version file a core update reads
+// from the upgrade directory, and only a data snapshot that stayed clean.
+func TestDropperOfficialVersionProbeScope(t *testing.T) {
+	const docroot = "/home/exampleuser/public_html"
+	eligible := func() dropperCandidate {
+		c := freshDropperCandidate(time.Unix(1_770_000_000, 0))
+		c.Docroot = docroot
+		c.Path = docroot + "/wp-content/upgrade/version-current.php"
+		c.WPInstallData = true
+		c.WPCoreRelease = &wpcheck.Verification{Kind: wpcheck.KindCore, Version: "7.1", Locale: "ro_RO"}
+		return c
+	}
+	verified := dropperProbe{Conclusive: true, OfficialWPCoreFile: true}
+	if got := assessDropper(eligible(), verified); got != dropperBenign {
+		t.Fatalf("verified version probe = %v, want benign", got)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*dropperCandidate, *dropperProbe)
+	}{
+		{"not verified", func(_ *dropperCandidate, p *dropperProbe) { p.OfficialWPCoreFile = false }},
+		{"no release", func(c *dropperCandidate, _ *dropperProbe) { c.WPCoreRelease = nil }},
+		{"translation path", func(c *dropperCandidate, _ *dropperProbe) {
+			c.Path = docroot + "/wp-content/upgrade/stage/version-current.l10n.php"
+		}},
+		{"nested version name", func(c *dropperCandidate, _ *dropperProbe) {
+			c.Path = docroot + "/wp-content/upgrade/stage/version-current.php"
+		}},
+		{"uploads", func(c *dropperCandidate, _ *dropperProbe) {
+			c.Path = docroot + "/wp-content/uploads/version-current.php"
+		}},
+		{"not data", func(c *dropperCandidate, _ *dropperProbe) { c.WPInstallData = false }},
+		{"earlier unsafe snapshot", func(c *dropperCandidate, _ *dropperProbe) { c.WPInstallUnsafe = true }},
+		{"no digest", func(c *dropperCandidate, _ *dropperProbe) { c.DigestKnown = false }},
+		{"write pending", func(c *dropperCandidate, _ *dropperProbe) { c.WritePending = true }},
+		{"content verdict", func(c *dropperCandidate, _ *dropperProbe) { c.ContentSuspicious = true }},
+		{"executable", func(c *dropperCandidate, _ *dropperProbe) { c.Mode = 0o100755 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, p := eligible(), verified
+			tc.mutate(&c, &p)
+			if got := assessDropper(c, p); got == dropperBenign {
+				t.Fatal("official release evidence cleared an ineligible candidate")
+			}
+		})
 	}
 }

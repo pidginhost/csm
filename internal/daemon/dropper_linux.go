@@ -4,7 +4,9 @@ package daemon
 
 import (
 	"bytes"
+	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -21,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
 // dropperDigestMax bounds how many bytes the admission hash covers. A
@@ -31,11 +34,6 @@ import (
 const dropperDigestMax = 8 << 20
 
 const dropperDigestChunk = 64 << 10
-
-// dropperHeadSnapshotAttempts bounds how many times the head read is retried
-// against a moved stat before the content is called unknown. Two attempts
-// settle a single metadata change; the third covers one landing in the retry.
-const dropperHeadSnapshotAttempts = 3
 
 const dropperPHPHandlerCacheMax = 4096
 
@@ -215,22 +213,31 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	if parent, err := statDropperCandidateParent(c.Path, c.Device, c.Inode); err == nil {
 		c.Parent = parent
 	}
-	var stable bool
-	c.Head, c.Size, stable = readDropperHead(event.fd, st, readFromFd)
-	c.ContentMayExecute = !stable
+	wpCopy := len(wpUpgradeCopyDestinations(c.Path, c.Docroot)) > 0
+	read, limit := readFromFd, dropperTrackedHeadMax
+	if wpCopy {
+		read, limit = readCompleteFromFd, dropperDigestMax
+	}
+	// The data proof and retained head must share the opening stat. Separate
+	// head/body snapshots leave a gap in which a writer can replace a payload.
+	body, size, stable := readDropperSnapshot(event.fd, st, limit, read)
+	c.Head, c.Size = body, size
+	if len(c.Head) > dropperTrackedHeadMax {
+		c.Head = bytes.Clone(c.Head[:dropperTrackedHeadMax])
+	}
+	c.ContentUnsettled = !stable
 	// Copy exceptions must check even CREATE snapshots: a benign CLOSE_WRITE
 	// cannot erase an earlier payload. Blank snapshots carry no such evidence.
-	wpCopy := len(wpUpgradeCopyDestinations(c.Path, c.Docroot)) > 0
 	if wpCopy && (!stable || !dropperContentIsInert(c.Head, c.Size)) {
 		// Keep only the proof and hash, not a large translation body in each
 		// tracker entry. Both must describe the same complete snapshot.
-		body := readCompleteFromFd(event.fd, dropperDigestMax)
-		var after unix.Stat_t
-		if body != nil && stable && bytes.HasPrefix(body, c.Head) && int64(len(body)) == c.Size &&
-			unix.Fstat(event.fd, &after) == nil && after.Mode == st.Mode {
+		if body != nil && stable && int64(len(body)) == c.Size {
 			c.Digest, c.DigestKnown = sha256.Sum256(body), true
 			if filepath.Base(c.Path) == "version-current.php" {
 				c.WPInstallData = checks.IsWPVersionDataBytesComplete(body, true)
+				if c.WPInstallData {
+					c.WPCoreRelease = fm.wpCoreReleaseOf(body)
+				}
 			} else {
 				c.WPInstallData = checks.IsWPTranslationCacheBytesComplete(body, true)
 			}
@@ -257,48 +264,51 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	return &c
 }
 
-// readDropperHead snapshots the head bytes together with proof that nothing
+// readDropperSnapshot reads bytes together with proof that nothing
 // changed the file while they were read. Size from before the read cannot
 // prove completeness if another writer changed the file in the meantime, even
 // when the retained head is empty.
 //
-// The stat pair also moves on a metadata-only change: unlink and rename
-// bump ctime without touching a byte. Plugin scratch files are
-// removed within seconds of being written, so that unlink lands inside the
-// stat window often enough to mark a zero-byte guard file "content unknown"
-// permanently. Only ctime changes can be retried: a quiet interval after a
-// write cannot erase evidence of that write, and a mode change invalidates
-// the caller's decision about which interpreter may execute the file.
-// Size is from the stat immediately before the returned head was read. It
-// proves completeness only when stable is true.
-func readDropperHead(fd int, before unix.Stat_t, read func(int, int) []byte) ([]byte, int64, bool) {
-	var head []byte
-	current := before
-	for attempt := 0; attempt < dropperHeadSnapshotAttempts; attempt++ {
-		previousHead := head
-		head = read(fd, dropperTrackedHeadMax)
-		var after unix.Stat_t
-		if unix.Fstat(fd, &after) != nil {
-			return head, current.Size, false
-		}
-		if current.Dev != after.Dev || current.Ino != after.Ino ||
-			current.Size != after.Size || current.Mtim != after.Mtim || current.Mode != after.Mode ||
-			(attempt > 0 && !bytes.Equal(previousHead, head)) {
-			return head, current.Size, false
-		}
-		if sameReadSnapshot(current, after) {
-			return head, after.Size, true
-		}
-		current = after
+// Even a ctime-only change is uncertain: a writer can restore bytes and
+// mtime, leaving the same evidence as a harmless unlink or rename. A later
+// quiet read cannot establish what executed in that interval.
+func readDropperSnapshot(fd int, before unix.Stat_t, limit int, read func(int, int) []byte) ([]byte, int64, bool) {
+	body := read(fd, limit)
+	var after unix.Stat_t
+	stable := unix.Fstat(fd, &after) == nil && sameReadSnapshot(before, after) && before.Mode == after.Mode
+	return body, before.Size, stable
+}
+
+func (fm *FileMonitor) newDropperFSProbe() *dropperFSProbe {
+	return &dropperFSProbe{quarantines: fm.dropperQuarantines, coreChecksums: fm.wpCache}
+}
+
+// wpCoreReleaseOf names the release a version-probe data snapshot declares.
+// Asking the cache now starts a missing checksum download in the background,
+// so the deletion probe normally finds it cached; the analyzer never waits.
+func (fm *FileMonitor) wpCoreReleaseOf(body []byte) *wpcheck.Verification {
+	if fm.wpCache == nil {
+		return nil
 	}
-	return head, current.Size, false
+	version, locale, err := wpcheck.ParseVersionContent(body)
+	if err != nil {
+		return nil
+	}
+	// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
+	sum := md5.Sum(body)
+	v := &wpcheck.Verification{
+		Kind: wpcheck.KindCore, Version: version, Locale: locale,
+		Rel: "wp-includes/version.php", Digest: hex.EncodeToString(sum[:]), Staged: true,
+	}
+	fm.wpCache.Verify(*v)
+	return v
 }
 
 // dropperProbeLoop probes overdue candidates for deletion and flushes findings.
 // It also refreshes the cached docroot set so account changes are picked up.
 func (fm *FileMonitor) dropperProbeLoop() {
 	defer fm.wg.Done()
-	prober := &dropperFSProbe{quarantines: fm.dropperQuarantines}
+	prober := fm.newDropperFSProbe()
 	ticker := time.NewTicker(dropperProbeInterval(fm.dropper.ttl))
 	defer ticker.Stop()
 	refresh := time.NewTicker(5 * time.Minute)

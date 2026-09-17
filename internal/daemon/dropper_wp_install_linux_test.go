@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
 const testL10nCache = "<?php\nreturn ['x-generator'=>'GlotPress/4.1.0','translation-revision-date'=>'2026-01-01 00:00:00+0000','plural-forms'=>'nplurals=3; plural=(n==1 ? 0 : 2);','messages'=>['Settings'=>'Setari','Save'=>'Salveaza']];\n"
@@ -72,7 +75,7 @@ func (r *wpInstallRun) observe(t *testing.T, path string, beforeObserve func()) 
 
 func (r *wpInstallRun) probeAndFlush() {
 	probeAt := time.Now().Add(r.ttl + time.Second)
-	prober := &dropperFSProbe{quarantines: r.fm.dropperQuarantines}
+	prober := r.fm.newDropperFSProbe()
 	r.fm.dropper.probeStep(probeAt, prober, probeAt)
 	flushAt := probeAt.Add(dropperGraceWindow + time.Second)
 	r.fm.dropper.probeStep(flushAt, prober, flushAt)
@@ -447,6 +450,202 @@ func TestDropperInstallDestinationDisappearsDuringDigest(t *testing.T) {
 			if (err != nil) != wantErr {
 				t.Fatalf("err=%v, want inconclusive=%v", err, wantErr)
 			}
+		})
+	}
+}
+
+func TestDropperUploadExecutionProbeCopy(t *testing.T) {
+	for _, body := range rssslProbeBodies {
+		docroot := t.TempDir()
+		probe := filepath.Join(docroot, "wp-content", "uploads", "code-execution.php")
+		writeWPInstallFile(t, probe, body)
+		r := newWPInstallRun(t, docroot)
+		r.observeCloseWrite(t, probe)
+		if err := os.Remove(probe); err != nil {
+			t.Fatal(err)
+		}
+		r.probeAndFlush()
+		if len(*r.alerts) != 0 {
+			t.Fatalf("upload execution test script raised %+v, want no finding", *r.alerts)
+		}
+	}
+}
+
+func TestDropperUploadExecutionProbeEventOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		masks []uint64
+	}{
+		{"create then close", []uint64{FAN_CREATE, FAN_CLOSE_WRITE}},
+		{"close then late create", []uint64{FAN_CLOSE_WRITE, FAN_CREATE}},
+		{"create then combined close", []uint64{FAN_CREATE, FAN_CREATE | FAN_CLOSE_WRITE}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, body := range rssslProbeBodies {
+				docroot := t.TempDir()
+				path := filepath.Join(docroot, "wp-content", "uploads", "code-execution.php")
+				writeWPInstallFile(t, path, body)
+				f, err := os.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = f.Close() }()
+				r := newWPInstallRun(t, docroot)
+				for _, mask := range tc.masks {
+					if c := r.fm.observeDropperCandidate(fileEvent{
+						path: path, fd: int(f.Fd()), pid: 4242, mask: mask,
+					}, ""); c == nil {
+						t.Fatal("probe event was not observed")
+					}
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				r.probeAndFlush()
+				if len(*r.alerts) != 0 {
+					t.Fatalf("completed upload execution probe raised %+v", *r.alerts)
+				}
+			}
+		})
+	}
+}
+
+func TestDropperUploadExecutionProbeNameStillCritical(t *testing.T) {
+	for name, writes := range map[string][]string{
+		"payload":                {testDropperPHP},
+		"probe with payload":     {rssslProbeBodies[1] + testDropperPHP},
+		"payload rewritten away": {testDropperPHP, rssslProbeBodies[1]},
+	} {
+		t.Run(name, func(t *testing.T) {
+			docroot := t.TempDir()
+			probe := filepath.Join(docroot, "wp-content", "uploads", "code-execution.php")
+			r := newWPInstallRun(t, docroot)
+			for _, body := range writes {
+				writeWPInstallFile(t, probe, body)
+				r.observeCloseWrite(t, probe)
+			}
+			if err := os.Remove(probe); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			assertSingleCriticalDropper(t, *r.alerts, probe)
+		})
+	}
+}
+
+// officialCoreChecksums returns a checksum cache that holds the given
+// wordpress.org manifests and never reaches the network.
+func officialCoreChecksums(t *testing.T, manifests map[[2]string]string) *wpcheck.Cache {
+	t.Helper()
+	cache := wpcheck.NewCache(t.TempDir())
+	stop := make(chan struct{})
+	close(stop)
+	cache.SetStopCh(stop)
+	for release, versionFile := range manifests {
+		// #nosec G401 -- mirrors the MD5 digests wordpress.org publishes
+		sum := md5.Sum([]byte(versionFile))
+		checksums := map[string]string{
+			"wp-includes/version.php": hex.EncodeToString(sum[:]),
+			"wp-load.php":             "0123456789abcdef0123456789abcdef",
+		}
+		if err := cache.PersistChecksums(release[0], release[1], []byte(`{"checksums":{}}`), checksums); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return cache
+}
+
+// A core update that stops after reading the new version file, for example
+// because the host fails its PHP or database requirement, leaves the old
+// release installed. The deleted probe is still the official file of the
+// release it names.
+func TestDropperCoreVersionProbeOfAbortedUpdate(t *testing.T) {
+	docroot := t.TempDir()
+	probe := filepath.Join(docroot, "wp-content", "upgrade", "version-current.php")
+	writeWPInstallFile(t, filepath.Join(docroot, "wp-includes", "version.php"), "<?php\n$wp_version = '6.9.7';\n")
+	writeWPInstallFile(t, probe, testVersionPHP)
+
+	r := newWPInstallRun(t, docroot)
+	r.fm.wpCache = officialCoreChecksums(t, map[[2]string]string{{"7.1", "ro_RO"}: testVersionPHP})
+	r.observe(t, probe, nil)
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	if len(*r.alerts) != 0 {
+		t.Fatalf("official version file of an aborted update raised %+v, want no finding", *r.alerts)
+	}
+}
+
+func TestDropperCoreVersionProbeRejectsOversizedRelease(t *testing.T) {
+	docroot := t.TempDir()
+	path := filepath.Join(docroot, "wp-content", "upgrade", "version-current.php")
+	body := "<?php $wp_version = '" + strings.Repeat("9", 1<<20) + "';"
+	writeWPInstallFile(t, path, body)
+	r := newWPInstallRun(t, docroot)
+	lookups := 0
+	r.fm.wpCache = &fakeWPVerifier{verify: func(wpcheck.Verification) wpcheck.Verdict {
+		lookups++
+		return wpcheck.VerdictPending
+	}}
+	c := r.observe(t, path, nil)
+	if !c.WPInstallData {
+		t.Fatal("fixture must reach release parsing as complete version data")
+	}
+	if c.WPCoreRelease != nil || lookups != 0 {
+		t.Fatal("oversized release retained or sent to the checksum cache")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	assertSingleCriticalDropper(t, *r.alerts, path)
+}
+
+func TestDropperCoreVersionProbeWithoutOfficialMatchStillCritical(t *testing.T) {
+	const official = "<?php\n$wp_version = '7.1';\n$wp_local_package = 'ro_RO';\n"
+	for _, tc := range []struct {
+		name       string
+		writes     []string
+		manifests  map[[2]string]string
+		executable bool
+		noCache    bool
+	}{
+		{name: "checksums not available", writes: []string{testVersionPHP}},
+		{name: "no checksum source", writes: []string{testVersionPHP}, noCache: true},
+		{name: "differs from official file", writes: []string{testVersionPHP},
+			manifests: map[[2]string]string{{"7.1", "ro_RO"}: official}},
+		{name: "official file of another locale", writes: []string{testVersionPHP},
+			manifests: map[[2]string]string{{"7.1", "en_US"}: testVersionPHP}},
+		{name: "code after version data", writes: []string{testVersionPHP + "system($_POST['c']);"},
+			manifests: map[[2]string]string{{"7.1", "ro_RO"}: testVersionPHP + "system($_POST['c']);"}},
+		{name: "executable mode", writes: []string{testVersionPHP}, executable: true,
+			manifests: map[[2]string]string{{"7.1", "ro_RO"}: testVersionPHP}},
+		{name: "payload rewritten to official file", writes: []string{testDropperPHP, testVersionPHP},
+			manifests: map[[2]string]string{{"7.1", "ro_RO"}: testVersionPHP}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			docroot := t.TempDir()
+			probe := filepath.Join(docroot, "wp-content", "upgrade", "version-current.php")
+			writeWPInstallFile(t, filepath.Join(docroot, "wp-includes", "version.php"), "<?php\n$wp_version = '6.9.7';\n")
+			r := newWPInstallRun(t, docroot)
+			if !tc.noCache {
+				r.fm.wpCache = officialCoreChecksums(t, tc.manifests)
+			}
+			for _, body := range tc.writes {
+				writeWPInstallFile(t, probe, body)
+				if tc.executable {
+					if err := os.Chmod(probe, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				r.observe(t, probe, nil)
+			}
+			if err := os.Remove(probe); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			assertSingleCriticalDropper(t, *r.alerts, probe)
 		})
 	}
 }

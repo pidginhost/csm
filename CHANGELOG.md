@@ -29,6 +29,8 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - Re-uploading the same identified WordPress plugin or theme release that cannot be checked against wordpress.org follows the normal daily reminder. A different version or site, or a package that cannot be fully identified, still alerts, and content findings remain separate.
 - WordPress translation and core updates no longer raise critical self-deleting file alerts when the updater copies a staged file into place and removes the original, including when file events arrive out of order. Only complete translation or version data qualifies, and a file removed from the same staging paths without an identical installed copy is still reported.
 - Scan coverage warnings and check crash alerts no longer send a new email on every scan cycle when only their counts or crash details change; an ongoing condition now follows the normal daily reminder.
+- Really Simple Security upload execution probes no longer raise critical self-deleting file alerts, including when file events arrive out of order or combined. Other content under the same name is still reported.
+- A WordPress core update that stops after reading its new version file no longer raises a critical self-deleting file alert when that file matches the official release it names, while an unverified file is still reported. Checksum lookups are bounded, and a file changed while being read stays reported.
 
 ## [3.39.0] - 2026-09-16
 

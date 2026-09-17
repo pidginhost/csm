@@ -332,3 +332,74 @@ func TestDropperInertPHPDataFileGateDoesNotCoverExecutables(t *testing.T) {
 		t.Fatal("executable script exempted using PHP compilation rules")
 	}
 }
+
+// A stable read cannot prove what ran during an earlier raced read. Keep
+// uncertainty regardless of the order analyzer workers deliver snapshots.
+func TestDropperInertUnsettledSnapshotOrdering(t *testing.T) {
+	base := time.Unix(1_770_000_000, 0)
+	data := dropperCandidate{
+		Path:       "/home/exampleuser/public_html/wp-content/wflogs/attack-data.php",
+		Docroot:    "/home/exampleuser/public_html",
+		Birth:      base.Add(-time.Second),
+		BirthKnown: true,
+		Device:     41,
+		Inode:      7003,
+		Mode:       0o100600,
+		Size:       21927,
+		PID:        4242,
+		Head:       []byte(wordfenceWAFHead),
+	}
+	type snapshot struct {
+		raced bool
+		read  time.Duration // read time after base
+	}
+	for _, tc := range []struct {
+		name string
+		// Snapshots in the order the analyzer workers deliver them.
+		delivered []snapshot
+		want      dropperVerdict
+	}{
+		{"complete read after race", []snapshot{{true, 0}, {false, time.Second}}, dropperDemotedReplaced},
+		{"race after complete read", []snapshot{{false, 0}, {true, time.Second}}, dropperDemotedReplaced},
+		{"older complete read delivered late", []snapshot{{true, time.Second}, {false, 0}}, dropperDemotedReplaced},
+		{"older race delivered late", []snapshot{{false, time.Second}, {true, 0}}, dropperDemotedReplaced},
+		{"race between complete reads", []snapshot{{false, 0}, {true, time.Second}, {false, 2 * time.Second}}, dropperDemotedReplaced},
+		{"late intermediate read", []snapshot{{false, 0}, {true, 2 * time.Second}, {false, time.Second}}, dropperDemotedReplaced},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := newDropperTracker(dropperTestTTL)
+			for i, s := range tc.delivered {
+				c := data
+				c.ContentUnsettled = s.raced
+				c.Observed = base.Add(s.read)
+				if i == 0 && !tr.Observe(c) || i > 0 && !tr.Refresh(c) {
+					t.Fatalf("snapshot %d was not merged", i)
+				}
+			}
+			due := tr.Due(base.Add(time.Hour))
+			if len(due) != 1 {
+				t.Fatalf("got %d candidates, want 1", len(due))
+			}
+			if got := assessDropper(due[0], dropperProbe{Conclusive: true}); got != dropperSuspect {
+				t.Fatalf("raced file deletion = %v, want suspect", got)
+			}
+			successor := dropperFileState{Path: data.Path, Device: data.Device, Inode: data.Inode + 1,
+				IsRegular: true, BirthKnown: true, Birth: base.Add(time.Hour)}
+			if got := assessDropper(due[0], dropperProbe{Conclusive: true, AtPath: &successor}); got != tc.want {
+				t.Fatalf("verdict = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDropperInertUnsettledSnapshotAdmitted(t *testing.T) {
+	c := inertTestCandidate()
+	c.Path = "/home/exampleuser/public_html/wp-content/wflogs/attack-data.php"
+	c.Head = []byte(wordfenceWAFHead)
+	c.Size = int64(len(c.Head))
+	c.ContentUnsettled = true
+	e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
+	if !e.admit(c) {
+		t.Fatal("snapshot that raced a writer was exempted as inert")
+	}
+}

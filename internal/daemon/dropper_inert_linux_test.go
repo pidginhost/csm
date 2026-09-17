@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -26,7 +27,7 @@ func TestDropperInertReadRejectsConcurrentGrowth(t *testing.T) {
 	if err := unix.Fstat(fd, &before); err != nil {
 		t.Fatal(err)
 	}
-	head, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+	head, _, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
 		head := readFromFd(fd, maxBytes)
 		if _, err := f.WriteString("<?php echo 1;"); err != nil {
 			t.Fatal(err)
@@ -35,6 +36,79 @@ func TestDropperInertReadRejectsConcurrentGrowth(t *testing.T) {
 	})
 	if stable {
 		t.Fatalf("prefix of a growing file accepted as a stable snapshot: head=%q", head)
+	}
+}
+
+// A writer can restore both bytes and mtime after executing transient code.
+// Even unlink's ctime change cannot prove that no write occurred in the same
+// interval; accepting a quiet retry would erase the only remaining evidence.
+func TestDropperHeadRejectsRestoredContentAndMtime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "version-current.php")
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(testVersionPHP); err != nil {
+		t.Fatal(err)
+	}
+	fd := int(f.Fd())
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	_, _, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
+		head := readFromFd(fd, maxBytes)
+		reads++
+		if reads == 1 {
+			if _, err := f.WriteAt([]byte(testDropperPHP), 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteAt([]byte(testVersionPHP), 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path, time.Unix(before.Atim.Sec, before.Atim.Nsec), time.Unix(before.Mtim.Sec, before.Mtim.Nsec)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return head
+	})
+	if stable {
+		t.Fatal("restoring bytes and mtime hid a write behind the unlink")
+	}
+}
+
+// Whole-file proof must still cover changes after the observation's opening
+// stat, even if the inner complete reader finds a quiet interval.
+func TestDropperSnapshotBindsCompleteReadToOpeningStat(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "version-*.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(testDropperPHP); err != nil {
+		t.Fatal(err)
+	}
+	fd := int(f.Fd())
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		t.Fatal(err)
+	}
+	body, _, stable := readDropperSnapshot(fd, before, dropperDigestMax, func(fd, maxBytes int) []byte {
+		if _, err := f.WriteAt([]byte(testVersionPHP), 0); err != nil {
+			t.Fatal(err)
+		}
+		return readCompleteFromFd(fd, maxBytes)
+	})
+	if string(body) != testVersionPHP {
+		t.Fatal("fixture did not produce a complete benign rewrite")
+	}
+	if stable {
+		t.Fatal("complete read erased evidence from the opening stat")
 	}
 }
 
@@ -131,52 +205,40 @@ func TestDropperInertRefreshDoesNotForgetCode(t *testing.T) {
 	}
 }
 
-// The plugin temp-file false positive: WP All Import recreates a zero-byte
-// index.php guard in a scratch directory roughly once a second and removes
-// the whole directory again. The unlink bumps the inode's ctime, so when it
-// lands between the two stats that bracket the head read the snapshot looks
-// racy even though no byte was ever written. Marking such a candidate
-// "content may execute" is sticky, so the empty-guard gate could never fire
-// and every one of those files was reported.
-func TestDropperInertHeadSnapshotSurvivesMetadataOnlyChange(t *testing.T) {
+// Rename and unlink change ctime. They cannot prove that no writer also
+// replaced and restored the content during the same read interval.
+func TestDropperSnapshotRetainsMetadataUncertainty(t *testing.T) {
 	for _, content := range []string{"", wordfenceWAFHead} {
-		for _, changes := range []int{1, 2} {
-			t.Run(fmt.Sprintf("bytes=%d/changes=%d", len(content), changes), func(t *testing.T) {
+		for _, operation := range []string{"rename", "unlink"} {
+			t.Run(fmt.Sprintf("bytes=%d/%s", len(content), operation), func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "index.php")
-				f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				f, err := os.Open(path)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer func() { _ = f.Close() }()
-				if _, err := f.WriteString(content); err != nil {
-					t.Fatal(err)
-				}
 				fd := int(f.Fd())
 				var before unix.Stat_t
-				if err := unix.Fstat(fd, &before); err != nil {
+				if err = unix.Fstat(fd, &before); err != nil {
 					t.Fatal(err)
 				}
-				reads := 0
-				head, size, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+				head, size, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
 					got := readFromFd(fd, maxBytes)
-					reads++
-					if reads < changes {
-						if err := os.Rename(path, path+".moved"); err != nil {
-							t.Fatal(err)
-						}
-						path += ".moved"
-					} else if reads == changes {
-						if err := os.Remove(path); err != nil {
-							t.Fatal(err)
-						}
+					if operation == "rename" {
+						err = os.Rename(path, path+".moved")
+					} else {
+						err = os.Remove(path)
+					}
+					if err != nil {
+						t.Fatal(err)
 					}
 					return got
 				})
-				if reads != changes+1 {
-					t.Fatalf("metadata changes were not retried: reads=%d", reads)
-				}
-				if !stable || string(head) != content || size != int64(len(content)) {
-					t.Fatalf("metadata change poisoned the snapshot: stable=%v head=%q size=%d", stable, head, size)
+				if stable || string(head) != content || size != int64(len(content)) {
+					t.Fatalf("metadata uncertainty lost: stable=%v size=%d", stable, size)
 				}
 			})
 		}
@@ -197,7 +259,7 @@ func TestDropperInertHeadSnapshotStaysUnstableWhileWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	reads := 0
-	_, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+	_, _, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
 		got := readFromFd(fd, maxBytes)
 		reads++
 		if _, err := f.WriteString("<?php echo 1;"); err != nil {
@@ -231,7 +293,7 @@ func TestDropperInertHeadSnapshotRetainsWriteEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			reads := 0
-			_, _, stable := readDropperHead(fd, before, func(fd, maxBytes int) []byte {
+			_, _, stable := readDropperSnapshot(fd, before, dropperTrackedHeadMax, func(fd, maxBytes int) []byte {
 				head := readFromFd(fd, maxBytes)
 				reads++
 				if reads == 1 {
@@ -329,4 +391,157 @@ func TestDropperInertPHPDataFileSignatureWins(t *testing.T) {
 	if len(due) != 1 || !due[0].ContentSuspicious || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
 		t.Fatalf("signature did not override the PHP exemption: %+v", due)
 	}
+}
+
+// wafAttackDataBody is shaped like a WAF attack log: a terminator header, a
+// signature and a binary row table the PHP compiler never reaches.
+var wafAttackDataBody = "<?php exit('Access denied'); __halt_compiler(); ?>\nwfWAF" +
+	strings.Repeat("\x00\x01\x7f\xfe", 512)
+
+// observeDuringConcurrentWrite keeps a second writer resizing path while the
+// analyzer snapshots it, the way concurrent requests append rows to a shared
+// WAF log while another request closes its handle. It returns once a snapshot
+// raced that writer and the writer has stopped.
+func observeDuringConcurrentWrite(t *testing.T, r *wpInstallRun, path string, body string) {
+	t.Helper()
+	w, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		chunk := []byte("\x00\x02\x7f\xfd")
+		for {
+			select {
+			case <-stop:
+				done <- w.Truncate(int64(len(body)))
+				return
+			default:
+			}
+			if _, err := w.WriteAt(chunk, int64(len(body))); err != nil {
+				done <- err
+				return
+			}
+			if err := w.Truncate(int64(len(body))); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	raced := false
+	deadline := time.Now().Add(10 * time.Second)
+	for !raced && time.Now().Before(deadline) {
+		r.observeCloseWrite(t, path)
+		raced = r.fm.dropper.tr.trackedCount() == 1
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !raced {
+		t.Fatal("no snapshot raced the concurrent writer")
+	}
+}
+
+func (r *wpInstallRun) observeCloseWrite(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	r.fm.observeDropperCandidate(fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, "pid=4242 cmd=lsphp uid=1000")
+}
+
+func replaceAtomically(t *testing.T, path, body string) {
+	t.Helper()
+	tmp := filepath.Join(filepath.Dir(path), "attack.tmp.example")
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Code can run between a raced read and a complete harmless rewrite. The
+// later close cannot rule that out, even when the retained bytes look inert.
+func TestDropperWAFLogRewriteAfterConcurrentWriteStillReported(t *testing.T) {
+	for _, replaced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replaced=%v", replaced), func(t *testing.T) {
+			docroot := t.TempDir()
+			path := filepath.Join(docroot, "wp-content", "wflogs", "attack-data.php")
+			writeWPInstallFile(t, path, wafAttackDataBody)
+			r := newWPInstallRun(t, docroot)
+			r.observeCloseWrite(t, path)
+			if r.fm.dropper.tr.trackedCount() != 0 {
+				t.Fatal("test must start from an exempt data file")
+			}
+			observeDuringConcurrentWrite(t, r, path, wafAttackDataBody)
+			// Delayed close-write analysis can read only the restored header,
+			// even if an earlier write exposed code.
+			if err := os.WriteFile(path, []byte(testDropperPHP), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(wafAttackDataBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r.observeCloseWrite(t, path)
+			want := alert.Critical
+			if replaced {
+				replaceAtomically(t, path, wafAttackDataBody)
+				want = alert.Warning
+			} else if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			if got := *r.alerts; len(got) != 1 || got[0].sev != want || got[0].path != path {
+				t.Fatalf("raced rewrite findings = %+v, want one %v", got, want)
+			}
+		})
+	}
+}
+
+// Without a later complete snapshot the raced bytes stay unknown.
+func TestDropperWAFLogRacedSnapshotAloneStillReported(t *testing.T) {
+	for _, replaced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replaced=%v", replaced), func(t *testing.T) {
+			docroot := t.TempDir()
+			path := filepath.Join(docroot, "wp-content", "wflogs", "attack-data.php")
+			writeWPInstallFile(t, path, wafAttackDataBody)
+			r := newWPInstallRun(t, docroot)
+			observeDuringConcurrentWrite(t, r, path, wafAttackDataBody)
+			want := alert.Critical
+			if replaced {
+				replaceAtomically(t, path, wafAttackDataBody)
+				want = alert.Warning
+			} else if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			if got := *r.alerts; len(got) != 1 || got[0].sev != want || got[0].path != path {
+				t.Fatalf("raced snapshot findings = %+v, want one %v", got, want)
+			}
+		})
+	}
+}
+
+// Code seen in any snapshot outlives a later complete data snapshot.
+func TestDropperWAFLogNameWithCodeStillCritical(t *testing.T) {
+	docroot := t.TempDir()
+	path := filepath.Join(docroot, "wp-content", "wflogs", "attack-data.php")
+	writeWPInstallFile(t, path, testDropperPHP)
+	r := newWPInstallRun(t, docroot)
+	r.observeCloseWrite(t, path)
+	if err := os.WriteFile(path, []byte(wafAttackDataBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.observeCloseWrite(t, path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	assertSingleCriticalDropper(t, *r.alerts, path)
 }

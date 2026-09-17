@@ -19,6 +19,9 @@ type Cache struct {
 	pluginChecksums map[string]map[string]string // plugins: "<slug>:<version>" -> relPath -> SHA256
 	roots           map[string]rootEntry
 	fetching        map[string]bool
+	// Retain admission times after completion so fast responses and repeated
+	// misses cannot turn tenant-written release names into unlimited fetches.
+	coreFetchAfter map[string]time.Time
 
 	// pluginNotFoundUntil records slug+version pairs that wordpress.org
 	// returned 404 for, paired with the absolute time at which the
@@ -48,6 +51,7 @@ func NewCache(statePath string) *Cache {
 		pluginChecksums:     make(map[string]map[string]string),
 		roots:               make(map[string]rootEntry),
 		fetching:            make(map[string]bool),
+		coreFetchAfter:      make(map[string]time.Time),
 		pluginNotFoundUntil: make(map[string]time.Time),
 	}
 	c.loadFromDisk()
@@ -155,16 +159,33 @@ func (c *Cache) invalidateRoot(root string) {
 	c.mu.Unlock()
 }
 
+const (
+	coreFetchMaxPending = 8
+	coreFetchHistoryMax = 64
+	coreFetchCooldown   = time.Hour
+)
+
 func (c *Cache) startBackgroundFetch(version, locale string) {
 	if c.isStopped() {
 		return
 	}
 	key := cacheKey(version, locale)
 	c.mu.Lock()
-	if c.fetching[key] {
+	if c.fetching[key] || c.checksums[key] != nil || len(c.fetching) >= coreFetchMaxPending {
 		c.mu.Unlock()
 		return
 	}
+	now := time.Now()
+	for oldKey, until := range c.coreFetchAfter {
+		if !now.Before(until) && !c.fetching[oldKey] {
+			delete(c.coreFetchAfter, oldKey)
+		}
+	}
+	if now.Before(c.coreFetchAfter[key]) || len(c.coreFetchAfter) >= coreFetchHistoryMax {
+		c.mu.Unlock()
+		return
+	}
+	c.coreFetchAfter[key] = now.Add(coreFetchCooldown)
 	c.fetching[key] = true
 	c.mu.Unlock()
 	go c.fetchWithRetry(version, locale, 0)
@@ -181,10 +202,16 @@ func (c *Cache) fetchWithRetry(version, locale string, attempt int) {
 
 	rawJSON, checksums, err := FetchChecksums(version, locale)
 	if err != nil {
-		delay := backoffs[len(backoffs)-1]
-		if attempt < len(backoffs) {
-			delay = backoffs[attempt]
+		if attempt >= len(backoffs) {
+			c.mu.Lock()
+			c.coreFetchAfter[key] = time.Now().Add(coreFetchCooldown)
+			delete(c.fetching, key)
+			c.mu.Unlock()
+			fmt.Fprintf(os.Stderr, "wpcheck: core fetch abandoned for WP %s (%s) after %d attempts: %v\n",
+				version, locale, attempt+1, err)
+			return
 		}
+		delay := backoffs[attempt]
 		fmt.Fprintf(os.Stderr, "wpcheck: fetch failed for WP %s (%s), retry in %v: %v\n",
 			version, locale, delay, err)
 		c.scheduleRetry(delay, func() {
