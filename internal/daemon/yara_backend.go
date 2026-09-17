@@ -95,7 +95,14 @@ func (d *Daemon) initYaraBackend() error {
 // of masquerading as a healthy zero-rule host.
 func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
 	yara.SetActive(sup)
-	d.MarkWatcher(yaraWorkerWatcher, true)
+	// Start launches supervision before returning. Serialize boot readiness
+	// with crash reporting so activation cannot erase an early crash; only
+	// the stable callback may restore health after an exit.
+	d.yaraCrashMu.Lock()
+	if sup.RestartCount() == 0 {
+		d.MarkWatcher(yaraWorkerWatcher, true)
+	}
+	d.yaraCrashMu.Unlock()
 
 	// Expose the supervisor's cumulative restart count to Prometheus.
 	// Registered once per process; subsequent calls re-point nothing
@@ -297,12 +304,11 @@ func (d *Daemon) onYaraWorkerRestart(exitCode int, sig syscall.Signal, ranFor ti
 	default:
 	}
 
-	// Scanning is offline until a restarted worker proves it stays up, so a
-	// crash loop keeps the watcher failed between brief successful starts.
-	d.MarkWatcher(yaraWorkerWatcher, false)
-
 	now := time.Now()
 	d.yaraCrashMu.Lock()
+	// Pair with activation's readiness publication. Scanning stays failed
+	// until a restarted worker proves it stays up.
+	d.MarkWatcher(yaraWorkerWatcher, false)
 	last := d.yaraLastCrashAlert
 	d.yaraLastCrashAlert = now
 	d.yaraCrashMu.Unlock()

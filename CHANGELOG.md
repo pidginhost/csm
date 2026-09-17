@@ -12,6 +12,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 ### Fixed
 
 - `csm doctor` and the components view now keep reporting the YARA-X scanning worker as failed while it keeps crashing after restarts, instead of only when it cannot start at all. A restarted worker counts as recovered once it stays up for 30 seconds.
+- YARA-X worker health now preserves crashes during startup activation and finishes pending recovery reports before shutdown returns.
 
 ## [3.39.0] - 2026-09-16
 

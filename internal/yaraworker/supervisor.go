@@ -59,6 +59,8 @@ type SupervisorConfig struct {
 	// OnStable is called each time a worker has stayed up for StableDuration
 	// after becoming ready. A restart that passes its readiness probe and
 	// dies again soon after never reports stable.
+	// Like OnRestart, it must return promptly and must not call Stop, which
+	// waits for callbacks to finish.
 	OnStable func()
 
 	// Logf is an optional structured-log hook. Supervisor internals log
@@ -219,6 +221,10 @@ func (s *Supervisor) Stop() error {
 	if done != nil {
 		<-done
 	}
+	// A timer may have passed its stopped/context check before shutdown.
+	// Join that callback before allowing its owner to tear down health state.
+	s.callbackMu.Lock()
+	defer s.callbackMu.Unlock()
 	return nil
 }
 
