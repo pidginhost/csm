@@ -13,8 +13,6 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 - A self-deleting file in WordPress update staging can no longer escape its alert by breaking the location where an installed copy of it would be looked for.
 - Translation files with concealed executable content no longer qualify as harmless data.
-- Self-deleting file detection retains uncertainty from concurrent writes, and WordPress checksum lookups have bounded background work and retries.
-- Self-deleting file detection preserves evidence of changes throughout content verification, and rejects oversized WordPress release identifiers before retaining or requesting checksums.
 
 ### Fixed
 
@@ -28,7 +26,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - PHP Shield no longer reports a webshell command parameter when a scanner probes a missing script and the site's verified, unmodified front controller answers instead. Modified or unverified scripts still alert, and quieted probes stay in the local event archive.
 - WordPress translation and core updates no longer raise critical self-deleting file alerts when the updater copies a staged file into place and removes the original, including when file events arrive out of order. Only complete translation or version data qualifies, and a file removed from the same staging paths without an identical installed copy is still reported.
 - Really Simple Security upload execution probes no longer raise critical self-deleting file alerts, including when file events arrive out of order or combined. Other content under the same name is still reported.
-- A WordPress core update that stops after reading its new version file no longer raises a critical self-deleting file alert when that file matches the official release it names, while an unverified file is still reported.
+- A WordPress core update that stops after reading its new version file no longer raises a critical self-deleting file alert when that file matches the official release it names, while an unverified file is still reported. Checksum lookups are bounded, and a file changed while being read stays reported.
 
 ## [3.39.0] - 2026-09-16
 
