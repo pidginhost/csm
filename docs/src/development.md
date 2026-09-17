@@ -302,6 +302,10 @@ Operator view:
   limited to one per minute) and restart with exponential backoff
   (1 s, 2 s, 4 s, capped at 60 s). Restarts reset to 1 s after the
   worker stays up for 30 s.
+- The crash finding is emitted before a restart is attempted, while YARA
+  scans cannot run. Scans can resume once a replacement worker serves
+  requests; they do not wait for the 30 s health check. The finding does
+  not confirm a successful restart or recovery.
 - `csm doctor` reports `watcher: yara_worker` as failed from a crash until
   a restarted worker has stayed up for 30 s, so a worker that keeps
   crashing shortly after each restart keeps doctor failing. This also
