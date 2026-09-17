@@ -92,6 +92,7 @@ func validateCorrelationPolicy(entries []CheckInfo) error {
 // filesystem, the store or the network.
 type correlationIndex struct {
 	classes map[string]CorrelationClass
+	reasons map[string]string
 	derived []string
 }
 
@@ -102,9 +103,13 @@ var (
 
 func loadCorrelationIndex() *correlationIndex {
 	correlationOnce.Do(func() {
-		idx := &correlationIndex{classes: make(map[string]CorrelationClass, len(checkRegistry))}
+		idx := &correlationIndex{
+			classes: make(map[string]CorrelationClass, len(checkRegistry)),
+			reasons: make(map[string]string, len(checkRegistry)),
+		}
 		for _, c := range checkRegistry {
 			idx.classes[c.Name] = c.Correlation
+			idx.reasons[c.Name] = c.CorrelationReason
 			if c.Correlation == CorrelationDerived {
 				idx.derived = append(idx.derived, c.Name)
 			}
@@ -117,6 +122,12 @@ func loadCorrelationIndex() *correlationIndex {
 
 func correlationClassOf(name string) CorrelationClass {
 	return loadCorrelationIndex().classes[name]
+}
+
+// correlationReasonOf returns the ignore reason a check is registered with,
+// or "" for an eligible or unknown check.
+func correlationReasonOf(name string) string {
+	return loadCorrelationIndex().reasons[name]
 }
 
 // securityEventEligible reports whether an attributed Critical finding of

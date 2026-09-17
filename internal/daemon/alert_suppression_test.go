@@ -34,6 +34,25 @@ func (b *alertSuppressionBlocker) IsBlocked(ip string) bool {
 	return b.blocked[ip]
 }
 
+func TestNewDoesNotReplaceIPResponsePolicy(t *testing.T) {
+	var calls int
+	previous := alert.SetIPResponsePolicy(func(_ *config.Config, _ alert.Finding, _ bool) bool {
+		calls++
+		return false
+	})
+	t.Cleanup(func() { alert.SetIPResponsePolicy(previous) })
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	_ = New(cfg, nil, nil, "")
+	got := alert.FilterBlockedAlerts(cfg, []alert.Finding{
+		{Check: "ftp_auth_failure_realtime", SourceIP: "203.0.113.40"},
+		{Check: "auto_block", Message: "AUTO-BLOCK: 203.0.113.40 (expires in 24h0m0s)"},
+	})
+	if len(got) != 1 || calls == 0 {
+		t.Fatalf("New replaced the process policy: calls=%d findings=%+v", calls, got)
+	}
+}
+
 func TestDispatchBatchSuppressesReputationAfterSameBatchBlock(t *testing.T) {
 	previousActive := config.Active()
 	config.SetActive(nil)
@@ -106,6 +125,82 @@ func TestDispatchBatchSuppressesReputationAfterSameBatchBlock(t *testing.T) {
 
 	if !blocker.IsBlocked("203.0.113.40") {
 		t.Fatal("reputation IP was not blocked during the daemon batch")
+	}
+	if got := webhookCalls.Load(); got != 0 {
+		t.Fatalf("webhook calls = %d, want 0 after same-batch live block", got)
+	}
+}
+
+func TestDispatchBatchSuppressesAttackerFindingAfterSameBatchBlock(t *testing.T) {
+	previousActive := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(previousActive) })
+
+	previousStore := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(previousStore) })
+
+	previousBlockedIPsFunc := alert.BlockedIPsFunc
+	alert.BlockedIPsFunc = nil
+	t.Cleanup(func() { alert.BlockedIPsFunc = previousBlockedIPsFunc })
+
+	blocker := &alertSuppressionBlocker{blocked: make(map[string]bool)}
+	checks.SetIPBlocker(blocker)
+	t.Cleanup(func() { checks.SetIPBlocker(nil) })
+
+	var webhookCalls atomic.Int32
+	webhook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		webhookCalls.Add(1)
+	}))
+	t.Cleanup(webhook.Close)
+
+	// Same-batch action matching is covered in the alert package; here the
+	// block may be recognised either way, which keeps the shared auto-block
+	// queue free of a deliberately failed state write.
+	stateDir := t.TempDir()
+
+	cfg := &config.Config{StatePath: stateDir}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockCpanelLogins = true
+	cfg.AutoResponse.BlockExpiry = "24h"
+	cfg.AutoResponse.MaxBlocksPerHour = 100
+	dryRun := false
+	cfg.AutoResponse.DryRun = &dryRun
+	cfg.Alerts.MaxPerHour = 10
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = webhook.URL
+	if err := alert.Dispatch(cfg, []alert.Finding{{
+		Severity:  alert.Critical,
+		Check:     "test_control",
+		Message:   "prove webhook delivery is active",
+		Timestamp: time.Now(),
+	}}); err != nil {
+		t.Fatalf("control dispatch: %v", err)
+	}
+	if got := webhookCalls.Load(); got != 1 {
+		t.Fatalf("control webhook calls = %d, want 1", got)
+	}
+	webhookCalls.Store(0)
+
+	findingState, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = findingState.Close() })
+
+	d := New(cfg, findingState, nil, "")
+	d.dispatchBatch([]alert.Finding{{
+		Severity:  alert.High,
+		Check:     "ftp_auth_failure_realtime",
+		Message:   "FTP authentication failed from 203.0.113.41",
+		SourceIP:  "203.0.113.41",
+		Timestamp: time.Now(),
+	}})
+
+	if !blocker.IsBlocked("203.0.113.41") {
+		t.Fatal("FTP source was not blocked during the daemon batch")
 	}
 	if got := webhookCalls.Load(); got != 0 {
 		t.Fatalf("webhook calls = %d, want 0 after same-batch live block", got)

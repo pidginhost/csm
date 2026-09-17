@@ -198,16 +198,19 @@ const (
 // challenge-vs-block decision, shared by ChallengeRouteIPs and AutoBlockIPs so
 // the two cannot diverge.
 func responseActionForCheck(cfg *config.Config, check string) string {
-	if !cfg.Challenge.Enabled {
-		return responseBlock
-	}
-	if !isChallengeableCheck(check) {
-		return responseBlock
-	}
-	if check == "http_scanner_profile" && cfg.AutoResponse.HTTPScannerAction == responseBlock {
+	if !cfg.Challenge.Enabled || !challengeRoutesCheck(cfg, check) {
 		return responseBlock
 	}
 	return responseChallenge
+}
+
+// challengeRoutesCheck is the challenge-vs-block policy for a check with
+// challenge routing assumed on.
+func challengeRoutesCheck(cfg *config.Config, check string) bool {
+	if !isChallengeableCheck(check) {
+		return false
+	}
+	return check != "http_scanner_profile" || cfg.AutoResponse.HTTPScannerAction != responseBlock
 }
 
 // responseActionForFinding narrows responseActionForCheck for one finding.
@@ -218,11 +221,19 @@ func responseActionForCheck(cfg *config.Config, check string) string {
 // answer the PoW page -- challenge-routing it just leaves the attacker
 // unblocked, retrying daily. Those resolve to a hard block.
 func responseActionForFinding(cfg *config.Config, f alert.Finding) string {
-	action := responseActionForCheck(cfg, f.Check)
-	if action == responseChallenge && f.Check == "ip_reputation" && f.Severity == alert.Critical {
+	if !cfg.Challenge.Enabled || !challengeRoutesFinding(cfg, f) {
 		return responseBlock
 	}
-	return action
+	return responseChallenge
+}
+
+// challengeRoutesFinding narrows challengeRoutesCheck for one finding, with
+// challenge routing assumed on.
+func challengeRoutesFinding(cfg *config.Config, f alert.Finding) bool {
+	if f.Check == "ip_reputation" && f.Severity == alert.Critical {
+		return false
+	}
+	return challengeRoutesCheck(cfg, f.Check)
 }
 
 // isHardBlockCheck returns true if the check should be hard-blocked (never challenged).

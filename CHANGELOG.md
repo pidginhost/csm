@@ -17,6 +17,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 - OWASP CRS attack rules logged by LiteSpeed are now recognised as attacks instead of unclassified, and an unclassified ModSecurity rule is reported once per day for the host instead of once for every source address.
 - A critical finding no longer carries the warnings batched with it past the hourly alert limit. Only delivered non-critical alerts count against that limit.
 - The YARA-X worker crash alert now reports the current scanning outage without claiming recovery. It distinguishes scanning becoming available after a restart from worker health recovering after the replacement stays up for 30 seconds.
+- Suppressing alerts for blocked addresses now also covers brute force, scanner and other attack alerts whose source was blocked or challenged, not only reputation alerts. Compromise evidence, successful logins, suspicious mail and attacks spread across many addresses still alert.
 
 ## [3.39.0] - 2026-09-16
 
