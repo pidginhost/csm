@@ -1636,6 +1636,9 @@ type ForwardHoldSignals struct {
 }
 
 func applyDefaults(cfg *Config, presence defaultPresence) {
+	for i, name := range cfg.Alerts.Email.DisabledChecks {
+		cfg.Alerts.Email.DisabledChecks[i] = CanonicalCheckName(strings.TrimSpace(name))
+	}
 	// Defaults
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/var/lib/csm/state"

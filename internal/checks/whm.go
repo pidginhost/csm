@@ -132,16 +132,25 @@ func CheckSSHLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 		if !strings.Contains(line, "Accepted") {
 			continue
 		}
-		if f, ok := sshAcceptedLoginFinding(line, cfg); ok {
+		if f, ok := SSHAcceptedLoginFinding(line, cfg); ok {
 			findings = append(findings, f)
 		}
 	}
 	return findings
 }
 
-// sshAcceptedLoginFinding parses an sshd "Accepted <method> for <user> from
+// SSHAcceptedLoginFinding parses an sshd "Accepted <method> for <user> from
 // <ip> port <n>" line and reports it unless the address is infrastructure.
-func sshAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
+// The daemon's realtime log watcher calls it so a login seen live and the same
+// line re-read by CheckSSHLogins carry one identity; without that the state
+// store sees two findings and the operator gets one login reported twice.
+func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	if !strings.Contains(line, "Accepted") {
+		return alert.Finding{}, false
+	}
 	parts := strings.Fields(line)
 	ipIdx := -1
 	for i, p := range parts {
@@ -165,12 +174,18 @@ func sshAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 			break
 		}
 	}
+	tenant := user
+	if tenant == "unknown" {
+		tenant = ""
+	}
 	return alert.Finding{
 		Severity: alert.Critical,
 		Check:    "ssh_login_unknown_ip",
+		DedupKey: loginRecordKey(line),
 		Message:  fmt.Sprintf("SSH login from non-infra IP: %s (user: %s)", ip, user),
 		Details:  truncateString(line, 200),
 		SourceIP: ip,
+		TenantID: tenant,
 	}, true
 }
 

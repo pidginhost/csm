@@ -13,7 +13,7 @@ import (
 
 var auditAuthChecks = []string{
 	"cpanel_file_upload_realtime", "cpanel_login", "cpanel_login_realtime",
-	"ftp_login", "ftp_login_realtime", "webmail_login_realtime", "pam_login",
+	"ftp_login", "webmail_login_realtime", "pam_login",
 }
 
 // Audit volume and successful access to multiple accounts must add no score,
@@ -67,7 +67,7 @@ func TestSuccessfulAuthScoringSurvivesReload(t *testing.T) {
 			const ip = "198.51.100.43"
 			db.RecordFinding(alert.Finding{Check: "mail_bruteforce", SourceIP: ip, TenantID: "alice"})
 			for _, account := range []string{"alice", "bob"} {
-				db.RecordFinding(alert.Finding{Check: "ftp_login_realtime", SourceIP: ip, TenantID: account})
+				db.RecordFinding(alert.Finding{Check: "ftp_login", SourceIP: ip, TenantID: account})
 			}
 			if err := db.Flush(); err != nil {
 				t.Fatal(err)
@@ -95,7 +95,7 @@ func TestSuccessfulAuthScoringSurvivesReload(t *testing.T) {
 func TestSuccessfulAuthSnapshotsAreDetached(t *testing.T) {
 	db := NewForTest(nil)
 	const ip = "198.51.100.44"
-	db.RecordFinding(alert.Finding{Check: "ftp_login_realtime", SourceIP: ip, TenantID: "alice"})
+	db.RecordFinding(alert.Finding{Check: "ftp_login", SourceIP: ip, TenantID: "alice"})
 	for name, snapshot := range map[string]*IPRecord{
 		"lookup": db.LookupIP(ip), "all": db.AllRecords()[0], "top": db.TopAttackers(1)[0],
 	} {
@@ -103,7 +103,7 @@ func TestSuccessfulAuthSnapshotsAreDetached(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		db.RecordFinding(alert.Finding{Check: "ftp_login_realtime", SourceIP: ip, TenantID: "alice"})
+		db.RecordFinding(alert.Finding{Check: "ftp_login", SourceIP: ip, TenantID: "alice"})
 		after, err := json.Marshal(snapshot)
 		if err != nil {
 			t.Fatal(err)

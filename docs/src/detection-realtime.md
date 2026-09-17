@@ -160,6 +160,45 @@ Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.
 
+The FTP and SSH log watchers read the same files as the periodic `ftp_logins`
+and `ssh_logins` checks, so both see every login. Each login is reported once:
+the watcher and the periodic check build the same finding, and the second one
+is recognised as a repeat. When the watcher is not running, on a non-cPanel
+host or before the log file appears, the periodic check still reports the
+login on its own.
+
+The identity uses the complete log record, including its timestamp and session
+fields, even when the displayed details are shortened. A later session from the
+same address is a new finding within the 24-hour reminder window.
+
+A successful FTP login and a cPanel File Manager write are not emailed. On
+shared hosting every customer connects from an address that is not
+infrastructure, so both fire on ordinary use of a core feature. They stay on
+the findings page, in history, in incident correlation and in the attack
+database, where their value is correlation with other evidence on the same
+account. Failed FTP authentication, FTP brute force, a login from a
+brute-force source, and SSH logins are all still emailed.
+
+The phpanel webhook and SSE event stream still receive these successful
+operations; the email and operator-webhook filter runs after data delivery.
+
+#### Login check names on upgrade
+
+New findings use `ftp_login` in place of `ftp_login_realtime`, and
+`ssh_login_unknown_ip` in place of `ssh_login_realtime`. Update external
+phpanel, export and SIEM rules to accept the merged names. Historical records
+and already queued deliveries can still contain the old names; the JSON schema
+is unchanged.
+
+Existing `alerts.email.disabled_checks` entries and saved suppression rules for
+either retired name also match its replacement. The Settings page displays and
+saves the current names. A mute for one former producer now covers the shared
+finding from both producers; it does not mute FTP brute-force escalations.
+
+Pending SSH blocks and restored SSH incident evidence retain their blocking
+policy. Historical successful FTP activity remains excluded from incident
+blocking, including events carrying its retired name.
+
 cPanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
 
 The Postfix/Dovecot file reader polls every two seconds. It reads replacement

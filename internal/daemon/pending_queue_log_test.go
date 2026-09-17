@@ -48,7 +48,7 @@ func TestPendingQueueRealLogRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got) != 1 || got[0].Check != "ssh_login_realtime" || !utf8.ValidString(got[0].Details) {
+			if len(got) != 1 || got[0].Check != "ssh_login_unknown_ip" || !utf8.ValidString(got[0].Details) {
 				t.Fatal("roundtrip changed original serialization policy")
 			}
 			row := d.QueueStatuses()["state.pending"]

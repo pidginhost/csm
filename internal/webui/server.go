@@ -848,7 +848,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"email_suspicious_forwarder":     "Suspicious Forwarder",
 			"cpanel_login_realtime":          "cPanel Login",
 			"cpanel_password_purge_realtime": "Password Purge",
-			"ssh_login_realtime":             "SSH Login",
+			"ssh_login_unknown_ip":           "SSH Login",
 			"pam_login":                      "PAM Login",
 			"pam_bruteforce":                 "PAM Brute Force",
 			"modsec_block_escalation":        "ModSec Escalation",

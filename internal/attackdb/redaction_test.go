@@ -28,7 +28,7 @@ func TestRecordFindingRedactsBeforePersistenceAndTruncation(t *testing.T) {
 					"log: NEW shop:[REDACTED] " + strings.Repeat("x", 175)},
 			} {
 				f := alert.Finding{
-					Check: "ssh_login_realtime", Severity: alert.Warning, Timestamp: time.Now().UTC(),
+					Check: "ssh_login_unknown_ip", Severity: alert.Warning, Timestamp: time.Now().UTC(),
 					Message: text.in, Details: "Account: shop", SourceIP: "198.51.100.23",
 				}
 				db.RecordFinding(f)

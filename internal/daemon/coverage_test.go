@@ -192,7 +192,7 @@ func TestParseFTPLogLineSuccessfulLoginRealFormat(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("got %d, want 1", len(findings))
 	}
-	if findings[0].Check != "ftp_login_realtime" {
+	if findings[0].Check != "ftp_login" {
 		t.Errorf("Check = %q", findings[0].Check)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -210,22 +211,14 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 		})
 	}
 
-	// Successful login from non-infra
-	if strings.Contains(line, "is now logged in") {
-		// Panel transfers use loopback. Suppress only the unfamiliar-address
-		// login warning; a local relay does not make auth failures trustworthy.
-		if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
-			return findings
-		}
-		findings = append(findings, alert.Finding{
-			// Warning, not High: pure-ftpd writes this only after the login
-			// succeeded, so it fires on every legitimate FTP session.
-			Severity: alert.Warning,
-			Check:    "ftp_login_realtime",
-			Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
-			Details:  truncateDaemon(line, 200),
-			SourceIP: ip,
-		})
+	// Successful login from non-infra. The scheduled ftp_logins check reads
+	// the same file and will meet this line again, so the finding comes from
+	// the shared builder: identical findings collapse in the state store,
+	// while a login this watcher never saw is still reported by the scan.
+	// The builder also drops loopback, which panel transfers use; a local
+	// relay does not make the auth failure above trustworthy.
+	if f, ok := checks.FTPLoginFinding(line, cfg); ok {
+		findings = append(findings, f)
 	}
 
 	return findings

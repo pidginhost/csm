@@ -506,7 +506,7 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 		}
 
 		if field.Type == "[]enum" {
-			if field.OptionsSource == "disabled_check_names" {
+			if field.OptionsSource == "disabled_check_names" || field.OptionsSource == "check_names" {
 				var err error
 				raw, err = normaliseDisabledCheckNamesRaw(raw)
 				if err != nil {
@@ -597,7 +597,7 @@ func normaliseDisabledCheckNamesRaw(raw json.RawMessage) (json.RawMessage, error
 	seen := make(map[string]struct{}, len(values))
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		value = strings.TrimSpace(value)
+		value = config.CanonicalCheckName(strings.TrimSpace(value))
 		if value == "" {
 			continue
 		}

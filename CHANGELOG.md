@@ -11,6 +11,7 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Security
 
+- Distinct FTP and SSH sessions no longer share an alert identity when log details are shortened. Queued SSH blocks also survive upgrades that merge login check names.
 - Dismissing a scan coverage warning no longer hides it for good: it can alert again once the condition clears and returns. New analyzer failures stay visible, and account scan crashes keep separate alert histories for each account.
 - Timed blocks in the web interface no longer shorten existing permanent or longer blocks. Undo respects later operator decisions.
 - Image payload detection now covers more file layouts and avoids missed writes during recovery. Payload details no longer cause excessive processing on repetitive files.
@@ -25,6 +26,8 @@ Releases before 3.30.0 are archived: [3.20 to 3.29](docs/changelog/3.20-3.29.md)
 
 ### Fixed
 
+- Existing login email exclusions and saved mutes survive the merged check names. Successful FTP logins and File Manager writes remain available to phpanel and event-stream consumers without sending operator notifications.
+- A successful FTP login and a cPanel File Manager write are no longer emailed, and one FTP or SSH login is now reported once instead of twice by the realtime watcher and the periodic check. They stay on the findings page, in history and in correlation, and failed authentication, brute force and a login from a brute-force source still alert.
 - Pruning old firewall action records and daily finding totals now removes every expired entry. Some were skipped and left behind, so the state database kept growing.
 - Unblocking an IPv4-mapped address now clears the same temporary evidence as its IPv4 form.
 - Manual block evidence survives threat-feed changes and migration, and bulk undo restores each address's prior block lifetime without reviving expired evidence. Duplicate selections no longer leave block records behind after undo.

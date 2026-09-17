@@ -427,47 +427,16 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	return findings
 }
 
+// parseSecureLogLine reports accepted SSH logins from the authentication log.
+// The scheduled ssh_logins check reads the same file and will meet this line
+// again, so the finding comes from the shared builder: identical findings
+// collapse in the state store, while a login this watcher never saw is still
+// reported by the scan.
 func parseSecureLogLine(line string, cfg *config.Config) []alert.Finding {
-	var findings []alert.Finding
-
-	if !strings.Contains(line, "Accepted") {
-		return nil
+	if f, ok := checks.SSHAcceptedLoginFinding(line, cfg); ok {
+		return []alert.Finding{f}
 	}
-
-	// Extract IP
-	parts := strings.Fields(line)
-	for i, p := range parts {
-		if p == "from" && i+1 < len(parts) {
-			ip := parts[i+1]
-			if isInfraIPDaemon(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-				return nil
-			}
-
-			user := "unknown"
-			for j, q := range parts {
-				if q == "for" && j+1 < len(parts) {
-					user = parts[j+1]
-					break
-				}
-			}
-
-			tenant := user
-			if tenant == "unknown" {
-				tenant = ""
-			}
-			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "ssh_login_realtime",
-				Message:  fmt.Sprintf("SSH login from non-infra IP: %s (user: %s)", ip, user),
-				Details:  truncateDaemon(line, 200),
-				SourceIP: ip,
-				TenantID: tenant,
-			})
-			break
-		}
-	}
-
-	return findings
+	return nil
 }
 
 func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {

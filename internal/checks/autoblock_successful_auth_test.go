@@ -38,7 +38,7 @@ import (
 func TestSuccessfulAuthOperationsAreNeverBlockable(t *testing.T) {
 	successAfterAuth := []string{
 		"cpanel_file_upload_realtime",
-		"ftp_login_realtime",
+		"ftp_login",
 		"webmail_login_realtime",
 	}
 	for _, check := range successAfterAuth {
@@ -78,7 +78,7 @@ func TestAlwaysBlockableChecksIgnoreTheSwitch(t *testing.T) {
 		"wp_login_bruteforce", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile",
 		"http_claimed_bot_unverified", "http_ua_spoof", "ftp_bruteforce", "smtp_bruteforce",
 		"smtp_probe_abuse", "mail_bruteforce", "mail_account_compromised", "admin_panel_bruteforce",
-		"ssh_login_unknown_ip", "ssh_login_realtime", "pam_bruteforce", "credential_stuffing",
+		"ssh_login_unknown_ip", "pam_bruteforce", "credential_stuffing",
 		"c2_connection", "ip_reputation", "local_threat_score", "modsec_block_escalation",
 		"modsec_csm_block_escalation", "email_compromised_account", "email_cloud_relay_abuse", "waf_attack_blocked",
 	} {
@@ -124,7 +124,7 @@ func TestSuccessfulAuthCannotPromoteAddressToBlock(t *testing.T) {
 			db.RecordFinding(alert.Finding{Check: "suspicious_process", SourceIP: ip, TenantID: "alice"})
 			for range 3 {
 				var findings []alert.Finding
-				for _, check := range []string{"cpanel_file_upload_realtime", "cpanel_login", "cpanel_login_realtime", "ftp_login", "ftp_login_realtime", "webmail_login_realtime", "pam_login"} {
+				for _, check := range []string{"cpanel_file_upload_realtime", "cpanel_login", "cpanel_login_realtime", "ftp_login", "webmail_login_realtime", "pam_login"} {
 					f := alert.Finding{Check: check, SourceIP: ip, TenantID: "bob", Severity: alert.Warning, Timestamp: time.Now()}
 					db.RecordFinding(f)
 					findings = append(findings, f)
@@ -159,7 +159,7 @@ func TestPendingBlocksRecheckEligibility(t *testing.T) {
 	}{
 		{name: "legacy upload"},
 		{name: "removed upload", check: "cpanel_file_upload_realtime", enabled: true},
-		{name: "removed FTP success", check: "ftp_login_realtime", enabled: true},
+		{name: "removed FTP success", check: "ftp_login", enabled: true},
 		{name: "removed webmail success", check: "webmail_login_realtime", enabled: true},
 		{name: "disabled API failure", check: "api_auth_failure_realtime"},
 		{name: "enabled API failure", check: "api_auth_failure_realtime", enabled: true, wantBlock: true},

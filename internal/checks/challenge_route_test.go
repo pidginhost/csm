@@ -255,8 +255,6 @@ func TestChallengeRoute_AuditAndNonBrowserChecksAreNotChallengeable(t *testing.T
 		"cpanel_file_upload",
 		"cpanel_file_upload_realtime",
 		"ftp_login",
-		"ftp_login_realtime",
-		"ssh_login_realtime",
 		"ssh_login_unknown_ip",
 		"webmail_login_realtime",
 		"whm_password_change",

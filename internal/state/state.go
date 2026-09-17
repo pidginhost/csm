@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/atomicio"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -1495,7 +1496,7 @@ func (s *Store) SaveSuppressions(rules []SuppressionRule) error {
 // re-reading the file for every finding.
 func (s *Store) IsSuppressed(f alert.Finding, rules []SuppressionRule) bool {
 	for _, rule := range rules {
-		if f.Check != rule.Check {
+		if config.CanonicalCheckName(f.Check) != config.CanonicalCheckName(rule.Check) {
 			continue
 		}
 		// If no path pattern, suppress all findings for this check type

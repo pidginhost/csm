@@ -112,8 +112,8 @@ func TestParseSecureLogLine_AcceptedSSHLogin(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
 	}
-	if findings[0].Check != "ssh_login_realtime" {
-		t.Fatalf("check = %q, want ssh_login_realtime", findings[0].Check)
+	if findings[0].Check != "ssh_login_unknown_ip" {
+		t.Fatalf("check = %q, want ssh_login_unknown_ip", findings[0].Check)
 	}
 }
 
