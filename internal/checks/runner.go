@@ -1047,11 +1047,15 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 					}
 					observeCheckDuration(c.name, tier, time.Since(start))
 					mu.Lock()
+					// The stack trace carries goroutine ids and addresses that
+					// differ on every run; a check that panics each cycle is
+					// one ongoing condition.
 					findings = append(findings, alert.Finding{
 						Severity:  alert.High,
 						Check:     "check_panic",
 						Message:   fmt.Sprintf("Check '%s' stopped after an internal panic", c.name),
 						Details:   outcome.panicErr,
+						DedupKey:  "check:" + c.name,
 						Timestamp: time.Now(),
 					})
 					mu.Unlock()

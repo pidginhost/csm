@@ -209,8 +209,13 @@ func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRang
 		parts = append(parts, fmt.Sprintf("exact paths retained for only the first %d", maxPHPTaintGapPaths))
 	}
 	message := fmt.Sprintf("PHP taint deep scan could not analyze %d file(s)", total)
+	// The collector spans the whole host cycle, so identity is the kind of
+	// degradation alone. Counts and examples change every cycle while the
+	// condition persists; keying on them re-alerted on every deep scan.
+	dedupKey := "coverage_gap"
 	if analyzerDefeat {
 		message = fmt.Sprintf("PHP taint deep scan was defeated by %d file(s) that crashed or stalled the analyzer", total)
+		dedupKey = "analyzer_defeat"
 	} else if total == 0 {
 		message = fmt.Sprintf("PHP taint deep scan could not cover %d location(s)", g.unknown)
 	}
@@ -219,6 +224,7 @@ func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRang
 		Check:    "php_taint_scan_incomplete",
 		Message:  message,
 		Details:  strings.Join(parts, "; "),
+		DedupKey: dedupKey,
 	}
 }
 

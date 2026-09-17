@@ -248,11 +248,14 @@ func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, 
 	case outcome := <-execution.done:
 		execution.received()
 		if outcome.panicErr != "" {
+			// The stack trace differs on every run, so identity is the check
+			// alone, kept apart from the scheduled runner's panic identity.
 			return []alert.Finding{{
 				Severity:  alert.High,
 				Check:     "check_panic",
 				Message:   fmt.Sprintf("Account scan check '%s' stopped after an internal panic", c.name),
 				Details:   outcome.panicErr,
+				DedupKey:  "account-scan:" + c.name,
 				Timestamp: time.Now(),
 			}}
 		}
