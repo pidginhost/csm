@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"time"
@@ -19,8 +20,10 @@ import (
 type dropperFSProbe struct {
 	quarantines *dropperQuarantineLedger
 	// coreChecksums compares a version probe with the official file of the
-	// release it declares. Nil leaves every such probe unverified.
+	// release it declares, and a core package file with the release now
+	// installed. Nil leaves every such candidate unverified.
 	coreChecksums interface {
+		Describe(path string) wpcheck.Verification
 		Verify(wpcheck.Verification) wpcheck.Verdict
 	}
 }
@@ -53,6 +56,7 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 	if c.WPCoreRelease != nil && p.coreChecksums != nil {
 		result.OfficialWPCoreFile = p.coreChecksums.Verify(*c.WPCoreRelease) == wpcheck.VerdictVerified
 	}
+	result.OfficialWPCorePackageFile = p.officialCorePackageFile(c)
 	var dst unix.Stat_t
 	if derr := unix.Stat(c.Docroot, &dst); derr != nil && errors.Is(derr, unix.ENOENT) {
 		result.DocrootRemoved = true
@@ -65,6 +69,28 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 		}
 	}
 	return result
+}
+
+// officialCorePackageFile compares a vanished file of an unpacked core
+// release with the release installed at its WordPress root. The staged tree,
+// and with it the staged version header, is gone by the time of the probe.
+// A completed update has installed that release, so its header names the
+// manifest to check. An aborted one leaves the old release, whose manifest
+// does not match the new bytes, and the candidate stays reported.
+func (p dropperFSProbe) officialCorePackageFile(c dropperCandidate) bool {
+	if p.coreChecksums == nil || !c.CoreMD5Known {
+		return false
+	}
+	wpRoot, rel, ok := wpUpgradeCorePackageFile(c.Path, c.Docroot)
+	if !ok {
+		return false
+	}
+	v := p.coreChecksums.Describe(filepath.Join(wpRoot, "wp-includes", "version.php"))
+	if v.Kind != wpcheck.KindCore || v.Root != wpRoot || v.Version == "" {
+		return false
+	}
+	v.Rel, v.Digest = rel, hex.EncodeToString(c.CoreMD5[:])
+	return p.coreChecksums.Verify(v) == wpcheck.VerdictVerified
 }
 
 // dropperFindRenameTarget snapshots the install destinations WordPress and the

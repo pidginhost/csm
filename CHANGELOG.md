@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
+## [Unreleased]
+
+### Security
+
+- Executable PHP can no longer pass as a comment-only stub and suppress a warning in sensitive WordPress directories.
+- A file staged in a WordPress core update that held other content before it was overwritten with official or installed bytes and deleted is reported again as a self-deleting file, instead of passing as update cleanup.
+- A PHP file could hide code behind a comment ended by a bare carriage return and still pass as an empty stub, a translation cache or version data, which skipped the location warning for PHP in uploads and other sensitive WordPress directories.
+
+### Fixed
+
+- A WordPress core update no longer raises a warning for the version file it copies into the upgrade directory. The file is recognised by content and holds only version data.
+- A WordPress core update no longer raises a self-deleting file notice for the release files it unpacks but does not install, such as bundled themes. Each file must match the official checksum of the release now installed.
+
 ## [3.40.0] - 2026-09-18
 
 ### Highlights
