@@ -312,6 +312,9 @@ func TestReloadConfigRejectsInvalidBlockEscalationCount(t *testing.T) {
 	orig := &config.Config{}
 	orig.AutoResponse.NetBlock = true
 	orig.AutoResponse.NetBlockThreshold = config.MinBlockEscalationCount
+	// Built without Load, so no defaults: the marshaled file would state an
+	// explicitly empty window, which validation rejects on its own.
+	orig.AutoResponse.NetBlockWindow = config.DefaultNetBlockWindow
 	seedConfigAtPath(t, cfgPath, orig)
 	loaded, err := config.Load(cfgPath)
 	if err != nil {
