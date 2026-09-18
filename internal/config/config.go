@@ -43,6 +43,11 @@ const (
 	// DefaultNetBlockThreshold is how many blocked addresses in one IPv4 /24
 	// or IPv6 /64 escalate to a subnet block when the key is unset.
 	DefaultNetBlockThreshold = 3
+	// DefaultNetBlockWindow is how far back blocked addresses count toward
+	// netblock_threshold when auto_response.netblock_window is unset. Hosts
+	// that rotate through a /24 keep one address blocked at a time, so only
+	// counting live blocks never reaches the threshold.
+	DefaultNetBlockWindow = "168h"
 	// DefaultPermBlockCount is how many temporary blocks inside the interval
 	// promote an address to a permanent block when the key is unset.
 	DefaultPermBlockCount = 4
@@ -730,6 +735,7 @@ type Config struct {
 		HTTPScannerAction string `yaml:"http_scanner_action"`
 		NetBlock          bool   `yaml:"netblock"`           // auto-block IPv4 /24 or IPv6 /64 at threshold
 		NetBlockThreshold int    `yaml:"netblock_threshold"` // IPs from same IPv4 /24 or IPv6 /64 before subnet block (default 3)
+		NetBlockWindow    string `yaml:"netblock_window"`    // how far back blocked IPs count toward the threshold (default "168h")
 		// MaxBlocksPerHour caps per-IP auto-blocks per wall-clock hour.
 		// 0 uses DefaultMaxBlocksPerHour.
 		MaxBlocksPerHour  int    `yaml:"max_blocks_per_hour"`
@@ -1586,6 +1592,7 @@ type defaultPresence struct {
 type autoResponsePresence struct {
 	blockExpiry       bool
 	netBlockThreshold bool
+	netBlockWindow    bool
 	permBlockCount    bool
 	permBlockInterval bool
 }
@@ -1975,6 +1982,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.AutoResponse.NetBlockThreshold == 0 && !presence.autoResponse.netBlockThreshold {
 		cfg.AutoResponse.NetBlockThreshold = DefaultNetBlockThreshold
 	}
+	if cfg.AutoResponse.NetBlockWindow == "" && !presence.autoResponse.netBlockWindow {
+		cfg.AutoResponse.NetBlockWindow = DefaultNetBlockWindow
+	}
 	if cfg.AutoResponse.PermBlockCount == 0 && !presence.autoResponse.permBlockCount {
 		cfg.AutoResponse.PermBlockCount = DefaultPermBlockCount
 	}
@@ -2294,6 +2304,9 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 	if node, ok := raw.AutoResponse["netblock_threshold"]; ok && !yamlNodeIsNull(&node) {
 		presence.autoResponse.netBlockThreshold = true
+	}
+	if node, ok := raw.AutoResponse["netblock_window"]; ok && !yamlNodeIsNull(&node) {
+		presence.autoResponse.netBlockWindow = true
 	}
 	if node, ok := raw.AutoResponse["permblock_count"]; ok && !yamlNodeIsNull(&node) {
 		presence.autoResponse.permBlockCount = true

@@ -703,21 +703,23 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 			threshold = config.DefaultNetBlockThreshold
 		}
 		subnetExpiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
-		// Count blocked IPs per subnet (IPv4 /24, IPv6 /64).
-		subnetCounts := make(map[string]int)
+		// Count addresses blocked inside the window per subnet (IPv4 /24,
+		// IPv6 /64), not only those blocked right now: a subnet that rotates
+		// addresses keeps one block live at a time and would never escalate.
+		now := autoBlockNow()
+		window := netblockWindow(cfg)
+		work.progress()
+		history := loadNetblockHistory(cfg.StatePath)
+		current := currentlyBlocked(state.IPs, liveBlocked, useLiveBlocked)
+		historyChanged := recordNetblockHistory(history, state.IPs, current, now, window)
+		subnetCounts := netblockCounts(cfg, history, current, blocker, now, window)
 		subnetCauses := make(map[string]blockedIP)
 		subnetBlocked := make(map[string]bool)
 		for _, b := range state.IPs {
 			cidr := subnetEscalationCIDR(b.IP)
-			// Exempt IPs do not contribute toward the netblock threshold so that
-			// a cluster of blocked addresses inside an operator-declared DoS-exempt
-			// range cannot inadvertently auto-block that range as a subnet.
-			if cidr != "" && !cidrIntersectsDOSExempt(cfg, cidr) {
-				subnetCounts[cidr]++
-				prior := subnetCauses[cidr]
-				if b.FindingID != "" && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
-					subnetCauses[cidr] = b
-				}
+			prior := subnetCauses[cidr]
+			if cidr != "" && b.FindingID != "" && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
+				subnetCauses[cidr] = b
 			}
 		}
 		for cidr, count := range subnetCounts {
@@ -746,9 +748,11 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 						})
 						continue
 					}
-					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
+					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s within %s", count, cidr, window)
 					if autoFirewallActionApplied(cidr, callBlockSubnet(sb, cidr, reason, subnetExpiry, subnetCauses[cidr].FindingID)) {
 						subnetBlocked[cidr] = true
+						history.Subnets[cidr] = now
+						historyChanged = true
 						fmt.Fprintf(os.Stderr, "[%s] AUTO-NETBLOCK: %s blocked (%d IPs from same subnet)\n", time.Now().Format("2006-01-02 15:04:05"), cidr, count)
 						actions = append(actions, alert.Finding{
 							Severity:  alert.Critical,
@@ -759,6 +763,10 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 					}
 				}
 			}
+		}
+		if historyChanged {
+			work.progress()
+			saveNetblockHistory(cfg.StatePath, history)
 		}
 	}
 
@@ -1178,6 +1186,8 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 		}
 		work.cleanupOutcome(ip, cleanupFailed)
 	}
+	work.progress()
+	saveNetblockHistory(statePath, &netblockHistory{})
 	if state != nil {
 		state.IPs = nil
 		// A failed bbolt cleanup must survive in the tracker after the

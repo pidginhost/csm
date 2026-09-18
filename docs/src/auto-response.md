@@ -13,7 +13,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
 | **PAM blocking** | Instant IP block when one address breaches `thresholds.pam_bruteforce_threshold` failures inside `pam_bruteforce_window_min` minutes, or fails against `cred_stuffing_distinct_accounts` distinct accounts. |
-| **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range attack. |
+| **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range were blocked within `netblock_window` (7 days by default). Operator and permanent blocks count, expired blocks count until they leave the window, and addresses the operator whitelisted or cleared do not. Addresses already answered by an earlier subnet block count again only if they are blocked again. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
@@ -173,6 +173,7 @@ auto_response:
   max_blocks_per_hour: 50     # per-IP blocks per hour; 0/omitted uses default
   netblock: true              # enable subnet blocking
   netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet block; minimum 2
+  netblock_window: "168h"     # blocked IPs count this far back, expired blocks included; omitted defaults to 168h
   permblock: true             # promote temp blocks to permanent
   permblock_count: 4          # temp blocks before promotion; minimum 2
   permblock_interval: "24h"   # positive counting window; omitted defaults to 24h

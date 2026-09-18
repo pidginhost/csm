@@ -1229,3 +1229,50 @@ func TestAPIThreatIPValidPublicIPNoGeo(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 }
+
+// Unblock & Clear and both whitelist actions declare an address a false
+// positive. It must stop counting toward a block of its whole subnet, not
+// linger for the netblock window.
+func TestAPIThreatOperatorClearForgetsNetblockHistory(t *testing.T) {
+	for name, tc := range map[string]struct {
+		call func(*Server, http.ResponseWriter, *http.Request)
+		body string
+	}{
+		"clear":          {(*Server).apiThreatClearIP, `{"ip":"203.0.113.5"}`},
+		"whitelist":      {(*Server).apiThreatWhitelistIP, `{"ip":"203.0.113.5"}`},
+		"temp whitelist": {(*Server).apiThreatTempWhitelistIP, `{"ip":"203.0.113.5","hours":1}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestServer(t, "tok")
+			s.blocker = newFullBlocker()
+			path := filepath.Join(s.cfg.StatePath, "netblock_history.json")
+			seed := `{"ips":{"203.0.113.5":"2026-09-18T10:00:00Z","203.0.113.6":"2026-09-18T10:00:00Z"}}`
+			if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", "/", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			tc.call(s, w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				IPs map[string]string `json:"ips"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := got.IPs["203.0.113.5"]; ok {
+				t.Errorf("cleared address still in netblock history: %s", data)
+			}
+			if _, ok := got.IPs["203.0.113.6"]; !ok {
+				t.Errorf("unrelated address dropped from netblock history: %s", data)
+			}
+		})
+	}
+}

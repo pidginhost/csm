@@ -413,7 +413,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         html+='<tr><td class="text-muted csm-w-160">Local Score</td><td>'+intel.local_score+'/100</td></tr>';
         if(intel.country)html+='<tr><td class="text-muted">Country</td><td>'+countryFlag(intel.country)+' <strong>'+CSM.esc(intel.country)+'</strong>'+(intel.country_name?' - '+CSM.esc(intel.country_name):'')+(intel.city?', '+CSM.esc(intel.city):'')+'</td></tr>';
         if(intel.as_org)html+='<tr><td class="text-muted">ISP / ASN</td><td>'+CSM.esc(intel.as_org)+(intel.asn?' <span class="text-muted">(AS'+intel.asn+')</span>':'')+'</td></tr>';
-        if(intel.network)html+='<tr><td class="text-muted">Network</td><td><code>'+CSM.esc(intel.network)+'</code></td></tr>';
+        if(intel.network)html+='<tr><td class="text-muted" title="The routed prefix this address belongs to, from GeoIP. Blocks and threat entries apply to the address itself.">GeoIP prefix</td><td><code>'+CSM.esc(intel.network)+'</code></td></tr>';
         html+='<tr><td class="text-muted">AbuseIPDB Score</td><td>'+(intel.abuse_score>=0?intel.abuse_score+'/100':'Not cached')+'</td></tr>';
         if(intel.abuse_category)html+='<tr><td class="text-muted">AbuseIPDB Category</td><td>'+CSM.esc(intel.abuse_category)+'</td></tr>';
         html+='<tr><td class="text-muted">In Threat DB</td><td>'+(intel.in_threat_db?'<span class="badge bg-danger">Yes</span> ('+CSM.esc(intel.threat_db_source)+')':'No')+'</td></tr>';

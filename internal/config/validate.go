@@ -251,6 +251,15 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "reputation.bot_ranges.update_interval", "update_interval must be at least 1h"})
 		}
 	}
+	if cfg.AutoResponse.NetBlockWindow != "" {
+		if d, err := time.ParseDuration(cfg.AutoResponse.NetBlockWindow); err != nil {
+			results = append(results, ValidationResult{"error", "auto_response.netblock_window", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.NetBlockWindow)})
+		} else if d <= 0 {
+			results = append(results, ValidationResult{"error", "auto_response.netblock_window", "netblock_window must be a positive duration"})
+		}
+	} else if cfg.AutoResponse.NetBlock {
+		results = append(results, ValidationResult{"error", "auto_response.netblock_window", fmt.Sprintf("netblock_window must be a positive duration when netblock is enabled; omit the key to use %s", DefaultNetBlockWindow)})
+	}
 	if cfg.AutoResponse.PermBlockInterval != "" {
 		if d, err := time.ParseDuration(cfg.AutoResponse.PermBlockInterval); err != nil {
 			results = append(results, ValidationResult{"error", "auto_response.permblock_interval", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.PermBlockInterval)})

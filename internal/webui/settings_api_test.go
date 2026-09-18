@@ -357,6 +357,9 @@ func TestSettingsGETShowsEffectiveBlockEscalationDefaults(t *testing.T) {
 	if got := resp.Values["permblock_count"]; got != float64(config.DefaultPermBlockCount) {
 		t.Errorf("permblock_count = %#v, want %d", got, config.DefaultPermBlockCount)
 	}
+	if got := resp.Values["netblock_window"]; got != config.DefaultNetBlockWindow {
+		t.Errorf("netblock_window = %#v, want %q", got, config.DefaultNetBlockWindow)
+	}
 }
 
 func TestSettingsPOSTRejectsEnablingNetblockWithExplicitZeroThreshold(t *testing.T) {

@@ -207,6 +207,10 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		actions = append(actions, "removed from attack DB")
 	}
 
+	// An address the operator cleared is no longer evidence against its subnet.
+	checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP)
+	actions = append(actions, "removed from subnet block history")
+
 	// 4. Flush cphulk
 	flushCphulk(req.IP)
 
@@ -447,6 +451,10 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 		actions = append(actions, "removed from attack DB")
 	}
 
+	// An address the operator cleared is no longer evidence against its subnet.
+	checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP)
+	actions = append(actions, "removed from subnet block history")
+
 	// 4. Flush cphulk
 	flushCphulk(req.IP)
 	actions = append(actions, "flushed cPanel login history")
@@ -523,6 +531,10 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 		adb.RemoveIP(req.IP)
 		actions = append(actions, "removed from attack DB")
 	}
+
+	// An address the operator cleared is no longer evidence against its subnet.
+	checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP)
+	actions = append(actions, "removed from subnet block history")
 
 	// 4. Flush cphulk
 	flushCphulk(req.IP)

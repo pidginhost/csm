@@ -452,6 +452,15 @@ func TestValidateDurations(t *testing.T) {
 		}
 	})
 
+	t.Run("bad netblock_window", func(t *testing.T) {
+		cfg := base()
+		cfg.AutoResponse.NetBlockWindow = "bad"
+		results := Validate(cfg)
+		if !hasResult(results, "error", "auto_response.netblock_window") {
+			t.Errorf("expected error for bad netblock_window; results=%v", results)
+		}
+	})
+
 	t.Run("bad permblock_interval", func(t *testing.T) {
 		cfg := base()
 		cfg.AutoResponse.PermBlockInterval = "bad"
@@ -1004,7 +1013,7 @@ func TestLoadFillsAutoResponseDurationDefaults(t *testing.T) {
 		data string
 	}{
 		{"omitted", "hostname: test\n"},
-		{"null", "hostname: test\nauto_response:\n  block_expiry: null\n  permblock_interval: null\n"},
+		{"null", "hostname: test\nauto_response:\n  block_expiry: null\n  permblock_interval: null\n  netblock_window: null\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := LoadBytes([]byte(tc.data))
@@ -1017,12 +1026,15 @@ func TestLoadFillsAutoResponseDurationDefaults(t *testing.T) {
 			if cfg.AutoResponse.PermBlockInterval != DefaultPermBlockInterval {
 				t.Errorf("permblock_interval = %q, want %q", cfg.AutoResponse.PermBlockInterval, DefaultPermBlockInterval)
 			}
+			if cfg.AutoResponse.NetBlockWindow != DefaultNetBlockWindow {
+				t.Errorf("netblock_window = %q, want %q", cfg.AutoResponse.NetBlockWindow, DefaultNetBlockWindow)
+			}
 		})
 	}
 }
 
 func TestLoadKeepsExplicitEmptyAutoResponseDurations(t *testing.T) {
-	cfg, err := LoadBytes([]byte("hostname: test\nauto_response:\n  enabled: true\n  block_ips: true\n  block_expiry: \"\"\n  permblock: true\n  permblock_interval: \"\"\n"))
+	cfg, err := LoadBytes([]byte("hostname: test\nauto_response:\n  enabled: true\n  block_ips: true\n  block_expiry: \"\"\n  permblock: true\n  permblock_interval: \"\"\n  netblock: true\n  netblock_window: \"\"\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1039,6 +1051,12 @@ func TestLoadKeepsExplicitEmptyAutoResponseDurations(t *testing.T) {
 	if !hasResult(results, "error", "auto_response.permblock_interval") {
 		t.Errorf("explicit empty permblock_interval must be rejected while permblock is enabled; results=%v", results)
 	}
+	if cfg.AutoResponse.NetBlockWindow != "" {
+		t.Errorf("netblock_window = %q, want explicit empty value", cfg.AutoResponse.NetBlockWindow)
+	}
+	if !hasResult(results, "error", "auto_response.netblock_window") {
+		t.Errorf("explicit empty netblock_window must be rejected while netblock is enabled; results=%v", results)
+	}
 }
 
 func TestValidateRejectsNonPositiveAutoResponseDurations(t *testing.T) {
@@ -1049,6 +1067,7 @@ func TestValidateRejectsNonPositiveAutoResponseDurations(t *testing.T) {
 	}{
 		{"block expiry", "auto_response.block_expiry", func(cfg *Config, value string) { cfg.AutoResponse.BlockExpiry = value }},
 		{"permblock interval", "auto_response.permblock_interval", func(cfg *Config, value string) { cfg.AutoResponse.PermBlockInterval = value }},
+		{"netblock window", "auto_response.netblock_window", func(cfg *Config, value string) { cfg.AutoResponse.NetBlockWindow = value }},
 	} {
 		for _, value := range []string{"0s", "-1h"} {
 			t.Run(tc.name+"_"+value, func(t *testing.T) {
