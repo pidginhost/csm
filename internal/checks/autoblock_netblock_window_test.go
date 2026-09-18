@@ -418,6 +418,61 @@ func TestNetblockPreservesUnreadableHistory(t *testing.T) {
 	}
 }
 
+func TestNetblockUnreadableHistoryCountsOnlyCurrentOffenders(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry_run=%t", dryRun), func(t *testing.T) {
+			cfg := netblockWindowConfig(t)
+			cfg.AutoResponse.DryRun = &dryRun
+			now := time.Now()
+			setAutoBlockNow(t, now)
+			path := filepath.Join(cfg.StatePath, netblockHistoryFile)
+			// Decoding reaches the IP map before the invalid timestamp. None of
+			// that partial history may become evidence for the fallback.
+			contents := []byte(fmt.Sprintf(`{"ips":{"198.51.100.50":%q},"pruned_at":"invalid"}`, now.Format(time.RFC3339)))
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			blocker := newNetblockBlocker()
+			for _, ip := range []string{"198.51.100.10", "198.51.100.20", "198.51.100.30"} {
+				blocker.live[ip] = struct{}{}
+			}
+			blocker.allowed["198.51.100.30"] = true
+			swapBlocker(t, blocker)
+			if err := writeBlockState(cfg.StatePath, &blockState{IPs: []blockedIP{
+				{IP: "198.51.100.10", BlockedAt: now.Add(-8 * 24 * time.Hour)},
+				{IP: "198.51.100.40", BlockedAt: now.Add(-time.Hour)},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if actions := AutoBlockIPs(cfg, nil); len(actions) != 0 || len(blocker.subnets) != 0 {
+				t.Fatalf("expired, allowed or partial-history IP counted: actions=%v subnets=%v", actions, blocker.subnets)
+			}
+			// Removing the allow entry leaves three live offenders, including
+			// the tracked block older than the history window.
+			delete(blocker.allowed, "198.51.100.30")
+			actions := AutoBlockIPs(cfg, nil)
+			wantMessage := "AUTO-NETBLOCK: 198.51.100.0/24 blocked (3 IPs from same subnet)"
+			wantSeverity := alert.Critical
+			if dryRun {
+				wantMessage = "AUTO-NETBLOCK [dry-run]: 198.51.100.0/24 would be blocked (3 IPs from same subnet)"
+				wantSeverity = alert.Warning
+				if len(blocker.subnets) != 0 {
+					t.Fatalf("dry-run applied subnet blocks: %v", blocker.subnets)
+				}
+			} else if len(blocker.subnets) != 1 || blocker.subnets[0] != "198.51.100.0/24" {
+				t.Fatalf("subnet blocks = %v, want the current offenders' /24", blocker.subnets)
+			}
+			if len(actions) != 1 || actions[0].Message != wantMessage || actions[0].Severity != wantSeverity {
+				t.Fatalf("actions = %+v, want %q at severity %v", actions, wantMessage, wantSeverity)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != string(contents) {
+				t.Fatalf("unreadable history changed: %s (%v)", got, err)
+			}
+		})
+	}
+}
+
 func mustSaveNetblockHistory(t *testing.T, path string, h *netblockHistory) {
 	t.Helper()
 	if err := saveNetblockHistory(path, h); err != nil {
