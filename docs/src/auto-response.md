@@ -13,9 +13,11 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
 | **PAM blocking** | Instant IP block when one address breaches `thresholds.pam_bruteforce_threshold` failures inside `pam_bruteforce_window_min` minutes, or fails against `cred_stuffing_distinct_accounts` distinct accounts. |
-| **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range attack. |
+| **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range were blocked within `netblock_window` (7 days by default). Currently blocked addresses count regardless of age, including operator and permanent blocks. Ended blocks count while their latest observed block start is inside the window, unless an earlier subnet block already answered them. A returning operator block starts fresh history after its absence is observed. Whitelist and clear actions, including bulk whitelist, forget the address. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
+
+Subnet history is pruned hourly and saved only when it changes. If the file cannot be read it is left untouched and escalation counts only the addresses blocked right now until it is repaired or removed; status and doctor report the failure. Clear, whitelist and flush actions report history cleanup failures so operators can retry them.
 
 ### Process termination
 
@@ -173,6 +175,7 @@ auto_response:
   max_blocks_per_hour: 50     # per-IP blocks per hour; 0/omitted uses default
   netblock: true              # enable subnet blocking
   netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet block; minimum 2
+  netblock_window: "168h"     # blocked IPs count this far back, expired blocks included; omitted defaults to 168h
   permblock: true             # promote temp blocks to permanent
   permblock_count: 4          # temp blocks before promotion; minimum 2
   permblock_interval: "24h"   # positive counting window; omitted defaults to 24h

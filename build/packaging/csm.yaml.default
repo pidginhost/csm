@@ -354,6 +354,7 @@ auto_response:
   fix_wp_cron: false          # auto-disable WP-Cron + install per-user system cron on WP-Cron findings
   netblock: false             # auto-block /24 subnet when threshold IPs from same range
   netblock_threshold: 3
+  netblock_window: "168h"    # how far back blocked IPs count, including expired blocks
   permblock: false            # auto-promote to permanent after N temp blocks
   permblock_count: 4
   permblock_interval: "24h"

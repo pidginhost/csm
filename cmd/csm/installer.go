@@ -879,6 +879,7 @@ auto_response:
   http_scanner_action: "challenge"  # http_scanner_profile response: challenge (PoW; falls back to block) or block
   netblock: false             # auto-block IPv4 /24 or IPv6 /64 at threshold
   netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet auto-block
+  netblock_window: "168h"     # how far back blocked IPs count, including expired blocks
   permblock: false            # auto-promote to permanent after N temp blocks
   permblock_count: 4          # temp blocks before permanent
   permblock_interval: "24h"   # window for counting temp blocks

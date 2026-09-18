@@ -354,6 +354,7 @@ auto_response:
   block_cpanel_logins: false            # block IPs on cPanel/webmail/FTP/API thresholded brute findings (multi-IP login, webmail/API brute, FTP brute). Single direct cPanel form logins stay audit-only regardless of this flag.
   netblock: false                       # auto-block IPv4 /24 or IPv6 /64 subnets
   netblock_threshold: 3                 # IPs from same IPv4 /24 or IPv6 /64 before subnet block; minimum 2, omit for the default
+  netblock_window: "168h"              # blocked IPs count this far back, expired blocks included; omit for the 168h default
   permblock: false                      # promote temp blocks to permanent
   permblock_count: 4                    # temp blocks before promotion; minimum 2, omit for the default
   permblock_interval: "24h"             # positive counting window; omit for the 24h default

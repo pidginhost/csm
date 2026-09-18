@@ -11,12 +11,14 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Subnet blocking now catches ranges that rotate through addresses one block at a time. Addresses blocked in the last seven days count toward the threshold, including operator and permanent blocks, and the window is adjustable.
 - Executable PHP can no longer pass as a comment-only stub and suppress a warning in sensitive WordPress directories.
 - A file staged in a WordPress core, plugin or theme update that held other content before it was overwritten and then moved into place or deleted beside an identical installed copy is reported again as a self-deleting file, instead of passing as update cleanup.
 - A PHP file could hide code behind a comment ended by a bare carriage return and still pass as an empty stub, a translation cache or version data, which skipped the location warning for PHP in uploads and other sensitive WordPress directories.
 
 ### Fixed
 
+- The threat detail page labels the routed range an address belongs to as its GeoIP prefix, so it no longer reads as if the whole range were listed or blocked.
 - A WordPress core update no longer raises a warning for the version file it copies into the upgrade directory. The file is recognised by content and holds only version data.
 - A WordPress core update no longer raises a self-deleting file notice for the release files it unpacks but does not install, such as bundled themes. Each file must match the official checksum of the release now installed.
 

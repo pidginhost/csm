@@ -243,6 +243,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "http_scanner_action", Type: "enum", Label: "URL scanner response", Options: []string{"challenge", "block"}, Help: "Response to http_scanner_profile findings. challenge routes the IP to the PoW challenge when the challenge subsystem is enabled, falling back to a block when it is not; block always hard-blocks."},
 			{YAMLPath: "netblock", Type: "bool", Label: "Auto-block /24 on threshold"},
 			{YAMLPath: "netblock_threshold", Type: "int", Label: "Netblock threshold", Min: int64p(config.MinBlockEscalationCount), Help: "Blocked addresses in one IPv4 /24 or IPv6 /64 before the subnet itself is blocked. Default 3."},
+			{YAMLPath: "netblock_window", Type: "string", Label: "Netblock window", Placeholder: "168h", Help: "Positive window in which blocked addresses count toward the netblock threshold, including blocks that already expired. Default 168h."},
 			{YAMLPath: "permblock", Type: "bool", Label: "Auto-promote to permanent"},
 			{YAMLPath: "permblock_count", Type: "int", Label: "Temp blocks before permanent", Min: int64p(config.MinBlockEscalationCount), Help: "Temporary blocks inside the window before the address is blocked permanently. Default 4."},
 			{YAMLPath: "permblock_interval", Type: "string", Label: "Permblock window", Placeholder: "24h", Help: "Positive window for counting temporary blocks. Default 24h."},
