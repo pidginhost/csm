@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unicode"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/jstaint"
@@ -292,14 +293,16 @@ func demotionForChangedContent(check, path string, info os.FileInfo, classifiedH
 // Rejecting closing tags also rejects inline HTML or JavaScript that would stay
 // live after PHP execution stops.
 func isInertPHPReplacement(content string) bool {
-	trimmed := strings.TrimSpace(content)
+	// Preserve the byte after the opener even when it is trailing whitespace:
+	// trimming it could turn a non-tag into the valid "<?php" at EOF.
+	trimmed := strings.TrimLeftFunc(content, unicode.IsSpace)
 	if trimmed == "" {
 		return true
 	}
 	if len(trimmed) < len("<?php") || !strings.EqualFold(trimmed[:len("<?php")], "<?php") {
 		return false
 	}
-	if len(trimmed) > len("<?php") && !isPHPSpace(trimmed[len("<?php")]) {
+	if len(trimmed) > len("<?php") && !isPHPOpenTagSpace(trimmed[len("<?php")]) {
 		return false
 	}
 	if strings.Contains(trimmed, "?>") {

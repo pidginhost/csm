@@ -103,6 +103,8 @@ func TestReverifyWithholdsDemotionFromLowEntropyLivePHP(t *testing.T) {
 		"request data output":                  "<?php echo $_GET['token'];\n",
 		"inline phishing page":                 "<form action='/collect'><input name='password'></form>\n",
 		"comment stub with active HTML tail":   "<?php // cleaned\n?><script>fetch('/collect')</script>\n",
+		"vertical tab before page output":      "<?php\v// <script>alert(1)</script>\n",
+		"form feed before page output":         "<?php\f// <script>alert(1)</script>\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			tmp := t.TempDir()

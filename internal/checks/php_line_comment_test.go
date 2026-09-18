@@ -78,11 +78,13 @@ func TestPHPInertRecognizersRejectAttributes(t *testing.T) {
 func TestPHPInertRecognizersRejectNonTagOpeners(t *testing.T) {
 	bodies := map[string]string{
 		"inert stub":        "// Silence is golden.",
+		"inert replacement": "// <script>alert(1)</script>",
 		"translation cache": "return ['messages'=>['Save'=>'<script>alert(1)</script>']];",
 		"version data":      "$wp_version = '<script>alert(1)</script>';",
 	}
 	recognizers := map[string]func([]byte) bool{
 		"inert stub":        IsBenignPHPStubBytes,
+		"inert replacement": func(b []byte) bool { return isInertPHPReplacement(string(b)) },
 		"translation cache": func(b []byte) bool { return IsWPTranslationCacheBytesComplete(b, true) },
 		"version data":      func(b []byte) bool { return IsWPVersionDataBytesComplete(b, true) },
 	}
@@ -97,5 +99,25 @@ func TestPHPInertRecognizersRejectNonTagOpeners(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInertPHPReplacementOpenerBoundary(t *testing.T) {
+	for _, tag := range []string{"<?php", "<?PHP", "<?Php"} {
+		for _, suffix := range []string{"", " ", "\t", "\r", "\n", " // cleaned\n"} {
+			if !isInertPHPReplacement(" \n" + tag + suffix) {
+				t.Errorf("valid comment-only opener rejected: %q", tag+suffix)
+			}
+		}
+		for _, suffix := range []string{"\v", "\f", "\v \n", "\f\t\n", "\u00a0"} {
+			if isInertPHPReplacement(" \n" + tag + suffix) {
+				t.Errorf("trailing whitespace hid an invalid opener: %q", tag+suffix)
+			}
+		}
+	}
+	for _, src := range []string{"<? // cleaned", "<?= 'page output';"} {
+		if isInertPHPReplacement(src) {
+			t.Errorf("short tag accepted as inert: %q", src)
+		}
 	}
 }
