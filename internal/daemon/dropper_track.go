@@ -56,6 +56,13 @@ type dropperCandidate struct {
 	// ContentRewritten is sticky: a file whose written content changed
 	// cannot prove from its last bytes what an earlier version ran.
 	ContentRewritten bool
+	// Keep the first nonempty core snapshot across empty writes and delayed
+	// analyzer verdicts. The latest snapshot alone cannot prove its history.
+	coreHistoryDigest [32]byte
+	coreHistoryKnown  bool
+	// Observed is the TTL origin; snapshotObserved orders the metadata even
+	// after a merge has moved Observed back to the earliest event.
+	snapshotObserved time.Time
 	// WPInstallData proves the complete, stable snapshot used for Digest was
 	// a translation return literal or version assignments, with no payload.
 	WPInstallData bool
@@ -196,6 +203,16 @@ func candidateKey(c dropperCandidate) dropperCandidateKey {
 }
 
 func ownDropperCandidate(c dropperCandidate) dropperCandidate {
+	if c.snapshotObserved.Before(c.Observed) {
+		c.snapshotObserved = c.Observed
+	}
+	if _, _, core := wpUpgradeCorePackageFile(c.Path, c.Docroot); core && c.Size != 0 {
+		if !c.DigestKnown {
+			c.ContentRewritten = true
+		} else if !c.coreHistoryKnown {
+			c.coreHistoryDigest, c.coreHistoryKnown = c.Digest, true
+		}
+	}
 	// Torn bytes that already look like code are evidence, not noise.
 	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsHarmless(c)
 	if len(c.Head) > dropperTrackedHeadMax {
@@ -205,24 +222,14 @@ func ownDropperCandidate(c dropperCandidate) dropperCandidate {
 	return c
 }
 
-// dropperContentChanged reports whether two completed snapshots of one file
-// may hold different bytes. A create-only snapshot is not compared: its read
-// can land mid-write, and a writer that never closes leaves no second
-// snapshot to compare with anyway.
-func dropperContentChanged(a, b dropperCandidate) bool {
-	if a.WritePending || b.WritePending || a.Size == 0 || b.Size == 0 {
-		return false
-	}
-	return !a.DigestKnown || !b.DigestKnown || a.Digest != b.Digest
-}
-
 func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged := next
-	if next.Observed.Before(prev.Observed) {
+	if next.snapshotObserved.Before(prev.snapshotObserved) {
 		merged = prev
+	}
+	merged.Observed = prev.Observed
+	if next.Observed.Before(prev.Observed) {
 		merged.Observed = next.Observed
-	} else {
-		merged.Observed = prev.Observed
 	}
 	merged.Created = prev.Created || next.Created
 	merged.PHPExecutable = prev.PHPExecutable || next.PHPExecutable
@@ -230,7 +237,13 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
 	merged.ContentUnsettled = prev.ContentUnsettled || next.ContentUnsettled
 	merged.WPInstallUnsafe = prev.WPInstallUnsafe || next.WPInstallUnsafe
-	merged.ContentRewritten = prev.ContentRewritten || next.ContentRewritten || dropperContentChanged(prev, next)
+	merged.ContentRewritten = prev.ContentRewritten || next.ContentRewritten ||
+		(prev.coreHistoryKnown && next.coreHistoryKnown && prev.coreHistoryDigest != next.coreHistoryDigest)
+	if prev.coreHistoryKnown {
+		merged.coreHistoryDigest, merged.coreHistoryKnown = prev.coreHistoryDigest, true
+	} else {
+		merged.coreHistoryDigest, merged.coreHistoryKnown = next.coreHistoryDigest, next.coreHistoryKnown
+	}
 	// CREATE may reach an analyzer after CLOSE_WRITE for the same inode.
 	merged.WritePending = prev.WritePending && next.WritePending
 	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
@@ -757,6 +770,12 @@ func dropperOfficialCorePackageFile(c dropperCandidate, p dropperProbe) bool {
 func dropperRenameMatch(c dropperCandidate, dest dropperFileState) bool {
 	if dropperSameIdentity(c, dest) {
 		return true
+	}
+	// A surviving copy of the last core snapshot cannot account for an
+	// earlier payload that was overwritten before the staged file vanished.
+	if _, _, core := wpUpgradeCorePackageFile(c.Path, c.Docroot); core &&
+		(c.ContentRewritten || c.ContentUnsettled || c.WritePending) {
+		return false
 	}
 	return c.DigestKnown && dest.DigestKnown && c.Size == dest.Size && c.Digest == dest.Digest
 }

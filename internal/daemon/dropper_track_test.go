@@ -1129,3 +1129,96 @@ func TestDropperOfficialVersionProbeScope(t *testing.T) {
 		})
 	}
 }
+
+func TestDropperCoreHistorySurvivesReordering(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	payload := freshDropperCandidate(now)
+	payload.Path = payload.Docroot + "/wp-content/upgrade/update/wordpress/wp-content/themes/example/functions.php"
+	payload.Created, payload.WritePending = true, true
+	empty := payload
+	empty.Observed, empty.Size, empty.Head = now.Add(time.Second), 0, nil
+	empty.Digest, empty.DigestKnown = sha256.Sum256(nil), true
+	empty.WritePending = false
+	official := payload
+	official.Observed, official.WritePending = now.Add(2*time.Second), false
+	official.Head = []byte("<?php function theme_setup() { add_theme_support('wp-block-styles'); }")
+	official.Size, official.Digest = int64(len(official.Head)), sha256.Sum256(official.Head)
+	official.CoreMD5Known = true
+	for _, order := range [][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+		snapshots := []dropperCandidate{payload, empty, official}
+		tr := newDropperTracker(time.Minute)
+		for _, i := range order {
+			tr.Observe(snapshots[i])
+		}
+		// Repeated analyzer verdicts must be idempotent for content history.
+		for _, i := range order {
+			tr.Refresh(snapshots[i])
+		}
+		due := tr.Due(now.Add(time.Minute))
+		if len(due) != 1 {
+			t.Fatalf("order %v: got %d candidates", order, len(due))
+		}
+		c := due[0]
+		if !c.ContentRewritten || c.Digest != official.Digest || !c.Observed.Equal(now) {
+			t.Fatalf("order %v lost history, latest snapshot or TTL: %+v", order, c)
+		}
+		if assessDropper(c, dropperProbe{Conclusive: true, OfficialWPCorePackageFile: true}) == dropperBenign {
+			t.Fatalf("order %v hid payload", order)
+		}
+	}
+}
+
+func TestDropperCoreHistoryKeepsInodeGenerations(t *testing.T) {
+	for _, knownBirth := range []bool{false, true} {
+		now := time.Unix(1_770_000_000, 0)
+		payload := freshDropperCandidate(now)
+		payload.Path = payload.Docroot + "/wp-content/upgrade/update/wordpress/wp-content/themes/example/functions.php"
+		payload.BirthKnown = knownBirth
+		official := payload
+		official.Observed, official.Birth = now.Add(time.Second), payload.Birth.Add(time.Second)
+		official.Head = []byte("<?php function theme_setup() { add_theme_support('wp-block-styles'); }")
+		official.Size, official.Digest = int64(len(official.Head)), sha256.Sum256(official.Head)
+		official.CoreMD5Known = true
+		tr := newDropperTracker(time.Minute)
+		tr.Observe(payload)
+		if !tr.Refresh(official) {
+			tr.Observe(official)
+		}
+		due := tr.Due(now.Add(2 * time.Minute))
+		wantCandidates := 1
+		if knownBirth {
+			wantCandidates = 2
+		}
+		if len(due) != wantCandidates {
+			t.Fatalf("birth known=%v: got %d candidates", knownBirth, len(due))
+		}
+		findings := 0
+		for _, c := range due {
+			if assessDropper(c, dropperProbe{Conclusive: true, OfficialWPCorePackageFile: c.Digest == official.Digest}) != dropperBenign {
+				findings++
+			}
+		}
+		if findings != 1 {
+			t.Fatalf("birth known=%v: got %d findings, want payload evidence", knownBirth, findings)
+		}
+	}
+}
+
+func TestDropperCoreHistoryRetainsUnknownSnapshot(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	c := freshDropperCandidate(now)
+	c.Path = c.Docroot + "/wp-content/upgrade/update/wordpress/wp-content/themes/example/functions.php"
+	c.DigestKnown = false // A nonempty read that exceeded the bound or failed.
+	tr := newDropperTracker(time.Minute)
+	tr.Observe(c)
+	c.Observed = now.Add(time.Second)
+	c.DigestKnown, c.CoreMD5Known = true, true
+	tr.Refresh(c)
+	due := tr.Due(now.Add(time.Minute))
+	if len(due) != 1 || !due[0].ContentRewritten {
+		t.Fatalf("unknown earlier bytes lost: %+v", due)
+	}
+	if assessDropper(due[0], dropperProbe{Conclusive: true, OfficialWPCorePackageFile: true}) == dropperBenign {
+		t.Fatal("unknown earlier bytes accepted as official")
+	}
+}

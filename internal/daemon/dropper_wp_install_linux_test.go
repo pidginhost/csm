@@ -792,3 +792,93 @@ func TestDropperCorePackageFileVersionFromOtherRootStillReported(t *testing.T) {
 		t.Fatalf("want one finding for %s, got %+v", staged, got)
 	}
 }
+
+func TestDropperCorePackageSnapshotHistory(t *testing.T) {
+	const rel = "wp-content/themes/twentytwentysix/functions.php"
+	type observation struct {
+		body string
+		mask uint64
+	}
+	for _, tc := range []struct {
+		name         string
+		writes       []observation
+		resendCreate bool
+		installed    bool
+		wantAlert    bool
+	}{
+		{name: "rewritten file has an installed copy", writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, installed: true, wantAlert: true},
+		{name: "create payload then official close", writes: []observation{{testDropperPHP, FAN_CREATE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, wantAlert: true},
+		{name: "payload empty official", writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {"", FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, wantAlert: true},
+		{name: "empty create then official close", writes: []observation{{"", FAN_CREATE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}},
+		{name: "official create then close", writes: []observation{{testCoreThemeFile, FAN_CREATE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}},
+		{name: "resend create then close", writes: []observation{{testCoreThemeFile, FAN_CREATE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, resendCreate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			staged := filepath.Join(root, "wp-content/upgrade/update/wordpress", rel)
+			writeWPInstallFile(t, filepath.Join(root, "wp-includes/version.php"), testVersionPHP)
+			r := newWPInstallRun(t, root)
+			r.fm.wpCache = coreReleaseChecksums(t, "7.1", "ro_RO", map[string]string{rel: testCoreThemeFile})
+			if tc.installed {
+				writeWPInstallFile(t, filepath.Join(root, rel), testCoreThemeFile)
+			}
+			var snapshots []*dropperCandidate
+			for _, write := range tc.writes {
+				writeWPInstallFile(t, staged, write.body)
+				f, err := os.Open(staged)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: write.mask}, "")
+				_ = f.Close()
+				if c == nil {
+					t.Fatal("missing candidate")
+				}
+				snapshots = append(snapshots, c)
+			}
+			if tc.resendCreate {
+				// Analyzer verdicts resend the original snapshot; they must not invent
+				// a content rewrite or discard history accumulated by another worker.
+				snapshots[0].ContentSuspicious = true
+				if !r.fm.dropper.tr.Refresh(*snapshots[0]) || !r.fm.dropper.tr.Refresh(*snapshots[1]) {
+					t.Fatal("refresh lost candidate")
+				}
+				due := r.fm.dropper.tr.Due(time.Now().Add(2 * r.ttl))
+				if len(due) != 1 || due[0].ContentRewritten || !due[0].ContentSuspicious {
+					t.Fatalf("resend changed content history: %+v", due)
+				}
+				return
+			}
+			if err := os.Remove(staged); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			if tc.wantAlert {
+				if len(*r.alerts) != 1 || (*r.alerts)[0].path != staged {
+					t.Fatalf("payload deletion lost: %+v", *r.alerts)
+				}
+			} else if len(*r.alerts) != 0 {
+				t.Fatalf("official bytes reported: %+v", *r.alerts)
+			}
+		})
+	}
+}
+
+func TestDropperCorePackageCreateSnapshotIsComplete(t *testing.T) {
+	root := t.TempDir()
+	staged := filepath.Join(root, "wp-content/upgrade/update/wordpress/wp-content/themes/example/functions.php")
+	body := testCoreThemeFile + strings.Repeat("// official content\n", 100)
+	writeWPInstallFile(t, staged, body)
+	r := newWPInstallRun(t, root)
+	f, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE}, "")
+	// #nosec G401 -- mirrors the official checksum format
+	want := md5.Sum([]byte(body))
+	if c == nil || !c.CoreMD5Known || c.CoreMD5 != want || string(c.Head) != body[:dropperTrackedHeadMax] {
+		t.Fatalf("create snapshot lacks a complete, bound digest: %+v", c)
+	}
+}
