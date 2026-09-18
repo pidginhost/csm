@@ -214,9 +214,10 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		c.Parent = parent
 	}
 	wpCopy := len(wpUpgradeCopyDestinations(c.Path, c.Docroot)) > 0
+	staged := wpUpgradeStagedPackageFile(c.Path, c.Docroot)
 	_, _, core := wpUpgradeCorePackageFile(c.Path, c.Docroot)
 	read, limit := readFromFd, dropperTrackedHeadMax
-	if wpCopy || core {
+	if wpCopy || staged {
 		read, limit = readCompleteFromFd, dropperDigestMax
 	}
 	// The data proof and retained head must share the opening stat. Separate
@@ -227,12 +228,14 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		c.Head = bytes.Clone(c.Head[:dropperTrackedHeadMax])
 	}
 	c.ContentUnsettled = !stable
-	if core && body != nil && stable && int64(len(body)) == c.Size {
+	if staged && body != nil && stable && int64(len(body)) == c.Size {
 		// Hash the retained snapshot, including CREATE observations, rather
 		// than rereading an fd whose bytes may already have been replaced.
 		c.Digest, c.DigestKnown = sha256.Sum256(body), true
-		// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
-		c.CoreMD5, c.CoreMD5Known = md5.Sum(body), true
+		if core {
+			// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
+			c.CoreMD5, c.CoreMD5Known = md5.Sum(body), true
+		}
 	}
 	// Copy exceptions must check even CREATE snapshots: a benign CLOSE_WRITE
 	// cannot erase an earlier payload. Blank snapshots carry no such evidence.
@@ -251,8 +254,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 			}
 		}
 		c.WPInstallUnsafe = !c.WPInstallData || c.Mode&0o111 != 0
-	} else if !wpCopy && !core && !c.WritePending && (atomicWriteRenameCandidate(c.Path) != "" ||
-		len(wpUpgradeRenameCandidates(c.Path, c.Docroot)) > 0) {
+	} else if !wpCopy && !staged && !c.WritePending && atomicWriteRenameCandidate(c.Path) != "" {
 		c.Digest, c.DigestKnown = digestFromFD(event.fd, st.Size)
 	}
 

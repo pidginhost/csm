@@ -1222,3 +1222,37 @@ func TestDropperCoreHistoryRetainsUnknownSnapshot(t *testing.T) {
 		t.Fatal("unknown earlier bytes accepted as official")
 	}
 }
+
+// A staged file whose only snapshot could not be read whole (oversized, or a
+// read that raced the writer) was still written once. Moving it into place
+// must not be reported as a rewrite; a second snapshot is what proves one.
+func TestDropperStagedSingleUnreadableSnapshotIsNotRewrite(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	c := freshDropperCandidate(now)
+	c.Path = c.Docroot + "/wp-content/upgrade/example-2.0/example/example.php"
+	c.DigestKnown = false
+	tr := newDropperTracker(time.Minute)
+	tr.Observe(c)
+	due := tr.Due(now.Add(time.Minute))
+	if len(due) != 1 || due[0].ContentRewritten {
+		t.Fatalf("single unreadable snapshot marked rewritten: %+v", due)
+	}
+	moved := dropperFileState{Path: c.Docroot + "/wp-content/plugins/example/example.php",
+		Device: c.Device, Inode: c.Inode, Birth: c.Birth, BirthKnown: c.BirthKnown, IsRegular: true}
+	if !dropperRenameMatch(due[0], moved) {
+		t.Fatal("rename of a single-write staged file rejected")
+	}
+
+	// Once a readable snapshot follows, the unread bytes are unaccounted for.
+	tr = newDropperTracker(time.Minute)
+	tr.Observe(c)
+	c.Observed = now.Add(time.Second)
+	c.DigestKnown = true
+	if !tr.Refresh(c) {
+		t.Fatal("refresh lost candidate")
+	}
+	due = tr.Due(now.Add(2 * time.Minute))
+	if len(due) != 1 || !due[0].ContentRewritten || dropperRenameMatch(due[0], moved) {
+		t.Fatalf("unread earlier bytes accepted: %+v", due)
+	}
+}

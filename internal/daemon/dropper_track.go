@@ -56,10 +56,12 @@ type dropperCandidate struct {
 	// ContentRewritten is sticky: a file whose written content changed
 	// cannot prove from its last bytes what an earlier version ran.
 	ContentRewritten bool
-	// Keep the first nonempty core snapshot across empty writes and delayed
-	// analyzer verdicts. The latest snapshot alone cannot prove its history.
-	coreHistoryDigest [32]byte
-	coreHistoryKnown  bool
+	// The first nonempty snapshot of a staged package file, kept across empty
+	// writes and delayed analyzer verdicts: its digest, or that its bytes could
+	// not be read whole. The latest snapshot alone cannot prove its history.
+	stagedHistorySet    bool
+	stagedHistoryKnown  bool
+	stagedHistoryDigest [32]byte
 	// Observed is the TTL origin; snapshotObserved orders the metadata even
 	// after a merge has moved Observed back to the earliest event.
 	snapshotObserved time.Time
@@ -206,12 +208,9 @@ func ownDropperCandidate(c dropperCandidate) dropperCandidate {
 	if c.snapshotObserved.Before(c.Observed) {
 		c.snapshotObserved = c.Observed
 	}
-	if _, _, core := wpUpgradeCorePackageFile(c.Path, c.Docroot); core && c.Size != 0 {
-		if !c.DigestKnown {
-			c.ContentRewritten = true
-		} else if !c.coreHistoryKnown {
-			c.coreHistoryDigest, c.coreHistoryKnown = c.Digest, true
-		}
+	if c.Size != 0 && !c.stagedHistorySet && wpUpgradeStagedPackageFile(c.Path, c.Docroot) {
+		c.stagedHistorySet = true
+		c.stagedHistoryKnown, c.stagedHistoryDigest = c.DigestKnown, c.Digest
 	}
 	// Torn bytes that already look like code are evidence, not noise.
 	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsHarmless(c)
@@ -220,6 +219,17 @@ func ownDropperCandidate(c dropperCandidate) dropperCandidate {
 	}
 	c.Head = bytes.Clone(c.Head)
 	return c
+}
+
+// dropperStagedHistoryDiffers reports whether two snapshots of a staged
+// package file may hold different content. Bytes that could not be read whole
+// only count once a second snapshot exists to compare them with; a single
+// unreadable snapshot moved into place is still one write.
+func dropperStagedHistoryDiffers(a, b dropperCandidate) bool {
+	if !a.stagedHistorySet || !b.stagedHistorySet {
+		return false
+	}
+	return !a.stagedHistoryKnown || !b.stagedHistoryKnown || a.stagedHistoryDigest != b.stagedHistoryDigest
 }
 
 func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
@@ -237,13 +247,13 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
 	merged.ContentUnsettled = prev.ContentUnsettled || next.ContentUnsettled
 	merged.WPInstallUnsafe = prev.WPInstallUnsafe || next.WPInstallUnsafe
-	merged.ContentRewritten = prev.ContentRewritten || next.ContentRewritten ||
-		(prev.coreHistoryKnown && next.coreHistoryKnown && prev.coreHistoryDigest != next.coreHistoryDigest)
-	if prev.coreHistoryKnown {
-		merged.coreHistoryDigest, merged.coreHistoryKnown = prev.coreHistoryDigest, true
-	} else {
-		merged.coreHistoryDigest, merged.coreHistoryKnown = next.coreHistoryDigest, next.coreHistoryKnown
+	merged.ContentRewritten = prev.ContentRewritten || next.ContentRewritten || dropperStagedHistoryDiffers(prev, next)
+	history := next
+	if prev.stagedHistorySet {
+		history = prev
 	}
+	merged.stagedHistorySet = history.stagedHistorySet
+	merged.stagedHistoryKnown, merged.stagedHistoryDigest = history.stagedHistoryKnown, history.stagedHistoryDigest
 	// CREATE may reach an analyzer after CLOSE_WRITE for the same inode.
 	merged.WritePending = prev.WritePending && next.WritePending
 	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
@@ -660,6 +670,12 @@ func wpUpgradeRenameCandidates(path, configuredDocroot string) []string {
 	}
 }
 
+// wpUpgradeStagedPackageFile reports whether path lies inside an unpacked
+// core, plugin or theme package under wp-content/upgrade/.
+func wpUpgradeStagedPackageFile(path, configuredDocroot string) bool {
+	return len(wpUpgradeRenameCandidates(path, configuredDocroot)) > 0
+}
+
 // wpUpgradeCorePackageFile splits a path inside an unpacked core release,
 // <wpRoot>/wp-content/upgrade/<working>/wordpress/<rel>, into the WordPress
 // root and the file's key in the release checksum manifest.
@@ -768,13 +784,16 @@ func dropperOfficialCorePackageFile(c dropperCandidate, p dropperProbe) bool {
 // inode, and birth time for rename(2), or identical size plus a full SHA-256
 // digest for a copy-delete fallback across filesystems.
 func dropperRenameMatch(c dropperCandidate, dest dropperFileState) bool {
+	// Neither the moved file nor a surviving copy of the last staged snapshot
+	// can account for an earlier payload overwritten before the move.
+	staged := wpUpgradeStagedPackageFile(c.Path, c.Docroot)
+	if staged && c.ContentRewritten {
+		return false
+	}
 	if dropperSameIdentity(c, dest) {
 		return true
 	}
-	// A surviving copy of the last core snapshot cannot account for an
-	// earlier payload that was overwritten before the staged file vanished.
-	if _, _, core := wpUpgradeCorePackageFile(c.Path, c.Docroot); core &&
-		(c.ContentRewritten || c.ContentUnsettled || c.WritePending) {
+	if staged && (c.ContentUnsettled || c.WritePending) {
 		return false
 	}
 	return c.DigestKnown && dest.DigestKnown && c.Size == dest.Size && c.Digest == dest.Digest
