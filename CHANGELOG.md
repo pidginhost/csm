@@ -11,8 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
-- WordPress update cleanup keeps self-deleting file evidence when earlier content could not be verified or changed before deletion.
-
+- A file staged in a WordPress core update that held other content before it was overwritten with official or installed bytes and deleted is reported again as a self-deleting file, instead of passing as update cleanup.
 - A PHP file could hide code behind a comment ended by a bare carriage return and still pass as an empty stub, a translation cache or version data, which skipped the location warning for PHP in uploads and other sensitive WordPress directories.
 
 ### Fixed
