@@ -3,6 +3,7 @@
 var _quarTable = null;
 var _quarURLUnbind = null;
 var _quarDateListenersBound = false;
+var _quarMutationBusy = false;
 
 // WEB_ROADMAP P3.3: extract /home/<account>/ from the quarantine entry's
 // original_path so the account filter dropdown works without a server
@@ -103,7 +104,7 @@ function _populateQuarFilterOptions(files) {
 }
 
 function loadQuarantine() {
-    CSM.get('/api/v1/quarantine').then(function(files){
+    return CSM.get('/api/v1/quarantine').then(function(files){
         var el = document.getElementById('quarantine-content');
         var fromEl = document.getElementById('quarantine-from');
         var toEl = document.getElementById('quarantine-to');
@@ -173,12 +174,14 @@ function loadQuarantine() {
     }).catch(function(){ CSM.loadError(document.getElementById('quarantine-content'), loadQuarantine); });
 }
 function restoreFile(id) {
+    if (_quarMutationBusy) return;
     CSM.confirm('Restore this file? A re-scan is recommended after restore.').then(function() {
-        CSM.post('/api/v1/quarantine-restore', {id: id}).then(function(data){
-            if (data.error) { CSM.toast('Error: ' + data.error, 'error'); }
-            else { CSM.toast('Restored: ' + data.path, 'success'); }
-            loadQuarantine();
-        }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
+        return withQuarantineMutation(function() {
+            return CSM.post('/api/v1/quarantine-restore', {id: id}).then(function(data){
+                if (data.error) { CSM.toast('Error: ' + data.error, 'error'); }
+                else { CSM.toast('Restored: ' + data.path, 'success'); }
+            }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); }).then(loadQuarantine);
+        });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 function viewFile(id, path) {
@@ -196,6 +199,30 @@ var formatSize = CSM.formatSize;
 // labels, and the select-all indeterminate. Quarantine just registers
 // the two action handlers.
 var _quarBulk = null;
+function syncQuarantineMutationButtons() {
+    // Selection changes and table refreshes repaint the bulk buttons. Keep
+    // them locked until every batch and the final reload have settled.
+    if (_quarMutationBusy) {
+        ['bulk-restore-btn', 'bulk-delete-btn'].forEach(function(id) {
+            var btn = document.getElementById(id);
+            if (btn) btn.disabled = true;
+        });
+    }
+    document.querySelectorAll('.restore-btn').forEach(function(btn) {
+        btn.disabled = _quarMutationBusy;
+    });
+}
+
+function withQuarantineMutation(fn) {
+    if (_quarMutationBusy) return Promise.resolve();
+    _quarMutationBusy = true;
+    syncQuarantineMutationButtons();
+    return Promise.resolve().then(fn).finally(function() {
+        _quarMutationBusy = false;
+        updateBulkRestore();
+    });
+}
+
 function updateBulkRestore() {
     var restoreBtn = document.getElementById('bulk-restore-btn');
     var deleteBtn  = document.getElementById('bulk-delete-btn');
@@ -215,6 +242,7 @@ function updateBulkRestore() {
         selectAllEl: selectAll,
         selectAllSelector: '#q-select-all',
         valueAttr: 'data-id',
+        onChange: syncQuarantineMutationButtons,
         buttons: [
             { el: restoreBtn, labelTemplate: 'Restore {n} file(s)' },
             { el: deleteBtn,  labelTemplate: 'Delete {n} file(s)' }
@@ -225,22 +253,23 @@ function updateBulkRestore() {
 var bulkRestoreBtn = document.getElementById('bulk-restore-btn');
 if (bulkRestoreBtn) {
     bulkRestoreBtn.addEventListener('click', function() {
-        if (!_quarBulk) return;
+        if (!_quarBulk || _quarMutationBusy) return;
         var ids = _quarBulk.selectedValues();
         if (ids.length === 0) return;
         CSM.confirm('Restore ' + ids.length + ' file(s)? A re-scan is recommended after restore.').then(function() {
-            var succeeded = 0, failed = 0;
-            var chain = Promise.resolve();
-            ids.forEach(function(id) {
-                chain = chain.then(function() {
-                    return CSM.post('/api/v1/quarantine-restore', {id: id})
-                        .then(function() { succeeded++; })
-                        .catch(function() { failed++; });
+            return withQuarantineMutation(function() {
+                var succeeded = 0, failed = 0;
+                var chain = Promise.resolve();
+                ids.forEach(function(id) {
+                    chain = chain.then(function() {
+                        return CSM.post('/api/v1/quarantine-restore', {id: id})
+                            .then(function() { succeeded++; })
+                            .catch(function() { failed++; });
+                    });
                 });
-            });
-            chain.then(function() {
-                CSM.toast('Restored ' + succeeded + ' of ' + (succeeded + failed) + ' file(s)', failed > 0 ? 'warning' : 'success');
-                loadQuarantine();
+                return chain.then(function() {
+                    CSM.toast('Restored ' + succeeded + ' of ' + (succeeded + failed) + ' file(s)', failed > 0 ? 'warning' : 'success');
+                }).then(loadQuarantine);
             });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     });
@@ -249,20 +278,22 @@ if (bulkRestoreBtn) {
 var bulkDeleteBtn = document.getElementById('bulk-delete-btn');
 if (bulkDeleteBtn) {
     bulkDeleteBtn.addEventListener('click', function() {
-        if (!_quarBulk) return;
+        if (!_quarBulk || _quarMutationBusy) return;
         var ids = _quarBulk.selectedValues();
         if (ids.length === 0) return;
         CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?').then(function() {
-            var deleted = 0;
-            CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,
-                function(batch) { return { ids: batch }; },
-                function(data) { deleted += data.count || 0; }
-            ).then(function() {
-                CSM.toast('Deleted ' + deleted + ' file(s)', 'success');
-            }).catch(function(err) {
-                CSM.toast('Deleted ' + deleted + ' file(s), then failed: ' + (err.message || 'request failed'), 'error');
-            }).then(loadQuarantine);
-        }).catch(function() { /* cancelled */ });
+            return withQuarantineMutation(function() {
+                var deleted = 0;
+                return CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,
+                    function(batch) { return { ids: batch }; },
+                    function(data) { deleted += data.count || 0; }
+                ).then(function() {
+                    CSM.toast('Deleted ' + deleted + ' file(s)', 'success');
+                }).catch(function(err) {
+                    CSM.toast('Deleted ' + deleted + ' file(s), then failed: ' + (err.message || 'request failed'), 'error');
+                }).then(loadQuarantine);
+            });
+        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     });
 }
 

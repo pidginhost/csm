@@ -1076,6 +1076,8 @@ func (s *Server) latestFindingForVerify(key, check, message string) (alert.Findi
 	return matched, found
 }
 
+const bulkFixBodyMax = 64 * 1024
+
 // apiBulkFix applies fixes to multiple findings at once.
 // POST /api/v1/fix-bulk  body: [{"check":"...", "message":"...", "details":"..."}, ...]
 func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
@@ -1091,7 +1093,7 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		FilePath string `json:"file_path"`
 		Key      string `json:"key"`
 	}
-	if err := decodeJSONBodyLimited(w, r, 64*1024, &reqs); err != nil {
+	if err := decodeJSONBodyLimited(w, r, bulkFixBodyMax, &reqs); err != nil {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

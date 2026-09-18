@@ -2,6 +2,8 @@ package webui
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -49,5 +51,76 @@ func TestThreatBulkActionsCheckServerLimitFirst(t *testing.T) {
 	}
 	if got := strings.Count(readUIScript(t, "threat.js"), "ips.length > CSM.THREAT_BULK_MAX"); got != 2 {
 		t.Fatalf("threat.js checks the bulk limit in %d places, want block and whitelist", got)
+	}
+}
+
+func TestQuarantineMutationsStayLockedThroughRefresh(t *testing.T) {
+	src := readUIScript(t, "quarantine.js")
+	for _, fragment := range []string{
+		"if (_quarMutationBusy) return Promise.resolve();",
+		"_quarMutationBusy = true;",
+		"_quarMutationBusy = false;",
+		"onChange: syncQuarantineMutationButtons",
+		"return CSM.get('/api/v1/quarantine')",
+		"return CSM.postBatches('/api/v1/quarantine/bulk-delete'",
+		"}).then(loadQuarantine);",
+	} {
+		if !strings.Contains(src, fragment) {
+			t.Errorf("quarantine.js missing mutation guard fragment %q", fragment)
+		}
+	}
+	if got := strings.Count(src, "return withQuarantineMutation(function()"); got != 3 {
+		t.Errorf("quarantine.js guards %d mutations, want single restore, bulk restore and delete", got)
+	}
+}
+
+func TestFindingsBulkActionsCheckBodyLimit(t *testing.T) {
+	if want := fmt.Sprintf("CSM.FIX_BULK_BODY_MAX = %d;", bulkFixBodyMax); !strings.Contains(readUIScript(t, "csrf.js"), want) {
+		t.Fatalf("csrf.js missing %q", want)
+	}
+	src := readUIScript(t, "findings.js")
+	for _, fragment := range []string{
+		"new Blob([JSON.stringify(payload)]).size > CSM.FIX_BULK_BODY_MAX",
+		"var fixItems = bulkFixPayload(fixable);\n        if (!fixItems) return;\n        CSM.confirm(",
+		"var quarItems = bulkFixPayload(items);\n        if (!quarItems) return;\n        CSM.confirm(",
+	} {
+		if !strings.Contains(src, fragment) {
+			t.Errorf("findings.js missing request-size check %q", fragment)
+		}
+	}
+}
+
+func TestBulkFixRequestBodyBoundary(t *testing.T) {
+	const prefix = `[{"check":"unsupported-test-check","details":"`
+	const suffix = `"}]`
+	for _, size := range []int{bulkFixBodyMax - 1, bulkFixBodyMax, bulkFixBodyMax + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			body := prefix + strings.Repeat("x", size-len(prefix)-len(suffix)) + suffix
+			w := httptest.NewRecorder()
+			s := &Server{}
+			s.apiBulkFix(w, httptest.NewRequest(http.MethodPost, "/api/v1/fix-bulk", strings.NewReader(body)))
+			want := http.StatusOK
+			if size > bulkFixBodyMax {
+				want = http.StatusBadRequest
+			}
+			if w.Code != want {
+				t.Fatalf("body of %d bytes: status = %d, want %d", size, w.Code, want)
+			}
+		})
+	}
+}
+
+func TestCleanupLocksRowRestoresDuringBulkDelete(t *testing.T) {
+	src := readUIScript(t, "cleanup-history.js")
+	for _, fragment := range []string{
+		"if (fileMutationBusy) return Promise.resolve();",
+		"fileMutationBusy = true;",
+		"fileMutationBusy = false;",
+		"btn.disabled = fileMutationBusy;",
+		"return withFileBulkButtons(null, '', function()",
+	} {
+		if !strings.Contains(src, fragment) {
+			t.Errorf("cleanup-history.js missing row restore guard %q", fragment)
+		}
 	}
 }

@@ -18,6 +18,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- File restore and delete controls stay locked while bulk operations finish and refresh. Oversized bulk fixes on the Findings page explain how to narrow the selection before sending a request.
 - Deleting more than 100 selected quarantined files or file backups at once no longer fails as a whole; the selection is sent in batches. Bulk block and whitelist on the threat page explain their 100-address limit instead of returning a raw error.
 - The threat detail page labels the routed range an address belongs to as its GeoIP prefix, so it no longer reads as if the whole range were listed or blocked.
 - A WordPress core update no longer raises a warning for the version file it copies into the upgrade directory. The file is recognised by content and holds only version data.
