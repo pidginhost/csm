@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,7 +25,7 @@ func newServerForTest(t *testing.T) (*Server, *IPList) {
 	cfg.Challenge.Secret = "test-secret-for-hmac"
 	cfg.Challenge.ListenPort = 0
 	cfg.Challenge.Difficulty = 1
-	list := NewIPList(t.TempDir())
+	list := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	s := New(cfg, list)
 	return s, list
 }

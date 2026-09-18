@@ -53,17 +53,9 @@ type IPList struct {
 	gate        PortGate
 }
 
-// NewIPList creates an IP list writer.
-func NewIPList(statePath string) *IPList {
-	return NewIPListWithMapPath(statePath, filepath.Join(statePath, "challenge_ips.txt"))
-}
-
-// NewIPListWithMapPath creates an IP list writer with an explicit
-// webserver-facing map path.
-func NewIPListWithMapPath(statePath, mapPath string) *IPList {
-	if strings.TrimSpace(mapPath) == "" {
-		mapPath = filepath.Join(statePath, "challenge_ips.txt")
-	}
+// NewIPList creates an IP list writer for the webserver-facing map at
+// mapPath and clears any entries a previous run left in it.
+func NewIPList(mapPath string) *IPList {
 	l := &IPList{
 		path: mapPath,
 		ips:  make(map[string]challengeEntry),

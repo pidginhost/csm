@@ -94,7 +94,7 @@ func blockedTrackerIPs(t *testing.T, statePath string) []string {
 func TestChallengeEscalationRecordsBlockEvidence(t *testing.T) {
 	cfg, blocker := applyWiringSetup(t)
 	d := New(cfg, nil, nil, "")
-	d.ipList = challenge.NewIPList(t.TempDir())
+	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	d.ipList.Add("203.0.113.70", "wp brute", -time.Minute)
 
 	d.escalateExpiredChallenges(parseBlockExpiry(cfg.AutoResponse.BlockExpiry))

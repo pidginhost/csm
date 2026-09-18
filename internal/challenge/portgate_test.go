@@ -2,6 +2,7 @@ package challenge
 
 import (
 	"net"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -116,7 +117,7 @@ func (f *fakeGate) snapshot() (allows []allowCall, revokes []string, closed bool
 
 func TestIPListWiresGateAddRemove(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPListWithMapPath(dir, dir+"/challenge_ips.txt")
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	g := &fakeGate{}
 	l.SetPortGate(g)
 
@@ -141,7 +142,7 @@ func TestIPListWiresGateAddRemove(t *testing.T) {
 
 func TestIPListNoGateIsNoOp(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPListWithMapPath(dir, dir+"/challenge_ips.txt")
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	// no SetPortGate call; Add/Remove must not panic.
 	l.Add("203.0.113.7", "noop", 1*time.Minute)
 	l.Remove("203.0.113.7")
@@ -154,7 +155,7 @@ func TestIPListNoGateIsNoOp(t *testing.T) {
 // must not Revoke an IP that was not on the list.
 func TestIPListRemoveSkipsRevokeWhenNotListed(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPListWithMapPath(dir, dir+"/challenge_ips.txt")
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	g := &fakeGate{}
 	l.SetPortGate(g)
 
@@ -171,7 +172,7 @@ func TestIPListRemoveSkipsRevokeWhenNotListed(t *testing.T) {
 // every subsequent call.
 func TestIPListRemoveRevokesOncePerListing(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPListWithMapPath(dir, dir+"/challenge_ips.txt")
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	g := &fakeGate{}
 	l.SetPortGate(g)
 
@@ -189,7 +190,7 @@ func TestIPListRemoveRevokesOncePerListing(t *testing.T) {
 // call can hit netlink and must happen after that lock has been released.
 func TestIPListRemoveRevokesAfterUnlock(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPListWithMapPath(dir, dir+"/challenge_ips.txt")
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	g := &lockCheckingGate{t: t, list: l}
 	l.SetPortGate(g)
 

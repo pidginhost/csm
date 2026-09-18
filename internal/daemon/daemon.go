@@ -2740,7 +2740,7 @@ func (d *Daemon) startChallengeServer() {
 		return
 	}
 
-	d.ipList = challenge.NewIPListWithMapPath(d.cfg.StatePath, challenge.DefaultMapPath)
+	d.ipList = challenge.NewIPList(challenge.DefaultMapPath)
 	if platform.Detect().WebServer == platform.WSNginx {
 		d.ipList.SetNginxMap(challenge.DefaultNginxMapPath, d.reloadChallengeNginxMap)
 	}

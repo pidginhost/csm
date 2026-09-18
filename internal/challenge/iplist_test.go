@@ -11,7 +11,7 @@ import (
 
 func TestIPListAddAndContains(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPList(dir)
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	l.Add("203.0.113.5", "test", 1*time.Hour)
 
 	if !l.Contains("203.0.113.5") {
@@ -24,7 +24,7 @@ func TestIPListAddAndContains(t *testing.T) {
 
 func TestIPListRemove(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPList(dir)
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	l.Add("203.0.113.5", "test", 1*time.Hour)
 	l.Remove("203.0.113.5")
 
@@ -35,7 +35,7 @@ func TestIPListRemove(t *testing.T) {
 
 func TestIPListExpiredEntries(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPList(dir)
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	// Add with very short TTL — already expired.
 	l.mu.Lock()
 	l.ips["203.0.113.5"] = challengeEntry{
@@ -65,7 +65,7 @@ func TestIPListExpiredEntries(t *testing.T) {
 
 func TestIPListExpiredEntriesSkipsNonEscalating(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPList(dir)
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	l.Add("203.0.113.5", "escalate", -1*time.Second)
 	l.AddNonEscalating("203.0.113.6", "challenge-only", -1*time.Second)
 
@@ -86,7 +86,7 @@ func TestIPListExpiredEntriesSkipsNonEscalating(t *testing.T) {
 
 func TestIPListExpiredEntriesFlushesNonEscalatingRemoval(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPList(dir)
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	l.AddNonEscalating("203.0.113.6", "challenge-only", -1*time.Second)
 
 	if expired := l.ExpiredEntries(); len(expired) != 0 {
@@ -106,7 +106,7 @@ func TestIPListExpiredEntriesFlushesNonEscalatingRemoval(t *testing.T) {
 
 func TestIPListCleanExpiredRemovesOld(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPList(dir)
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	l.mu.Lock()
 	l.ips["old"] = challengeEntry{ExpiresAt: time.Now().Add(-1 * time.Minute)}
 	l.mu.Unlock()
@@ -119,7 +119,7 @@ func TestIPListCleanExpiredRemovesOld(t *testing.T) {
 
 func TestIPListFlushWritesFile(t *testing.T) {
 	dir := t.TempDir()
-	l := NewIPList(dir)
+	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
 	l.Add("203.0.113.5", "test", 1*time.Hour)
 
 	data, err := os.ReadFile(filepath.Join(dir, "challenge_ips.txt"))
@@ -269,7 +269,7 @@ func TestWriteMapFileDoesNotFollowPredictableTempSymlink(t *testing.T) {
 	}
 }
 
-func TestNewIPListWithMapPathClearsStaleMap(t *testing.T) {
+func TestNewIPListClearsStaleMap(t *testing.T) {
 	dir := t.TempDir()
 	mapPath := filepath.Join(dir, "run", "challenge_ips.txt")
 	if err := os.MkdirAll(filepath.Dir(mapPath), 0o755); err != nil {
@@ -279,7 +279,7 @@ func TestNewIPListWithMapPathClearsStaleMap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	NewIPListWithMapPath(dir, mapPath)
+	NewIPList(mapPath)
 
 	data, err := os.ReadFile(mapPath)
 	if err != nil {
@@ -294,7 +294,7 @@ func TestIPListWritesNginxMapAndReloadsOnChanges(t *testing.T) {
 	dir := t.TempDir()
 	mapPath := filepath.Join(dir, "run", "challenge_ips.txt")
 	nginxMapPath := filepath.Join(dir, "run", "challenge_ips.nginx.map")
-	l := NewIPListWithMapPath(dir, mapPath)
+	l := NewIPList(mapPath)
 
 	reloads := 0
 	l.SetNginxMap(nginxMapPath, func() error {
