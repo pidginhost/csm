@@ -408,8 +408,13 @@ func TestNetblockPreservesUnreadableHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(contents) || len(blocker.subnets) != 0 {
-		t.Fatalf("unreadable history discarded: contents=%s, subnet blocks=%v", got, blocker.subnets)
+	if string(got) != string(contents) {
+		t.Fatalf("unreadable history overwritten: %s", got)
+	}
+	// Losing the history must not switch escalation off: addresses blocked
+	// right now are still evidence.
+	if len(blocker.subnets) != 1 || blocker.subnets[0] != "198.51.100.0/24" {
+		t.Fatalf("subnet blocks = %v, want the /24 blocked from current evidence", blocker.subnets)
 	}
 }
 

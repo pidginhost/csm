@@ -11,7 +11,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
-- Subnet history now refreshes repeat operator blocks, forgets whitelisted addresses, and respects earlier mail subnet blocks. Operator cleanup is coordinated with automatic blocking and reports persistence failures.
 - Subnet blocking now catches ranges that rotate through addresses one block at a time. Addresses blocked in the last seven days count toward the threshold, including operator and permanent blocks, and the window is adjustable.
 - Executable PHP can no longer pass as a comment-only stub and suppress a warning in sensitive WordPress directories.
 - A file staged in a WordPress core update that held other content before it was overwritten with official or installed bytes and deleted is reported again as a self-deleting file, instead of passing as update cleanup.

@@ -17,7 +17,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
-Subnet history is pruned hourly and saved only when it changes. If it cannot be read, history-based escalation waits for recovery. Clear and flush actions report history cleanup failures so operators can retry them.
+Subnet history is pruned hourly and saved only when it changes. If the file cannot be read it is left untouched and escalation counts only the addresses blocked right now until it is repaired or removed; status and doctor report the failure. Clear, whitelist and flush actions report history cleanup failures so operators can retry them.
 
 ### Process termination
 

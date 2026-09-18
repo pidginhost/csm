@@ -179,6 +179,7 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 
 	var actions []string
 
+	var historyErr error
 	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
 		// 1. Unblock from firewall
 		if s.blocker != nil {
@@ -208,10 +209,12 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 			actions = append(actions, "removed from attack DB")
 		}
 	}); err != nil {
-		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+err.Error(), http.StatusInternalServerError)
-		return
+		// The firewall and database changes above already happened. Finish the
+		// action, including its audit entry, and report the failure after.
+		historyErr = err
+	} else {
+		actions = append(actions, "removed from subnet block history")
 	}
-	actions = append(actions, "removed from subnet block history")
 
 	// 4. Flush cphulk
 	flushCphulk(req.IP)
@@ -225,6 +228,10 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		detail += "; " + warning
 	}
 	s.auditLog(r, "whitelist_ip", req.IP, detail)
+	if historyErr != nil {
+		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+historyErr.Error(), http.StatusInternalServerError)
+		return
+	}
 	resp := map[string]interface{}{
 		"status":  "whitelisted",
 		"ip":      req.IP,
@@ -434,6 +441,7 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 
 	var actions []string
 
+	var historyErr error
 	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
 		// 1. Unblock from firewall (but don't add to allow list)
 		if s.blocker != nil {
@@ -454,16 +462,22 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 			actions = append(actions, "removed from attack DB")
 		}
 	}); err != nil {
-		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+err.Error(), http.StatusInternalServerError)
-		return
+		// The firewall and database changes above already happened. Finish the
+		// action, including its audit entry, and report the failure after.
+		historyErr = err
+	} else {
+		actions = append(actions, "removed from subnet block history")
 	}
-	actions = append(actions, "removed from subnet block history")
 
 	// 4. Flush cphulk
 	flushCphulk(req.IP)
 	actions = append(actions, "flushed cPanel login history")
 
 	s.auditLog(r, "clear_ip", req.IP, "unblock & clear")
+	if historyErr != nil {
+		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+historyErr.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, map[string]interface{}{
 		"status":  "cleared",
 		"ip":      req.IP,
@@ -508,6 +522,7 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 	ttl := time.Duration(req.Hours) * time.Hour
 	var actions []string
 
+	var historyErr error
 	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
 		// 1. Unblock from firewall
 		if s.blocker != nil {
@@ -537,15 +552,21 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 			actions = append(actions, "removed from attack DB")
 		}
 	}); err != nil {
-		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+err.Error(), http.StatusInternalServerError)
-		return
+		// The firewall and database changes above already happened. Finish the
+		// action, including its audit entry, and report the failure after.
+		historyErr = err
+	} else {
+		actions = append(actions, "removed from subnet block history")
 	}
-	actions = append(actions, "removed from subnet block history")
 
 	// 4. Flush cphulk
 	flushCphulk(req.IP)
 
 	s.auditLog(r, "temp_whitelist_ip", req.IP, fmt.Sprintf("%dh temp whitelist", req.Hours))
+	if historyErr != nil {
+		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+historyErr.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, map[string]interface{}{
 		"status":  "temp_whitelisted",
 		"ip":      req.IP,

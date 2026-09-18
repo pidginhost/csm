@@ -93,4 +93,9 @@ func TestThreatClearReportsNetblockHistoryWriteFailure(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("clear status = %d, want partial failure: %s", w.Code, w.Body.String())
 	}
+	// The unblock already happened, so it must still be audited.
+	audit, err := os.ReadFile(filepath.Join(s.cfg.StatePath, uiAuditFile))
+	if err != nil || !strings.Contains(string(audit), `"action":"clear_ip"`) {
+		t.Fatalf("applied clear was not audited: %s (%v)", audit, err)
+	}
 }
