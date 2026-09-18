@@ -3,7 +3,6 @@ package checks
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -12,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
+	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -211,7 +211,7 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		// on the plaintext so a payload hidden behind base64 is caught -- the
 		// raw base64 blob would otherwise sail past every text pattern.
 		if hasBase64HTMLMIME(headersLower, bodyLower) {
-			if decoded := decodeBase64Body(bodyData); decoded != "" {
+			if decoded := decodeBase64Body(bodyData, headersLower); decoded != "" {
 				indicators = append(indicators, bodyContentIndicators(strings.ToLower(decoded))...)
 			}
 		}
@@ -242,9 +242,13 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	}
 }
 
+// base64CTERe matches a base64 Content-Transfer-Encoding header in lowercased
+// text. Whitespace after the colon is optional, so an exact-string match let a
+// sender skip decoding by writing "content-transfer-encoding:base64".
+var base64CTERe = regexp.MustCompile(`content-transfer-encoding:[ \t]*base64\b`)
+
 func hasBase64HTMLMIME(headersLower, bodyLower string) bool {
-	hasBase64 := strings.Contains(headersLower, "content-transfer-encoding: base64") ||
-		strings.Contains(bodyLower, "content-transfer-encoding: base64")
+	hasBase64 := base64CTERe.MatchString(headersLower) || base64CTERe.MatchString(bodyLower)
 	hasHTML := strings.Contains(headersLower, "text/html") ||
 		strings.Contains(bodyLower, "text/html")
 	return hasBase64 && hasHTML
@@ -276,47 +280,53 @@ func bodyContentIndicators(bodyLower string) []string {
 	return indicators
 }
 
-// base64BodyLineRe matches a single line that is entirely standard-base64 (with
-// optional trailing padding). MIME wraps base64 bodies at 76 columns, so the
-// payload spans many such lines; envelope preamble, MIME boundary markers, and
-// the "<msgID>-D" spool marker contain characters outside this set and are
-// skipped.
-var base64BodyLineRe = regexp.MustCompile(`^[A-Za-z0-9+/]+={0,2}$`)
+// decodeBase64Body decodes every base64 section of a spool body sample: the
+// whole body when the message headers declare base64, and each MIME part whose
+// own headers do, from the blank line after them to the next boundary line.
+// Every part is decoded, not just the longest: a larger benign image can sit
+// before a shorter phishing HTML part. Decoding follows attachment scanning,
+// so stray characters, missing padding or a sample clipped mid-part do not
+// hide content a mail client would render.
+func decodeBase64Body(raw []byte, headersLower string) string {
+	lines := strings.Split(string(raw), "\n")
+	if len(lines) > 0 && strings.HasSuffix(strings.TrimSpace(lines[0]), "-D") {
+		lines = lines[1:] // Exim spool marker line
+	}
 
-// decodeBase64Body extracts every run of consecutive base64 lines from a spool
-// body sample and decodes each valid run. Multipart messages can put a larger
-// benign image part before a shorter phishing HTML part; decoding only the
-// longest run misses that payload. A sample may clip the final blob mid-run, so
-// the trailing partial group is dropped to keep the remaining prefix decodable.
-func decodeBase64Body(raw []byte) string {
 	var decodedParts []string
-	var cur []string
-	flush := func() {
-		if len(cur) == 0 {
-			return
-		}
-		blob := strings.Join(cur, "")
-		if rem := len(blob) % 4; rem != 0 {
-			blob = blob[:len(blob)-rem]
-		}
-		if blob != "" {
-			if decoded, err := base64.StdEncoding.DecodeString(blob); err == nil {
-				decodedParts = append(decodedParts, string(decoded))
+	decodeSection := func(section []string) {
+		for _, variant := range emime.DecodeTransferVariants("base64", []byte(strings.Join(section, "\n"))) {
+			if len(variant) > 0 {
+				decodedParts = append(decodedParts, string(variant))
 			}
 		}
-		cur = nil
 	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && base64BodyLineRe.MatchString(line) {
-			cur = append(cur, line)
+	// sectionEnd returns the index of the next boundary line at or after i.
+	sectionEnd := func(i int) int {
+		for ; i < len(lines); i++ {
+			if strings.HasPrefix(strings.TrimSpace(lines[i]), "--") {
+				return i
+			}
+		}
+		return len(lines)
+	}
+
+	if base64CTERe.MatchString(headersLower) {
+		decodeSection(lines[:sectionEnd(0)])
+	}
+	for i := 0; i < len(lines); i++ {
+		if !base64CTERe.MatchString(strings.ToLower(lines[i])) {
 			continue
 		}
-		flush()
-	}
-	flush()
-	if len(decodedParts) == 0 {
-		return ""
+		start := i + 1
+		for start < len(lines) && strings.TrimSpace(lines[start]) != "" {
+			start++ // rest of this part's header block
+		}
+		end := sectionEnd(start)
+		if start < end {
+			decodeSection(lines[start+1 : end])
+		}
+		i = end - 1
 	}
 	return strings.Join(decodedParts, "\n")
 }

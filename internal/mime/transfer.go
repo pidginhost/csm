@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 )
 
 // transferDecoder returns a reader that undoes a part's
@@ -391,4 +392,18 @@ func (rr *readErrRecorder) Read(p []byte) (int, error) {
 		rr.err = err
 	}
 	return n, err
+}
+
+// DecodeTransferVariants decodes data under Content-Transfer-Encoding cte the
+// way attachment extraction does: leniently, and under every reading of
+// ambiguous base64 a mail client could apply. Decode errors are ignored; each
+// variant holds every byte that decoded.
+func DecodeTransferVariants(cte string, data []byte) [][]byte {
+	readers, _ := transferReaders(strings.ToLower(strings.TrimSpace(cte)), bytes.NewReader(data), &ExtractionResult{})
+	variants := make([][]byte, 0, len(readers))
+	for _, r := range readers {
+		decoded, _ := io.ReadAll(r)
+		variants = append(variants, decoded)
+	}
+	return variants
 }

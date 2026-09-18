@@ -1018,3 +1018,23 @@ func FuzzWordPressCoreChecksumLine(f *testing.F) {
 		}
 	})
 }
+
+// decodeBase64Body reads attacker-written spool bodies. It must not panic on
+// arbitrary input, and a top-level base64 body with stray spaces must decode
+// back to the original text so phishing checks see it.
+func FuzzDecodeBase64Body(f *testing.F) {
+	f.Add([]byte("1aBcDe-000001-11-D\n--b\nContent-Transfer-Encoding: base64\n\nPGh0bWw+\n--b--\n"), "please verify")
+	f.Add([]byte("--\n\n--\ncontent-transfer-encoding:base64\n"), "")
+	f.Add([]byte(""), "x")
+
+	f.Fuzz(func(t *testing.T, raw []byte, text string) {
+		_ = decodeBase64Body(raw, "")
+		_ = decodeBase64Body(raw, "content-transfer-encoding: base64")
+
+		wrapped := strings.ReplaceAll(base64Wrap(text), "\n", " \n ")
+		got := decodeBase64Body([]byte("1aBcDe-000001-11-D\n"+wrapped+"\n"), "content-transfer-encoding: base64")
+		if !strings.Contains(got, text) {
+			t.Fatalf("decoded %q, want it to contain %q", got, text)
+		}
+	})
+}
