@@ -125,8 +125,8 @@ func TestBase64AfterPaddingStillExtractsArchive(t *testing.T) {
 	if !result.Partial {
 		t.Fatal("data after padding must remain partial")
 	}
-	if len(result.Parts) != 2 {
-		t.Fatalf("Parts = %d, want archive and extracted payload", len(result.Parts))
+	if len(result.Parts) != 3 {
+		t.Fatalf("Parts = %d, want archive, extracted payload and padded prefix", len(result.Parts))
 	}
 	got, err := os.ReadFile(result.Parts[1].TempPath)
 	if err != nil {

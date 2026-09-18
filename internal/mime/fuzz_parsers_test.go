@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/iotest"
 )
 
 // The Exim -H parser turns a spool header file into the envelope + RFC 5322
@@ -60,7 +61,21 @@ func FuzzTransferDecoder(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data, junk []byte, stride uint8) {
 		for _, cte := range []string{"base64", "quoted-printable", "7bit"} {
-			_, _ = io.ReadAll(transferDecoder(cte, bytes.NewReader(data)))
+			got, err := io.ReadAll(transferDecoder(cte, bytes.NewReader(data)))
+			chunked, chunkErr := io.ReadAll(transferDecoder(cte, iotest.OneByteReader(bytes.NewReader(data))))
+			if !bytes.Equal(got, chunked) || (err == nil) != (chunkErr == nil) {
+				t.Fatalf("%s decoding depends on input chunk size", cte)
+			}
+		}
+		readers, err := transferReaders("base64", bytes.NewReader(data), &ExtractionResult{})
+		if err != nil || len(readers) < 1 || len(readers) > 3 {
+			t.Fatalf("unexpected transfer readers: count=%d, error=%v", len(readers), err)
+		}
+		for _, reader := range readers {
+			decoded, _ := io.ReadAll(reader)
+			if len(decoded) > len(data) {
+				t.Fatal("base64 interpretation expanded the input")
+			}
 		}
 
 		encoded := base64.StdEncoding.EncodeToString(data)

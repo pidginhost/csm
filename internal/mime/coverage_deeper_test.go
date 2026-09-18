@@ -755,7 +755,7 @@ func TestDetectDirectionAuthEquals(t *testing.T) {
 // --- decodeSinglePart: empty input --------------------------------------
 
 func TestDecodeSinglePartEmptyInput(t *testing.T) {
-	got, truncated, decodeErr := decodeSinglePart([]byte{}, "7bit", 1024)
+	got, truncated, decodeErr := decodeSinglePart(transferDecoder("7bit", bytes.NewReader([]byte{})), 1024)
 	if decodeErr != nil {
 		t.Fatalf("decodeSinglePart: %v", decodeErr)
 	}

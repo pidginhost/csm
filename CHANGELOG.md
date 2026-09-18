@@ -17,7 +17,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - Executable PHP can no longer pass as a comment-only stub and suppress a warning in sensitive WordPress directories.
 - A file staged in a WordPress core, plugin or theme update that held other content before it was overwritten and then moved into place or deleted beside an identical installed copy is reported again as a self-deleting file, instead of passing as update cleanup.
 - A PHP file could hide code behind a comment ended by a bare carriage return, or print its whole content as page text through a malformed opening tag, and still pass as an empty stub, a translation cache or version data. That skipped the location warning for PHP in uploads and other sensitive WordPress directories.
-- Email attachments with malformed transfer encoding were delivered without being scanned: base64 with spaces, stray characters, missing or early padding, quoted-printable with raw control bytes, long lines or bare carriage returns, and encoded multipart sections. Mail clients decode these, so they are now decoded the same way and scanned, and malformed parts are still reported as incompletely scanned.
+- Email attachment scanning now recovers more malformed encodings and encoded multipart bodies without losing later attachments. Recovered content is scanned within extraction limits, and decoding or multipart parsing failures are reported as incomplete scans.
 
 ### Fixed
 

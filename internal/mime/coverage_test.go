@@ -113,7 +113,7 @@ func TestReadBodyFileLimitedExactLimit(t *testing.T) {
 func TestDecodeSinglePartBase64(t *testing.T) {
 	plain := []byte("Hello, World!")
 	encoded := base64.StdEncoding.EncodeToString(plain)
-	got, truncated, decodeErr := decodeSinglePart([]byte(encoded), "base64", 1024)
+	got, truncated, decodeErr := decodeSinglePart(transferDecoder("base64", bytes.NewReader([]byte(encoded))), 1024)
 	if decodeErr != nil {
 		t.Fatalf("decodeSinglePart: %v", decodeErr)
 	}
@@ -126,7 +126,7 @@ func TestDecodeSinglePartBase64(t *testing.T) {
 }
 
 func TestDecodeSinglePartQuotedPrintable(t *testing.T) {
-	got, truncated, decodeErr := decodeSinglePart([]byte("Hello=20World"), "quoted-printable", 1024)
+	got, truncated, decodeErr := decodeSinglePart(transferDecoder("quoted-printable", bytes.NewReader([]byte("Hello=20World"))), 1024)
 	if decodeErr != nil {
 		t.Fatalf("decodeSinglePart: %v", decodeErr)
 	}
@@ -139,7 +139,7 @@ func TestDecodeSinglePartQuotedPrintable(t *testing.T) {
 }
 
 func TestDecodeSinglePart7bitPassthrough(t *testing.T) {
-	got, truncated, decodeErr := decodeSinglePart([]byte("raw text"), "7bit", 1024)
+	got, truncated, decodeErr := decodeSinglePart(transferDecoder("7bit", bytes.NewReader([]byte("raw text"))), 1024)
 	if decodeErr != nil {
 		t.Fatalf("decodeSinglePart: %v", decodeErr)
 	}
@@ -156,7 +156,7 @@ func TestDecodeSinglePart7bitTruncated(t *testing.T) {
 	for i := range big {
 		big[i] = 'x'
 	}
-	got, truncated, decodeErr := decodeSinglePart(big, "7bit", 50)
+	got, truncated, decodeErr := decodeSinglePart(transferDecoder("7bit", bytes.NewReader(big)), 50)
 	if decodeErr != nil {
 		t.Fatalf("decodeSinglePart: %v", decodeErr)
 	}
@@ -175,7 +175,7 @@ func TestDecodeSinglePartBase64Oversized(t *testing.T) {
 		raw[i] = 'A'
 	}
 	encoded := base64.StdEncoding.EncodeToString(raw)
-	got, truncated, decodeErr := decodeSinglePart([]byte(encoded), "base64", 50)
+	got, truncated, decodeErr := decodeSinglePart(transferDecoder("base64", bytes.NewReader([]byte(encoded))), 50)
 	if decodeErr != nil {
 		t.Fatalf("decodeSinglePart: %v", decodeErr)
 	}

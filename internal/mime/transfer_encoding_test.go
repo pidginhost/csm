@@ -149,7 +149,7 @@ func TestMultipartBase64DecodeFailureNamesDecoding(t *testing.T) {
 	if !strings.Contains(result.PartialReason, "could not decode attachment") {
 		t.Fatalf("PartialReason = %q, want a decode failure", result.PartialReason)
 	}
-	requireStagedPrefix(t, result, append([]byte("ab"), transferPayload()...))
+	requireStagedPrefix(t, result, append([]byte("ab"), transferPayload()...), []byte("ab"))
 }
 
 // A trailing character that completes no byte makes the decoder fail after
@@ -166,17 +166,20 @@ func TestMultipartBase64DanglingCharacterStillScansPayload(t *testing.T) {
 	requireStagedPrefix(t, result, transferPayload())
 }
 
-func requireStagedPrefix(t *testing.T, result *ExtractionResult, want []byte) {
+func requireStagedPrefix(t *testing.T, result *ExtractionResult, want []byte, alternatives ...[]byte) {
 	t.Helper()
-	if len(result.Parts) != 1 {
-		t.Fatalf("Parts = %d, want the decoded prefix staged for scanning", len(result.Parts))
+	wants := append([][]byte{want}, alternatives...)
+	if len(result.Parts) != len(wants) {
+		t.Fatalf("Parts = %d, want %d decoded interpretations staged for scanning", len(result.Parts), len(wants))
 	}
-	got, err := os.ReadFile(result.Parts[0].TempPath)
-	if err != nil {
-		t.Fatalf("read staged part: %v", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("staged %d bytes, want the %d decoded bytes", len(got), len(want))
+	for i, want := range wants {
+		got, err := os.ReadFile(result.Parts[i].TempPath)
+		if err != nil {
+			t.Fatalf("read staged part: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("interpretation %d: staged %d bytes, want the %d decoded bytes", i, len(got), len(want))
+		}
 	}
 }
 
@@ -208,5 +211,5 @@ func TestSinglePartBase64DecodeFailureNamesDecoding(t *testing.T) {
 			os.Remove(p.TempPath)
 		}
 	})
-	requireStagedPrefix(t, result, append([]byte("ab"), transferPayload()...))
+	requireStagedPrefix(t, result, append([]byte("ab"), transferPayload()...), []byte("ab"))
 }
