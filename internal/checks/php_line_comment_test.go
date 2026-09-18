@@ -71,3 +71,31 @@ func TestPHPInertRecognizersRejectAttributes(t *testing.T) {
 		})
 	}
 }
+
+// PHP opens a code block only when "<?php" is followed by a space, tab, CR or
+// LF. After a vertical tab or form feed it prints the whole file as text, so
+// such a file is attacker-chosen page output, never inert data.
+func TestPHPInertRecognizersRejectNonTagOpeners(t *testing.T) {
+	bodies := map[string]string{
+		"inert stub":        "// Silence is golden.",
+		"translation cache": "return ['messages'=>['Save'=>'<script>alert(1)</script>']];",
+		"version data":      "$wp_version = '<script>alert(1)</script>';",
+	}
+	recognizers := map[string]func([]byte) bool{
+		"inert stub":        IsBenignPHPStubBytes,
+		"translation cache": func(b []byte) bool { return IsWPTranslationCacheBytesComplete(b, true) },
+		"version data":      func(b []byte) bool { return IsWPVersionDataBytesComplete(b, true) },
+	}
+	for name, recognize := range recognizers {
+		t.Run(name, func(t *testing.T) {
+			if !recognize([]byte("<?php\n" + bodies[name])) {
+				t.Fatalf("control body not recognized")
+			}
+			for _, opener := range []string{"<?php\v", "<?php\f"} {
+				if body := opener + bodies[name]; recognize([]byte(body)) {
+					t.Errorf("file PHP prints as text accepted as inert: %q", body)
+				}
+			}
+		})
+	}
+}

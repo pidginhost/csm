@@ -103,9 +103,10 @@ func (s *phpLiteralScanner) consumeOpener() bool {
 		return false
 	}
 	s.i += len(opener)
-	// PHP requires whitespace (or EOF) after the tag; "<?phpreturn" is invalid
-	// and "<?=" is the short-echo opener, which emits output.
-	if s.i < len(s.buf) && !isPHPSpace(s.buf[s.i]) {
+	// PHP requires a space, tab, CR or LF (or EOF) after the tag; "<?phpreturn"
+	// is invalid, "<?=" is the short-echo opener, and after a vertical tab or
+	// form feed PHP prints the whole file as text.
+	if s.i < len(s.buf) && !isPHPOpenTagSpace(s.buf[s.i]) {
 		return false
 	}
 	return true
