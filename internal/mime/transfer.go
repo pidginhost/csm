@@ -1,118 +1,275 @@
 package mime
 
 import (
-	"encoding/base64"
+	"errors"
 	"io"
-	"mime/quotedprintable"
 )
 
 // transferDecoder returns a reader that undoes a part's
 // Content-Transfer-Encoding. Decoding is as lenient as mail clients are:
 // anything a client would render as an attachment has to reach the scanners
 // too, or a malformed encoding becomes a way to deliver unscanned content.
-// Unknown encodings (7bit, 8bit, binary) pass through unchanged.
+// Malformed input still decodes as far as clients decode it; the reader then
+// reports an error so the part is marked incompletely scanned. Unknown
+// encodings (7bit, 8bit, binary) pass through unchanged.
 func transferDecoder(cte string, r io.Reader) io.Reader {
 	switch cte {
 	case "base64":
-		return base64.NewDecoder(base64.StdEncoding, &base64AlphabetFilter{r: r})
+		return &decodeReader{src: r, dec: &base64Decoder{}}
 	case "quoted-printable":
-		return quotedprintable.NewReader(&qpControlEscaper{r: r})
+		return &decodeReader{src: r, dec: &qpDecoder{}}
 	default:
 		return r
 	}
 }
 
-// base64AlphabetFilter drops every byte outside the base64 alphabet and
-// supplies missing final padding. RFC 2045 section 6.8 says such bytes are
-// ignored; the standard decoder rejects anything but CR and LF. Data after
-// padding is passed on and still fails to decode, because clients do not
-// agree on what it means.
-type base64AlphabetFilter struct {
-	r      io.Reader
-	chars  int // alphabet characters seen, excluding '='
-	padded bool
-	tail   []byte
-	eof    bool
+var (
+	errBase64AfterPadding = errors.New("base64 data after padding")
+	errBase64Truncated    = errors.New("base64 data ends with an incomplete byte")
+)
+
+// byteDecoder turns encoded bytes into decoded bytes one input byte at a
+// time. finish flushes held state at end of input and reports malformed input
+// that was nonetheless decoded.
+type byteDecoder interface {
+	feed(b byte, out []byte) []byte
+	finish(out []byte) ([]byte, error)
 }
 
-func (f *base64AlphabetFilter) Read(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	for {
-		if len(f.tail) > 0 {
-			n := copy(p, f.tail)
-			f.tail = f.tail[n:]
-			return n, nil
-		}
-		if f.eof {
-			return 0, io.EOF
-		}
-		n, err := f.r.Read(p)
-		kept := 0
-		for _, b := range p[:n] {
-			switch {
-			case b == '=':
-				f.padded = true
-			case isBase64Alphabet(b):
-				f.chars++
-			default:
-				continue
-			}
-			p[kept] = b
-			kept++
-		}
-		if err == io.EOF {
-			f.eof = true
-			if !f.padded {
-				switch f.chars % 4 {
-				case 2:
-					f.tail = []byte("==")
-				case 3:
-					f.tail = []byte("=")
-				}
-			}
-			err = nil
-		}
-		if kept > 0 || err != nil {
-			return kept, err
-		}
-	}
-}
-
-func isBase64Alphabet(b byte) bool {
-	return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '+' || b == '/'
-}
-
-// qpControlEscaper rewrites raw control bytes as =XX escapes, which decode
-// back to the same byte. The standard reader aborts on an unescaped control
-// byte; mail readers pass it through.
-type qpControlEscaper struct {
-	r       io.Reader
+// decodeReader drives a byteDecoder. Decoded output is drained before any
+// error is returned, so a caller always sees every byte a client would.
+type decodeReader struct {
+	src     io.Reader
+	dec     byteDecoder
+	buf     [4096]byte
 	pending []byte
 	err     error
-	buf     [512]byte
 }
 
-func (e *qpControlEscaper) Read(p []byte) (int, error) {
-	for len(e.pending) == 0 && e.err == nil {
-		n, err := e.r.Read(e.buf[:])
-		for _, b := range e.buf[:n] {
-			if b < ' ' && b != '\t' && b != '\r' && b != '\n' || b == 0x7f {
-				const hex = "0123456789ABCDEF"
-				e.pending = append(e.pending, '=', hex[b>>4], hex[b&0x0f])
-				continue
-			}
-			e.pending = append(e.pending, b)
+func (d *decodeReader) Read(p []byte) (int, error) {
+	for len(d.pending) == 0 && d.err == nil {
+		n, err := d.src.Read(d.buf[:])
+		out := d.pending[:0]
+		for _, b := range d.buf[:n] {
+			out = d.dec.feed(b, out)
 		}
-		e.err = err
+		if err == io.EOF {
+			var decodeErr error
+			out, decodeErr = d.dec.finish(out)
+			err = io.EOF
+			if decodeErr != nil {
+				err = decodeErr
+			}
+		}
+		d.pending = out
+		d.err = err
 	}
-	if len(e.pending) == 0 {
-		return 0, e.err
+	if len(d.pending) == 0 {
+		return 0, d.err
 	}
-	n := copy(p, e.pending)
-	e.pending = e.pending[n:]
+	n := copy(p, d.pending)
+	d.pending = d.pending[n:]
 	return n, nil
+}
+
+// base64Decoder decodes quartet by quartet and ignores every byte outside
+// the alphabet, as RFC 2045 section 6.8 requires. Padding ends a quartet
+// early instead of ending the data: clients keep decoding what follows, so
+// the scanners must too.
+type base64Decoder struct {
+	quad         [4]byte
+	n            int
+	sawPad       bool
+	afterPadData bool
+}
+
+func (d *base64Decoder) feed(b byte, out []byte) []byte {
+	if b == '=' {
+		if d.n >= 2 {
+			out = d.flush(out)
+		}
+		d.n = 0
+		d.sawPad = true
+		return out
+	}
+	v, ok := base64Value(b)
+	if !ok {
+		return out
+	}
+	if d.sawPad {
+		d.afterPadData = true
+	}
+	d.quad[d.n] = v
+	d.n++
+	if d.n == 4 {
+		out = d.flush(out)
+		d.n = 0
+	}
+	return out
+}
+
+// flush emits the bytes carried by the first d.n sextets (2 to 4).
+func (d *base64Decoder) flush(out []byte) []byte {
+	q := d.quad
+	out = append(out, q[0]<<2|q[1]>>4)
+	if d.n >= 3 {
+		out = append(out, q[1]<<4|q[2]>>2)
+	}
+	if d.n == 4 {
+		out = append(out, q[2]<<6|q[3])
+	}
+	return out
+}
+
+func (d *base64Decoder) finish(out []byte) ([]byte, error) {
+	var err error
+	switch {
+	case d.n >= 2:
+		out = d.flush(out) // missing final padding
+	case d.n == 1:
+		err = errBase64Truncated
+	}
+	d.n = 0
+	if d.afterPadData {
+		err = errBase64AfterPadding
+	}
+	return out, err
+}
+
+func base64Value(b byte) (byte, bool) {
+	switch {
+	case b >= 'A' && b <= 'Z':
+		return b - 'A', true
+	case b >= 'a' && b <= 'z':
+		return b - 'a' + 26, true
+	case b >= '0' && b <= '9':
+		return b - '0' + 52, true
+	case b == '+':
+		return 62, true
+	case b == '/':
+		return 63, true
+	}
+	return 0, false
+}
+
+// qpDecoder decodes quoted-printable without ever failing: an escape that is
+// not two hex digits is kept literally, a soft line break may end in CR, LF or
+// CRLF, raw control bytes pass through, and lines have no length limit.
+// Whitespace before a line break is transport padding and is dropped
+// (RFC 2045 section 6.7, rule 3).
+type qpDecoder struct {
+	state qpState
+	hex1  byte
+	ws    []byte // whitespace held until the next byte shows whether it ends a line
+}
+
+type qpState int
+
+const (
+	qpText     qpState = iota
+	qpEquals           // saw '='
+	qpEqualsH1         // saw '=' and one hex digit
+	qpEqualsWS         // saw '=' followed by whitespace: soft break if a line break follows
+	qpSoftCR           // soft break ended in CR; swallow a following LF
+)
+
+func (d *qpDecoder) feed(b byte, out []byte) []byte {
+	switch d.state {
+	case qpEquals:
+		switch {
+		case isHexDigit(b):
+			d.hex1 = b
+			d.state = qpEqualsH1
+			return out
+		case b == ' ' || b == '\t':
+			d.ws = append(d.ws[:0], b)
+			d.state = qpEqualsWS
+			return out
+		case b == '\r':
+			d.state = qpSoftCR
+			return out
+		case b == '\n':
+			d.state = qpText
+			return out
+		}
+		out = append(out, '=')
+		d.state = qpText
+	case qpEqualsH1:
+		d.state = qpText
+		if isHexDigit(b) {
+			return append(out, hexValue(d.hex1)<<4|hexValue(b))
+		}
+		out = append(out, '=', d.hex1)
+	case qpEqualsWS:
+		switch b {
+		case ' ', '\t':
+			d.ws = append(d.ws, b)
+			return out
+		case '\r':
+			d.ws = d.ws[:0]
+			d.state = qpSoftCR
+			return out
+		case '\n':
+			d.ws = d.ws[:0]
+			d.state = qpText
+			return out
+		}
+		out = append(out, '=')
+		out = append(out, d.ws...)
+		d.ws = d.ws[:0]
+		d.state = qpText
+	case qpSoftCR:
+		d.state = qpText
+		if b == '\n' {
+			return out
+		}
+	}
+
+	switch b {
+	case '=':
+		out = append(out, d.ws...)
+		d.ws = d.ws[:0]
+		d.state = qpEquals
+	case ' ', '\t':
+		d.ws = append(d.ws, b)
+	case '\r', '\n':
+		d.ws = d.ws[:0]
+		out = append(out, b)
+	default:
+		out = append(out, d.ws...)
+		d.ws = d.ws[:0]
+		out = append(out, b)
+	}
+	return out
+}
+
+func (d *qpDecoder) finish(out []byte) ([]byte, error) {
+	switch d.state {
+	case qpEquals:
+		out = append(out, '=')
+	case qpEqualsH1:
+		out = append(out, '=', d.hex1)
+	}
+	// Trailing whitespace on the last line and a trailing "= " soft break
+	// carry no data.
+	d.ws = d.ws[:0]
+	d.state = qpText
+	return out, nil
+}
+
+func isHexDigit(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'A' && b <= 'F' || b >= 'a' && b <= 'f'
+}
+
+func hexValue(b byte) byte {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0'
+	case b >= 'a' && b <= 'f':
+		return b - 'a' + 10
+	default:
+		return b - 'A' + 10
+	}
 }
 
 // readErrRecorder remembers the error its source returned, so a failed copy

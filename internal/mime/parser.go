@@ -488,10 +488,13 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 		}
 		mediaType, params, _ := mime.ParseMediaType(ct)
 
-		// Recurse into nested multipart
+		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
+
+		// Recurse into nested multipart. RFC 2045 forbids encoding a
+		// multipart body, but a sender can still do it, so decode first.
 		if strings.HasPrefix(mediaType, "multipart/") {
 			if b := params["boundary"]; b != "" {
-				if nestedErr := extractMultipartNested(part, b, limits, result, totalSize, depth, mimeDepth+1); nestedErr != nil {
+				if nestedErr := extractMultipartNested(transferDecoder(cte, part), b, limits, result, totalSize, depth, mimeDepth+1); nestedErr != nil {
 					return nestedErr
 				}
 			}
@@ -520,7 +523,6 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 		filename = sanitizeAttachmentName(filename)
 
 		// Decode the part body based on Content-Transfer-Encoding
-		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
 		bodyReader := &readErrRecorder{r: transferDecoder(cte, part)}
 
 		// Write to temp file with size limit

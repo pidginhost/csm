@@ -136,9 +136,9 @@ func TestSinglePartBase64IgnoresCharactersOutsideAlphabet(t *testing.T) {
 	requireSingleStagedPart(t, result, transferPayload())
 }
 
-// Data after base64 padding cannot be decoded consistently, so the part is
-// still reported incomplete -- but as a decode failure, not as a staging or
-// size problem that sends the operator after the wrong cause.
+// Data after base64 padding is malformed. Clients such as Thunderbird keep
+// decoding each quartet, so the scanners get every decoded byte, and the part
+// is still reported as a decode failure rather than a staging or size problem.
 func TestMultipartBase64DecodeFailureNamesDecoding(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("ab")) + base64.StdEncoding.EncodeToString(transferPayload())
 	result := parseSpoolWithCleanup(t, `multipart/mixed; boundary="B64"`,
@@ -149,7 +149,7 @@ func TestMultipartBase64DecodeFailureNamesDecoding(t *testing.T) {
 	if !strings.Contains(result.PartialReason, "could not decode attachment") {
 		t.Fatalf("PartialReason = %q, want a decode failure", result.PartialReason)
 	}
-	requireStagedPrefix(t, result, []byte("ab"))
+	requireStagedPrefix(t, result, append([]byte("ab"), transferPayload()...))
 }
 
 // A trailing character that completes no byte makes the decoder fail after
@@ -208,5 +208,5 @@ func TestSinglePartBase64DecodeFailureNamesDecoding(t *testing.T) {
 			os.Remove(p.TempPath)
 		}
 	})
-	requireStagedPrefix(t, result, []byte("ab"))
+	requireStagedPrefix(t, result, append([]byte("ab"), transferPayload()...))
 }

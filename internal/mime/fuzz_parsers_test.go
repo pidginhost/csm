@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"io"
+	"mime/quotedprintable"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,7 +51,8 @@ func FuzzParseEximHeaderData(f *testing.F) {
 
 // transferDecoder decodes attacker-controlled attachment bodies. Two
 // properties: arbitrary input never panics, and base64 with ignorable bytes
-// spliced in decodes to exactly what clean base64 decodes to.
+// spliced in decodes to exactly what clean base64 decodes to, and so does
+// quoted-printable written by a conforming encoder.
 func FuzzTransferDecoder(f *testing.F) {
 	f.Add([]byte("SGVsbG8h"), []byte(" \t!"), uint8(3))
 	f.Add([]byte("\x00\x01\x7f=ZZ=\r\n"), []byte("*"), uint8(0))
@@ -67,7 +69,7 @@ func FuzzTransferDecoder(f *testing.F) {
 		for i := 0; i < len(encoded); i++ {
 			if i%step == 0 {
 				for _, b := range junk {
-					if !isBase64Alphabet(b) && b != '=' {
+					if _, ok := base64Value(b); !ok && b != '=' {
 						spliced = append(spliced, b)
 					}
 				}
@@ -80,6 +82,23 @@ func FuzzTransferDecoder(f *testing.F) {
 		}
 		if !bytes.Equal(got, data) {
 			t.Fatalf("decoded %d bytes, want %d", len(got), len(data))
+		}
+
+		var qp bytes.Buffer
+		w := quotedprintable.NewWriter(&qp)
+		w.Binary = true
+		if _, err = w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+		if err = w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		got, err = io.ReadAll(transferDecoder("quoted-printable", &qp))
+		if err != nil {
+			t.Fatalf("decode quoted-printable: %v", err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("quoted-printable round trip changed %d bytes into %d", len(data), len(got))
 		}
 	})
 }
