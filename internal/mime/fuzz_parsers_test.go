@@ -1,9 +1,14 @@
 package mime
 
 import (
+	"bytes"
+	"encoding/base64"
+	"io"
+	"mime/quotedprintable"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/iotest"
 )
 
 // The Exim -H parser turns a spool header file into the envelope + RFC 5322
@@ -41,6 +46,74 @@ func FuzzParseEximHeaderData(f *testing.F) {
 		env, hdrs := parseEximHeaderData(data)
 		if env == nil || hdrs == nil {
 			t.Fatal("parseEximHeaderData must return non-nil envelope and headers")
+		}
+	})
+}
+
+// transferDecoder decodes attacker-controlled attachment bodies. Two
+// properties: arbitrary input never panics, and base64 with ignorable bytes
+// spliced in decodes to exactly what clean base64 decodes to, and so does
+// quoted-printable written by a conforming encoder.
+func FuzzTransferDecoder(f *testing.F) {
+	f.Add([]byte("SGVsbG8h"), []byte(" \t!"), uint8(3))
+	f.Add([]byte("\x00\x01\x7f=ZZ=\r\n"), []byte("*"), uint8(0))
+	f.Add([]byte(""), []byte(""), uint8(1))
+
+	f.Fuzz(func(t *testing.T, data, junk []byte, stride uint8) {
+		for _, cte := range []string{"base64", "quoted-printable", "7bit"} {
+			got, err := io.ReadAll(transferDecoder(cte, bytes.NewReader(data)))
+			chunked, chunkErr := io.ReadAll(transferDecoder(cte, iotest.OneByteReader(bytes.NewReader(data))))
+			if !bytes.Equal(got, chunked) || (err == nil) != (chunkErr == nil) {
+				t.Fatalf("%s decoding depends on input chunk size", cte)
+			}
+		}
+		readers, err := transferReaders("base64", bytes.NewReader(data), &ExtractionResult{})
+		if err != nil || len(readers) < 1 || len(readers) > 3 {
+			t.Fatalf("unexpected transfer readers: count=%d, error=%v", len(readers), err)
+		}
+		for _, reader := range readers {
+			decoded, _ := io.ReadAll(reader)
+			if len(decoded) > len(data) {
+				t.Fatal("base64 interpretation expanded the input")
+			}
+		}
+
+		encoded := base64.StdEncoding.EncodeToString(data)
+		var spliced []byte
+		step := int(stride%16) + 1
+		for i := 0; i < len(encoded); i++ {
+			if i%step == 0 {
+				for _, b := range junk {
+					if _, ok := base64Value(b); !ok && b != '=' {
+						spliced = append(spliced, b)
+					}
+				}
+			}
+			spliced = append(spliced, encoded[i])
+		}
+		got, err := io.ReadAll(transferDecoder("base64", bytes.NewReader(spliced)))
+		if err != nil {
+			t.Fatalf("decode spliced base64: %v", err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("decoded %d bytes, want %d", len(got), len(data))
+		}
+
+		var qp bytes.Buffer
+		w := quotedprintable.NewWriter(&qp)
+		w.Binary = true
+		if _, err = w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+		if err = w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		got, err = io.ReadAll(transferDecoder("quoted-printable", &qp))
+		if err != nil {
+			t.Fatalf("decode quoted-printable: %v", err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("quoted-printable round trip changed %d bytes into %d", len(data), len(got))
 		}
 	})
 }

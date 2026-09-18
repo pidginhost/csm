@@ -6,12 +6,10 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
-	"mime/quotedprintable"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -42,6 +40,9 @@ type ExtractionResult struct {
 	From                    string
 	To                      []string
 	Subject                 string
+	// Shared across multipart recursion so ambiguous wrappers cannot branch
+	// into exponentially many decoding passes.
+	transferVariants int
 }
 
 // EncryptedArchiveEntry names an archive member CSM cannot read because the
@@ -128,44 +129,59 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 			return result, nil
 		}
 		var totalSize int64
-		extractErr := extractMultipart(bytes.NewReader(bodyData), boundary, limits, result, &totalSize, 0)
-		if extractErr != nil {
-			return result, nil //nolint:nilerr // fail-open by design: return what we extracted so far
-		}
+		cte := strings.ToLower(hdrs.Get("Content-Transfer-Encoding"))
+		extractEncodedMultipart(bytes.NewReader(bodyData), cte, boundary, limits, result, &totalSize, 0, 0)
 	} else if !strings.HasPrefix(mediaType, "text/") {
 		// Single-part non-text message (e.g. application/octet-stream,
 		// application/pdf, image/*). These are attachment-like payloads
 		// that must be scanned even without a multipart wrapper.
 		cte := strings.ToLower(hdrs.Get("Content-Transfer-Encoding"))
-		decoded, truncated := decodeSinglePart(bodyData, cte, limits.MaxAttachmentSize+1)
+		readers, _ := transferReaders(cte, bytes.NewReader(bodyData), result)
+		var totalSize int64
+		for _, reader := range readers {
+			decoded, truncated, decodeErr := decodeSinglePart(reader, limits.MaxAttachmentSize+1)
 
-		if !truncated && int64(len(decoded)) <= limits.MaxAttachmentSize {
-			tmpFile, tmpErr := os.CreateTemp(limits.TempDir, "csm-emailav-single-*")
-			if tmpErr == nil {
-				n, writeErr := tmpFile.Write(decoded)
-				closeErr := tmpFile.Close()
-				if writeErr != nil || closeErr != nil || n != len(decoded) {
-					os.Remove(tmpFile.Name())
-					markPartial(result, "could not stage single-part attachment for scanning")
-				} else {
-					filename := params["name"]
-					if filename == "" {
-						filename = "attachment"
-					}
-					filename = sanitizeAttachmentName(filename)
-					result.Parts = append(result.Parts, ExtractedPart{
-						Filename:    filename,
-						ContentType: mediaType,
-						Size:        int64(len(decoded)),
-						TempPath:    tmpFile.Name(),
-					})
-				}
-			} else {
-				markPartial(result, "could not stage single-part attachment for scanning")
+			if decodeErr != nil {
+				// The decoded prefix is still scanned; see extractMultipartNested.
+				markPartial(result, fmt.Sprintf("could not decode single-part attachment: %v", decodeErr))
 			}
-		} else {
-			result.Partial = true
-			result.PartialReason = "single-part attachment exceeds max size"
+
+			switch {
+			case decodeErr != nil && len(decoded) == 0:
+				// Nothing decoded, nothing to scan.
+			case !truncated && int64(len(decoded)) <= limits.MaxAttachmentSize:
+				if int64(len(decoded)) > limits.MaxExtractionSize-totalSize {
+					markPartial(result, "total extraction size exceeds limit")
+					break
+				}
+				tmpFile, tmpErr := os.CreateTemp(limits.TempDir, "csm-emailav-single-*")
+				if tmpErr == nil {
+					n, writeErr := tmpFile.Write(decoded)
+					closeErr := tmpFile.Close()
+					if writeErr != nil || closeErr != nil || n != len(decoded) {
+						os.Remove(tmpFile.Name())
+						markPartial(result, "could not stage single-part attachment for scanning")
+					} else {
+						totalSize += int64(n)
+						filename := params["name"]
+						if filename == "" {
+							filename = "attachment"
+						}
+						filename = sanitizeAttachmentName(filename)
+						result.Parts = append(result.Parts, ExtractedPart{
+							Filename:    filename,
+							ContentType: mediaType,
+							Size:        int64(len(decoded)),
+							TempPath:    tmpFile.Name(),
+						})
+					}
+				} else {
+					markPartial(result, "could not stage single-part attachment for scanning")
+				}
+			default:
+				result.Partial = true
+				result.PartialReason = "single-part attachment exceeds max size"
+			}
 		}
 	}
 	// text/* bodies are not attachments - skip
@@ -234,28 +250,14 @@ func markPartial(result *ExtractionResult, reason string) {
 	}
 }
 
-func decodeSinglePart(bodyData []byte, cte string, limit int64) ([]byte, bool) {
-	var reader io.Reader
-	switch cte {
-	case "base64":
-		reader = base64.NewDecoder(base64.StdEncoding, bytes.NewReader(bodyData))
-	case "quoted-printable":
-		reader = quotedprintable.NewReader(bytes.NewReader(bodyData))
-	default:
-		if int64(len(bodyData)) > limit {
-			return bodyData[:limit], true
-		}
-		return bodyData, false
-	}
-
-	decoded, err := io.ReadAll(io.LimitReader(reader, limit+1))
-	if err != nil {
-		return nil, true
-	}
+// decodeSinglePart returns the decoded body, whether it was cut at limit, and
+// any decode error. On error the bytes decoded before it are still returned.
+func decodeSinglePart(r io.Reader, limit int64) ([]byte, bool, error) {
+	decoded, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if int64(len(decoded)) > limit {
-		return decoded[:limit], true
+		return decoded[:limit], true, err
 	}
-	return decoded, false
+	return decoded, false, err
 }
 
 type envelope struct {
@@ -465,11 +467,28 @@ func detectDirection(hdrs textproto.MIMEHeader) string {
 // wrapper while hiding attachments below any scanner's patience.
 const maxMIMENestingDepth = 16
 
-// extractMultipart recursively walks MIME parts, extracting attachments.
+// extractEncodedMultipart recursively walks MIME parts, extracting attachments.
 // depth counts archive nesting (zip-in-zip), not MIME nesting: an archive
 // attached five multipart levels down is still archive depth 0.
-func extractMultipart(r io.Reader, boundary string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) error {
-	return extractMultipartNested(r, boundary, limits, result, totalSize, depth, 0)
+func extractEncodedMultipart(r io.Reader, cte, boundary string, limits Limits, result *ExtractionResult, totalSize *int64, depth, mimeDepth int) {
+	readers, readErr := transferReaders(cte, r, result)
+	if readErr != nil {
+		markPartial(result, fmt.Sprintf("could not decode multipart body: %v", readErr))
+	}
+	for _, reader := range readers {
+		body := &readErrRecorder{r: reader}
+		parseErr := extractMultipartNested(body, boundary, limits, result, totalSize, depth, mimeDepth)
+		// A closing MIME delimiter ends parsing before the transfer decoder has
+		// necessarily reported its error. Drain the bounded spool body (or this
+		// outer part only), including any epilogue, to finish the decoder.
+		_, _ = io.Copy(io.Discard, body)
+		if body.err != nil {
+			markPartial(result, fmt.Sprintf("could not decode multipart body: %v", body.err))
+		}
+		if parseErr != nil {
+			markPartial(result, fmt.Sprintf("could not parse multipart body: %v", parseErr))
+		}
+	}
 }
 
 func extractMultipartNested(r io.Reader, boundary string, limits Limits, result *ExtractionResult, totalSize *int64, depth, mimeDepth int) error {
@@ -482,7 +501,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 	}
 	mr := multipart.NewReader(r, boundary)
 	for {
-		part, err := mr.NextPart()
+		part, err := mr.NextRawPart()
 		if err == io.EOF {
 			return nil
 		}
@@ -496,12 +515,14 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 		}
 		mediaType, params, _ := mime.ParseMediaType(ct)
 
-		// Recurse into nested multipart
+		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
+
+		// Recurse into nested multipart. RFC 2045 forbids encoding a
+		// multipart body, but a sender can still do it, so decode first.
 		if strings.HasPrefix(mediaType, "multipart/") {
 			if b := params["boundary"]; b != "" {
-				if nestedErr := extractMultipartNested(part, b, limits, result, totalSize, depth, mimeDepth+1); nestedErr != nil {
-					return nestedErr
-				}
+				// Failure within one wrapper must not hide its outer siblings.
+				extractEncodedMultipart(part, cte, b, limits, result, totalSize, depth, mimeDepth+1)
 			}
 			continue
 		}
@@ -527,61 +548,69 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 		rawFilename := filename
 		filename = sanitizeAttachmentName(filename)
 
-		// Decode the part body based on Content-Transfer-Encoding
-		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
-		var bodyReader io.Reader = part
-		switch cte {
-		case "base64":
-			bodyReader = base64.NewDecoder(base64.StdEncoding, part)
-		case "quoted-printable":
-			bodyReader = quotedprintable.NewReader(part)
+		readers, readErr := transferReaders(cte, part, result)
+		if readErr != nil {
+			markPartial(result, fmt.Sprintf("could not decode attachment %q: %v", filename, readErr))
 		}
+		for _, reader := range readers {
+			// Decode the part body based on Content-Transfer-Encoding
+			bodyReader := &readErrRecorder{r: reader}
 
-		// Write to temp file with size limit
-		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-*")
-		if err != nil {
-			markPartial(result, "could not stage attachment for scanning")
-			return fmt.Errorf("creating temp file: %w", err)
-		}
+			// Write to temp file with size limit
+			tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-*")
+			if err != nil {
+				markPartial(result, "could not stage attachment for scanning")
+				return fmt.Errorf("creating temp file: %w", err)
+			}
 
-		limited := io.LimitReader(bodyReader, limits.MaxAttachmentSize+1)
-		n, err := io.Copy(tmpFile, limited)
-		closeErr := tmpFile.Close()
-		if err != nil || closeErr != nil {
-			os.Remove(tmpFile.Name())
-			markPartial(result, "could not stage attachment for scanning")
-			continue // fail-open: skip this part
-		}
+			limited := io.LimitReader(bodyReader, limits.MaxAttachmentSize+1)
+			n, err := io.Copy(tmpFile, limited)
+			closeErr := tmpFile.Close()
+			if closeErr != nil || (err != nil && err != bodyReader.err) {
+				os.Remove(tmpFile.Name())
+				markPartial(result, "could not stage attachment for scanning")
+				continue // fail-open: skip this part
+			}
+			if bodyReader.err != nil {
+				// Keep what decoded: a mail client shows those bytes, so they
+				// must be scanned even though the rest of the part is lost.
+				markPartial(result, fmt.Sprintf("could not decode attachment %q: %v", filename, bodyReader.err))
+				if n == 0 {
+					os.Remove(tmpFile.Name())
+					continue
+				}
+			}
 
-		if n > limits.MaxAttachmentSize {
-			os.Remove(tmpFile.Name())
-			result.Partial = true
-			result.PartialReason = fmt.Sprintf("attachment %q exceeds max size %d", filename, limits.MaxAttachmentSize)
-			continue
-		}
+			if n > limits.MaxAttachmentSize {
+				os.Remove(tmpFile.Name())
+				result.Partial = true
+				result.PartialReason = fmt.Sprintf("attachment %q exceeds max size %d", filename, limits.MaxAttachmentSize)
+				continue
+			}
 
-		*totalSize += n
-		if *totalSize > limits.MaxExtractionSize {
-			os.Remove(tmpFile.Name())
-			result.Partial = true
-			result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
-			return nil // stop extracting
-		}
+			*totalSize += n
+			if *totalSize > limits.MaxExtractionSize {
+				os.Remove(tmpFile.Name())
+				result.Partial = true
+				result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
+				return nil // stop extracting
+			}
 
-		result.Parts = append(result.Parts, ExtractedPart{
-			Filename:    filename,
-			ContentType: mediaType,
-			Size:        n,
-			TempPath:    tmpFile.Name(),
-		})
+			result.Parts = append(result.Parts, ExtractedPart{
+				Filename:    filename,
+				ContentType: mediaType,
+				Size:        n,
+				TempPath:    tmpFile.Name(),
+			})
 
-		// Attempt archive extraction
-		if depth < limits.MaxArchiveDepth {
-			switch archiveKindForAttachmentName(rawFilename, filename) {
-			case "zip":
-				extractZIP(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
-			case "tar.gz":
-				extractTarGz(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
+			// Attempt archive extraction
+			if depth < limits.MaxArchiveDepth {
+				switch archiveKindForAttachmentName(rawFilename, filename) {
+				case "zip":
+					extractZIP(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
+				case "tar.gz":
+					extractTarGz(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
+				}
 			}
 		}
 	}
