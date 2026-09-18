@@ -519,6 +519,19 @@ function suppressFinding(check, message, filePath) {
 }
 
 // --- Bulk actions ---
+function bulkFixPayload(items) {
+    var payload = items.map(function(i) {
+        return { key: i.key, check: i.check, message: i.message, details: i.details, file_path: i.file_path };
+    });
+    // The endpoint bounds bytes, not item count; finding details may be large
+    // and non-ASCII text takes more than one byte per character.
+    if (new Blob([JSON.stringify(payload)]).size > CSM.FIX_BULK_BODY_MAX) {
+        CSM.toast('Selection is too large for one request. Select fewer findings and repeat.', 'error');
+        return null;
+    }
+    return payload;
+}
+
 function bulkAction(action) {
     var selected = getSelectedRows();
     if (selected.length === 0) return;
@@ -537,8 +550,9 @@ function bulkAction(action) {
     if (action === 'fix') {
         var fixable = items.filter(function(i) { return i.fixable; });
         if (fixable.length === 0) { CSM.toast('None of the selected findings have automated fixes.', 'warning'); return; }
+        var fixItems = bulkFixPayload(fixable);
+        if (!fixItems) return;
         CSM.confirm('Fix ' + fixable.length + ' finding(s)?\n\nThis will apply automated fixes (chmod, quarantine, etc.) to the selected items.').then(function() {
-            var fixItems = fixable.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: i.details, file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
                 refreshFindings();
@@ -565,8 +579,9 @@ function bulkAction(action) {
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
     } else if (action === 'quarantine') {
+        var quarItems = bulkFixPayload(items);
+        if (!quarItems) return;
         CSM.confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/').then(function() {
-            var quarItems = items.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: i.details, file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
                 CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
                 refreshFindings();

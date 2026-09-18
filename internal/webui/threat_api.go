@@ -575,6 +575,11 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// threatBulkActionMax bounds the addresses one bulk threat action changes. Each
+// request returns one undo token, so the UI refuses larger selections instead
+// of splitting them.
+const threatBulkActionMax = 100
+
 // POST /api/v1/threat/bulk-action - block or whitelist multiple IPs at once.
 func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 	s.threatActionMu.Lock()
@@ -593,8 +598,8 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if len(req.IPs) == 0 || len(req.IPs) > 100 {
-		writeJSONError(w, "IPs must be 1-100 items", http.StatusBadRequest)
+	if len(req.IPs) == 0 || len(req.IPs) > threatBulkActionMax {
+		writeJSONError(w, fmt.Sprintf("IPs must be 1-%d items", threatBulkActionMax), http.StatusBadRequest)
 		return
 	}
 	blockAction := req.Action == "block" || req.Action == "block_permanent"

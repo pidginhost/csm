@@ -3,6 +3,7 @@
     'use strict';
 
     var formatSize = CSM.formatSize;
+    var fileMutationBusy = false;
 
     // Thin alias preserved so the rest of the file reads naturally; routes
     // through the shared CSM.get so timeouts and error toasts stay uniform.
@@ -103,6 +104,7 @@
                 restoreFileBackup(this.getAttribute('data-id'));
             });
         });
+        syncFileRestoreButtons();
     }
 
     function updateFileBulkButtons() {
@@ -129,12 +131,14 @@
     }
 
     function restoreFileBackup(id) {
+        if (fileMutationBusy) return;
         CSM.confirm('Restore this file backup? A re-scan is recommended after restore.').then(function() {
-            CSM.post('/api/v1/quarantine-restore', { id: id }).then(function(data) {
-                CSM.toast('Restored: ' + data.path, 'success');
-                loadFileBackups();
-            }).catch(function(e) {
-                CSM.toast('Restore failed: ' + e.message, 'error');
+            return withFileBulkButtons(null, '', function() {
+                return CSM.post('/api/v1/quarantine-restore', { id: id }).then(function(data) {
+                    CSM.toast('Restored: ' + data.path, 'success');
+                }).catch(function(e) {
+                    CSM.toast('Restore failed: ' + e.message, 'error');
+                }).then(loadFileBackups);
             });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }
@@ -147,32 +151,43 @@
         return ids;
     }
 
+    function syncFileRestoreButtons() {
+        document.querySelectorAll('.cleanup-file-restore').forEach(function(btn) {
+            btn.disabled = fileMutationBusy;
+        });
+    }
+
     function withFileBulkButtons(activeID, busyHTML, fn) {
+        if (fileMutationBusy) return Promise.resolve();
+        fileMutationBusy = true;
         var buttonIDs = ['cleanup-files-restore-btn', 'cleanup-files-delete-btn'];
         var states = [];
-        var activeBtn = document.getElementById(activeID);
-        if (activeBtn && activeBtn.disabled) return Promise.resolve();
+        var activeBtn = activeID ? document.getElementById(activeID) : null;
         buttonIDs.forEach(function(id) {
             var btn = document.getElementById(id);
             if (!btn) return;
             states.push({ btn: btn, disabled: btn.disabled, html: btn.innerHTML });
             btn.disabled = true;
         });
+        syncFileRestoreButtons();
         if (activeBtn) activeBtn.innerHTML = busyHTML;
         return Promise.resolve().then(fn).finally(function() {
+            fileMutationBusy = false;
             states.forEach(function(state) {
                 state.btn.disabled = state.disabled;
                 state.btn.innerHTML = state.html;
             });
             updateFileBulkButtons();
+            syncFileRestoreButtons();
         });
     }
 
     function restoreSelectedFileBackups() {
+        if (fileMutationBusy) return;
         var ids = selectedFileIDs();
         if (ids.length === 0) return;
         CSM.confirm('Restore ' + ids.length + ' file backup(s)? A re-scan is recommended after restore.').then(function() {
-            withFileBulkButtons('cleanup-files-restore-btn', '<i class="ti ti-restore"></i>&nbsp;Restoring...', function() {
+            return withFileBulkButtons('cleanup-files-restore-btn', '<i class="ti ti-restore"></i>&nbsp;Restoring...', function() {
                 var chain = Promise.resolve();
                 var succeeded = 0;
                 var failed = 0;
@@ -192,16 +207,20 @@
     }
 
     function deleteSelectedFileBackups() {
+        if (fileMutationBusy) return;
         var ids = selectedFileIDs();
         if (ids.length === 0) return;
         CSM.confirm('Permanently delete ' + ids.length + ' file backup(s)?').then(function() {
-            withFileBulkButtons('cleanup-files-delete-btn', '<i class="ti ti-trash"></i>&nbsp;Deleting...', function() {
-                return CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(data) {
-                    CSM.toast('Deleted ' + data.count + ' file backup(s)', 'success');
-                    return loadFileBackups();
+            return withFileBulkButtons('cleanup-files-delete-btn', '<i class="ti ti-trash"></i>&nbsp;Deleting...', function() {
+                var deleted = 0;
+                return CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,
+                    function(batch) { return { ids: batch }; },
+                    function(data) { deleted += data.count || 0; }
+                ).then(function() {
+                    CSM.toast('Deleted ' + deleted + ' file backup(s)', 'success');
                 }).catch(function(e) {
-                    CSM.toast('Delete failed: ' + e.message, 'error');
-                });
+                    CSM.toast('Deleted ' + deleted + ' file backup(s), then failed: ' + (e.message || 'request failed'), 'error');
+                }).then(loadFileBackups);
             });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }

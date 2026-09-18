@@ -44,6 +44,18 @@ scope. The header links to session management.
 | **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer |
 | **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session |
 
+## Bulk file actions
+
+Quarantine and Cleanup delete large file selections in sequential batches.
+If a request fails, later batches are not sent; the page reports the confirmed
+deletion count and refreshes the list. File restore and delete controls stay
+disabled until the operation and refresh finish.
+
+Threat Intel bulk block and whitelist actions accept up to 100 selected IPs
+and retain one undo action. Larger selections must be narrowed before sending.
+Findings bulk fix and quarantine actions also ask for a smaller selection when
+the request would exceed the API body-size limit, which includes finding details.
+
 ## Security
 
 - **Authentication** - API bearer tokens in the header; opaque server-side browser sessions in HttpOnly/Secure/SameSite=Strict cookies

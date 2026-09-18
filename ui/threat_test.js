@@ -27,7 +27,7 @@ function stubElement(id) {
     };
 }
 
-function threatPage(overrides = {}) {
+function threatPage(overrides = {}, selectedCount = 1) {
     const elements = {};
     function byId(id) {
         if (!elements[id]) elements[id] = stubElement(id);
@@ -47,7 +47,9 @@ function threatPage(overrides = {}) {
             getElementById: byId,
             querySelectorAll(selector) {
                 if (selector === '.bulk-ip-cb:checked') {
-                    return [{ getAttribute() { return '192.0.2.20'; } }];
+                    return Array.from({ length: selectedCount }, (_, i) => ({
+                        getAttribute() { return '192.0.2.' + (i + 1); }
+                    }));
                 }
                 return [];
             },
@@ -75,6 +77,9 @@ function threatPage(overrides = {}) {
             ...overrides
         }
     });
+    const shared = fs.readFileSync(path.join(__dirname, 'static/js/csrf.js'), 'utf8');
+    vm.runInContext(shared.slice(shared.indexOf('CSM.QUARANTINE_BULK_MAX'),
+        shared.indexOf('// Wrapper for DELETE')), context);
     const source = fs.readFileSync(path.join(__dirname, 'static/js/threat.js'), 'utf8');
     vm.runInContext(source, context);
     return { context, elements, byId };
@@ -154,3 +159,34 @@ test('bulk timed block shows refused permanent blocks', async () => {
     assert.ok(toasts.some(t => t.kind === 'warning' && /permanently blocked/.test(t.message)));
     assert.ok(!toasts.some(t => t.kind === 'success'), 'all-refused action must not show success');
 });
+
+for (const action of ['block', 'block_permanent', 'whitelist']) {
+    for (const count of [0, 100, 101]) {
+        test('bulk ' + action + ' handles selection size ' + count, async () => {
+            const requests = [], confirmations = [], toasts = [], undo = [];
+            const { context, byId } = threatPage({
+                confirm(message) { confirmations.push(message); return Promise.resolve(); },
+                post(url, body) {
+                    requests.push({ url, body });
+                    return Promise.resolve({ count, undo_token: 'test-undo' });
+                },
+                toast(message) { toasts.push(message); },
+                undo: { offer(entry) { undo.push(entry); } }
+            }, count);
+            if (action === 'whitelist') byId('bulk-whitelist-btn').listeners.click[0]();
+            else await context.bulkBlock(action === 'block_permanent');
+            await new Promise(resolve => setImmediate(resolve));
+            if (count === 100) {
+                assert.equal(requests.length, 1);
+                assert.equal(requests[0].body.ips.length, count);
+                assert.equal(requests[0].body.action, action);
+                assert.equal(undo.length, 1);
+            } else {
+                assert.equal(requests.length, 0);
+                assert.equal(confirmations.length, 0);
+                assert.equal(undo.length, 0);
+                if (count > 100) assert.ok(toasts.some(message => /bulk limit is 100/.test(message)));
+            }
+        });
+    }
+}

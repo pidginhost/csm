@@ -29,6 +29,28 @@ CSM.post = function(url, body) {
     }).then(function(r) { return r.json(); });
 };
 
+// Per-request limits the bulk endpoints enforce. Keep them equal to the
+// server constants; the Web UI tests compare the two.
+CSM.QUARANTINE_BULK_MAX = 100;
+CSM.THREAT_BULK_MAX = 100;
+CSM.FIX_BULK_BODY_MAX = 65536;
+
+// Send items to an endpoint that accepts at most `size` per request, one batch
+// after another, so a large selection is not refused as a whole. body(batch)
+// builds each request body and onBatch(response) sees each reply as it lands,
+// which lets a caller report what already happened if a later batch fails.
+CSM.postBatches = function(url, items, size, body, onBatch) {
+    var chain = Promise.resolve();
+    for (var i = 0; i < items.length; i += size) {
+        (function(batch) {
+            chain = chain.then(function() {
+                return CSM.post(url, body(batch)).then(onBatch);
+            });
+        })(items.slice(i, i + size));
+    }
+    return chain;
+};
+
 // Wrapper for DELETE requests with CSRF token
 CSM.delete = function(url, body) {
     var opts = {
