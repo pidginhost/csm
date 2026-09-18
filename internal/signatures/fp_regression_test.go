@@ -1150,3 +1150,115 @@ func TestPhpGotoObfuscation_DropperWithSink(t *testing.T) {
 		t.Error("php_goto_obfuscation regression: goto-scrambled dropper with a decode sink not detected")
 	}
 }
+
+// Security plugins describe the users endpoint they protect. A doc comment
+// naming the application-passwords route, or a translation catalogue whose one
+// line holds both the endpoint prose and an unrelated "password" string, is
+// text about the endpoint, not a request to it.
+func TestExploitWpRestApi_TextAboutTheEndpoint(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	for name, body := range map[string]string{
+		"doc comment naming application-passwords route": `<?php
+class Share {
+	/**
+	 * Without this filter a recipient could call the core endpoint
+	 * POST /wp-json/wp/v2/users/me/application-passwords using the cookie
+	 * and nonce from the shared page and keep a credential after revocation.
+	 */
+	public function disable_app_passwords( bool $available, $user ): bool {
+		return in_array( 'viewer', $user->roles, true ) ? false : $available;
+	}
+}
+`,
+		"translation catalogue on one line": "<?php\nreturn ['x-generator'=>'GlotPress/4.0.1','messages'=>['Disable REST users'=>'Disable REST users','Blocks the /wp-json/wp/v2/users endpoint for visitors who are not logged in'=>'Blocks the /wp-json/wp/v2/users endpoint for visitors who are not logged in','Reset password'=>'Reset password','Password'=>'Password']];\n",
+		"settings label": `<?php
+$options = array(
+	'rest_users' => array(
+		'title' => __('Disable REST users', 'plugin'),
+		'exp' => __('Blocks the /wp-json/wp/v2/users endpoint for visitors who are not logged in', 'plugin'),
+	),
+	'password_policy' => array('title' => __('Strong password', 'plugin')),
+);
+`,
+		"different endpoint with users prefix": `<?php
+wp_remote_post('https://example.org/wp-json/wp/v2/users-export?password=' . $token);
+`,
+		"password only in fragment": `<?php
+echo '<a href="https://example.org/wp-json/wp/v2/users#help?password=example">Help</a>';
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if hasRule(scanner.ScanContent([]byte(body), ".php"), "exploit_wp_rest_api") {
+				t.Errorf("exploit_wp_rest_api matched text about the endpoint:\n%s", body)
+			}
+		})
+	}
+}
+
+// Account takeover through the REST API sends a request to the users endpoint
+// carrying a password field: creating an administrator or resetting a user.
+func TestExploitWpRestApi_RequestsCarryingPassword(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	for name, body := range map[string]string{
+		"wp_remote_post creates administrator": `<?php
+$r = wp_remote_post($target . '/wp-json/wp/v2/users', array(
+	'headers' => array('X-WP-Nonce' => $nonce, 'Cookie' => $cookie),
+	'body'    => array('username' => 'wpsupport', 'email' => 'x@example.net',
+		'password' => 'Xk29!pq', 'roles' => array('administrator')),
+));
+`,
+		"curl json password reset": `<?php
+$ch = curl_init("https://" . $host . "/wp-json/wp/v2/users/1");
+curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "POST");
+curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode(["password" => $new]));
+curl_exec($ch);
+`,
+		"rest route creates administrator": `<?php
+wp_remote_post($target . '/?rest_route=/wp/v2/users', [
+	'body' => ['username' => $login, 'password' => $new, 'roles' => ['administrator']],
+]);
+`,
+		"rest route password query": `<?php
+wp_remote_post($target . '/index.php?rest_route=/wp/v2/users/1&password=' . $new);
+`,
+		"query built with http_build_query": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users/1?' . http_build_query(['password' => $new]));
+`,
+		"rest route query built with http_build_query": `<?php
+wp_remote_post($target . '/?rest_route=/wp/v2/users/1&' . http_build_query(['password' => $new]));
+`,
+		"raw json body": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users/1', ['body' => '{"password":"replacement"}']);
+`,
+		"escaped json body": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users/1', ['body' => "{\"password\":\"replacement\"}"]);
+`,
+		"form encoded body": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users/1', ['body' => 'password=' . rawurlencode($new)]);
+`,
+		"form encoded body after another field": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users', ['body' => 'username=operator&password=' . rawurlencode($new)]);
+`,
+		"payload prepared before variable url": `<?php
+$body = json_encode(['password' => $new]);
+$url = $target . '/wp-json/wp/v2/users/1';
+wp_remote_post($url, ['body' => $body]);
+`,
+		"form prepared before rest route url": `<?php
+$body = http_build_query(['password' => $new]);
+$url = $target . '/?rest_route=/wp/v2/users/1';
+wp_remote_post($url, ['body' => $body]);
+`,
+		"query appended to variable url": `<?php
+$url = $target . '/wp-json/wp/v2/users/1';
+$url .= '?password=' . rawurlencode($new);
+wp_remote_post($url);
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !hasRule(scanner.ScanContent([]byte(body), ".php"), "exploit_wp_rest_api") {
+				t.Errorf("exploit_wp_rest_api missed a request carrying a password:\n%s", body)
+			}
+		})
+	}
+}

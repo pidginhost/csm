@@ -18,6 +18,12 @@ Both engines skip ZIP, gzip, bzip2, xz, 7z, and RAR containers, but only when th
 
 ## YAML Rules
 
+The WordPress REST API exploit signature is a YAML-only heuristic. It requires
+a users-endpoint URL literal and a password query parameter or a nearby PHP,
+JSON or form-encoded password field, including payloads prepared before the
+URL. Endpoint prose alone does not qualify. This is bounded textual evidence,
+not PHP data-flow analysis or proof that a request is unauthorized.
+
 ```yaml
 rules:
   - name: webshell_c99

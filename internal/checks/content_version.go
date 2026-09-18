@@ -96,7 +96,7 @@ func ContentDetectionVersion() string {
 // its verifiers can reach. BUMP IT in the same commit as any such change, so an
 // upgraded host sweeps at startup instead of carrying the old behaviour until
 // its next deep-scan cycle.
-const reverifySweepLogicVersion = 1
+const reverifySweepLogicVersion = 2
 
 // FindingReverifyVersion identifies every verifier family the startup sweep
 // runs unattended, plus the sweep's own semantics. Including the exposure

@@ -50,6 +50,7 @@ func TestPHPLineCommentEndsAtCarriageReturn(t *testing.T) {
 func TestPHPInertRecognizersRejectAttributes(t *testing.T) {
 	for name, recognize := range map[string]func([]byte) bool{
 		"inert stub":        IsBenignPHPStubBytes,
+		"inert replacement": func(b []byte) bool { return isInertPHPReplacement(string(b)) },
 		"translation cache": func(b []byte) bool { return IsWPTranslationCacheBytesComplete(b, true) },
 		"version data":      func(b []byte) bool { return IsWPVersionDataBytesComplete(b, true) },
 	} {
@@ -65,9 +66,59 @@ func TestPHPInertRecognizersRejectAttributes(t *testing.T) {
 					t.Errorf("ordinary hash comment rejected: %q", comment)
 				}
 			}
-			if name == "inert stub" && recognize([]byte("<?php #[Example] function example() {} print('EXECUTED');")) {
+			if (name == "inert stub" || name == "inert replacement") && recognize([]byte("<?php #[Example] function example() {} print('EXECUTED');")) {
 				t.Error("executable attribute line at EOF accepted")
 			}
 		})
+	}
+}
+
+// PHP opens a code block only when "<?php" is followed by a space, tab, CR or
+// LF. After a vertical tab or form feed it prints the whole file as text, so
+// such a file is attacker-chosen page output, never inert data.
+func TestPHPInertRecognizersRejectNonTagOpeners(t *testing.T) {
+	bodies := map[string]string{
+		"inert stub":        "// Silence is golden.",
+		"inert replacement": "// <script>alert(1)</script>",
+		"translation cache": "return ['messages'=>['Save'=>'<script>alert(1)</script>']];",
+		"version data":      "$wp_version = '<script>alert(1)</script>';",
+	}
+	recognizers := map[string]func([]byte) bool{
+		"inert stub":        IsBenignPHPStubBytes,
+		"inert replacement": func(b []byte) bool { return isInertPHPReplacement(string(b)) },
+		"translation cache": func(b []byte) bool { return IsWPTranslationCacheBytesComplete(b, true) },
+		"version data":      func(b []byte) bool { return IsWPVersionDataBytesComplete(b, true) },
+	}
+	for name, recognize := range recognizers {
+		t.Run(name, func(t *testing.T) {
+			if !recognize([]byte("<?php\n" + bodies[name])) {
+				t.Fatalf("control body not recognized")
+			}
+			for _, opener := range []string{"<?php\v", "<?php\f"} {
+				if body := opener + bodies[name]; recognize([]byte(body)) {
+					t.Errorf("file PHP prints as text accepted as inert: %q", body)
+				}
+			}
+		})
+	}
+}
+
+func TestInertPHPReplacementOpenerBoundary(t *testing.T) {
+	for _, tag := range []string{"<?php", "<?PHP", "<?Php"} {
+		for _, suffix := range []string{"", " ", "\t", "\r", "\n", " // cleaned\n"} {
+			if !isInertPHPReplacement(" \n" + tag + suffix) {
+				t.Errorf("valid comment-only opener rejected: %q", tag+suffix)
+			}
+		}
+		for _, suffix := range []string{"\v", "\f", "\v \n", "\f\t\n", "\u00a0"} {
+			if isInertPHPReplacement(" \n" + tag + suffix) {
+				t.Errorf("trailing whitespace hid an invalid opener: %q", tag+suffix)
+			}
+		}
+	}
+	for _, src := range []string{"<? // cleaned", "<?= 'page output';"} {
+		if isInertPHPReplacement(src) {
+			t.Errorf("short tag accepted as inert: %q", src)
+		}
 	}
 }
