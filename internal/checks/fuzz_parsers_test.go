@@ -441,6 +441,8 @@ func FuzzPHPCodeOnly(f *testing.F) {
 	f.Add("<?php /* ?> */ echo 1; ?>")                  // ?> inside a block comment
 	f.Add("<?php // trailing ?> html <?php echo 2; ?>") // ?> ends a line comment
 	f.Add("<?php $h = <<<EOT\n?> not a tag\nEOT;\n?>")  // ?> inside a heredoc
+	f.Add("<?php #[Example('?>')] function example() {} system($_GET['c']);")
+	f.Add("<?php # comment\r#[Example(<<<'TEXT'\n?>\nTEXT)] function example() {}")
 	f.Add("plain html with no php tags at all")
 	f.Add("<?")
 	f.Add("<?php")

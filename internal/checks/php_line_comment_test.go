@@ -50,6 +50,7 @@ func TestPHPLineCommentEndsAtCarriageReturn(t *testing.T) {
 func TestPHPInertRecognizersRejectAttributes(t *testing.T) {
 	for name, recognize := range map[string]func([]byte) bool{
 		"inert stub":        IsBenignPHPStubBytes,
+		"inert replacement": func(b []byte) bool { return isInertPHPReplacement(string(b)) },
 		"translation cache": func(b []byte) bool { return IsWPTranslationCacheBytesComplete(b, true) },
 		"version data":      func(b []byte) bool { return IsWPVersionDataBytesComplete(b, true) },
 	} {
@@ -65,7 +66,7 @@ func TestPHPInertRecognizersRejectAttributes(t *testing.T) {
 					t.Errorf("ordinary hash comment rejected: %q", comment)
 				}
 			}
-			if name == "inert stub" && recognize([]byte("<?php #[Example] function example() {} print('EXECUTED');")) {
+			if (name == "inert stub" || name == "inert replacement") && recognize([]byte("<?php #[Example] function example() {} print('EXECUTED');")) {
 				t.Error("executable attribute line at EOF accepted")
 			}
 		})

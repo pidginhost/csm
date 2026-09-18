@@ -1419,14 +1419,10 @@ func copyPHPModeRegion(b *strings.Builder, src string, start int) int {
 			}
 			continue
 		}
-		if (src[i] == '/' && i+1 < n && src[i+1] == '/') || src[i] == '#' {
-			for i < n && src[i] != '\n' {
-				if src[i] == '?' && i+1 < n && src[i+1] == '>' {
-					break
-				}
-				b.WriteByte(src[i])
-				i++
-			}
+		if isPHPLineCommentStart(src, i) {
+			end := skipPHPLineComment(src, i)
+			b.WriteString(src[i:end])
+			i = end
 			if i+1 < n && src[i] == '?' && src[i+1] == '>' {
 				b.WriteString("; ")
 				return i + 2
@@ -3188,7 +3184,7 @@ func isPHPLineCommentStart[T string | []byte](buf T, i int) bool {
 // skipPHPLineComment returns the index that ends the "//" or "#" comment at
 // i. PHP ends one at a bare CR as well as at LF, so a CR must not be read as
 // comment text: the statement after it runs.
-func skipPHPLineComment(buf []byte, i int) int {
+func skipPHPLineComment[T string | []byte](buf T, i int) int {
 	for i < len(buf) {
 		if buf[i] == '\n' || buf[i] == '\r' {
 			return i

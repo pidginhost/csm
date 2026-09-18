@@ -87,6 +87,11 @@ func detectVarFuncDangerousAssignment(content string) bool {
 func findIndirectAssignments(code string) map[string][]indirectAssignment {
 	assignments := map[string][]indirectAssignment{}
 	for i := 0; i < len(code); i++ {
+		// Literal examples must neither create nor overwrite a callable binding.
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			i = phpHeredocEnd(code, bodyStart, label) - 1
+			continue
+		}
 		if isPHPQuote(code[i]) {
 			i = skipPHPString(code, i)
 			continue
@@ -121,7 +126,14 @@ func findIndirectAssignments(code string) map[string][]indirectAssignment {
 
 func findIndirectCalls(code string, assignments map[string][]indirectAssignment) []indirectCall {
 	var calls []indirectCall
+	// Strip strings before slicing lines: a call's line may start inside a
+	// multiline literal whose opening quote is on an earlier line.
+	codeNoStrings := stripPHPStringsFromCode(code)
 	for i := 0; i < len(code); i++ {
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			i = phpHeredocEnd(code, bodyStart, label) - 1
+			continue
+		}
 		if isPHPQuote(code[i]) {
 			i = skipPHPString(code, i)
 			continue
@@ -150,7 +162,7 @@ func findIndirectCalls(code string, assignments map[string][]indirectAssignment)
 			pos:       i,
 			lineStart: lineStart,
 			lineEnd:   lineEnd,
-			line:      code[lineStart:lineEnd],
+			line:      codeNoStrings[lineStart:lineEnd],
 		})
 		i = next - 1
 	}
