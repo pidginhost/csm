@@ -1180,6 +1180,12 @@ $options = array(
 	'password_policy' => array('title' => __('Strong password', 'plugin')),
 );
 `,
+		"different endpoint with users prefix": `<?php
+wp_remote_post('https://example.org/wp-json/wp/v2/users-export?password=' . $token);
+`,
+		"password only in fragment": `<?php
+echo '<a href="https://example.org/wp-json/wp/v2/users#help?password=example">Help</a>';
+`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if hasRule(scanner.ScanContent([]byte(body), ".php"), "exploit_wp_rest_api") {
@@ -1206,6 +1212,47 @@ $ch = curl_init("https://" . $host . "/wp-json/wp/v2/users/1");
 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "POST");
 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode(["password" => $new]));
 curl_exec($ch);
+`,
+		"rest route creates administrator": `<?php
+wp_remote_post($target . '/?rest_route=/wp/v2/users', [
+	'body' => ['username' => $login, 'password' => $new, 'roles' => ['administrator']],
+]);
+`,
+		"rest route password query": `<?php
+wp_remote_post($target . '/index.php?rest_route=/wp/v2/users/1&password=' . $new);
+`,
+		"query built with http_build_query": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users/1?' . http_build_query(['password' => $new]));
+`,
+		"rest route query built with http_build_query": `<?php
+wp_remote_post($target . '/?rest_route=/wp/v2/users/1&' . http_build_query(['password' => $new]));
+`,
+		"raw json body": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users/1', ['body' => '{"password":"replacement"}']);
+`,
+		"escaped json body": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users/1', ['body' => "{\"password\":\"replacement\"}"]);
+`,
+		"form encoded body": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users/1', ['body' => 'password=' . rawurlencode($new)]);
+`,
+		"form encoded body after another field": `<?php
+wp_remote_post($target . '/wp-json/wp/v2/users', ['body' => 'username=operator&password=' . rawurlencode($new)]);
+`,
+		"payload prepared before variable url": `<?php
+$body = json_encode(['password' => $new]);
+$url = $target . '/wp-json/wp/v2/users/1';
+wp_remote_post($url, ['body' => $body]);
+`,
+		"form prepared before rest route url": `<?php
+$body = http_build_query(['password' => $new]);
+$url = $target . '/?rest_route=/wp/v2/users/1';
+wp_remote_post($url, ['body' => $body]);
+`,
+		"query appended to variable url": `<?php
+$url = $target . '/wp-json/wp/v2/users/1';
+$url .= '?password=' . rawurlencode($new);
+wp_remote_post($url);
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
