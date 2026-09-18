@@ -146,7 +146,7 @@ func TestStartCentralConsumeDefaultsThresholdAndClearsHook(t *testing.T) {
 	t.Setenv("CSM_TEST_CENTRAL_PUB", hex.EncodeToString(pub))
 
 	d := New(cfg, nil, nil, "")
-	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist"))
+	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist", "challenge_ips.txt"))
 	loop := d.startCentralConsume()
 	if loop == nil {
 		t.Fatal("enabled consumer returned nil loop")
@@ -229,7 +229,7 @@ func centralStoreWith(t *testing.T, entries []reporting.ScoredEntry) *reporting.
 
 func TestApplyCentralChallengesListedIP(t *testing.T) {
 	d := New(&config.Config{}, nil, nil, "")
-	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist"))
+	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist", "challenge_ips.txt"))
 
 	store := centralStoreWith(t, []reporting.ScoredEntry{
 		{IP: "45.76.1.1", Score: 90, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Unix(1_700_000_000, 0).UTC()},
@@ -244,7 +244,7 @@ func TestApplyCentralChallengesListedIP(t *testing.T) {
 
 func TestApplyCentralRespectsFirebreak(t *testing.T) {
 	d := New(&config.Config{}, nil, nil, "")
-	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist"))
+	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist", "challenge_ips.txt"))
 
 	// 203.0.113.5 is in the set but is a documentation range -> firebreak.
 	store := centralStoreWith(t, []reporting.ScoredEntry{
@@ -260,7 +260,7 @@ func TestApplyCentralRespectsFirebreak(t *testing.T) {
 
 func TestApplyCentralIgnoresUnlistedIP(t *testing.T) {
 	d := New(&config.Config{}, nil, nil, "")
-	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist"))
+	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist", "challenge_ips.txt"))
 	store := centralStoreWith(t, []reporting.ScoredEntry{
 		{IP: "45.76.1.1", Score: 90, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Unix(1_700_000_000, 0).UTC()},
 	})

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,14 +20,14 @@ import (
 // --- IPList ------------------------------------------------------------
 
 func TestNewIPListDefaultsToEmpty(t *testing.T) {
-	l := NewIPList(t.TempDir())
+	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	if l.Contains("1.2.3.4") {
 		t.Error("fresh list should not contain any IP")
 	}
 }
 
 func TestIPListAddContainsRemove(t *testing.T) {
-	l := NewIPList(t.TempDir())
+	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	l.Add("1.2.3.4", "brute force", time.Hour)
 	if !l.Contains("1.2.3.4") {
 		t.Error("Add should make Contains return true")
@@ -54,7 +55,7 @@ func TestIPListAddContainsRemove(t *testing.T) {
 }
 
 func TestIPListExpiredEntriesReturnsAndRemoves(t *testing.T) {
-	l := NewIPList(t.TempDir())
+	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	l.Add("1.1.1.1", "test", 1*time.Hour)
 	l.Add("2.2.2.2", "test", -1*time.Hour) // already expired
 	l.Add("3.3.3.3", "test", -5*time.Minute)
@@ -79,14 +80,14 @@ func TestIPListExpiredEntriesReturnsAndRemoves(t *testing.T) {
 }
 
 func TestIPListExpiredEntriesEmptyListReturnsNil(t *testing.T) {
-	l := NewIPList(t.TempDir())
+	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	if got := l.ExpiredEntries(); got != nil {
 		t.Errorf("got %v, want nil for empty list", got)
 	}
 }
 
 func TestIPListCleanExpired(t *testing.T) {
-	l := NewIPList(t.TempDir())
+	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	l.Add("1.1.1.1", "test", -1*time.Hour)
 	l.CleanExpired()
 	if l.Contains("1.1.1.1") {
@@ -248,7 +249,7 @@ func TestGenerateNonceUnique(t *testing.T) {
 
 func newTestServer(t *testing.T, cfg *config.Config) (*Server, *IPList) {
 	t.Helper()
-	l := NewIPList(t.TempDir())
+	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	s := New(cfg, l)
 	return s, l
 }
@@ -645,7 +646,7 @@ func TestExtractIPUntrustedPeerIgnoresXFF(t *testing.T) {
 func TestHandleGateReflectsChallengeList(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
-	l := NewIPList(t.TempDir())
+	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	l.Add("203.0.113.44", "test", time.Hour)
 	s := New(cfg, l)
 

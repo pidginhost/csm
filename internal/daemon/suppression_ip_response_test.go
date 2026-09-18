@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -161,7 +162,7 @@ func TestSuppressionDoesNotGateCentralEnforcement(t *testing.T) {
 					rules = checkWideSuppression("smtp_bruteforce")
 				}
 				d := suppressionTestDaemon(t, cfg, rules)
-				d.ipList = challenge.NewIPList(t.TempDir())
+				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 				previous := alert.CentralHook
 				var calls int
 				alert.SetCentralHook(func(f alert.Finding) {
@@ -411,7 +412,7 @@ func TestDispatchBatchChallengeRoutesSuppressedSource(t *testing.T) {
 	cfg, _, _ := suppressionResponseSetup(t)
 	cfg.Challenge.Enabled = true
 	d := suppressionTestDaemon(t, cfg, checkWideSuppression("wp_login_bruteforce"))
-	d.ipList = challenge.NewIPList(t.TempDir())
+	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	previous := checks.GetChallengeIPList()
 	checks.SetChallengeIPList(d.ipList)
 	t.Cleanup(func() { checks.SetChallengeIPList(previous) })

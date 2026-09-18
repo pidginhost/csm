@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -93,7 +94,7 @@ func TestChallengeVerifiedAuditFailureRetainsEvidence(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, db, dispatched := lifecycleAuditDaemon(t, firewall.BlockOutcomeLive, tc.err)
-			d.ipList = challenge.NewIPList(t.TempDir())
+			d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 			d.ipList.Add("203.0.113.82", "observed abuse", -time.Minute)
 			before := challengeEscalatedCount()
 			stderr := captureAppliedBlockStderr(t, func() { d.escalateExpiredChallenges(time.Hour) })

@@ -140,7 +140,7 @@ func TestChallengeTimeoutRetainsOriginalFindingID(t *testing.T) {
 		b := &causalWiringBlocker{}
 		checks.SetIPBlocker(b)
 		d := New(cfg, nil, nil, "")
-		d.ipList = challenge.NewIPList(t.TempDir())
+		d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 		previous := checks.GetChallengeIPList()
 		checks.SetChallengeIPList(d.ipList)
 		t.Cleanup(func() { checks.SetChallengeIPList(previous) })
