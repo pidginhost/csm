@@ -610,6 +610,10 @@ document.getElementById('select-all-attackers').addEventListener('change', funct
 function bulkBlock(permanent) {
     var ips = getSelectedIPs();
     if (ips.length === 0) return Promise.resolve();
+    if (ips.length > CSM.THREAT_BULK_MAX) {
+        CSM.toast('Too many IPs selected (' + ips.length + '); the bulk limit is ' + CSM.THREAT_BULK_MAX + '. Narrow the selection and repeat.', 'error');
+        return Promise.resolve();
+    }
     var question = permanent ?
         'Block ' + ips.length + ' IP(s) permanently?\n\nThe firewall blocks never expire and the IPs stay in the threat database until you clear them.' :
         'Block ' + ips.length + ' IP(s) for 24 hours?\n\nThis will block them in the firewall and add them to the threat database for the same 24 hours. Permanent and longer blocks are skipped; unblock them explicitly before changing their lifetime.';
@@ -638,6 +642,10 @@ document.getElementById('bulk-block-perm-btn').addEventListener('click', functio
 document.getElementById('bulk-whitelist-btn').addEventListener('click', function() {
     var ips = getSelectedIPs();
     if (ips.length === 0) return;
+    if (ips.length > CSM.THREAT_BULK_MAX) {
+        CSM.toast('Too many IPs selected (' + ips.length + '); the bulk limit is ' + CSM.THREAT_BULK_MAX + '. Narrow the selection and repeat.', 'error');
+        return;
+    }
     CSM.confirm('Permanently whitelist ' + ips.length + ' IP(s)?\n\nThis will unblock from firewall, add to allow list, and remove from all threat databases.').then(function() {
         CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'whitelist' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }

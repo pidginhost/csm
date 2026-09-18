@@ -1513,6 +1513,10 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// quarantineBulkDeleteMax bounds the files one bulk-delete request removes.
+// The UI sends larger selections as several requests of this size.
+const quarantineBulkDeleteMax = 100
+
 // apiQuarantineBulkDelete permanently removes quarantined files and their metadata.
 func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1526,8 +1530,8 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if len(req.IDs) == 0 || len(req.IDs) > 100 {
-		writeJSONError(w, "IDs must be 1-100 items", http.StatusBadRequest)
+	if len(req.IDs) == 0 || len(req.IDs) > quarantineBulkDeleteMax {
+		writeJSONError(w, fmt.Sprintf("IDs must be 1-%d items", quarantineBulkDeleteMax), http.StatusBadRequest)
 		return
 	}
 

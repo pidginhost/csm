@@ -253,10 +253,15 @@ if (bulkDeleteBtn) {
         var ids = _quarBulk.selectedValues();
         if (ids.length === 0) return;
         CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?').then(function() {
-            CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(data) {
-                CSM.toast('Deleted ' + data.count + ' file(s)', 'success');
-                loadQuarantine();
-            }).catch(function(err) { CSM.toast(err.message || 'Delete failed', 'error'); });
+            var deleted = 0;
+            CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,
+                function(batch) { return { ids: batch }; },
+                function(data) { deleted += data.count || 0; }
+            ).then(function() {
+                CSM.toast('Deleted ' + deleted + ' file(s)', 'success');
+            }).catch(function(err) {
+                CSM.toast('Deleted ' + deleted + ' file(s), then failed: ' + (err.message || 'request failed'), 'error');
+            }).then(loadQuarantine);
         }).catch(function() { /* cancelled */ });
     });
 }

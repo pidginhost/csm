@@ -196,12 +196,15 @@
         if (ids.length === 0) return;
         CSM.confirm('Permanently delete ' + ids.length + ' file backup(s)?').then(function() {
             withFileBulkButtons('cleanup-files-delete-btn', '<i class="ti ti-trash"></i>&nbsp;Deleting...', function() {
-                return CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(data) {
-                    CSM.toast('Deleted ' + data.count + ' file backup(s)', 'success');
-                    return loadFileBackups();
+                var deleted = 0;
+                return CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,
+                    function(batch) { return { ids: batch }; },
+                    function(data) { deleted += data.count || 0; }
+                ).then(function() {
+                    CSM.toast('Deleted ' + deleted + ' file backup(s)', 'success');
                 }).catch(function(e) {
-                    CSM.toast('Delete failed: ' + e.message, 'error');
-                });
+                    CSM.toast('Deleted ' + deleted + ' file backup(s), then failed: ' + (e.message || 'request failed'), 'error');
+                }).then(loadFileBackups);
             });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }
