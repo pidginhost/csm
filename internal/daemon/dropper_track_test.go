@@ -1256,3 +1256,55 @@ func TestDropperStagedSingleUnreadableSnapshotIsNotRewrite(t *testing.T) {
 		t.Fatalf("unread earlier bytes accepted: %+v", due)
 	}
 }
+
+// Analyzer verdicts and probe retries reuse snapshots. Empty CREATE/CLOSE_WRITE
+// observations can arrive in either order without adding another nonempty write.
+func TestDropperStagedHistoryReplay(t *testing.T) {
+	for _, pkg := range []string{"example", "wordpress"} {
+		for _, known := range []bool{false, true} {
+			for _, order := range [][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+				now := time.Unix(1_770_000_000, 0)
+				written := freshDropperCandidate(now.Add(time.Second))
+				written.Path = written.Docroot + "/wp-content/upgrade/update/" + pkg + "/file.php"
+				written.DigestKnown = known
+				empty := written
+				empty.Observed, empty.Size, empty.Head = now, 0, nil
+				empty.Created, empty.WritePending = true, true
+				truncated := empty
+				truncated.Observed, truncated.WritePending = now.Add(2*time.Second), false
+				snapshots := []dropperCandidate{empty, written, truncated}
+				tr := newDropperTracker(time.Minute)
+				for _, i := range order {
+					tr.Observe(snapshots[i])
+				}
+				written.ContentSuspicious = true
+				if !tr.Refresh(written) {
+					t.Fatal("replayed verdict lost candidate")
+				}
+				due := tr.Due(now.Add(time.Minute))
+				if len(due) != 1 || due[0].ContentRewritten || !due[0].ContentSuspicious ||
+					due[0].Size != 0 || due[0].WritePending || !due[0].Observed.Equal(now) {
+					t.Fatalf("package=%s known=%v order=%v: replay changed history or metadata: %+v", pkg, known, order, due)
+				}
+				// A detached probe can collide with a replay of that same snapshot.
+				tr.Observe(written)
+				if _, ok := tr.Retry(due[0]); !ok {
+					t.Fatal("retry lost candidate")
+				}
+				due = tr.Due(now.Add(2 * time.Minute))
+				if len(due) != 1 || due[0].ContentRewritten {
+					t.Fatalf("retry invented a rewrite: %+v", due)
+				}
+				// A genuinely distinct unknown snapshot must still count.
+				tr.Observe(written)
+				written.Observed = now.Add(3 * time.Second)
+				written.DigestKnown = false
+				tr.Refresh(written)
+				due = tr.Due(now.Add(2 * time.Minute))
+				if len(due) != 1 || !due[0].ContentRewritten {
+					t.Fatalf("distinct unknown snapshot lost: %+v", due)
+				}
+			}
+		}
+	}
+}

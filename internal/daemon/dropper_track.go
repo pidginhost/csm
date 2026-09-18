@@ -59,9 +59,10 @@ type dropperCandidate struct {
 	// The first nonempty snapshot of a staged package file, kept across empty
 	// writes and delayed analyzer verdicts: its digest, or that its bytes could
 	// not be read whole. The latest snapshot alone cannot prove its history.
-	stagedHistorySet    bool
-	stagedHistoryKnown  bool
-	stagedHistoryDigest [32]byte
+	stagedHistorySet      bool
+	stagedHistoryKnown    bool
+	stagedHistoryDigest   [32]byte
+	stagedHistoryObserved time.Time
 	// Observed is the TTL origin; snapshotObserved orders the metadata even
 	// after a merge has moved Observed back to the earliest event.
 	snapshotObserved time.Time
@@ -211,6 +212,7 @@ func ownDropperCandidate(c dropperCandidate) dropperCandidate {
 	if c.Size != 0 && !c.stagedHistorySet && wpUpgradeStagedPackageFile(c.Path, c.Docroot) {
 		c.stagedHistorySet = true
 		c.stagedHistoryKnown, c.stagedHistoryDigest = c.DigestKnown, c.Digest
+		c.stagedHistoryObserved = c.snapshotObserved
 	}
 	// Torn bytes that already look like code are evidence, not noise.
 	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsHarmless(c)
@@ -229,7 +231,13 @@ func dropperStagedHistoryDiffers(a, b dropperCandidate) bool {
 	if !a.stagedHistorySet || !b.stagedHistorySet {
 		return false
 	}
-	return !a.stagedHistoryKnown || !b.stagedHistoryKnown || a.stagedHistoryDigest != b.stagedHistoryDigest
+	if !a.stagedHistoryKnown || !b.stagedHistoryKnown {
+		// Analyzer verdicts and detached probes can replay the same unreadable
+		// snapshot after newer empty writes. Compare the history's own time,
+		// not the latest metadata time or the merged TTL origin.
+		return !a.stagedHistoryObserved.Equal(b.stagedHistoryObserved)
+	}
+	return a.stagedHistoryDigest != b.stagedHistoryDigest
 }
 
 func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
@@ -254,6 +262,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	}
 	merged.stagedHistorySet = history.stagedHistorySet
 	merged.stagedHistoryKnown, merged.stagedHistoryDigest = history.stagedHistoryKnown, history.stagedHistoryDigest
+	merged.stagedHistoryObserved = history.stagedHistoryObserved
 	// CREATE may reach an analyzer after CLOSE_WRITE for the same inode.
 	merged.WritePending = prev.WritePending && next.WritePending
 	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)

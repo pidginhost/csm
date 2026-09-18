@@ -217,7 +217,9 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	staged := wpUpgradeStagedPackageFile(c.Path, c.Docroot)
 	_, _, core := wpUpgradeCorePackageFile(c.Path, c.Docroot)
 	read, limit := readFromFd, dropperTrackedHeadMax
-	if wpCopy || staged {
+	// Oversized staged files still need a head for the executable content
+	// check, even though they cannot supply a complete digest.
+	if wpCopy || (staged && st.Size <= dropperDigestMax) {
 		read, limit = readCompleteFromFd, dropperDigestMax
 	}
 	// The data proof and retained head must share the opening stat. Separate
