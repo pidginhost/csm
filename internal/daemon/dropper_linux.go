@@ -9,7 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,7 +245,14 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		c.WPInstallUnsafe = !c.WPInstallData || c.Mode&0o111 != 0
 	} else if !wpCopy && !c.WritePending && (atomicWriteRenameCandidate(c.Path) != "" ||
 		len(wpUpgradeRenameCandidates(c.Path, c.Docroot)) > 0) {
-		c.Digest, c.DigestKnown = digestFromFD(event.fd, st.Size)
+		if _, _, core := wpUpgradeCorePackageFile(c.Path, c.Docroot); core {
+			// One read backs both digests, so the rename match and the
+			// release checksum describe the same bytes.
+			c.Digest, c.CoreMD5, c.DigestKnown = digestsFromFD(event.fd, st.Size)
+			c.CoreMD5Known = c.DigestKnown
+		} else {
+			c.Digest, c.DigestKnown = digestFromFD(event.fd, st.Size)
+		}
 	}
 
 	// FAN_CREATE and FAN_CLOSE_WRITE normally arrive as separate records. The
@@ -382,7 +389,30 @@ func digestFromFD(fd int, size int64) ([32]byte, bool) {
 	return sum, true
 }
 
-func hashFDRange(h hash.Hash, fd int, size int64) bool {
+// digestsFromFD is digestFromFD plus the MD5 wordpress.org publishes for
+// core files, both taken from a single read.
+func digestsFromFD(fd int, size int64) ([32]byte, [16]byte, bool) {
+	if size < 0 || size > dropperDigestMax {
+		return [32]byte{}, [16]byte{}, false
+	}
+	sh := sha256.New()
+	// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
+	mh := md5.New()
+	if !hashFDRange(io.MultiWriter(sh, mh), fd, size) {
+		return [32]byte{}, [16]byte{}, false
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || after.Size != size {
+		return [32]byte{}, [16]byte{}, false
+	}
+	var sum [sha256.Size]byte
+	var coreSum [md5.Size]byte
+	copy(sum[:], sh.Sum(nil))
+	copy(coreSum[:], mh.Sum(nil))
+	return sum, coreSum, true
+}
+
+func hashFDRange(h io.Writer, fd int, size int64) bool {
 	if size == 0 {
 		return true
 	}

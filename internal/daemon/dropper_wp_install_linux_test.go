@@ -649,3 +649,146 @@ func TestDropperCoreVersionProbeWithoutOfficialMatchStillCritical(t *testing.T) 
 		})
 	}
 }
+
+const testCoreThemeFile = "<?php\nfunction twentytwentysix_setup() {\n\tadd_theme_support( 'wp-block-styles' );\n}\n"
+
+// coreReleaseChecksums returns a checksum cache holding one wordpress.org
+// core manifest with the given files, never reaching the network.
+func coreReleaseChecksums(t *testing.T, version, locale string, files map[string]string) *wpcheck.Cache {
+	t.Helper()
+	cache := wpcheck.NewCache(t.TempDir())
+	stop := make(chan struct{})
+	close(stop)
+	cache.SetStopCh(stop)
+	checksums := make(map[string]string, len(files))
+	for rel, body := range files {
+		// #nosec G401 -- mirrors the MD5 digests wordpress.org publishes
+		sum := md5.Sum([]byte(body))
+		checksums[rel] = hex.EncodeToString(sum[:])
+	}
+	if err := cache.PersistChecksums(version, locale, []byte(`{"checksums":{}}`), checksums); err != nil {
+		t.Fatal(err)
+	}
+	return cache
+}
+
+// A core update unpacks the whole release under upgrade/, copies only the
+// files that changed into place, never copies the bundled themes and plugins
+// under wp-content/ over installed ones, and then deletes the working tree.
+// Those staged files vanish without an install destination that matches, but
+// they are byte for byte the official files of the release now installed.
+func TestDropperCorePackageFileNotCopiedByUpdate(t *testing.T) {
+	docroot := t.TempDir()
+	workDir := filepath.Join(docroot, "wp-content", "upgrade", "wordpress-7.1-ro_ro-new")
+	staged := filepath.Join(workDir, "wordpress", "wp-content", "themes", "twentytwentysix", "functions.php")
+	writeWPInstallFile(t, filepath.Join(docroot, "wp-includes", "version.php"), testVersionPHP)
+	writeWPInstallFile(t, filepath.Join(docroot, "wp-content", "themes", "twentytwentysix", "functions.php"), "<?php\n// customised copy\n")
+	writeWPInstallFile(t, staged, testCoreThemeFile)
+
+	r := newWPInstallRun(t, docroot)
+	r.fm.wpCache = coreReleaseChecksums(t, "7.1", "ro_RO", map[string]string{
+		"wp-includes/version.php":                         testVersionPHP,
+		"wp-content/themes/twentytwentysix/functions.php": testCoreThemeFile,
+	})
+	r.observe(t, staged, nil)
+	if err := os.RemoveAll(workDir); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	if len(*r.alerts) != 0 {
+		t.Fatalf("official core package file removed with the working tree raised %+v, want no finding", *r.alerts)
+	}
+}
+
+func TestDropperCorePackageFileWithoutOfficialMatchStillReported(t *testing.T) {
+	const rel = "wp-content/themes/twentytwentysix/functions.php"
+	for _, tc := range []struct {
+		name       string
+		pkg        string
+		writes     []string
+		manifest   map[string]string
+		executable bool
+		noCache    bool
+	}{
+		{name: "differs from official file", writes: []string{testCoreThemeFile},
+			manifest: map[string]string{rel: testCoreThemeFile + "// changed\n"}},
+		{name: "not in the official package", writes: []string{testCoreThemeFile},
+			manifest: map[string]string{"wp-load.php": testCoreThemeFile}},
+		{name: "checksums not available", writes: []string{testCoreThemeFile}},
+		{name: "no checksum source", writes: []string{testCoreThemeFile}, noCache: true},
+		{name: "executable mode", writes: []string{testCoreThemeFile}, executable: true,
+			manifest: map[string]string{rel: testCoreThemeFile}},
+		{name: "payload rewritten to official file", writes: []string{testDropperPHP, testCoreThemeFile},
+			manifest: map[string]string{rel: testCoreThemeFile}},
+		{name: "outside a core package", pkg: "twentytwentysix-theme", writes: []string{testCoreThemeFile},
+			manifest: map[string]string{rel: testCoreThemeFile}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			docroot := t.TempDir()
+			pkg := tc.pkg
+			if pkg == "" {
+				pkg = "wordpress"
+			}
+			workDir := filepath.Join(docroot, "wp-content", "upgrade", "wordpress-7.1-ro_ro-new")
+			staged := filepath.Join(workDir, pkg, filepath.FromSlash(rel))
+			writeWPInstallFile(t, filepath.Join(docroot, "wp-includes", "version.php"), testVersionPHP)
+			r := newWPInstallRun(t, docroot)
+			if !tc.noCache {
+				if tc.manifest == nil {
+					cache := wpcheck.NewCache(t.TempDir())
+					stop := make(chan struct{})
+					close(stop)
+					cache.SetStopCh(stop)
+					r.fm.wpCache = cache
+				} else {
+					r.fm.wpCache = coreReleaseChecksums(t, "7.1", "ro_RO", tc.manifest)
+				}
+			}
+			for _, body := range tc.writes {
+				writeWPInstallFile(t, staged, body)
+				if tc.executable {
+					if err := os.Chmod(staged, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				r.observe(t, staged, nil)
+			}
+			if err := os.RemoveAll(workDir); err != nil {
+				t.Fatal(err)
+			}
+			r.probeAndFlush()
+			got := *r.alerts
+			if len(got) != 1 || got[0].path != staged || got[0].check != "self_deleting_dropper_realtime" {
+				t.Fatalf("want one self-deleting finding for %s, got %+v", staged, got)
+			}
+		})
+	}
+}
+
+// A site nested below another tree's wp-includes/ resolves its version header
+// to the outer root. That header does not describe the nested install, so it
+// cannot vouch for the nested site's staged files.
+func TestDropperCorePackageFileVersionFromOtherRootStillReported(t *testing.T) {
+	outer := t.TempDir()
+	docroot := filepath.Join(outer, "wp-includes", "site")
+	workDir := filepath.Join(docroot, "wp-content", "upgrade", "wordpress-7.1-ro_ro-new")
+	staged := filepath.Join(workDir, "wordpress", "wp-content", "themes", "twentytwentysix", "functions.php")
+	writeWPInstallFile(t, filepath.Join(outer, "wp-includes", "version.php"), testVersionPHP)
+	writeWPInstallFile(t, filepath.Join(docroot, "wp-includes", "version.php"), testVersionPHP)
+	writeWPInstallFile(t, staged, testCoreThemeFile)
+
+	r := newWPInstallRun(t, docroot)
+	r.fm.wpCache = coreReleaseChecksums(t, "7.1", "ro_RO", map[string]string{
+		"wp-includes/version.php":                         testVersionPHP,
+		"wp-content/themes/twentytwentysix/functions.php": testCoreThemeFile,
+	})
+	r.observe(t, staged, nil)
+	if err := os.RemoveAll(workDir); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	got := *r.alerts
+	if len(got) != 1 || got[0].path != staged {
+		t.Fatalf("want one finding for %s, got %+v", staged, got)
+	}
+}

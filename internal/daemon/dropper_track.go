@@ -49,6 +49,13 @@ type dropperCandidate struct {
 	ContentUnsettled bool
 	Digest           [32]byte
 	DigestKnown      bool
+	// CoreMD5 is the same snapshot hashed the way wordpress.org publishes
+	// core checksums. Only files inside an unpacked core release carry it.
+	CoreMD5      [16]byte
+	CoreMD5Known bool
+	// ContentRewritten is sticky: a file whose written content changed
+	// cannot prove from its last bytes what an earlier version ran.
+	ContentRewritten bool
 	// WPInstallData proves the complete, stable snapshot used for Digest was
 	// a translation return literal or version assignments, with no payload.
 	WPInstallData bool
@@ -198,6 +205,17 @@ func ownDropperCandidate(c dropperCandidate) dropperCandidate {
 	return c
 }
 
+// dropperContentChanged reports whether two completed snapshots of one file
+// may hold different bytes. A create-only snapshot is not compared: its read
+// can land mid-write, and a writer that never closes leaves no second
+// snapshot to compare with anyway.
+func dropperContentChanged(a, b dropperCandidate) bool {
+	if a.WritePending || b.WritePending || a.Size == 0 || b.Size == 0 {
+		return false
+	}
+	return !a.DigestKnown || !b.DigestKnown || a.Digest != b.Digest
+}
+
 func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged := next
 	if next.Observed.Before(prev.Observed) {
@@ -212,6 +230,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
 	merged.ContentUnsettled = prev.ContentUnsettled || next.ContentUnsettled
 	merged.WPInstallUnsafe = prev.WPInstallUnsafe || next.WPInstallUnsafe
+	merged.ContentRewritten = prev.ContentRewritten || next.ContentRewritten || dropperContentChanged(prev, next)
 	// CREATE may reach an analyzer after CLOSE_WRITE for the same inode.
 	merged.WritePending = prev.WritePending && next.WritePending
 	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
@@ -446,6 +465,10 @@ type dropperProbe struct {
 	// equals the wordpress.org checksum for that release. Checksums that are
 	// not cached yet leave it false.
 	OfficialWPCoreFile bool
+	// OfficialWPCorePackageFile reports that the candidate, a file of an
+	// unpacked core release, is byte for byte the file of that path in the
+	// release installed at the WordPress root.
+	OfficialWPCorePackageFile bool
 }
 
 type dropperVerdict int
@@ -525,6 +548,9 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 		return dropperSuspect
 	}
 	if dropperOfficialVersionProbe(c, p) {
+		return dropperBenign
+	}
+	if dropperOfficialCorePackageFile(c, p) {
 		return dropperBenign
 	}
 	if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
@@ -621,6 +647,22 @@ func wpUpgradeRenameCandidates(path, configuredDocroot string) []string {
 	}
 }
 
+// wpUpgradeCorePackageFile splits a path inside an unpacked core release,
+// <wpRoot>/wp-content/upgrade/<working>/wordpress/<rel>, into the WordPress
+// root and the file's key in the release checksum manifest.
+func wpUpgradeCorePackageFile(path, configuredDocroot string) (wpRoot, rel string, ok bool) {
+	wpRoot, rest, ok := wpUpgradeStagedPath(path, configuredDocroot)
+	if !ok {
+		return "", "", false
+	}
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 3 || parts[0] == "" || parts[1] != "wordpress" ||
+		parts[2] == "" || filepath.Clean(parts[2]) != parts[2] {
+		return "", "", false
+	}
+	return wpRoot, parts[2], true
+}
+
 // wpUpgradeInstallDestinations lists every place the WordPress updater puts
 // the bytes of a file it wrote under wp-content/upgrade/ before removing it:
 // the package-tree moves above, plus two copy-then-delete steps that leave no
@@ -696,6 +738,16 @@ func dropperOfficialVersionProbe(c dropperCandidate, p dropperProbe) bool {
 	return p.OfficialWPCoreFile && c.WPCoreRelease != nil && dropperWPCopyDataEligible(c) &&
 		filepath.Base(c.Path) == "version-current.php" &&
 		len(wpUpgradeCopyDestinations(c.Path, c.Docroot)) > 0
+}
+
+// dropperOfficialCorePackageFile covers the files a core update unpacks but
+// never installs: bundled themes and plugins under wp-content/, and files
+// unchanged from the running release. WordPress deletes them with the working
+// tree. Official release bytes carry nothing an attacker chose, so removing
+// them loses no evidence.
+func dropperOfficialCorePackageFile(c dropperCandidate, p dropperProbe) bool {
+	return p.OfficialWPCorePackageFile && c.CoreMD5Known && !c.ContentRewritten &&
+		!c.WritePending && !c.ContentUnsettled && c.Mode&0o111 == 0
 }
 
 // dropperRenameMatch reports whether a probe of a rename-destination path
