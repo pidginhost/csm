@@ -11,7 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
-- Re-checking a finding no longer lowers its severity when a replacement file uses a malformed PHP opening tag to serve active page content.
+- Re-checking a finding no longer lowers its severity when the replacement file hides active content behind a malformed PHP opening tag or a PHP 8 attribute.
 - Subnet blocking now catches ranges that rotate through addresses one block at a time. Addresses blocked in the last seven days count toward the threshold, including operator and permanent blocks, and the window is adjustable.
 - Executable PHP can no longer pass as a comment-only stub and suppress a warning in sensitive WordPress directories.
 - A file staged in a WordPress core, plugin or theme update that held other content before it was overwritten and then moved into place or deleted beside an identical installed copy is reported again as a self-deleting file, instead of passing as update cleanup.

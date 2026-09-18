@@ -105,6 +105,9 @@ func TestReverifyWithholdsDemotionFromLowEntropyLivePHP(t *testing.T) {
 		"comment stub with active HTML tail":   "<?php // cleaned\n?><script>fetch('/collect')</script>\n",
 		"vertical tab before page output":      "<?php\v// <script>alert(1)</script>\n",
 		"form feed before page output":         "<?php\f// <script>alert(1)</script>\n",
+		// Padding lowers entropy below the packed-content gate, so only the
+		// inert-stub proof stands between this call and a demotion.
+		"attribute hides a call": "<?php\n// " + strings.Repeat("a", 400) + "\n#[A] function f(){} system(getenv('HTTP_X_COMMAND'));\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			tmp := t.TempDir()

@@ -3178,7 +3178,7 @@ func skipPHPSpace(buf []byte, i int) int {
 
 // PHP 8 attributes begin with #[ and can precede executable declarations and
 // statements on the same line. Every inert-content scanner must preserve them.
-func isPHPLineCommentStart(buf []byte, i int) bool {
+func isPHPLineCommentStart[T string | []byte](buf T, i int) bool {
 	if buf[i] == '#' {
 		return i+1 == len(buf) || buf[i+1] != '['
 	}

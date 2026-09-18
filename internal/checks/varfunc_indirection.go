@@ -247,7 +247,9 @@ func stripPHPCommentsFromCode(code string) string {
 			}
 			continue
 		}
-		if code[i] == '#' {
+		// "#[" opens a PHP 8 attribute, which can precede a statement on the
+		// same line; only other "#" forms are comments.
+		if code[i] == '#' && isPHPLineCommentStart(code, i) {
 			b.WriteByte(' ')
 			i++
 			for i < len(code) {
