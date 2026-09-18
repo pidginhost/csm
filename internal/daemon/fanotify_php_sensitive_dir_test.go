@@ -383,3 +383,18 @@ func TestPHPInSensitiveDirVersionDataJudgedByContent(t *testing.T) {
 		})
 	}
 }
+
+func TestPHPInSensitiveDirExecutableCommentShapesWarn(t *testing.T) {
+	for name, body := range map[string]string{
+		"attribute stub":         "<?php #[Example] function example() {} print('EXECUTED');",
+		"CR slash before return": "<?php // comment\rprint('EXECUTED');\nreturn [];",
+		"CR hash before return":  "<?php # comment\rprint('EXECUTED');\nreturn [];",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzeVersionProbeAt(t, "wp-content/languages/arbitrary.php", []byte(body))
+			if len(got) != 1 || got[0].Check != "php_in_sensitive_dir_realtime" || got[0].Severity != alert.Warning {
+				t.Fatalf("expected one php_in_sensitive_dir_realtime Warning, got %+v", got)
+			}
+		})
+	}
+}

@@ -3036,11 +3036,7 @@ func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 			i++
 			continue
 		}
-		if c == '#' {
-			i = skipPHPLineComment(buf, i)
-			continue
-		}
-		if c == '/' && i+1 < len(buf) && buf[i+1] == '/' {
+		if isPHPLineCommentStart(buf, i) {
 			i = skipPHPLineComment(buf, i)
 			continue
 		}
@@ -3178,6 +3174,15 @@ func skipPHPSpace(buf []byte, i int) int {
 		i++
 	}
 	return i
+}
+
+// PHP 8 attributes begin with #[ and can precede executable declarations and
+// statements on the same line. Every inert-content scanner must preserve them.
+func isPHPLineCommentStart(buf []byte, i int) bool {
+	if buf[i] == '#' {
+		return i+1 == len(buf) || buf[i+1] != '['
+	}
+	return buf[i] == '/' && i+1 < len(buf) && buf[i+1] == '/'
 }
 
 // skipPHPLineComment returns the index that ends the "//" or "#" comment at
