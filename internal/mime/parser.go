@@ -316,6 +316,14 @@ func parseEximHeaderData(data []byte) (*envelope, textproto.MIMEHeader) {
 	return env, hdrs
 }
 
+// ParseSpoolMIMEHeaders returns the live RFC 5322 headers from Exim -H data.
+// Folded values are unfolded and deleted headers are omitted, just as they
+// are for attachment extraction.
+func ParseSpoolMIMEHeaders(data []byte) textproto.MIMEHeader {
+	_, headers := parseEximHeaderData(data)
+	return headers
+}
+
 // reconstructEximHeaderBytes rebuilds a plain RFC 5322 header block from an
 // Exim -H file by dropping the two leading metadata lines and the envelope
 // preamble, then stripping the "<byte-count><flag> " prefix from each header

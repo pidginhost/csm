@@ -1023,18 +1023,25 @@ func FuzzWordPressCoreChecksumLine(f *testing.F) {
 // arbitrary input, and a top-level base64 body with stray spaces must decode
 // back to the original text so phishing checks see it.
 func FuzzDecodeBase64Body(f *testing.F) {
+	f.Add([]byte("Content-Type: text/html\nContent-Transfer-Encoding: base64\n\nPGh0bWw+"), "message/rfc822")
 	f.Add([]byte("1aBcDe-000001-11-D\n--b\nContent-Transfer-Encoding: base64\n\nPGh0bWw+\n--b--\n"), "please verify")
 	f.Add([]byte("--\n\n--\ncontent-transfer-encoding:base64\n"), "")
 	f.Add([]byte(""), "x")
 
 	f.Fuzz(func(t *testing.T, raw []byte, text string) {
-		_ = decodeBase64Body(raw, "")
-		_ = decodeBase64Body(raw, "content-transfer-encoding: base64")
+		_ = decodeBase64Body(raw, `multipart/mixed; boundary="b"`, "")
+		_ = decodeBase64Body(raw, "text/html", "base64")
+		_ = decodeBase64Body(raw, text, text)
 
 		wrapped := strings.ReplaceAll(base64Wrap(text), "\n", " \n ")
-		got := decodeBase64Body([]byte("1aBcDe-000001-11-D\n"+wrapped+"\n"), "content-transfer-encoding: base64")
-		if !strings.Contains(got, text) {
-			t.Fatalf("decoded %q, want it to contain %q", got, text)
+		got := decodeBase64Body([]byte(wrapped+"\n"), "text/html", "base64")
+		if got != text {
+			t.Fatalf("decoded %q, want %q", got, text)
+		}
+		multipart := "--b\nContent-Transfer-Encoding:\n\tbase64\n\n--" + wrapped + "\n--b--\n"
+		got = decodeBase64Body([]byte(multipart), `multipart/mixed; boundary="b"`, "")
+		if got != text {
+			t.Fatalf("decoded multipart %q, want %q", got, text)
 		}
 	})
 }

@@ -1,9 +1,13 @@
 package checks
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"mime"
+	"net/textproto"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -146,10 +150,6 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		// the previous loose parse would have done.
 		return nil
 	}
-	// Lower-cased raw bytes are still required for the base64-text/html
-	// combination heuristic, which inspects MIME framing the emailspool
-	// Headers struct does not surface.
-	headersLower := strings.ToLower(string(headerData))
 
 	// Check 1: Reply-To mismatch
 	if parsed.From != "" && parsed.ReplyTo != "" {
@@ -210,10 +210,14 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		// indicator by itself. Decode the body and run the same content checks
 		// on the plaintext so a payload hidden behind base64 is caught -- the
 		// raw base64 blob would otherwise sail past every text pattern.
-		if hasBase64HTMLMIME(headersLower, bodyLower) {
-			if decoded := decodeBase64Body(bodyData, headersLower); decoded != "" {
-				indicators = append(indicators, bodyContentIndicators(strings.ToLower(decoded))...)
-			}
+		// Only the exact Exim marker is framing; arbitrary body text ending
+		// in -D must remain available to the transfer decoder.
+		if marker, body, ok := bytes.Cut(bodyData, []byte("\n")); ok && string(bytes.TrimSuffix(marker, []byte("\r"))) == msgID+"-D" {
+			bodyData = body
+		}
+		mimeHeaders := emime.ParseSpoolMIMEHeaders(headerData)
+		if decoded := decodeBase64Body(bodyData, mimeHeaders.Get("Content-Type"), mimeHeaders.Get("Content-Transfer-Encoding")); decoded != "" {
+			indicators = append(indicators, bodyContentIndicators(strings.ToLower(decoded))...)
 		}
 	}
 
@@ -242,18 +246,6 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	}
 }
 
-// base64CTERe matches a base64 Content-Transfer-Encoding header in lowercased
-// text. Whitespace after the colon is optional, so an exact-string match let a
-// sender skip decoding by writing "content-transfer-encoding:base64".
-var base64CTERe = regexp.MustCompile(`content-transfer-encoding:[ \t]*base64\b`)
-
-func hasBase64HTMLMIME(headersLower, bodyLower string) bool {
-	hasBase64 := base64CTERe.MatchString(headersLower) || base64CTERe.MatchString(bodyLower)
-	hasHTML := strings.Contains(headersLower, "text/html") ||
-		strings.Contains(bodyLower, "text/html")
-	return hasBase64 && hasHTML
-}
-
 // bodyContentIndicators runs the phishing-URL and credential-harvesting content
 // checks over an already-lowercased body text. Shared by the raw-body pass and
 // the decoded-base64 pass so both apply identical logic.
@@ -280,53 +272,123 @@ func bodyContentIndicators(bodyLower string) []string {
 	return indicators
 }
 
-// decodeBase64Body decodes every base64 section of a spool body sample: the
-// whole body when the message headers declare base64, and each MIME part whose
-// own headers do, from the blank line after them to the next boundary line.
-// Every part is decoded, not just the longest: a larger benign image can sit
-// before a shorter phishing HTML part. Decoding follows attachment scanning,
-// so stray characters, missing padding or a sample clipped mid-part do not
-// hide content a mail client would render.
-func decodeBase64Body(raw []byte, headersLower string) string {
-	lines := strings.Split(string(raw), "\n")
-	if len(lines) > 0 && strings.HasSuffix(strings.TrimSpace(lines[0]), "-D") {
-		lines = lines[1:] // Exim spool marker line
-	}
-
+// decodeBase64Body walks actual MIME parts instead of searching body text for
+// header names. Boundaries are case-sensitive and only delimit their enclosing
+// multipart; other dash lines remain part of the lenient base64 input.
+func decodeBase64Body(raw []byte, contentType, transferEncoding string) string {
 	var decodedParts []string
-	decodeSection := func(section []string) {
-		for _, variant := range emime.DecodeTransferVariants("base64", []byte(strings.Join(section, "\n"))) {
-			if len(variant) > 0 {
-				decodedParts = append(decodedParts, string(variant))
+	var walk func([]byte, string, string, int)
+	walk = func(body []byte, ct, cte string, depth int) {
+		// Match attachment extraction's nesting bound for attacker-written MIME.
+		if depth >= 16 {
+			return
+		}
+		visit := func(part []byte) {
+			reader := bufio.NewReader(bytes.NewReader(part))
+			headers, err := textproto.NewReader(reader).ReadMIMEHeader()
+			if err != nil {
+				// A damaged part must not hide its siblings.
+				return
+			}
+			data, _ := io.ReadAll(reader)
+			walk(data, headers.Get("Content-Type"), headers.Get("Content-Transfer-Encoding"), depth+1)
+		}
+		encoding := strings.ToLower(strings.TrimSpace(withoutMIMEComments(cte)))
+		mediaType, params, _ := mime.ParseMediaType(withoutMIMEComments(ct))
+		if strings.HasPrefix(mediaType, "multipart/") {
+			boundary := params["boundary"]
+			if boundary == "" {
+				return
+			}
+			visitBase64MIMEParts(body, boundary, visit)
+			return
+		}
+		if (mediaType == "message/rfc822" || mediaType == "message/global") && encoding != "base64" {
+			visit(body)
+			return
+		}
+		if encoding == "base64" {
+			for _, variant := range emime.DecodeTransferVariants("base64", body) {
+				if len(variant) > 0 {
+					decodedParts = append(decodedParts, string(variant))
+				}
 			}
 		}
 	}
-	// sectionEnd returns the index of the next boundary line at or after i.
-	sectionEnd := func(i int) int {
-		for ; i < len(lines); i++ {
-			if strings.HasPrefix(strings.TrimSpace(lines[i]), "--") {
-				return i
-			}
-		}
-		return len(lines)
-	}
+	walk(raw, contentType, transferEncoding, 0)
+	return strings.Join(decodedParts, "\n")
+}
 
-	if base64CTERe.MatchString(headersLower) {
-		decodeSection(lines[:sectionEnd(0)])
+// Frame parts before parsing their headers so malformed headers cannot stop
+// iteration at the next sibling. A clipped final part is still worth scanning.
+func visitBase64MIMEParts(body []byte, boundary string, visit func([]byte)) {
+	delimiter := "--" + boundary
+	start := -1
+	for offset := 0; offset < len(body); {
+		end := bytes.IndexByte(body[offset:], '\n')
+		next := len(body)
+		if end >= 0 {
+			next = offset + end + 1
+		}
+		line := strings.TrimRight(string(body[offset:next]), "\r\n \t")
+		if line == delimiter || line == delimiter+"--" {
+			if start >= 0 {
+				visit(body[start:offset])
+			}
+			if line == delimiter+"--" {
+				return
+			}
+			start = next
+		}
+		offset = next
 	}
-	for i := 0; i < len(lines); i++ {
-		if !base64CTERe.MatchString(strings.ToLower(lines[i])) {
+	if start >= 0 {
+		visit(body[start:])
+	}
+}
+
+// MIME comments are allowed around tokens, but parentheses inside quoted
+// parameters (notably boundary values) are literal. Keep a space where a
+// comment was removed so separate tokens cannot be joined accidentally.
+func withoutMIMEComments(value string) string {
+	var out strings.Builder
+	depth := 0
+	quoted := false
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if depth > 0 {
+			switch b {
+			case '\\':
+				if i+1 < len(value) {
+					i++
+				}
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
 			continue
 		}
-		start := i + 1
-		for start < len(lines) && strings.TrimSpace(lines[start]) != "" {
-			start++ // rest of this part's header block
+		if quoted {
+			out.WriteByte(b)
+			if b == '\\' && i+1 < len(value) {
+				i++
+				out.WriteByte(value[i])
+			} else if b == '"' {
+				quoted = false
+			}
+			continue
 		}
-		end := sectionEnd(start)
-		if start < end {
-			decodeSection(lines[start+1 : end])
+		switch b {
+		case '(':
+			depth = 1
+			out.WriteByte(' ')
+		case '"':
+			quoted = true
+			out.WriteByte(b)
+		default:
+			out.WriteByte(b)
 		}
-		i = end - 1
 	}
-	return strings.Join(decodedParts, "\n")
+	return out.String()
 }
