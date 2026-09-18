@@ -40,7 +40,7 @@ POST /api/v1/email/quarantine/   Release or delete quarantined email
 
 ## Related Checks
 
-- `email_content` - scans outbound email body for credentials and suspicious URLs; base64 text and HTML bodies and parts are decoded with the same tolerance as attachments, using live MIME headers and the declared multipart boundaries
+- `email_content` - scans outbound email body for credentials and suspicious URLs; every base64 body and part, attachments included, is decoded with the same tolerance as attachment scanning, using live MIME headers and the declared multipart boundaries
 - `email_weak_password` - detects email accounts with weak passwords
 - `email_forwarder_audit` - audits forwarders for exfiltration redirects
 - `mail_queue` - alerts on queue buildup (spam outbreak indicator)
