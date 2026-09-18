@@ -232,3 +232,117 @@ done:
 		t.Errorf("path-based Critical should be suppressed when content scan already fired, got: %+v", got)
 	}
 }
+
+// A core update copies the new release's wp-includes/version.php to
+// wp-content/upgrade/version-current.php, reads it and deletes it. The copy
+// is literal assignments only and cannot run code, so it must not raise the
+// clean-content warning on every site that updates.
+const wpCoreVersionProbe = `<?php
+/**
+ * WordPress Version
+ *
+ * Contains version information for the current WordPress release.
+ *
+ * @package WordPress
+ * @since 1.2.0
+ */
+
+/**
+ * The WordPress version string.
+ *
+ * @global string $wp_version
+ */
+$wp_version = '7.1';
+
+/**
+ * Holds the WordPress DB revision, increments when changes are made to the WordPress DB schema.
+ *
+ * @global int $wp_db_version
+ */
+$wp_db_version = 60717;
+
+/**
+ * Holds the TinyMCE version.
+ *
+ * @global string $tinymce_version
+ */
+$tinymce_version = '49110-20250317';
+
+/**
+ * Holds the minimum required PHP version.
+ *
+ * @global string $required_php_version
+ */
+$required_php_version = '7.4';
+
+/**
+ * Holds the names of required PHP extensions.
+ *
+ * @global string[] $required_php_extensions
+ */
+$required_php_extensions = array(
+	'json',
+	'hash',
+);
+
+/**
+ * Holds the minimum required MySQL version.
+ *
+ * @global string $required_mysql_version
+ */
+$required_mysql_version = '5.5.5';
+`
+
+func analyzeUpgradeProbe(t *testing.T, body []byte) []alert.Finding {
+	t.Helper()
+	dir := t.TempDir()
+	upgradeDir := filepath.Join(dir, "wp-content", "upgrade")
+	if err := os.MkdirAll(upgradeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(upgradeDir, "version-current.php")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	var got []alert.Finding
+	timeout := time.After(150 * time.Millisecond)
+	for {
+		select {
+		case a := <-ch:
+			got = append(got, a)
+		case <-timeout:
+			return got
+		}
+	}
+}
+
+func TestPHPInUpgradeCoreVersionProbeNoAlert(t *testing.T) {
+	if got := analyzeUpgradeProbe(t, []byte(wpCoreVersionProbe)); len(got) != 0 {
+		t.Errorf("expected no alert for a core update version probe, got %+v", got)
+	}
+}
+
+func TestPHPInUpgradeVersionShapedCodeWarns(t *testing.T) {
+	// Same variables, but one value is computed: that is code, not data.
+	body := strings.Replace(wpCoreVersionProbe, "$wp_version = '7.1';", "$wp_version = strtoupper('7.1');", 1)
+	got := analyzeUpgradeProbe(t, []byte(body))
+	if len(got) != 1 || got[0].Check != "php_in_sensitive_dir_realtime" || got[0].Severity != alert.Warning {
+		t.Fatalf("expected one php_in_sensitive_dir_realtime Warning for version-shaped code, got %+v", got)
+	}
+}
+
+func TestPHPInUpgradeOversizeVersionDataWarns(t *testing.T) {
+	// Past the whole-file read cap the tail is never seen, so literal-looking
+	// leading assignments cannot prove the file inert.
+	body := wpCoreVersionProbe + strings.Repeat(" ", checks.MaxInertPHPScanBytes)
+	got := analyzeUpgradeProbe(t, []byte(body))
+	if len(got) != 1 || got[0].Check != "php_in_sensitive_dir_realtime" || got[0].Severity != alert.Warning {
+		t.Fatalf("expected one php_in_sensitive_dir_realtime Warning for an incomplete read, got %+v", got)
+	}
+}

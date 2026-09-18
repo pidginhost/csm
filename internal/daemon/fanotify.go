@@ -1472,6 +1472,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			if isWPTranslationCacheData(event.fd, data) {
 				return
 			}
+			// A core update copies the new version file here to read the
+			// release requirements. Literal assignments to the version
+			// variables cannot run code; the whole body must be seen.
+			if data != nil && checks.IsWPVersionDataBytesComplete(data, true) {
+				return
+			}
 			fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
 				fmt.Sprintf("PHP file created in sensitive WP directory (content clean): %s", path), "", path, procInfo)
 		}
