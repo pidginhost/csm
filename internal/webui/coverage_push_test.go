@@ -1238,6 +1238,7 @@ func TestAPIThreatOperatorClearForgetsNetblockHistory(t *testing.T) {
 		call func(*Server, http.ResponseWriter, *http.Request)
 		body string
 	}{
+		"bulk whitelist": {(*Server).apiThreatBulkAction, `{"ips":["203.0.113.5"],"action":"whitelist"}`},
 		"clear":          {(*Server).apiThreatClearIP, `{"ip":"203.0.113.5"}`},
 		"whitelist":      {(*Server).apiThreatWhitelistIP, `{"ip":"203.0.113.5"}`},
 		"temp whitelist": {(*Server).apiThreatTempWhitelistIP, `{"ip":"203.0.113.5","hours":1}`},

@@ -179,36 +179,38 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 
 	var actions []string
 
-	// 1. Unblock from firewall
-	if s.blocker != nil {
-		if err := s.blocker.UnblockIP(req.IP); err == nil {
-			actions = append(actions, "unblocked from firewall")
-		}
-		// Also add to firewall allow list so it doesn't get re-blocked
-		if allower, ok := s.blocker.(interface {
-			AllowIP(string, string) error
-		}); ok {
-			if err := allower.AllowIP(req.IP, "CSM whitelist: customer IP"); err == nil {
-				actions = append(actions, "added to firewall allow list")
+	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
+		// 1. Unblock from firewall
+		if s.blocker != nil {
+			if err := s.blocker.UnblockIP(req.IP); err == nil {
+				actions = append(actions, "unblocked from firewall")
+			}
+			// Also add to firewall allow list so it doesn't get re-blocked
+			if allower, ok := s.blocker.(interface {
+				AllowIP(string, string) error
+			}); ok {
+				if err := allower.AllowIP(req.IP, "CSM whitelist: customer IP"); err == nil {
+					actions = append(actions, "added to firewall allow list")
+				}
 			}
 		}
-	}
 
-	// 2. Remove from threat DB permanent blocklist + add to whitelist
-	if tdb := checks.GetThreatDB(); tdb != nil {
-		tdb.RemovePermanent(req.IP)
-		tdb.AddWhitelist(req.IP)
-		actions = append(actions, "removed from threat DB, added to whitelist")
-	}
+		// 2. Remove from threat DB permanent blocklist + add to whitelist
+		if tdb := checks.GetThreatDB(); tdb != nil {
+			tdb.RemovePermanent(req.IP)
+			tdb.AddWhitelist(req.IP)
+			actions = append(actions, "removed from threat DB, added to whitelist")
+		}
 
-	// 3. Remove from attack DB
-	if adb := attackdb.Global(); adb != nil {
-		adb.RemoveIP(req.IP)
-		actions = append(actions, "removed from attack DB")
+		// 3. Remove from attack DB
+		if adb := attackdb.Global(); adb != nil {
+			adb.RemoveIP(req.IP)
+			actions = append(actions, "removed from attack DB")
+		}
+	}); err != nil {
+		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
-
-	// An address the operator cleared is no longer evidence against its subnet.
-	checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP)
 	actions = append(actions, "removed from subnet block history")
 
 	// 4. Flush cphulk
@@ -432,27 +434,29 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 
 	var actions []string
 
-	// 1. Unblock from firewall (but don't add to allow list)
-	if s.blocker != nil {
-		if err := s.blocker.UnblockIP(req.IP); err == nil {
-			actions = append(actions, "unblocked from firewall")
+	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
+		// 1. Unblock from firewall (but don't add to allow list)
+		if s.blocker != nil {
+			if err := s.blocker.UnblockIP(req.IP); err == nil {
+				actions = append(actions, "unblocked from firewall")
+			}
 		}
-	}
 
-	// 2. Remove from threat DB permanent blocklist (but don't whitelist)
-	if tdb := checks.GetThreatDB(); tdb != nil {
-		tdb.RemovePermanent(req.IP)
-		actions = append(actions, "removed from threat DB")
-	}
+		// 2. Remove from threat DB permanent blocklist (but don't whitelist)
+		if tdb := checks.GetThreatDB(); tdb != nil {
+			tdb.RemovePermanent(req.IP)
+			actions = append(actions, "removed from threat DB")
+		}
 
-	// 3. Remove from attack DB
-	if adb := attackdb.Global(); adb != nil {
-		adb.RemoveIP(req.IP)
-		actions = append(actions, "removed from attack DB")
+		// 3. Remove from attack DB
+		if adb := attackdb.Global(); adb != nil {
+			adb.RemoveIP(req.IP)
+			actions = append(actions, "removed from attack DB")
+		}
+	}); err != nil {
+		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
-
-	// An address the operator cleared is no longer evidence against its subnet.
-	checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP)
 	actions = append(actions, "removed from subnet block history")
 
 	// 4. Flush cphulk
@@ -504,36 +508,38 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 	ttl := time.Duration(req.Hours) * time.Hour
 	var actions []string
 
-	// 1. Unblock from firewall
-	if s.blocker != nil {
-		if err := s.blocker.UnblockIP(req.IP); err == nil {
-			actions = append(actions, "unblocked from firewall")
-		}
-		// Temp allow in firewall too
-		if allower, ok := s.blocker.(interface {
-			TempAllowIP(string, string, time.Duration) error
-		}); ok {
-			if err := allower.TempAllowIP(req.IP, "CSM temp whitelist", ttl); err == nil {
-				actions = append(actions, fmt.Sprintf("temp allowed in firewall for %dh", req.Hours))
+	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
+		// 1. Unblock from firewall
+		if s.blocker != nil {
+			if err := s.blocker.UnblockIP(req.IP); err == nil {
+				actions = append(actions, "unblocked from firewall")
+			}
+			// Temp allow in firewall too
+			if allower, ok := s.blocker.(interface {
+				TempAllowIP(string, string, time.Duration) error
+			}); ok {
+				if err := allower.TempAllowIP(req.IP, "CSM temp whitelist", ttl); err == nil {
+					actions = append(actions, fmt.Sprintf("temp allowed in firewall for %dh", req.Hours))
+				}
 			}
 		}
-	}
 
-	// 2. Remove from threat DB + temp whitelist
-	if tdb := checks.GetThreatDB(); tdb != nil {
-		tdb.RemovePermanent(req.IP)
-		tdb.TempWhitelist(req.IP, ttl)
-		actions = append(actions, fmt.Sprintf("temp whitelisted for %dh", req.Hours))
-	}
+		// 2. Remove from threat DB + temp whitelist
+		if tdb := checks.GetThreatDB(); tdb != nil {
+			tdb.RemovePermanent(req.IP)
+			tdb.TempWhitelist(req.IP, ttl)
+			actions = append(actions, fmt.Sprintf("temp whitelisted for %dh", req.Hours))
+		}
 
-	// 3. Remove from attack DB
-	if adb := attackdb.Global(); adb != nil {
-		adb.RemoveIP(req.IP)
-		actions = append(actions, "removed from attack DB")
+		// 3. Remove from attack DB
+		if adb := attackdb.Global(); adb != nil {
+			adb.RemoveIP(req.IP)
+			actions = append(actions, "removed from attack DB")
+		}
+	}); err != nil {
+		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
-
-	// An address the operator cleared is no longer evidence against its subnet.
-	checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP)
 	actions = append(actions, "removed from subnet block history")
 
 	// 4. Flush cphulk
@@ -649,25 +655,32 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			if row, ok := captureUndoThreatRow(ipStr, false); ok {
 				removedThreats = append(removedThreats, row)
 			}
-			// Mirror apiThreatWhitelistIP flow
-			if s.blocker != nil {
-				_ = s.blocker.UnblockIP(ipStr)
-				if allower, ok := s.blocker.(interface {
-					AllowIP(string, string) error
-				}); ok {
-					_ = allower.AllowIP(ipStr, "CSM bulk whitelist")
+			// Serialize the firewall mutation and history cleanup as one operator action.
+			if err := checks.ForgetNetblockHistory(s.cfg.StatePath, ipStr, func() {
+				// Mirror apiThreatWhitelistIP flow
+				if s.blocker != nil {
+					_ = s.blocker.UnblockIP(ipStr)
+					if allower, ok := s.blocker.(interface {
+						AllowIP(string, string) error
+					}); ok {
+						_ = allower.AllowIP(ipStr, "CSM bulk whitelist")
+					}
+					if warning := coveringSubnetWarning(s.blocker, ipStr); warning != "" {
+						warnings = append(warnings, ipStr+": "+warning)
+					}
 				}
-				if warning := coveringSubnetWarning(s.blocker, ipStr); warning != "" {
-					warnings = append(warnings, ipStr+": "+warning)
+				if tdb := checks.GetThreatDB(); tdb != nil {
+					tdb.RemovePermanent(ipStr)
+					tdb.AddWhitelist(ipStr)
 				}
+				if adb := attackdb.Global(); adb != nil {
+					adb.RemoveIP(ipStr)
+				}
+			}); err != nil {
+				warnings = append(warnings, ipStr+": subnet history cleanup failed: "+err.Error())
+				continue
 			}
-			if tdb := checks.GetThreatDB(); tdb != nil {
-				tdb.RemovePermanent(ipStr)
-				tdb.AddWhitelist(ipStr)
-			}
-			if adb := attackdb.Global(); adb != nil {
-				adb.RemoveIP(ipStr)
-			}
+
 			flushCphulk(ipStr)
 			succeeded = append(succeeded, ipStr)
 			count++

@@ -13,9 +13,11 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
 | **PAM blocking** | Instant IP block when one address breaches `thresholds.pam_bruteforce_threshold` failures inside `pam_bruteforce_window_min` minutes, or fails against `cred_stuffing_distinct_accounts` distinct accounts. |
-| **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range were blocked within `netblock_window` (7 days by default). Operator and permanent blocks count, expired blocks count until they leave the window, and addresses the operator whitelisted or cleared do not. Addresses already answered by an earlier subnet block count again only if they are blocked again. |
+| **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range were blocked within `netblock_window` (7 days by default). Currently blocked addresses count regardless of age, including operator and permanent blocks. Ended blocks count while their latest observed block start is inside the window, unless an earlier subnet block already answered them. A returning operator block starts fresh history after its absence is observed. Whitelist and clear actions, including bulk whitelist, forget the address. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
+
+Subnet history is pruned hourly and saved only when it changes. If it cannot be read, history-based escalation waits for recovery. Clear and flush actions report history cleanup failures so operators can retry them.
 
 ### Process termination
 

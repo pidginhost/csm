@@ -2,6 +2,7 @@ package checks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,17 +26,21 @@ const netblockHistoryPruneEvery = time.Hour
 // only offenders seen after that count toward the next subnet block.
 type netblockHistory struct {
 	IPs      map[string]time.Time `json:"ips"`
+	Active   map[string]bool      `json:"active"`
 	Subnets  map[string]time.Time `json:"subnets,omitempty"`
 	PrunedAt time.Time            `json:"pruned_at,omitempty"`
 }
 
-func loadNetblockHistory(statePath string) *netblockHistory {
+func loadNetblockHistory(statePath string) (*netblockHistory, error) {
 	h := &netblockHistory{}
 	path := filepath.Join(statePath, netblockHistoryFile)
-	if data, err := osFS.ReadFile(path); err == nil {
-		if uerr := json.Unmarshal(data, h); uerr != nil {
-			fmt.Fprintf(os.Stderr, "autoblock: %s is corrupt, ignoring netblock history: %v\n", path, uerr)
-			h = &netblockHistory{}
+	data, err := osFS.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if err == nil {
+		if err := json.Unmarshal(data, h); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", path, err)
 		}
 	}
 	if h.IPs == nil {
@@ -44,28 +49,38 @@ func loadNetblockHistory(statePath string) *netblockHistory {
 	if h.Subnets == nil {
 		h.Subnets = make(map[string]time.Time)
 	}
-	return h
+	return h, nil
 }
 
-func saveNetblockHistory(statePath string, h *netblockHistory) {
+func saveNetblockHistory(statePath string, h *netblockHistory) error {
 	path := filepath.Join(statePath, netblockHistoryFile)
 	if err := atomicio.AtomicWriteJSON(path, 0o600, h); err != nil {
-		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
+		return fmt.Errorf("persist %s: %w", path, err)
 	}
+	return nil
 }
 
-// ForgetNetblockHistory drops an address the operator cleared, so a false
-// positive does not keep counting toward a block of its whole subnet.
-func ForgetNetblockHistory(statePath, ip string) {
+// ForgetNetblockHistory serializes the operator's firewall/database mutation
+// and history removal with auto-block cycles. clear may be nil for history-only
+// cleanup; it must not call another auto-block state operation.
+func ForgetNetblockHistory(statePath, ip string, clear func()) error {
 	work := autoBlockQueues.acquire()
 	defer work.finish()
 	work.progress()
-	h := loadNetblockHistory(statePath)
-	if _, ok := h.IPs[ip]; ok {
-		delete(h.IPs, ip)
-		saveNetblockHistory(statePath, h)
+	if clear != nil {
+		clear()
 	}
+	h, err := loadNetblockHistory(statePath)
+	if err == nil {
+		if _, ok := h.IPs[ip]; ok {
+			delete(h.IPs, ip)
+			delete(h.Active, ip)
+			err = saveNetblockHistory(statePath, h)
+		}
+	}
+	work.observe(err)
 	work.complete()
+	return err
 }
 
 // netblockWindow resolves the counting window. Load fills the default and
@@ -79,8 +94,31 @@ func netblockWindow(cfg *config.Config) time.Duration {
 // entries with their block times, and addresses only the live kernel set
 // knows (operator and permanent blocks), stamped when first seen. It reports
 // whether the history changed.
-func recordNetblockHistory(h *netblockHistory, tracked []blockedIP, current map[string]bool, now time.Time, window time.Duration) bool {
+func recordNetblockHistory(h *netblockHistory, tracked []blockedIP, current map[string]bool, blocker IPBlocker, now time.Time, window time.Duration) bool {
 	changed := false
+	// Persist membership transitions, not per-cycle timestamps: an operator
+	// re-block is fresh evidence, but a long-lived block must not churn the file.
+	if h.Active == nil {
+		h.Active = make(map[string]bool)
+		for ip := range h.IPs {
+			h.Active[ip] = true
+		}
+		changed = true
+	}
+	if allow, ok := blocker.(allowChecker); ok {
+		for ip := range current {
+			if allow.IsAllowed(ip) {
+				delete(current, ip)
+			}
+		}
+		for ip := range h.IPs {
+			if allow.IsAllowed(ip) {
+				delete(h.IPs, ip)
+				delete(h.Active, ip)
+				changed = true
+			}
+		}
+	}
 	note := func(ip string, at time.Time) {
 		if prev, ok := h.IPs[ip]; !ok || at.After(prev) {
 			h.IPs[ip] = at
@@ -90,13 +128,27 @@ func recordNetblockHistory(h *netblockHistory, tracked []blockedIP, current map[
 	inTracker := make(map[string]bool, len(tracked))
 	for _, b := range tracked {
 		inTracker[b.IP] = true
-		note(b.IP, b.BlockedAt)
+		if current[b.IP] {
+			note(b.IP, b.BlockedAt)
+		}
 	}
 	for ip := range current {
 		if !inTracker[ip] {
-			if _, ok := h.IPs[ip]; !ok {
+			if _, ok := h.IPs[ip]; !ok || !h.Active[ip] {
 				note(ip, now)
 			}
+		}
+	}
+	for ip := range h.Active {
+		if !current[ip] {
+			delete(h.Active, ip)
+			changed = true
+		}
+	}
+	for ip := range current {
+		if !h.Active[ip] {
+			h.Active[ip] = true
+			changed = true
 		}
 	}
 	if now.Sub(h.PrunedAt) >= netblockHistoryPruneEvery {
@@ -118,7 +170,7 @@ func recordNetblockHistory(h *netblockHistory, tracked []blockedIP, current map[
 
 // currentlyBlocked is every address blocked right now, from the tracker and
 // from the live kernel set when the engine can list it.
-func currentlyBlocked(tracked []blockedIP, live firewall.LiveBlockedSnapshot, useLive bool) map[string]bool {
+func currentlyBlocked(tracked []blockedIP, live firewall.LiveBlockedSnapshot, useLive bool, h *netblockHistory, blocker IPBlocker) map[string]bool {
 	current := make(map[string]bool, len(tracked)+len(live.V4)+len(live.V6))
 	for _, b := range tracked {
 		current[b.IP] = true
@@ -128,6 +180,19 @@ func currentlyBlocked(tracked []blockedIP, live firewall.LiveBlockedSnapshot, us
 			for ip := range set {
 				current[ip] = true
 			}
+		}
+	}
+	// A missing family snapshot is unknown, not evidence that an operator's
+	// permanent block ended. Use the same cached fallback as tracker reconciliation.
+	for ip := range h.IPs {
+		if current[ip] {
+			continue
+		}
+		if _, known := live.Contains(ip); useLive && known {
+			continue
+		}
+		if blocker.IsBlocked(ip) {
+			current[ip] = true
 		}
 	}
 	return current

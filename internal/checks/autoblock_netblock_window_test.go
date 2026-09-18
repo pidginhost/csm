@@ -1,6 +1,9 @@
 package checks
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -88,7 +91,7 @@ func TestAutoBlockIPs_NetBlockIgnoresBlocksOutsideWindow(t *testing.T) {
 	cfg := netblockWindowConfig(t)
 	now := time.Now()
 	setAutoBlockNow(t, now)
-	saveNetblockHistory(cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
 		"198.51.100.10": now.Add(-8 * 24 * time.Hour),
 		"198.51.100.20": now.Add(-8 * 24 * time.Hour),
 	}})
@@ -120,7 +123,7 @@ func TestAutoBlockIPs_NetBlockSkipsAllowedHistory(t *testing.T) {
 	cfg := netblockWindowConfig(t)
 	now := time.Now()
 	setAutoBlockNow(t, now)
-	saveNetblockHistory(cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
 		"198.51.100.10": now.Add(-time.Hour),
 		"198.51.100.20": now.Add(-time.Hour),
 	}})
@@ -138,11 +141,13 @@ func TestForgetNetblockHistoryDropsAddress(t *testing.T) {
 	cfg := netblockWindowConfig(t)
 	now := time.Now()
 	setAutoBlockNow(t, now)
-	saveNetblockHistory(cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
 		"198.51.100.10": now.Add(-time.Hour),
 		"198.51.100.20": now.Add(-time.Hour),
 	}})
-	ForgetNetblockHistory(cfg.StatePath, "198.51.100.20")
+	if err := ForgetNetblockHistory(cfg.StatePath, "198.51.100.20", nil); err != nil {
+		t.Fatal(err)
+	}
 	blocker := newNetblockBlocker()
 	swapBlocker(t, blocker)
 
@@ -159,7 +164,7 @@ func TestAutoBlockIPs_NetBlockNeedsFreshOffendersAfterSubnetBlock(t *testing.T) 
 	cfg := netblockWindowConfig(t)
 	now := time.Now()
 	setAutoBlockNow(t, now)
-	saveNetblockHistory(cfg.StatePath, &netblockHistory{
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{
 		IPs: map[string]time.Time{
 			"198.51.100.10": now.Add(-3 * time.Hour),
 			"198.51.100.20": now.Add(-3 * time.Hour),
@@ -184,11 +189,11 @@ func TestAutoBlockIPs_NetBlockNeedsFreshOffendersAfterSubnetBlock(t *testing.T) 
 
 func TestFlushAutoBlockStateClearsNetblockHistory(t *testing.T) {
 	cfg := netblockWindowConfig(t)
-	saveNetblockHistory(cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{"198.51.100.10": time.Now()}})
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{"198.51.100.10": time.Now()}})
 	if _, err := FlushAutoBlockState(cfg.StatePath, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if h := loadNetblockHistory(cfg.StatePath); len(h.IPs) != 0 || len(h.Subnets) != 0 {
+	if h := mustLoadNetblockHistory(t, cfg.StatePath); len(h.IPs) != 0 || len(h.Subnets) != 0 {
 		t.Fatalf("history after flush = %+v, want empty", h)
 	}
 }
@@ -198,7 +203,7 @@ func TestAutoBlockIPs_ProgrammaticConfigUsesDefaultNetblockWindow(t *testing.T) 
 	cfg.AutoResponse.NetBlockWindow = ""
 	now := time.Now()
 	setAutoBlockNow(t, now)
-	saveNetblockHistory(cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
 		"198.51.100.10": now.Add(-6 * 24 * time.Hour),
 		"198.51.100.20": now.Add(-6 * 24 * time.Hour),
 	}})
@@ -217,7 +222,7 @@ func TestAutoBlockIPs_NetBlockWindowAppliesBetweenPrunes(t *testing.T) {
 	cfg := netblockWindowConfig(t)
 	now := time.Now()
 	setAutoBlockNow(t, now)
-	saveNetblockHistory(cfg.StatePath, &netblockHistory{
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{
 		IPs: map[string]time.Time{
 			"198.51.100.10": now.Add(-8 * 24 * time.Hour),
 			"198.51.100.20": now.Add(-8 * 24 * time.Hour),
@@ -230,5 +235,256 @@ func TestAutoBlockIPs_NetBlockWindowAppliesBetweenPrunes(t *testing.T) {
 	AutoBlockIPs(cfg, bruteForceFrom("198.51.100.30"))
 	if len(blocker.subnets) != 0 {
 		t.Fatalf("subnets = %v, want none: earlier blocks ended before the window", blocker.subnets)
+	}
+}
+
+func TestNetblockOperatorReblockRefreshesHistory(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	now := time.Now()
+	setAutoBlockNow(t, now)
+	blocker := newNetblockBlocker()
+	swapBlocker(t, blocker)
+	ip := "198.51.100.10"
+	for _, address := range []string{ip, "198.51.100.20", "198.51.100.30"} {
+		blocker.live[address] = struct{}{}
+	}
+	AutoBlockIPs(cfg, nil)
+	if len(blocker.subnets) != 1 {
+		t.Fatalf("initial subnet blocks = %v", blocker.subnets)
+	}
+	blocker.subnets = nil
+	delete(blocker.live, "198.51.100.20")
+	delete(blocker.live, "198.51.100.30")
+	delete(blocker.live, ip)
+	AutoBlockIPs(cfg, nil)
+	autoBlockNow = func() time.Time { return now.Add(time.Hour) }
+	blocker.live[ip] = struct{}{}
+	AutoBlockIPs(cfg, nil)
+	delete(blocker.live, ip)
+	AutoBlockIPs(cfg, nil)
+	if got := mustLoadNetblockHistory(t, cfg.StatePath).IPs[ip]; !got.Equal(now.Add(time.Hour)) {
+		t.Fatalf("repeat operator block time = %s, want %s", got, now.Add(time.Hour))
+	}
+	AutoBlockIPs(cfg, bruteForceFrom("198.51.100.40"))
+	AutoBlockIPs(cfg, bruteForceFrom("198.51.100.50"))
+	if len(blocker.subnets) != 1 {
+		t.Fatalf("fresh operator block did not count after ending: %v", blocker.subnets)
+	}
+
+}
+
+func TestNetblockAllowedHistoryStaysForgotten(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	blocker := newNetblockBlocker()
+	swapBlocker(t, blocker)
+	ip := "198.51.100.10"
+	blocker.live[ip] = struct{}{}
+	AutoBlockIPs(cfg, nil)
+	delete(blocker.live, ip)
+	blocker.allowed[ip] = true
+	AutoBlockIPs(cfg, nil)
+	delete(blocker.allowed, ip)
+	AutoBlockIPs(cfg, bruteForceFrom("198.51.100.20"))
+	AutoBlockIPs(cfg, bruteForceFrom("198.51.100.30"))
+	if len(blocker.subnets) != 0 {
+		t.Fatalf("forgotten address caused subnet block: %v", blocker.subnets)
+	}
+}
+
+func TestFlushAutoBlockStateReportsNetblockHistoryFailure(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	if err := os.Mkdir(filepath.Join(cfg.StatePath, netblockHistoryFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := FlushAutoBlockState(cfg.StatePath, func() error { return nil })
+	if !result.Flushed || err == nil {
+		t.Fatalf("flush = %+v, %v; want partial failure", result, err)
+	}
+}
+
+func TestNetblockHistoryRetentionAndIdleWrites(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	now := time.Now()
+	setAutoBlockNow(t, now)
+	blocker := newNetblockBlocker()
+	swapBlocker(t, blocker)
+	blocker.live["198.51.100.10"] = struct{}{}
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{
+		IPs:     map[string]time.Time{"198.51.100.10": now.Add(-8 * 24 * time.Hour), "203.0.113.10": now.Add(-8 * 24 * time.Hour)},
+		Subnets: map[string]time.Time{"203.0.113.0/24": now.Add(-8 * 24 * time.Hour)},
+	})
+	AutoBlockIPs(cfg, nil)
+	h := mustLoadNetblockHistory(t, cfg.StatePath)
+	if len(h.IPs) != 1 || len(h.Subnets) != 0 {
+		t.Fatalf("unbounded history: %+v", h)
+	}
+	path := filepath.Join(cfg.StatePath, netblockHistoryFile)
+	// A past mtime detects atomic replacements without depending on clock resolution.
+	stamp := now.Add(-time.Hour)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	autoBlockNow = func() time.Time { return now.Add(30 * time.Second) }
+	AutoBlockIPs(cfg, nil)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(stamp) {
+		t.Fatal("unchanged history was rewritten")
+	}
+}
+
+func mustLoadNetblockHistory(t *testing.T, path string) *netblockHistory {
+	t.Helper()
+	h, err := loadNetblockHistory(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func TestNetblockDoesNotReuseHistoryAfterMailSubnetBlock(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	now := time.Now()
+	setAutoBlockNow(t, now)
+	mustSaveNetblockHistory(t, cfg.StatePath, &netblockHistory{IPs: map[string]time.Time{
+		"198.51.100.10": now.Add(-time.Hour),
+		"198.51.100.20": now.Add(-time.Hour),
+		"198.51.100.30": now.Add(-time.Hour),
+	}})
+	blocker := newNetblockBlocker()
+	swapBlocker(t, blocker)
+	AutoBlockIPs(cfg, []alert.Finding{{Check: "smtp_subnet_spray", Message: "SMTP spray from 198.51.100.0/24"}})
+	if len(blocker.subnets) != 1 {
+		t.Fatalf("mail subnet blocks = %v", blocker.subnets)
+	}
+	blocker.subnets = nil
+	AutoBlockIPs(cfg, nil)
+	if len(blocker.subnets) != 0 {
+		t.Fatalf("answered offenders re-blocked subnet: %v", blocker.subnets)
+	}
+}
+
+type incompleteNetblockSnapshot struct{ *netblockBlocker }
+
+func (b *incompleteNetblockSnapshot) LiveBlockedSet() (firewall.LiveBlockedSnapshot, error) {
+	return firewall.LiveBlockedSnapshot{HasV4: true}, nil
+}
+
+func TestNetblockKeepsPermanentHistoryWithoutFamilySnapshot(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	now := time.Now()
+	setAutoBlockNow(t, now)
+	ips := []string{"2001:db8::10", "2001:db8::20", "2001:db8::30"}
+	history := &netblockHistory{IPs: make(map[string]time.Time)}
+	blocker := &incompleteNetblockSnapshot{newNetblockBlocker()}
+	for _, ip := range ips {
+		history.IPs[ip] = now.Add(-8 * 24 * time.Hour)
+		blocker.live[ip] = struct{}{}
+	}
+	mustSaveNetblockHistory(t, cfg.StatePath, history)
+	swapBlocker(t, blocker)
+	AutoBlockIPs(cfg, nil)
+	if len(blocker.subnets) != 1 || blocker.subnets[0] != "2001:db8::/64" {
+		t.Fatalf("subnets = %v, want cached permanent blocks to count", blocker.subnets)
+	}
+}
+
+func TestNetblockPreservesUnreadableHistory(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	path := filepath.Join(cfg.StatePath, netblockHistoryFile)
+	contents := []byte(`{"ips":`)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocker := newNetblockBlocker()
+	for _, ip := range []string{"198.51.100.10", "198.51.100.20", "198.51.100.30"} {
+		blocker.live[ip] = struct{}{}
+	}
+	swapBlocker(t, blocker)
+	AutoBlockIPs(cfg, nil)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(contents) || len(blocker.subnets) != 0 {
+		t.Fatalf("unreadable history discarded: contents=%s, subnet blocks=%v", got, blocker.subnets)
+	}
+}
+
+func mustSaveNetblockHistory(t *testing.T, path string, h *netblockHistory) {
+	t.Helper()
+	if err := saveNetblockHistory(path, h); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNetblockHistoryBoundedAtProductionRate(t *testing.T) {
+	now := time.Now()
+	cfg := netblockWindowConfig(t)
+	h := &netblockHistory{IPs: map[string]time.Time{}, Subnets: map[string]time.Time{}}
+	blocker := newNetblockBlocker()
+	window := netblockWindow(cfg)
+	for hour := 0; hour < 9*24; hour++ {
+		current := make(map[string]bool)
+		for n := 0; n < 2800; n++ {
+			current[fmt.Sprintf("2001:db8:1::%x", n)] = true
+		}
+		// Two new blocks per minute, summarized as one hour of arrivals.
+		for n := 0; n < 120; n++ {
+			current[fmt.Sprintf("2001:db8:2::%x", hour*120+n)] = true
+		}
+		at := now.Add(time.Duration(hour) * time.Hour)
+		recordNetblockHistory(h, nil, current, blocker, at, window)
+		if recordNetblockHistory(h, nil, current, blocker, at.Add(30*time.Second), window) {
+			t.Fatal("unchanged cycle would rewrite production history")
+		}
+	}
+	want := 2800 + (int(window/time.Hour)+1)*120
+	if len(h.IPs) != want || len(h.Active) != 2920 {
+		t.Fatalf("history size = %d IPs, %d active; want %d, 2920", len(h.IPs), len(h.Active), want)
+	}
+}
+
+func TestNetblockPermanentBlocksStillCountAfterSubnetExpiry(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	now := time.Now()
+	setAutoBlockNow(t, now)
+	blocker := newNetblockBlocker()
+	swapBlocker(t, blocker)
+	h := &netblockHistory{IPs: map[string]time.Time{}}
+	for _, ip := range []string{"198.51.100.10", "198.51.100.20", "198.51.100.30"} {
+		blocker.live[ip] = struct{}{}
+		h.IPs[ip] = now.Add(-8 * 24 * time.Hour)
+	}
+	mustSaveNetblockHistory(t, cfg.StatePath, h)
+	AutoBlockIPs(cfg, nil)
+	if len(blocker.subnets) != 1 {
+		t.Fatalf("old permanent blocks did not count: %v", blocker.subnets)
+	}
+	blocker.subnets = nil
+	AutoBlockIPs(cfg, nil)
+	if len(blocker.subnets) != 1 {
+		t.Fatalf("live permanent blocks did not renew subnet: %v", blocker.subnets)
+	}
+}
+
+func TestNetblockMailBlockAnswersNewlyObservedOperatorBlocks(t *testing.T) {
+	cfg := netblockWindowConfig(t)
+	blocker := newNetblockBlocker()
+	swapBlocker(t, blocker)
+	for _, ip := range []string{"198.51.100.10", "198.51.100.20", "198.51.100.30"} {
+		blocker.live[ip] = struct{}{}
+	}
+	AutoBlockIPs(cfg, []alert.Finding{{Check: "mail_subnet_spray", Message: "Mail spray from 198.51.100.0/24"}})
+	if len(blocker.subnets) != 1 {
+		t.Fatalf("mail subnet blocks = %v", blocker.subnets)
+	}
+	blocker.subnets = nil
+	clear(blocker.live)
+	AutoBlockIPs(cfg, nil)
+	if len(blocker.subnets) != 0 {
+		t.Fatalf("same-cycle operator blocks counted as fresh: %v", blocker.subnets)
 	}
 }
