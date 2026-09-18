@@ -882,3 +882,143 @@ func TestDropperCorePackageCreateSnapshotIsComplete(t *testing.T) {
 		t.Fatalf("create snapshot lacks a complete, bound digest: %+v", c)
 	}
 }
+
+const testPluginFile = "<?php\n/*\nPlugin Name: Example\nVersion: 2.0\n*/\nfunction example_boot() {}\n"
+
+func TestDropperStagedOversizedExecutableKeepsContentSignal(t *testing.T) {
+	root := t.TempDir()
+	staged := filepath.Join(root, "wp-content/upgrade/update/example/loader.bin")
+	writeWPInstallFile(t, staged, testDropperPHP)
+	if err := os.Chmod(staged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(staged, dropperDigestMax+1); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	r := newWPInstallRun(t, root)
+	r.fm.analyzeFile(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242,
+		mask: FAN_CREATE | FAN_CLOSE_WRITE, dropperOnly: true})
+	if err := os.Remove(staged); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	if len(*r.alerts) != 1 || (*r.alerts)[0].sev != alert.Critical {
+		t.Fatalf("oversized executable lost its webshell signal: %+v", *r.alerts)
+	}
+}
+
+func TestDropperStagedOversizedSnapshotReplayAllowsRename(t *testing.T) {
+	root := t.TempDir()
+	staged := filepath.Join(root, "wp-content/upgrade/update/example/example.php")
+	installed := filepath.Join(root, "wp-content/plugins/example/example.php")
+	writeWPInstallFile(t, staged, testPluginFile)
+	if err := os.Truncate(staged, dropperDigestMax+1); err != nil {
+		t.Fatal(err)
+	}
+	r := newWPInstallRun(t, root)
+	c := r.observe(t, staged, nil)
+	if c.DigestKnown {
+		t.Fatal("oversized snapshot unexpectedly hashed")
+	}
+	// A delayed content verdict carries the original snapshot, not a new read.
+	c.ContentSuspicious = true
+	if !r.fm.dropper.tr.Refresh(*c) {
+		t.Fatal("refresh lost candidate")
+	}
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(staged, installed); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlush()
+	if len(*r.alerts) != 0 {
+		t.Fatalf("single snapshot replay prevented identity rename: %+v", *r.alerts)
+	}
+}
+
+// Plugin and theme updates stage packages the same way a core update does, and
+// the same history rule applies: an installed copy or a rename into place can
+// only account for a staged file whose written content never changed.
+func TestDropperStagedPackageSnapshotHistory(t *testing.T) {
+	type observation struct {
+		body string
+		mask uint64
+	}
+	const (
+		copyInstall = iota
+		renameInstall
+	)
+	for _, tc := range []struct {
+		name      string
+		kind      string // plugins or themes
+		writes    []observation
+		install   int
+		wantAlert bool
+	}{
+		{name: "payload overwritten with installed bytes", kind: "plugins", install: copyInstall, wantAlert: true,
+			writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+		{name: "payload overwritten then renamed into place", kind: "plugins", install: renameInstall, wantAlert: true,
+			writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+		{name: "create payload then close", kind: "plugins", install: copyInstall, wantAlert: true,
+			writes: []observation{{testDropperPHP, FAN_CREATE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+		{name: "payload emptied then rewritten", kind: "plugins", install: renameInstall, wantAlert: true,
+			writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {"", FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+		{name: "theme payload overwritten with installed bytes", kind: "themes", install: copyInstall, wantAlert: true,
+			writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+		{name: "single write copied into place", kind: "plugins", install: copyInstall,
+			writes: []observation{{testPluginFile, FAN_CREATE | FAN_CLOSE_WRITE}}},
+		{name: "single write renamed into place", kind: "plugins", install: renameInstall,
+			writes: []observation{{testPluginFile, FAN_CREATE | FAN_CLOSE_WRITE}}},
+		{name: "empty create then close", kind: "plugins", install: renameInstall,
+			writes: []observation{{"", FAN_CREATE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+		{name: "create and close of the same bytes", kind: "themes", install: copyInstall,
+			writes: []observation{{testPluginFile, FAN_CREATE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			staged := filepath.Join(root, "wp-content", "upgrade", "example-2.0", "example", "example.php")
+			installed := filepath.Join(root, "wp-content", tc.kind, "example", "example.php")
+			r := newWPInstallRun(t, root)
+			for _, write := range tc.writes {
+				writeWPInstallFile(t, staged, write.body)
+				f, err := os.Open(staged)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: write.mask}, "")
+				_ = f.Close()
+				if c == nil {
+					t.Fatal("missing candidate")
+				}
+			}
+			switch tc.install {
+			case copyInstall:
+				writeWPInstallFile(t, installed, testPluginFile)
+				if err := os.Remove(staged); err != nil {
+					t.Fatal(err)
+				}
+			case renameInstall:
+				if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(staged, installed); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.probeAndFlush()
+			if tc.wantAlert {
+				if len(*r.alerts) != 1 || (*r.alerts)[0].path != staged {
+					t.Fatalf("payload deletion lost: %+v", *r.alerts)
+				}
+			} else if len(*r.alerts) != 0 {
+				t.Fatalf("clean package install reported: %+v", *r.alerts)
+			}
+		})
+	}
+}
