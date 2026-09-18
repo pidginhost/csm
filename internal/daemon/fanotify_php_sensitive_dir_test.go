@@ -295,12 +295,15 @@ $required_mysql_version = '5.5.5';
 
 func analyzeUpgradeProbe(t *testing.T, body []byte) []alert.Finding {
 	t.Helper()
-	dir := t.TempDir()
-	upgradeDir := filepath.Join(dir, "wp-content", "upgrade")
-	if err := os.MkdirAll(upgradeDir, 0o755); err != nil {
+	return analyzeVersionProbeAt(t, "wp-content/upgrade/version-current.php", body)
+}
+
+func analyzeVersionProbeAt(t *testing.T, relativePath string, body []byte) []alert.Finding {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(upgradeDir, "version-current.php")
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -344,5 +347,39 @@ func TestPHPInUpgradeOversizeVersionDataWarns(t *testing.T) {
 	got := analyzeUpgradeProbe(t, []byte(body))
 	if len(got) != 1 || got[0].Check != "php_in_sensitive_dir_realtime" || got[0].Severity != alert.Warning {
 		t.Fatalf("expected one php_in_sensitive_dir_realtime Warning for an incomplete read, got %+v", got)
+	}
+}
+
+func TestPHPInUpgradeVersionDataHidingCodeWarns(t *testing.T) {
+	for name, body := range map[string]string{
+		"CR slash comment": wpCoreVersionProbe + "// comment\rprint('EXECUTED');",
+		"CR hash comment":  wpCoreVersionProbe + "# comment\rprint('EXECUTED');",
+		"code past 64 KiB": wpCoreVersionProbe + strings.Repeat(" ", 65536) + "print('EXECUTED');",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzeUpgradeProbe(t, []byte(body))
+			if len(got) != 1 || got[0].Check != "php_in_sensitive_dir_realtime" || got[0].Severity != alert.Warning {
+				t.Fatalf("expected one php_in_sensitive_dir_realtime Warning, got %+v", got)
+			}
+		})
+	}
+}
+
+// The proof is the content, so the file name neither grants nor withholds it.
+func TestPHPInSensitiveDirVersionDataJudgedByContent(t *testing.T) {
+	for _, rel := range []string{
+		"wp-content/upgrade/version-current.php",
+		"wp-content/upgrade/arbitrary.php",
+		"wp-content/languages/arbitrary.php",
+	} {
+		t.Run(rel, func(t *testing.T) {
+			if got := analyzeVersionProbeAt(t, rel, []byte(wpCoreVersionProbe)); len(got) != 0 {
+				t.Fatalf("expected literal version data to stay quiet, got %+v", got)
+			}
+			got := analyzeVersionProbeAt(t, rel, []byte(wpCoreVersionProbe+"// comment\rprint('EXECUTED');"))
+			if len(got) != 1 || got[0].Check != "php_in_sensitive_dir_realtime" || got[0].Severity != alert.Warning {
+				t.Fatalf("expected one php_in_sensitive_dir_realtime Warning, got %+v", got)
+			}
+		})
 	}
 }

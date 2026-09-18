@@ -3180,9 +3180,12 @@ func skipPHPSpace(buf []byte, i int) int {
 	return i
 }
 
+// skipPHPLineComment returns the index that ends the "//" or "#" comment at
+// i. PHP ends one at a bare CR as well as at LF, so a CR must not be read as
+// comment text: the statement after it runs.
 func skipPHPLineComment(buf []byte, i int) int {
 	for i < len(buf) {
-		if buf[i] == '\n' {
+		if buf[i] == '\n' || buf[i] == '\r' {
 			return i
 		}
 		if buf[i] == '?' && i+1 < len(buf) && buf[i+1] == '>' {

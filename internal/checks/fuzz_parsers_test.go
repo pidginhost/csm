@@ -82,6 +82,7 @@ func FuzzWPVersionData(f *testing.F) {
 		"<?php $wp_version = phpversion();",
 		"<?php $wp_version = '7.1'; #[Example] function example() {} print(123);",
 		"<?php $wp_version = '7.1'; /* unterminated",
+		"<?php $wp_version = '7.1'; // comment\rprint('EXECUTED');",
 	} {
 		f.Add(seed)
 	}
@@ -89,9 +90,17 @@ func FuzzWPVersionData(f *testing.F) {
 		if IsWPVersionDataBytesComplete([]byte(body), false) {
 			t.Fatal("incomplete version data accepted")
 		}
-		if IsWPVersionDataBytesComplete([]byte(body), true) &&
-			IsWPVersionDataBytesComplete([]byte(body+"\n/**/system($_POST['c']);"), true) {
-			t.Fatal("executable suffix accepted as version data")
+		if IsWPVersionDataBytesComplete([]byte(body), true) {
+			for _, suffix := range []string{
+				"\n/**/system($_POST['c']);",
+				// The leading "/**/" also closes a comment the body left open.
+				"\n/**/// comment\rsystem($_POST['c']);",
+				"\n/**/# comment\rsystem($_POST['c']);",
+			} {
+				if IsWPVersionDataBytesComplete([]byte(body+suffix), true) {
+					t.Fatalf("executable suffix %q accepted as version data", suffix)
+				}
+			}
 		}
 	})
 }
