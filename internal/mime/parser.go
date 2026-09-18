@@ -6,12 +6,10 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
-	"mime/quotedprintable"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -137,9 +135,17 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 		// application/pdf, image/*). These are attachment-like payloads
 		// that must be scanned even without a multipart wrapper.
 		cte := strings.ToLower(hdrs.Get("Content-Transfer-Encoding"))
-		decoded, truncated := decodeSinglePart(bodyData, cte, limits.MaxAttachmentSize+1)
+		decoded, truncated, decodeErr := decodeSinglePart(bodyData, cte, limits.MaxAttachmentSize+1)
 
-		if !truncated && int64(len(decoded)) <= limits.MaxAttachmentSize {
+		if decodeErr != nil {
+			// The decoded prefix is still scanned; see extractMultipartNested.
+			markPartial(result, fmt.Sprintf("could not decode single-part attachment: %v", decodeErr))
+		}
+
+		switch {
+		case decodeErr != nil && len(decoded) == 0:
+			// Nothing decoded, nothing to scan.
+		case !truncated && int64(len(decoded)) <= limits.MaxAttachmentSize:
 			tmpFile, tmpErr := os.CreateTemp(limits.TempDir, "csm-emailav-single-*")
 			if tmpErr == nil {
 				n, writeErr := tmpFile.Write(decoded)
@@ -163,7 +169,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 			} else {
 				markPartial(result, "could not stage single-part attachment for scanning")
 			}
-		} else {
+		default:
 			result.Partial = true
 			result.PartialReason = "single-part attachment exceeds max size"
 		}
@@ -234,28 +240,14 @@ func markPartial(result *ExtractionResult, reason string) {
 	}
 }
 
-func decodeSinglePart(bodyData []byte, cte string, limit int64) ([]byte, bool) {
-	var reader io.Reader
-	switch cte {
-	case "base64":
-		reader = base64.NewDecoder(base64.StdEncoding, bytes.NewReader(bodyData))
-	case "quoted-printable":
-		reader = quotedprintable.NewReader(bytes.NewReader(bodyData))
-	default:
-		if int64(len(bodyData)) > limit {
-			return bodyData[:limit], true
-		}
-		return bodyData, false
-	}
-
-	decoded, err := io.ReadAll(io.LimitReader(reader, limit+1))
-	if err != nil {
-		return nil, true
-	}
+// decodeSinglePart returns the decoded body, whether it was cut at limit, and
+// any decode error. On error the bytes decoded before it are still returned.
+func decodeSinglePart(bodyData []byte, cte string, limit int64) ([]byte, bool, error) {
+	decoded, err := io.ReadAll(io.LimitReader(transferDecoder(cte, bytes.NewReader(bodyData)), limit+1))
 	if int64(len(decoded)) > limit {
-		return decoded[:limit], true
+		return decoded[:limit], true, err
 	}
-	return decoded, false
+	return decoded, false, err
 }
 
 type envelope struct {
@@ -482,7 +474,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 	}
 	mr := multipart.NewReader(r, boundary)
 	for {
-		part, err := mr.NextPart()
+		part, err := mr.NextRawPart()
 		if err == io.EOF {
 			return nil
 		}
@@ -529,13 +521,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 
 		// Decode the part body based on Content-Transfer-Encoding
 		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
-		var bodyReader io.Reader = part
-		switch cte {
-		case "base64":
-			bodyReader = base64.NewDecoder(base64.StdEncoding, part)
-		case "quoted-printable":
-			bodyReader = quotedprintable.NewReader(part)
-		}
+		bodyReader := &readErrRecorder{r: transferDecoder(cte, part)}
 
 		// Write to temp file with size limit
 		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-*")
@@ -547,10 +533,19 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 		limited := io.LimitReader(bodyReader, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
 		closeErr := tmpFile.Close()
-		if err != nil || closeErr != nil {
+		if closeErr != nil || (err != nil && err != bodyReader.err) {
 			os.Remove(tmpFile.Name())
 			markPartial(result, "could not stage attachment for scanning")
 			continue // fail-open: skip this part
+		}
+		if bodyReader.err != nil {
+			// Keep what decoded: a mail client shows those bytes, so they
+			// must be scanned even though the rest of the part is lost.
+			markPartial(result, fmt.Sprintf("could not decode attachment %q: %v", filename, bodyReader.err))
+			if n == 0 {
+				os.Remove(tmpFile.Name())
+				continue
+			}
 		}
 
 		if n > limits.MaxAttachmentSize {

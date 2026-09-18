@@ -1,6 +1,9 @@
 package mime
 
 import (
+	"bytes"
+	"encoding/base64"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,6 +44,42 @@ func FuzzParseEximHeaderData(f *testing.F) {
 		env, hdrs := parseEximHeaderData(data)
 		if env == nil || hdrs == nil {
 			t.Fatal("parseEximHeaderData must return non-nil envelope and headers")
+		}
+	})
+}
+
+// transferDecoder decodes attacker-controlled attachment bodies. Two
+// properties: arbitrary input never panics, and base64 with ignorable bytes
+// spliced in decodes to exactly what clean base64 decodes to.
+func FuzzTransferDecoder(f *testing.F) {
+	f.Add([]byte("SGVsbG8h"), []byte(" \t!"), uint8(3))
+	f.Add([]byte("\x00\x01\x7f=ZZ=\r\n"), []byte("*"), uint8(0))
+	f.Add([]byte(""), []byte(""), uint8(1))
+
+	f.Fuzz(func(t *testing.T, data, junk []byte, stride uint8) {
+		for _, cte := range []string{"base64", "quoted-printable", "7bit"} {
+			_, _ = io.ReadAll(transferDecoder(cte, bytes.NewReader(data)))
+		}
+
+		encoded := base64.StdEncoding.EncodeToString(data)
+		var spliced []byte
+		step := int(stride%16) + 1
+		for i := 0; i < len(encoded); i++ {
+			if i%step == 0 {
+				for _, b := range junk {
+					if !isBase64Alphabet(b) && b != '=' {
+						spliced = append(spliced, b)
+					}
+				}
+			}
+			spliced = append(spliced, encoded[i])
+		}
+		got, err := io.ReadAll(transferDecoder("base64", bytes.NewReader(spliced)))
+		if err != nil {
+			t.Fatalf("decode spliced base64: %v", err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("decoded %d bytes, want %d", len(got), len(data))
 		}
 	})
 }
