@@ -342,6 +342,12 @@ func TestCompiledTaintMatchesReferenceEvaluation(t *testing.T) {
 		{"<?php $a = curl_exec($c); $b = base64_decode($clean, $a);", summaryTables{}},
 		{"<?php $a = curl_exec($c); $b = base64_decode($a); $a = base64_decode(file_get_contents('https://example.invalid/p'));", summaryTables{}},
 		{"<?php $a = base64_decode(file_get_contents('https://example.invalid/p')); $b = base64_decode($a); $a = curl_exec($c);", summaryTables{}},
+		{"<?php $a = base64_decode(file_get_contents($x)) . curl_exec($c);", summaryTables{}},
+		{"<?php $r = curl_exec($c); $a = base64_decode(file_get_contents($x)) . $r;", summaryTables{}},
+		{"<?php $a = base64_decode($obj->fetch()) . Client::load();", summaryTables{methods: map[string]gradeSet{
+			"fetch": setOf(directGrade(ConfidenceLow, BasisUnresolved)),
+			"load":  setOf(directGrade(ConfidenceHigh, BasisAlwaysRemote)),
+		}}},
 		{"<?php $a = $obj->fetch(); $b = Client::load();", summaryTables{methods: map[string]gradeSet{
 			"fetch": setOf(directGrade(ConfidenceHigh, BasisLiteral)),
 			"load":  setOf(directGrade(ConfidenceLow, BasisUnresolved)),

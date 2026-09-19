@@ -339,3 +339,26 @@ func TestGradeEntryEncoding(t *testing.T) {
 		}()
 	}
 }
+
+// The decoder upgrade belongs to the origins inside the decoder's input, not
+// to the whole expression. Here the only Certain proof is the decoded
+// unresolved read; the always-remote fetch beside it stays High, so the
+// strongest proof is Certain unresolved. Upgrading the joined set would
+// wrongly credit Certain to always-remote.
+func TestDecodeUpgradesOnlyDecodedOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"sink", `<?php eval(base64_decode(file_get_contents($x)) . curl_exec($c));`},
+		{"assignment", `<?php $a = base64_decode(file_get_contents($x)) . curl_exec($c); eval($a);`},
+		{"assignment through read", `<?php $r = curl_exec($c); $a = base64_decode(file_get_contents($x)) . $r; eval($a);`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := onlyResult(t, []byte(tc.src))
+			if got.Confidence != ConfidenceCertain || got.Basis != BasisUnresolved || got.ResolutionOffset != -1 {
+				t.Fatalf("result = %+v, want Certain unresolved offset -1", got)
+			}
+		})
+	}
+}

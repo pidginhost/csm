@@ -386,7 +386,6 @@ func solveAssignments(compiled compiledAssignments) taintState {
 		queued[i] = false
 		var best gradeSet
 		found := false
-		decoded := false
 		for _, origin := range assignments[i].origins {
 			var value gradeSet
 			var active bool
@@ -401,17 +400,17 @@ func solveAssignments(compiled compiledAssignments) taintState {
 			if !active {
 				continue
 			}
-			decoded = decoded || origin.decoded
+			if origin.decoded {
+				// Decoding fetched content raises the confidence of this
+				// origin's proofs only; each keeps its own basis, and an
+				// origin outside every decoder keeps its own confidence.
+				value = value.decoded()
+			}
 			best.add(value)
 			found = true
 		}
 		if !found {
 			continue
-		}
-		if decoded {
-			// Decoding fetched content raises confidence; each source's own
-			// basis still explains its acquisition.
-			best = best.decoded()
 		}
 		if outputSet[i] {
 			merged := outputs[i]
@@ -592,15 +591,12 @@ func exprTaint(e ast.Vertex, st taintState, summaries summaryTables) (gradeSet, 
 }
 
 func exprTaintFacts(sub *scopeFacts, st taintState, summaries summaryTables) (gradeSet, bool) {
-	best, found, origins := activeTaint(sub, st, summaries)
-	if !found {
-		return gradeSet{}, false
-	}
-	// A decoder raises confidence to Certain only when the tainted value
-	// passed through THAT decoder's own argument, not merely somewhere else
-	// in the same expression: f(base64_decode($clean), $tainted) must stay
-	// at the source's own grade, because the decode never touched $tainted.
-	// The upgrade changes confidence only: each source's basis still explains
+	// A decoder raises confidence to Certain only for the origins that
+	// passed through THAT decoder's own argument, not for anything else in
+	// the same expression: f(base64_decode($clean), $tainted) must stay at
+	// the source's own grade, because the decode never touched $tainted, and
+	// in base64_decode(a()) . b() only a()'s proofs become Certain. The
+	// upgrade changes confidence only: each source's basis still explains
 	// how its content was acquired.
 	decoderSpans := make([]nodeSpan, 0)
 	for _, call := range sub.callNodes {
@@ -613,13 +609,7 @@ func exprTaintFacts(sub *scopeFacts, st taintState, summaries summaryTables) (gr
 			}
 		}
 	}
-	decoderIndex := newSpanIndex(decoderSpans)
-	for _, origin := range origins {
-		if decoderIndex.contains(origin) {
-			return best.decoded(), true
-		}
-	}
-	return best, true
+	return activeTaint(sub, st, summaries, newSpanIndex(decoderSpans))
 }
 
 // decoderInputs returns only arguments that carry data through the decoder.
@@ -1296,9 +1286,10 @@ func retainStrongestEvidence(flows []flowResult) []flowResult {
 }
 
 // activeTaint joins the proofs of an already-collected subtree's source
-// calls, summarized calls, and tainted variable reads. It also
-// returns source positions so decoder correlation stays linearithmic rather
-// than recursively recollecting every nested decoder argument.
+// calls, summarized calls, and tainted variable reads. Each origin inside a
+// decoder input span is upgraded on its own before the join, so correlation
+// stays linearithmic rather than recursively recollecting every nested
+// decoder argument, and a proof outside every decoder keeps its confidence.
 // A variable name is looked up in a taintState in exactly five places in this
 // package, and every one of them must be fed by facts collected WITH
 // declaration exclusion, or a nested declaration's own parameter or local
@@ -1326,38 +1317,34 @@ func retainStrongestEvidence(flows []flowResult) []flowResult {
 // the summaries path, in the sink path, and in the capture walk -- before the
 // enumeration above made it possible to say the class was closed rather than
 // merely that no more instances had turned up.
-func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables) (gradeSet, bool, []nodeSpan) {
+func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables, decoderArgs spanIndex) (gradeSet, bool) {
 	var best gradeSet
 	found := false
-	origins := make([]nodeSpan, 0)
+	join := func(set gradeSet, node ast.Vertex) {
+		// An origin without a position cannot be placed inside a decoder
+		// input, so it keeps its own grade.
+		if span, ok := spanOf(node); ok && decoderArgs.contains(span) {
+			set = set.decoded()
+		}
+		best.add(set)
+		found = true
+	}
 	for _, call := range sub.callNodes {
 		if c, ok := sourceGrade(call); ok {
-			best.add(setOf(c))
-			found = true
-			if span, ok := spanOf(call); ok {
-				origins = append(origins, span)
-			}
+			join(setOf(c), call)
 		}
 	}
 	for _, call := range sub.callSites {
 		if c, ok := summaries.lookup(call); ok {
-			best.add(c)
-			found = true
-			if span, ok := spanOf(call.node); ok {
-				origins = append(origins, span)
-			}
+			join(c, call.node)
 		}
 	}
 	for _, variable := range sub.readVarNodes() {
 		if c, ok := st[variable.name]; ok {
-			best.add(c)
-			found = true
-			if span, ok := spanOf(variable.node); ok {
-				origins = append(origins, span)
-			}
+			join(c, variable.node)
 		}
 	}
-	return best, found, origins
+	return best, found
 }
 
 // writtenEvidence is what a tainted file write contributes to an include of
