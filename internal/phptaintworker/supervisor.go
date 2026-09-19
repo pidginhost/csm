@@ -180,7 +180,7 @@ func (s *Supervisor) analyzeLocked(ctx context.Context, src []byte, work *reques
 		return gap(phptaint.StatusWorkerFailure, startErr.Error())
 	}
 
-	report, err := s.roundTripLocked(ctx, req, work)
+	report, err := s.roundTripLocked(ctx, req, len(src), work)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			work.fail()
@@ -245,10 +245,11 @@ func (s *Supervisor) breakerOpenLocked() bool {
 }
 
 // roundTripLocked writes one request and waits for its reply, bounded by the
-// configured timeout. The pipe round trip runs on its own goroutine because the
-// child may stop before reading the complete request or never answer. The
-// goroutine ends when killLocked closes the pipes.
-func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame, work *requestWork) (phptaint.Report, error) {
+// configured timeout. sourceLen is the size of the submitted source, which
+// bounds every offset the reply may carry. The pipe round trip runs on its own
+// goroutine because the child may stop before reading the complete request or
+// never answer. The goroutine ends when killLocked closes the pipes.
+func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame, sourceLen int, work *requestWork) (phptaint.Report, error) {
 	c := s.child
 	type result struct {
 		frame phptaintipc.Frame
@@ -295,6 +296,9 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame,
 		}
 		var out phptaintipc.AnalyzeResult
 		if err := phptaintipc.DecodePayload(res.frame, &out); err != nil {
+			return phptaint.Report{}, err
+		}
+		if err := phptaintipc.ValidateReportForSource(out.Report, sourceLen); err != nil {
 			return phptaint.Report{}, err
 		}
 		return out.Report, nil

@@ -30,6 +30,7 @@ func TestReverifyPHPTaintUsesIsolatedAnalyzer(t *testing.T) {
 			TotalResults: 1,
 			Results: []phptaint.Result{{
 				Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceHigh,
+				Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1,
 			}},
 		}
 	})
@@ -68,7 +69,7 @@ func TestStaleSweepDoesNotDismissLivePHPTaintFinding(t *testing.T) {
 		return phptaint.Report{
 			Status:       phptaint.StatusAnalyzed,
 			TotalResults: 1,
-			Results:      []phptaint.Result{{Source: "curl_exec", Sink: "eval"}},
+			Results:      []phptaint.Result{{Source: "curl_exec", Sink: "eval", Basis: phptaint.BasisUnresolved, ResolutionOffset: -1}},
 		}
 	})
 	finding := alert.Finding{

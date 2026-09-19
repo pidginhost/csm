@@ -20,6 +20,13 @@ func firstCall(t *testing.T, src string) *ast.ExprFunctionCall {
 	return f.callNodes[0]
 }
 
+// sourceConfidence keeps the pre-grade test vocabulary: these tests pin
+// confidence, and basis is pinned separately in grade_test.go.
+func sourceConfidence(call *ast.ExprFunctionCall) (Confidence, bool) {
+	g, ok := sourceGrade(call)
+	return g.conf, ok
+}
+
 func TestAlwaysRemoteSourcesAreHighConfidence(t *testing.T) {
 	for _, src := range []string{
 		"<?php curl_exec($c);",

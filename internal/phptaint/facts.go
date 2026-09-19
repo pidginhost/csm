@@ -362,7 +362,7 @@ func callSinkSite(name string, node ast.Vertex) (sinkSite, bool) {
 // function-alias table (populated from `use function` imports) and reports
 // the canonical name. When the call is aliased, it returns a detached copy
 // of the call node whose Function names the canonical target, so downstream
-// name lookups (sourceConfidence, decoder checks) see the resolved name
+// name lookups (sourceGrade, decoder checks) see the resolved name
 // without the parsed tree itself ever being rewritten mid-traversal: the
 // traverser reads call.Function right after visiting call, so mutating it in
 // place would orphan the original alias-name subtree from the walk in

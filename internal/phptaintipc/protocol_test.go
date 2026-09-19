@@ -179,7 +179,8 @@ func TestAnalyzeResultCarriesReportVerbatim(t *testing.T) {
 		TotalResults:      1,
 		EvidenceTruncated: true,
 		Results: []phptaint.Result{
-			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain, Identifiers: []string{"$p"}},
+			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain, Identifiers: []string{"$p"},
+				Basis: phptaint.BasisLiteral, ResolutionOffset: -1},
 		},
 	}
 	frame, err := EncodePayload("", AnalyzeResult{Report: want})
@@ -194,6 +195,7 @@ func TestAnalyzeResultCarriesReportVerbatim(t *testing.T) {
 		got.Report.Reason != "" || !got.Report.EvidenceTruncated ||
 		len(got.Report.Results) != 1 || got.Report.Results[0].Sink != "eval" ||
 		got.Report.Results[0].Confidence != phptaint.ConfidenceCertain ||
+		got.Report.Results[0].Basis != phptaint.BasisLiteral ||
 		len(got.Report.PrecisionLoss) != 1 {
 		t.Fatalf("report round trip lost data: %+v", got.Report)
 	}
@@ -270,6 +272,9 @@ func TestAnalyzeResultRejectsMissingEvidence(t *testing.T) {
 
 func TestAnalyzeResultCarriesBoundedEvidence(t *testing.T) {
 	results := make([]phptaint.Result, phptaint.MaxEvidenceResults)
+	for i := range results {
+		results[i] = phptaint.Result{Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1}
+	}
 	frame, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
 		Status:            phptaint.StatusAnalyzed,
 		Results:           results,
@@ -287,6 +292,9 @@ func TestAnalyzeResultCarriesBoundedEvidence(t *testing.T) {
 
 func TestAnalyzeResultRejectsUnmarkedEvidenceTruncation(t *testing.T) {
 	results := make([]phptaint.Result, phptaint.MaxEvidenceResults)
+	for i := range results {
+		results[i] = phptaint.Result{Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1}
+	}
 	_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
 		Status:       phptaint.StatusAnalyzed,
 		Results:      results,
@@ -301,9 +309,11 @@ func TestAnalyzeResultRejectsUnknownConfidence(t *testing.T) {
 	_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
 		Status: phptaint.StatusAnalyzed,
 		Results: []phptaint.Result{{
-			Source:     "curl_exec",
-			Sink:       "eval",
-			Confidence: phptaint.Confidence(255),
+			Source:           "curl_exec",
+			Sink:             "eval",
+			Confidence:       phptaint.Confidence(255),
+			Basis:            phptaint.BasisAlwaysRemote,
+			ResolutionOffset: -1,
 		}},
 		TotalResults: 1,
 	}})
@@ -321,5 +331,185 @@ func TestAnalyzeResultRejectsSupervisorOnlyStatuses(t *testing.T) {
 		if err == nil {
 			t.Errorf("worker reply with status %v was accepted", status)
 		}
+	}
+}
+
+func validResult() phptaint.Result {
+	return phptaint.Result{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceHigh,
+		Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1}
+}
+
+func analyzedWith(r phptaint.Result) phptaint.Report {
+	return phptaint.Report{Status: phptaint.StatusAnalyzed, TotalResults: 1, Results: []phptaint.Result{r}}
+}
+
+func TestAnalyzeResultRejectsMissingOrUnknownBasis(t *testing.T) {
+	for _, basis := range []phptaint.Basis{"", "remote"} {
+		r := validResult()
+		r.Basis = basis
+		if _, err := EncodePayload("", AnalyzeResult{Report: analyzedWith(r)}); err == nil {
+			t.Errorf("basis %q accepted", basis)
+		}
+	}
+}
+
+// A reply from a worker built before Basis existed has no basis field. It
+// must fail as a worker error, never decode into an empty-basis success.
+func TestDecodeRejectsPreBasisReply(t *testing.T) {
+	// The real encoding of a valid one-result report with only the Basis and
+	// ResolutionOffset keys removed. The control below restores them and must
+	// decode, so the missing basis is the literal's only defect.
+	const preBasis = `{"report":{"Status":1,"Results":[{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1}],"TotalResults":1,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`
+	const restored = `{"report":{"Status":1,"Results":[{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1,"Basis":"always-remote","ResolutionOffset":-1}],"TotalResults":1,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`
+	var control AnalyzeResult
+	if err := DecodePayload(Frame{Payload: []byte(restored)}, &control); err != nil {
+		t.Fatalf("control with basis restored rejected: %v", err)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: []byte(preBasis)}, &got); err == nil {
+		t.Fatalf("pre-basis reply decoded: %+v", got.Report)
+	}
+}
+
+func TestAnalyzeResultRejectsOffsetBelowMinusOne(t *testing.T) {
+	r := validResult()
+	r.ResolutionOffset = -2
+	if _, err := EncodePayload("", AnalyzeResult{Report: analyzedWith(r)}); err == nil {
+		t.Fatal("offset -2 accepted")
+	}
+}
+
+func TestValidateReportForSourceBoundsOffset(t *testing.T) {
+	r := validResult()
+	r.Basis = phptaint.BasisCallArgument
+	for _, tc := range []struct {
+		offset, n int
+		ok        bool
+	}{
+		{-1, 10, true}, {0, 10, true}, {9, 10, true}, {10, 10, false}, {0, 0, false},
+	} {
+		r.ResolutionOffset = tc.offset
+		err := ValidateReportForSource(analyzedWith(r), tc.n)
+		if (err == nil) != tc.ok {
+			t.Errorf("offset %d in %d bytes: err = %v, want ok=%v", tc.offset, tc.n, err, tc.ok)
+		}
+	}
+}
+
+// resultReply is the real encoding of a valid one-result report (see
+// TestDecodeRejectsPreBasisReply) with the result's Basis and ResolutionOffset
+// keys replaced by keys. TestDecodeResultReplyControl proves the complete form
+// decodes, so each rejection turns on the keys alone.
+func resultReply(keys string) []byte {
+	return []byte(`{"report":{"Status":1,"Results":[{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1` +
+		keys + `}],"TotalResults":1,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`)
+}
+
+func TestDecodeResultReplyControl(t *testing.T) {
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":5`)}, &got); err != nil {
+		t.Fatalf("complete reply rejected: %v", err)
+	}
+	if got.Report.Results[0].ResolutionOffset != 5 || got.Report.Results[0].Basis != phptaint.BasisCallArgument {
+		t.Fatalf("complete reply decoded as %+v", got.Report.Results[0])
+	}
+}
+
+// A missing offset decodes to 0, a real position. It must be a worker error,
+// never evidence resolved at the first byte.
+func TestDecodeRejectsResultWithoutOffset(t *testing.T) {
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument"`)}, &got); err == nil {
+		t.Fatalf("reply without offset decoded: %+v", got.Report)
+	}
+}
+
+// twoResultReply is a valid two-result report whose second result's Basis
+// and ResolutionOffset keys are replaced by second.
+func twoResultReply(second string) []byte {
+	return []byte(`{"report":{"Status":1,"Results":[` +
+		`{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1,"Basis":"always-remote","ResolutionOffset":-1},` +
+		`{"Source":"fsockopen","Identifiers":null,"Sink":"include","Confidence":1` + second + `}` +
+		`],"TotalResults":2,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`)
+}
+
+// Every result is checked, not only the first: a mixed reply whose later
+// result predates the offset field is a worker failure too.
+func TestDecodeRejectsMixedResultsWithoutOffset(t *testing.T) {
+	var control AnalyzeResult
+	if err := DecodePayload(Frame{Payload: twoResultReply(`,"Basis":"always-remote","ResolutionOffset":-1`)}, &control); err != nil {
+		t.Fatalf("complete two-result reply rejected: %v", err)
+	}
+	if len(control.Report.Results) != 2 {
+		t.Fatalf("control decoded as %+v", control.Report)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: twoResultReply(`,"Basis":"always-remote"`)}, &got); err == nil {
+		t.Fatalf("reply whose second result has no offset decoded: %+v", got.Report)
+	}
+}
+
+func TestDecodeRejectsResultWithNullOffset(t *testing.T) {
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":null`)}, &got); err == nil {
+		t.Fatalf("reply with null offset decoded: %+v", got.Report)
+	}
+}
+
+func TestDecodeRejectsResultWithoutBasis(t *testing.T) {
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: resultReply(`,"ResolutionOffset":-1`)}, &got); err == nil {
+		t.Fatalf("reply without basis decoded: %+v", got.Report)
+	}
+}
+
+// Go's decoder matches keys case-insensitively and keeps the last one, so two
+// spellings of one key would let a reply say two things at once.
+func TestDecodeRejectsAmbiguousResultKeys(t *testing.T) {
+	for _, keys := range []string{
+		`,"Basis":"always-remote","ResolutionOffset":-1,"basis":"call-argument"`,
+		`,"Basis":"call-argument","ResolutionOffset":-1,"resolutionoffset":5`,
+	} {
+		var got AnalyzeResult
+		if err := DecodePayload(Frame{Payload: resultReply(keys)}, &got); err == nil {
+			t.Errorf("ambiguous reply %s decoded: %+v", keys, got.Report)
+		}
+	}
+}
+
+func TestAnalyzeResultCarriesResolutionOffset(t *testing.T) {
+	r := validResult()
+	r.Basis = phptaint.BasisCallArgument
+	r.ResolutionOffset = 5
+	frame, err := EncodePayload("", AnalyzeResult{Report: analyzedWith(r)})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(frame, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Report.Results) != 1 || got.Report.Results[0].ResolutionOffset != 5 ||
+		got.Report.Results[0].Basis != phptaint.BasisCallArgument {
+		t.Fatalf("round trip lost the resolution: %+v", got.Report)
+	}
+}
+
+func TestDecodeRejectsDuplicateEvidenceFields(t *testing.T) {
+	for name, payload := range map[string][]byte{
+		"basis":  resultReply(`,"Basis":"always-remote","Basis":null,"ResolutionOffset":-1`),
+		"offset": resultReply(`,"Basis":"always-remote","ResolutionOffset":-1,"ResolutionOffset":5`),
+		// Unmarshal merges repeated report objects, whereas a map keeps only
+		// the last object. Inspecting just that object misses the result whose
+		// absent offset will become a plausible zero-byte resolution point.
+		"merged report": []byte(`{"report":{"Results":[{"Source":"curl_exec","Sink":"eval","Confidence":1,"Basis":"always-remote"}],"TotalResults":1},"report":{"Status":1}}`),
+		"results":       []byte(`{"report":{"Status":1,"TotalResults":1,"Results":[{"Basis":"literal","ResolutionOffset":-1}],"Results":[{"Basis":"always-remote","ResolutionOffset":5}]}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got AnalyzeResult
+			if err := DecodePayload(Frame{Payload: payload}, &got); err == nil {
+				t.Fatalf("duplicate fields accepted: %+v", got.Report)
+			}
+		})
 	}
 }

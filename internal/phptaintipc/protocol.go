@@ -25,6 +25,7 @@
 package phptaintipc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -140,6 +141,9 @@ func DecodePayload(f Frame, v any) error {
 		if status == nil {
 			return errors.New("phptaintipc: report status is null")
 		}
+		if err := requireResultEvidenceKeys(reportJSON); err != nil {
+			return err
+		}
 		var decoded AnalyzeResult
 		if err := json.Unmarshal(f.Payload, &decoded); err != nil {
 			return fmt.Errorf("phptaintipc: unmarshal payload: %w", err)
@@ -224,6 +228,12 @@ func validateReport(report phptaint.Report) error {
 			if result.Confidence.String() == "unknown" {
 				return errors.New("phptaintipc: analyzed report has unknown confidence")
 			}
+			if !result.Basis.Valid() {
+				return errors.New("phptaintipc: analyzed report has missing or unknown basis")
+			}
+			if result.ResolutionOffset < -1 {
+				return errors.New("phptaintipc: analyzed report has an invalid resolution offset")
+			}
 		}
 	default:
 		if hasEvidence {
@@ -239,25 +249,101 @@ func validateReport(report phptaint.Report) error {
 	return nil
 }
 
+// ValidateReportForSource applies the checks that need the submitted source:
+// a resolution offset must point inside it. The parent calls it after
+// DecodePayload, which has already applied every source-independent check.
+func ValidateReportForSource(report phptaint.Report, sourceLen int) error {
+	if err := validateReport(report); err != nil {
+		return err
+	}
+	for _, result := range report.Results {
+		if result.ResolutionOffset >= sourceLen {
+			return fmt.Errorf("phptaintipc: resolution offset %d outside %d-byte source", result.ResolutionOffset, sourceLen)
+		}
+	}
+	return nil
+}
+
+// requireResultEvidenceKeys checks every result for its basis and resolution
+// offset keys. A missing offset would decode to 0, a real position, so a reply
+// from a worker that predates either field must fail rather than pose as
+// evidence resolved at the first byte.
+func requireResultEvidenceKeys(reportJSON json.RawMessage) error {
+	resultsJSON, ok, err := lookupJSONField(reportJSON, "results")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	var results []json.RawMessage
+	if err := json.Unmarshal(resultsJSON, &results); err != nil {
+		return fmt.Errorf("phptaintipc: unmarshal report results: %w", err)
+	}
+	for _, result := range results {
+		if _, err := requiredJSONField(result, "basis"); err != nil {
+			return err
+		}
+		offsetJSON, err := requiredJSONField(result, "resolutionoffset")
+		if err != nil {
+			return err
+		}
+		var offset *int
+		if err := json.Unmarshal(offsetJSON, &offset); err != nil {
+			return fmt.Errorf("phptaintipc: unmarshal resolution offset: %w", err)
+		}
+		if offset == nil {
+			return errors.New("phptaintipc: result resolution offset is null")
+		}
+	}
+	return nil
+}
+
 func requiredJSONField(raw []byte, name string) (json.RawMessage, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, fmt.Errorf("phptaintipc: inspect %s field: %w", name, err)
+	found, ok, err := lookupJSONField(raw, name)
+	if err != nil {
+		return nil, err
 	}
-	var found json.RawMessage
-	for field, value := range fields {
-		if !strings.EqualFold(field, name) {
-			continue
-		}
-		if found != nil {
-			return nil, fmt.Errorf("phptaintipc: payload has ambiguous %s fields", name)
-		}
-		found = value
-	}
-	if found == nil {
+	if !ok {
 		return nil, fmt.Errorf("phptaintipc: payload has no %s field", name)
 	}
 	return found, nil
+}
+
+// lookupJSONField finds name in a JSON object the way encoding/json matches
+// struct fields, case-insensitively, and rejects more than one spelling so a
+// reply cannot carry two values for one field.
+func lookupJSONField(raw []byte, name string) (json.RawMessage, bool, error) {
+	// A map discards repeated keys, but struct decoding can merge their
+	// values. Inspect every occurrence so validation sees what decoding sees.
+	if !json.Valid(raw) {
+		return nil, false, fmt.Errorf("phptaintipc: invalid JSON inspecting %s field", name)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return nil, false, fmt.Errorf("phptaintipc: expected object inspecting %s field", name)
+	}
+	var found json.RawMessage
+	ok := false
+	for decoder.More() {
+		field, err := decoder.Token()
+		if err != nil {
+			return nil, false, fmt.Errorf("phptaintipc: inspect %s field: %w", name, err)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, false, fmt.Errorf("phptaintipc: inspect %s value: %w", name, err)
+		}
+		if !strings.EqualFold(field.(string), name) {
+			continue
+		}
+		if ok {
+			return nil, false, fmt.Errorf("phptaintipc: payload has ambiguous %s fields", name)
+		}
+		found, ok = value, true
+	}
+	return found, ok, nil
 }
 
 // WriteFrame writes one length-prefixed frame.

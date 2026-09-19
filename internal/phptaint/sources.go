@@ -78,30 +78,31 @@ const (
 	localityRemote
 )
 
-// sourceConfidence reports whether a call acquires remote content and how
-// firmly that was shown.
-func sourceConfidence(call *ast.ExprFunctionCall) (Confidence, bool) {
+// sourceGrade reports whether a call acquires remote content, how firmly
+// that was shown, and on what basis.
+func sourceGrade(call *ast.ExprFunctionCall) (grade, bool) {
 	name := calleeName(call.Function)
 	if alwaysRemote[name] {
-		return ConfidenceHigh, true
+		return directGrade(ConfidenceHigh, BasisAlwaysRemote), true
 	}
 	if !dualUse[name] {
-		return ConfidenceLow, false
+		return grade{}, false
 	}
+	unresolved := directGrade(ConfidenceLow, BasisUnresolved)
 	if len(call.Args) == 0 {
-		return ConfidenceLow, true
+		return unresolved, true
 	}
 	arg, ok := call.Args[0].(*ast.Argument)
 	if !ok {
-		return ConfidenceLow, true
+		return unresolved, true
 	}
 	switch argLocality(arg.Expr) {
 	case localityLocal:
-		return ConfidenceLow, false
+		return grade{}, false
 	case localityRemote:
-		return ConfidenceHigh, true
+		return directGrade(ConfidenceHigh, BasisLiteral), true
 	}
-	return ConfidenceLow, true
+	return unresolved, true
 }
 
 // argLocality classifies an argument by shape. Literal text and

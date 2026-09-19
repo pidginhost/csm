@@ -257,9 +257,10 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 
 // solveSummaries runs the interprocedural fixpoint over prebuilt bodies.
 func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, error) {
-	// Summaries only ever move from absent to present, or to a higher
-	// confidence, so this is a monotone fixpoint over a finite lattice
-	// (three confidence levels) whose result does not depend on the order
+	// Summaries only ever move from absent to present, or grow pointwise as
+	// a gradeSet, so this is a monotone fixpoint over a finite lattice (one
+	// entry per (basis, confidence) key, each holding the lowest offset drawn
+	// from this file's call sites) whose result does not depend on the order
 	// bodies are (re)evaluated in - only on eventually evaluating every body
 	// whose inputs changed since it was last evaluated. A body's inputs are
 	// exactly the summaries of the functions and methods its own facts call,
@@ -279,9 +280,9 @@ func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, erro
 	// body here plays the role an assignment plays there, and a produced
 	// summary name plays the role a variable plays there. Termination
 	// follows from the lattice being finite - at most one entry per body
-	// name, each raised at most twice - rather than from any iteration
-	// count, so it needs no cap sized to the input the way a round-robin
-	// sweep would.
+	// name, each raised a bounded number of times - rather than from any
+	// iteration count, so it needs no cap sized to the input the way a
+	// round-robin sweep would.
 	produced := make(map[summaryKey]bool, len(bodies))
 	for _, b := range bodies {
 		if b.name == "" {
@@ -291,7 +292,7 @@ func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, erro
 	}
 
 	// dependents maps a produced key to the bodies whose own facts call it,
-	// i.e. the bodies to wake when that key's confidence rises. Built once
+	// i.e. the bodies to wake when that key's grade rises. Built once
 	// from each body's already-collected call sites, so this costs one pass
 	// over the call sites this file already gathered rather than a rescan
 	// per round.
@@ -323,7 +324,7 @@ func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, erro
 		}
 	}
 
-	tables := summaryTables{funcs: map[string]Confidence{}, methods: map[string]Confidence{}}
+	tables := summaryTables{funcs: map[string]gradeSet{}, methods: map[string]gradeSet{}}
 	for head := 0; head < len(queue); head++ {
 		if err := ctx.Err(); err != nil {
 			return summaryTables{}, err
@@ -344,8 +345,11 @@ func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, erro
 		if b.kind == bodyMethod {
 			target = tables.methods
 		}
-		if cur, ok := target[b.name]; ok && cur >= best {
-			continue
+		if cur, ok := target[b.name]; ok {
+			if !cur.add(best) {
+				continue
+			}
+			best = cur
 		}
 		target[b.name] = best
 		enqueue(dependents[summaryKey{kind: b.kind, name: b.name}])
@@ -355,17 +359,18 @@ func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, erro
 }
 
 // evalBodySummary grades what one body returns against the summaries known so
-// far: Low..Certain plus whether anything tainted is returned at all. It reads
+// far: the joined proofs of every tainted return, plus whether anything
+// tainted is returned at all. It reads
 // only the summaries dependencyKeys reports, which is what lets the worklist
 // wake exactly the bodies an update can affect.
-func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (Confidence, bool, error) {
+func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (gradeSet, bool, error) {
 	summaryBodyEvals.Add(1)
 	st := taintedLocals(b.facts, tables)
-	best := ConfidenceLow
+	var best gradeSet
 	found := false
 	for _, ret := range b.facts.returns {
 		if err := ctx.Err(); err != nil {
-			return ConfidenceLow, false, err
+			return gradeSet{}, false, err
 		}
 		if ret.Expr == nil {
 			continue
@@ -375,10 +380,8 @@ func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (Con
 		if !tainted {
 			continue
 		}
+		best.add(c)
 		found = true
-		if c > best {
-			best = c
-		}
 	}
 	return best, found, nil
 }

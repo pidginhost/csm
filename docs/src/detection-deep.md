@@ -75,6 +75,10 @@ An oversize file is judged once more before it counts. Only a file whose leading
 
 A finding's severity follows how firmly the source was shown to be remote: a decoder-confirmed remote fetch reaching execution is Critical, a fetch carrying a remote URL is High, and a dual-use call whose argument could not be resolved either way is a Warning for review. When one file contains several flows, its strongest flow sets the severity. The last group is where legitimate template compilers and cache layers land, so it is kept visible without paging anyone.
 
+Each flow in a finding's details reads `source -> sink (confidence, basis)`, for example `curl_exec -> eval (high, always-remote)` or `file_get_contents -> include (low, unresolved)`. The basis says how the source was identified: `always-remote` (the call can only read over the network), `literal` (the argument text carries a remote scheme), `decoded` (the scheme appears only after escape or builtin decoding), `request` (a requester can supply the start of the path), `call-argument` (a call site in the same file passes the remote argument), or `unresolved` (the analyzer could not decide whether the argument is local or remote). The basis describes the strongest proof that reaches the sink, which can come from a different source call than the one the flow names. Some basis values appear only in later versions.
+
+A finding's identity is its file, its severity and the source and sink pairs of its reported flows. Changes to the details wording or the basis do not show a dismissed finding again. Any change in those flows or severity, or a new file, does. When evidence is capped, basis ranking does not change which equal-confidence flows are retained.
+
 The WordPress database scan reports what it could not fully inspect as
 `db_content_scan_incomplete`, counting affected installs against the number
 discovered and naming one bounded example config path per reason:

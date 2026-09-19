@@ -13,6 +13,11 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 - Web-downloadable Joomla site backups are now reported when the site sits in a folder inside the zip, as most backups are packed. Only the root-level layout was recognized before, so these archives and the database password inside them stayed exposed without a finding.
 
+### Changed
+
+- PHP remote-code findings now say how the fetched source was identified, so an unresolved source is distinguishable from a proven remote one.
+- PHP remote-code findings now keep the same identity when their wording changes. This release changes their identity once, so an earlier dismissal of one of these findings is shown once more.
+
 ## [3.41.0] - 2026-09-19
 
 ### Highlights
