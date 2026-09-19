@@ -110,6 +110,32 @@ func (c Confidence) String() string {
 	return "unknown"
 }
 
+// Basis names how a result's source was shown to be remote, or that it was
+// not. It is explanation for reviewers and for the reporting decision in
+// internal/checks; nothing inside this package detects on it.
+type Basis string
+
+const (
+	// BasisAlwaysRemote: the acquiring call can only read over the network.
+	BasisAlwaysRemote Basis = "always-remote"
+	// BasisLiteral: the path argument's exact text carries a remote scheme.
+	BasisLiteral Basis = "literal"
+	// BasisDecoded: the scheme appears only after PHP escape or builtin decoding.
+	BasisDecoded Basis = "decoded"
+	// BasisRequest: a requester can supply the beginning of the path.
+	BasisRequest Basis = "request"
+	// BasisCallArgument: a same-file call site supplied the remote argument.
+	BasisCallArgument Basis = "call-argument"
+	// BasisUnresolved: the analyzer followed every modeled construct and
+	// could not decide the argument's locality.
+	BasisUnresolved Basis = "unresolved"
+)
+
+// Valid reports whether b is one of the defined bases.
+func (b Basis) Valid() bool {
+	return basisRank(b) >= 0
+}
+
 // MaxSourceBytes bounds the complete source an analysis accepts. Callers
 // should read one byte past it to tell an exact-limit file from a truncated
 // prefix.
@@ -155,6 +181,12 @@ type Result struct {
 	Sink string
 	// Confidence grades how firmly the source was shown to be remote.
 	Confidence Confidence
+	// Basis explains how the source's locality was established. It never
+	// changes Confidence; see the Basis type.
+	Basis Basis
+	// ResolutionOffset is the zero-based byte offset of the outermost call
+	// site where a parameter relation was resolved, or -1 for a direct result.
+	ResolutionOffset int
 }
 
 // Report is the outcome of analysing one source file.
