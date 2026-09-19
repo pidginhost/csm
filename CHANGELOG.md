@@ -22,6 +22,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- A WordPress core or plugin update that WordPress refused or failed to install, for example because the new release needs a newer PHP, no longer reports hundreds of stock files as modified against the old release. The removed package is reported once instead.
 - The job-state files the BackWPup backup plugin writes and deletes during every run are reported as a lower-severity self-deleting file instead of paging Critical.
 - Files deleted together with their directory, such as a translation pack WordPress unpacks and discards during an update, are reported once for the directory instead of once per file.
 - The WordPress REST API exploit rule no longer fires High on security and analytics plugins that only mention the users endpoint in comments, settings or translations. It now requires a request to the endpoint that carries a password, which also catches account takeover code the old rule missed.

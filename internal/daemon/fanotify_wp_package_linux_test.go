@@ -505,6 +505,21 @@ func TestStagedPackageLateIdentityKeepsDeletedFileDigest(t *testing.T) {
 					t.Fatal("unresolved entry was not kept waiting")
 				}
 				ready = true
+				if !usePackageIdentity {
+					// Core copies version.php; plugins normally rename the
+					// actual staged directory, preserving its identity.
+					if kind == wpcheck.KindCore {
+						writeStagedFile(t, installed, "<?php $wp_version = '7.1';")
+					} else {
+						pluginDir := filepath.Join(wpRoot, "wp-content", "plugins", slug)
+						if err := os.Rename(pluginDir, pluginDir+".old"); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Rename(initial.Root, pluginDir); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				if usePackageIdentity {
 					// Another file carried the header before the package disappeared.
 					resolved.Verdict = wpcheck.VerdictVerified
@@ -608,7 +623,7 @@ func TestStagedPackageMismatchDoesNotDiscardInertContent(t *testing.T) {
 	}
 }
 
-func TestStagedPackageCoreResolvesAfterMoveWithoutStagedHeader(t *testing.T) {
+func TestStagedPackageCoreRetainsDigestAfterCopyWithLateHeaderEvent(t *testing.T) {
 	for _, rel := range []string{"index.php", "extra.php", "wp-content/plugins/akismet/extra.php"} {
 		t.Run(rel, func(t *testing.T) {
 			wpRoot := filepath.Join(t.TempDir(), "public_html")
@@ -627,19 +642,21 @@ func TestStagedPackageCoreResolvesAfterMoveWithoutStagedHeader(t *testing.T) {
 			if fm.stagedPackages().pendingCount() != 1 {
 				t.Fatal("staged file was not retained before version.php existed")
 			}
+			// Capture the staged header before WordPress copies the files.
+			// Its event can reach the queue after cleanup has finished.
+			header := filepath.Join(staging, "wp-includes/version.php")
+			writeStagedFile(t, header, "<?php $wp_version = '7.1';")
+			identity := cache.Describe(header)
 			installed := filepath.Join(wpRoot, rel)
-			if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(path, installed); err != nil {
-				t.Fatal(err)
-			}
+			writeStagedFile(t, installed, stock+"// changed\n")
 			if err := os.RemoveAll(staging); err != nil {
 				t.Fatal(err)
 			}
 			// A replacement at the installed path cannot erase the original mismatch.
 			writeStagedFile(t, installed, stock)
 			writeStagedFile(t, filepath.Join(wpRoot, "wp-includes", "version.php"), "<?php $wp_version = '7.1';")
+			identity.Verdict = wpcheck.VerdictVerified
+			fm.handleStagedPackageFile(header, identity, "")
 			fm.drainStagedPackages(time.Now())
 			got := drainFindings(ch)
 			if len(got) != 1 || got[0].FilePath != installed || !strings.Contains(got[0].Message, "does not match") {
