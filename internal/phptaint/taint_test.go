@@ -310,7 +310,7 @@ func TestNestedAssignmentTargetDoesNotTaintItsValue(t *testing.T) {
 
 func TestNestedAssignmentValueKeepsDecoderCorrelation(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $b = base64_decode($a = curl_exec($c));")
-	if got := st["b"]; got.conf != ConfidenceCertain {
+	if got := st["b"]; got.strongest().conf != ConfidenceCertain {
 		t.Errorf("confidence = %v, want Certain", got)
 	}
 }
@@ -321,8 +321,8 @@ func TestMethodAndStaticSummariesPropagateTaint(t *testing.T) {
 		t.Fatalf("parse status %v: %s", status, reason)
 	}
 	f := collectScope(root)
-	st := taintedLocals(f, summaryTables{methods: map[string]grade{"fetch": directGrade(ConfidenceHigh, BasisLiteral), "load": directGrade(ConfidenceLow, BasisUnresolved)}})
-	if st["a"].conf != ConfidenceHigh || st["b"].conf != ConfidenceLow {
+	st := taintedLocals(f, summaryTables{methods: map[string]gradeSet{"fetch": setOf(directGrade(ConfidenceHigh, BasisLiteral)), "load": setOf(directGrade(ConfidenceLow, BasisUnresolved))}})
+	if st["a"].strongest().conf != ConfidenceHigh || st["b"].strongest().conf != ConfidenceLow {
 		t.Errorf("state = %v, want method/static summary confidence", st)
 	}
 }
@@ -339,9 +339,11 @@ func TestCompiledTaintMatchesReferenceEvaluation(t *testing.T) {
 		{"<?php $a['x'] = fopen('https://host/x', 'r'); $b = fread($a, 10);", summaryTables{}},
 		{"<?php $b =& $a; $b = curl_exec($c);", summaryTables{}},
 		{"<?php $a = curl_exec($c); $b = base64_decode($clean, $a);", summaryTables{}},
-		{"<?php $a = $obj->fetch(); $b = Client::load();", summaryTables{methods: map[string]grade{
-			"fetch": directGrade(ConfidenceHigh, BasisLiteral),
-			"load":  directGrade(ConfidenceLow, BasisUnresolved),
+		{"<?php $a = curl_exec($c); $b = base64_decode($a); $a = base64_decode(file_get_contents('https://example.invalid/p'));", summaryTables{}},
+		{"<?php $a = base64_decode(file_get_contents('https://example.invalid/p')); $b = base64_decode($a); $a = curl_exec($c);", summaryTables{}},
+		{"<?php $a = $obj->fetch(); $b = Client::load();", summaryTables{methods: map[string]gradeSet{
+			"fetch": setOf(directGrade(ConfidenceHigh, BasisLiteral)),
+			"load":  setOf(directGrade(ConfidenceLow, BasisUnresolved)),
 		}}},
 	}
 	for _, test := range tests {
@@ -400,7 +402,7 @@ func TestDecoderRaisesConfidenceToCertain(t *testing.T) {
 	if !ok {
 		t.Fatalf("state = %v, want $b tainted", st)
 	}
-	if got.conf != ConfidenceCertain {
+	if got.strongest().conf != ConfidenceCertain {
 		t.Errorf("confidence = %v, want Certain after a decoder", got)
 	}
 }
@@ -467,7 +469,7 @@ func TestDecoderOnTaintedArgumentRaisesConfidence(t *testing.T) {
 	if !ok {
 		t.Fatalf("state = %v, want $b tainted", st)
 	}
-	if got.conf != ConfidenceCertain {
+	if got.strongest().conf != ConfidenceCertain {
 		t.Errorf("confidence = %v, want Certain: the decoder's own argument is tainted", got)
 	}
 }
@@ -484,24 +486,24 @@ func TestDecoderOnUnrelatedArgumentDoesNotRaiseConfidence(t *testing.T) {
 	if !ok {
 		t.Fatalf("state = %v, want $b tainted via $a", st)
 	}
-	if got.conf != ConfidenceHigh {
+	if got.strongest().conf != ConfidenceHigh {
 		t.Errorf("confidence = %v, want High: base64_decode never touched $a, only $clean", got)
 	}
 }
 
 func TestDecoderOptionDoesNotRaiseConfidence(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = base64_decode($clean, $a);")
-	if got := st["b"]; got.conf != ConfidenceHigh {
+	if got := st["b"]; got.strongest().conf != ConfidenceHigh {
 		t.Errorf("confidence = %v, want High: the tainted value is only the strict option", got)
 	}
 }
 
 func TestPackRaisesConfidenceForValueNotFormat(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $value = pack('H*', $a); $format = pack($a, 1);")
-	if got := st["value"]; got.conf != ConfidenceCertain {
+	if got := st["value"]; got.strongest().conf != ConfidenceCertain {
 		t.Errorf("value confidence = %v, want Certain", got)
 	}
-	if got := st["format"]; got.conf != ConfidenceHigh {
+	if got := st["format"]; got.strongest().conf != ConfidenceHigh {
 		t.Errorf("format confidence = %v, want High", got)
 	}
 }
@@ -517,8 +519,8 @@ func TestExprTaintHandlesDeepDecoderChain(t *testing.T) {
 	if len(f.assigns) != 2 {
 		t.Fatalf("assignments = %d, want 2", len(f.assigns))
 	}
-	confidence, tainted := exprTaint(f.assigns[1].Expr, taintState{"a": directGrade(ConfidenceHigh, BasisLiteral)}, summaryTables{})
-	if !tainted || confidence.conf != ConfidenceCertain {
+	confidence, tainted := exprTaint(f.assigns[1].Expr, taintState{"a": setOf(directGrade(ConfidenceHigh, BasisLiteral))}, summaryTables{})
+	if !tainted || confidence.strongest().conf != ConfidenceCertain {
 		t.Errorf("tainted=%t confidence=%v, want true/Certain", tainted, confidence)
 	}
 }

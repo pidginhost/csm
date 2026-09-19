@@ -257,9 +257,9 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 
 // solveSummaries runs the interprocedural fixpoint over prebuilt bodies.
 func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, error) {
-	// Summaries only ever move from absent to present, or to a stronger
-	// grade, so this is a monotone fixpoint over a finite lattice (grades
-	// are drawn from three confidence levels, six bases and the offsets of
+	// Summaries only ever move from absent to present, or grow pointwise as
+	// a gradeSet, so this is a monotone fixpoint over a finite lattice (one
+	// entry per basis, drawn from three confidence levels and the offsets of
 	// this file's call sites) whose result does not depend on the order
 	// bodies are (re)evaluated in - only on eventually evaluating every body
 	// whose inputs changed since it was last evaluated. A body's inputs are
@@ -324,7 +324,7 @@ func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, erro
 		}
 	}
 
-	tables := summaryTables{funcs: map[string]grade{}, methods: map[string]grade{}}
+	tables := summaryTables{funcs: map[string]gradeSet{}, methods: map[string]gradeSet{}}
 	for head := 0; head < len(queue); head++ {
 		if err := ctx.Err(); err != nil {
 			return summaryTables{}, err
@@ -345,8 +345,11 @@ func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, erro
 		if b.kind == bodyMethod {
 			target = tables.methods
 		}
-		if cur, ok := target[b.name]; ok && !best.stronger(cur) {
-			continue
+		if cur, ok := target[b.name]; ok {
+			if !cur.add(best) {
+				continue
+			}
+			best = cur
 		}
 		target[b.name] = best
 		enqueue(dependents[summaryKey{kind: b.kind, name: b.name}])
@@ -356,17 +359,18 @@ func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, erro
 }
 
 // evalBodySummary grades what one body returns against the summaries known so
-// far: Low..Certain plus whether anything tainted is returned at all. It reads
+// far: the joined proofs of every tainted return, plus whether anything
+// tainted is returned at all. It reads
 // only the summaries dependencyKeys reports, which is what lets the worklist
 // wake exactly the bodies an update can affect.
-func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (grade, bool, error) {
+func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (gradeSet, bool, error) {
 	summaryBodyEvals.Add(1)
 	st := taintedLocals(b.facts, tables)
-	var best grade
+	var best gradeSet
 	found := false
 	for _, ret := range b.facts.returns {
 		if err := ctx.Err(); err != nil {
-			return grade{}, false, err
+			return gradeSet{}, false, err
 		}
 		if ret.Expr == nil {
 			continue
@@ -376,9 +380,7 @@ func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (gra
 		if !tainted {
 			continue
 		}
-		if !found || c.stronger(best) {
-			best = c
-		}
+		best.add(c)
 		found = true
 	}
 	return best, found, nil

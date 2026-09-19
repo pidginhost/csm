@@ -23,9 +23,9 @@ var decoders = map[string]bool{
 // unlisted some_helper($a) are all already covered without naming a single
 // one of them. A name list here could only ever be narrower than that rule.
 
-// taintState maps a variable name to the strongest grade with which it
-// carries remote content.
-type taintState map[string]grade
+// taintState maps a variable name to every proof, per basis, with which it
+// carries remote content. See gradeSet for why it is not a single grade.
+type taintState map[string]gradeSet
 
 // summaryTables holds interprocedural summaries in two namespaces so a
 // function and a method that happen to share a name can never collide: PHP
@@ -36,14 +36,14 @@ type taintState map[string]grade
 // function call site, which is false-positive-only but unacceptable given
 // this analyzer's zero-false-positive bar against real WordPress/plugin code.
 type summaryTables struct {
-	funcs   map[string]grade
-	methods map[string]grade
+	funcs   map[string]gradeSet
+	methods map[string]gradeSet
 }
 
 // lookup resolves a call site's summary in the namespace its call syntax
 // selects. A node shape outside the three call kinds facts.go records
 // (should not occur) resolves to nothing rather than guessing a namespace.
-func (s summaryTables) lookup(call callSite) (grade, bool) {
+func (s summaryTables) lookup(call callSite) (gradeSet, bool) {
 	switch call.node.(type) {
 	case *ast.ExprFunctionCall:
 		c, ok := s.funcs[call.name]
@@ -52,17 +52,19 @@ func (s summaryTables) lookup(call callSite) (grade, bool) {
 		c, ok := s.methods[call.name]
 		return c, ok
 	}
-	return grade{}, false
+	return gradeSet{}, false
 }
 
-func (s taintState) raise(name string, g grade) bool {
-	if name == "" {
+// raise joins g into name's proofs and reports whether they grew.
+func (s taintState) raise(name string, g gradeSet) bool {
+	if name == "" || g.isEmpty() {
 		return false
 	}
-	if cur, ok := s[name]; ok && !g.stronger(cur) {
+	cur, ok := s[name]
+	if !cur.add(g) && ok {
 		return false
 	}
-	s[name] = g
+	s[name] = cur
 	return true
 }
 
@@ -76,7 +78,7 @@ type taintAssignment struct {
 type taintOrigin struct {
 	variable   string
 	assignment int
-	value      grade
+	value      gradeSet
 	fixed      bool
 	decoded    bool
 }
@@ -156,14 +158,14 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 			positioned = append(positioned, positionedOrigin{
 				nodeSpan: span,
 				origin: taintOrigin{
-					assignment: -1, value: g, fixed: true,
+					assignment: -1, value: setOf(g), fixed: true,
 				},
 				self: -1,
 			})
 		}
 	}
 	for _, call := range f.callSites {
-		g, summarized := summaries.lookup(call)
+		set, summarized := summaries.lookup(call)
 		if !summarized {
 			continue
 		}
@@ -174,7 +176,7 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 		positioned = append(positioned, positionedOrigin{
 			nodeSpan: span,
 			origin: taintOrigin{
-				assignment: -1, value: g, fixed: true,
+				assignment: -1, value: set, fixed: true,
 			},
 			self: -1,
 		})
@@ -328,7 +330,7 @@ func solveAssignments(assignments []taintAssignment) taintState {
 
 	queue := make([]int, len(assignments))
 	queued := make([]bool, len(assignments))
-	outputs := make([]grade, len(assignments))
+	outputs := make([]gradeSet, len(assignments))
 	outputSet := make([]bool, len(assignments))
 	for i := range assignments {
 		queue[i] = i
@@ -346,11 +348,11 @@ func solveAssignments(assignments []taintAssignment) taintState {
 	for head := 0; head < len(queue); head++ {
 		i := queue[head]
 		queued[i] = false
-		var best grade
+		var best gradeSet
 		found := false
 		decoded := false
 		for _, origin := range assignments[i].origins {
-			var value grade
+			var value gradeSet
 			var active bool
 			switch {
 			case origin.fixed:
@@ -364,21 +366,23 @@ func solveAssignments(assignments []taintAssignment) taintState {
 				continue
 			}
 			decoded = decoded || origin.decoded
-			if !found || value.stronger(best) {
-				best = value
-			}
+			best.add(value)
 			found = true
 		}
 		if !found {
 			continue
 		}
 		if decoded {
-			// Decoding fetched content raises confidence; the source's own
-			// basis still explains the acquisition.
-			best.conf = ConfidenceCertain
+			// Decoding fetched content raises confidence; each source's own
+			// basis still explains its acquisition.
+			best = best.decoded()
 		}
-		if outputSet[i] && !best.stronger(outputs[i]) {
-			continue
+		if outputSet[i] {
+			merged := outputs[i]
+			if !merged.add(best) {
+				continue
+			}
+			best = merged
 		}
 		outputs[i], outputSet[i] = best, true
 		enqueue(assignmentDependents[i])
@@ -542,26 +546,26 @@ func assignedTargetKey(target ast.Vertex) string {
 }
 
 // exprTaint reports whether an expression carries remote content, and with
-// what grade. It collects the subtree once and correlates decoder inputs by
+// which proofs. It collects the subtree once and correlates decoder inputs by
 // source positions, without recursing over the parsed structure.
-func exprTaint(e ast.Vertex, st taintState, summaries summaryTables) (grade, bool) {
+func exprTaint(e ast.Vertex, st taintState, summaries summaryTables) (gradeSet, bool) {
 	if e == nil {
-		return grade{}, false
+		return gradeSet{}, false
 	}
 	return exprTaintFacts(collectScope(e), st, summaries)
 }
 
-func exprTaintFacts(sub *scopeFacts, st taintState, summaries summaryTables) (grade, bool) {
+func exprTaintFacts(sub *scopeFacts, st taintState, summaries summaryTables) (gradeSet, bool) {
 	best, found, origins := activeTaint(sub, st, summaries)
 	if !found {
-		return grade{}, false
+		return gradeSet{}, false
 	}
 	// A decoder raises confidence to Certain only when the tainted value
 	// passed through THAT decoder's own argument, not merely somewhere else
 	// in the same expression: f(base64_decode($clean), $tainted) must stay
 	// at the source's own grade, because the decode never touched $tainted.
-	// The upgrade changes confidence only: the source's basis still explains
-	// how the content was acquired.
+	// The upgrade changes confidence only: each source's basis still explains
+	// how its content was acquired.
 	decoderSpans := make([]nodeSpan, 0)
 	for _, call := range sub.callNodes {
 		if !decoders[calleeName(call.Function)] {
@@ -576,8 +580,7 @@ func exprTaintFacts(sub *scopeFacts, st taintState, summaries summaryTables) (gr
 	decoderIndex := newSpanIndex(decoderSpans)
 	for _, origin := range origins {
 		if decoderIndex.contains(origin) {
-			best.conf = ConfidenceCertain
-			return best, true
+			return best.decoded(), true
 		}
 	}
 	return best, true
@@ -1095,7 +1098,7 @@ func findFlows(
 			return nil, err
 		}
 		sub := wholeCalls.apply(collectScope(s.expr)).withoutNestedDeclarationVars(exclude)
-		c, tainted := exprTaintFacts(sub, st, summaries)
+		set, tainted := exprTaintFacts(sub, st, summaries)
 		if !tainted {
 			// A file this scope wrote from remote content and now includes
 			// by the same path expression executes that content just as a
@@ -1116,6 +1119,7 @@ func findFlows(
 			}
 			continue
 		}
+		c := set.strongest()
 		source, sourceTruncated := sourceLabel(sub, st, summaries)
 		identifiers, identifiersTruncated := identifiersFor(sub)
 		out = append(out, flowResult{
@@ -1255,8 +1259,8 @@ func retainStrongestEvidence(flows []flowResult) []flowResult {
 	return retained
 }
 
-// activeTaint finds the strongest grade among an already-collected
-// subtree's source calls, summarized calls, and tainted variable reads. It also
+// activeTaint joins the proofs of an already-collected subtree's source
+// calls, summarized calls, and tainted variable reads. It also
 // returns source positions so decoder correlation stays linearithmic rather
 // than recursively recollecting every nested decoder argument.
 // A variable name is looked up in a taintState in exactly five places in this
@@ -1286,15 +1290,13 @@ func retainStrongestEvidence(flows []flowResult) []flowResult {
 // the summaries path, in the sink path, and in the capture walk -- before the
 // enumeration above made it possible to say the class was closed rather than
 // merely that no more instances had turned up.
-func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables) (grade, bool, []nodeSpan) {
-	var best grade
+func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables) (gradeSet, bool, []nodeSpan) {
+	var best gradeSet
 	found := false
 	origins := make([]nodeSpan, 0)
 	for _, call := range sub.callNodes {
 		if c, ok := sourceGrade(call); ok {
-			if !found || c.stronger(best) {
-				best = c
-			}
+			best.add(setOf(c))
 			found = true
 			if span, ok := spanOf(call); ok {
 				origins = append(origins, span)
@@ -1303,9 +1305,7 @@ func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables) (grade
 	}
 	for _, call := range sub.callSites {
 		if c, ok := summaries.lookup(call); ok {
-			if !found || c.stronger(best) {
-				best = c
-			}
+			best.add(c)
 			found = true
 			if span, ok := spanOf(call.node); ok {
 				origins = append(origins, span)
@@ -1314,9 +1314,7 @@ func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables) (grade
 	}
 	for _, variable := range sub.readVarNodes() {
 		if c, ok := st[variable.name]; ok {
-			if !found || c.stronger(best) {
-				best = c
-			}
+			best.add(c)
 			found = true
 			if span, ok := spanOf(variable.node); ok {
 				origins = append(origins, span)
@@ -1350,10 +1348,11 @@ func taintedWritePaths(
 			continue
 		}
 		sub := wholeCalls.apply(collectScope(w.data)).withoutNestedDeclarationVars(exclude)
-		c, tainted := exprTaintFacts(sub, st, summaries)
+		set, tainted := exprTaintFacts(sub, st, summaries)
 		if !tainted {
 			continue
 		}
+		c := set.strongest()
 		if prev, ok := out[key]; ok && !c.stronger(prev.value) {
 			continue
 		}
