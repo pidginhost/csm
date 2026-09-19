@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"encoding/binary"
@@ -270,6 +271,10 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipDirectory) (bool, 
 	// directory rather than decided per entry.
 	deepConfig := false
 	wpRuntime := false
+	// A nested Joomla configuration.php counts only when its own directory
+	// also holds a Joomla entry point, so both are keyed by directory.
+	joomlaConfigDirs := map[string]bool{}
+	joomlaRuntimeDirs := map[string]bool{}
 	for {
 		if records%256 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -308,6 +313,24 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipDirectory) (bool, 
 			if archiveEntryIsWPRuntime(entry) {
 				wpRuntime = true
 			}
+			// Names alone cannot distinguish PHP files from directories or
+			// symlinks. Interpret central-directory attributes without opening
+			// or decompressing any entry payload.
+			entryHeader := zip.FileHeader{
+				Name:           strings.ReplaceAll(entry, `\`, "/"),
+				CreatorVersion: binary.LittleEndian.Uint16(header[4:6]),
+				ExternalAttrs:  binary.LittleEndian.Uint32(header[38:42]),
+			}
+			if entryHeader.Mode().IsRegular() {
+				if d, ok := archiveNestedJoomlaConfigDir(entry); ok {
+					joomlaConfigDirs[d] = true
+					holdsSite = holdsSite || joomlaRuntimeDirs[d]
+				}
+				if d, ok := archiveJoomlaRuntimeDir(entry); ok {
+					joomlaRuntimeDirs[d] = true
+					holdsSite = holdsSite || joomlaConfigDirs[d]
+				}
+			}
 		}
 		records++
 	}
@@ -328,9 +351,15 @@ func archiveDirectoryReadError(err error) error {
 // must never be read as a marker: absolute, drive-qualified, and traversal
 // names. It returns nil for anything unusable.
 func archiveEntryPath(rawName string) []string {
-	name := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(rawName, `\`, "/")))
+	return archiveEntryPathPreservingCase(strings.ToLower(strings.TrimSpace(rawName)))
+}
+
+// Directory identity must retain case and whitespace when pairing entries:
+// archives from Linux can contain distinct directories differing only by either.
+func archiveEntryPathPreservingCase(rawName string) []string {
+	name := strings.ReplaceAll(rawName, `\`, "/")
 	if name == "" || strings.HasPrefix(name, "/") ||
-		(len(name) >= 3 && name[0] >= 'a' && name[0] <= 'z' && name[1] == ':' && name[2] == '/') {
+		(len(name) >= 3 && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) && name[1] == ':' && name[2] == '/') {
 		return nil
 	}
 	name = path.Clean(name)
@@ -400,6 +429,31 @@ func archiveEntryIsWPRuntime(rawName string) bool {
 		}
 	}
 	return false
+}
+
+// archiveNestedJoomlaConfigDir returns the directory of a configuration.php
+// below the archive root. A root-level one already counts on its own.
+func archiveNestedJoomlaConfigDir(rawName string) (string, bool) {
+	parts := archiveEntryPathPreservingCase(rawName)
+	if len(parts) < 2 || !strings.EqualFold(parts[len(parts)-1], "configuration.php") {
+		return "", false
+	}
+	return strings.Join(parts[:len(parts)-1], "/"), true
+}
+
+// archiveJoomlaRuntimeDir returns the site directory of a Joomla core entry
+// point. Every Joomla release carries these and no extension package does.
+func archiveJoomlaRuntimeDir(rawName string) (string, bool) {
+	parts := archiveEntryPathPreservingCase(rawName)
+	if len(parts) < 2 {
+		return "", false
+	}
+	parent, file := strings.ToLower(parts[len(parts)-2]), strings.ToLower(parts[len(parts)-1])
+	if (parent == "includes" && file == "defines.php") ||
+		(parent == "administrator" && file == "index.php") {
+		return strings.Join(parts[:len(parts)-2], "/"), true
+	}
+	return "", false
 }
 
 func hasArchivePathSuffix(parts []string, suffix ...string) bool {

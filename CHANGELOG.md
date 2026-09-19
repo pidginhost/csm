@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
+## [Unreleased]
+
+### Security
+
+- Web-downloadable Joomla site backups are now reported when the site sits in a folder inside the zip, as most backups are packed. Only the root-level layout was recognized before, so these archives and the database password inside them stayed exposed without a finding.
+
 ## [3.41.0] - 2026-09-19
 
 ### Highlights
