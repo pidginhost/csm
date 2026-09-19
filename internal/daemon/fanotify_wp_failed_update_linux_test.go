@@ -74,8 +74,11 @@ func TestStagedCorePackageRemovedWithoutInstallIsReportedOnce(t *testing.T) {
 	}
 }
 
-// Neither a recent installed inode nor an owner-controlled metadata change
-// links an installed release to the deleted staging tree.
+// A plugin identity is borrowed only from the staged directory renamed into
+// place. Core updates copy files, so a core header is borrowed once the
+// installed version.php changed after the file was queued; an owner-made
+// chmod can trigger that, but a file that is not the official bytes of the
+// borrowed release is still named, never passed.
 func TestStagedPackageCannotBorrowInstalledIdentity(t *testing.T) {
 	for _, kind := range []wpcheck.PackageKind{wpcheck.KindCore, wpcheck.KindPlugin} {
 		for _, change := range []string{"recent", "chmod", "copy", "symlink"} {
@@ -97,6 +100,8 @@ func TestStagedPackageCannotBorrowInstalledIdentity(t *testing.T) {
 					v.Digest = strings.Repeat("a", 64)
 				}
 				v.RootInfo, _ = os.Lstat(root)
+				coreBorrow := kind == wpcheck.KindCore && (change == "chmod" || change == "copy")
+				compared := false
 				fake := &fakeWPVerifier{
 					describe: func(path string) wpcheck.Verification {
 						if strings.HasPrefix(path, staging+"/") {
@@ -105,8 +110,12 @@ func TestStagedPackageCannotBorrowInstalledIdentity(t *testing.T) {
 						return wpcheck.Verification{Kind: kind, Root: installedRoot, Slug: slug, Version: "1.0", Verdict: wpcheck.VerdictReady}
 					},
 					verify: func(wpcheck.Verification) wpcheck.Verdict {
-						t.Error("deleted tree borrowed an unrelated installed identity")
-						return wpcheck.VerdictVerified
+						if !coreBorrow {
+							t.Error("deleted tree borrowed an unrelated installed identity")
+							return wpcheck.VerdictVerified
+						}
+						compared = true
+						return wpcheck.VerdictMismatch
 					},
 				}
 				fm, ch := newStagedPackageMonitor(t, fake)
@@ -144,6 +153,12 @@ func TestStagedPackageCannotBorrowInstalledIdentity(t *testing.T) {
 				}
 				fm.drainStagedPackages(now.Add(stagedPackageTimeout + time.Second))
 				got := drainFindings(ch)
+				if coreBorrow {
+					if !compared || len(got) != 1 || !strings.Contains(got[0].Message, "does not match") {
+						t.Fatalf("borrowed core header: compared=%v findings=%+v, want the file named", compared, got)
+					}
+					return
+				}
 				if len(got) != 1 || got[0].FilePath != staging || !strings.Contains(got[0].Details, "removed before") {
 					t.Fatalf("unidentified removal must produce a package warning: %+v", got)
 				}
@@ -222,5 +237,77 @@ func TestStagedPluginInstalledIdentityMustRemainLinked(t *testing.T) {
 				t.Fatalf("unidentified moved tree must produce a package warning: %+v", got)
 			}
 		})
+	}
+}
+
+// A tampered staged core file whose staged header event was missed is still
+// named once the update installs: the rewritten installed version.php names
+// the release, and the retained digest is compared against it.
+func TestStagedCoreTamperedFileNamedWithoutStagedHeader(t *testing.T) {
+	wpRoot := filepath.Join(t.TempDir(), "public_html")
+	rel := "index.php"
+	staging := filepath.Join(wpRoot, "wp-content", "upgrade", "wp_random", "wordpress")
+	path := filepath.Join(staging, rel)
+	cache := wpcheck.NewCache(t.TempDir())
+	sum := md5.Sum([]byte(cleanStagedPHP)) // #nosec G401
+	if err := cache.PersistChecksums("7.1", "en_US", nil, map[string]string{rel: hex.EncodeToString(sum[:])}); err != nil {
+		t.Fatal(err)
+	}
+	fm, ch := newStagedPackageMonitor(t, cache)
+	fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, cleanStagedPHP+"// changed\n")})
+	installed := filepath.Join(wpRoot, rel)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, installed); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(staging); err != nil {
+		t.Fatal(err)
+	}
+	writeStagedFile(t, installed, cleanStagedPHP)
+	writeStagedFile(t, filepath.Join(wpRoot, "wp-includes", "version.php"), "<?php $wp_version = '7.1';")
+	fm.drainStagedPackages(time.Now())
+	fm.drainStagedPackages(time.Now().Add(stagedPackageTimeout + time.Second))
+	got := drainFindings(ch)
+	named := false
+	for _, f := range got {
+		named = named || (f.FilePath == installed && strings.Contains(f.Message, "does not match"))
+	}
+	if !named {
+		t.Fatalf("tampered core file not named: %+v", got)
+	}
+}
+
+// An owner-controlled chmod on the old version.php makes CSM borrow the old
+// release. The staged file is not official bytes, so it is still named.
+func TestStagedCoreChmodBorrowCannotHideModifiedFile(t *testing.T) {
+	wpRoot := filepath.Join(t.TempDir(), "public_html")
+	rel := "wp-admin/about.php"
+	staging := filepath.Join(wpRoot, "wp-content", "upgrade", "wp_x", "wordpress")
+	cache := wpcheck.NewCache(t.TempDir())
+	sum := md5.Sum([]byte(cleanStagedPHP)) // #nosec G401
+	if err := cache.PersistChecksums("6.9", "en_US", nil, map[string]string{rel: hex.EncodeToString(sum[:])}); err != nil {
+		t.Fatal(err)
+	}
+	header := filepath.Join(wpRoot, "wp-includes", "version.php")
+	writeStagedFile(t, header, "<?php $wp_version = '6.9';")
+	fm, ch := newStagedPackageMonitor(t, cache)
+	path := filepath.Join(staging, rel)
+	fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, cleanStagedPHP+"// modified\n")})
+	if err := os.Chmod(header, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Dir(staging)); err != nil {
+		t.Fatal(err)
+	}
+	fm.drainStagedPackages(time.Now())
+	got := drainFindings(ch)
+	named := false
+	for _, f := range got {
+		named = named || strings.Contains(f.Message, "does not match")
+	}
+	if !named {
+		t.Fatalf("modified staged file hidden by a borrowed header: %+v", got)
 	}
 }

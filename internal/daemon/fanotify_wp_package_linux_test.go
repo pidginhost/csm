@@ -531,20 +531,6 @@ func TestStagedPackageLateIdentityKeepsDeletedFileDigest(t *testing.T) {
 					t.Fatal(err)
 				}
 				fm.drainStagedPackages(time.Now())
-				if kind == wpcheck.KindCore && !usePackageIdentity {
-					if compared || fm.stagedPackages().pendingCount() != 1 || len(drainFindings(ch)) != 0 {
-						t.Fatal("a copied core header cannot identify a deleted staging tree")
-					}
-					fm.drainStagedPackages(time.Now().Add(stagedPackageTimeout + time.Second))
-					got := drainFindings(ch)
-					if compared || len(got) != 1 || got[0].FilePath != staging || fm.stagedPackages().pendingCount() != 0 {
-						t.Fatalf("unidentified copied core: compared=%v findings=%+v pending=%d", compared, got, fm.stagedPackages().pendingCount())
-					}
-					if strings.Contains(got[0].Details, "not installed") || !strings.Contains(got[0].Details, "installation could not be confirmed") {
-						t.Fatalf("must not claim a copied update failed: %+v", got[0])
-					}
-					return
-				}
 				got := drainFindings(ch)
 				if !compared || len(got) != 1 || got[0].FilePath != staged || fm.stagedPackages().pendingCount() != 0 {
 					t.Fatalf("deleted mismatch: compared=%v findings=%+v pending=%d", compared, got, fm.stagedPackages().pendingCount())

@@ -121,6 +121,9 @@ type stagedPackageFile struct {
 	key      stagedPackageKey
 	queuedAt time.Time
 	ticket   queuehealth.Ticket
+	// coreHeader is the installed version.php as it was when a core file
+	// was queued; a zero stamp means there was none.
+	coreHeader fileStamp
 }
 
 // A pathname can be reused by a later unpack. Retained headers only belong
@@ -300,7 +303,11 @@ func (fm *FileMonitor) handleStagedPackageFile(path string, v wpcheck.Verificati
 	case wpcheck.VerdictMismatch, wpcheck.VerdictUnverifiable:
 		fm.alertStagedFileMismatch(path, pkg, v, procInfo)
 	case wpcheck.VerdictPending, wpcheck.VerdictNoVersion, wpcheck.VerdictReady:
-		if !q.push(stagedPackageFile{path: path, procInfo: procInfo, v: v, pkg: pkg, key: key, queuedAt: now}) {
+		file := stagedPackageFile{path: path, procInfo: procInfo, v: v, pkg: pkg, key: key, queuedAt: now}
+		if v.Kind == wpcheck.KindCore {
+			file.coreHeader, _ = statFileStamp(pkg.wpRoot + "/wp-includes/version.php")
+		}
+		if !q.push(file) {
 			fm.alertStagedPackage(pkg, info, "verification queue full", procInfo)
 		}
 	default:
@@ -488,10 +495,16 @@ func (fm *FileMonitor) redescribeStaged(f stagedPackageFile) wpcheck.Verificatio
 		v.Digest = f.v.Digest
 		return v
 	}
+	if !os.IsNotExist(err) {
+		return f.v
+	}
+	if f.v.Kind == wpcheck.KindCore {
+		return fm.redescribeCoreFromInstalled(f)
+	}
 	// Only a renamed plugin directory can link an installed header to this
-	// staging tree. Core and plugin copy installs lose that link: a recent
-	// ctime (including chmod or child creation) is not evidence of origin.
-	if !os.IsNotExist(err) || f.v.Kind != wpcheck.KindPlugin || f.v.RootInfo == nil {
+	// staging tree. A plugin copy install loses that link: a recent ctime
+	// (including chmod or child creation) is not evidence of origin.
+	if f.v.Kind != wpcheck.KindPlugin || f.v.RootInfo == nil {
 		return f.v
 	}
 	if installed := stagedFileInstalledPath(f.pkg, f.v); installed != "" {
@@ -515,6 +528,46 @@ func (fm *FileMonitor) redescribeStaged(f stagedPackageFile) wpcheck.Verificatio
 	}
 	v.Digest, v.Staged = f.v.Digest, true
 	return v
+}
+
+// redescribeCoreFromInstalled identifies a core file whose staged tree is gone
+// by the installed version.php. A core update copies files into place, so no
+// inode links the two trees; the installed header names this release only if
+// it was replaced or rewritten since the file was queued. A refused or failed
+// update leaves the old release, whose manifest would call every new file
+// modified. Borrowing cannot make a modified file pass: its digest must still
+// equal the official bytes of that path in the borrowed release.
+func (fm *FileMonitor) redescribeCoreFromInstalled(f stagedPackageFile) wpcheck.Verification {
+	header := f.pkg.wpRoot + "/wp-includes/version.php"
+	now, ok := statFileStamp(header)
+	if !ok || now == f.coreHeader {
+		return f.v // keep waiting: a late event may still identify the tree
+	}
+	iv := fm.wpCache.Describe(header)
+	if iv.Kind != wpcheck.KindCore || iv.Version == "" ||
+		iv.Verdict == wpcheck.VerdictNoVersion || iv.Verdict == wpcheck.VerdictUnknown {
+		return f.v
+	}
+	if after, ok := statFileStamp(header); !ok || after != now {
+		return f.v // the header changed during detection
+	}
+	iv.Rel, iv.Digest, iv.Staged = f.v.Rel, f.v.Digest, true
+	return iv
+}
+
+// fileStamp identifies one version of a regular file: a replacement changes
+// the inode, a rewrite or metadata change moves the change time.
+type fileStamp struct {
+	dev, ino uint64
+	ctime    int64
+}
+
+func statFileStamp(path string) (fileStamp, bool) {
+	var st unix.Stat_t
+	if err := unix.Lstat(path, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fileStamp{}, false
+	}
+	return fileStamp{dev: uint64(st.Dev), ino: st.Ino, ctime: st.Ctim.Nano()}, true // #nosec G115 -- device numbers are non-negative
 }
 
 // drainStagedPackages resolves every queued file whose checksums have

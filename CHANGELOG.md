@@ -11,7 +11,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
-- Removed WordPress update packages can no longer inherit an unrelated installed release to avoid a warning. Later unidentified uploads remain reportable when a staging path is reused.
 - PHP scanning handles attribute metadata and multiline strings consistently, avoiding missed execution and false alarms from literal examples.
 - Re-checking a finding no longer lowers its severity when the replacement file hides active content behind a malformed PHP opening tag or a PHP 8 attribute.
 - Subnet blocking now catches ranges that rotate through addresses one block at a time. Addresses blocked in the last seven days count toward the threshold, including operator and permanent blocks, and the window is adjustable.
