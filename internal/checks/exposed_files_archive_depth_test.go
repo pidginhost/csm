@@ -52,3 +52,54 @@ func TestArchiveDeepConfigNeedsWordPressTree(t *testing.T) {
 		})
 	}
 }
+
+// A Joomla backup usually nests its site under a directory named after the
+// domain, so configuration.php sits one level down. A bare configuration.php at
+// that depth is also what extension bundles ship, so it only counts when the
+// same directory carries a Joomla entry point that no extension packages.
+func TestArchiveNestedJoomlaConfigNeedsJoomlaTree(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct {
+		name    string
+		entries []string
+		want    bool
+	}{
+		{
+			name:    "joomla-site-under-domain-dir.zip",
+			entries: []string{"example.com/configuration.php", "example.com/includes/defines.php"},
+			want:    true,
+		},
+		{
+			name:    "joomla-site-admin-entry-point.zip",
+			entries: []string{"example.com/administrator/index.php", "example.com/configuration.php"},
+			want:    true,
+		},
+		{
+			name:    "joomla-site-deeply-nested.zip",
+			entries: []string{"backups/2022/site/configuration.php", "backups/2022/site/includes/defines.php"},
+			want:    true,
+		},
+		// An extension bundle that ships a configuration.php, next to an
+		// unrelated tree holding a Joomla entry point, is not a site copy: the
+		// configuration file and the runtime must belong to one directory.
+		{
+			name:    "extension-config-beside-other-tree.zip",
+			entries: []string{"some-extension/configuration.php", "vendor-copy/includes/defines.php"},
+			want:    false,
+		},
+		{
+			name:    "extension-config-only.zip",
+			entries: []string{"some-extension/configuration.php", "some-extension/some-extension.php"},
+			want:    false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(root, tc.name)
+			writeZip(t, p, tc.entries...)
+			if got := archiveHoldsSiteBackup(p); got != tc.want {
+				t.Errorf("archiveHoldsSiteBackup(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}

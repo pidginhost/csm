@@ -270,6 +270,10 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipDirectory) (bool, 
 	// directory rather than decided per entry.
 	deepConfig := false
 	wpRuntime := false
+	// A nested Joomla configuration.php counts only when its own directory
+	// also holds a Joomla entry point, so both are keyed by directory.
+	joomlaConfigDirs := map[string]bool{}
+	joomlaRuntimeDirs := map[string]bool{}
 	for {
 		if records%256 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -308,13 +312,26 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipDirectory) (bool, 
 			if archiveEntryIsWPRuntime(entry) {
 				wpRuntime = true
 			}
+			if d, ok := archiveNestedJoomlaConfigDir(entry); ok {
+				joomlaConfigDirs[d] = true
+			}
+			if d, ok := archiveJoomlaRuntimeDir(entry); ok {
+				joomlaRuntimeDirs[d] = true
+			}
 		}
 		records++
 	}
 	if records != dir.records {
 		return false, errArchiveFormat
 	}
-	return holdsSite || (deepConfig && wpRuntime), nil
+	joomlaSite := false
+	for d := range joomlaConfigDirs {
+		if joomlaRuntimeDirs[d] {
+			joomlaSite = true
+			break
+		}
+	}
+	return holdsSite || (deepConfig && wpRuntime) || joomlaSite, nil
 }
 
 func archiveDirectoryReadError(err error) error {
@@ -400,6 +417,27 @@ func archiveEntryIsWPRuntime(rawName string) bool {
 		}
 	}
 	return false
+}
+
+// archiveNestedJoomlaConfigDir returns the directory of a configuration.php
+// below the archive root. A root-level one already counts on its own.
+func archiveNestedJoomlaConfigDir(rawName string) (string, bool) {
+	parts := archiveEntryPath(rawName)
+	if len(parts) < 2 || parts[len(parts)-1] != "configuration.php" {
+		return "", false
+	}
+	return strings.Join(parts[:len(parts)-1], "/"), true
+}
+
+// archiveJoomlaRuntimeDir returns the site directory of a Joomla core entry
+// point. Every Joomla release carries these and no extension package does.
+func archiveJoomlaRuntimeDir(rawName string) (string, bool) {
+	parts := archiveEntryPath(rawName)
+	if hasArchivePathSuffix(parts, "includes", "defines.php") ||
+		hasArchivePathSuffix(parts, "administrator", "index.php") {
+		return strings.Join(parts[:len(parts)-2], "/"), true
+	}
+	return "", false
 }
 
 func hasArchivePathSuffix(parts []string, suffix ...string) bool {
