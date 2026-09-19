@@ -27,7 +27,11 @@ A file that matches the official wordpress.org checksum for its package version
 is stock and skips detection like an installed stock file. A file whose
 checksums are still being fetched is content-scanned now and compared once they
 land, even if the package header was written late or WordPress has already
-moved the tree into place. A file the official package does not ship gets its
+moved the tree into place. The installed copy identifies the release only if
+the update actually rewrote it; an update WordPress refuses or fails to install
+(for example because the new release needs a newer PHP) is reported once as a
+package that was removed before it could be identified, not file by file
+against the old release. A file the official package does not ship gets its
 own warning, naming the installed path when it still exists. Themes, packages
 not published on wordpress.org, a full verification queue, and a package whose
 checksums do not arrive within 60 seconds raise one warning per staging

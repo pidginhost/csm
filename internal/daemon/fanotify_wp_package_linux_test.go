@@ -505,6 +505,21 @@ func TestStagedPackageLateIdentityKeepsDeletedFileDigest(t *testing.T) {
 					t.Fatal("unresolved entry was not kept waiting")
 				}
 				ready = true
+				if !usePackageIdentity {
+					// Only an installed tree can name the release: WordPress
+					// writes version.php, or renames the plugin into place.
+					if kind == wpcheck.KindCore {
+						writeStagedFile(t, installed, "<?php $wp_version = '7.1';")
+					} else {
+						pluginDir := filepath.Join(wpRoot, "wp-content", "plugins", slug)
+						if err := os.Rename(pluginDir, pluginDir+".old"); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Mkdir(pluginDir, 0o755); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				if usePackageIdentity {
 					// Another file carried the header before the package disappeared.
 					resolved.Verdict = wpcheck.VerdictVerified
