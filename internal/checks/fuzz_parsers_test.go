@@ -111,12 +111,23 @@ func FuzzArchiveEntrySignalsSiteBackup(f *testing.F) {
 	f.Add("../wp-config.php")
 	f.Add(`C:\public_html\index.php`)
 	f.Add("some-plugin/settings.php")
+	f.Add("Site/configuration.php")
+	f.Add("Site/includes/defines.php")
+	f.Add(" site/administrator/index.php")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, name string) {
 		_ = archiveEntrySignalsSiteBackup(name)
+		_, _ = archiveNestedJoomlaConfigDir(name)
+		_, _ = archiveJoomlaRuntimeDir(name)
 		for _, unsafe := range []string{"../" + name, "/" + name, `C:\` + name} {
 			if archiveEntrySignalsSiteBackup(unsafe) {
 				t.Fatalf("unsafe archive path %q was classified", unsafe)
+			}
+			if _, ok := archiveNestedJoomlaConfigDir(unsafe); ok {
+				t.Fatalf("unsafe archive path %q was paired as Joomla config", unsafe)
+			}
+			if _, ok := archiveJoomlaRuntimeDir(unsafe); ok {
+				t.Fatalf("unsafe archive path %q was paired as Joomla runtime", unsafe)
 			}
 		}
 	})
