@@ -424,6 +424,31 @@ func TestDecodeRejectsResultWithoutOffset(t *testing.T) {
 	}
 }
 
+// twoResultReply is a valid two-result report whose second result's Basis
+// and ResolutionOffset keys are replaced by second.
+func twoResultReply(second string) []byte {
+	return []byte(`{"report":{"Status":1,"Results":[` +
+		`{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1,"Basis":"always-remote","ResolutionOffset":-1},` +
+		`{"Source":"fsockopen","Identifiers":null,"Sink":"include","Confidence":1` + second + `}` +
+		`],"TotalResults":2,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`)
+}
+
+// Every result is checked, not only the first: a mixed reply whose later
+// result predates the offset field is a worker failure too.
+func TestDecodeRejectsMixedResultsWithoutOffset(t *testing.T) {
+	var control AnalyzeResult
+	if err := DecodePayload(Frame{Payload: twoResultReply(`,"Basis":"always-remote","ResolutionOffset":-1`)}, &control); err != nil {
+		t.Fatalf("complete two-result reply rejected: %v", err)
+	}
+	if len(control.Report.Results) != 2 {
+		t.Fatalf("control decoded as %+v", control.Report)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: twoResultReply(`,"Basis":"always-remote"`)}, &got); err == nil {
+		t.Fatalf("reply whose second result has no offset decoded: %+v", got.Report)
+	}
+}
+
 func TestDecodeRejectsResultWithNullOffset(t *testing.T) {
 	var got AnalyzeResult
 	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":null`)}, &got); err == nil {

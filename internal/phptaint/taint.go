@@ -23,8 +23,9 @@ var decoders = map[string]bool{
 // unlisted some_helper($a) are all already covered without naming a single
 // one of them. A name list here could only ever be narrower than that rule.
 
-// taintState maps a variable name to every proof, per basis, with which it
-// carries remote content. See gradeSet for why it is not a single grade.
+// taintState maps a variable name to every proof, one per (basis,
+// confidence) key, with which it carries remote content. See gradeSet for
+// why it is not a single grade.
 type taintState map[string]gradeSet
 
 // summaryTables holds interprocedural summaries in two namespaces so a

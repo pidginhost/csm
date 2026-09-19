@@ -259,8 +259,8 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, error) {
 	// Summaries only ever move from absent to present, or grow pointwise as
 	// a gradeSet, so this is a monotone fixpoint over a finite lattice (one
-	// entry per basis, drawn from three confidence levels and the offsets of
-	// this file's call sites) whose result does not depend on the order
+	// entry per (basis, confidence) key, each holding the lowest offset drawn
+	// from this file's call sites) whose result does not depend on the order
 	// bodies are (re)evaluated in - only on eventually evaluating every body
 	// whose inputs changed since it was last evaluated. A body's inputs are
 	// exactly the summaries of the functions and methods its own facts call,

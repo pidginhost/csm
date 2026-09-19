@@ -2,6 +2,10 @@ package phptaint
 
 import (
 	"context"
+	goast "go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
 	"testing"
 	"unsafe"
 )
@@ -360,5 +364,78 @@ func TestDecodeUpgradesOnlyDecodedOrigins(t *testing.T) {
 				t.Fatalf("result = %+v, want Certain unresolved offset -1", got)
 			}
 		})
+	}
+}
+
+// Every exported Basis constant must be valid, and so ranked: Valid is
+// membership in rankedBases, so a constant added without a rank would make
+// the worker boundary reject every reply that carries it. The constants are
+// read from the source rather than listed here, so a new one cannot be
+// missed by this test.
+func TestEveryExportedBasisIsValid(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "phptaint.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse phptaint.go: %v", err)
+	}
+	found := 0
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*goast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs := spec.(*goast.ValueSpec)
+			if ident, ok := vs.Type.(*goast.Ident); !ok || ident.Name != "Basis" {
+				continue
+			}
+			for i, name := range vs.Names {
+				if !name.IsExported() {
+					continue
+				}
+				lit, ok := vs.Values[i].(*goast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Fatalf("%s: value is not a string literal", name.Name)
+				}
+				value, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("%s: %v", name.Name, err)
+				}
+				if !Basis(value).Valid() {
+					t.Errorf("%s = %q is not Valid(); add it to rankedBases", name.Name, value)
+				}
+				found++
+			}
+		}
+	}
+	if found != len(rankedBases) {
+		t.Errorf("found %d exported Basis constants, rankedBases has %d", found, len(rankedBases))
+	}
+}
+
+// An unknown basis or confidence reaching setOf is an analyzer defect. It
+// must not silently drop the proof, which would turn a flow into no flow; it
+// panics, and the package boundary turns that into a visible coverage gap.
+func TestSetOfRejectsUndefinedGrade(t *testing.T) {
+	for _, g := range []grade{
+		{ConfidenceHigh, "bogus", -1},
+		{ConfidenceHigh, "", -1},
+		{Confidence(confidenceLevels), BasisLiteral, -1},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("setOf(%+v): want panic, not a silently empty set", g)
+				}
+			}()
+			setOf(g)
+		}()
+	}
+	report := recovered(func() Report {
+		setOf(grade{ConfidenceHigh, "bogus", -1})
+		return Report{Status: StatusAnalyzed}
+	})
+	if report.Status != StatusPanic || len(report.Results) != 0 {
+		t.Fatalf("report = %+v, want a StatusPanic coverage gap", report)
 	}
 }

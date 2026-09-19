@@ -109,13 +109,20 @@ func joinEntry(cur *gradeEntry, e gradeEntry) bool {
 	return true
 }
 
-// setOf is the set holding one proof. An undefined basis or confidence
-// yields the empty set; sourceGrade never produces one.
+// setOf is the set holding one proof. An undefined basis or confidence is
+// an analyzer defect: dropping it would silently turn a flow into no flow,
+// so it panics instead, and the package boundary (recovered) reports the
+// file as a StatusPanic coverage gap.
 func setOf(g grade) gradeSet {
-	var s gradeSet
-	if r := basisRank(g.basis); r >= 0 && int(g.conf) < confidenceLevels {
-		s.entries[r][g.conf] = entryAt(g.offset)
+	r := basisRank(g.basis)
+	if r < 0 {
+		panic("phptaint: undefined basis")
 	}
+	if int(g.conf) >= confidenceLevels {
+		panic("phptaint: undefined confidence")
+	}
+	var s gradeSet
+	s.entries[r][g.conf] = entryAt(g.offset)
 	return s
 }
 
