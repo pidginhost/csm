@@ -649,7 +649,7 @@ func looksLikeBackWPupJobState(path string, head []byte) bool {
 			switch {
 			case bytes.HasPrefix(line, []byte("///")):
 				folders++
-			case last && bytes.HasPrefix([]byte("///"), line):
+			case last && len(line) < 3 && bytes.Equal(line, []byte("///")[:len(line)]):
 				// The head can end inside the next comment marker.
 			default:
 				return false
