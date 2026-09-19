@@ -27,11 +27,17 @@ A file that matches the official wordpress.org checksum for its package version
 is stock and skips detection like an installed stock file. A file whose
 checksums are still being fetched is content-scanned now and compared once they
 land, even if the package header was written late or WordPress has already
-moved the tree into place. The installed copy identifies the release only if
-the update actually rewrote it; an update WordPress refuses or fails to install
-(for example because the new release needs a newer PHP) is reported once as a
-package that was removed before it could be identified, not file by file
-against the old release. A file the official package does not ship gets its
+moved the tree into place. An installed plugin header can identify the release
+only when its directory is the original staging directory moved into place.
+Core updates and plugin copy fallbacks need a header observed in the staged
+tree; a recently changed installed header alone does not establish its origin.
+A tree removed before its release could be identified gets a package warning,
+not file-by-file comparisons against the old release. This covers refused
+updates (for example when the new release needs a newer PHP) and copied updates
+whose staging identity was never captured; the warning does not establish
+whether installation succeeded. Reused staging paths follow the normal alert
+cooldown rather than suppressing later unidentified uploads. A file the
+official package does not ship gets its
 own warning, naming the installed path when it still exists. Themes, packages
 not published on wordpress.org, a full verification queue, and a package whose
 checksums do not arrive within 60 seconds raise one warning per staging

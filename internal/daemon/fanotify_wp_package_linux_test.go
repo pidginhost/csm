@@ -506,8 +506,8 @@ func TestStagedPackageLateIdentityKeepsDeletedFileDigest(t *testing.T) {
 				}
 				ready = true
 				if !usePackageIdentity {
-					// Only an installed tree can name the release: WordPress
-					// writes version.php, or renames the plugin into place.
+					// Core copies version.php; plugins normally rename the
+					// actual staged directory, preserving its identity.
 					if kind == wpcheck.KindCore {
 						writeStagedFile(t, installed, "<?php $wp_version = '7.1';")
 					} else {
@@ -515,7 +515,7 @@ func TestStagedPackageLateIdentityKeepsDeletedFileDigest(t *testing.T) {
 						if err := os.Rename(pluginDir, pluginDir+".old"); err != nil {
 							t.Fatal(err)
 						}
-						if err := os.Mkdir(pluginDir, 0o755); err != nil {
+						if err := os.Rename(initial.Root, pluginDir); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -531,6 +531,20 @@ func TestStagedPackageLateIdentityKeepsDeletedFileDigest(t *testing.T) {
 					t.Fatal(err)
 				}
 				fm.drainStagedPackages(time.Now())
+				if kind == wpcheck.KindCore && !usePackageIdentity {
+					if compared || fm.stagedPackages().pendingCount() != 1 || len(drainFindings(ch)) != 0 {
+						t.Fatal("a copied core header cannot identify a deleted staging tree")
+					}
+					fm.drainStagedPackages(time.Now().Add(stagedPackageTimeout + time.Second))
+					got := drainFindings(ch)
+					if compared || len(got) != 1 || got[0].FilePath != staging || fm.stagedPackages().pendingCount() != 0 {
+						t.Fatalf("unidentified copied core: compared=%v findings=%+v pending=%d", compared, got, fm.stagedPackages().pendingCount())
+					}
+					if strings.Contains(got[0].Details, "not installed") || !strings.Contains(got[0].Details, "installation could not be confirmed") {
+						t.Fatalf("must not claim a copied update failed: %+v", got[0])
+					}
+					return
+				}
 				got := drainFindings(ch)
 				if !compared || len(got) != 1 || got[0].FilePath != staged || fm.stagedPackages().pendingCount() != 0 {
 					t.Fatalf("deleted mismatch: compared=%v findings=%+v pending=%d", compared, got, fm.stagedPackages().pendingCount())
@@ -623,7 +637,7 @@ func TestStagedPackageMismatchDoesNotDiscardInertContent(t *testing.T) {
 	}
 }
 
-func TestStagedPackageCoreResolvesAfterMoveWithoutStagedHeader(t *testing.T) {
+func TestStagedPackageCoreRetainsDigestAfterCopyWithLateHeaderEvent(t *testing.T) {
 	for _, rel := range []string{"index.php", "extra.php", "wp-content/plugins/akismet/extra.php"} {
 		t.Run(rel, func(t *testing.T) {
 			wpRoot := filepath.Join(t.TempDir(), "public_html")
@@ -642,19 +656,21 @@ func TestStagedPackageCoreResolvesAfterMoveWithoutStagedHeader(t *testing.T) {
 			if fm.stagedPackages().pendingCount() != 1 {
 				t.Fatal("staged file was not retained before version.php existed")
 			}
+			// Capture the staged header before WordPress copies the files.
+			// Its event can reach the queue after cleanup has finished.
+			header := filepath.Join(staging, "wp-includes/version.php")
+			writeStagedFile(t, header, "<?php $wp_version = '7.1';")
+			identity := cache.Describe(header)
 			installed := filepath.Join(wpRoot, rel)
-			if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(path, installed); err != nil {
-				t.Fatal(err)
-			}
+			writeStagedFile(t, installed, stock+"// changed\n")
 			if err := os.RemoveAll(staging); err != nil {
 				t.Fatal(err)
 			}
 			// A replacement at the installed path cannot erase the original mismatch.
 			writeStagedFile(t, installed, stock)
 			writeStagedFile(t, filepath.Join(wpRoot, "wp-includes", "version.php"), "<?php $wp_version = '7.1';")
+			identity.Verdict = wpcheck.VerdictVerified
+			fm.handleStagedPackageFile(header, identity, "")
 			fm.drainStagedPackages(time.Now())
 			got := drainFindings(ch)
 			if len(got) != 1 || got[0].FilePath != installed || !strings.Contains(got[0].Message, "does not match") {

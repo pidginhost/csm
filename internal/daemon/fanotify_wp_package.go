@@ -135,10 +135,9 @@ type stagedPackageKey struct {
 // installed is decided on the package's first file, while the old tree or its
 // rollback copy is still on disk.
 type stagedPackageInfo struct {
-	installed       bool
-	identity        wpcheck.Verification
-	lastSeen        time.Time
-	removedReported bool // reported once as removed without being installed
+	installed bool
+	identity  wpcheck.Verification
+	lastSeen  time.Time
 }
 
 type stagedPackageQueue struct {
@@ -263,21 +262,6 @@ func (q *stagedPackageQueue) discardPending(now time.Time) {
 		f.ticket.Reject(now)
 	}
 	q.files = nil
-}
-
-// claimRemovedReport reports whether this is the first file of a removed,
-// unidentified package, so the package is reported once rather than per file.
-func (q *stagedPackageQueue) claimRemovedReport(key stagedPackageKey) bool {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	info := q.packages[key]
-	if info.removedReported {
-		return false
-	}
-	info.removedReported = true
-	info.lastSeen = q.now()
-	q.packages[key] = info
-	return true
 }
 
 func (q *stagedPackageQueue) evictIdle(now time.Time) {
@@ -504,26 +488,24 @@ func (fm *FileMonitor) redescribeStaged(f stagedPackageFile) wpcheck.Verificatio
 		v.Digest = f.v.Digest
 		return v
 	}
-	// The drain tick can fall during unpacking. An installed header is
-	// still the old release until the staged tree has gone away.
-	if !os.IsNotExist(err) {
+	// Only a renamed plugin directory can link an installed header to this
+	// staging tree. Core and plugin copy installs lose that link: a recent
+	// ctime (including chmod or child creation) is not evidence of origin.
+	if !os.IsNotExist(err) || f.v.Kind != wpcheck.KindPlugin || f.v.RootInfo == nil {
 		return f.v
 	}
 	if installed := stagedFileInstalledPath(f.pkg, f.v); installed != "" {
-		// Extra root files and bundled plugins are still paths in the
-		// core manifest. Resolve its header without reclassifying them
-		// from their installed filenames.
-		if f.v.Kind == wpcheck.KindCore {
-			installed = f.pkg.wpRoot + "/wp-includes/version.php"
-		}
-		// The installed tree names this release only if the update wrote
-		// it after the file was staged. A refused or failed update deletes
-		// the staged tree and leaves the old release in place, whose
-		// manifest would call every new file modified.
-		if !changedSince(stagedInstallMarker(f.pkg, f.v, installed), f.queuedAt) {
-			return f.v // keep waiting: a late event may still identify the tree
+		root := f.pkg.wpRoot + "/wp-content/plugins/" + f.v.Slug
+		before, statErr := os.Lstat(root)
+		if statErr != nil || !before.IsDir() || !os.SameFile(f.v.RootInfo, before) {
+			return f.v
 		}
 		if iv := fm.wpCache.Describe(installed); !unresolved(iv) {
+			after, statErr := os.Lstat(root)
+			if statErr != nil || !after.IsDir() || !os.SameFile(before, after) ||
+				iv.Root != root || iv.Kind != wpcheck.KindPlugin || iv.Slug != f.v.Slug {
+				return f.v // the installed tree changed during header detection
+			}
 			v = iv
 			v.Rel = f.v.Rel
 		}
@@ -534,30 +516,6 @@ func (fm *FileMonitor) redescribeStaged(f stagedPackageFile) wpcheck.Verificatio
 	v.Digest, v.Staged = f.v.Digest, true
 	return v
 }
-
-// stagedInstallMarker is the installed path an update rewrites when it puts
-// the staged package in place: version.php for core (header is already that
-// path), the plugin directory WordPress renames into place for a plugin.
-func stagedInstallMarker(pkg wpStagedPackage, v wpcheck.Verification, header string) string {
-	if v.Kind == wpcheck.KindPlugin && v.Slug != "" {
-		return pkg.wpRoot + "/wp-content/plugins/" + v.Slug
-	}
-	return header
-}
-
-// changedSince reports whether path's inode changed at or after t. The
-// change time, unlike the modification time, cannot be set back by a user.
-// The kernel stamps it from a coarse clock that can trail time.Now by a tick,
-// hence the tolerance; a failed update leaves a header hours or days old.
-func changedSince(path string, t time.Time) bool {
-	var st unix.Stat_t
-	if err := unix.Lstat(path, &st); err != nil {
-		return false
-	}
-	return !time.Unix(st.Ctim.Unix()).Before(t.Add(-changeTimeTolerance))
-}
-
-const changeTimeTolerance = time.Second
 
 // drainStagedPackages resolves every queued file whose checksums have
 // arrived and reports packages that ran out of time.
@@ -586,13 +544,11 @@ func (fm *FileMonitor) drainStagedPackages(now time.Time) {
 			fm.alertStagedFileMismatch(f.path, f.pkg, v, f.procInfo)
 		case wpcheck.VerdictPending, wpcheck.VerdictNoVersion, wpcheck.VerdictReady:
 			if now.Sub(f.queuedAt) > stagedPackageTimeout {
-				if v.Version == "" && !pathPresent(f.pkg.dir) {
-					// A refused or failed update: the tree is gone and was never
-					// installed. One warning for the package, not one per file.
-					if q.claimRemovedReport(f.key) {
-						fm.alertStagedPackage(f.pkg, q.info(f.key),
-							"removed before its release could be identified, and it was not installed", f.procInfo)
-					}
+				if _, err := os.Lstat(f.key.root); v.Version == "" && os.IsNotExist(err) {
+					// Use the normal alert cooldown, not a permanent claim on a
+					// path that a later unidentified upload may reuse.
+					fm.alertStagedPackage(f.pkg, q.info(f.key),
+						"staged tree removed before its release could be identified; installation could not be confirmed", f.procInfo)
 					continue
 				}
 				fm.alertStagedPackage(f.pkg, q.info(f.key),
