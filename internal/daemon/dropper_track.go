@@ -827,8 +827,8 @@ type dropperGone struct {
 	ticket  queuehealth.Ticket
 }
 
-// dropperFinding is one flush decision: either a single vanished file or a
-// per-docroot aggregate of a create/delete burst.
+// dropperFinding is one flush decision: a single vanished file, a removed
+// directory group, or a per-docroot aggregate of a create/delete burst.
 type dropperFinding struct {
 	Aggregate bool
 	Docroot   string
@@ -897,33 +897,34 @@ func (t *dropperTracker) FlushDue(now time.Time) []dropperFinding {
 
 	var out []dropperFinding
 	for key, items := range groups {
-		if len(items) >= dropperBurstThreshold {
-			out = append(out, dropperFinding{
-				Aggregate: true,
-				Docroot:   key.docroot,
-				Items:     items,
-			})
+		out = append(out, groupDropperFindings(key.docroot, items)...)
+	}
+	return out
+}
+
+// groupDropperFindings also runs after ignore-path filtering: a burst can
+// shrink into removed-directory groups, and a directory group into one file.
+// Callers keep docroots and demoted/unclassified batches separate.
+func groupDropperFindings(docroot string, items []dropperGone) []dropperFinding {
+	if len(items) >= dropperBurstThreshold {
+		return []dropperFinding{{Aggregate: true, Docroot: docroot, Items: items}}
+	}
+	var out []dropperFinding
+	byDir := make(map[string][]dropperGone)
+	for _, item := range items {
+		if item.Verdict == dropperDemotedDirRemoved {
+			dir := filepath.Dir(item.Cand.Path)
+			byDir[dir] = append(byDir[dir], item)
 			continue
 		}
-		byDir := make(map[string][]dropperGone)
-		for _, item := range items {
-			if item.Verdict == dropperDemotedDirRemoved {
-				dir := filepath.Dir(item.Cand.Path)
-				byDir[dir] = append(byDir[dir], item)
-				continue
-			}
-			out = append(out, dropperFinding{
-				Docroot: key.docroot,
-				Items:   []dropperGone{item},
-			})
+		out = append(out, dropperFinding{Docroot: docroot, Items: []dropperGone{item}})
+	}
+	for dir, members := range byDir {
+		f := dropperFinding{Docroot: docroot, Items: members}
+		if len(members) > 1 {
+			f.RemovedDir = dir
 		}
-		for dir, members := range byDir {
-			if len(members) > 1 {
-				out = append(out, dropperFinding{Docroot: key.docroot, Items: members, RemovedDir: dir})
-				continue
-			}
-			out = append(out, dropperFinding{Docroot: key.docroot, Items: members})
-		}
+		out = append(out, f)
 	}
 	return out
 }

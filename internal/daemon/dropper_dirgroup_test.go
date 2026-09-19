@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -8,6 +9,82 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 )
+
+func TestEngineRegroupsRemovedDirectoriesAfterBurstFiltering(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	root := "/home/alice/public_html"
+	paths := []string{"pack/a.php", "pack/b.php", "pack/c.php", "pack/d.php", "other/e.php", "other/f.php", "lone/g.php", "pack/temp.php"}
+	for _, tc := range []struct {
+		name string
+		keep []int
+		want map[string]int // Finding path -> number of files (zero for a singleton).
+	}{
+		{"burst takes precedence", []int{0, 1, 2, 3, 4, 5, 6, 7}, map[string]int{".": 8}},
+		{"below burst threshold", []int{0, 1, 2, 3, 4, 5, 6}, map[string]int{"pack": 4, "other": 2, "lone/g.php": 0}},
+		{"other demotion stays separate", []int{0, 1, 4, 5, 6, 7}, map[string]int{"pack": 2, "other": 2, "lone/g.php": 0, "pack/temp.php": 0}},
+		{"singleton fallback", []int{0}, map[string]int{"pack/a.php": 0}},
+		{"all demoted files ignored", nil, map[string]int{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, got := newTestEngine(time.Minute)
+			for i, path := range paths {
+				c := freshDropperCandidate(now)
+				c.Path, c.Docroot, c.Inode = filepath.Join(root, path), root, uint64(i+1)
+				verdict := dropperDemotedDirRemoved
+				if i == len(paths)-1 {
+					verdict = dropperDemotedAtomicWrite
+				}
+				e.tr.HoldGone(c, verdict, now)
+			}
+			suspect := freshDropperCandidate(now)
+			suspect.Path, suspect.Docroot = filepath.Join(root, "pack/shell.php"), root
+			e.tr.HoldGone(suspect, dropperSuspect, now)
+			findings := e.tr.FlushDue(now.Add(dropperGraceWindow))
+			if len(findings) != 2 {
+				t.Fatalf("got %d findings before filtering, want a burst and a suspect", len(findings))
+			}
+			keep := map[string]bool{suspect.Path: true}
+			for _, i := range tc.keep {
+				keep[filepath.Join(root, paths[i])] = true
+			}
+			// Model a suppression reload while the findings were held.
+			e.ignorePath = func(path string) bool { return !keep[path] }
+			for _, f := range findings {
+				e.flushFinding(f)
+			}
+			if len(*got) != len(tc.want)+1 {
+				t.Fatalf("alerts = %+v, want %d demoted findings and one suspect", *got, len(tc.want))
+			}
+			seen := make(map[string]bool)
+			for _, a := range *got {
+				if seen[a.path] {
+					t.Fatalf("duplicate finding for %s", a.path)
+				}
+				seen[a.path] = true
+				if a.path == suspect.Path {
+					if a.sev != alert.Critical {
+						t.Errorf("suspect severity = %v, want Critical", a.sev)
+					}
+					continue
+				}
+				rel, err := filepath.Rel(root, a.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				count, ok := tc.want[rel]
+				if !ok || a.sev != alert.Warning || (count > 0 && !strings.HasPrefix(a.msg, fmt.Sprintf("%d ", count))) {
+					t.Errorf("unexpected finding: %+v", a)
+				}
+				for _, path := range paths {
+					full := filepath.Join(root, path)
+					if !keep[full] && strings.Contains(a.details, full) {
+						t.Errorf("ignored file %s leaked into details: %s", full, a.details)
+					}
+				}
+			}
+		})
+	}
+}
 
 // WordPress unpacks a language pack flat into its own working directory and
 // removes the whole directory when it is done with it. Each file was already
