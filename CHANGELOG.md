@@ -9,10 +9,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ## [Unreleased]
 
-### Fixed
-
-- PHP source explanations no longer change reported flows or finding identities when confidence is unchanged. Ambiguous worker replies are rejected instead of accepting incomplete evidence.
-
 ### Changed
 
 - PHP remote-code findings now say how the fetched source was identified, so an unresolved source is distinguishable from a proven remote one.
