@@ -179,7 +179,8 @@ func TestAnalyzeResultCarriesReportVerbatim(t *testing.T) {
 		TotalResults:      1,
 		EvidenceTruncated: true,
 		Results: []phptaint.Result{
-			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain, Identifiers: []string{"$p"}},
+			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain, Identifiers: []string{"$p"},
+				Basis: phptaint.BasisLiteral, ResolutionOffset: -1},
 		},
 	}
 	frame, err := EncodePayload("", AnalyzeResult{Report: want})
@@ -194,6 +195,7 @@ func TestAnalyzeResultCarriesReportVerbatim(t *testing.T) {
 		got.Report.Reason != "" || !got.Report.EvidenceTruncated ||
 		len(got.Report.Results) != 1 || got.Report.Results[0].Sink != "eval" ||
 		got.Report.Results[0].Confidence != phptaint.ConfidenceCertain ||
+		got.Report.Results[0].Basis != phptaint.BasisLiteral ||
 		len(got.Report.PrecisionLoss) != 1 {
 		t.Fatalf("report round trip lost data: %+v", got.Report)
 	}
@@ -270,6 +272,9 @@ func TestAnalyzeResultRejectsMissingEvidence(t *testing.T) {
 
 func TestAnalyzeResultCarriesBoundedEvidence(t *testing.T) {
 	results := make([]phptaint.Result, phptaint.MaxEvidenceResults)
+	for i := range results {
+		results[i] = phptaint.Result{Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1}
+	}
 	frame, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
 		Status:            phptaint.StatusAnalyzed,
 		Results:           results,
@@ -287,6 +292,9 @@ func TestAnalyzeResultCarriesBoundedEvidence(t *testing.T) {
 
 func TestAnalyzeResultRejectsUnmarkedEvidenceTruncation(t *testing.T) {
 	results := make([]phptaint.Result, phptaint.MaxEvidenceResults)
+	for i := range results {
+		results[i] = phptaint.Result{Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1}
+	}
 	_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
 		Status:       phptaint.StatusAnalyzed,
 		Results:      results,
@@ -301,9 +309,11 @@ func TestAnalyzeResultRejectsUnknownConfidence(t *testing.T) {
 	_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
 		Status: phptaint.StatusAnalyzed,
 		Results: []phptaint.Result{{
-			Source:     "curl_exec",
-			Sink:       "eval",
-			Confidence: phptaint.Confidence(255),
+			Source:           "curl_exec",
+			Sink:             "eval",
+			Confidence:       phptaint.Confidence(255),
+			Basis:            phptaint.BasisAlwaysRemote,
+			ResolutionOffset: -1,
 		}},
 		TotalResults: 1,
 	}})
@@ -320,6 +330,68 @@ func TestAnalyzeResultRejectsSupervisorOnlyStatuses(t *testing.T) {
 		}})
 		if err == nil {
 			t.Errorf("worker reply with status %v was accepted", status)
+		}
+	}
+}
+
+func validResult() phptaint.Result {
+	return phptaint.Result{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceHigh,
+		Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1}
+}
+
+func analyzedWith(r phptaint.Result) phptaint.Report {
+	return phptaint.Report{Status: phptaint.StatusAnalyzed, TotalResults: 1, Results: []phptaint.Result{r}}
+}
+
+func TestAnalyzeResultRejectsMissingOrUnknownBasis(t *testing.T) {
+	for _, basis := range []phptaint.Basis{"", "remote"} {
+		r := validResult()
+		r.Basis = basis
+		if _, err := EncodePayload("", AnalyzeResult{Report: analyzedWith(r)}); err == nil {
+			t.Errorf("basis %q accepted", basis)
+		}
+	}
+}
+
+// A reply from a worker built before Basis existed has no basis field. It
+// must fail as a worker error, never decode into an empty-basis success.
+func TestDecodeRejectsPreBasisReply(t *testing.T) {
+	// The real encoding of a valid one-result report with only the Basis and
+	// ResolutionOffset keys removed. The control below restores them and must
+	// decode, so the missing basis is the literal's only defect.
+	const preBasis = `{"report":{"Status":1,"Results":[{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1}],"TotalResults":1,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`
+	const restored = `{"report":{"Status":1,"Results":[{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1,"Basis":"always-remote","ResolutionOffset":-1}],"TotalResults":1,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`
+	var control AnalyzeResult
+	if err := DecodePayload(Frame{Payload: []byte(restored)}, &control); err != nil {
+		t.Fatalf("control with basis restored rejected: %v", err)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: []byte(preBasis)}, &got); err == nil {
+		t.Fatalf("pre-basis reply decoded: %+v", got.Report)
+	}
+}
+
+func TestAnalyzeResultRejectsOffsetBelowMinusOne(t *testing.T) {
+	r := validResult()
+	r.ResolutionOffset = -2
+	if _, err := EncodePayload("", AnalyzeResult{Report: analyzedWith(r)}); err == nil {
+		t.Fatal("offset -2 accepted")
+	}
+}
+
+func TestValidateReportForSourceBoundsOffset(t *testing.T) {
+	r := validResult()
+	r.Basis = phptaint.BasisCallArgument
+	for _, tc := range []struct {
+		offset, n int
+		ok        bool
+	}{
+		{-1, 10, true}, {0, 10, true}, {9, 10, true}, {10, 10, false}, {0, 0, false},
+	} {
+		r.ResolutionOffset = tc.offset
+		err := ValidateReportForSource(analyzedWith(r), tc.n)
+		if (err == nil) != tc.ok {
+			t.Errorf("offset %d in %d bytes: err = %v, want ok=%v", tc.offset, tc.n, err, tc.ok)
 		}
 	}
 }

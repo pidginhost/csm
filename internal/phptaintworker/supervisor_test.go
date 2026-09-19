@@ -60,8 +60,47 @@ func TestHelperWorkerProcess(t *testing.T) {
 		if err := phptaintipc.WriteFrame(os.Stdout, resp); err != nil {
 			t.Fatalf("write helper response: %v", err)
 		}
+	case "reply-offset-at-len", "reply-offset-direct":
+		req, err := phptaintipc.ReadFrame(os.Stdin)
+		if err != nil {
+			t.Fatalf("read helper request: %v", err)
+		}
+		var args phptaintipc.AnalyzeArgs
+		if decodeErr := phptaintipc.DecodePayload(req, &args); decodeErr != nil {
+			t.Fatalf("decode helper request: %v", decodeErr)
+		}
+		offset := -1
+		if mode == "reply-offset-at-len" {
+			// One past the last byte: the smallest offset outside the source.
+			offset = len(args.Source)
+		}
+		resp, err := phptaintipc.EncodePayload("", phptaintipc.AnalyzeResult{
+			Report: helperOffsetReport(offset),
+		})
+		if err != nil {
+			t.Fatalf("encode helper response: %v", err)
+		}
+		if err := phptaintipc.WriteFrame(os.Stdout, resp); err != nil {
+			t.Fatalf("write helper response: %v", err)
+		}
 	default:
 		_ = Serve(context.Background(), os.Stdin, os.Stdout)
+	}
+}
+
+// helperOffsetReport is a report the source-independent checks accept, so the
+// only thing that can reject it is the offset's bound against the source.
+func helperOffsetReport(offset int) phptaint.Report {
+	return phptaint.Report{
+		Status:       phptaint.StatusAnalyzed,
+		TotalResults: 1,
+		Results: []phptaint.Result{{
+			Source:           "curl_exec",
+			Sink:             "eval",
+			Confidence:       phptaint.ConfidenceHigh,
+			Basis:            phptaint.BasisCallArgument,
+			ResolutionOffset: offset,
+		}},
 	}
 }
 
@@ -318,6 +357,41 @@ func TestSupervisorRejectsResponseWithAnOp(t *testing.T) {
 	}
 	if !strings.Contains(rep.Reason, "response carries op") {
 		t.Fatalf("reason = %q, want response-op protocol error", rep.Reason)
+	}
+}
+
+// A worker that points a resolution offset past the end of the submitted
+// source is not trusted: the reply is a worker failure, never evidence.
+func TestSupervisorRejectsOffsetOutsideSource(t *testing.T) {
+	s, err := NewSupervisor(helperChild(t, "reply-offset-at-len"))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+
+	rep := s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));"))
+	if rep.Status != phptaint.StatusWorkerFailure {
+		t.Fatalf("status = %v (%s), want StatusWorkerFailure", rep.Status, rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "resolution offset") {
+		t.Fatalf("reason = %q, want resolution-offset protocol error", rep.Reason)
+	}
+}
+
+func TestSupervisorPassesDirectResultUnchanged(t *testing.T) {
+	s, err := NewSupervisor(helperChild(t, "reply-offset-direct"))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+
+	rep := s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));"))
+	want := helperOffsetReport(-1)
+	if rep.Status != want.Status || rep.TotalResults != want.TotalResults || rep.Reason != "" ||
+		len(rep.Results) != 1 || rep.Results[0].Basis != want.Results[0].Basis ||
+		rep.Results[0].ResolutionOffset != -1 || rep.Results[0].Confidence != want.Results[0].Confidence ||
+		rep.Results[0].Source != want.Results[0].Source || rep.Results[0].Sink != want.Results[0].Sink {
+		t.Fatalf("report = %+v, want %+v", rep, want)
 	}
 }
 

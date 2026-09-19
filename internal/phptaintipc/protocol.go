@@ -224,6 +224,12 @@ func validateReport(report phptaint.Report) error {
 			if result.Confidence.String() == "unknown" {
 				return errors.New("phptaintipc: analyzed report has unknown confidence")
 			}
+			if !result.Basis.Valid() {
+				return errors.New("phptaintipc: analyzed report has missing or unknown basis")
+			}
+			if result.ResolutionOffset < -1 {
+				return errors.New("phptaintipc: analyzed report has an invalid resolution offset")
+			}
 		}
 	default:
 		if hasEvidence {
@@ -235,6 +241,21 @@ func validateReport(report phptaint.Report) error {
 	}
 	if len(report.Reason) > phptaint.MaxReasonBytes {
 		return fmt.Errorf("phptaintipc: report reason is %d bytes, exceeds cap %d", len(report.Reason), phptaint.MaxReasonBytes)
+	}
+	return nil
+}
+
+// ValidateReportForSource applies the checks that need the submitted source:
+// a resolution offset must point inside it. The parent calls it after
+// DecodePayload, which has already applied every source-independent check.
+func ValidateReportForSource(report phptaint.Report, sourceLen int) error {
+	if err := validateReport(report); err != nil {
+		return err
+	}
+	for _, result := range report.Results {
+		if result.ResolutionOffset >= sourceLen {
+			return fmt.Errorf("phptaintipc: resolution offset %d outside %d-byte source", result.ResolutionOffset, sourceLen)
+		}
 	}
 	return nil
 }
