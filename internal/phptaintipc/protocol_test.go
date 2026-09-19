@@ -395,3 +395,77 @@ func TestValidateReportForSourceBoundsOffset(t *testing.T) {
 		}
 	}
 }
+
+// resultReply is the real encoding of a valid one-result report (see
+// TestDecodeRejectsPreBasisReply) with the result's Basis and ResolutionOffset
+// keys replaced by keys. TestDecodeResultReplyControl proves the complete form
+// decodes, so each rejection turns on the keys alone.
+func resultReply(keys string) []byte {
+	return []byte(`{"report":{"Status":1,"Results":[{"Source":"curl_exec","Identifiers":null,"Sink":"eval","Confidence":1` +
+		keys + `}],"TotalResults":1,"Reason":"","PrecisionLoss":null,"EvidenceTruncated":false}}`)
+}
+
+func TestDecodeResultReplyControl(t *testing.T) {
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":5`)}, &got); err != nil {
+		t.Fatalf("complete reply rejected: %v", err)
+	}
+	if got.Report.Results[0].ResolutionOffset != 5 || got.Report.Results[0].Basis != phptaint.BasisCallArgument {
+		t.Fatalf("complete reply decoded as %+v", got.Report.Results[0])
+	}
+}
+
+// A missing offset decodes to 0, a real position. It must be a worker error,
+// never evidence resolved at the first byte.
+func TestDecodeRejectsResultWithoutOffset(t *testing.T) {
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument"`)}, &got); err == nil {
+		t.Fatalf("reply without offset decoded: %+v", got.Report)
+	}
+}
+
+func TestDecodeRejectsResultWithNullOffset(t *testing.T) {
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: resultReply(`,"Basis":"call-argument","ResolutionOffset":null`)}, &got); err == nil {
+		t.Fatalf("reply with null offset decoded: %+v", got.Report)
+	}
+}
+
+func TestDecodeRejectsResultWithoutBasis(t *testing.T) {
+	var got AnalyzeResult
+	if err := DecodePayload(Frame{Payload: resultReply(`,"ResolutionOffset":-1`)}, &got); err == nil {
+		t.Fatalf("reply without basis decoded: %+v", got.Report)
+	}
+}
+
+// Go's decoder matches keys case-insensitively and keeps the last one, so two
+// spellings of one key would let a reply say two things at once.
+func TestDecodeRejectsAmbiguousResultKeys(t *testing.T) {
+	for _, keys := range []string{
+		`,"Basis":"always-remote","ResolutionOffset":-1,"basis":"call-argument"`,
+		`,"Basis":"call-argument","ResolutionOffset":-1,"resolutionoffset":5`,
+	} {
+		var got AnalyzeResult
+		if err := DecodePayload(Frame{Payload: resultReply(keys)}, &got); err == nil {
+			t.Errorf("ambiguous reply %s decoded: %+v", keys, got.Report)
+		}
+	}
+}
+
+func TestAnalyzeResultCarriesResolutionOffset(t *testing.T) {
+	r := validResult()
+	r.Basis = phptaint.BasisCallArgument
+	r.ResolutionOffset = 5
+	frame, err := EncodePayload("", AnalyzeResult{Report: analyzedWith(r)})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(frame, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Report.Results) != 1 || got.Report.Results[0].ResolutionOffset != 5 ||
+		got.Report.Results[0].Basis != phptaint.BasisCallArgument {
+		t.Fatalf("round trip lost the resolution: %+v", got.Report)
+	}
+}

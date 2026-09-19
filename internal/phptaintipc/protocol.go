@@ -140,6 +140,9 @@ func DecodePayload(f Frame, v any) error {
 		if status == nil {
 			return errors.New("phptaintipc: report status is null")
 		}
+		if err := requireResultEvidenceKeys(reportJSON); err != nil {
+			return err
+		}
 		var decoded AnalyzeResult
 		if err := json.Unmarshal(f.Payload, &decoded); err != nil {
 			return fmt.Errorf("phptaintipc: unmarshal payload: %w", err)
@@ -260,25 +263,72 @@ func ValidateReportForSource(report phptaint.Report, sourceLen int) error {
 	return nil
 }
 
+// requireResultEvidenceKeys checks every result for its basis and resolution
+// offset keys. A missing offset would decode to 0, a real position, so a reply
+// from a worker that predates either field must fail rather than pose as
+// evidence resolved at the first byte.
+func requireResultEvidenceKeys(reportJSON json.RawMessage) error {
+	resultsJSON, ok, err := lookupJSONField(reportJSON, "results")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	var results []json.RawMessage
+	if err := json.Unmarshal(resultsJSON, &results); err != nil {
+		return fmt.Errorf("phptaintipc: unmarshal report results: %w", err)
+	}
+	for _, result := range results {
+		if _, err := requiredJSONField(result, "basis"); err != nil {
+			return err
+		}
+		offsetJSON, err := requiredJSONField(result, "resolutionoffset")
+		if err != nil {
+			return err
+		}
+		var offset *int
+		if err := json.Unmarshal(offsetJSON, &offset); err != nil {
+			return fmt.Errorf("phptaintipc: unmarshal resolution offset: %w", err)
+		}
+		if offset == nil {
+			return errors.New("phptaintipc: result resolution offset is null")
+		}
+	}
+	return nil
+}
+
 func requiredJSONField(raw []byte, name string) (json.RawMessage, error) {
+	found, ok, err := lookupJSONField(raw, name)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("phptaintipc: payload has no %s field", name)
+	}
+	return found, nil
+}
+
+// lookupJSONField finds name in a JSON object the way encoding/json matches
+// struct fields, case-insensitively, and rejects more than one spelling so a
+// reply cannot carry two values for one field.
+func lookupJSONField(raw []byte, name string) (json.RawMessage, bool, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, fmt.Errorf("phptaintipc: inspect %s field: %w", name, err)
+		return nil, false, fmt.Errorf("phptaintipc: inspect %s field: %w", name, err)
 	}
 	var found json.RawMessage
+	ok := false
 	for field, value := range fields {
 		if !strings.EqualFold(field, name) {
 			continue
 		}
-		if found != nil {
-			return nil, fmt.Errorf("phptaintipc: payload has ambiguous %s fields", name)
+		if ok {
+			return nil, false, fmt.Errorf("phptaintipc: payload has ambiguous %s fields", name)
 		}
-		found = value
+		found, ok = value, true
 	}
-	if found == nil {
-		return nil, fmt.Errorf("phptaintipc: payload has no %s field", name)
-	}
-	return found, nil
+	return found, ok, nil
 }
 
 // WriteFrame writes one length-prefixed frame.
