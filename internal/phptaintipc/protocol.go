@@ -25,6 +25,7 @@
 package phptaintipc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -313,14 +314,28 @@ func requiredJSONField(raw []byte, name string) (json.RawMessage, error) {
 // struct fields, case-insensitively, and rejects more than one spelling so a
 // reply cannot carry two values for one field.
 func lookupJSONField(raw []byte, name string) (json.RawMessage, bool, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, false, fmt.Errorf("phptaintipc: inspect %s field: %w", name, err)
+	// A map discards repeated keys, but struct decoding can merge their
+	// values. Inspect every occurrence so validation sees what decoding sees.
+	if !json.Valid(raw) {
+		return nil, false, fmt.Errorf("phptaintipc: invalid JSON inspecting %s field", name)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return nil, false, fmt.Errorf("phptaintipc: expected object inspecting %s field", name)
 	}
 	var found json.RawMessage
 	ok := false
-	for field, value := range fields {
-		if !strings.EqualFold(field, name) {
+	for decoder.More() {
+		field, err := decoder.Token()
+		if err != nil {
+			return nil, false, fmt.Errorf("phptaintipc: inspect %s field: %w", name, err)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, false, fmt.Errorf("phptaintipc: inspect %s value: %w", name, err)
+		}
+		if !strings.EqualFold(field.(string), name) {
 			continue
 		}
 		if ok {

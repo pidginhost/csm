@@ -494,3 +494,22 @@ func TestAnalyzeResultCarriesResolutionOffset(t *testing.T) {
 		t.Fatalf("round trip lost the resolution: %+v", got.Report)
 	}
 }
+
+func TestDecodeRejectsDuplicateEvidenceFields(t *testing.T) {
+	for name, payload := range map[string][]byte{
+		"basis":  resultReply(`,"Basis":"always-remote","Basis":null,"ResolutionOffset":-1`),
+		"offset": resultReply(`,"Basis":"always-remote","ResolutionOffset":-1,"ResolutionOffset":5`),
+		// Unmarshal merges repeated report objects, whereas a map keeps only
+		// the last object. Inspecting just that object misses the result whose
+		// absent offset will become a plausible zero-byte resolution point.
+		"merged report": []byte(`{"report":{"Results":[{"Source":"curl_exec","Sink":"eval","Confidence":1,"Basis":"always-remote"}],"TotalResults":1},"report":{"Status":1}}`),
+		"results":       []byte(`{"report":{"Status":1,"TotalResults":1,"Results":[{"Basis":"literal","ResolutionOffset":-1}],"Results":[{"Basis":"always-remote","ResolutionOffset":5}]}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got AnalyzeResult
+			if err := DecodePayload(Frame{Payload: payload}, &got); err == nil {
+				t.Fatalf("duplicate fields accepted: %+v", got.Report)
+			}
+		})
+	}
+}

@@ -355,8 +355,8 @@ func phpTaintDeepFinding(path, contentSHA256 string, report phptaint.Report) ale
 // evidence wording, basis and context, which change between releases; if
 // they fed the key, each such change would re-key every stored finding, drop
 // its dismissal and alert again. The content hash is left out too: a library
-// file still flagged after an update is the same finding. A new flow, a new
-// file or an escalation still makes a new one.
+// file still flagged after an update is the same finding. Any change to the
+// reported flows, file or severity still makes a new one.
 func phpTaintDedupKey(path string, severity alert.Severity, results []phptaint.Result) string {
 	type endpoint struct{ source, sink string }
 	seen := make(map[endpoint]bool, len(results))

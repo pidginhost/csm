@@ -1275,7 +1275,9 @@ func retainStrongestEvidence(flows []flowResult) []flowResult {
 	}
 	strongest := 0
 	for i := 1; i < len(flows); i++ {
-		if directGradeOf(flows[i].Result).stronger(directGradeOf(flows[strongest].Result)) {
+		// Basis only explains a flow; it must not change the retained
+		// endpoints (and therefore the finding's identity) on a confidence tie.
+		if flows[i].Confidence > flows[strongest].Confidence {
 			strongest = i
 		}
 	}
@@ -1377,8 +1379,17 @@ func taintedWritePaths(
 			continue
 		}
 		c := set.strongest()
-		if prev, ok := out[key]; ok && !c.stronger(prev.value) {
-			continue
+		if prev, ok := out[key]; ok {
+			if !c.stronger(prev.value) {
+				continue
+			}
+			if c.conf == prev.value.conf {
+				// Keep the first strongest-confidence endpoint as before;
+				// only its explanation changes when another basis wins.
+				prev.value = c
+				out[key] = prev
+				continue
+			}
 		}
 		source, truncated := sourceLabel(sub, st, summaries)
 		out[key] = writtenEvidence{source: source, value: c, truncated: truncated}
