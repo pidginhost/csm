@@ -191,9 +191,9 @@ func TestSolverDecodeKeepsSourceBasis(t *testing.T) {
 	}
 }
 
-// The join is pointwise per basis: each basis keeps its own best proof, and
-// add reports growth only when some entry actually improved, which is what
-// lets every fixpoint over gradeSet stop.
+// The join is pointwise per (basis, confidence) key, keeping the lowest
+// offset. add reports growth only when a key appears or its offset drops,
+// which is what lets every fixpoint over gradeSet stop.
 func TestGradeSetJoin(t *testing.T) {
 	var s gradeSet
 	if !s.add(setOf(grade{ConfidenceHigh, BasisCallArgument, 9})) {
@@ -202,26 +202,96 @@ func TestGradeSetJoin(t *testing.T) {
 	if s.add(setOf(grade{ConfidenceHigh, BasisCallArgument, 9})) {
 		t.Error("equal proof: want no growth")
 	}
-	if s.add(setOf(grade{ConfidenceLow, BasisCallArgument, 1})) {
-		t.Error("lower confidence on the same basis: want no growth")
-	}
 	if !s.add(setOf(grade{ConfidenceHigh, BasisCallArgument, 3})) {
-		t.Error("lower offset on the same basis and confidence: want growth")
+		t.Error("lower offset on the same key: want growth")
+	}
+	if s.add(setOf(grade{ConfidenceHigh, BasisCallArgument, 5})) {
+		t.Error("higher offset on the same key: want no growth")
+	}
+	if !s.add(setOf(grade{ConfidenceLow, BasisCallArgument, 1})) {
+		t.Error("lower confidence on the same basis: want growth, it is a new key")
 	}
 	if !s.add(setOf(grade{ConfidenceLow, BasisUnresolved, -1})) {
-		t.Error("weaker proof on a new basis: want growth, bases join pointwise")
+		t.Error("new basis: want growth")
 	}
 	if got := s.strongest(); got != (grade{ConfidenceHigh, BasisCallArgument, 3}) {
 		t.Errorf("strongest = %+v, want High call-argument offset 3", got)
 	}
-	d := s.decoded()
-	if got := d.strongest(); got != (grade{ConfidenceCertain, BasisCallArgument, 3}) {
-		t.Errorf("decoded strongest = %+v, want Certain call-argument offset 3", got)
-	}
-	if e := d.entries[basisRank(BasisUnresolved)]; !e.present || e.conf != ConfidenceCertain {
-		t.Errorf("decoded unresolved entry = %+v, want Certain: the upgrade applies to every proof", e)
+	// The upgrade moves every proof to Certain and joins each basis there,
+	// so the Low call-argument proof's offset 1 now wins.
+	var want gradeSet
+	want.add(setOf(grade{ConfidenceCertain, BasisCallArgument, 1}))
+	want.add(setOf(grade{ConfidenceCertain, BasisUnresolved, -1}))
+	if got := s.decoded(); got != want {
+		t.Errorf("decoded = %+v, want %+v", got, want)
 	}
 	if !(gradeSet{}).isEmpty() || s.isEmpty() {
 		t.Error("isEmpty disagrees with contents")
+	}
+}
+
+// The upgrade must distribute over the join: decoding a value before or
+// after it meets another must give the same set. Offsets are -1 in analyzer
+// output today, so this is pinned on gradeSet directly.
+func TestGradeSetUpgradeCommutesWithJoin(t *testing.T) {
+	high := setOf(grade{ConfidenceHigh, BasisLiteral, 3})
+	certain := setOf(grade{ConfidenceCertain, BasisLiteral, 9})
+
+	joinedFirst := high
+	joinedFirst.add(certain)
+	joinedFirst = joinedFirst.decoded()
+
+	decodedFirst := high.decoded()
+	decodedFirst.add(certain)
+
+	want := grade{ConfidenceCertain, BasisLiteral, 3}
+	if got := joinedFirst.strongest(); got != want {
+		t.Errorf("join then upgrade: strongest = %+v, want %+v", got, want)
+	}
+	if got := decodedFirst.strongest(); got != want {
+		t.Errorf("upgrade then join: strongest = %+v, want %+v", got, want)
+	}
+	if joinedFirst != decodedFirst {
+		t.Errorf("sets differ:\n join then upgrade: %+v\n upgrade then join: %+v", joinedFirst, decodedFirst)
+	}
+}
+
+// Property form of the same rule: for every insertion order and every point
+// at which the upgrade is applied (to what has been joined so far, with each
+// later value upgraded on its own), the result equals upgrading the whole
+// join. This is the shape a worklist produces when a decoded value is seen
+// before or after its inputs settle.
+func TestGradeSetUpgradeIndependentOfOrder(t *testing.T) {
+	proofs := []grade{
+		{ConfidenceHigh, BasisLiteral, 3},
+		{ConfidenceCertain, BasisLiteral, 9},
+		{ConfidenceLow, BasisLiteral, 1},
+		{ConfidenceHigh, BasisAlwaysRemote, 5},
+		{ConfidenceLow, BasisUnresolved, -1},
+	}
+	var all gradeSet
+	for _, p := range proofs {
+		all.add(setOf(p))
+	}
+	want := all.decoded()
+
+	idx := make([]string, len(proofs))
+	for i := range proofs {
+		idx[i] = string(rune('0' + i))
+	}
+	for _, order := range permutations(idx) {
+		for split := 0; split <= len(order); split++ {
+			var got gradeSet
+			for _, k := range order[:split] {
+				got.add(setOf(proofs[k[0]-'0']))
+			}
+			got = got.decoded()
+			for _, k := range order[split:] {
+				got.add(setOf(proofs[k[0]-'0']).decoded())
+			}
+			if got != want {
+				t.Fatalf("order %v upgraded after %d: got %+v, want %+v", order, split, got, want)
+			}
+		}
 	}
 }

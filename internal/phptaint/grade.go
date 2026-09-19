@@ -53,78 +53,80 @@ func directGradeOf(r Result) grade {
 	return grade{conf: r.Confidence, basis: r.Basis, offset: r.ResolutionOffset}
 }
 
+// confidenceLevels is the number of Confidence values, the second index of
+// a gradeSet.
+const confidenceLevels = int(ConfidenceCertain) + 1
+
 // gradeSet is the value the fixpoints store for a variable, an assignment,
-// an origin and a summary: for each basis, the best confidence and offset
-// any proof on that basis reached. A single grade cannot be stored there,
-// because the decoder upgrade is not monotone under stronger: High
-// always-remote is weaker than Certain literal, yet after both are decoded
-// Certain always-remote wins. Kept as one maximum, the answer would depend on
-// which value the worklist saw first. Per basis the upgrade is monotone, the
-// join is pointwise, and at most len(rankedBases) entries exist, so every
-// fixpoint over gradeSet still terminates and has one answer. The single
-// strongest grade is chosen only when a Result is emitted.
+// an origin and a summary: for each (basis, confidence) pair, the lowest
+// resolution offset any proof with that key reached. A single grade cannot
+// be stored there, because the decoder upgrade is not monotone under
+// stronger: High always-remote is weaker than Certain literal, yet after
+// both are decoded Certain always-remote wins. Keying by basis alone is not
+// enough either: (High, 3) is weaker than (Certain, 9) on one basis, yet
+// after the upgrade offset 3 wins. With confidence in the key, the upgrade
+// just moves each entry to its basis's Certain key and joins it there, which
+// distributes over the join. The join keeps the lowest offset per key, there
+// are at most len(rankedBases) x confidenceLevels keys, so every fixpoint
+// over gradeSet still terminates and has one answer. The single strongest
+// grade is chosen only when a Result is emitted.
 type gradeSet struct {
-	entries [len(rankedBases)]gradeEntry
+	entries [len(rankedBases)][confidenceLevels]gradeEntry
 }
 
 type gradeEntry struct {
 	present bool
-	conf    Confidence
 	offset  int
 }
 
-// better orders two proofs on the same basis: higher confidence, then the
-// lower resolution offset.
-func (e gradeEntry) better(o gradeEntry) bool {
-	if e.present != o.present {
-		return e.present
+// joinEntry keeps the lower offset for one key and reports whether it grew.
+func joinEntry(cur *gradeEntry, e gradeEntry) bool {
+	if !e.present || (cur.present && cur.offset <= e.offset) {
+		return false
 	}
-	if e.conf != o.conf {
-		return e.conf > o.conf
-	}
-	return e.offset < o.offset
+	*cur = e
+	return true
 }
 
-// setOf is the set holding one proof. An undefined basis yields the empty
-// set; sourceGrade never produces one.
+// setOf is the set holding one proof. An undefined basis or confidence
+// yields the empty set; sourceGrade never produces one.
 func setOf(g grade) gradeSet {
 	var s gradeSet
-	if r := basisRank(g.basis); r >= 0 {
-		s.entries[r] = gradeEntry{present: true, conf: g.conf, offset: g.offset}
+	if r := basisRank(g.basis); r >= 0 && int(g.conf) < confidenceLevels {
+		s.entries[r][g.conf] = gradeEntry{present: true, offset: g.offset}
 	}
 	return s
 }
 
 func (s gradeSet) isEmpty() bool {
-	for _, e := range s.entries {
-		if e.present {
-			return false
-		}
-	}
-	return true
+	return s == gradeSet{}
 }
 
-// add joins o into s pointwise and reports whether s grew.
+// add joins o into s per key and reports whether s grew: a key appeared or
+// an existing key's offset dropped.
 func (s *gradeSet) add(o gradeSet) bool {
 	grew := false
-	for i, e := range o.entries {
-		if e.better(s.entries[i]) {
-			s.entries[i] = e
-			grew = true
+	for b := range o.entries {
+		for c := range o.entries[b] {
+			if joinEntry(&s.entries[b][c], o.entries[b][c]) {
+				grew = true
+			}
 		}
 	}
 	return grew
 }
 
-// decoded applies the decoder upgrade to every proof: confidence becomes
-// Certain and each basis still explains its own acquisition.
+// decoded applies the decoder upgrade to every proof: each entry moves to
+// its basis's Certain key, and each basis still explains its own
+// acquisition.
 func (s gradeSet) decoded() gradeSet {
-	for i := range s.entries {
-		if s.entries[i].present {
-			s.entries[i].conf = ConfidenceCertain
+	var out gradeSet
+	for b := range s.entries {
+		for c := range s.entries[b] {
+			joinEntry(&out.entries[b][ConfidenceCertain], s.entries[b][c])
 		}
 	}
-	return s
+	return out
 }
 
 // strongest selects the proof a Result reports, by the stronger order. The
@@ -132,15 +134,17 @@ func (s gradeSet) decoded() gradeSet {
 func (s gradeSet) strongest() grade {
 	var best grade
 	found := false
-	for i, e := range s.entries {
-		if !e.present {
-			continue
+	for b := range s.entries {
+		for c, e := range s.entries[b] {
+			if !e.present {
+				continue
+			}
+			g := grade{conf: Confidence(c), basis: rankedBases[b], offset: e.offset}
+			if !found || g.stronger(best) {
+				best = g
+			}
+			found = true
 		}
-		g := grade{conf: e.conf, basis: rankedBases[i], offset: e.offset}
-		if !found || g.stronger(best) {
-			best = g
-		}
-		found = true
 	}
 	return best
 }
