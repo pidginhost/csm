@@ -640,7 +640,9 @@ func looksLikeBackWPupJobState(path string, head []byte) bool {
 		folders := 0
 		for i, line := range lines {
 			last := i == len(lines)-1
-			if !last {
+			// A full retained head may stop between CR and LF. Removing
+			// only the terminal CR still rejects any bare CR before code.
+			if !last || len(head) == dropperTrackedHeadMax {
 				line = bytes.TrimSuffix(line, []byte("\r"))
 			}
 			if bytes.ContainsRune(line, '\r') || bytes.Contains(line, []byte("?>")) {

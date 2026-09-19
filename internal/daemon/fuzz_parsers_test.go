@@ -5,6 +5,33 @@ import (
 	"testing"
 )
 
+func FuzzBackWPupJobState(f *testing.F) {
+	for _, head := range []string{
+		"", backwpupWorking, backwpupFolderRaw,
+		"<?php\r\n///home/alice/\r\n//",
+		"<?php\n///home/alice/\recho 1;",
+		"<?php //{\"job\":\"?><?=1?>\"}",
+		"<?php\n///home/alice/\n#[Attr] function f() {}",
+	} {
+		f.Add([]byte(head))
+	}
+	f.Fuzz(func(t *testing.T, head []byte) {
+		// Leave room for the escape inside the retained window, so this
+		// checks visible code rather than the intentionally unknown tail.
+		if len(head) > dropperTrackedHeadMax-32 {
+			head = head[:dropperTrackedHeadMax-32]
+		}
+		for _, name := range []string{"backwpup-working.php", "backwpup-ced7cc-folder.php"} {
+			for _, escape := range []string{"\necho 1;", "\recho 1;", "?><?=1?>", "\n#[Attr] function f() {}"} {
+				body := append(append([]byte(nil), head...), escape...)
+				if looksLikeBackWPupJobState(name, body) {
+					t.Fatalf("visible code demoted as backup state: %q", body)
+				}
+			}
+		}
+	})
+}
+
 func FuzzModSecRuleFileConfidence(f *testing.F) {
 	f.Add(211999, "Unknown vendor rule", "", `[file "/rules/anomaly-content-type.conf"]`)
 	f.Add(942190, "", "", liteSpeedTriggerLineCRSSQLi)
