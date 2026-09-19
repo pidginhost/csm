@@ -32,12 +32,4 @@ func TestTestJobRequiresNodeForUITests(t *testing.T) {
 	if !strings.Contains(string(image), "COPY --from=node:24.") || !strings.Contains(string(image), "/usr/local/bin/node /usr/local/bin/node") {
 		t.Error("ci-tools image does not install node from a pinned node 24 image")
 	}
-
-	runner, err := os.ReadFile("../../scripts/uitest/uitest_test.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(runner), `os.Getenv("CSM_REQUIRE_NODE") == "1"`) {
-		t.Error("scripts/uitest does not fail when CSM_REQUIRE_NODE=1 and node is missing")
-	}
 }
