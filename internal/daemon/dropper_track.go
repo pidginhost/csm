@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -514,11 +515,12 @@ const (
 	dropperDemotedDocroot
 	dropperDemotedDirRemoved
 	dropperDemotedReplaced
+	dropperDemotedBackupState
 	dropperSuspect
 )
 
 func dropperVerdictDemoted(v dropperVerdict) bool {
-	return v >= dropperDemotedTemplate && v <= dropperDemotedReplaced
+	return v >= dropperDemotedTemplate && v <= dropperDemotedBackupState
 }
 
 func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
@@ -606,7 +608,58 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if looksLikeCompiledTemplate(c.Head) {
 		return dropperDemotedTemplate
 	}
+	if looksLikeBackWPupJobState(c.Path, c.Head) {
+		return dropperDemotedBackupState
+	}
 	return dropperSuspect
+}
+
+var backwpupFolderListName = regexp.MustCompile(`^backwpup-[A-Za-z0-9]+-folder\.php$`)
+
+// looksLikeBackWPupJobState recognises the state files the BackWPup plugin
+// writes while a backup job runs and deletes when it ends. The file name and
+// the head must both match the writer's format: backwpup-working.php is
+// "<?php //" plus the job as JSON on one line, and backwpup-<hash>-folder.php
+// is "<?php" and then one "//<absolute folder>" comment per line. Every
+// visible byte after the opening tag must stay inside those comments; the
+// tracked head cannot see the rest of the file, so this only demotes.
+func looksLikeBackWPupJobState(path string, head []byte) bool {
+	name := filepath.Base(path)
+	switch {
+	case name == "backwpup-working.php":
+		rest, ok := bytes.CutPrefix(head, []byte(`<?php //{"`))
+		return ok && !bytes.ContainsAny(rest, "\r\n") && !bytes.Contains(rest, []byte("?>"))
+	case backwpupFolderListName.MatchString(name):
+		rest, ok := bytes.CutPrefix(head, []byte("<?php\n"))
+		if !ok {
+			if rest, ok = bytes.CutPrefix(head, []byte("<?php\r\n")); !ok {
+				return false
+			}
+		}
+		lines := bytes.Split(rest, []byte("\n"))
+		folders := 0
+		for i, line := range lines {
+			last := i == len(lines)-1
+			// A full retained head may stop between CR and LF. Removing
+			// only the terminal CR still rejects any bare CR before code.
+			if !last || len(head) == dropperTrackedHeadMax {
+				line = bytes.TrimSuffix(line, []byte("\r"))
+			}
+			if bytes.ContainsRune(line, '\r') || bytes.Contains(line, []byte("?>")) {
+				return false
+			}
+			switch {
+			case bytes.HasPrefix(line, []byte("///")):
+				folders++
+			case last && len(line) < 3 && bytes.Equal(line, []byte("///")[:len(line)]):
+				// The head can end inside the next comment marker.
+			default:
+				return false
+			}
+		}
+		return folders > 0
+	}
+	return false
 }
 
 // looksLikeCompiledTemplate recognises template-engine compile artifacts
@@ -984,6 +1037,8 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 			details += "\nDemoted: the original containing directory was removed before the probe."
 		case dropperDemotedReplaced:
 			details += "\nDemoted: the path was replaced in place by a newer file (atomic write), not emptied."
+		case dropperDemotedBackupState:
+			details += "\nDemoted: content matches BackWPup job state written behind a PHP comment; only the leading bytes were seen."
 		}
 	}
 	if len(c.Head) > 0 {
