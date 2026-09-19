@@ -7,29 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
-## [Unreleased]
+## [3.41.0] - 2026-09-19
+
+### Highlights
+
+- Upgrade recommended: email attachments with malformed transfer encoding, such as spaces inside base64 lines, were delivered without being scanned when attachment scanning fails open. They are now decoded the way mail clients decode them.
+- Outbound phishing detection now reads base64 message bodies it used to skip.
+- WordPress update nights are much quieter: the core version file, release files that are unpacked but not installed, failed updates, discarded translation folders and BackWPup job files no longer page as modified or self-deleting files.
+- Subnet blocking now catches ranges that rotate through addresses one at a time. Expect more subnet blocks after upgrading, since blocks from the last seven days count, including operator and permanent ones.
+- Several ways to disguise executable PHP as a harmless stub, translation cache or version file in sensitive WordPress directories are closed.
+- The WordPress REST API exploit rule no longer fires on security and analytics plugins, and now catches account takeover code it missed.
 
 ### Security
 
-- PHP scanning handles attribute metadata and multiline strings consistently, avoiding missed execution and false alarms from literal examples.
-- Re-checking a finding no longer lowers its severity when the replacement file hides active content behind a malformed PHP opening tag or a PHP 8 attribute.
-- Subnet blocking now catches ranges that rotate through addresses one block at a time. Addresses blocked in the last seven days count toward the threshold, including operator and permanent blocks, and the window is adjustable.
-- Executable PHP can no longer pass as a comment-only stub and suppress a warning in sensitive WordPress directories.
-- A file staged in a WordPress core, plugin or theme update that held other content before it was overwritten and then moved into place or deleted beside an identical installed copy is reported again as a self-deleting file, instead of passing as update cleanup.
-- A PHP file could hide code behind a comment ended by a bare carriage return, or print its whole content as page text through a malformed opening tag, and still pass as an empty stub, a translation cache or version data. That skipped the location warning for PHP in uploads and other sensitive WordPress directories.
 - Email attachments with malformed transfer encoding were delivered without being scanned: base64 with spaces, stray characters or odd padding, quoted-printable with raw control bytes, long lines or bare carriage returns, and encoded multipart sections, and one broken section also hid the attachments after it. These are now decoded the way mail clients decode them, ambiguous encodings are scanned under each reading, and malformed parts are reported as incompletely scanned.
 - Outbound phishing detection skipped a base64 message body when a line held a space, the encoding header had no space after its colon, or a header was folded. Message parts are now read from their real MIME framing and decoded the same way as attachments, which also stops header-like body text from being treated as framing.
+- A PHP file could hide code behind a comment ended by a bare carriage return, print its whole content as page text through a malformed opening tag, or otherwise carry executable code in a comment-only stub, and still pass as an empty stub, a translation cache or version data. That skipped the location warning for PHP in uploads and other sensitive WordPress directories.
+- Re-checking a finding no longer lowers its severity when the replacement file hides active content behind a malformed PHP opening tag or a PHP 8 attribute.
+- PHP scanning handles attribute metadata and multiline strings consistently, avoiding missed execution and false alarms from literal examples.
+- A file staged in a WordPress core, plugin or theme update that held other content before it was overwritten and then moved into place or deleted beside an identical installed copy is reported again as a self-deleting file, instead of passing as update cleanup.
+- Subnet blocking now catches ranges that rotate through addresses one block at a time. Addresses blocked in the last seven days count toward the threshold, including operator and permanent blocks, and the window is adjustable.
 
 ### Fixed
 
-- A WordPress core or plugin update that WordPress refused or failed to install, for example because the new release needs a newer PHP, no longer reports hundreds of stock files as modified against the old release. The removed package is reported once instead.
-- The job-state files the BackWPup backup plugin writes and deletes during every run are reported as a lower-severity self-deleting file instead of paging Critical.
-- Files deleted together with their directory, such as a translation pack WordPress unpacks and discards during an update, are reported once for the directory instead of once per file.
-- The WordPress REST API exploit rule no longer fires High on security and analytics plugins that only mention the users endpoint in comments, settings or translations. It now requires a request to the endpoint that carries a password, which also catches account takeover code the old rule missed.
-- Deleting more than 100 selected quarantined files or file backups is sent in batches instead of failing as a whole, and file controls stay locked until it finishes. Threat page bulk actions and Findings bulk fixes explain their size limit instead of returning a raw error.
-- The threat detail page labels the routed range an address belongs to as its GeoIP prefix, so it no longer reads as if the whole range were listed or blocked.
+#### WordPress updates
+
 - A WordPress core update no longer raises a warning for the version file it copies into the upgrade directory. The file is recognised by content and holds only version data.
 - A WordPress core update no longer raises a self-deleting file notice for the release files it unpacks but does not install, such as bundled themes. Each file must match the official checksum of the release now installed.
+- A WordPress core or plugin update that WordPress refused or failed to install, for example because the new release needs a newer PHP, no longer reports hundreds of stock files as modified against the old release. The removed package is reported once instead.
+- Files deleted together with their directory, such as a translation pack WordPress unpacks and discards during an update, are reported once for the directory instead of once per file.
+- The job-state files the BackWPup backup plugin writes and deletes during every run are reported as a lower-severity self-deleting file instead of paging Critical.
+
+#### Detection rules
+
+- The WordPress REST API exploit rule no longer fires High on security and analytics plugins that only mention the users endpoint in comments, settings or translations. It now requires a request to the endpoint that carries a password, which also catches account takeover code the old rule missed.
+
+#### Web UI
+
+- Deleting more than 100 selected quarantined files or file backups is sent in batches instead of failing as a whole, and file controls stay locked until it finishes. Threat page bulk actions and Findings bulk fixes explain their size limit instead of returning a raw error.
+- The threat detail page labels the routed range an address belongs to as its GeoIP prefix, so it no longer reads as if the whole range were listed or blocked.
 
 ## [3.40.0] - 2026-09-18
 
@@ -94,5 +110,5 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - `csm doctor` and the components view now keep reporting the YARA-X scanning worker as failed while it keeps crashing after restarts, instead of only when it cannot start at all. A restarted worker counts as recovered once it stays up for 30 seconds.
 - The YARA-X worker crash alert now reports the current scanning outage without claiming recovery. It distinguishes scanning becoming available after a restart from worker health recovering after the replacement stays up for 30 seconds.
 
-[Unreleased]: https://github.com/pidginhost/csm/compare/v3.40.0...HEAD
+[3.41.0]: https://github.com/pidginhost/csm/compare/v3.40.0...v3.41.0
 [3.40.0]: https://github.com/pidginhost/csm/compare/v3.39.0...v3.40.0
