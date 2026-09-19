@@ -48,6 +48,7 @@ func TestPHPTaintSnapshotReportsAFlow(t *testing.T) {
 			Results: []phptaint.Result{{
 				Source: "curl_exec", Sink: "eval",
 				Confidence: phptaint.ConfidenceHigh, Identifiers: []string{"$p"},
+				Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1,
 			}},
 		}
 	})
@@ -198,6 +199,7 @@ func TestCheckYARADeepRunsPHPAsTheOnlyConsumer(t *testing.T) {
 			TotalResults: 1,
 			Results: []phptaint.Result{{
 				Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceHigh,
+				Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1,
 			}},
 		}
 	})
@@ -499,15 +501,16 @@ func TestPHPTaintUnknownRangeIsReported(t *testing.T) {
 func TestPHPTaintSeverityFollowsConfidence(t *testing.T) {
 	for _, tc := range []struct {
 		confidence phptaint.Confidence
+		basis      phptaint.Basis
 		want       alert.Severity
 	}{
-		{phptaint.ConfidenceLow, alert.Warning},
-		{phptaint.ConfidenceHigh, alert.High},
-		{phptaint.ConfidenceCertain, alert.Critical},
+		{phptaint.ConfidenceLow, phptaint.BasisUnresolved, alert.Warning},
+		{phptaint.ConfidenceHigh, phptaint.BasisAlwaysRemote, alert.High},
+		{phptaint.ConfidenceCertain, phptaint.BasisAlwaysRemote, alert.Critical},
 	} {
 		report := phptaint.Report{
 			Status: phptaint.StatusAnalyzed, TotalResults: 1,
-			Results: []phptaint.Result{{Source: "curl_exec", Sink: "eval", Confidence: tc.confidence}},
+			Results: []phptaint.Result{{Source: "curl_exec", Sink: "eval", Confidence: tc.confidence, Basis: tc.basis, ResolutionOffset: -1}},
 		}
 		got := phpTaintDeepFinding("/x.php", "sha", report)
 		if got.Severity != tc.want {
@@ -522,9 +525,9 @@ func TestPHPTaintSeverityUsesTheStrongestResult(t *testing.T) {
 	report := phptaint.Report{
 		Status: phptaint.StatusAnalyzed, TotalResults: 3,
 		Results: []phptaint.Result{
-			{Source: "curl_exec", Sink: "include", Confidence: phptaint.ConfidenceLow},
-			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain},
-			{Source: "curl_exec", Sink: "require", Confidence: phptaint.ConfidenceLow},
+			{Source: "curl_exec", Sink: "include", Confidence: phptaint.ConfidenceLow, Basis: phptaint.BasisUnresolved, ResolutionOffset: -1},
+			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain, Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1},
+			{Source: "curl_exec", Sink: "require", Confidence: phptaint.ConfidenceLow, Basis: phptaint.BasisUnresolved, ResolutionOffset: -1},
 		},
 	}
 	if got := phpTaintDeepFinding("/x.php", "sha", report); got.Severity != alert.Critical {
@@ -725,5 +728,18 @@ func TestOversizeNonPHPIsNotAPHPCoverageGap(t *testing.T) {
 	}
 	if !strings.Contains(gaps[0].Details, filepath.Base(phpPath)) {
 		t.Fatalf("details = %q, want the oversize PHP file named", gaps[0].Details)
+	}
+}
+
+func TestPHPTaintDetailsNameTheBasis(t *testing.T) {
+	report := phptaint.Report{Status: phptaint.StatusAnalyzed, TotalResults: 2, Results: []phptaint.Result{
+		{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceHigh, Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1},
+		{Source: "file_get_contents", Sink: "include", Confidence: phptaint.ConfidenceLow, Basis: phptaint.BasisUnresolved, ResolutionOffset: -1},
+	}}
+	got := phpTaintDeepFinding("/x.php", "sha", report).Details
+	for _, want := range []string{"curl_exec -> eval (high, always-remote)", "file_get_contents -> include (low, unresolved)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("details %q missing %q", got, want)
+		}
 	}
 }

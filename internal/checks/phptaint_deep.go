@@ -324,7 +324,7 @@ func analyzePHPTaintSnapshot(ctx context.Context, path, contentSHA256 string, da
 func phpTaintDeepFinding(path, contentSHA256 string, report phptaint.Report) alert.Finding {
 	flows := make([]string, 0, len(report.Results))
 	for _, res := range report.Results {
-		flows = append(flows, fmt.Sprintf("%s -> %s (%s)", res.Source, res.Sink, phpTaintConfidence(res.Confidence)))
+		flows = append(flows, fmt.Sprintf("%s -> %s (%s, %s)", res.Source, res.Sink, phpTaintConfidence(res.Confidence), res.Basis))
 	}
 	details := "Remotely fetched content reaches a code-execution construct. Evidence: " + strings.Join(flows, "; ")
 	if extra := report.TotalResults - len(report.Results); extra > 0 {

@@ -37,6 +37,7 @@ func TestContentFindingsAttributeByPath(t *testing.T) {
 			Results: []phptaint.Result{{
 				Source: "curl_exec", Sink: "eval",
 				Confidence: phptaint.ConfidenceCertain, Identifiers: []string{"$p"},
+				Basis: phptaint.BasisAlwaysRemote, ResolutionOffset: -1,
 			}},
 		}
 	})
