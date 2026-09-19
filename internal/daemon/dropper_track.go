@@ -880,12 +880,15 @@ type dropperGone struct {
 	ticket  queuehealth.Ticket
 }
 
-// dropperFinding is one flush decision: either a single vanished file or a
-// per-docroot aggregate of a create/delete burst.
+// dropperFinding is one flush decision: a single vanished file, a removed
+// directory group, or a per-docroot aggregate of a create/delete burst.
 type dropperFinding struct {
 	Aggregate bool
 	Docroot   string
 	Items     []dropperGone
+	// RemovedDir groups files that were each demoted because this directory
+	// was removed with them: one event, reported once.
+	RemovedDir string
 }
 
 // HoldGone parks a vanished candidate until FlushDue decides whether it is
@@ -947,20 +950,34 @@ func (t *dropperTracker) FlushDue(now time.Time) []dropperFinding {
 
 	var out []dropperFinding
 	for key, items := range groups {
-		if len(items) >= dropperBurstThreshold {
-			out = append(out, dropperFinding{
-				Aggregate: true,
-				Docroot:   key.docroot,
-				Items:     items,
-			})
+		out = append(out, groupDropperFindings(key.docroot, items)...)
+	}
+	return out
+}
+
+// groupDropperFindings also runs after ignore-path filtering: a burst can
+// shrink into removed-directory groups, and a directory group into one file.
+// Callers keep docroots and demoted/unclassified batches separate.
+func groupDropperFindings(docroot string, items []dropperGone) []dropperFinding {
+	if len(items) >= dropperBurstThreshold {
+		return []dropperFinding{{Aggregate: true, Docroot: docroot, Items: items}}
+	}
+	var out []dropperFinding
+	byDir := make(map[string][]dropperGone)
+	for _, item := range items {
+		if item.Verdict == dropperDemotedDirRemoved {
+			dir := filepath.Dir(item.Cand.Path)
+			byDir[dir] = append(byDir[dir], item)
 			continue
 		}
-		for _, item := range items {
-			out = append(out, dropperFinding{
-				Docroot: key.docroot,
-				Items:   []dropperGone{item},
-			})
+		out = append(out, dropperFinding{Docroot: docroot, Items: []dropperGone{item}})
+	}
+	for dir, members := range byDir {
+		f := dropperFinding{Docroot: docroot, Items: members}
+		if len(members) > 1 {
+			f.RemovedDir = dir
 		}
+		out = append(out, f)
 	}
 	return out
 }
@@ -983,6 +1000,21 @@ const (
 // dropperAlertParams renders one flush decision into alert parameters:
 // severity, message, details and the finding path.
 func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, string) {
+	if f.RemovedDir != "" {
+		var b strings.Builder
+		b.WriteString("Files created and removed within the tracking TTL together with the directory holding them; each was demoted for that reason:\n")
+		for i, g := range f.Items {
+			if i == dropperAggregateSampleMax {
+				fmt.Fprintf(&b, "... and %d more", len(f.Items)-dropperAggregateSampleMax)
+				break
+			}
+			fmt.Fprintf(&b, "%s (uid=%d size=%d)\n",
+				dropperPrintable([]byte(g.Cand.Path), dropperPathExcerptMax), g.Cand.UID, g.Cand.Size)
+		}
+		msg := fmt.Sprintf("%d short-lived PHP/executable files removed with their directory %s",
+			len(f.Items), dropperPrintable([]byte(f.RemovedDir), dropperPathExcerptMax))
+		return alert.Warning, msg, strings.TrimRight(b.String(), "\n"), f.RemovedDir
+	}
 	if f.Aggregate {
 		severity := alert.Warning
 		unclassified := 0
