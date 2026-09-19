@@ -311,3 +311,139 @@ func TestStagedCoreChmodBorrowCannotHideModifiedFile(t *testing.T) {
 		t.Fatalf("modified staged file hidden by a borrowed header: %+v", got)
 	}
 }
+
+// A header changed during Describe cannot identify a queued file, even if
+// Describe returned a usable release. Keep the event until a stable read.
+func TestStagedCoreBorrowRequiresStableHeader(t *testing.T) {
+	for _, change := range []string{"rewrite", "replace", "remove", "symlink", "directory"} {
+		t.Run(change, func(t *testing.T) {
+			wpRoot := filepath.Join(t.TempDir(), "public_html")
+			staging := filepath.Join(wpRoot, "wp-content/upgrade/wp_update/wordpress")
+			path := filepath.Join(staging, "wp-admin/about.php")
+			header := filepath.Join(wpRoot, "wp-includes/version.php")
+			writeStagedFile(t, header, "<?php $wp_version = '6.9';")
+			writeStagedFile(t, path, cleanStagedPHP)
+			initial := wpcheck.Verification{
+				Kind: wpcheck.KindCore, Root: staging, Rel: "wp-admin/about.php",
+				Digest: strings.Repeat("a", 32), Verdict: wpcheck.VerdictNoVersion, Staged: true,
+			}
+			initial.RootInfo, _ = os.Lstat(staging)
+			reads, comparisons := 0, 0
+			fake := &fakeWPVerifier{
+				describe: func(path string) wpcheck.Verification {
+					if path != header {
+						return wpcheck.Verification{Verdict: wpcheck.VerdictUnknown}
+					}
+					reads++
+					if reads == 1 {
+						switch change {
+						case "rewrite":
+							writeStagedFile(t, header, "<?php $wp_version = '7.2';")
+						case "replace":
+							writeStagedFile(t, header+".new", "<?php $wp_version = '7.2';")
+							if err := os.Rename(header+".new", header); err != nil {
+								t.Fatal(err)
+							}
+						default:
+							if err := os.Rename(header, header+".old"); err != nil {
+								t.Fatal(err)
+							}
+							if change == "symlink" {
+								if err := os.Symlink(header+".old", header); err != nil {
+									t.Fatal(err)
+								}
+							}
+							if change == "directory" {
+								if err := os.Mkdir(header, 0o755); err != nil {
+									t.Fatal(err)
+								}
+							}
+						}
+					}
+					return wpcheck.Verification{Kind: wpcheck.KindCore, Root: wpRoot, Version: "7.1", Verdict: wpcheck.VerdictReady}
+				},
+				verify: func(v wpcheck.Verification) wpcheck.Verdict {
+					comparisons++
+					if v.Digest != initial.Digest || v.Rel != initial.Rel || !v.Staged {
+						t.Errorf("lost staged event identity: %+v", v)
+					}
+					return wpcheck.VerdictMismatch
+				},
+			}
+			fm, ch := newStagedPackageMonitor(t, fake)
+			fm.handleStagedPackageFile(path, initial, "")
+			writeStagedFile(t, header, "<?php $wp_version = '7.1';")
+			if err := os.RemoveAll(staging); err != nil {
+				t.Fatal(err)
+			}
+			fm.drainStagedPackages(time.Now())
+			if got := drainFindings(ch); reads != 1 || comparisons != 0 || len(got) != 0 || fm.stagedPackages().pendingCount() != 1 {
+				t.Fatalf("unstable header: reads=%d comparisons=%d pending=%d findings=%+v", reads, comparisons, fm.stagedPackages().pendingCount(), got)
+			}
+			// Rejected identities must not be retained in package state.
+			// The next stable header read can still resolve this event.
+			if change == "symlink" || change == "directory" {
+				if err := os.Remove(header); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeStagedFile(t, header, "<?php $wp_version = '7.1';")
+			fm.drainStagedPackages(time.Now())
+			got := drainFindings(ch)
+			if reads != 2 || comparisons != 1 || len(got) != 1 || got[0].FilePath != path || !strings.Contains(got[0].Message, "does not match") || fm.stagedPackages().pendingCount() != 0 {
+				t.Fatalf("stable retry: reads=%d comparisons=%d pending=%d findings=%+v", reads, comparisons, fm.stagedPackages().pendingCount(), got)
+			}
+		})
+	}
+}
+
+// Copy installs must use the new installed header, even when the verifier
+// cached the old release. Only official bytes for the original path pass.
+func TestStagedCoreCopyBorrowsFreshInstalledRelease(t *testing.T) {
+	wpRoot := filepath.Join(t.TempDir(), "public_html")
+	staging := filepath.Join(wpRoot, "wp-content/upgrade/wp_update/wordpress")
+	header := filepath.Join(wpRoot, "wp-includes/version.php")
+	cache := wpcheck.NewCache(t.TempDir())
+	oldSum := md5.Sum([]byte(cleanStagedPHP + "// old\n")) // #nosec G401 -- official core digest
+	newSum := md5.Sum([]byte(cleanStagedPHP))              // #nosec G401 -- official core digest
+	rels := []string{"wp-admin/about.php", "wp-admin/credits.php", "wp-admin/extra.php"}
+	oldManifest := map[string]string{rels[0]: hex.EncodeToString(oldSum[:])}
+	newManifest := map[string]string{rels[0]: hex.EncodeToString(newSum[:]), rels[1]: hex.EncodeToString(newSum[:])}
+	if err := cache.PersistChecksums("6.9", "en_US", nil, oldManifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.PersistChecksums("7.1", "ro_RO", nil, newManifest); err != nil {
+		t.Fatal(err)
+	}
+	writeStagedFile(t, header, "<?php $wp_version = '6.9';")
+	if v := cache.Describe(header); v.Version != "6.9" || v.Verdict != wpcheck.VerdictReady {
+		t.Fatalf("failed to prime installed release cache: %+v", v)
+	}
+	fm, ch := newStagedPackageMonitor(t, cache)
+	for _, rel := range rels {
+		body := cleanStagedPHP
+		if rel == rels[1] {
+			body += "// modified\n"
+		}
+		path := filepath.Join(staging, rel)
+		fm.analyzeFile(fileEvent{path: path, fd: writeStagedFile(t, path, body)})
+		writeStagedFile(t, filepath.Join(wpRoot, rel), body)
+	}
+	if n := fm.stagedPackages().pendingCount(); n != len(rels) {
+		t.Fatalf("queued %d events, want %d", n, len(rels))
+	}
+	writeStagedFile(t, header, "<?php $wp_version = '7.1'; $wp_local_package = 'ro_RO';")
+	if err := os.RemoveAll(staging); err != nil {
+		t.Fatal(err)
+	}
+	fm.drainStagedPackages(time.Now())
+	got := drainFindings(ch)
+	if len(got) != 2 || fm.stagedPackages().pendingCount() != 0 {
+		t.Fatalf("copy update: pending=%d findings=%+v", fm.stagedPackages().pendingCount(), got)
+	}
+	for i, f := range got {
+		if f.FilePath != filepath.Join(wpRoot, rels[i+1]) || !strings.Contains(f.Message, "does not match wordpress.org WordPress 7.1:") {
+			t.Errorf("finding %d = %+v, want only modified and unshipped files of 7.1", i, f)
+		}
+	}
+}
