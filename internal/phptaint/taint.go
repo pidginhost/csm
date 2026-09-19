@@ -75,12 +75,46 @@ type taintAssignment struct {
 	origins []taintOrigin
 }
 
+// taintOrigin is one input of an assignment: a variable read, another
+// assignment's output, or a fixed value from a source or summarized call.
+// Only fixed origins carry proofs of their own, so those live out of line in
+// compiledAssignments.fixed and the origin holds an index: an attacker picks
+// how many origins a file has, and a gradeSet in every one of them tripled
+// what analysis allocated.
 type taintOrigin struct {
 	variable   string
 	assignment int
-	value      gradeSet
-	fixed      bool
-	decoded    bool
+	// fixed is the 1-based index of this origin's value in
+	// compiledAssignments.fixed; 0 means the origin is not fixed.
+	fixed   int32
+	decoded bool
+}
+
+// compiledAssignments is one scope's solver input. fixed holds each distinct
+// fixed origin value once.
+type compiledAssignments struct {
+	assignments []taintAssignment
+	fixed       []gradeSet
+}
+
+// fixedValues interns fixed origin values for one compileAssignments call.
+type fixedValues struct {
+	values []gradeSet
+	index  map[gradeSet]int32
+}
+
+// ref returns the 1-based reference to set, adding it on first use.
+func (v *fixedValues) ref(set gradeSet) int32 {
+	if i, ok := v.index[set]; ok {
+		return i
+	}
+	if v.index == nil {
+		v.index = make(map[gradeSet]int32)
+	}
+	v.values = append(v.values, set)
+	i := int32(len(v.values)) // #nosec G115 -- one value per collected call, and maxCollectedNodes bounds those far below int32
+	v.index[set] = i
+	return i
 }
 
 type positionedOrigin struct {
@@ -99,27 +133,27 @@ type assignmentInterval struct {
 // dependency worklist reaches arbitrarily long local chains without borrowing
 // the interprocedural summary-round limit or silently returning a partial state.
 func taintedLocals(f *scopeFacts, summaries summaryTables) taintState {
-	assignments, ok := compileAssignments(f, summaries)
+	compiled, ok := compileAssignments(f, summaries)
 	if !ok {
 		return taintedLocalsFallback(f, summaries)
 	}
-	return solveAssignments(assignments)
+	return solveAssignments(compiled)
 }
 
-func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignment, bool) {
+func compileAssignments(f *scopeFacts, summaries summaryTables) (compiledAssignments, bool) {
 	assignments := make([]taintAssignment, 0, len(f.assigns)+len(f.references)*2+len(f.concats))
 	for _, a := range f.assigns {
 		var ok bool
 		assignments, _, ok = appendAssignment(assignments, a, a.Var, a.Expr)
 		if !ok {
-			return nil, false
+			return compiledAssignments{}, false
 		}
 	}
 	for _, a := range f.references {
 		var ok bool
 		assignments, _, ok = appendAssignment(assignments, a, a.Var, a.Expr)
 		if !ok {
-			return nil, false
+			return compiledAssignments{}, false
 		}
 	}
 	for _, a := range f.concats {
@@ -127,7 +161,7 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 		var ok bool
 		assignments, index, ok = appendAssignment(assignments, a, a.Var, a.Expr)
 		if !ok {
-			return nil, false
+			return compiledAssignments{}, false
 		}
 		if index >= 0 {
 			assignments[index].origins = append(assignments[index].origins, taintOrigin{
@@ -137,11 +171,12 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 	}
 
 	forwardCount := len(assignments)
+	var fixed fixedValues
 	positioned := make([]positionedOrigin, 0, len(f.varNodes)+len(f.callSites)+forwardCount)
 	for _, variable := range f.readVarNodes() {
 		span, ok := spanOf(variable.node)
 		if !ok {
-			return nil, false
+			return compiledAssignments{}, false
 		}
 		positioned = append(positioned, positionedOrigin{
 			nodeSpan: span,
@@ -153,12 +188,12 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 		if g, source := sourceGrade(call); source {
 			span, ok := spanOf(call)
 			if !ok {
-				return nil, false
+				return compiledAssignments{}, false
 			}
 			positioned = append(positioned, positionedOrigin{
 				nodeSpan: span,
 				origin: taintOrigin{
-					assignment: -1, value: setOf(g), fixed: true,
+					assignment: -1, fixed: fixed.ref(setOf(g)),
 				},
 				self: -1,
 			})
@@ -171,12 +206,12 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 		}
 		span, ok := spanOf(call.node)
 		if !ok {
-			return nil, false
+			return compiledAssignments{}, false
 		}
 		positioned = append(positioned, positionedOrigin{
 			nodeSpan: span,
 			origin: taintOrigin{
-				assignment: -1, value: set, fixed: true,
+				assignment: -1, fixed: fixed.ref(set),
 			},
 			self: -1,
 		})
@@ -184,7 +219,7 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 	for i := 0; i < forwardCount; i++ {
 		span, ok := spanOf(assignments[i].node)
 		if !ok {
-			return nil, false
+			return compiledAssignments{}, false
 		}
 		positioned = append(positioned, positionedOrigin{
 			nodeSpan: span,
@@ -202,7 +237,7 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 			if span, ok := spanOf(input); ok {
 				decoderSpans = append(decoderSpans, span)
 			} else {
-				return nil, false
+				return compiledAssignments{}, false
 			}
 		}
 	}
@@ -228,7 +263,7 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 			}},
 		})
 	}
-	return assignments, true
+	return compiledAssignments{assignments: assignments, fixed: fixed.values}, true
 }
 
 func appendAssignment(assignments []taintAssignment, node, target, expr ast.Vertex) ([]taintAssignment, int, bool) {
@@ -312,14 +347,15 @@ func (index spanIndex) contains(span nodeSpan) bool {
 	return i >= 0 && index.maxEnds[i] >= span.end
 }
 
-func solveAssignments(assignments []taintAssignment) taintState {
+func solveAssignments(compiled compiledAssignments) taintState {
+	assignments := compiled.assignments
 	st := taintState{}
 	variableDependents := make(map[string][]int)
 	assignmentDependents := make([][]int, len(assignments))
 	for i, assignment := range assignments {
 		for _, origin := range assignment.origins {
 			switch {
-			case origin.fixed:
+			case origin.fixed > 0:
 			case origin.assignment >= 0:
 				assignmentDependents[origin.assignment] = append(assignmentDependents[origin.assignment], i)
 			case origin.variable != "":
@@ -355,8 +391,8 @@ func solveAssignments(assignments []taintAssignment) taintState {
 			var value gradeSet
 			var active bool
 			switch {
-			case origin.fixed:
-				value, active = origin.value, true
+			case origin.fixed > 0:
+				value, active = compiled.fixed[origin.fixed-1], true
 			case origin.assignment >= 0:
 				value, active = outputs[origin.assignment], outputSet[origin.assignment]
 			default:

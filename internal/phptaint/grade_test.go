@@ -3,6 +3,7 @@ package phptaint
 import (
 	"context"
 	"testing"
+	"unsafe"
 )
 
 func TestBasisValid(t *testing.T) {
@@ -293,5 +294,48 @@ func TestGradeSetUpgradeIndependentOfOrder(t *testing.T) {
 				t.Fatalf("order %v upgraded after %d: got %+v, want %+v", order, split, got, want)
 			}
 		}
+	}
+}
+
+// The solver stores one gradeSet per variable, assignment output and
+// summary, and one taintOrigin per read, so these sizes multiply with input
+// an attacker writes. An origin must not carry a gradeSet by value, and an
+// entry stays one int32 rather than a padded (bool, int) pair.
+func TestSolverValueFootprint(t *testing.T) {
+	if got := unsafe.Sizeof(gradeEntry(0)); got != 4 {
+		t.Errorf("gradeEntry is %d bytes, want 4", got)
+	}
+	if got, want := unsafe.Sizeof(gradeSet{}), uintptr(len(rankedBases)*confidenceLevels*4); got != want {
+		t.Errorf("gradeSet is %d bytes, want %d", got, want)
+	}
+	if got := unsafe.Sizeof(taintOrigin{}); got > 32 {
+		t.Errorf("taintOrigin is %d bytes, want at most 32: keep fixed values out of line", got)
+	}
+}
+
+// The biased encoding keeps the zero value absent and preserves offset order.
+func TestGradeEntryEncoding(t *testing.T) {
+	var zero gradeEntry
+	if zero.present() {
+		t.Error("zero entry: want absent")
+	}
+	for _, off := range []int{-1, 0, 1, MaxSourceBytes} {
+		e := entryAt(off)
+		if !e.present() || e.offset() != off {
+			t.Errorf("entryAt(%d) = present %v offset %d", off, e.present(), e.offset())
+		}
+	}
+	if entryAt(-1) >= entryAt(0) || entryAt(3) >= entryAt(9) {
+		t.Error("encoding must preserve offset order")
+	}
+	for _, off := range []int{-2, MaxSourceBytes + 1} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("entryAt(%d): want panic", off)
+				}
+			}()
+			entryAt(off)
+		}()
 	}
 }

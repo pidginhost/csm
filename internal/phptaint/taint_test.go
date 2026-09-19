@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -522,5 +523,60 @@ func TestExprTaintHandlesDeepDecoderChain(t *testing.T) {
 	confidence, tainted := exprTaint(f.assigns[1].Expr, taintState{"a": setOf(directGrade(ConfidenceHigh, BasisLiteral))}, summaryTables{})
 	if !tainted || confidence.strongest().conf != ConfidenceCertain {
 		t.Errorf("tainted=%t confidence=%v, want true/Certain", tainted, confidence)
+	}
+}
+
+// manyReadsSource builds `$x=$a.$a.$a...` up to size bytes: one assignment
+// whose right-hand side holds one tainted read every three bytes. Each read
+// is a solver origin, so the per-origin footprint dominates what analysis
+// allocates, and an attacker controls how many there are.
+func manyReadsSource(size int) []byte {
+	var b strings.Builder
+	b.WriteString("<?php $a = curl_exec($c); $x=$a")
+	const tail = ";eval($x);"
+	for b.Len()+3+len(tail) <= size {
+		b.WriteString(".$a")
+	}
+	b.WriteString(tail)
+	return []byte(b.String())
+}
+
+// TestManyReadsAllocationStaysBounded guards a memory regression the basis
+// lattice once shipped: every solver origin carried its own gradeSet by
+// value, although only source and summary origins ever read one. On a
+// 64 KiB reads case, analysis at 4decce64 allocated about 284 bytes per
+// source byte and the regressed version about 871; at MaxSourceBytes that
+// was 641 MB against 1851 MB with an unchanged allocation count, so the
+// count alone cannot catch it. The fixed version allocates 284 (298 under
+// -race); a gradeSet back in every origin costs 411 even at its compact
+// 72-byte size. The bound sits between the two.
+func TestManyReadsAllocationStaysBounded(t *testing.T) {
+	const maxBytesPerSourceByte = 360
+	src := manyReadsSource(64 << 10)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	r := Analyze(context.Background(), src)
+	runtime.ReadMemStats(&after)
+	if r.Status != StatusAnalyzed || len(r.Results) != 1 {
+		t.Fatalf("report = %+v, want one analyzed result", r)
+	}
+	perByte := (after.TotalAlloc - before.TotalAlloc) / uint64(len(src))
+	if perByte > maxBytesPerSourceByte {
+		t.Fatalf("analysis allocated %d bytes per source byte (%d KB for %d bytes); want at most %d. "+
+			"Keep fixed origin values out of line: variable and assignment origins never read one",
+			perByte, (after.TotalAlloc-before.TotalAlloc)/1024, len(src), maxBytesPerSourceByte)
+	}
+}
+
+// BenchmarkAnalyzeManyReads measures the same shape at the size limit.
+func BenchmarkAnalyzeManyReads(b *testing.B) {
+	src := manyReadsSource(MaxSourceBytes)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(src)))
+	for i := 0; i < b.N; i++ {
+		if r := Analyze(context.Background(), src); r.Status != StatusAnalyzed {
+			b.Fatalf("status = %v", r.Status)
+		}
 	}
 }

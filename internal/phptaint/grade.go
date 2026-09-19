@@ -74,14 +74,35 @@ type gradeSet struct {
 	entries [len(rankedBases)][confidenceLevels]gradeEntry
 }
 
-type gradeEntry struct {
-	present bool
-	offset  int
+// gradeEntry is one key's lowest resolution offset, stored biased by
+// entryBias so the zero value means absent and the zero gradeSet is the
+// empty set. A resolution offset is -1 or a position inside the source,
+// which MaxSourceBytes bounds far below int32. The solver keeps one gradeSet
+// per variable, assignment output and summary, so the entry stays four
+// bytes rather than a padded (bool, int) pair.
+type gradeEntry int32
+
+const entryBias = 2
+
+// entryAt encodes offset. An offset outside [-1, MaxSourceBytes] is an
+// analyzer defect: it panics, which the package boundary recovers into a
+// visible coverage gap, rather than storing a value that decodes to a
+// different proof.
+func entryAt(offset int) gradeEntry {
+	if offset < -1 || offset > MaxSourceBytes {
+		panic("phptaint: resolution offset out of range")
+	}
+	return gradeEntry(offset + entryBias)
 }
 
+func (e gradeEntry) present() bool { return e != 0 }
+
+func (e gradeEntry) offset() int { return int(e) - entryBias }
+
 // joinEntry keeps the lower offset for one key and reports whether it grew.
+// The bias preserves order, so present entries compare directly.
 func joinEntry(cur *gradeEntry, e gradeEntry) bool {
-	if !e.present || (cur.present && cur.offset <= e.offset) {
+	if !e.present() || (cur.present() && *cur <= e) {
 		return false
 	}
 	*cur = e
@@ -93,7 +114,7 @@ func joinEntry(cur *gradeEntry, e gradeEntry) bool {
 func setOf(g grade) gradeSet {
 	var s gradeSet
 	if r := basisRank(g.basis); r >= 0 && int(g.conf) < confidenceLevels {
-		s.entries[r][g.conf] = gradeEntry{present: true, offset: g.offset}
+		s.entries[r][g.conf] = entryAt(g.offset)
 	}
 	return s
 }
@@ -136,10 +157,10 @@ func (s gradeSet) strongest() grade {
 	found := false
 	for b := range s.entries {
 		for c, e := range s.entries[b] {
-			if !e.present {
+			if !e.present() {
 				continue
 			}
-			g := grade{conf: Confidence(c), basis: rankedBases[b], offset: e.offset}
+			g := grade{conf: Confidence(c), basis: rankedBases[b], offset: e.offset()}
 			if !found || g.stronger(best) {
 				best = g
 			}
