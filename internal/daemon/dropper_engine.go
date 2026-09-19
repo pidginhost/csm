@@ -134,9 +134,12 @@ func (e *dropperEngine) flushFinding(f dropperFinding) {
 	}
 	// Suppress before deciding burst severity. Otherwise excluded files
 	// can turn a remaining solitary dropper into a lower-severity burst.
-	if len(items) >= dropperBurstThreshold {
+	switch {
+	case len(items) >= dropperBurstThreshold:
 		e.emitFinding(dropperFinding{Aggregate: true, Docroot: f.Docroot, Items: items})
-	} else {
+	case f.RemovedDir != "" && len(items) > 1:
+		e.emitFinding(dropperFinding{Docroot: f.Docroot, Items: items, RemovedDir: f.RemovedDir})
+	default:
 		for _, item := range items {
 			e.emitFinding(dropperFinding{Docroot: f.Docroot, Items: []dropperGone{item}})
 		}
