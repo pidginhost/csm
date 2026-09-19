@@ -15,7 +15,9 @@ go version
 Linux tests need PHP CLI and python3-cryptography for the shipped PHP runtime
 and release verification regressions. The release-verifier tests skip when the
 module is absent and fail when `CSM_REQUIRE_PYTHON_VERIFIER=1`, which the CI
-test jobs set so a missing module cannot pass as a silent skip. Builds with `yara,journal,bpf` also need
+test jobs set so a missing module cannot pass as a silent skip. The Web UI
+JavaScript tests need Node 24 or newer the same way: they skip without it and
+fail when `CSM_REQUIRE_NODE=1`, which the CI test job sets. Builds with `yara,journal,bpf` also need
 CGO, pkg-config, YARA-X 1.20.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI selects the module toolchain with `GOTOOLCHAIN=auto`; the older Go versions

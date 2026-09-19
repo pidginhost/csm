@@ -1,6 +1,7 @@
 package uitest
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -8,13 +9,17 @@ import (
 )
 
 // The dashboard's JavaScript has no build step and no runner of its own, so
-// its unit tests run through Go. A machine without node cannot check them, and
-// CI's Go images carry none, so this is developer-local coverage; the server
-// side of the same behaviour is covered by the handler tests in internal/webui.
+// its unit tests run through Go. A machine without node skips them; the CI test
+// job installs node and sets CSM_REQUIRE_NODE=1, so a missing runtime there is
+// a failure rather than a quiet skip. The server side of the same behaviour is
+// covered by the handler tests in internal/webui.
 func TestBrowserSourcesPassTheirNodeTests(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node is not installed; the browser tests cannot run here")
+		if os.Getenv("CSM_REQUIRE_NODE") == "1" {
+			t.Fatalf("CSM_REQUIRE_NODE=1 but node is unavailable: %v", err)
+		}
+		t.Skip("node is not installed; set CSM_REQUIRE_NODE=1 to require it")
 	}
 	matches, err := filepath.Glob(filepath.Join("..", "..", "ui", "*_test.js"))
 	if err != nil {

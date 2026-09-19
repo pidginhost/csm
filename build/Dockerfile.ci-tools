@@ -7,11 +7,12 @@
 # that the node's containerd caches once and reuses across pipelines.
 #
 # Also bundles the apt packages that integration:'s before_script
-# installs on every run (openssh-client, jq) for the same reason.
+# installs on every run (openssh-client, jq) for the same reason, and
+# node for the Web UI JavaScript tests the test: job runs.
 #
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r2
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r3
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r2 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r3 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
 # Bump the tag suffix whenever a pinned tool version changes or a new
@@ -54,3 +55,8 @@ RUN go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} \
  && GONOSUMCHECK='*' GOFLAGS=-mod=mod \
         go install github.com/pidginhost/phctl@${PHCTL_VERSION} \
  && rm -rf /root/.cache/go-build /go/pkg/mod
+
+# node runs the Web UI JavaScript tests (scripts/uitest). Taken from the
+# official image rather than apt: bookworm's nodejs is past upstream end of
+# life. The binary needs only glibc and libstdc++, both in this base.
+COPY --from=node:24.21.0-bookworm-slim /usr/local/bin/node /usr/local/bin/node
