@@ -77,6 +77,8 @@ A finding's severity follows how firmly the source was shown to be remote: a dec
 
 Each flow in a finding's details reads `source -> sink (confidence, basis)`, for example `curl_exec -> eval (high, always-remote)` or `file_get_contents -> include (low, unresolved)`. The basis says how the source was identified: `always-remote` (the call can only read over the network), `literal` (the argument text carries a remote scheme), `decoded` (the scheme appears only after escape or builtin decoding), `request` (a requester can supply the start of the path), `call-argument` (a call site in the same file passes the remote argument), or `unresolved` (the analyzer could not decide whether the argument is local or remote).
 
+A finding's identity is its file, its severity and the source and sink pairs of its flows. Changes to the details wording or the basis do not show a dismissed finding again. A new flow, a new file or a higher severity does.
+
 The WordPress database scan reports what it could not fully inspect as
 `db_content_scan_incomplete`, counting affected installs against the number
 discovered and naming one bounded example config path per reason:

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"hash"
 	"os"
@@ -336,15 +337,56 @@ func phpTaintDeepFinding(path, contentSHA256 string, report phptaint.Report) ale
 	if len(report.PrecisionLoss) > 0 {
 		details += "; reduced precision: " + strings.Join(report.PrecisionLoss, ", ")
 	}
+	severity := phpTaintSeverity(report.Results)
 	return alert.Finding{
-		Severity:      phpTaintSeverity(report.Results),
+		Severity:      severity,
 		Check:         "php_remote_taint",
 		Message:       "PHP remote-source code execution data flow: " + sanitizeJSTaintDisplay(path, phpTaintMessageMaxBytes),
 		Details:       sanitizeJSTaintDisplay(details, phpTaintDetailsMaxBytes),
+		DedupKey:      phpTaintDedupKey(path, severity, report.Results),
 		FilePath:      path,
 		ContentSHA256: contentSHA256,
 		DetectLogic:   ContentDetectionVersion(),
 	}
+}
+
+// phpTaintDedupKey pins a finding's identity to the file, its severity and
+// the distinct source and sink endpoints of its flows. Details carry the
+// evidence wording, basis and context, which change between releases; if
+// they fed the key, each such change would re-key every stored finding, drop
+// its dismissal and alert again. The content hash is left out too: a library
+// file still flagged after an update is the same finding. A new flow, a new
+// file or an escalation still makes a new one.
+func phpTaintDedupKey(path string, severity alert.Severity, results []phptaint.Result) string {
+	type endpoint struct{ source, sink string }
+	seen := make(map[endpoint]bool, len(results))
+	pairs := make([]endpoint, 0, len(results))
+	for _, res := range results {
+		e := endpoint{res.Source, res.Sink}
+		if !seen[e] {
+			seen[e] = true
+			pairs = append(pairs, e)
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].source != pairs[j].source {
+			return pairs[i].source < pairs[j].source
+		}
+		return pairs[i].sink < pairs[j].sink
+	})
+	identity := make([]byte, 0, 128)
+	appendField := func(value string) {
+		identity = binary.BigEndian.AppendUint64(identity, uint64(len(value)))
+		identity = append(identity, value...)
+	}
+	appendField(path)
+	appendField(severity.String())
+	for _, e := range pairs {
+		appendField(e.source)
+		appendField(e.sink)
+	}
+	digest := sha256.Sum256(identity)
+	return fmt.Sprintf("php-taint:%x", digest[:12])
 }
 
 // phpTaintSeverity grades a finding by the strongest flow it contains.
