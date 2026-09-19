@@ -22,7 +22,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
-- The job-state files the BackWPup backup plugin writes and deletes during every run are reported as a lower-severity self-deleting file instead of paging Critical, including folder lists whose captured content ends inside a Windows line ending.
+- The job-state files the BackWPup backup plugin writes and deletes during every run are reported as a lower-severity self-deleting file instead of paging Critical.
 - The WordPress REST API exploit rule no longer fires High on security and analytics plugins that only mention the users endpoint in comments, settings or translations. It now requires a request to the endpoint that carries a password, which also catches account takeover code the old rule missed.
 - Deleting more than 100 selected quarantined files or file backups is sent in batches instead of failing as a whole, and file controls stay locked until it finishes. Threat page bulk actions and Findings bulk fixes explain their size limit instead of returning a raw error.
 - The threat detail page labels the routed range an address belongs to as its GeoIP prefix, so it no longer reads as if the whole range were listed or blocked.
