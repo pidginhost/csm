@@ -542,6 +542,12 @@ func reducedDeepChecks() []namedCheck {
 		// budgeted rolling YAML content scan keeps running beside the
 		// rolling YARA scan instead of being dropped as "covered".
 		{"php_content", CheckPHPContent},
+		// Same blind spot, and the file index is the only check that closes
+		// it: the mask carries no FAN_MOVED_TO on any kernel and drops
+		// FAN_CREATE on EL8, so a renamed-in file is never reported. The
+		// index also owns the baseline the new-file diff runs against, which
+		// stops being refreshed for as long as the monitor stays attached.
+		{"file_index", CheckFileIndex},
 		{"wp_core", CheckWPCore},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
