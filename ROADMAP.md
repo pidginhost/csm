@@ -1260,10 +1260,10 @@ Use the results before revisiting the local database choice.
 
 **Status:** partially complete; image pin consolidation open.
 
-`go.mod` requires Go 1.26.7 and CI sets `GOTOOLCHAIN=auto`, so the Go command
-selects it even though the tools image and the YARA-X builder start older. The
-Linux test wrapper derives its default image version from `go.mod`. Lint is
-pinned to golangci-lint 2.11.4.
+`go.mod` requires Go 1.27.1 and CI sets `GOTOOLCHAIN=auto`, so the Go command
+selects it even though the YARA-X builder starts older. The Linux test wrapper
+derives its default image version from `go.mod`. Lint is pinned to
+golangci-lint 2.13.2.
 
 **Acceptance:** generate bootstrap version inputs from one maintained source and
 check for drift; rebuild both architecture builders and the tools image, update

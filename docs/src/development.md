@@ -2,12 +2,12 @@
 
 ## Toolchain and prerequisites
 
-Use the Go version required by `go.mod` (currently 1.26.7), including its
+Use the Go version required by `go.mod` (currently 1.27.1), including its
 formatter. A newer local formatter can disagree with the pinned CI linter.
 For an installed Go launcher that supports toolchain selection:
 
 ```bash
-export GOTOOLCHAIN=go1.26.7
+export GOTOOLCHAIN=go1.27.1
 export PATH="$(go env GOROOT)/bin:$PATH"
 go version
 ```
