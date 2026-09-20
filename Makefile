@@ -1,9 +1,9 @@
 .PHONY: build build-yara build-linux build-all build-pam clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded check-fixtures bpf-gen
 
 # Pinned tool versions -- bump deliberately, keep in sync with .gitlab-ci.yml
-GOLANGCI_LINT_VERSION := v2.11.4
-GOSEC_VERSION := v2.25.0
-GOVULNCHECK_VERSION := v1.2.0
+GOLANGCI_LINT_VERSION := v2.13.2
+GOSEC_VERSION := v2.29.0
+GOVULNCHECK_VERSION := v1.8.0
 
 BINARY_NAME := csm
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
