@@ -185,7 +185,7 @@ func (t *subtreeChangeTracker) build(ctx context.Context) {
 // (fileindex.current, fileindex.previous, dircache.json). The normal incremental
 // baseline is left byte-for-byte intact. All indexed files are treated as new
 // so the caller receives findings for the full current state of the account.
-func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckFileIndex(ctx context.Context, cfg *config.Config, st *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -207,11 +207,11 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	}
 
 	return fileIndexQueues.run(ctx, func(work *fileIndexWork) []alert.Finding {
-		return checkFileIndexLive(ctx, cfg, work)
+		return checkFileIndexLive(ctx, cfg, st, work)
 	})
 }
 
-func checkFileIndexLive(ctx context.Context, cfg *config.Config, work *fileIndexWork) []alert.Finding {
+func checkFileIndexLive(ctx context.Context, cfg *config.Config, st *state.Store, work *fileIndexWork) []alert.Finding {
 	ctx = context.WithValue(ctx, fileIndexWorkKey{}, work)
 	scanNum := atomic.AddInt32(&fileIndexScanCount, 1)
 	forceFullScan := scanNum == 1 || scanNum%6 == 0
@@ -261,31 +261,59 @@ func checkFileIndexLive(ctx context.Context, cfg *config.Config, work *fileIndex
 		prevSet[e] = true
 	}
 
-	var newFiles []string
+	// The baseline only tracks new paths. Active findings also need a current
+	// verdict before this scan can retire them, even on a cached walk.
+	activePaths := make(map[string]bool)
+	if st != nil {
+		for _, f := range st.LatestFindings() {
+			for _, name := range runnerFindingNames["file_index"] {
+				if f.Check == name && f.FilePath != "" {
+					activePaths[f.FilePath] = true
+					break
+				}
+			}
+		}
+	}
+	var newFiles, activeFiles, scanFiles []string
 	for _, e := range currentEntries {
 		if !prevSet[e] {
 			newFiles = append(newFiles, e)
+		}
+		if activePaths[e] {
+			activeFiles = append(activeFiles, e)
+		}
+		if !prevSet[e] || activePaths[e] {
+			scanFiles = append(scanFiles, e)
 		}
 	}
 
 	if incomplete {
 		// Publishing partial entries or mtimes would let the next cached
 		// walk retire findings for directories we still have not read.
-		return checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
+		return checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles)
 	}
 
 	work.local()
-	// Save updated dir cache
-	work.observe(saveDirCache(indexDir, dirCache))
-
 	// Write current index (atomic)
 	work.observe(writeIndex(currentPath, currentEntries))
 
 	// First run - save baseline
 	if _, err := osFS.Stat(previousPath); os.IsNotExist(err) {
 		work.observe(copyFile(currentPath, previousPath))
-		return nil
+		work.observe(saveDirCache(indexDir, dirCache))
+		work.execution()
+		return checkFileIndexAnalyzeNewFiles(ctx, cfg, activeFiles)
 	}
+
+	isShrink, promote := evaluateFileIndexShrink(len(previousEntries), len(currentEntries))
+	if isShrink && !promote {
+		// The preserved baseline still contains removed paths. Its entries
+		// cannot be carried forward using mtimes from the smaller current
+		// walk, or the next cached scan resurrects those paths and resets
+		// the shrink streak. Rewalk until the smaller baseline is adopted.
+		dirCache = make(dirMtimeCache)
+	}
+	work.observe(saveDirCache(indexDir, dirCache))
 
 	// A large shrink (mass deletion, a WP install removed, or a transient read
 	// failure) must not instantly flush the baseline: promoting an empty or
@@ -295,9 +323,9 @@ func checkFileIndexLive(ctx context.Context, cfg *config.Config, work *fileIndex
 	// classified now. Non-promoting shrink cycles merge those paths into the old
 	// baseline so they do not alert repeatedly while the deletion guard is still
 	// preserving the removed paths against recovery floods.
-	if isShrink, promote := evaluateFileIndexShrink(len(previousEntries), len(currentEntries)); isShrink {
+	if isShrink {
 		work.execution()
-		findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
+		findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles)
 		work.local()
 		if promote {
 			fmt.Fprintf(os.Stderr, "file_index: shrink persisted %d scans; adopting smaller index (%d entries, was %d) as new baseline\n",
@@ -314,7 +342,7 @@ func checkFileIndexLive(ctx context.Context, cfg *config.Config, work *fileIndex
 	}
 
 	work.execution()
-	findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
+	findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles)
 	work.local()
 	work.observe(copyFile(currentPath, previousPath))
 	return findings
@@ -377,6 +405,7 @@ func checkFileIndexAnalyzeNewFiles(ctx context.Context, cfg *config.Config, newF
 			// real code surfaces, malicious or merely present.
 			sev, ck, msg, hash, readOK := classifyUploadPHPWithFingerprint(path)
 			if !readOK {
+				recordCoverageGapPaths(ctx, "file_index", coveragePathAliases(path))
 				reportFileIndexFailure(ctx)
 			}
 			if sev >= 0 {
@@ -394,6 +423,7 @@ func checkFileIndexAnalyzeNewFiles(ctx context.Context, cfg *config.Config, newF
 		// translation queues, WP auto-update staging). See classifySensitiveDirPHP.
 		sev, ck, msg, hash, readOK := classifySensitiveDirPHPWithFingerprint(path, name)
 		if !readOK {
+			recordCoverageGapPaths(ctx, "file_index", coveragePathAliases(path))
 			reportFileIndexFailure(ctx)
 		}
 		if sev >= 0 {
