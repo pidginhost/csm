@@ -26,6 +26,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- CSM is now built with Go 1.27.
 - PHP remote-code findings now say how the fetched source was identified, so an unresolved source is distinguishable from a proven remote one.
 - PHP remote-code findings now keep the same identity when their wording changes. This release changes their identity once, so an earlier dismissal of one of these findings is shown once more.
 

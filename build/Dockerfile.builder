@@ -64,7 +64,7 @@ RUN dnf -y install dnf-plugins-core epel-release \
 # robust regardless of BuildKit quirks, matches the semantics
 # whether the container runs natively or under QEMU emulation, and
 # also Just Works under plain `docker build` without buildx.
-ENV GO_VERSION=1.26.2
+ENV GO_VERSION=1.27.1
 RUN set -eux; \
     case "$(uname -m)" in \
         x86_64)  GOARCH=amd64 ;; \

@@ -10,25 +10,25 @@
 # installs on every run (openssh-client, jq) for the same reason, and
 # node for the Web UI JavaScript tests the test: job runs.
 #
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r3
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.1-r1
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r3 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.1-r1 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
 # Bump the tag suffix whenever a pinned tool version changes or a new
 # tool needs to be added. The .gitlab-ci.yml CSM_CI_TOOLS_TAG variable
 # points at the tag that pipelines should pull.
 
-FROM golang:1.26.3-bookworm
+FROM golang:1.27.1-bookworm
 
 # Versions kept in sync with the install commands that previously
 # lived inline in .gitlab-ci.yml. When bumping any of these, bump
 # the image tag in .gitlab-ci.yml CSM_CI_TOOLS_TAG so the next
 # pipeline pulls the rebuilt image instead of the stale one.
-ARG GOVULNCHECK_VERSION=v1.2.0
+ARG GOVULNCHECK_VERSION=v1.8.0
 ARG GOCOVER_COBERTURA_VERSION=v1.2.0
 ARG GOCOVMERGE_VERSION=v0.0.0-20160331181800-b5bfa59ec0ad
-ARG GOSEC_VERSION=v2.25.0
+ARG GOSEC_VERSION=v2.29.0
 ARG PHCTL_VERSION=v0.6.2
 
 # openssh-client + jq + ca-certificates are the only system packages
