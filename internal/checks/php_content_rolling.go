@@ -40,13 +40,87 @@ func rollingContentEnabled(ctx context.Context, cfg *config.Config, forcedFull b
 		!forcedFull
 }
 
+// rollingContentPass spends one cycle's file budget on rolling coverage across
+// the host. The budget is the operator's per-scan file cap: sizing a window
+// that large for every account asked for hundreds of windows inside one check
+// budget, so the check never finished and its findings were never reported.
+// Accounts are taken least-recently-covered first, so a host too large for one
+// cycle keeps moving instead of resweeping the same alphabetical prefix.
+func rollingContentPass(ctx context.Context, cfg *config.Config, scan *phpContentScan, homeDirs []os.DirEntry, findings *[]alert.Finding) {
+	db := store.Global()
+	if db == nil {
+		// Cannot persist a cursor, so rolling would scan from the start every
+		// cycle without making progress. Skip rather than spin in place.
+		return
+	}
+	accounts := rollingAccountOrder(db, homeDirs)
+	budget := accountScanMaxFiles(ctx, cfg)
+	wrapped := 0
+	for _, account := range accounts {
+		if ctx.Err() != nil || budget <= 0 {
+			break
+		}
+		whole, used := rollingContentCoverage(ctx, cfg, scan, account.name, accountDocRoots(account.home), budget, findings)
+		budget -= used
+		if whole {
+			wrapped++
+		}
+	}
+	if wrapped != len(accounts) {
+		// The accounts this cycle did not finish are not re-emitting their
+		// earlier findings, and completing the check would purge them
+		// (mirrors yara_deep).
+		markCheckIncomplete(ctx, "php_content")
+	}
+}
+
+// rollingAccount pairs an account name with its home directory.
+type rollingAccount struct {
+	name string
+	home string
+}
+
+// rollingAccountOrder sorts accounts by the time each last completed a full
+// traversal, oldest first, so an account that has never been covered goes
+// first and no account can be starved by the ones before it in the alphabet.
+func rollingAccountOrder(db *store.DB, homeDirs []os.DirEntry) []rollingAccount {
+	type ordered struct {
+		rollingAccount
+		last time.Time
+	}
+	all := make([]ordered, 0, len(homeDirs))
+	for _, entry := range homeDirs {
+		if !entry.IsDir() {
+			continue
+		}
+		cur, _, _ := db.GetScanCursor(entry.Name(), rollingScanCheck)
+		all = append(all, ordered{
+			rollingAccount: rollingAccount{name: entry.Name(), home: scanHomeDirPath(entry)},
+			last:           cur.LastFullCycleTS,
+		})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].last.Equal(all[j].last) {
+			return all[i].last.Before(all[j].last)
+		}
+		return all[i].name < all[j].name
+	})
+	out := make([]rollingAccount, 0, len(all))
+	for _, a := range all {
+		out = append(out, a.rollingAccount)
+	}
+	return out
+}
+
 // rollingContentCoverage sweeps a bounded path-sorted slice of the account's
 // full docroot PHP-source set, advancing the per-account cursor so every stock
 // PHP source or source-view file is eventually content-scanned over cycles.
 // The caller guarantees the gate (rolling on, host-scope periodic, not a
-// forced/audit run). Findings append to the live findings slice (rolling is
-// part of the periodic scan, not a report-only full-scan job). A canceled run
-// leaves the prior cursor untouched.
+// forced/audit run) and hands it what is left of the cycle's file budget.
+// Findings append to the live findings slice (rolling is part of the periodic
+// scan, not a report-only full-scan job). A canceled run leaves the prior
+// cursor untouched. It returns how many files it read so the caller can charge
+// them against the budget.
 //
 // Limitation: rolling enumerates only stock-PHP-executable filenames across the
 // whole docroot. A file whose non-stock extension is remapped to PHP by an
@@ -57,20 +131,14 @@ func rollingContentEnabled(ctx context.Context, cfg *config.Config, forcedFull b
 // window that did not wrap leaves files from earlier windows unvisited, and
 // their findings are not re-emitted this cycle, so the caller must mark the
 // check incomplete or the runner purges them from the latest set.
-func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpContentScan, account string, docRoots []string, findings *[]alert.Finding) bool {
+func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpContentScan, account string, docRoots []string, limit int, findings *[]alert.Finding) (bool, int) {
 	db := store.Global()
-	if db == nil {
-		// Cannot persist a cursor, so rolling would scan from the start every
-		// cycle without making progress. Skip rather than spin in place.
-		return true
-	}
 
 	files := enumeratePHPFiles(ctx, cfg, docRoots)
 	if len(files) == 0 {
-		return true
+		return true, 0
 	}
 
-	limit := accountScanMaxFiles(ctx, cfg)
 	cur, _, curErr := db.GetScanCursor(account, rollingScanCheck)
 	if curErr != nil {
 		// A persistent read error would re-scan from the start every cycle and
@@ -80,7 +148,7 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	}
 	selected, newLast, wrapped := rollingCandidatesAfter(files, cur.LastPath, limit)
 	if len(selected) == 0 {
-		return true
+		return true, 0
 	}
 	// Crossing the end of the list completes a traversal across several
 	// windows, but this run still did not re-emit findings from the earlier
@@ -93,6 +161,7 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	// in the slice that shares a directory shares the same overlay, and reading
 	// the ancestor .htaccess chain per file would multiply the read cost.
 	overlayCache := make(map[string]phpHandlerOverlay)
+	read := 0
 	for _, file := range selected {
 		if ctx.Err() != nil {
 			break
@@ -102,6 +171,7 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 		if !rollingRegularCandidate(file) {
 			continue
 		}
+		read++
 		dir := filepath.Dir(file)
 		overlay, ok := overlayCache[dir]
 		if !ok {
@@ -115,12 +185,17 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	// ctx cancellation leaves the prior cursor so the next cycle resumes where
 	// this one stopped instead of skipping the unscanned tail.
 	if ctx.Err() != nil {
-		return false
+		return false, read
 	}
 	cur.Account = account
 	cur.Check = rollingScanCheck
 	cur.LastPath = newLast
 	if fullTraversal {
+		// This window saw the account's whole PHP source list, so a cached
+		// stamp under its docroots for a path the list does not hold belongs
+		// to a deleted file. Carry-forward keeps stamps across cycles, and
+		// this is where they stop being carried forever.
+		scan.pruneMissing(docRoots, files)
 		now := time.Now().UTC()
 		cur.LastFullCycleTS = now
 		if wrapped {
@@ -130,7 +205,7 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	if err := db.PutScanCursor(cur); err != nil {
 		fmt.Fprintf(os.Stderr, "php_content rolling: cursor write for %s: %v\n", account, err)
 	}
-	return windowComplete
+	return windowComplete, read
 }
 
 func rollingRegularCandidate(file string) bool {

@@ -414,6 +414,13 @@ const checkTimeout = 5 * time.Minute
 // check_timeout warnings while leaving fast checks aggressive.
 const heavyCheckTimeout = 15 * time.Minute
 
+// checkTimeoutDrainGrace bounds how long the runner waits for a check to hand
+// back the findings it gathered before its deadline. A check that honors ctx
+// returns within one file of the cancellation, and the slice is already paid
+// for; a check wedged in a parser gets abandoned rather than holding the scan.
+// A var so tests can shrink it without stalling on a deliberately stuck check.
+var checkTimeoutDrainGrace = 5 * time.Second
+
 // heavyChecks names the deep-tier checks that traverse every account's web
 // roots or databases. Keep this list short and explicit; only checks that
 // observably blow past 5 minutes on production hosts belong here.
@@ -1097,6 +1104,11 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 						return
 					}
 					mu.Lock()
+					// A heavy scan returns what it found before the budget ran
+					// out. The check stays out of completedChecks either way, so
+					// these findings merge into the latest set without
+					// authorizing a purge of anything the run never reached.
+					findings = append(findings, results...)
 					findings = append(findings, alert.Finding{
 						Severity:  alert.Warning,
 						Check:     "check_timeout",
@@ -1143,6 +1155,23 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				mu.Unlock()
 			case <-ctx.Done():
 				execution.withdraw(ctx.Err())
+				// The deadline and the check's own return race: a heavy scan
+				// that honors ctx hands back its partial findings just after
+				// the deadline fires, and select picks whichever is ready
+				// first. Wait a bounded moment for them instead of discarding
+				// detections the scan already paid for.
+				var drained []alert.Finding
+				grace := time.NewTimer(checkTimeoutDrainGrace)
+				select {
+				case outcome := <-execution.done:
+					// A panic carries no findings, and the deadline is what the
+					// operator needs to see either way.
+					if outcome.panicErr == "" {
+						drained = outcome.findings
+					}
+				case <-grace.C:
+				}
+				grace.Stop()
 				cancel()
 				if throttleReserved {
 					store.ReleaseThrottle(c.name)
@@ -1156,6 +1185,10 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 					return
 				}
 				mu.Lock()
+				// The check stays out of completedChecks, so these merge into
+				// the latest set without authorizing a purge of the range the
+				// run never reached.
+				findings = append(findings, drained...)
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Warning,
 					Check:     "check_timeout",

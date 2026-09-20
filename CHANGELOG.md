@@ -11,7 +11,13 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- The deep scan for obfuscated and suspicious PHP content reported nothing on busy shared hosts: it ran out of its time budget every cycle and everything it had found until then was discarded, so droppers and webshells in scanned directories went unreported. What a scan finds before it runs out of time is now reported.
+- Deep PHP content scanning now spends one file budget per cycle across the host instead of one per account, and takes accounts least-recently-covered first. Accounts late in the alphabet were never reached on hosts with many accounts.
 - Web-downloadable Joomla site backups are now reported when the site sits in a folder inside the zip, as most backups are packed. Only the root-level layout was recognized before, so these archives and the database password inside them stayed exposed without a finding.
+
+### Fixed
+
+- A deep PHP content scan that runs out of time now keeps the record of the files it confirmed clean, so the next scan resumes instead of re-reading every file from the start.
 
 ### Changed
 

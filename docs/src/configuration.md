@@ -169,12 +169,13 @@ thresholds:
   ftp_fail_window_min: 30               # sliding window (minutes) for per-IP pure-ftpd auth-failure accumulation before ftp_bruteforce (default: 30)
   account_scan_max_files: 10000         # account and mail-domain paths per scanner cycle (default: 10000)
   # If this cap clips /home/<account>/ paths, account_scan_truncated names the affected account.
+  # Rolling content coverage spends this cap once per cycle across the whole host, not once per account.
   crontab_base64_blob_max_bytes: 16384  # encoded bytes per crontab base64 candidate before decoded-content matching; must be a multiple of 4 (default: 16384)
 
   # Full-scan subsystem (`csm scan --full`) and rolling content coverage.
   full_scan_max_file_mb: 16            # cap on a single file scanned by a full scan, in MiB (default: 16)
   scan_job_retention: 20               # completed full-scan job records kept in the store (default: 20)
-  rolling_coverage: true               # tri-state; default on. Each cycle content-scans a slice of dormant files past the mtime cap so old planted files get covered over time. Set false to disable
+  rolling_coverage: true               # tri-state; default on. Each cycle content-scans a slice of dormant files past the mtime cap so old planted files get covered over time, taking the accounts covered longest ago first. Set false to disable
   dropper_detection: true              # tri-state; default on. Real-time flag for a PHP/executable created under a web docroot and unlinked before the TTL probe. Set false to disable
   dropper_unlink_ttl_sec: 300          # seconds a fresh docroot PHP/executable is tracked before the self-delete probe (default: 300, range 30-3600)
 

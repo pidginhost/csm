@@ -1826,13 +1826,78 @@ type phpContentScan struct {
 	prev      phpContentCache
 	next      phpContentCache
 	forceFull bool
+	// visited holds directories whose full entry list this run read. Their
+	// prior stamps are authoritative-by-absence: a cached file the walk did
+	// not see again is gone. Everything else is simply unreached.
+	visited map[string]bool
 }
 
 func newPHPContentScan(cfg *config.Config, prev phpContentCache, forceFull bool) *phpContentScan {
 	if prev == nil {
 		prev = phpContentCache{}
 	}
-	return &phpContentScan{cfg: cfg, prev: prev, next: phpContentCache{}, forceFull: forceFull}
+	return &phpContentScan{
+		cfg:       cfg,
+		prev:      prev,
+		next:      phpContentCache{},
+		forceFull: forceFull,
+		visited:   map[string]bool{},
+	}
+}
+
+// merged is the cache to persist after a run that may have been cut short. It
+// keeps every stamp confirmed this cycle and carries forward prior stamps from
+// directories the run never finished reading. A run that walked a directory
+// prunes what vanished from it; a run that never reached one leaves its files
+// cached so the next cycle does not re-read the whole host from scratch.
+func (s *phpContentScan) merged() phpContentCache {
+	out := make(phpContentCache, len(s.next)+len(s.prev))
+	for path, stamp := range s.prev {
+		if s.visited[filepath.Dir(path)] {
+			continue
+		}
+		out[path] = stamp
+	}
+	for path, stamp := range s.next {
+		out[path] = stamp
+	}
+	return out
+}
+
+// pruneMissing drops cached stamps under roots for paths that are no longer on
+// disk. The caller passes the complete current file list for those roots.
+func (s *phpContentScan) pruneMissing(roots []string, present []string) {
+	live := make(map[string]struct{}, len(present))
+	for _, path := range present {
+		live[path] = struct{}{}
+	}
+	for path := range s.prev {
+		if _, ok := live[path]; ok {
+			continue
+		}
+		for _, root := range roots {
+			if strings.HasPrefix(path, root+string(filepath.Separator)) {
+				delete(s.prev, path)
+				break
+			}
+		}
+	}
+}
+
+// accountDocRoots lists an account's document roots: public_html plus the
+// addon-domain directories beside it, skipping the mail, control and temp
+// directories that never serve web content.
+func accountDocRoots(homeDir string) []string {
+	docRoots := []string{filepath.Join(homeDir, "public_html")}
+	subDirs, _ := osFS.ReadDir(homeDir)
+	for _, sd := range subDirs {
+		if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
+			!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
+			sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
+			docRoots = append(docRoots, filepath.Join(homeDir, sd.Name()))
+		}
+	}
+	return docRoots
 }
 
 func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
@@ -1846,25 +1911,18 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	forcedFull := phpContentForceFull(ctx) || scanForceContent(ctx)
 	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), forcedFull)
 
+	// A run cut short still falls through to the cache write below, so the
+	// stamps it confirmed are not thrown away with the rest of the cycle.
+accounts:
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
-			return findings
+			break
 		}
 		if !homeEntry.IsDir() {
 			continue
 		}
 		homeDir := scanHomeDirPath(homeEntry)
-
-		// Get all potential document roots
-		docRoots := []string{filepath.Join(homeDir, "public_html")}
-		subDirs, _ := osFS.ReadDir(homeDir)
-		for _, sd := range subDirs {
-			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
-				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
-				sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
-				docRoots = append(docRoots, filepath.Join(homeDir, sd.Name()))
-			}
-		}
+		docRoots := accountDocRoots(homeDir)
 
 		for _, docRoot := range docRoots {
 			// Scan directories that shouldn't contain user PHP
@@ -1879,33 +1937,26 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			for _, dir := range suspiciousDirs {
 				scan.scanDir(ctx, dir, 4, phpHandlerOverlay{}, &findings)
 				if ctx.Err() != nil {
-					return findings
+					break accounts
 				}
-			}
-		}
-
-		if rollingContentEnabled(ctx, cfg, forcedFull) {
-			if !rollingContentCoverage(ctx, cfg, scan, homeEntry.Name(), docRoots, &findings) {
-				// Earlier windows' findings are not re-emitted this cycle;
-				// completing the check would purge them (mirrors yara_deep).
-				markCheckIncomplete(ctx, "php_content")
-			}
-			if ctx.Err() != nil {
-				return findings
 			}
 		}
 	}
 
-	// Persist only after a complete host-wide scan. A run cut short by ctx
-	// timeout leaves scan.next missing the unscanned files; persisting it would
-	// drop their cached-clean state and force a needless re-read next cycle
-	// (still safe, just slower). An account-scoped run (account_scan) only walks
-	// one account, so its scan.next is a subset of the shared cache and must not
-	// overwrite the host-wide stamps. A forced-content scan (ForceContent=true)
+	if rollingContentEnabled(ctx, cfg, forcedFull) {
+		rollingContentPass(ctx, cfg, scan, homeDirs, &findings)
+	}
+
+	// Persist on every host-wide run, including one cut short by the check
+	// budget: scan.merged() carries forward the stamps for directories this run
+	// never read, so a host too large to finish in one cycle still makes
+	// progress instead of re-reading everything next cycle. An account-scoped
+	// run (account_scan) only walks one account, so its stamps must not
+	// overwrite the host-wide cache. A forced-content scan (ForceContent=true)
 	// re-reads every file regardless of the cache, so scan.next reflects only
 	// the files visited this run and must not overwrite the host-wide live cache.
-	if ctx.Err() == nil && AccountFromContext(ctx) == "" && !scanForceContent(ctx) {
-		savePHPContentCache(cfg.StatePath, scan.next)
+	if AccountFromContext(ctx) == "" && !scanForceContent(ctx) {
+		savePHPContentCache(cfg.StatePath, scan.merged())
 	}
 
 	return findings
@@ -1931,6 +1982,11 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 	}
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
+		// A directory that is gone has no files left to cache. One we cannot
+		// read may still hold them, so its stamps stay.
+		if os.IsNotExist(err) {
+			s.visited[dir] = true
+		}
 		return
 	}
 
@@ -1971,6 +2027,7 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 
 		s.scanFile(ctx, fullPath, overlay, findings)
 	}
+	s.visited[dir] = true
 }
 
 // scanFile content-analyses one PHP file using the same cache, size-guard, and
