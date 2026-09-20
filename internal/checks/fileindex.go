@@ -262,35 +262,57 @@ func checkFileIndexLive(ctx context.Context, cfg *config.Config, st *state.Store
 	}
 
 	// The baseline only tracks new paths. Active findings also need a current
-	// verdict before this scan can retire them, even on a cached walk.
-	activePaths := make(map[string]bool)
+	// verdict before this scan can retire them, even on a cached walk. Two of
+	// the owned names are shared with the content scan, so a re-verified path
+	// may carry a finding this check never raised.
+	activeChecks := make(map[string]map[string]bool)
 	if st != nil {
 		for _, f := range st.LatestFindings() {
 			for _, name := range runnerFindingNames["file_index"] {
 				if f.Check == name && f.FilePath != "" {
-					activePaths[f.FilePath] = true
+					if activeChecks[f.FilePath] == nil {
+						activeChecks[f.FilePath] = make(map[string]bool)
+					}
+					activeChecks[f.FilePath][f.Check] = true
 					break
 				}
 			}
 		}
 	}
+	newSet := make(map[string]bool)
 	var newFiles, activeFiles, scanFiles []string
 	for _, e := range currentEntries {
 		if !prevSet[e] {
+			newSet[e] = true
 			newFiles = append(newFiles, e)
 		}
-		if activePaths[e] {
+		if activeChecks[e] != nil {
 			activeFiles = append(activeFiles, e)
 		}
-		if !prevSet[e] || activePaths[e] {
+		if !prevSet[e] || activeChecks[e] != nil {
 			scanFiles = append(scanFiles, e)
 		}
+	}
+	// Every finding this check raises asserts the file is new. A path is only
+	// re-verified because it already carries one, so the re-verification may
+	// renew that finding but must never raise a different one about a file
+	// that has been in the baseline all along -- which would also keep itself
+	// alive, by putting the path back into this set on the next cycle.
+	keepReverified := func(findings []alert.Finding) []alert.Finding {
+		out := findings[:0]
+		for _, f := range findings {
+			if !newSet[f.FilePath] && activeChecks[f.FilePath] != nil && !activeChecks[f.FilePath][f.Check] {
+				continue
+			}
+			out = append(out, f)
+		}
+		return out
 	}
 
 	if incomplete {
 		// Publishing partial entries or mtimes would let the next cached
 		// walk retire findings for directories we still have not read.
-		return checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles)
+		return keepReverified(checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles))
 	}
 
 	work.local()
@@ -302,7 +324,7 @@ func checkFileIndexLive(ctx context.Context, cfg *config.Config, st *state.Store
 		work.observe(copyFile(currentPath, previousPath))
 		work.observe(saveDirCache(indexDir, dirCache))
 		work.execution()
-		return checkFileIndexAnalyzeNewFiles(ctx, cfg, activeFiles)
+		return keepReverified(checkFileIndexAnalyzeNewFiles(ctx, cfg, activeFiles))
 	}
 
 	isShrink, promote := evaluateFileIndexShrink(len(previousEntries), len(currentEntries))
@@ -325,7 +347,7 @@ func checkFileIndexLive(ctx context.Context, cfg *config.Config, st *state.Store
 	// preserving the removed paths against recovery floods.
 	if isShrink {
 		work.execution()
-		findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles)
+		findings := keepReverified(checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles))
 		work.local()
 		if promote {
 			fmt.Fprintf(os.Stderr, "file_index: shrink persisted %d scans; adopting smaller index (%d entries, was %d) as new baseline\n",
@@ -342,7 +364,7 @@ func checkFileIndexLive(ctx context.Context, cfg *config.Config, st *state.Store
 	}
 
 	work.execution()
-	findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles)
+	findings := keepReverified(checkFileIndexAnalyzeNewFiles(ctx, cfg, scanFiles))
 	work.local()
 	work.observe(copyFile(currentPath, previousPath))
 	return findings
