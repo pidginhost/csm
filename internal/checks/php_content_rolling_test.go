@@ -377,7 +377,7 @@ func TestRollingContentReportsCursorWriteError(t *testing.T) {
 	scan := newPHPContentScan(cfg, nil, false)
 	var findings []alert.Finding
 	stderr := captureStderr(t, func() {
-		rollingContentCoverage(context.Background(), cfg, scan, "acct", []string{dir}, &findings)
+		rollingContentCoverage(context.Background(), cfg, scan, "acct", []string{dir}, 1, &findings)
 	})
 	if !strings.Contains(stderr, "php_content rolling: cursor write for acct:") {
 		t.Fatalf("cursor write error was not reported; stderr=%q", stderr)
@@ -412,7 +412,7 @@ func TestRollingContentSkipsNonRegularCandidates(t *testing.T) {
 	cfg := rollingCfg(1)
 	scan := newPHPContentScan(cfg, nil, false)
 	var findings []alert.Finding
-	rollingContentCoverage(context.Background(), cfg, scan, "acct", []string{dir}, &findings)
+	rollingContentCoverage(context.Background(), cfg, scan, "acct", []string{dir}, 1, &findings)
 
 	if opened {
 		t.Fatal("rolling content must not open non-regular PHP candidates")

@@ -983,8 +983,11 @@ func TestRunParallelThrottledCheckReturningAfterDeadlineDoesNotStamp(t *testing.
 	if slices.Contains(purge, name) {
 		t.Fatalf("deadline-expired result must stay out of purge list: %v", purge)
 	}
-	if containsFindingCheck(findings, name) {
-		t.Fatalf("deadline-expired result was merged as a successful check: %+v", findings)
+	// The result is kept because the work was already done, but the check is
+	// still not a completed one: no purge, no throttle stamp, and the timeout
+	// is reported.
+	if !containsFindingCheck(findings, name) {
+		t.Fatalf("deadline-expired result was dropped: %+v", findings)
 	}
 	if !containsFindingCheck(findings, "check_timeout") {
 		t.Fatalf("deadline-expired result did not emit check_timeout: %+v", findings)
