@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -86,4 +87,55 @@ func TestRunParallelTimedOutCheckWithoutResultsReportsTimeoutOnly(t *testing.T) 
 	if len(findings) != 1 || findings[0].Check != "check_timeout" {
 		t.Fatalf("expected only a check_timeout finding, got %+v", findings)
 	}
+}
+
+func TestRunParallelCancellationDoesNotWaitForDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		release := make(chan struct{})
+		defer close(release)
+		checks := []namedCheck{{"cancel_drain", func(context.Context, *config.Config, *state.Store) []alert.Finding {
+			cancel()
+			<-release
+			return nil
+		}}}
+		start := time.Now()
+		findings, purge := runParallelWithContext(ctx, &config.Config{}, nil, checks, "test", false)
+		if len(findings) != 0 || len(purge) != 0 {
+			t.Fatalf("canceled run published results: %v %v", findings, purge)
+		}
+		if elapsed := time.Since(start); elapsed != 0 {
+			t.Fatalf("shutdown waited for drain: %v", elapsed)
+		}
+	})
+}
+
+func TestRunParallelDrainedDeadlineStillCountsLoss(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		previous := checkExecutions
+		checkExecutions = newCheckExecutionMonitor()
+		defer func() { checkExecutions = previous }()
+		previousTimeout := timeoutForFunc
+		timeoutForFunc = func(string) time.Duration { return time.Second }
+		defer func() { timeoutForFunc = previousTimeout }()
+		checks := []namedCheck{{"drain_loss", func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			<-ctx.Done()
+			time.Sleep(time.Millisecond)
+			return []alert.Finding{{Check: "partial", Severity: alert.High}}
+		}}}
+		start := time.Now()
+		findings, purge := runParallel(&config.Config{}, nil, checks, "test", false)
+		synctest.Wait()
+		status := CheckExecutionQueueStatus(time.Now())
+		if status.DroppedTotal != 1 || status.InFlight != 0 || status.Depth != 0 {
+			t.Fatalf("drained deadline accounting: %+v", status)
+		}
+		if len(findings) != 2 || !containsFindingCheck(findings, "partial") || !containsFindingCheck(findings, "check_timeout") || slices.Contains(purge, "drain_loss") {
+			t.Fatalf("unexpected results: %v %v", findings, purge)
+		}
+		if time.Since(start) != time.Second+time.Millisecond {
+			t.Fatal("result was drained more than once")
+		}
+	})
 }

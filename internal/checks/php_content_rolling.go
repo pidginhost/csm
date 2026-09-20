@@ -53,6 +53,7 @@ func rollingContentPass(ctx context.Context, cfg *config.Config, scan *phpConten
 		// cycle without making progress. Skip rather than spin in place.
 		return
 	}
+	rollingContentCursors.retain(db, homeDirs)
 	accounts := rollingAccountOrder(db, homeDirs)
 	budget := accountScanMaxFiles(ctx, cfg)
 	wrapped := 0
@@ -93,7 +94,7 @@ func rollingAccountOrder(db *store.DB, homeDirs []os.DirEntry) []rollingAccount 
 		if !entry.IsDir() {
 			continue
 		}
-		cur, _, _ := db.GetScanCursor(entry.Name(), rollingScanCheck)
+		cur, _ := rollingContentCursors.load(db, entry.Name())
 		all = append(all, ordered{
 			rollingAccount: rollingAccount{name: entry.Name(), home: scanHomeDirPath(entry)},
 			last:           cur.LastFullCycleTS,
@@ -135,15 +136,21 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	db := store.Global()
 
 	files := enumeratePHPFiles(ctx, cfg, docRoots)
+	if ctx.Err() != nil {
+		return false, 0
+	}
+	// Enumeration already covers all roots independently of the content
+	// window. Prune even on partial or empty windows, including lists that
+	// keep growing before the cursor can ever wrap.
+	scan.pruneMissing(docRoots, files)
 	if len(files) == 0 {
 		return true, 0
 	}
 
-	cur, _, curErr := db.GetScanCursor(account, rollingScanCheck)
+	cur, curErr := rollingContentCursors.load(db, account)
 	if curErr != nil {
-		// A persistent read error would re-scan from the start every cycle and
-		// never reach dormant files past the cap. Surface it; cur is the zero
-		// record so this cycle still scans the head of the list.
+		// Keep storage failures visible even when in-memory progress lets
+		// this daemon continue covering the account.
 		fmt.Fprintf(os.Stderr, "php_content rolling: cursor read for %s: %v\n", account, curErr)
 	}
 	selected, newLast, wrapped := rollingCandidatesAfter(files, cur.LastPath, limit)
@@ -169,6 +176,10 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 		// Opening FIFOs or device nodes can block the scan; rolling only needs
 		// regular PHP files (including symlinks that resolve to regular files).
 		if !rollingRegularCandidate(file) {
+			// A failed stat or changed file type invalidates any earlier
+			// clean result just like an unsuccessful content read.
+			delete(scan.prev, file)
+			delete(scan.next, file)
 			continue
 		}
 		read++
@@ -191,18 +202,13 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	cur.Check = rollingScanCheck
 	cur.LastPath = newLast
 	if fullTraversal {
-		// This window saw the account's whole PHP source list, so a cached
-		// stamp under its docroots for a path the list does not hold belongs
-		// to a deleted file. Carry-forward keeps stamps across cycles, and
-		// this is where they stop being carried forever.
-		scan.pruneMissing(docRoots, files)
 		now := time.Now().UTC()
 		cur.LastFullCycleTS = now
 		if wrapped {
 			cur.WrappedAt = now
 		}
 	}
-	if err := db.PutScanCursor(cur); err != nil {
+	if err := rollingContentCursors.save(db, cur); err != nil {
 		fmt.Fprintf(os.Stderr, "php_content rolling: cursor write for %s: %v\n", account, err)
 	}
 	return windowComplete, read

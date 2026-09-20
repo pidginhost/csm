@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -1798,6 +1799,30 @@ func savePHPContentCache(stateDir string, cache phpContentCache) {
 	_ = os.Rename(tmpPath, filepath.Join(stateDir, "phpcontentcache.json"))
 }
 
+// A timed-out check can outlive the runner's drain grace. Only the latest
+// host scan may publish its snapshot; an older scan must not restore clean
+// stamps that its successor invalidated. Account and audit scans do not write
+// this cache and therefore do not take ownership away from a host scan.
+var phpContentCacheWriter struct {
+	sync.Mutex
+	generation uint64
+}
+
+func beginPHPContentCacheRun() uint64 {
+	phpContentCacheWriter.Lock()
+	defer phpContentCacheWriter.Unlock()
+	phpContentCacheWriter.generation++
+	return phpContentCacheWriter.generation
+}
+
+func savePHPContentCacheRun(stateDir string, scan *phpContentScan, generation uint64) {
+	phpContentCacheWriter.Lock()
+	defer phpContentCacheWriter.Unlock()
+	if generation == phpContentCacheWriter.generation {
+		savePHPContentCache(stateDir, scan.merged())
+	}
+}
+
 // phpContentHostScanCount drives a periodic forced full rescan that bypasses
 // the content cache, mirroring the file-index cadence. The cache keys on
 // mtime+size alone, so a content swap that preserves both (an attacker resetting
@@ -1819,8 +1844,8 @@ func phpContentForceFull(ctx context.Context) bool {
 }
 
 // phpContentScan carries the per-cycle cache state through the recursive walk.
-// prev is the previous cycle's clean-file stamps (read-only); next is rebuilt
-// from the files seen this cycle, which prunes deleted files automatically.
+// prev holds prior clean stamps not yet invalidated by this run; next holds
+// files confirmed clean during this run.
 type phpContentScan struct {
 	cfg       *config.Config
 	prev      phpContentCache
@@ -1853,7 +1878,9 @@ func newPHPContentScan(cfg *config.Config, prev phpContentCache, forceFull bool)
 func (s *phpContentScan) merged() phpContentCache {
 	out := make(phpContentCache, len(s.next)+len(s.prev))
 	for path, stamp := range s.prev {
-		if s.visited[filepath.Dir(path)] {
+		// The periodic forced pass must also expire stamps outside its fixed
+		// directories, so rolling coverage re-reads them on its next visit.
+		if s.forceFull || s.visited[filepath.Dir(path)] {
 			continue
 		}
 		out[path] = stamp
@@ -1865,7 +1892,8 @@ func (s *phpContentScan) merged() phpContentCache {
 }
 
 // pruneMissing drops cached stamps under roots for paths that are no longer on
-// disk. The caller passes the complete current file list for those roots.
+// disk. Enumeration can omit unreadable directories and remapped extensions,
+// so absence from its list alone is not proof that a cached path is gone.
 func (s *phpContentScan) pruneMissing(roots []string, present []string) {
 	live := make(map[string]struct{}, len(present))
 	for _, path := range present {
@@ -1877,7 +1905,9 @@ func (s *phpContentScan) pruneMissing(roots []string, present []string) {
 		}
 		for _, root := range roots {
 			if strings.HasPrefix(path, root+string(filepath.Separator)) {
-				delete(s.prev, path)
+				if _, err := osFS.Stat(path); os.IsNotExist(err) {
+					delete(s.prev, path)
+				}
 				break
 			}
 		}
@@ -1909,6 +1939,11 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	}
 
 	forcedFull := phpContentForceFull(ctx) || scanForceContent(ctx)
+	persistCache := AccountFromContext(ctx) == "" && !scanForceContent(ctx)
+	var cacheGeneration uint64
+	if persistCache {
+		cacheGeneration = beginPHPContentCacheRun()
+	}
 	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), forcedFull)
 
 	// A run cut short still falls through to the cache write below, so the
@@ -1955,8 +1990,8 @@ accounts:
 	// overwrite the host-wide cache. A forced-content scan (ForceContent=true)
 	// re-reads every file regardless of the cache, so scan.next reflects only
 	// the files visited this run and must not overwrite the host-wide live cache.
-	if AccountFromContext(ctx) == "" && !scanForceContent(ctx) {
-		savePHPContentCache(cfg.StatePath, scan.merged())
+	if persistCache {
+		savePHPContentCacheRun(cfg.StatePath, scan, cacheGeneration)
 	}
 
 	return findings
@@ -2037,6 +2072,16 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 // each cycle for the alert pipeline. scanDir calls this for every non-directory
 // entry; the rolling driver calls it for each path in its bounded slice.
 func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay phpHandlerOverlay, findings *[]alert.Finding) {
+	// Once attempted, only a fresh clean result may retain a stamp. Rolling
+	// and interrupted directory walks cannot rely on directory completion to
+	// invalidate a finding, read failure, or an earlier read in the same run.
+	previous, cached := s.prev[fullPath]
+	delete(s.next, fullPath)
+	defer func() {
+		if _, clean := s.next[fullPath]; !clean {
+			delete(s.prev, fullPath)
+		}
+	}()
 	nameLower := strings.ToLower(filepath.Base(fullPath))
 	if !contenttype.IsPHPSourceName(nameLower) && !overlay.executes(nameLower) {
 		return
@@ -2052,7 +2097,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 		// still readable. chmod does not update mtime or size, so a stale
 		// clean cache entry must not mask a file we can no longer inspect.
 		if !s.forceFull {
-			if prev, ok := s.prev[fullPath]; ok && prev == stamp {
+			if cached && previous == stamp {
 				if phpContentReadable(fullPath) {
 					s.next[fullPath] = stamp
 					return

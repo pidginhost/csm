@@ -2,12 +2,16 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -105,5 +109,131 @@ func TestCheckPHPContentPrunesDeletedFileFromVisitedDir(t *testing.T) {
 	}
 	if _, ok := got[gone]; ok {
 		t.Fatalf("stamp for a deleted file in a scanned directory survived: %v", got)
+	}
+}
+
+// An attempted file must invalidate its old clean stamp even if cancellation
+// prevents scanDir from finishing the directory, or rolling reads it alone.
+type interruptedPHPReadOS struct {
+	realOS
+	path       string
+	cancel     context.CancelFunc
+	unreadable bool
+}
+
+func (o interruptedPHPReadOS) Open(path string) (*os.File, error) {
+	if path == o.path {
+		o.cancel()
+		if o.unreadable {
+			return nil, os.ErrPermission
+		}
+	}
+	return os.Open(path)
+}
+
+func TestPHPContentPartialCacheInvalidatesAttemptedFile(t *testing.T) {
+	for _, unreadable := range []bool{false, true} {
+		t.Run(fmt.Sprint(unreadable), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "a.php")
+			mtime := time.Unix(1700000000, 0)
+			writePHPFixture(t, path, rollingDormantPHP, mtime)
+			writePHPFixture(t, filepath.Join(dir, "z.php"), phpCacheBenign, mtime)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			withMockOS(t, interruptedPHPReadOS{path: path, cancel: cancel, unreadable: unreadable})
+			stamp := phpFileStamp{Mtime: mtime.Unix() - 1, Size: 1}
+			if unreadable {
+				stamp = phpFileStamp{Mtime: mtime.Unix(), Size: int64(len(rollingDormantPHP))}
+			}
+			scan := newPHPContentScan(&config.Config{}, phpContentCache{path: stamp}, false)
+			var findings []alert.Finding
+			scan.scanDir(ctx, dir, 4, phpHandlerOverlay{}, &findings)
+			if !unreadable && !findsPath(findings, path) {
+				t.Fatal("payload was not detected")
+			}
+			if _, ok := scan.merged()[path]; ok {
+				t.Fatal("attempted file retained a stale clean stamp")
+			}
+		})
+	}
+}
+
+func TestPHPContentCacheInvalidatesEarlierReadInSameRun(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.php")
+	writeFile(t, path, phpCacheBenign)
+	scan := newPHPContentScan(&config.Config{}, nil, false)
+	var findings []alert.Finding
+	scan.scanFile(context.Background(), path, phpHandlerOverlay{}, &findings)
+	if _, ok := scan.next[path]; !ok {
+		t.Fatal("clean file was not cached")
+	}
+	writeFile(t, path, rollingDormantPHP)
+	scan.scanFile(context.Background(), path, phpHandlerOverlay{}, &findings)
+	if !findsPath(findings, path) {
+		t.Fatal("payload was not detected")
+	}
+	if _, ok := scan.merged()[path]; ok {
+		t.Fatal("finding retained this run's earlier clean stamp")
+	}
+}
+
+type delayedPHPReadOS struct {
+	realOS
+	path    string
+	entered chan struct{}
+	release chan struct{}
+	blocked atomic.Bool
+}
+
+func (o *delayedPHPReadOS) Open(path string) (*os.File, error) {
+	if path == o.path && o.blocked.CompareAndSwap(false, true) {
+		close(o.entered)
+		<-o.release
+	}
+	return os.Open(path)
+}
+
+func TestCheckPHPContentLateCanceledRunCannotReplaceNewerCache(t *testing.T) {
+	resetPHPContentScanCounts(t)
+	homeRoot := t.TempDir()
+	stateDir := t.TempDir()
+	cfg := &config.Config{StatePath: stateDir}
+	mtime := time.Unix(1700000000, 0)
+	path := seedPHPAccount(t, homeRoot, "aaa", mtime)
+	writePHPFixture(t, path, rollingBenignPHP, mtime)
+	slow := filepath.Join(filepath.Dir(path), "z.php")
+	writePHPFixture(t, slow, rollingBenignPHP, mtime)
+	previousRoots := accountHomeRoots
+	accountHomeRoots = func() []string { return []string{homeRoot} }
+	t.Cleanup(func() { accountHomeRoots = previousRoots })
+	fs := &delayedPHPReadOS{path: slow, entered: make(chan struct{}), release: make(chan struct{})}
+	withMockOS(t, fs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	release := sync.OnceFunc(func() { close(fs.release) })
+	defer func() { release(); <-done }()
+	go func() {
+		defer close(done)
+		CheckPHPContent(ctx, cfg, nil)
+	}()
+	<-fs.entered
+	cancel()
+	// A replacement run detects a change after the old run read the clean
+	// version, while the old run is still blocked in an unrelated file read.
+	payload := rollingDormantPHP + strings.Repeat(" ", len(rollingBenignPHP)-len(rollingDormantPHP))
+	writePHPFixture(t, path, payload, mtime.Add(time.Second))
+	if findings := CheckPHPContent(context.Background(), cfg, nil); !findsPath(findings, path) {
+		t.Fatal("replacement run did not detect the changed file")
+	}
+	if _, ok := loadPHPContentCache(stateDir)[path]; ok {
+		t.Fatal("replacement run cached the payload")
+	}
+	release()
+	<-done
+	if _, ok := loadPHPContentCache(stateDir)[path]; ok {
+		t.Fatal("late canceled run restored an obsolete clean stamp")
 	}
 }

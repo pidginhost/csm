@@ -1170,6 +1170,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 						drained = outcome.findings
 					}
 				case <-grace.C:
+				case <-scanCtx.Done():
+					// Shutdown has no partial findings to publish and must
+					// not wait for checks that ignore cancellation.
 				}
 				grace.Stop()
 				cancel()

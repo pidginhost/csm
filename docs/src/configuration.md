@@ -176,6 +176,8 @@ thresholds:
   full_scan_max_file_mb: 16            # cap on a single file scanned by a full scan, in MiB (default: 16)
   scan_job_retention: 20               # completed full-scan job records kept in the store (default: 20)
   rolling_coverage: true               # tri-state; default on. Each cycle content-scans a slice of dormant files past the mtime cap so old planted files get covered over time, taking the accounts covered longest ago first. Set false to disable
+  # Cursor write failures keep progress in memory until storage recovers; a restart loses that unpersisted progress.
+  # Periodic forced rescans expire old clean-file records, including files waiting for a later rolling window.
   dropper_detection: true              # tri-state; default on. Real-time flag for a PHP/executable created under a web docroot and unlinked before the TTL probe. Set false to disable
   dropper_unlink_ttl_sec: 300          # seconds a fresh docroot PHP/executable is tracked before the self-delete probe (default: 300, range 30-3600)
 
