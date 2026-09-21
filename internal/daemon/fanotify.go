@@ -2251,7 +2251,11 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 	}
 
 	if yaraScanner := yara.Active(); yaraScanner != nil {
-		matches, err := yara.ScanBytesChecked(yaraScanner, path, data)
+		// The IPC frame ceiling is a property of the transport, not of the
+		// file: on its own it would let a dropper padded past that ceiling go
+		// unscanned on write. As in the deep and mail scans, an oversize
+		// payload is retried by letting the worker open the file itself.
+		matches, _, err := yara.ScanContentOrPathChecked(yaraScanner, path, data, len(data))
 		if err != nil {
 			fm.reportYARAScanError(path, err)
 			return matched
