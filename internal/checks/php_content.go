@@ -1301,6 +1301,9 @@ func includeKeywordEnd(line string, start int) (int, bool) {
 		if end < len(line) && isPHPIdentifierPart(line[end]) {
 			continue
 		}
+		if precededByFunctionKeyword(line, start) {
+			continue
+		}
 		return end, true
 	}
 	return 0, false
@@ -1312,6 +1315,35 @@ func canStartIncludeKeyword(line string, start int) bool {
 	}
 	prev := line[start-1]
 	return !isPHPIdentifierPart(prev) && prev != '$' && prev != '>' && prev != ':' && prev != '\\'
+}
+
+// functionKeywordLookback bounds the scan back over the whitespace between
+// `function` and the name it declares. This runs only after a keyword match,
+// but the separator is a space or a newline in real code, so a few tokens of
+// slack is enough and keeps the check constant-time.
+const functionKeywordLookback = 64
+
+// precededByFunctionKeyword reports whether the token before start is the
+// `function` keyword, i.e. start begins a declared function or method name
+// rather than a language construct. PHP 7 allows a reserved word as a method
+// name, and a bootstrap method called include() is a common plugin idiom;
+// treating that declaration as an include statement makes the method body its
+// target expression, so any request input inside the method reads as an
+// include of request input.
+func precededByFunctionKeyword(line string, start int) bool {
+	const kw = "function"
+	i := start - 1
+	limit := start - functionKeywordLookback
+	for i >= 0 && i >= limit && (line[i] == ' ' || line[i] == '\t' || line[i] == '\n' || line[i] == '\r') {
+		i--
+	}
+	if i < len(kw)-1 || i == start-1 {
+		return false
+	}
+	if !strings.EqualFold(line[i-len(kw)+1:i+1], kw) {
+		return false
+	}
+	return i-len(kw) < 0 || !isPHPIdentifierPart(line[i-len(kw)])
 }
 
 func phpExpressionEnd(code string, start int) int {

@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,13 +86,16 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			".s.PGSQL", ".font-unix", ".ICE-unix", ".X11-unix",
 			".XIM-unix", ".crontab.", ".Test-unix",
 		}
+		// One candidate set across all three roots: on CloudLinux /var/tmp is
+		// the same filesystem as /tmp, so the same physical file is reachable
+		// through two of these patterns and was reported once per pattern.
+		var candidates []string
 		for _, pattern := range []string{"/tmp/.*", "/dev/shm/.*", "/var/tmp/.*"} {
 			if ctx.Err() != nil {
 				return findings
 			}
 			matches, err := osFS.Glob(pattern)
 			markScanReadError(ctx, "filesystem", err)
-			candidates := make([]string, 0, len(matches))
 			for _, match := range matches {
 				if ctx.Err() != nil {
 					return findings
@@ -109,29 +113,47 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 				}
 				candidates = append(candidates, match)
 			}
-			// These are global temp locations, not account paths; do not let
-			// account_scan_max_files hide older suspicious files here.
-			ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
+		}
+		// These are global temp locations, not account paths; do not let
+		// account_scan_max_files hide older suspicious files here.
+		ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
+		if ctx.Err() != nil {
+			return findings
+		}
+		var reported []os.FileInfo
+		for _, match := range ranked {
 			if ctx.Err() != nil {
 				return findings
 			}
-			for _, match := range ranked {
-				if ctx.Err() != nil {
-					return findings
-				}
-				info, err := osFS.Stat(match)
-				markScanReadError(ctx, "filesystem", err)
-				if err != nil || info.IsDir() {
-					continue
-				}
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "suspicious_file",
-					Message:  fmt.Sprintf("Suspicious hidden file: %s", match),
-					Details:  fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime()),
-					FilePath: match,
-				})
+			info, err := osFS.Stat(match)
+			markScanReadError(ctx, "filesystem", err)
+			if err != nil || info.IsDir() {
+				continue
 			}
+			// A leading dot is not by itself a signal: these directories are
+			// full of root-owned infrastructure state. What matters is whether
+			// the file could execute.
+			if !hiddenTempFileCanExecute(match) {
+				continue
+			}
+			seen := false
+			for _, prev := range reported {
+				if os.SameFile(prev, info) {
+					seen = true
+					break
+				}
+			}
+			if seen {
+				continue
+			}
+			reported = append(reported, info)
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "suspicious_file",
+				Message:  fmt.Sprintf("Suspicious hidden file: %s", match),
+				Details:  fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime()),
+				FilePath: match,
+			})
 		}
 
 		// SUID binaries in tmp dirs - ReadDir + stat (small dirs, fast)
@@ -159,6 +181,33 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	}
 
 	return findings
+}
+
+// hiddenTempFileCanExecute reports whether a hidden file in a world-writable
+// temp directory could run: an executable bit or ELF magic, or a script marker
+// that an interpreter would honour. Inert data written there by system
+// components is not a finding.
+func hiddenTempFileCanExecute(path string) bool {
+	// Opening a FIFO blocks until a writer appears, and these directories are
+	// world-writable, so the mode is checked before anything is opened.
+	info, err := osFS.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	if looksExecutableOrLibrary(path) {
+		return true
+	}
+	f, err := osFS.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	var head [8]byte
+	n, _ := io.ReadFull(f, head[:])
+	prefix := strings.ToLower(string(head[:n]))
+	return strings.HasPrefix(prefix, "#!") ||
+		strings.HasPrefix(prefix, "<?php") ||
+		strings.HasPrefix(prefix, "<?=")
 }
 
 // scanForSUID checks for SUID binaries using ReadDir.

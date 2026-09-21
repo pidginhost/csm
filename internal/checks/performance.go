@@ -397,15 +397,20 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			if !ok || when.Before(cutoff) {
 				continue
 			}
+			severity, accountScoped := classifyOOMLine(line)
+			message := "OOM killer invoked in the last hour"
+			if accountScoped {
+				message = "Account memory limit reached in the last hour"
+			}
 			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
+				Severity: severity,
 				Check:    "perf_memory",
-				Message:  "OOM killer invoked in the last hour",
+				Message:  message,
 				Details:  strings.TrimSpace(line),
 				// Every kill logs a fresh pid and byte counts; keying dedup on
 				// the victim process name keeps an ongoing OOM loop to one
 				// finding per state-expiry window instead of one per scan.
-				DedupKey:  "oom:" + oomVictimProcess(line),
+				DedupKey:  oomDedupKey(line),
 				Timestamp: time.Now(),
 			})
 			break // one finding is enough
@@ -474,6 +479,27 @@ func oomVictimProcess(line string) string {
 // ("[Mon Jan _2 15:04:05 2006] ..."). Returns ok=false when no timestamp can
 // be parsed, so the caller drops the line rather than reporting an undatable
 // (and therefore possibly stale) OOM event.
+// classifyOOMLine separates a host-wide OOM from a cgroup one. On a shared
+// host a cgroup kill is an account reaching the memory limit its plan sets:
+// routine, and not evidence about host health. Only real memory exhaustion is
+// Critical, or the two become indistinguishable in the alert stream.
+func classifyOOMLine(line string) (alert.Severity, bool) {
+	if strings.Contains(strings.ToLower(line), "memory cgroup out of memory") {
+		return alert.Warning, true
+	}
+	return alert.Critical, false
+}
+
+// oomDedupKey keeps the account-scoped and host-wide cases on separate dedup
+// identities, so one account repeatedly hitting its limit cannot suppress the
+// host-wide alert that follows it.
+func oomDedupKey(line string) string {
+	if _, accountScoped := classifyOOMLine(line); accountScoped {
+		return "oom:cgroup:" + oomVictimProcess(line)
+	}
+	return "oom:host:" + oomVictimProcess(line)
+}
+
 func parseDmesgOOMTime(line string, useISO bool) (time.Time, bool) {
 	if useISO {
 		// 2006-01-02T15:04:05,000000+0300 -- comma decimal, first field.

@@ -33,9 +33,11 @@ func dmesgMock(tLine string) *mockCmd {
 	}
 }
 
+// An OOM finding is identified by its dedup namespace rather than its wording:
+// the account-scoped case deliberately reads differently from the host-wide one.
 func oomFinding(findings []alert.Finding) bool {
 	for _, f := range findings {
-		if f.Check == "perf_memory" && strings.Contains(f.Message, "OOM") {
+		if f.Check == "perf_memory" && strings.HasPrefix(f.DedupKey, "oom:") {
 			return true
 		}
 	}
@@ -140,7 +142,7 @@ func TestOOMVictimProcessUsesProcessMarker(t *testing.T) {
 func oomFindingValue(t *testing.T, findings []alert.Finding) alert.Finding {
 	t.Helper()
 	for _, f := range findings {
-		if f.Check == "perf_memory" && strings.Contains(f.Message, "OOM") {
+		if f.Check == "perf_memory" && strings.HasPrefix(f.DedupKey, "oom:") {
 			return f
 		}
 	}
