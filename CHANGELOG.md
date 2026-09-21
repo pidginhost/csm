@@ -11,7 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
-- A file written to disk was left unscanned by the realtime rule engine when its content was too large to send to the scanner in one message, even though the scanner could have opened the file itself. Padding a dropper past that size kept it from being scanned on write. The scheduled and mail scans already handled this.
+- Realtime rule scans now handle large event snapshots without losing coverage at the scanner transport limit. Retries preserve the captured content and alert evidence even if the file changes or disappears.
 - Recognized templates, stylesheets, and data files no longer produce false JavaScript scan warnings, while JavaScript remains checked regardless of filename. Embedded JavaScript in those documents is not covered by this analyzer.
 - Suspended accounts are no longer counted as WordPress databases the scan failed to read. Their database users are locked while the account is suspended, so every scan reported coverage it could never obtain.
 - Mailbox audit warnings stay visible between scheduled checks. Temporary verification failures continue to retry even when their underlying error resembles an unauditable hash.

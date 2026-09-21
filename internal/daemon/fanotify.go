@@ -2251,19 +2251,21 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 	}
 
 	if yaraScanner := yara.Active(); yaraScanner != nil {
-		// The IPC frame ceiling is a property of the transport, not of the
-		// file: on its own it would let a dropper padded past that ceiling go
-		// unscanned on write. As in the deep and mail scans, an oversize
-		// payload is retried by letting the worker open the file itself.
-		matches, _, err := yara.ScanContentOrPathChecked(yaraScanner, path, data, len(data))
+		matches, scannedSHA, err := scanRealtimeYARA(yaraScanner, path, data)
 		if err != nil {
 			fm.reportYARAScanError(path, err)
 			return matched
 		}
 		if len(matches) > 0 {
-			fm.sendAlertWithPath(alert.Critical, "yara_match_realtime",
-				fmt.Sprintf("YARA rule match [%s]: %s", matches[0].RuleName, path),
-				fmt.Sprintf("Matched %d YARA rule(s)", len(matches))+signatures.ReferencedPayloadDetail(data), path, procInfo)
+			fm.sendFileFinding(alert.Finding{
+				Severity:      alert.Critical,
+				Check:         "yara_match_realtime",
+				Message:       fmt.Sprintf("YARA rule match [%s]: %s", matches[0].RuleName, path),
+				Details:       fmt.Sprintf("Matched %d YARA rule(s)", len(matches)) + signatures.ReferencedPayloadDetail(data),
+				FilePath:      path,
+				ProcessInfo:   procInfo,
+				ContentSHA256: scannedSHA,
+			})
 			return true
 		}
 	}
