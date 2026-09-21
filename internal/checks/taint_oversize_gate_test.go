@@ -15,12 +15,9 @@ import (
 	"github.com/pidginhost/csm/internal/phptaint"
 )
 
-// TestOversizeGapRejectsBinaryFiles covers the case
-// TestOversizeGapRequiresPHPLookingContent missed: its fixtures were all
-// text, and text without a PHP tag was already rejected. Media files are
-// the ones that carried a chance open tag and flooded the coverage
-// report.
-func TestOversizeGapRejectsBinaryFiles(t *testing.T) {
+// The PHP gate must retain binary content carrying a potential opening tag:
+// PHP can execute after arbitrary inline output. The JS gate is independent.
+func TestOversizeGatesClassifyBinaryPrefixes(t *testing.T) {
 	dir := t.TempDir()
 
 	png := filepath.Join(dir, "photo.png")
@@ -50,11 +47,11 @@ func TestOversizeGapRejectsBinaryFiles(t *testing.T) {
 		return info
 	}
 
-	if phpFileMayBePHP(png, stat(png)) {
-		t.Error("a PNG carrying a chance open tag was reported as PHP coverage")
+	if !phpFileMayBePHP(png, stat(png)) {
+		t.Error("a binary prefix hid a potential PHP opening tag")
 	}
-	if phpFileMayBePHP(catalog, stat(catalog)) {
-		t.Error("a gettext catalog was reported as PHP coverage")
+	if !phpFileMayBePHP(catalog, stat(catalog)) {
+		t.Error("a binary prefix hid a potential PHP short tag")
 	}
 	if !phpFileMayBePHP(source, stat(source)) {
 		t.Error("a PHP source file was dropped from coverage")

