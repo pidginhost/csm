@@ -253,13 +253,27 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 	if len(installs) == 0 {
 		return appendDatabaseScanIncompleteFinding(ctx, nil, coverage)
 	}
-	coverage.discovered = len(installs)
+	// cPanel locks an account's database users when it suspends the account,
+	// so every query against its installs fails with an access error. Such an
+	// install is dropped before coverage is counted: leaving it in made the
+	// scan permanently short of full coverage, with a warning no operator
+	// action could clear while the account stayed suspended.
 	wpConfigs := make([]string, 0, len(installs))
 	servedRoots := make(map[string]servedState, len(installs))
+	scannable := make([]wpInstall, 0, len(installs))
 	for _, in := range installs {
+		if accountSuspended(wpConfigUser(filepath.Dir(in.ConfigPath))) {
+			continue
+		}
+		scannable = append(scannable, in)
 		wpConfigs = append(wpConfigs, in.ConfigPath)
 		servedRoots[in.ConfigPath] = in.Served
 	}
+	installs = scannable
+	if len(installs) == 0 {
+		return appendDatabaseScanIncompleteFinding(ctx, nil, coverage)
+	}
+	coverage.discovered = len(installs)
 	owners := wpConfigOwners(installs)
 	domainOwnership := newPanelDomainOwnership(panelDomains)
 

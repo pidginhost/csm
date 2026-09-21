@@ -1137,6 +1137,15 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				}
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
+				// An internal interval skip did not run an audit. Like a runner
+				// throttle skip, it cannot replace per-run coverage summaries
+				// or acknowledge recovery from an earlier failure.
+				if incompleteChecks.wasSkipped(c.name) {
+					if throttleReserved {
+						store.ReleaseThrottle(c.name)
+					}
+					return
+				}
 				mu.Lock()
 				recoveredPanicKeys = append(recoveredPanicKeys, (alert.Finding{Check: "check_panic", DedupKey: "check:" + c.name}).Key())
 				if scopes := coveragePaths.completedScopes(c.name); len(scopes) > 0 {

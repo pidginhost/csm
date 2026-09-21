@@ -78,5 +78,9 @@ work finishes.
 An unsupported, malformed, or over-budget hash produces
 `email_password_audit_incomplete`. CSM keeps earlier password findings and does
 not record that mailbox as successfully audited. Other mailboxes continue to be
-checked, and incomplete mailboxes are retried on a later deep scan. Upgrading
+checked. When these are the only failures, the audit waits for
+`password_check_interval_min` before trying again; temporary verification failures
+remain eligible for retry on the next deep scan. Cycles skipped by the interval
+preserve both earlier password findings and the audit warning. A completed audit
+replaces them with its current results. Upgrading
 starts a fresh audit even when an older CSM version recorded the same hash.

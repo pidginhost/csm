@@ -283,11 +283,16 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 		return nil
 	}
 
-	// Internal throttle -- same pattern as CheckOutdatedPlugins
+	// Internal throttle. Unlike CheckOutdatedPlugins, which throttles only its
+	// cache refresh and still evaluates that cache every cycle, this check has
+	// nothing to report from until it runs again. Returning nothing silently
+	// would read as "ran, found nothing" and let the runner retire the weak
+	// passwords the last run found, so the skipped scope is declared.
 	if !ForceAll {
 		lastRefresh := db.GetEmailPWLastRefresh()
 		interval := time.Duration(cfg.EmailProtection.PasswordCheckIntervalMin) * time.Minute
 		if time.Since(lastRefresh) < interval {
+			markCheckSkipped(ctx, "email_weak_password")
 			return nil
 		}
 	}
@@ -317,6 +322,7 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var incomplete int
+	var unauditable int
 	var wg sync.WaitGroup
 
 	sem := make(chan struct{}, 5)
@@ -355,7 +361,11 @@ mailboxes:
 				}
 				mu.Lock()
 				if err != nil {
-					incomplete++
+					if emailHashPermanentlyUnauditable(err) {
+						unauditable++
+					} else {
+						incomplete++
+					}
 				} else if finding != nil {
 					findings = append(findings, *finding)
 				}
@@ -375,20 +385,34 @@ mailboxes:
 	}
 	batch.abandon(ctx)
 	wg.Wait()
-	if incomplete > 0 || ctx.Err() != nil {
+	if incomplete > 0 || unauditable > 0 || ctx.Err() != nil {
 		markCheckIncomplete(ctx, "email_weak_password")
 		findings = append(findings, alert.Finding{
 			Severity: alert.Warning,
 			Check:    "email_password_audit_incomplete",
 			Message:  "Email password audit did not complete",
-			Details:  fmt.Sprintf("Mailboxes with an unfinished verification: %d. Unsupported, malformed, or over-budget hashes remain unaudited and are retried. See the email password audit documentation for supported formats and limits.", incomplete),
-			// The unfinished-mailbox count in Details is not the condition.
+			Details:  fmt.Sprintf("Mailboxes to retry: %d. Mailboxes whose stored hash this build cannot audit at all: %d. See the email password audit documentation for supported formats and limits.", incomplete, unauditable),
+			// The mailbox counts in Details are not the condition.
 			DedupKey: "unfinished_verification",
 		})
-		return findings
 	}
-	_ = db.SetEmailPWLastRefresh(time.Now())
+	// A hash this build cannot audit never becomes auditable by rerunning, so
+	// it must not hold the stamp back: that turned the interval into "every
+	// scan" and re-verified the whole mailbox set each cycle. A cycle skipped
+	// by the stamp now declares its skipped scope, so the findings survive it.
+	if incomplete == 0 && ctx.Err() == nil {
+		_ = db.SetEmailPWLastRefresh(time.Now())
+	}
 	return findings
+}
+
+// emailHashPermanentlyUnauditable reports whether a verification failure is a
+// property of the stored hash rather than a condition that may clear.
+func emailHashPermanentlyUnauditable(err error) bool {
+	// The parser returns these sentinels directly. A wrapper can describe a
+	// transient verification failure, so unwrapping is not proof that only
+	// the stored hash prevented this audit from completing.
+	return err == errEmailHashUnsupported || err == errEmailHashInvalid || err == errEmailHashCost
 }
 
 func auditEmailPassword(ctx context.Context, entry mailboxEntry) (*alert.Finding, error) {

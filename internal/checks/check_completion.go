@@ -14,8 +14,9 @@ import (
 // complete. Known file gaps can be preserved in the eventual store transaction;
 // an unknown range prevents the owner from retiring anything.
 type incompleteCheckCollector struct {
-	mu    sync.Mutex
-	names map[string]struct{}
+	mu      sync.Mutex
+	names   map[string]struct{}
+	skipped map[string]bool
 }
 
 type incompleteCheckContextKey struct{}
@@ -125,6 +126,28 @@ func markCheckIncomplete(ctx context.Context, name string) {
 	collector.mu.Lock()
 	collector.names[name] = struct{}{}
 	collector.mu.Unlock()
+}
+
+// markCheckSkipped preserves both discovered state and the last run's coverage
+// summary when an internal refresh interval prevents any new audit work.
+func markCheckSkipped(ctx context.Context, name string) {
+	collector := incompleteCollectorFrom(ctx)
+	if collector == nil {
+		return
+	}
+	collector.mu.Lock()
+	defer collector.mu.Unlock()
+	collector.names[name] = struct{}{}
+	if collector.skipped == nil {
+		collector.skipped = make(map[string]bool)
+	}
+	collector.skipped[name] = true
+}
+
+func (c *incompleteCheckCollector) wasSkipped(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.skipped[name]
 }
 
 // A removed path is covered absence; a failed read is not evidence of cleanup.
