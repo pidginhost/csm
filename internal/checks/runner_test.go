@@ -151,7 +151,11 @@ func TestLatestPurgeCheckNamesForTierCriticalIncludesEmittedNames(t *testing.T) 
 	}
 }
 
-func TestLatestPurgeCheckNamesForReducedDeepSkipsFanotifyReplacedChecks(t *testing.T) {
+// The reduced tier owns the emitted names of every check it schedules, down to
+// the per-run coverage summaries, so a run in this tier can retire what an
+// earlier one left behind. The names of the filesystem checks it also runs are
+// pinned separately, in reduced_tier_filesystem_test.go.
+func TestLatestPurgeCheckNamesForReducedDeepCoversScheduledChecks(t *testing.T) {
 	names := LatestPurgeCheckNamesForReducedDeep()
 	if !slices.Contains(names, "outdated_plugins") {
 		t.Fatalf("reduced deep purge names missing outdated_plugins")
@@ -161,9 +165,6 @@ func TestLatestPurgeCheckNamesForReducedDeepSkipsFanotifyReplacedChecks(t *testi
 	}
 	if !slices.Contains(names, "php_config_scan_incomplete") {
 		t.Fatalf("reduced deep purge names missing php_config_scan_incomplete")
-	}
-	if slices.Contains(names, "webshell") {
-		t.Fatalf("reduced deep purge names included fanotify-replaced webshell")
 	}
 }
 

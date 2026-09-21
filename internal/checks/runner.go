@@ -555,6 +555,17 @@ func reducedDeepChecks() []namedCheck {
 		// index also owns the baseline the new-file diff runs against, which
 		// stops being refreshed for as long as the monitor stays attached.
 		{"file_index", CheckFileIndex},
+		// The rest of the rename-blind content scans, for the same reason.
+		{"webshells", CheckWebshells},
+		{"htaccess", CheckHtaccess},
+		{"phishing", CheckPhishing},
+		// Not merely rename-blind: a setuid bit is set by chmod, which raises
+		// no close-write event, so no realtime path reports one at all.
+		{"filesystem", CheckFilesystem},
+		// Confirmed by probing the vhost rather than by reading the file, so
+		// no file event stands in for it. Throttled, because that probe is a
+		// live request to a customer site and the findings are posture.
+		{"exposed_files", CheckExposedFiles},
 		{"wp_core", CheckWPCore},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
@@ -615,6 +626,10 @@ func PerfCheckNamesForTier(tier Tier) []string {
 // would purge stale findings and merge nothing, hiding real issues until
 // the next non-throttled cycle (or daemon restart).
 var checkThrottleMin = map[string]int{
+	// Every candidate is confirmed with a live request to the customer's
+	// vhost, and the findings are posture that does not change between
+	// cycles, so this runs a few times a day rather than on each deep cycle.
+	"exposed_files":      360,
 	"perf_php_handler":   60,
 	"perf_mysql_config":  60,
 	"perf_redis_config":  60,
