@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- The realtime scan's retry for a large file now inspects the exact bytes the write event carried, rather than reopening the path, so a file swapped between the write and the retry cannot change what is scanned.
 - Realtime rule scans now handle large event snapshots without losing coverage at the scanner transport limit. Retries preserve the captured content and alert evidence even if the file changes or disappears.
 - Recognized templates, stylesheets, and data files no longer produce false JavaScript scan warnings, while JavaScript remains checked regardless of filename. Embedded JavaScript in those documents is not covered by this analyzer.
 - Suspended accounts are no longer counted as WordPress databases the scan failed to read. Their database users are locked while the account is suspended, so every scan reported coverage it could never obtain.
