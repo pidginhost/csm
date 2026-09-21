@@ -83,18 +83,18 @@ var cronDangerTokens = [][]byte{
 	[]byte("wget "),
 }
 
-// cronHasDangerTokens returns true if any cronDangerTokens byte fragment
-// appears in content. Case-sensitive; cron content is shell, so case
-// matters (PATH lookups, builtins). The curl/wget tokens are broad on
-// purpose: a vendor cron that needs to fetch is rare enough that flagging
-// is the right default.
+// cronHasDangerTokens also uses the crontab detector so known persistence,
+// including encoded payloads, cannot be downgraded by a smaller token list.
+// The extra shell fragments are case-sensitive. The curl/wget tokens are
+// broad on purpose: a vendor cron that needs to fetch is rare enough that
+// flagging is the right default.
 func cronHasDangerTokens(content []byte) bool {
 	for _, tok := range cronDangerTokens {
 		if bytes.Contains(content, tok) {
 			return true
 		}
 	}
-	return false
+	return len(MatchCrontabPatternsDeep(string(content), nil)) > 0
 }
 
 // rescoreSensitive returns f with severity adjusted per provenance signals:

