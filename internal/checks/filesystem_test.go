@@ -62,7 +62,7 @@ func TestCheckFilesystemHiddenRankingSkipsSafePrefixesBeforeStat(t *testing.T) {
 				return statWithMtime{name: ".font-unix", modTime: now.Add(time.Minute)}, nil
 			}
 			if name == suspicious {
-				return statWithMtime{name: ".malware_payload", modTime: now}, nil
+				return statWithMtime{name: ".malware_payload", modTime: now, mode: 0o755}, nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -123,10 +123,10 @@ func TestCheckFilesystemHiddenFilesIgnoreAccountScanCap(t *testing.T) {
 			}
 			return nil, nil
 		},
-		stat: mtimesByPath(map[string]time.Time{
+		stat: mtimesByPathMode(map[string]time.Time{
 			oldPath:    now.Add(-24 * time.Hour),
 			recentPath: now.Add(-1 * time.Minute),
-		}),
+		}, 0o755),
 		readDir: func(name string) ([]os.DirEntry, error) { return nil, os.ErrNotExist },
 	})
 

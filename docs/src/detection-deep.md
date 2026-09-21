@@ -352,3 +352,18 @@ Operators on plain Linux can point `perf_error_logs`, `perf_wp_config`, `perf_wp
 Package integrity rechecks retain a modification that the package verifier still
 reports for the flagged file. Changing its executable mode or removing the file
 does not by itself resolve that finding.
+
+### Hidden temporary files
+
+The filesystem check reports hidden regular files in the shared temporary
+directories when they have executable permissions, ELF magic, or a leading
+shebang, long PHP opening tag, or short echo tag. Aliases of the same inode
+produce one finding;
+distinct files remain separate even when their names match. Failed content
+reads leave the filesystem scan incomplete and preserve earlier alerts.
+
+An inert staged blob without these signals is outside this heuristic. There is
+no guaranteed alternate detection before it is made executable or interpreted;
+signature and runtime detection depend on recognizable content and activity.
+Changing its permissions to executable makes it eligible for the next filesystem
+scan. This check does not establish that every unreported temporary file is safe.

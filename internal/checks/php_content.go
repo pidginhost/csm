@@ -1301,6 +1301,9 @@ func includeKeywordEnd(line string, start int) (int, bool) {
 		if end < len(line) && isPHPIdentifierPart(line[end]) {
 			continue
 		}
+		if precededByFunctionKeyword(line, start) {
+			continue
+		}
 		return end, true
 	}
 	return 0, false
@@ -1312,6 +1315,26 @@ func canStartIncludeKeyword(line string, start int) bool {
 	}
 	prev := line[start-1]
 	return !isPHPIdentifierPart(prev) && prev != '$' && prev != '>' && prev != ':' && prev != '\\'
+}
+
+// precededByFunctionKeyword reports whether the token before start is the
+// `function` keyword, i.e. start begins a declared function or method name
+// rather than a language construct. PHP 7 allows a reserved word as a method
+// name, and a bootstrap method called include() is a common plugin idiom;
+// treating that declaration as an include statement makes the method body its
+// target expression, so any request input inside the method reads as an
+// include of request input.
+func precededByFunctionKeyword(line string, start int) bool {
+	const kw = "function"
+	// Only inspect the separator after a keyword match, never at each byte
+	// offset. Separators have no length limit in PHP; each whitespace run is
+	// visited at most once per matched keyword, keeping the full scan linear.
+	end := skipPHPWhitespaceBack(line, 0, start)
+	if end > 0 && line[end-1] == '&' {
+		end = skipPHPWhitespaceBack(line, 0, end-1)
+	}
+	begin := end - len(kw)
+	return begin >= 0 && strings.EqualFold(line[begin:end], kw) && canStartIncludeKeyword(line, begin)
 }
 
 func phpExpressionEnd(code string, start int) int {

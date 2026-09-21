@@ -348,7 +348,7 @@ func TestCheckFilesystem_HiddenFileInTmp(t *testing.T) {
 		},
 		stat: func(name string) (os.FileInfo, error) {
 			if name == "/tmp/.malware_payload" {
-				return fakeFileInfo{name: ".malware_payload", size: 512}, nil
+				return fakeFileInfoWithModeX{name: ".malware_payload", mode: 0o755}, nil
 			}
 			return nil, os.ErrNotExist
 		},

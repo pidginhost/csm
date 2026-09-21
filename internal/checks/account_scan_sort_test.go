@@ -14,11 +14,17 @@ import (
 type statWithMtime struct {
 	name    string
 	modTime time.Time
+	mode    os.FileMode // zero value stays a plain regular file
 }
 
-func (s statWithMtime) Name() string       { return s.name }
-func (s statWithMtime) Size() int64        { return 0 }
-func (s statWithMtime) Mode() os.FileMode  { return 0o644 }
+func (s statWithMtime) Name() string { return s.name }
+func (s statWithMtime) Size() int64  { return 0 }
+func (s statWithMtime) Mode() os.FileMode {
+	if s.mode != 0 {
+		return s.mode
+	}
+	return 0o644
+}
 func (s statWithMtime) ModTime() time.Time { return s.modTime }
 func (s statWithMtime) IsDir() bool        { return false }
 func (s statWithMtime) Sys() any           { return nil }
@@ -26,12 +32,18 @@ func (s statWithMtime) Sys() any           { return nil }
 // mtimesByPath builds a stat callback that returns the configured ModTime
 // for known paths and ErrNotExist for everything else.
 func mtimesByPath(times map[string]time.Time) func(string) (os.FileInfo, error) {
+	return mtimesByPathMode(times, 0)
+}
+
+// mtimesByPathMode is mtimesByPath with an explicit mode, for fixtures that
+// have to stand in for a dropped executable rather than a plain file.
+func mtimesByPathMode(times map[string]time.Time, mode os.FileMode) func(string) (os.FileInfo, error) {
 	return func(name string) (os.FileInfo, error) {
 		t, ok := times[name]
 		if !ok {
 			return nil, os.ErrNotExist
 		}
-		return statWithMtime{name: name, modTime: t}, nil
+		return statWithMtime{name: name, modTime: t, mode: mode}, nil
 	}
 }
 

@@ -366,7 +366,8 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 }
 
 // CheckSwapAndOOM checks for OOM killer events in dmesg and elevated swap
-// usage from /proc/meminfo. Reports Critical for OOM, High for swap > 50%.
+// usage from /proc/meminfo. Host OOM is Critical, cgroup OOM Warning, and
+// swap usage above 50% High.
 func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
@@ -384,6 +385,7 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	}
 	if dmesgOut != nil {
 		cutoff := time.Now().Add(-1 * time.Hour)
+		seen := make(map[string]bool)
 		for _, line := range strings.Split(string(dmesgOut), "\n") {
 			lower := strings.ToLower(line)
 			if !strings.Contains(lower, "out of memory") && !strings.Contains(lower, "oom_reaper") {
@@ -397,18 +399,27 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			if !ok || when.Before(cutoff) {
 				continue
 			}
+			key := oomDedupKey(line)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			severity, accountScoped := classifyOOMLine(line)
+			message := "OOM killer invoked in the last hour"
+			if accountScoped {
+				message = "Account memory limit reached in the last hour"
+			}
 			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
+				Severity: severity,
 				Check:    "perf_memory",
-				Message:  "OOM killer invoked in the last hour",
+				Message:  message,
 				Details:  strings.TrimSpace(line),
 				// Every kill logs a fresh pid and byte counts; keying dedup on
 				// the victim process name keeps an ongoing OOM loop to one
 				// finding per state-expiry window instead of one per scan.
-				DedupKey:  "oom:" + oomVictimProcess(line),
+				DedupKey:  key,
 				Timestamp: time.Now(),
 			})
-			break // one finding is enough
 		}
 	}
 
@@ -466,6 +477,27 @@ func oomVictimProcess(line string) string {
 		}
 	}
 	return "host"
+}
+
+// classifyOOMLine separates a host-wide OOM from a cgroup one. On a shared
+// host a cgroup kill is an account reaching the memory limit its plan sets:
+// routine, and not evidence about host health. Only real memory exhaustion is
+// Critical, or the two become indistinguishable in the alert stream.
+func classifyOOMLine(line string) (alert.Severity, bool) {
+	if strings.Contains(strings.ToLower(line), "memory cgroup out of memory") {
+		return alert.Warning, true
+	}
+	return alert.Critical, false
+}
+
+// oomDedupKey keeps the account-scoped and host-wide cases on separate dedup
+// identities, so one account repeatedly hitting its limit cannot suppress the
+// host-wide alert that follows it.
+func oomDedupKey(line string) string {
+	if _, accountScoped := classifyOOMLine(line); accountScoped {
+		return "oom:cgroup:" + oomVictimProcess(line)
+	}
+	return "oom:host:" + oomVictimProcess(line)
 }
 
 // parseDmesgOOMTime extracts the event time from a dmesg line. ISO lines
