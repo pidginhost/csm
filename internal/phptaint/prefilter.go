@@ -89,7 +89,18 @@ func MayBePHPSource(prefix []byte) bool {
 // the AST rules would. The open-tag check runs first so a file that never
 // looks like PHP never pays for the sink/source keyword scans either.
 func isCandidate(src []byte) bool {
-	if !containsAnyFold(src, phpOpenTags) {
+	// PHP source is text where it opens, so the tag has to appear before the
+	// first NUL -- the same rule MayBePHPSource applies. Without it a compiled
+	// catalog, a Mach-O binary or an image that happens to carry the two-byte
+	// "<?" sequence in its payload reached the parser, which then reported a
+	// partial parse or panicked on it: a coverage gap for a file that was
+	// never PHP. Truncating rather than rejecting keeps a dropper that opens
+	// with a tag and embeds a binary blob further down.
+	head := src
+	if i := bytes.IndexByte(head, 0); i >= 0 {
+		head = head[:i]
+	}
+	if !containsAnyFold(head, phpOpenTags) {
 		return false
 	}
 	return containsAnyFold(src, sinkKeywords) && containsAnyFold(src, sourceKeywords)

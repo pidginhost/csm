@@ -34,7 +34,7 @@ const JSTaintLogicVersion = 2
 // change to its parser, pre-filter, propagation, sinks, resource limits, or
 // evidence semantics so existing findings are re-verified by the isolated
 // worker under the new logic.
-const PHPTaintLogicVersion = 2
+const PHPTaintLogicVersion = 3
 
 // contentReverifiableChecks are content findings whose condition can be
 // re-evaluated here by re-running the classifier that produced them on the
