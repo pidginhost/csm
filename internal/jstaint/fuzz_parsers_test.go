@@ -2,12 +2,42 @@ package jstaint
 
 import (
 	"bytes"
+	"context"
 	"reflect"
 	"testing"
 
 	"github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/js"
 )
+
+func FuzzDocumentClassification(f *testing.F) {
+	for _, src := range []string{
+		`<html><?php $src = 'keydown'; ?>`,
+		`{"keydown":"send"}`,
+		`.onkeydown { content: "send"; }`,
+		"msgid \"keydown\"\nmsgstr \"send\"\n",
+		"/* <?php */\n" + candidateSrc,
+		`'<html><?php';` + candidateSrc,
+		`.onkeydown { content: "send`,
+	} {
+		f.Add([]byte(src))
+	}
+	f.Fuzz(func(t *testing.T, src []byte) {
+		if len(src) > 64<<10 {
+			return
+		}
+		before := bytes.Clone(src)
+		got := isNonJSDocument(src)
+		if !bytes.Equal(src, before) || got != isNonJSDocument(src) {
+			t.Fatal("document classification mutated input or was nondeterministic")
+		}
+		if _, err := js.Parse(parse.NewInputBytes(src[:len(src):len(src)]), js.Options{}); err == nil && isCandidate(src) {
+			if report := Analyze(context.Background(), src); report.Status == StatusNotCandidate {
+				t.Fatalf("valid candidate JavaScript was excluded: %q", src)
+			}
+		}
+	})
+}
 
 func FuzzMayBeJSSource(f *testing.F) {
 	for _, src := range []string{

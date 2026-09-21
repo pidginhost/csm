@@ -26,13 +26,13 @@ import (
 
 // Status is the outcome of an analysis attempt. Callers must not infer a clean
 // file from an empty result slice: only StatusAnalyzed means the content was
-// examined end to end. Every other status is a coverage gap and must be
-// accounted for as such rather than counted as a clean file.
+// examined end to end. StatusNotCandidate excludes unsupported documents and
+// content without flow tokens; all remaining statuses are coverage gaps.
 type Status uint8
 
 const (
-	// StatusNotCandidate means the content cannot contain a flow this analyzer
-	// reports, decided by the content pre-filter alone.
+	// StatusNotCandidate means the content lacks the required flow tokens or
+	// is a recognized non-JavaScript document. Embedded scripts are not examined.
 	StatusNotCandidate Status = iota
 	// StatusAnalyzed means the content was parsed and examined to completion.
 	StatusAnalyzed
@@ -162,6 +162,11 @@ func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report
 
 	ast, err := js.Parse(parse.NewInputBytes(src), js.Options{})
 	if err != nil {
+		// A document marker inside a JavaScript literal or comment must never
+		// suppress analysis. Classify other formats only after JS parsing fails.
+		if isNonJSDocument(src) {
+			return Report{Status: StatusNotCandidate}
+		}
 		return Report{Status: StatusParseError, Reason: parseFailureContext(err)}
 	}
 

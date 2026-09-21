@@ -27,7 +27,7 @@ const ContentScannerVersion = 4
 // any change to its sources, propagation, sinks, resource limits, parser
 // version, or content pre-filter so findings produced by the previous logic
 // are re-verified under the new one.
-const JSTaintLogicVersion = 1
+const JSTaintLogicVersion = 2
 
 // PHPTaintLogicVersion identifies the current semantics of the PHP remote-
 // source taint analyzer (internal/phptaint). BUMP IT in the same commit as any

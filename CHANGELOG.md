@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Recognized templates, stylesheets, and data files no longer produce false JavaScript scan warnings, while JavaScript remains checked regardless of filename. Embedded JavaScript in those documents is not covered by this analyzer.
 - Suspended accounts are no longer counted as WordPress databases the scan failed to read. Their database users are locked while the account is suspended, so every scan reported coverage it could never obtain.
 - Mailbox audit warnings stay visible between scheduled checks. Temporary verification failures continue to retry even when their underlying error resembles an unauditable hash.
 - Checks that keep their own refresh interval reported nothing on the cycles in between, which read as a completed scan, so the weak mailbox passwords and forwarder findings from the cycle that did look were cleared until the next one. A skipped cycle now says it skipped, and the earlier findings stay.
