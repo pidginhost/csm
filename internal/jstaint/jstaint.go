@@ -26,13 +26,13 @@ import (
 
 // Status is the outcome of an analysis attempt. Callers must not infer a clean
 // file from an empty result slice: only StatusAnalyzed means the content was
-// examined end to end. Every other status is a coverage gap and must be
-// accounted for as such rather than counted as a clean file.
+// examined end to end. StatusNotCandidate excludes unsupported documents and
+// content without flow tokens; all remaining statuses are coverage gaps.
 type Status uint8
 
 const (
-	// StatusNotCandidate means the content cannot contain a flow this analyzer
-	// reports, decided by the content pre-filter alone.
+	// StatusNotCandidate means the content lacks the required flow tokens or
+	// is a recognized non-JavaScript document. Embedded scripts are not examined.
 	StatusNotCandidate Status = iota
 	// StatusAnalyzed means the content was parsed and examined to completion.
 	StatusAnalyzed
@@ -156,17 +156,17 @@ func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report
 		return Report{Status: StatusOversize}
 	}
 
-	// The deep walk hands every readable file here and relies on this filter
-	// to reject the rest. PHP source passes it easily and can never parse as
-	// JavaScript, so reporting the failure would invent a coverage gap no
-	// operator action can close. The JavaScript embedded in such a file is
-	// genuinely unexamined; that needs script extraction, not a parse attempt.
-	if !isCandidate(src) || opensWithPHPTag(src) {
+	if !isCandidate(src) {
 		return Report{Status: StatusNotCandidate}
 	}
 
 	ast, err := js.Parse(parse.NewInputBytes(src), js.Options{})
 	if err != nil {
+		// A document marker inside a JavaScript literal or comment must never
+		// suppress analysis. Classify other formats only after JS parsing fails.
+		if isNonJSDocument(src) {
+			return Report{Status: StatusNotCandidate}
+		}
 		return Report{Status: StatusParseError, Reason: parseFailureContext(err)}
 	}
 
@@ -232,22 +232,6 @@ func MayBeJSSource(prefix []byte) bool {
 			return true
 		}
 	}
-}
-
-// opensWithPHPTag reports whether src begins a PHP document. Only a tag at the
-// very start counts, after any byte-order mark and leading whitespace: that is
-// where a PHP file declares itself, while a JavaScript file may carry the same
-// characters inside a string literal.
-func opensWithPHPTag(src []byte) bool {
-	src = bytes.TrimPrefix(src, []byte("\xef\xbb\xbf"))
-	src = bytes.TrimLeft(src, " \t\r\n")
-	if bytes.HasPrefix(src, []byte("<?=")) {
-		return true
-	}
-	// The opening tag is case-insensitive, so compare only its own length
-	// rather than folding the whole file.
-	const tag = "<?php"
-	return len(src) >= len(tag) && bytes.EqualFold(src[:len(tag)], []byte(tag))
 }
 
 // isCandidate reports whether src carries both a key-handler token and a sink
