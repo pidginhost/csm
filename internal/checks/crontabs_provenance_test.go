@@ -15,8 +15,17 @@ import (
 // stored hash no longer matches content.
 func cronDChangeHarness(t *testing.T, path string, content []byte) []alert.Finding {
 	t.Helper()
+	return cronDProvenanceHarness(t, path, content, false)
+}
+
+func cronDProvenanceHarness(t *testing.T, path string, content []byte, added bool) []alert.Finding {
+	t.Helper()
 	store := newCrontabTestStore(t)
-	store.SetRaw("_crond:"+filepath.Base(path), hashBytes([]byte("the previous job\n")))
+	if added {
+		store.SetRaw(cronDBaselineKey, "1")
+	} else {
+		store.SetRaw("_crond:"+filepath.Base(path), hashBytes([]byte("the previous job\n")))
+	}
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			if pattern == "/etc/cron.d/*" {
@@ -97,5 +106,34 @@ func TestCronDChangeWithoutProvenanceStaysHigh(t *testing.T) {
 	got := cronDFinding(t, cronDChangeHarness(t, "/etc/cron.d/cloudlinux-cron", []byte("0 1 * * * root /usr/sbin/cloudlinux-update\n")))
 	if got.Severity != alert.High {
 		t.Fatalf("severity = %v, want High with no provenance evidence", got.Severity)
+	}
+}
+
+func TestCronDAddedProvenanceAndDangerVeto(t *testing.T) {
+	pkgLog := filepath.Join(t.TempDir(), "package.log")
+	if err := os.WriteFile(pkgLog, []byte("transaction\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldLogs := pkgManagerLogs
+	pkgManagerLogs = []string{pkgLog}
+	t.Cleanup(func() { pkgManagerLogs = oldLogs })
+	for _, tc := range []struct {
+		name, content string
+		want          alert.Severity
+	}{
+		{"benign", "0 1 * * * root /usr/sbin/maintenance\n", alert.Warning},
+		{"dangerous", "* * * * * root /tmp/job\n", alert.High},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const path = "/etc/cron.d/new-job"
+			findings := cronDProvenanceHarness(t, path, []byte(tc.content), true)
+			if len(findings) != 1 {
+				t.Fatalf("want exactly one finding, got %+v", findings)
+			}
+			got := findings[0]
+			if got.Check != "crond_change" || got.Message != "Cron.d file added: "+path || got.Severity != tc.want {
+				t.Fatalf("finding = %+v; want added cron finding at %v", got, tc.want)
+			}
+		})
 	}
 }

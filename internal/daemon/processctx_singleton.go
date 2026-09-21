@@ -59,7 +59,6 @@ func ProcessCtx() (*processctx.Cache, *processctx.Enricher) {
 		processCtxPublished.Store(processCtxEnr)
 		processCtxEnr.Start()
 		wireAncestryCache(processCtxCache)
-		wireAncestryProvenance()
 	})
 	return processCtxCache, processCtxEnr
 }

@@ -130,7 +130,7 @@ func EvaluateSensitiveFileWriteSnapshot(path string, uid, pid uint32, comm strin
 		FilePath:  path,
 		Timestamp: now,
 	}
-	return rescoreSensitive(f, kind, nil, pid, now), true
+	return rescoreSensitive(f, kind, content, pid, now), true
 }
 
 // EvaluateSensitiveFileAppearance returns a finding when a path no previous

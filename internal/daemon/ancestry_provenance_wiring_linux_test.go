@@ -4,10 +4,26 @@ package daemon
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/checks"
 )
+
+// Start a fresh process so another test cannot initialize ProcessCtx first.
+func TestAncestryProvenanceWithoutBPFStartup(t *testing.T) {
+	if os.Getenv("CSM_TEST_ANCESTRY_STARTUP") == "1" {
+		if checks.AncestryProvenance == nil {
+			t.Fatal("Linux ancestry must be wired before any optional BPF monitor starts")
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAncestryProvenanceWithoutBPFStartup$")
+	cmd.Env = append(os.Environ(), "CSM_TEST_ANCESTRY_STARTUP=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fresh process: %v\n%s", err, out)
+	}
+}
 
 // The /proc walk needs no BPF, so every Linux host must get ancestry
 // provenance for sensitive-file findings. Wiring it only under the bpf build
