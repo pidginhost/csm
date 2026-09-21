@@ -3,6 +3,8 @@ package checks
 import (
 	"context"
 	"os"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -66,5 +68,85 @@ func TestForwarderIntervalSkipDeclaresSkippedScope(t *testing.T) {
 
 	if !collector.contains("email_forwarder_audit") {
 		t.Fatal("a cycle skipped by the forwarder interval reported complete, so the runner may retire forwarder findings it never looked at")
+	}
+}
+
+// Repeated skips must not leak completion state into a later real scan.
+func TestInternalThrottleEventuallyRetiresFindings(t *testing.T) {
+	for _, owner := range []namedCheck{
+		{"email_weak_password", CheckEmailPasswords},
+		{"email_forwarder_audit", CheckForwarders},
+	} {
+		for _, resume := range []string{"expired", "forced", "disabled"} {
+			t.Run(owner.name+"/"+resume, func(t *testing.T) {
+				db := withTestStore(t)
+				withMockOS(t, &mockOS{
+					glob:    func(string) ([]string, error) { return nil, nil },
+					open:    func(string) (*os.File, error) { return nil, os.ErrNotExist },
+					readDir: func(string) ([]os.DirEntry, error) { return nil, os.ErrNotExist },
+				})
+				// Exercise the runner reservation as well as the internal interval.
+				previousThrottle, hadThrottle := checkThrottleMin[owner.name]
+				checkThrottleMin[owner.name] = 60
+				t.Cleanup(func() {
+					if hadThrottle {
+						checkThrottleMin[owner.name] = previousThrottle
+					} else {
+						delete(checkThrottleMin, owner.name)
+					}
+				})
+				previousForce := ForceAll
+				ForceAll = false
+				t.Cleanup(func() { ForceAll = previousForce })
+				stamp := func(at time.Time) {
+					t.Helper()
+					if err := db.SetEmailPWLastRefresh(at); err != nil {
+						t.Fatal(err)
+					}
+					if err := db.SetMetaString("email:fwd_last_refresh", at.Format(time.RFC3339)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				stamp(time.Now())
+				st := newCrontabTestStore(t)
+				var prior []alert.Finding
+				for _, check := range runnerFindingNames[owner.name] {
+					prior = append(prior, alert.Finding{Check: check, Severity: alert.Warning, Message: "prior finding"})
+				}
+				st.SetLatestFindings(prior)
+				prior = st.LatestFindings()
+				cfg := &config.Config{}
+				cfg.EmailProtection.PasswordCheckIntervalMin = 1440
+				ctx, gaps := WithCoverageGaps(context.Background())
+				for cycle := 0; cycle < 3; cycle++ {
+					findings, purge := runParallelWithContext(ctx, cfg, st, []namedCheck{owner}, "deep", true)
+					if len(findings) != 0 || len(purge) != 0 {
+						t.Fatalf("skip returned findings=%+v purge=%v", findings, purge)
+					}
+					StoreLatestScanFindingsWithCoverage(st, purge, findings, gaps.Snapshot())
+					if got := st.LatestFindings(); !reflect.DeepEqual(got, prior) {
+						t.Fatalf("skip changed prior findings: %+v", got)
+					}
+				}
+				switch resume {
+				case "expired":
+					stamp(time.Now().Add(-48 * time.Hour))
+				case "forced":
+					ForceAll = true
+				case "disabled":
+					cfg.DisabledChecks = []string{owner.name}
+				}
+				findings, purge := runParallelWithContext(ctx, cfg, st, []namedCheck{owner}, "deep", true)
+				for _, check := range runnerFindingNames[owner.name] {
+					if !slices.Contains(purge, check) || gaps.Snapshot().IncompleteChecks[check] {
+						t.Fatalf("completed check did not release %s: purge=%v coverage=%+v", check, purge, gaps.Snapshot())
+					}
+				}
+				StoreLatestScanFindingsWithCoverage(st, purge, findings, gaps.Snapshot())
+				if got := st.LatestFindings(); len(got) != 0 {
+					t.Fatalf("completed scan retained findings: %+v", got)
+				}
+			})
+		}
 	}
 }

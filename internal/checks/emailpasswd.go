@@ -292,7 +292,7 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 		lastRefresh := db.GetEmailPWLastRefresh()
 		interval := time.Duration(cfg.EmailProtection.PasswordCheckIntervalMin) * time.Minute
 		if time.Since(lastRefresh) < interval {
-			markCheckIncomplete(ctx, "email_weak_password")
+			markCheckSkipped(ctx, "email_weak_password")
 			return nil
 		}
 	}
@@ -409,9 +409,10 @@ mailboxes:
 // emailHashPermanentlyUnauditable reports whether a verification failure is a
 // property of the stored hash rather than a condition that may clear.
 func emailHashPermanentlyUnauditable(err error) bool {
-	return errors.Is(err, errEmailHashUnsupported) ||
-		errors.Is(err, errEmailHashInvalid) ||
-		errors.Is(err, errEmailHashCost)
+	// The parser returns these sentinels directly. A wrapper can describe a
+	// transient verification failure, so unwrapping is not proof that only
+	// the stored hash prevented this audit from completing.
+	return err == errEmailHashUnsupported || err == errEmailHashInvalid || err == errEmailHashCost
 }
 
 func auditEmailPassword(ctx context.Context, entry mailboxEntry) (*alert.Finding, error) {

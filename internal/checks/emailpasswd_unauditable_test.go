@@ -1,7 +1,10 @@
 package checks
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
 	"testing"
 )
 
@@ -25,5 +28,20 @@ func TestUnauditableHashesAreNotRetryable(t *testing.T) {
 func TestTransientFailuresRemainRetryable(t *testing.T) {
 	if emailHashPermanentlyUnauditable(errors.New("connection reset")) {
 		t.Fatal("a transient failure was treated as permanently unauditable")
+	}
+}
+
+func TestWrappedHashFailuresRemainRetryable(t *testing.T) {
+	for _, sentinel := range []error{errEmailHashUnsupported, errEmailHashInvalid, errEmailHashCost} {
+		for _, err := range []error{
+			fmt.Errorf("temporary verification failure: %w", sentinel),
+			&os.PathError{Op: "read", Path: "shadow", Err: sentinel},
+			errors.Join(context.DeadlineExceeded, sentinel),
+			errors.Join(sentinel, context.Canceled),
+		} {
+			if emailHashPermanentlyUnauditable(err) {
+				t.Errorf("wrapped failure %v must remain retryable", err)
+			}
+		}
 	}
 }

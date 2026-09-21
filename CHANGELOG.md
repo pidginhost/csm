@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Mailbox audit warnings stay visible between scheduled checks. Temporary verification failures continue to retry even when their underlying error resembles an unauditable hash.
 - Checks that keep their own refresh interval reported nothing on the cycles in between, which read as a completed scan, so the weak mailbox passwords and forwarder findings from the cycle that did look were cleared until the next one. A skipped cycle now says it skipped, and the earlier findings stay.
 - The mailbox password audit re-verified every mailbox on every scan instead of on its interval, because hashes it can never audit counted as unfinished work. Those are now reported separately and no longer hold the audit back.
 - Temporary-file inspection now handles file replacement and read failures without blocking or clearing earlier alerts. Host-wide memory exhaustion remains visible when account memory-limit events occur in the same scan.

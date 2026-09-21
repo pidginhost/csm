@@ -265,7 +265,7 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 				if time.Since(lastRefresh) < interval {
 					// A skipped cycle examined nothing, so it must not let the
 					// runner retire what the last run found.
-					markCheckIncomplete(ctx, "email_forwarder_audit")
+					markCheckSkipped(ctx, "email_forwarder_audit")
 					return nil
 				}
 			}
