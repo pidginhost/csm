@@ -722,8 +722,13 @@ func legacyModSecurityDirective(name string) bool {
 // outputs travel together so cleaning never disagrees with what
 // the operator was alerted about.
 func AuditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange) {
+	findings, ranges, _ := auditHtaccessFile(path)
+	return findings, ranges
+}
+
+func auditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange, bool) {
 	if filepath.Base(path) != ".htaccess" {
-		return nil, nil
+		return nil, nil, true
 	}
 	content, ok, err := readHtaccessBounded(path)
 	if htaccessOversized(ok, err) {
@@ -734,12 +739,13 @@ func AuditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange) {
 			Details:   fmt.Sprintf("File exceeds %d bytes; a real .htaccess is a few kilobytes. Inspect it by hand.", htaccessMaxFileBytes),
 			FilePath:  path,
 			Timestamp: time.Now(),
-		}}, nil
+		}}, nil, false
 	}
 	if err != nil || !ok {
-		return nil, nil
+		return nil, nil, os.IsNotExist(err)
 	}
-	return AuditHtaccessContent(path, content)
+	findings, ranges := AuditHtaccessContent(path, content)
+	return findings, ranges, true
 }
 
 func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {

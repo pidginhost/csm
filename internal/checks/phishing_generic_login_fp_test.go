@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func TestAnalyzeHTMLForPhishingGenericLoginNotFlagged(t *testing.T) {
 	if err := os.WriteFile(path, []byte(plainCustomerLoginHTML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzeHTMLForPhishing(path); res != nil {
+	if res := analyzeHTMLForPhishing(context.Background(), path); res != nil {
 		t.Errorf("customer's own plain login page must not flag as phishing, got %+v", res)
 	}
 }
@@ -73,7 +74,7 @@ func TestQuickPhishingCheckGenericLoginTitleOnlyNotSignal(t *testing.T) {
 	if err := os.WriteFile(path, []byte(plainCustomerLoginGenericTitleOnlyHTML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if quickPhishingCheck(path) {
+	if quickPhishingCheck(context.Background(), path) {
 		t.Fatal("generic Sign In title alone must not satisfy directory-anomaly phishing content")
 	}
 }
@@ -88,7 +89,7 @@ func TestAnalyzeDirectoryStructureGenericLoginTitleOnlyNotFlagged(t *testing.T) 
 		[]byte(plainCustomerLoginGenericTitleOnlyHTML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzeDirectoryStructure(dropDir, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), dropDir, "alice"); res != nil {
 		t.Fatalf("generic login title bypassed the higher floor via directory anomaly: %+v", res)
 	}
 }
@@ -120,7 +121,7 @@ func TestAnalyzeHTMLForPhishingGenericKitStillFlagged(t *testing.T) {
 	if err := os.WriteFile(path, []byte(genericLoginPhishKitHTML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	res := analyzeHTMLForPhishing(path)
+	res := analyzeHTMLForPhishing(context.Background(), path)
 	if res == nil {
 		t.Fatal("real generic-login kit with external exfil + trust badge + urgency must flag")
 	}
@@ -152,7 +153,7 @@ func TestAnalyzeHTMLForPhishingRealBrandKeepsNormalFloor(t *testing.T) {
 	if err := os.WriteFile(path, []byte(realBrandLowFloorHTML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	res := analyzeHTMLForPhishing(path)
+	res := analyzeHTMLForPhishing(context.Background(), path)
 	if res == nil {
 		t.Fatal("real brand at score 4 must keep the normal brand floor")
 	}
@@ -194,7 +195,7 @@ func TestAnalyzePHPForPhishingGenericLoginNotFlagged(t *testing.T) {
 	if err := os.WriteFile(path, []byte(plainCustomerLoginPHP), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("customer's own login.php must not flag as phishing, got %+v", res)
 	}
 }
@@ -228,7 +229,7 @@ func TestAnalyzePHPForPhishingGenericKitStillFlagged(t *testing.T) {
 	if err := os.WriteFile(path, []byte(genericLoginPhishKitPHP), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res == nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res == nil {
 		t.Fatal("real generic-login PHP kit that mails+writes harvested creds must flag")
 	}
 }

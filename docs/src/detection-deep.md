@@ -39,7 +39,14 @@ monitor reports neither a file renamed into place nor a setuid bit being set.
 The exposed-file scan runs in that tier too, on its own interval, because it
 confirms each candidate with a live request to the site rather than by reading
 the file. A cycle that skips it on that interval leaves its existing findings
-in place.
+in place. The interval starts only after a complete exposure scan; an incomplete
+attempt can retry on the next cycle, including after switching between full and
+reduced scans.
+
+Account discovery failures, unreadable directories or files, and truncated
+backdoor candidate lists leave the affected scan incomplete. Its earlier
+findings remain active until a complete scan can replace them; detections from
+the incomplete attempt are still added. These rules apply to both deep tiers.
 
 The file index runs on every deep cycle, including while the realtime monitor
 is active. It checks new paths and rechecks indexed files with active findings;

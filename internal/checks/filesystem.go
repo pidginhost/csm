@@ -39,7 +39,8 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		if ctx.Err() != nil {
 			return findings
 		}
-		matches, _ := homeGlob(ctx, pattern...)
+		matches, err := homeGlob(ctx, pattern...)
+		markScanReadError(ctx, "filesystem", err)
 		for _, path := range matches {
 			if ctx.Err() != nil {
 				return findings
@@ -54,6 +55,9 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		}
 	}
 	rankedConfigCandidates := rankPathsByMtimeDesc(ctx, configCandidates, accountScanMaxFiles(ctx, cfg))
+	if len(rankedConfigCandidates) < len(configCandidates) {
+		markCheckIncomplete(ctx, "filesystem")
+	}
 	if ctx.Err() != nil {
 		return findings
 	}
@@ -85,7 +89,8 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			if ctx.Err() != nil {
 				return findings
 			}
-			matches, _ := osFS.Glob(pattern)
+			matches, err := osFS.Glob(pattern)
+			markScanReadError(ctx, "filesystem", err)
 			candidates := make([]string, 0, len(matches))
 			for _, match := range matches {
 				if ctx.Err() != nil {
@@ -115,6 +120,7 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 					return findings
 				}
 				info, err := osFS.Stat(match)
+				markScanReadError(ctx, "filesystem", err)
 				if err != nil || info.IsDir() {
 					continue
 				}
@@ -141,7 +147,7 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	if ctx.Err() != nil {
 		return findings
 	}
-	homeDirs, _ := GetScanHomeDirs(ctx)
+	homeDirs := scanHomeDirsWithCoverage(ctx, "filesystem")
 	for _, entry := range homeDirs {
 		if ctx.Err() != nil {
 			return findings
@@ -165,6 +171,7 @@ func scanForSUID(ctx context.Context, dir string, maxDepth int, findings *[]aler
 	}
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
+		markScanReadError(ctx, "filesystem", err)
 		return
 	}
 	for _, entry := range entries {
@@ -182,6 +189,7 @@ func scanForSUID(ctx context.Context, dir string, maxDepth int, findings *[]aler
 		}
 		info, err := entry.Info()
 		if err != nil {
+			markScanReadError(ctx, "filesystem", err)
 			continue
 		}
 		if info.Mode()&os.ModeSetuid != 0 {
@@ -211,7 +219,7 @@ func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	}
 
 	// Scan each user's public_html and addon domains
-	homeDirs, _ := GetScanHomeDirs(ctx)
+	homeDirs := scanHomeDirsWithCoverage(ctx, "webshells")
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
 			return findings
@@ -223,7 +231,8 @@ func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 
 		// Get all potential document roots
 		docRoots := []string{filepath.Join(homeDir, "public_html")}
-		subDirs, _ := osFS.ReadDir(homeDir)
+		subDirs, err := osFS.ReadDir(homeDir)
+		markScanReadError(ctx, "webshells", err)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
@@ -254,6 +263,7 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 	}
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
+		markScanReadError(ctx, "webshells", err)
 		return
 	}
 
@@ -320,6 +330,7 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 		// File permission anomalies - only check PHP-executable files to keep it fast
 		if isExecutablePHPName(nameLower) {
 			info, err := entry.Info()
+			markScanReadError(ctx, "webshells", err)
 			if err == nil {
 				mode := info.Mode()
 				// World-writable PHP

@@ -912,12 +912,8 @@ func RunTierDryRunWithContext(ctx context.Context, cfg *config.Config, store *st
 // RunReducedDeep runs only the deep checks that fanotify can't replace.
 // Used by the daemon when fanotify is active.
 //
-// Skipped (fanotify handles these in real-time):
-//
-//	filesystem, webshells, htaccess, file_index, phishing
-//
-// php_config_changes remains scheduled because fanotify sees only writes and
-// cannot find a planted configuration that predates daemon startup.
+// Filesystem and content scans remain scheduled because fanotify misses
+// renames, permission changes and files planted before daemon startup.
 //
 // The second return value is the per-scan purge name list scoped to the
 // checks that actually executed this cycle.
@@ -1170,7 +1166,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				if len(results) > 0 {
 					findings = append(findings, results...)
 				}
-				if throttleReserved {
+				if throttleReserved && incompleteChecks.contains(c.name) {
+					store.ReleaseThrottle(c.name)
+				} else if throttleReserved {
 					completedThrottled = append(completedThrottled, c.name)
 				}
 				mu.Unlock()

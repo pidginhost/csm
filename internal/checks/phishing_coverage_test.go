@@ -25,7 +25,7 @@ func TestAnalyzeHTMLForPhishingReadsWholeAcceptedFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(padded), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzeHTMLForPhishing(path); res == nil {
+	if res := analyzeHTMLForPhishing(context.Background(), path); res == nil {
 		t.Fatal("kit with a 20 KB stylesheet before its form was not detected")
 	}
 }

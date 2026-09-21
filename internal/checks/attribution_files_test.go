@@ -78,7 +78,7 @@ func TestHtaccessFindingsAttributeByPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	var legacy []alert.Finding
-	checkHtaccessFile(big, nil, nil, &legacy)
+	checkHtaccessFile(context.Background(), big, nil, nil, &legacy)
 	requireChecks(t, expectAttributed(t, legacy, "bob"), "htaccess_injection")
 }
 

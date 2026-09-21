@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,7 +53,7 @@ func TestCheckHtaccessFileReportsNameOnlyFilesMatchHandler(t *testing.T) {
 			}
 			withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(tmp) }})
 			var findings []alert.Finding
-			checkHtaccessFile(tmp, nil, nil, &findings)
+			checkHtaccessFile(context.Background(), tmp, nil, nil, &findings)
 			got := 0
 			for _, f := range findings {
 				if f.Check == "htaccess_injection" {

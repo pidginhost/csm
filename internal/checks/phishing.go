@@ -215,10 +215,7 @@ var embeddedAssetPatterns = []string{
 func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	homeDirs, err := GetScanHomeDirs(ctx)
-	if err != nil {
-		return nil
-	}
+	homeDirs := scanHomeDirsWithCoverage(ctx, "phishing")
 
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
@@ -234,7 +231,8 @@ func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 
 		homeDir := scanHomeDirPath(homeEntry)
 		docRoots := []string{filepath.Join(homeDir, "public_html")}
-		subDirs, _ := osFS.ReadDir(homeDir)
+		subDirs, err := osFS.ReadDir(homeDir)
+		markScanReadError(ctx, "phishing", err)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
@@ -267,6 +265,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 	}
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return
 	}
 
@@ -297,7 +296,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 			}
 
 			// --- Directory anomaly detection ---
-			dirResult := analyzeDirectoryStructure(fullPath, user)
+			dirResult := analyzeDirectoryStructure(ctx, fullPath, user)
 			if dirResult != nil {
 				*findings = append(*findings, *dirResult)
 			}
@@ -309,6 +308,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		nameLower := strings.ToLower(name)
 		info, err := entry.Info()
 		if err != nil {
+			markScanReadError(ctx, "phishing", err)
 			continue
 		}
 		size := info.Size()
@@ -317,7 +317,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		if strings.HasSuffix(nameLower, ".html") || strings.HasSuffix(nameLower, ".htm") {
 			// Standard phishing page check (3KB-100KB)
 			if size >= 3000 && size <= 100000 {
-				result := analyzeHTMLForPhishing(fullPath)
+				result := analyzeHTMLForPhishing(ctx, fullPath)
 				if result != nil {
 					*findings = append(*findings, alert.Finding{
 						Severity: alert.Critical,
@@ -332,7 +332,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 
 			// --- iframe phishing (tiny HTML files that embed external phishing) ---
 			if size > 0 && size < 3000 {
-				if result := checkIframePhishing(fullPath); result != "" {
+				if result := checkIframePhishing(ctx, fullPath); result != "" {
 					*findings = append(*findings, alert.Finding{
 						Severity: alert.Critical,
 						Check:    "phishing_iframe",
@@ -353,7 +353,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 			}
 			// PHP phishing (3KB-100KB) - same brand/content analysis as HTML
 			if size >= 3000 && size <= 100000 {
-				result := analyzePHPForPhishing(fullPath)
+				result := analyzePHPForPhishing(ctx, fullPath)
 				if result != nil {
 					*findings = append(*findings, alert.Finding{
 						Severity: alert.Critical,
@@ -367,7 +367,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 			}
 			// PHP open redirector (tiny PHP files under 1KB)
 			if size > 0 && size < 1024 {
-				if result := checkPHPRedirector(fullPath); result != "" {
+				if result := checkPHPRedirector(ctx, fullPath); result != "" {
 					*findings = append(*findings, alert.Finding{
 						Severity: alert.High,
 						Check:    "phishing_redirector",
@@ -383,7 +383,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		// --- Credential log files ---
 		if !strings.HasSuffix(nameLower, ".zip") && isCredentialLogName(nameLower) &&
 			size > 0 && size < 10*1024*1024 {
-			if result := checkCredentialLog(fullPath); result != "" {
+			if result := checkCredentialLog(ctx, fullPath); result != "" {
 				*findings = append(*findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "phishing_credential_log",
@@ -397,7 +397,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 
 		// --- Phishing kit ZIP archives ---
 		if strings.HasSuffix(nameLower, ".zip") && size > 1000 && size < 50*1024*1024 {
-			if isPhishingKitZipName(nameLower) && zipLooksLikeKit(fullPath) {
+			if isPhishingKitZipName(nameLower) && zipLooksLikeKit(ctx, fullPath) {
 				*findings = append(*findings, alert.Finding{
 					Severity: alert.High,
 					Check:    "phishing_kit_archive",
@@ -421,15 +421,19 @@ type phishingResult struct {
 	indicators []string
 }
 
-func analyzeHTMLForPhishing(path string) *phishingResult {
+func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return nil
 	}
 	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, phishingReadSize)
-	n, _ := f.Read(buf)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		markCheckIncomplete(ctx, "phishing")
+	}
 	if n == 0 {
 		return nil
 	}
@@ -813,9 +817,10 @@ func looksLikePersonName(name string) bool {
 // - Contains only 1-3 HTML files and nothing else significant
 // - Directory name looks like a business/organization name
 // - No CMS markers (wp-config, index.php, etc.)
-func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
+func analyzeDirectoryStructure(ctx context.Context, dir string, user string) *alert.Finding {
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return nil
 	}
 
@@ -855,7 +860,7 @@ func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
 	hasPhishingContent := false
 	for _, htmlFile := range htmlFiles {
 		fullPath := filepath.Join(dir, htmlFile)
-		if quickPhishingCheck(fullPath) {
+		if quickPhishingCheck(ctx, fullPath) {
 			hasPhishingContent = true
 			break
 		}
@@ -972,15 +977,19 @@ func looksLikeBusinessName(name string) bool {
 // Requiring credential intake plus one of those signals keeps real
 // phishing kits in scope while letting tutorials and trivial forms drop
 // out without consulting any path-name allowlist.
-func quickPhishingCheck(path string) bool {
+func quickPhishingCheck(ctx context.Context, path string) bool {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return false
 	}
 	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 4096) // first 4KB is enough for the head, form attrs, brand strings
-	n, _ := f.Read(buf)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		markCheckIncomplete(ctx, "phishing")
+	}
 	if n == 0 {
 		return false
 	}
@@ -1024,15 +1033,19 @@ func quickPhishingCheck(path string) bool {
 // analyzePHPForPhishing reads a PHP file and checks for embedded HTML with
 // brand impersonation. PHP phishing kits often have PHP code at the top
 // (credential handling, emailing) and HTML output below.
-func analyzePHPForPhishing(path string) *phishingResult {
+func analyzePHPForPhishing(ctx context.Context, path string) *phishingResult {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return nil
 	}
 	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, phishingReadSize)
-	n, _ := f.Read(buf)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		markCheckIncomplete(ctx, "phishing")
+	}
 	if n == 0 {
 		return nil
 	}
@@ -1265,15 +1278,19 @@ func isKnownCMSFile(nameLower string) bool {
 
 // checkPHPRedirector reads a small PHP file and checks if it's an open
 // redirector - a file that redirects the visitor to a URL from a parameter.
-func checkPHPRedirector(path string) string {
+func checkPHPRedirector(ctx context.Context, path string) string {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return ""
 	}
 	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 1024)
-	n, _ := f.Read(buf)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		markCheckIncomplete(ctx, "phishing")
+	}
 	if n == 0 {
 		return ""
 	}
@@ -1437,9 +1454,10 @@ func normalizeCredentialLogText(data []byte) []byte {
 
 // checkCredentialLog reads a text file and checks if it contains harvested
 // credentials (email:password pairs, one per line) or a harvested address list.
-func checkCredentialLog(path string) string {
+func checkCredentialLog(ctx context.Context, path string) string {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return ""
 	}
 	defer func() { _ = f.Close() }()
@@ -1452,6 +1470,7 @@ func checkCredentialLog(path string) string {
 	head := make([]byte, 8192)
 	hn, err := io.ReadFull(f, head)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		markCheckIncomplete(ctx, "phishing")
 		return ""
 	}
 	head = head[:hn]
@@ -1461,6 +1480,7 @@ func checkCredentialLog(path string) string {
 
 	rest, err := io.ReadAll(io.LimitReader(f, credentialLogReadLimit+1-int64(hn)))
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return ""
 	}
 	return analyzeCredentialLog(append(head, rest...), path)
@@ -1533,15 +1553,19 @@ func analyzeCredentialLog(data []byte, path string) string {
 
 // checkIframePhishing checks small HTML files for iframe-based phishing -
 // a minimal HTML page that just loads an external phishing page in a full-screen iframe.
-func checkIframePhishing(path string) string {
+func checkIframePhishing(ctx context.Context, path string) string {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return ""
 	}
 	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 3000)
-	n, _ := f.Read(buf)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		markCheckIncomplete(ctx, "phishing")
+	}
 	if n == 0 {
 		return ""
 	}
@@ -1690,30 +1714,34 @@ func isKitCredentialSinkName(base string) bool {
 // credential sink file, a capture script, a brand-login page, an anti-bot
 // blocker. Two signal categories from at least two distinct entries are
 // required so one generic result filename cannot decide the archive alone.
-func zipLooksLikeKit(path string) bool {
+func zipLooksLikeKit(ctx context.Context, path string) bool {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return false
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
+		markScanReadError(ctx, "phishing", err)
 		return false
 	}
 	if !info.Mode().IsRegular() || info.Size() <= 1000 || info.Size() >= 50*1024*1024 {
+		markCheckIncomplete(ctx, "phishing")
 		return false
 	}
-	return phishingKitZipHasEvidence(f, info.Size())
+	return phishingKitZipHasEvidence(ctx, f, info.Size())
 }
 
 // phishingKitZipHasEvidence confirms a bounded ZIP using independent entry-name
 // signals without decompressing attacker-controlled archive contents.
-func phishingKitZipHasEvidence(reader io.ReaderAt, size int64) bool {
+func phishingKitZipHasEvidence(ctx context.Context, reader io.ReaderAt, size int64) bool {
 	if size <= 1000 || size >= 50*1024*1024 {
 		return false
 	}
 	zr, err := zip.NewReader(reader, size)
 	if err != nil {
+		markCheckIncomplete(ctx, "phishing")
 		return false
 	}
 

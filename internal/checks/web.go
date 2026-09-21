@@ -77,7 +77,7 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 	}
 
 	// Scan each user's document roots
-	homeDirs, _ := GetScanHomeDirs(ctx)
+	homeDirs := scanHomeDirsWithCoverage(ctx, "htaccess")
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
 			return findings
@@ -90,7 +90,8 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		scanHtaccess(ctx, docRoot, htaccessScanMaxDepth, suspiciousPatterns, safePatterns, cfg, &findings)
 
 		// Also check addon domains
-		subDirs, _ := osFS.ReadDir(homeDir)
+		subDirs, err := osFS.ReadDir(homeDir)
+		markScanReadError(ctx, "htaccess", err)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
@@ -119,6 +120,7 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 	}
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
+		markScanReadError(ctx, "htaccess", err)
 		return
 	}
 
@@ -152,14 +154,17 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 			continue
 		}
 
-		checkHtaccessFile(fullPath, suspicious, safe, findings)
+		checkHtaccessFile(ctx, fullPath, suspicious, safe, findings)
 		// Run the hardened detector registry alongside the generic
 		// token scanner so per-pattern findings emit with their own
 		// names (htaccess_php_in_uploads, htaccess_filesmatch_shield,
 		// etc.) rather than collapsing into the catch-all categories.
 		// The two scans can both fire on the same line; downstream
 		// dedup at alert.Dispatch handles same-key dups.
-		hardenedFindings, _ := AuditHtaccessFile(fullPath)
+		hardenedFindings, _, complete := auditHtaccessFile(fullPath)
+		if !complete {
+			markCheckIncomplete(ctx, "htaccess")
+		}
 		*findings = append(*findings, hardenedFindings...)
 	}
 }
@@ -232,9 +237,10 @@ func directiveHandlerContextTargetsNonPHP(directive string, contexts []phpHandle
 	return false
 }
 
-func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert.Finding) {
+func checkHtaccessFile(ctx context.Context, path string, suspicious, safe []string, findings *[]alert.Finding) {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markScanReadError(ctx, "htaccess", err)
 		return
 	}
 	defer func() { _ = f.Close() }()
@@ -263,6 +269,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 		lines = append(lines, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
+		markCheckIncomplete(ctx, "htaccess")
 		// Could not read the whole file (oversized line or I/O error), so
 		// the cross-line and per-line analysis below is incomplete. Flag
 		// the file for review rather than reporting a clean partial scan.

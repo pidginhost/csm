@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Incomplete filesystem and content scans now keep earlier alerts when accounts or files cannot be read or a candidate limit is reached. Failed exposure scans can retry on the next cycle instead of waiting for the normal interval.
 - A canceled PHP scan that finishes late can no longer restore outdated clean-file records over a newer scan.
 - Partial PHP scans now discard outdated clean-file records after a detection or read failure, and periodic rescans also refresh files reached only by rolling coverage. Storage failures no longer let one account prevent others from being scanned.
 - The deep scan for obfuscated and suspicious PHP content reported nothing on busy shared hosts: it ran out of its time budget every cycle and everything it had found until then was discarded, so droppers and webshells in scanned directories went unreported. What a scan finds before it runs out of time is now reported.

@@ -127,6 +127,30 @@ func markCheckIncomplete(ctx context.Context, name string) {
 	collector.mu.Unlock()
 }
 
+// A removed path is covered absence; a failed read is not evidence of cleanup.
+func markScanReadError(ctx context.Context, owner string, err error) {
+	if err != nil && !os.IsNotExist(err) {
+		markCheckIncomplete(ctx, owner)
+	}
+}
+
+// Unlike the best-effort inventory, partial discovery cannot authorize a
+// stateful scanner to retire findings from accounts it never enumerated.
+func scanHomeDirsWithCoverage(ctx context.Context, owner string) []os.DirEntry {
+	if AccountFromContext(ctx) != "" {
+		entries, err := GetScanHomeDirs(ctx)
+		markScanReadError(ctx, owner, err)
+		return entries
+	}
+	homes, err := readAccountHomes()
+	markScanReadError(ctx, owner, err)
+	entries := make([]os.DirEntry, 0, len(homes))
+	for _, home := range homes {
+		entries = append(entries, rootedDirEntry{DirEntry: home.Entry, root: home.Root})
+	}
+	return entries
+}
+
 // recordCoverageGapPaths records the stable aliases captured when a known file
 // gap was observed. The store must consume these aliases as identities, without
 // resolving them again after a symlink may have changed targets.
