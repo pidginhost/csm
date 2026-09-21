@@ -10,6 +10,10 @@ CSM monitors server performance metrics and generates findings when thresholds a
 | `perf_php_processes` | PHP process count and total memory usage |
 | `perf_memory` | Swap usage percentage and OOM killer activity |
 
+Host-wide OOM events are Critical; memory-cgroup limit events are Warning.
+Both are reported when present in the last hour, with separate deduplication
+identities for each scope and victim process.
+
 ## Deep Checks (default every 60 min, `thresholds.deep_scan_interval_min`)
 
 | Check | What it monitors |

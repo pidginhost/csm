@@ -11,6 +11,8 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Temporary-file inspection now handles file replacement and read failures without blocking or clearing earlier alerts. Host-wide memory exhaustion remains visible when account memory-limit events occur in the same scan.
+- PHP method declarations with long separators or return-by-reference syntax no longer trigger false include alerts.
 - A plugin that declares a method named `include()` or `require()`, which PHP allows and WordPress plugins commonly use, was reported as loading a file from request input. The method body was being read as the include target, so unrelated request handling anywhere inside it triggered the finding.
 - Hidden files in the shared temporary directories were all reported at high severity, so a root-owned control-panel working file came back as a security finding. A hidden file there is now reported only when it could actually execute.
 - On hosts where the two temporary directories are the same filesystem, the same file was reported twice. Findings there are now reported once per file.

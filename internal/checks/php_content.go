@@ -1317,12 +1317,6 @@ func canStartIncludeKeyword(line string, start int) bool {
 	return !isPHPIdentifierPart(prev) && prev != '$' && prev != '>' && prev != ':' && prev != '\\'
 }
 
-// functionKeywordLookback bounds the scan back over the whitespace between
-// `function` and the name it declares. This runs only after a keyword match,
-// but the separator is a space or a newline in real code, so a few tokens of
-// slack is enough and keeps the check constant-time.
-const functionKeywordLookback = 64
-
 // precededByFunctionKeyword reports whether the token before start is the
 // `function` keyword, i.e. start begins a declared function or method name
 // rather than a language construct. PHP 7 allows a reserved word as a method
@@ -1332,18 +1326,15 @@ const functionKeywordLookback = 64
 // include of request input.
 func precededByFunctionKeyword(line string, start int) bool {
 	const kw = "function"
-	i := start - 1
-	limit := start - functionKeywordLookback
-	for i >= 0 && i >= limit && (line[i] == ' ' || line[i] == '\t' || line[i] == '\n' || line[i] == '\r') {
-		i--
+	// Only inspect the separator after a keyword match, never at each byte
+	// offset. Separators have no length limit in PHP; each whitespace run is
+	// visited at most once per matched keyword, keeping the full scan linear.
+	end := skipPHPWhitespaceBack(line, 0, start)
+	if end > 0 && line[end-1] == '&' {
+		end = skipPHPWhitespaceBack(line, 0, end-1)
 	}
-	if i < len(kw)-1 || i == start-1 {
-		return false
-	}
-	if !strings.EqualFold(line[i-len(kw)+1:i+1], kw) {
-		return false
-	}
-	return i-len(kw) < 0 || !isPHPIdentifierPart(line[i-len(kw)])
+	begin := end - len(kw)
+	return begin >= 0 && strings.EqualFold(line[begin:end], kw) && canStartIncludeKeyword(line, begin)
 }
 
 func phpExpressionEnd(code string, start int) int {

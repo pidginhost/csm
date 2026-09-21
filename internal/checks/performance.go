@@ -366,7 +366,8 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 }
 
 // CheckSwapAndOOM checks for OOM killer events in dmesg and elevated swap
-// usage from /proc/meminfo. Reports Critical for OOM, High for swap > 50%.
+// usage from /proc/meminfo. Host OOM is Critical, cgroup OOM Warning, and
+// swap usage above 50% High.
 func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
@@ -384,6 +385,7 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	}
 	if dmesgOut != nil {
 		cutoff := time.Now().Add(-1 * time.Hour)
+		seen := make(map[string]bool)
 		for _, line := range strings.Split(string(dmesgOut), "\n") {
 			lower := strings.ToLower(line)
 			if !strings.Contains(lower, "out of memory") && !strings.Contains(lower, "oom_reaper") {
@@ -397,6 +399,11 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			if !ok || when.Before(cutoff) {
 				continue
 			}
+			key := oomDedupKey(line)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			severity, accountScoped := classifyOOMLine(line)
 			message := "OOM killer invoked in the last hour"
 			if accountScoped {
@@ -410,10 +417,9 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 				// Every kill logs a fresh pid and byte counts; keying dedup on
 				// the victim process name keeps an ongoing OOM loop to one
 				// finding per state-expiry window instead of one per scan.
-				DedupKey:  oomDedupKey(line),
+				DedupKey:  key,
 				Timestamp: time.Now(),
 			})
-			break // one finding is enough
 		}
 	}
 
@@ -473,12 +479,6 @@ func oomVictimProcess(line string) string {
 	return "host"
 }
 
-// parseDmesgOOMTime extracts the event time from a dmesg line. ISO lines
-// (--time-format iso) carry an absolute timestamp with a timezone offset as
-// the first field. The -T fallback carries a bracketed ctime in local time
-// ("[Mon Jan _2 15:04:05 2006] ..."). Returns ok=false when no timestamp can
-// be parsed, so the caller drops the line rather than reporting an undatable
-// (and therefore possibly stale) OOM event.
 // classifyOOMLine separates a host-wide OOM from a cgroup one. On a shared
 // host a cgroup kill is an account reaching the memory limit its plan sets:
 // routine, and not evidence about host health. Only real memory exhaustion is
@@ -500,6 +500,12 @@ func oomDedupKey(line string) string {
 	return "oom:host:" + oomVictimProcess(line)
 }
 
+// parseDmesgOOMTime extracts the event time from a dmesg line. ISO lines
+// (--time-format iso) carry an absolute timestamp with a timezone offset as
+// the first field. The -T fallback carries a bracketed ctime in local time
+// ("[Mon Jan _2 15:04:05 2006] ..."). Returns ok=false when no timestamp can
+// be parsed, so the caller drops the line rather than reporting an undatable
+// (and therefore possibly stale) OOM event.
 func parseDmesgOOMTime(line string, useISO bool) (time.Time, bool) {
 	if useISO {
 		// 2006-01-02T15:04:05,000000+0300 -- comma decimal, first field.

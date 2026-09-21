@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -133,7 +134,9 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			// A leading dot is not by itself a signal: these directories are
 			// full of root-owned infrastructure state. What matters is whether
 			// the file could execute.
-			if !hiddenTempFileCanExecute(match) {
+			canExecute, err := hiddenTempFileCanExecute(match, info)
+			markScanReadError(ctx, "filesystem", err)
+			if !canExecute {
 				continue
 			}
 			seen := false
@@ -187,27 +190,51 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 // temp directory could run: an executable bit or ELF magic, or a script marker
 // that an interpreter would honour. Inert data written there by system
 // components is not a finding.
-func hiddenTempFileCanExecute(path string) bool {
-	// Opening a FIFO blocks until a writer appears, and these directories are
-	// world-writable, so the mode is checked before anything is opened.
-	info, err := osFS.Stat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return false
+func hiddenTempFileCanExecute(path string, info os.FileInfo) (bool, error) {
+	if !info.Mode().IsRegular() {
+		return false, nil
 	}
-	if looksExecutableOrLibrary(path) {
-		return true
+	if info.Mode()&0o111 != 0 {
+		return true, nil
 	}
-	f, err := osFS.Open(path)
+	// Stat alone cannot protect a world-writable path: it can be replaced with
+	// a FIFO before open. Use the provider's nonblocking, fd-verified opener
+	// and bind the content decision to the same inode used for deduplication.
+	opener, ok := osFS.(interface {
+		openRegularFile(string, int) (*os.File, error)
+	})
+	if !ok {
+		return false, fmt.Errorf("filesystem provider cannot safely open %s", path)
+	}
+	f, err := opener.openRegularFile(path, 0)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer func() { _ = f.Close() }()
+	opened, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !sameFileSnapshot(info, opened) {
+		return false, errFileChanged
+	}
 	var head [8]byte
-	n, _ := io.ReadFull(f, head[:])
+	n, err := io.ReadFull(f, head[:])
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !sameFileSnapshot(opened, after) {
+		return false, errFileChanged
+	}
 	prefix := strings.ToLower(string(head[:n]))
-	return strings.HasPrefix(prefix, "#!") ||
+	return strings.HasPrefix(string(head[:n]), "\x7fELF") ||
+		strings.HasPrefix(prefix, "#!") ||
 		strings.HasPrefix(prefix, "<?php") ||
-		strings.HasPrefix(prefix, "<?=")
+		strings.HasPrefix(prefix, "<?="), nil
 }
 
 // scanForSUID checks for SUID binaries using ReadDir.
