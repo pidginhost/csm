@@ -9,6 +9,11 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ## [Unreleased]
 
+### Fixed
+
+- Nightly control panel maintenance no longer pages as a system compromise. A cron drop-in or a staged executable written by the panel's own scheduled work is reported as a Warning instead of High or Critical, recognised by the program a parent process is actually running rather than the name it reports. Nothing is skipped, and a cron file carrying persistence tokens still reports at full severity.
+- Sensitive-file findings are rescored using process ancestry on every Linux host. Until now that evidence was only read on hosts running the optional kernel monitoring, so the same write scored differently depending on the build.
+
 ## [3.43.0] - 2026-09-22
 
 ### Highlights

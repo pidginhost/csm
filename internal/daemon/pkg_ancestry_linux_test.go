@@ -13,7 +13,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -60,7 +59,7 @@ func TestProcAncestryFindsPackageManager(t *testing.T) {
 	})
 	overrideProcRoot(t, root)
 
-	if !procAncestryIsPackageManager(100) {
+	if !procAncestryEvidence(100, nil).packageManager {
 		t.Fatal("cpio under dnf must be recognized as package-manager ancestry")
 	}
 }
@@ -74,7 +73,7 @@ func TestProcAncestryWriterIsPackageManagerItself(t *testing.T) {
 	})
 	overrideProcRoot(t, root)
 
-	if !procAncestryIsPackageManager(200) {
+	if !procAncestryEvidence(200, nil).packageManager {
 		t.Fatal("rpm writing directly must be recognized")
 	}
 }
@@ -89,7 +88,7 @@ func TestProcAncestryNoPackageManager(t *testing.T) {
 	})
 	overrideProcRoot(t, root)
 
-	if procAncestryIsPackageManager(100) {
+	if procAncestryEvidence(100, nil).packageManager {
 		t.Fatal("cpio under plain bash must NOT be demote-eligible")
 	}
 }
@@ -97,7 +96,7 @@ func TestProcAncestryNoPackageManager(t *testing.T) {
 func TestProcAncestryMissingProcess(t *testing.T) {
 	overrideProcRoot(t, t.TempDir())
 
-	if procAncestryIsPackageManager(424242) {
+	if procAncestryEvidence(424242, nil).packageManager {
 		t.Fatal("missing /proc entry must fail closed (no demotion)")
 	}
 }
@@ -115,7 +114,7 @@ func TestProcAncestryMissingStatusFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if procAncestryIsPackageManager(100) {
+	if procAncestryEvidence(100, nil).packageManager {
 		t.Fatal("missing status must fail closed before reaching package-manager parent")
 	}
 }
@@ -134,7 +133,7 @@ func TestProcAncestryMalformedPPidFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if procAncestryIsPackageManager(100) {
+	if procAncestryEvidence(100, nil).packageManager {
 		t.Fatal("malformed PPid must fail closed before reaching package-manager parent")
 	}
 }
@@ -153,7 +152,7 @@ func TestProcAncestryMissingPPidFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if procAncestryIsPackageManager(100) {
+	if procAncestryEvidence(100, nil).packageManager {
 		t.Fatal("missing PPid must fail closed without looping or demoting")
 	}
 }
@@ -180,30 +179,32 @@ func TestProcAncestryDepthCap(t *testing.T) {
 	root := fakeProc(t, procs)
 	overrideProcRoot(t, root)
 
-	if procAncestryIsPackageManager(top) {
+	if procAncestryEvidence(top, nil).packageManager {
 		t.Fatal("package manager beyond depth cap must not qualify")
 	}
 }
 
-func TestPkgManagerAncestryPrefersBPFProbe(t *testing.T) {
-	// BPF probe says yes -> no /proc walk needed (procRootDir is empty).
+func TestAncestryEvidencePrefersCachedProbe(t *testing.T) {
+	// Cached probe says yes -> no /proc walk needed (procRootDir is empty).
 	overrideProcRoot(t, t.TempDir())
-	oldProbe := checks.AncestryProbe
-	checks.AncestryProbe = func(pid uint32) bool { return pid == 555 }
-	t.Cleanup(func() { checks.AncestryProbe = oldProbe })
-
-	if !pkgManagerAncestry(555) {
-		t.Fatal("BPF probe hit must qualify")
+	oldProbe := cachedAncestryEvidence
+	cachedAncestryEvidence = func(pid uint32, _ []string) ancestryEvidence {
+		return ancestryEvidence{packageManager: pid == 555}
 	}
-	if pkgManagerAncestry(556) {
+	t.Cleanup(func() { cachedAncestryEvidence = oldProbe })
+
+	if !ancestryEvidenceFor(555).packageManager {
+		t.Fatal("cached probe hit must qualify")
+	}
+	if !ancestryEvidenceFor(556).none() {
 		t.Fatal("probe miss with empty /proc must not qualify")
 	}
 }
 
-func TestPkgManagerAncestryFallsBackToProcWalk(t *testing.T) {
-	oldProbe := checks.AncestryProbe
-	checks.AncestryProbe = nil
-	t.Cleanup(func() { checks.AncestryProbe = oldProbe })
+func TestAncestryEvidenceFallsBackToProcWalk(t *testing.T) {
+	oldProbe := cachedAncestryEvidence
+	cachedAncestryEvidence = nil
+	t.Cleanup(func() { cachedAncestryEvidence = oldProbe })
 
 	root := fakeProc(t, map[int32]struct {
 		comm string
@@ -214,8 +215,8 @@ func TestPkgManagerAncestryFallsBackToProcWalk(t *testing.T) {
 	})
 	overrideProcRoot(t, root)
 
-	if !pkgManagerAncestry(300) {
-		t.Fatal("nil BPF probe must fall back to /proc walk")
+	if !ancestryEvidenceFor(300).packageManager {
+		t.Fatal("nil cached probe must fall back to /proc walk")
 	}
 }
 
@@ -223,10 +224,10 @@ func TestDemoteTmpExecGates(t *testing.T) {
 	now := time.Now()
 	override := func(t *testing.T, window, ancestry bool) {
 		t.Helper()
-		oldW, oldA := tmpExecPkgWindow, tmpExecPkgAncestry
+		oldW, oldA := tmpExecPkgWindow, tmpExecAncestry
 		tmpExecPkgWindow = func(time.Time) bool { return window }
-		tmpExecPkgAncestry = func(int32) bool { return ancestry }
-		t.Cleanup(func() { tmpExecPkgWindow, tmpExecPkgAncestry = oldW, oldA })
+		tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{packageManager: ancestry} }
+		t.Cleanup(func() { tmpExecPkgWindow, tmpExecAncestry = oldW, oldA })
 	}
 
 	t.Run("non_root_file_never_demotes", func(t *testing.T) {
@@ -349,10 +350,10 @@ func TestAnalyzeFileTmpExecNonRootStaysCritical(t *testing.T) {
 		t.Fatal("test setup must use a non-root-owned file to exercise the uid gate")
 	}
 
-	oldW, oldA := tmpExecPkgWindow, tmpExecPkgAncestry
+	oldW, oldA := tmpExecPkgWindow, tmpExecAncestry
 	tmpExecPkgWindow = func(time.Time) bool { return true }
-	tmpExecPkgAncestry = func(int32) bool { return true }
-	t.Cleanup(func() { tmpExecPkgWindow, tmpExecPkgAncestry = oldW, oldA })
+	tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{packageManager: true} }
+	t.Cleanup(func() { tmpExecPkgWindow, tmpExecAncestry = oldW, oldA })
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}

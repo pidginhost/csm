@@ -47,12 +47,12 @@ func TestSensitiveWatchsetGlobsExpand(t *testing.T) {
 func disableSensitiveProvenanceForTest(t *testing.T) {
 	t.Helper()
 	oldLogs := pkgManagerLogs
-	oldProbe := AncestryProbe
+	oldProbe := AncestryProvenance
 	pkgManagerLogs = []string{filepath.Join(t.TempDir(), "missing-package-manager.log")}
-	AncestryProbe = nil
+	AncestryProvenance = nil
 	t.Cleanup(func() {
 		pkgManagerLogs = oldLogs
-		AncestryProbe = oldProbe
+		AncestryProvenance = oldProbe
 	})
 }
 
