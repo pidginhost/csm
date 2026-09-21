@@ -89,15 +89,37 @@ func TestDangerousIncludeDeclarationSeparators(t *testing.T) {
 	}
 }
 
-func TestDangerousIncludeLargeWhitespace(t *testing.T) {
-	// An unbounded lookback is safe only after a matched keyword. Doing it at
-	// each byte offset makes a large whitespace run quadratic.
-	code := "<?php class A { function" + strings.Repeat(" ", 1<<20) + "include() { return $_GET['p']; } }"
-	start := time.Now()
-	if hasDangerousInclude(code) {
-		t.Fatal("long declaration was treated as an include")
+func TestDangerousIncludeScalesLinearlyWithWhitespace(t *testing.T) {
+	// The guard is against reintroducing the lookback at every byte offset,
+	// which makes a long whitespace run quadratic. A wall-clock bound cannot
+	// express that: CI runs this package under -race with coverage
+	// instrumentation on a shared runner, where the same linear scan measured
+	// 5s against 0.02s locally, so any absolute threshold either fails on a
+	// busy runner or is too loose to mean anything. Growth is the property, so
+	// measure growth: quadruple the input and compare.
+	measure := func(spaces int) time.Duration {
+		code := "<?php class A { function" + strings.Repeat(" ", spaces) + "include() { return $_GET['p']; } }"
+		start := time.Now()
+		if hasDangerousInclude(code) {
+			t.Fatal("long declaration was treated as an include")
+		}
+		return time.Since(start)
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("include scan took %s for 1 MiB of whitespace", elapsed)
+
+	// Warm the code path so first-call effects land outside the comparison.
+	measure(1 << 16)
+
+	const base = 1 << 20
+	small := measure(base)
+	large := measure(4 * base)
+
+	// A timer floor keeps a sub-millisecond baseline from turning scheduler
+	// jitter into a ratio. Linear growth is about 4x for 4x the input and
+	// quadratic about 16x, so 8x separates them with room for a loaded runner.
+	if small < time.Millisecond {
+		small = time.Millisecond
+	}
+	if large > 8*small {
+		t.Fatalf("include scan grew %v -> %v for 4x the whitespace, which is superlinear", small, large)
 	}
 }
