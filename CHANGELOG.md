@@ -11,12 +11,14 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Incomplete filesystem and content scans now keep earlier alerts when accounts or files cannot be read or a candidate limit is reached. Failed exposure scans can retry on the next cycle instead of waiting for the normal interval.
 - A canceled PHP scan that finishes late can no longer restore outdated clean-file records over a newer scan.
 - Partial PHP scans now discard outdated clean-file records after a detection or read failure, and periodic rescans also refresh files reached only by rolling coverage. Storage failures no longer let one account prevent others from being scanned.
 - The deep scan for obfuscated and suspicious PHP content reported nothing on busy shared hosts: it ran out of its time budget every cycle and everything it had found until then was discarded, so droppers and webshells in scanned directories went unreported. What a scan finds before it runs out of time is now reported.
 - Deep PHP content scanning now spends one file budget per cycle across the host instead of one per account, and takes accounts least-recently-covered first. Accounts late in the alphabet were never reached on hosts with many accounts.
 - Repeated deep scans keep alerts for indexed files that still need attention, including when a file cannot be read. After a large deletion, cached scans no longer restore removed paths into the file baseline.
 - While the realtime file monitor is attached, the scan that indexes files to spot new ones was skipped as covered by it. The monitor never reports a file renamed into place, so those files were never indexed and the baseline they are compared against stopped being refreshed until a signature update happened to force a full scan.
+- The deep scans for webshells, .htaccess injection, phishing content, setuid and backdoor binaries, and web-exposed backups were skipped for the same reason, so they too ran only when a signature update forced a full scan. The monitor reports neither a file renamed into place nor a setuid bit being set, so these now run on every deep cycle, with the exposed-file scan on a longer interval because it confirms a finding by requesting the file from the site.
 - Web-downloadable Joomla site backups are now reported when the site sits in a folder inside the zip, as most backups are packed. Only the root-level layout was recognized before, so these archives and the database password inside them stayed exposed without a finding.
 
 ### Fixed

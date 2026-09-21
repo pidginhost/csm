@@ -867,7 +867,7 @@ func TestCheckHtaccessFileSuspiciousDirectives(t *testing.T) {
 	safe := []string{"wordfence-waf.php"}
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, suspicious, safe, &findings)
+	checkHtaccessFile(context.Background(), tmp, suspicious, safe, &findings)
 	if len(findings) < 2 {
 		t.Errorf("expected at least 2 findings, got %d", len(findings))
 	}
@@ -889,7 +889,7 @@ func TestCheckHtaccessFileDirectiveAfterLongLineStillFlagged(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"auto_prepend_file"}, nil, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"auto_prepend_file"}, nil, &findings)
 	if len(findings) == 0 {
 		t.Fatal("malicious directive after an oversized line was not flagged (scanner truncated)")
 	}
@@ -909,7 +909,7 @@ func TestCheckHtaccessFileOversizedLineFailsClosed(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"auto_prepend_file"}, nil, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"auto_prepend_file"}, nil, &findings)
 	// A line past the ceiling also puts the file past the file-size ceiling,
 	// so either fail-closed finding (too large, or unparseable line) is the
 	// required High htaccess_injection report; a clean partial scan is not.
@@ -937,7 +937,7 @@ func TestCheckHtaccessFileCommentSkipped(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"auto_prepend_file"}, nil, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"auto_prepend_file"}, nil, &findings)
 	if len(findings) != 0 {
 		t.Error("commented lines should not produce findings")
 	}
@@ -955,7 +955,7 @@ func TestCheckHtaccessFileSafePatternWordfence(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"auto_prepend_file"}, []string{"wordfence-waf.php"}, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"auto_prepend_file"}, []string{"wordfence-waf.php"}, &findings)
 	if len(findings) != 0 {
 		t.Error("wordfence-waf.php should be safe")
 	}
@@ -973,7 +973,7 @@ func TestCheckHtaccessFileExecCGIBlock(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"sethandler"}, []string{"-execcgi"}, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"sethandler"}, []string{"-execcgi"}, &findings)
 	if len(findings) != 0 {
 		t.Error("SetHandler with -ExecCGI block should not flag")
 	}
@@ -991,7 +991,7 @@ func TestCheckHtaccessFileAddHandlerDangerousExt(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"addhandler"}, []string{}, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"addhandler"}, []string{}, &findings)
 
 	hasAbuse := false
 	for _, f := range findings {
@@ -1016,7 +1016,7 @@ func TestCheckHtaccessFileAddTypeStandardMIME(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"addtype"}, nil, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"addtype"}, nil, &findings)
 	if len(findings) != 0 {
 		t.Error("AddType with standard MIME should not flag")
 	}
@@ -1034,7 +1034,7 @@ func TestCheckHtaccessFileSetHandlerNone(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"sethandler"}, nil, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"sethandler"}, nil, &findings)
 	if len(findings) != 0 {
 		t.Error("SetHandler none is a security measure, should not flag")
 	}
@@ -1052,7 +1052,7 @@ func TestCheckHtaccessFileAddHandlerStandardCGI(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"addhandler"}, nil, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"addhandler"}, nil, &findings)
 	if len(findings) != 0 {
 		t.Error("AddHandler for .cgi/.pl should not flag as suspicious")
 	}
@@ -1070,7 +1070,7 @@ func TestCheckHtaccessFileDrupalSecurity(t *testing.T) {
 	})
 
 	var findings []alert.Finding
-	checkHtaccessFile(tmp, []string{"sethandler"}, nil, &findings)
+	checkHtaccessFile(context.Background(), tmp, []string{"sethandler"}, nil, &findings)
 	if len(findings) != 0 {
 		t.Error("Drupal security handler should not be flagged")
 	}

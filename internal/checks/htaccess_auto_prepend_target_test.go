@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -65,7 +66,7 @@ func TestCheckHtaccessFileAutoPrependParsesQuotedTarget(t *testing.T) {
 		withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(tmp) }})
 
 		var findings []alert.Finding
-		checkHtaccessFile(tmp, []string{"auto_prepend_file", "auto_append_file"}, nil, &findings)
+		checkHtaccessFile(context.Background(), tmp, []string{"auto_prepend_file", "auto_append_file"}, nil, &findings)
 		if len(findings) != tc.want {
 			t.Errorf("%s target %q: findings = %d, want %d", tc.directive, tc.target, len(findings), tc.want)
 		}
@@ -147,7 +148,7 @@ func TestCheckHtaccessFileAutoPrependIgnoresSafeSubstringsInTarget(t *testing.T)
 		withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(tmp) }})
 
 		var findings []alert.Finding
-		checkHtaccessFile(tmp, []string{"auto_prepend_file"}, []string{"litespeed", ".ttf", "wordfence-waf.php"}, &findings)
+		checkHtaccessFile(context.Background(), tmp, []string{"auto_prepend_file"}, []string{"litespeed", ".ttf", "wordfence-waf.php"}, &findings)
 		if len(findings) == 0 {
 			t.Errorf("target %q: no htaccess_injection finding; a safe substring in the target must not exempt it", target)
 		}

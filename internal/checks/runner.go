@@ -555,6 +555,17 @@ func reducedDeepChecks() []namedCheck {
 		// index also owns the baseline the new-file diff runs against, which
 		// stops being refreshed for as long as the monitor stays attached.
 		{"file_index", CheckFileIndex},
+		// The rest of the rename-blind content scans, for the same reason.
+		{"webshells", CheckWebshells},
+		{"htaccess", CheckHtaccess},
+		{"phishing", CheckPhishing},
+		// Not merely rename-blind: a setuid bit is set by chmod, which raises
+		// no close-write event, so no realtime path reports one at all.
+		{"filesystem", CheckFilesystem},
+		// Confirmed by probing the vhost rather than by reading the file, so
+		// no file event stands in for it. Throttled, because that probe is a
+		// live request to a customer site and the findings are posture.
+		{"exposed_files", CheckExposedFiles},
 		{"wp_core", CheckWPCore},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
@@ -615,6 +626,10 @@ func PerfCheckNamesForTier(tier Tier) []string {
 // would purge stale findings and merge nothing, hiding real issues until
 // the next non-throttled cycle (or daemon restart).
 var checkThrottleMin = map[string]int{
+	// Every candidate is confirmed with a live request to the customer's
+	// vhost, and the findings are posture that does not change between
+	// cycles, so this runs a few times a day rather than on each deep cycle.
+	"exposed_files":      360,
 	"perf_php_handler":   60,
 	"perf_mysql_config":  60,
 	"perf_redis_config":  60,
@@ -897,12 +912,8 @@ func RunTierDryRunWithContext(ctx context.Context, cfg *config.Config, store *st
 // RunReducedDeep runs only the deep checks that fanotify can't replace.
 // Used by the daemon when fanotify is active.
 //
-// Skipped (fanotify handles these in real-time):
-//
-//	filesystem, webshells, htaccess, file_index, phishing
-//
-// php_config_changes remains scheduled because fanotify sees only writes and
-// cannot find a planted configuration that predates daemon startup.
+// Filesystem and content scans remain scheduled because fanotify misses
+// renames, permission changes and files planted before daemon startup.
 //
 // The second return value is the per-scan purge name list scoped to the
 // checks that actually executed this cycle.
@@ -1155,7 +1166,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				if len(results) > 0 {
 					findings = append(findings, results...)
 				}
-				if throttleReserved {
+				if throttleReserved && incompleteChecks.contains(c.name) {
+					store.ReleaseThrottle(c.name)
+				} else if throttleReserved {
 					completedThrottled = append(completedThrottled, c.name)
 				}
 				mu.Unlock()

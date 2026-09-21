@@ -3,6 +3,7 @@ package checks
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,7 @@ func TestCheckCredentialLogBinaryImageNotFlagged(t *testing.T) {
 	if err := os.WriteFile(path, blob, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkCredentialLog(path); got != "" {
+	if got := checkCredentialLog(context.Background(), path); got != "" {
 		t.Errorf("binary image must not flag as credential log, got %q", got)
 	}
 }
@@ -45,7 +46,7 @@ func TestCheckCredentialLogBinaryVideoNotFlagged(t *testing.T) {
 	if err := os.WriteFile(path, blob, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkCredentialLog(path); got != "" {
+	if got := checkCredentialLog(context.Background(), path); got != "" {
 		t.Errorf("binary video must not flag as credential log, got %q", got)
 	}
 }
@@ -65,7 +66,7 @@ func TestCheckCredentialLogSourceScatteredEmailsNotFlagged(t *testing.T) {
 	if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkCredentialLog(path); got != "" {
+	if got := checkCredentialLog(context.Background(), path); got != "" {
 		t.Errorf("source file with minority embedded emails must not flag, got %q", got)
 	}
 }
@@ -79,7 +80,7 @@ const third = "carol@example.com:pending";
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkCredentialLog(path); got != "" {
+	if got := checkCredentialLog(context.Background(), path); got != "" {
 		t.Errorf("email mappings in source must not count as credential pairs, got %q", got)
 	}
 }
@@ -93,7 +94,7 @@ func TestCheckCredentialLogRealPairsStillFlagged(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkCredentialLog(path); !strings.Contains(got, "credential-like lines") {
+	if got := checkCredentialLog(context.Background(), path); !strings.Contains(got, "credential-like lines") {
 		t.Errorf("real email:password dump must still flag, got %q", got)
 	}
 }
@@ -120,7 +121,7 @@ func TestCheckCredentialLogEncodedPairsStillFlagged(t *testing.T) {
 			if err := os.WriteFile(path, encoded, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if got := checkCredentialLog(path); !strings.Contains(got, "credential-like lines") {
+			if got := checkCredentialLog(context.Background(), path); !strings.Contains(got, "credential-like lines") {
 				t.Errorf("encoded credential dump must still flag, got %q", got)
 			}
 		})
@@ -139,7 +140,7 @@ func TestCheckCredentialLogReadsPastLargeHeader(t *testing.T) {
 	if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkCredentialLog(path); !strings.Contains(got, "harvested email list") {
+	if got := checkCredentialLog(context.Background(), path); !strings.Contains(got, "harvested email list") {
 		t.Errorf("address dump after a large header must still flag, got %q", got)
 	}
 }
@@ -161,7 +162,7 @@ class wpadm_dropbox_backup {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("dropbox backup class must not flag, got %+v", res)
 	}
 }
@@ -180,7 +181,7 @@ $email = $_POST['email'];
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("paypal donation gateway must not flag, got %+v", res)
 	}
 }
@@ -201,7 +202,7 @@ $email = $_POST['email'];
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("cost calculator plugin must not flag, got %+v", res)
 	}
 }
@@ -220,7 +221,7 @@ class td_ajax {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("ajax handler must not flag, got %+v", res)
 	}
 }
@@ -244,7 +245,7 @@ file_put_contents('results.txt', "$email:$password\n", FILE_APPEND);
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	res := analyzePHPForPhishing(path)
+	res := analyzePHPForPhishing(context.Background(), path)
 	if res == nil {
 		t.Fatal("body-branded PHP kit that captures a password must flag")
 	}
@@ -270,7 +271,7 @@ file_put_contents('results.txt', "$email:$password\n", FILE_APPEND);
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res == nil || res.brand != "Dropbox" {
+	if res := analyzePHPForPhishing(context.Background(), path); res == nil || res.brand != "Dropbox" {
 		t.Fatalf("spaced password capture with a visible brand must flag, got %+v", res)
 	}
 }
@@ -291,7 +292,7 @@ $email = $_POST['email'];
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("a commented password example must not establish capture, got %+v", res)
 	}
 }
@@ -307,7 +308,7 @@ mail('owner@example.com', 'receipt', $email);
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("a title literal in backend code must not impersonate a brand, got %+v", res)
 	}
 }
@@ -330,7 +331,7 @@ if ($_POST['password'] > '') {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzePHPForPhishing(path); res != nil {
+	if res := analyzePHPForPhishing(context.Background(), path); res != nil {
 		t.Errorf("provider name in PHP source must not count as visible impersonation, got %+v", res)
 	}
 }
@@ -345,7 +346,7 @@ func TestCheckIframePhishingDocumentedEmbedNotFlagged(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkIframePhishing(path); got != "" {
+	if got := checkIframePhishing(context.Background(), path); got != "" {
 		t.Errorf("documented demo embed must not flag, got %q", got)
 	}
 }
@@ -365,7 +366,7 @@ func TestCheckIframePhishingHiddenCodeDoesNotCountAsProse(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkIframePhishing(path); !strings.Contains(got, "Full-screen iframe") {
+	if got := checkIframePhishing(context.Background(), path); !strings.Contains(got, "Full-screen iframe") {
 		t.Errorf("hidden code and comments must not suppress iframe detection, got %q", got)
 	}
 }
@@ -379,7 +380,7 @@ func TestCheckIframePhishingStylesheetHiddenTextDoesNotCountAsProse(t *testing.T
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := checkIframePhishing(path); !strings.Contains(got, "Full-screen iframe") {
+	if got := checkIframePhishing(context.Background(), path); !strings.Contains(got, "Full-screen iframe") {
 		t.Errorf("stylesheet-hidden text must not suppress iframe detection, got %q", got)
 	}
 }
@@ -418,7 +419,7 @@ func TestZipLooksLikeKitLegitPluginFalse(t *testing.T) {
 		"insta-gallery-pro/build/backend/css/style.css",
 		"insta-gallery-pro/includes/class-instagram.php",
 	})
-	if zipLooksLikeKit(path) {
+	if zipLooksLikeKit(context.Background(), path) {
 		t.Error("legit instagram plugin zip must not look like a kit")
 	}
 }
@@ -431,7 +432,7 @@ func TestZipLooksLikeKitSearchResultsPHPIsNotCredentialSink(t *testing.T) {
 		"paypal-search/includes/search-results.php",
 		"paypal-search/readme.txt",
 	})
-	if zipLooksLikeKit(path) {
+	if zipLooksLikeKit(context.Background(), path) {
 		t.Error("a generic PHP result page must not be decisive kit evidence")
 	}
 }
@@ -444,7 +445,7 @@ func TestZipLooksLikeKitCredentialSinkNeedsAnotherSignal(t *testing.T) {
 		"paypal-export/results.txt",
 		"paypal-export/readme.txt",
 	})
-	if zipLooksLikeKit(path) {
+	if zipLooksLikeKit(context.Background(), path) {
 		t.Error("a credential-like filename alone must not decide that an archive is a kit")
 	}
 }
@@ -457,7 +458,7 @@ func TestZipLooksLikeKitSignalsMustComeFromDistinctEntries(t *testing.T) {
 		"paypal-security/includes/secure-antibot.php",
 		"paypal-security/readme.txt",
 	})
-	if zipLooksLikeKit(path) {
+	if zipLooksLikeKit(context.Background(), path) {
 		t.Error("one filename matching two keywords must not count as independent kit signals")
 	}
 }
@@ -469,7 +470,7 @@ func TestZipLooksLikeKitBlockerAndLoginStillFlagged(t *testing.T) {
 		"paypal/login.html",
 		"paypal/blocker.php",
 	})
-	if !zipLooksLikeKit(path) {
+	if !zipLooksLikeKit(context.Background(), path) {
 		t.Error("a login page and separate anti-bot blocker must look like a kit")
 	}
 }
@@ -482,7 +483,7 @@ func TestZipLooksLikeKitRealKitTrue(t *testing.T) {
 		"office365/next.php",
 		"office365/results.txt",
 	})
-	if !zipLooksLikeKit(path) {
+	if !zipLooksLikeKit(context.Background(), path) {
 		t.Error("real office365 kit zip must be detected")
 	}
 }
