@@ -1,3 +1,8 @@
+# This repository is published from an upstream mirror, so the branches
+# Dependabot opens here are replaced on the next sync and its pull requests
+# close on their own. Treat them as notifications: the update is applied
+# upstream, and it arrives here with the following sync. Do not spend time
+# reopening or merging them.
 version: 2
 updates:
   - package-ecosystem: gomod

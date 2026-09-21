@@ -27,7 +27,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
+          # Read the version from go.mod rather than repeating it here. A
+          # literal pin silently fell behind a go.mod bump and broke this
+          # workflow with GOTOOLCHAIN=local, which forbids fetching the
+          # newer toolchain the module requires.
+          go-version-file: go.mod
 
       - name: Download coverage profile from latest release
         env:
