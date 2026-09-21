@@ -7,42 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
-## [Unreleased]
+## [3.42.0] - 2026-09-21
+
+### Highlights
+
+- Upgrade recommended: the deep scan for obfuscated and suspicious PHP content reported nothing at all on busy shared hosts. It ran out of its time budget every cycle and discarded everything it had found until that point, so droppers and webshells in the directories it covers went unreported.
+- Several filesystem scans ran only when a signature update happened to force a full sweep: the index that spots new files, webshells, .htaccess injection, phishing content, setuid and backdoor binaries, and web-downloadable backups. They were treated as covered by the realtime monitor, which reports neither a file renamed into place nor a setuid bit being set.
+- Expect more findings after upgrading, and read the first cycle rather than dismissing it. Setuid binaries and web-exposed backups had no coverage at all, so whatever is present has been accumulating.
+- Scans that keep their own refresh interval no longer clear findings on the cycles they skip, and a scan cut short no longer discards what it had already found.
+- Much less noise: hidden working files in the shared temporary directories, the same file reported twice where those directories share a filesystem, an account reaching its own memory limit reported as machine-wide exhaustion, false scan warnings on templates and data files, and suspended accounts counted as databases the scan failed to read.
+- The mailbox password audit runs on its interval again instead of re-verifying every mailbox on every scan.
+- CSM is now built with Go 1.27.
 
 ### Security
 
-- PHP analysis now retains coverage for code embedded in binary content. Files that cannot be analyzed remain visible as coverage gaps and retain earlier findings.
-- The realtime scan's retry for a large file now inspects the exact bytes the write event carried, rather than reopening the path, so a file swapped between the write and the retry cannot change what is scanned.
-- Realtime rule scans now handle large event snapshots without losing coverage at the scanner transport limit. Retries preserve the captured content and alert evidence even if the file changes or disappears.
-- Recognized templates, stylesheets, and data files no longer produce false JavaScript scan warnings, while JavaScript remains checked regardless of filename. Embedded JavaScript in those documents is not covered by this analyzer.
-- Suspended accounts are no longer counted as WordPress databases the scan failed to read. Their database users are locked while the account is suspended, so every scan reported coverage it could never obtain.
-- Mailbox audit warnings stay visible between scheduled checks. Temporary verification failures continue to retry even when their underlying error resembles an unauditable hash.
-- Checks that keep their own refresh interval reported nothing on the cycles in between, which read as a completed scan, so the weak mailbox passwords and forwarder findings from the cycle that did look were cleared until the next one. A skipped cycle now says it skipped, and the earlier findings stay.
-- The mailbox password audit re-verified every mailbox on every scan instead of on its interval, because hashes it can never audit counted as unfinished work. Those are now reported separately and no longer hold the audit back.
-- Temporary-file inspection now handles file replacement and read failures without blocking or clearing earlier alerts. Host-wide memory exhaustion remains visible when account memory-limit events occur in the same scan.
-- PHP method declarations with long separators or return-by-reference syntax no longer trigger false include alerts.
-- A plugin that declares a method named `include()` or `require()`, which PHP allows and WordPress plugins commonly use, was reported as loading a file from request input. The method body was being read as the include target, so unrelated request handling anywhere inside it triggered the finding.
-- Hidden files in the shared temporary directories were all reported at high severity, so a root-owned control-panel working file came back as a security finding. A hidden file there is now reported only when it could actually execute.
-- On hosts where the two temporary directories are the same filesystem, the same file was reported twice. Findings there are now reported once per file.
-- A single account reaching its own memory limit was reported as critical, the same as the machine running out of memory. The account case is now a warning, reads differently, and no longer suppresses the machine-wide alert.
-- Incomplete filesystem and content scans now keep earlier alerts when accounts or files cannot be read or a candidate limit is reached. Failed exposure scans can retry on the next cycle instead of waiting for the normal interval.
-- A canceled PHP scan that finishes late can no longer restore outdated clean-file records over a newer scan.
-- Partial PHP scans now discard outdated clean-file records after a detection or read failure, and periodic rescans also refresh files reached only by rolling coverage. Storage failures no longer let one account prevent others from being scanned.
 - The deep scan for obfuscated and suspicious PHP content reported nothing on busy shared hosts: it ran out of its time budget every cycle and everything it had found until then was discarded, so droppers and webshells in scanned directories went unreported. What a scan finds before it runs out of time is now reported.
 - Deep PHP content scanning now spends one file budget per cycle across the host instead of one per account, and takes accounts least-recently-covered first. Accounts late in the alphabet were never reached on hosts with many accounts.
-- Repeated deep scans keep alerts for indexed files that still need attention, including when a file cannot be read. After a large deletion, cached scans no longer restore removed paths into the file baseline.
 - While the realtime file monitor is attached, the scan that indexes files to spot new ones was skipped as covered by it. The monitor never reports a file renamed into place, so those files were never indexed and the baseline they are compared against stopped being refreshed until a signature update happened to force a full scan.
 - The deep scans for webshells, .htaccess injection, phishing content, setuid and backdoor binaries, and web-exposed backups were skipped for the same reason, so they too ran only when a signature update forced a full scan. The monitor reports neither a file renamed into place nor a setuid bit being set, so these now run on every deep cycle, with the exposed-file scan on a longer interval because it confirms a finding by requesting the file from the site.
+- A file written to disk was left unscanned by the realtime rule engine when its content was too large to send to the scanner in one message, even though the scanner could have opened the file itself. Padding a dropper past that size kept it from being scanned on write. The retry now inspects the exact bytes the write event carried rather than reopening the path, so a file swapped between the write and the retry cannot change what is scanned, and the evidence in the alert describes what was actually examined.
+- PHP analysis now retains coverage for code embedded in binary content. PHP emits anything outside its tags verbatim, so a binary header cannot establish that executable code later in the file is inert; files that cannot be analyzed stay visible as coverage gaps and keep their earlier findings.
+- Checks that keep their own refresh interval reported nothing on the cycles in between, which read as a completed scan, so the weak mailbox passwords and forwarder findings from the cycle that did look were cleared until the next one. A skipped cycle now says it skipped, its warnings stay visible, and the earlier findings remain.
+- The mailbox password audit re-verified every mailbox on every scan instead of on its interval, because hashes it can never audit counted as unfinished work. Those are now reported separately and no longer hold the audit back, while a temporary verification failure still retries.
+- Suspended accounts are no longer counted as WordPress databases the scan failed to read. Their database users are locked while the account is suspended, so every scan reported coverage it could never obtain.
+- Incomplete filesystem and content scans now keep earlier alerts when accounts or files cannot be read or a candidate limit is reached. A failed exposure scan can retry on the next cycle instead of waiting for its normal interval.
+- A canceled PHP scan that finishes late can no longer restore outdated clean-file records over a newer scan, and a partial scan discards outdated records after a detection or read failure. Periodic rescans also refresh files reached only by rolling coverage, and storage failures no longer let one account prevent others from being scanned.
+- Repeated deep scans keep alerts for indexed files that still need attention, including when a file cannot be read. After a large deletion, cached scans no longer restore removed paths into the file baseline.
+- A plugin that declares a method named `include()` or `require()`, which PHP allows and WordPress plugins commonly use, was reported as loading a file from request input. The method body was being read as the include target, so unrelated request handling anywhere inside it triggered the finding. Declarations with long separators or return-by-reference syntax are handled too.
+- Hidden files in the shared temporary directories were all reported at high severity, so a root-owned control-panel working file came back as a security finding. A hidden file there is now reported only when it could actually execute, and inspection handles a file being replaced or unreadable without blocking or clearing earlier alerts.
+- On hosts where the two temporary directories are the same filesystem, the same file was reported twice. Findings there are now reported once per file.
+- A single account reaching its own memory limit was reported as critical, the same as the machine running out of memory. The account case is now a warning, reads differently, and no longer suppresses the machine-wide alert.
+- Recognized templates, stylesheets, and data files no longer produce false JavaScript scan warnings, while JavaScript remains checked regardless of filename. JavaScript embedded in those documents is not covered by this analyzer.
 - Web-downloadable Joomla site backups are now reported when the site sits in a folder inside the zip, as most backups are packed. Only the root-level layout was recognized before, so these archives and the database password inside them stayed exposed without a finding.
 
 ### Fixed
 
-- Deleted PHP files are removed from the scan cache even when an account needs several scan windows. Shutdown no longer waits for the grace period used to collect findings from timed-out checks.
-- A deep PHP content scan that runs out of time now keeps the record of the files it confirmed clean, so the next scan resumes instead of re-reading every file from the start.
+- A deep PHP content scan that runs out of time now keeps the record of the files it confirmed clean, so the next scan resumes instead of re-reading every file from the start. Deleted files are removed from that record even when an account needs several scan windows.
+- Shutdown no longer waits for the grace period used to collect findings from timed-out checks.
 
 ### Changed
 
-- CSM is now built with Go 1.27.
 - PHP remote-code findings now say how the fetched source was identified, so an unresolved source is distinguishable from a proven remote one.
 - PHP remote-code findings now keep the same identity when their wording changes. This release changes their identity once, so an earlier dismissal of one of these findings is shown once more.
 
@@ -149,5 +153,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - `csm doctor` and the components view now keep reporting the YARA-X scanning worker as failed while it keeps crashing after restarts, instead of only when it cannot start at all. A restarted worker counts as recovered once it stays up for 30 seconds.
 - The YARA-X worker crash alert now reports the current scanning outage without claiming recovery. It distinguishes scanning becoming available after a restart from worker health recovering after the replacement stays up for 30 seconds.
 
+[3.42.0]: https://github.com/pidginhost/csm/compare/v3.41.0...v3.42.0
 [3.41.0]: https://github.com/pidginhost/csm/compare/v3.40.0...v3.41.0
 [3.40.0]: https://github.com/pidginhost/csm/compare/v3.39.0...v3.40.0
