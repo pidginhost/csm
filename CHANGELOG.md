@@ -11,6 +11,8 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Checks that keep their own refresh interval reported nothing on the cycles in between, which read as a completed scan, so the weak mailbox passwords and forwarder findings from the cycle that did look were cleared until the next one. A skipped cycle now says it skipped, and the earlier findings stay.
+- The mailbox password audit re-verified every mailbox on every scan instead of on its interval, because hashes it can never audit counted as unfinished work. Those are now reported separately and no longer hold the audit back.
 - Temporary-file inspection now handles file replacement and read failures without blocking or clearing earlier alerts. Host-wide memory exhaustion remains visible when account memory-limit events occur in the same scan.
 - PHP method declarations with long separators or return-by-reference syntax no longer trigger false include alerts.
 - A plugin that declares a method named `include()` or `require()`, which PHP allows and WordPress plugins commonly use, was reported as loading a file from request input. The method body was being read as the include target, so unrelated request handling anywhere inside it triggered the finding.

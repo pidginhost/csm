@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -24,6 +25,11 @@ func TestEmailPasswordIncompleteScanPreservesFindingsAndRetries(t *testing.T) {
 	s.SetLatestFindings([]alert.Finding{{Check: "email_weak_password", Severity: alert.Critical, Message: "prior weak password"}})
 	const key = "email:pwaudit:alice:mailbox@example.test"
 	for _, stored := range []string{"{UNKNOWN}private-fixture", "$6$rounds=1000001$salt$" + strings.Repeat("a", 86), "{SHA}invalid"} {
+		// Each hash type is exercised on its own run, so the interval the
+		// previous iteration stamped must not skip this one.
+		if err := db.SetEmailPWLastRefresh(time.Time{}); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(path, []byte("mailbox:"+stored+"\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -41,8 +47,15 @@ func TestEmailPasswordIncompleteScanPreservesFindingsAndRetries(t *testing.T) {
 		if len(got) != 2 || counts["email_weak_password"] != 1 || counts["email_password_audit_incomplete"] != 1 {
 			t.Fatalf("incomplete scan lost prior findings or accumulated status rows: %+v", got)
 		}
-		if db.GetMetaString(key) != oldFP || !db.GetEmailPWLastRefresh().IsZero() {
+		if db.GetMetaString(key) != oldFP {
 			t.Fatal("incomplete scan recorded successful verification")
+		}
+		// These three hashes are unauditable by construction, not transient.
+		// Rerunning cannot change the outcome, so the scan stamps its refresh
+		// and honours the interval instead of redoing every mailbox next
+		// cycle; the warning above is what keeps them visible.
+		if db.GetEmailPWLastRefresh().IsZero() {
+			t.Fatal("a scan whose only failures are unauditable hashes did not stamp its refresh, so the whole mailbox set is re-verified every cycle")
 		}
 	}
 	// A supported hash must be retried even if an earlier version cached it.
