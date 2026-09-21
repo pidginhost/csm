@@ -1726,8 +1726,11 @@ func zipLooksLikeKit(ctx context.Context, path string) bool {
 		markScanReadError(ctx, "phishing", err)
 		return false
 	}
+	// Out of bounds or not a regular file is a scope decision, not a coverage
+	// failure: the caller already gates on the same range, and marking the
+	// check incomplete here would stop it ever retiring a stale finding on a
+	// host that simply keeps a large archive under a docroot.
 	if !info.Mode().IsRegular() || info.Size() <= 1000 || info.Size() >= 50*1024*1024 {
-		markCheckIncomplete(ctx, "phishing")
 		return false
 	}
 	return phishingKitZipHasEvidence(ctx, f, info.Size())

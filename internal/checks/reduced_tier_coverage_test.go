@@ -188,6 +188,12 @@ func TestPhishingReadFailuresMarkIncomplete(t *testing.T) {
 			if failure == "archive parse" && name != "zip" {
 				continue
 			}
+			// The zip path reaches its reader through a regular-file gate, so
+			// a directory handle lands on that scope check rather than on a
+			// read error. "archive parse" is its read-failure equivalent.
+			if failure == "read" && name == "zip" {
+				continue
+			}
 			t.Run(name+"/"+failure, func(t *testing.T) {
 				root := t.TempDir()
 				path := filepath.Join(root, "candidate")
