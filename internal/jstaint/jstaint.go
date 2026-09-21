@@ -156,7 +156,12 @@ func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report
 		return Report{Status: StatusOversize}
 	}
 
-	if !isCandidate(src) {
+	// The deep walk hands every readable file here and relies on this filter
+	// to reject the rest. PHP source passes it easily and can never parse as
+	// JavaScript, so reporting the failure would invent a coverage gap no
+	// operator action can close. The JavaScript embedded in such a file is
+	// genuinely unexamined; that needs script extraction, not a parse attempt.
+	if !isCandidate(src) || opensWithPHPTag(src) {
 		return Report{Status: StatusNotCandidate}
 	}
 
@@ -227,6 +232,22 @@ func MayBeJSSource(prefix []byte) bool {
 			return true
 		}
 	}
+}
+
+// opensWithPHPTag reports whether src begins a PHP document. Only a tag at the
+// very start counts, after any byte-order mark and leading whitespace: that is
+// where a PHP file declares itself, while a JavaScript file may carry the same
+// characters inside a string literal.
+func opensWithPHPTag(src []byte) bool {
+	src = bytes.TrimPrefix(src, []byte("\xef\xbb\xbf"))
+	src = bytes.TrimLeft(src, " \t\r\n")
+	if bytes.HasPrefix(src, []byte("<?=")) {
+		return true
+	}
+	// The opening tag is case-insensitive, so compare only its own length
+	// rather than folding the whole file.
+	const tag = "<?php"
+	return len(src) >= len(tag) && bytes.EqualFold(src[:len(tag)], []byte(tag))
 }
 
 // isCandidate reports whether src carries both a key-handler token and a sink
