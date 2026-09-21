@@ -420,8 +420,13 @@ func TestWorkerQueueRecoveredAnalyzerPanicCountsLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Stop() }()
-	for range 3 {
-		rep := s.Analyze(context.Background(), []byte("<?php $x = curl_exec($c); eval($x); }"))
+	for _, src := range []string{
+		"<?php $x = curl_exec($c); eval($x); }",
+		// Text syntax-highlighting rules can contain PHP tokens without NULs.
+		`var rules = ["<?php", "}", "curl_exec", "eval"];`,
+		"<?php $x = curl_exec($c); eval($x); }",
+	} {
+		rep := s.Analyze(context.Background(), []byte(src))
 		if rep.Status != phptaint.StatusPanic || len(rep.Results) != 0 || rep.Reason != "panic: recovered panic during analysis" {
 			t.Fatalf("recovered analyzer panic report changed: status=%s results=%d", rep.Status, len(rep.Results))
 		}
