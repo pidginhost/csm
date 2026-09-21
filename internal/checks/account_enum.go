@@ -3,11 +3,26 @@ package checks
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 )
+
+// accountSuspended reports whether cPanel has suspended an account. cPanel
+// locks the account's database users at suspension, so every query against its
+// installs fails with an access error; scanning one produces no coverage, only
+// a gap that no operator action can clear. A name that is not a single path
+// element is rejected rather than resolved, so it cannot escape the directory.
+func accountSuspended(account string) bool {
+	if account == "" || account == "." || account == ".." || strings.ContainsAny(account, `/\`) {
+		return false
+	}
+	_, err := osFS.Stat(filepath.Join("/var/cpanel/suspended", account))
+	return err == nil
+}
 
 // EnumerateScanAccounts returns the sorted list of cPanel account usernames
 // eligible for a server-wide scan. Source of truth: the cPanel user registry
