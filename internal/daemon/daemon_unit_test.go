@@ -1104,31 +1104,12 @@ func TestDiscoverAccessLogPath_NoCandidatesExist(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// sdNotify — invalid address does not panic
-// ---------------------------------------------------------------------------
-
-func TestSdNotify_InvalidAddress(t *testing.T) {
-	// Nonexistent socket — should silently fail.
-	sdNotify("/tmp/nonexistent-sd-notify-socket-"+t.Name(), "WATCHDOG=1")
-}
-
-func TestSdNotify_EmptyMessage(t *testing.T) {
-	sdNotify("/tmp/nonexistent-sd-notify-socket-"+t.Name(), "")
-}
-
-// ---------------------------------------------------------------------------
 // watchdogNotifier — exits when env vars are not set
 // ---------------------------------------------------------------------------
 
 func TestWatchdogNotifier_NoEnvExitsImmediately(t *testing.T) {
 	// Ensure WATCHDOG_USEC is not set.
-	prev := os.Getenv("WATCHDOG_USEC")
-	_ = os.Unsetenv("WATCHDOG_USEC")
-	defer func() {
-		if prev != "" {
-			os.Setenv("WATCHDOG_USEC", prev)
-		}
-	}()
+	captureWatchdogEnv(t, "", "")
 
 	d := New(&config.Config{}, nil, nil, "")
 	d.wg.Add(1)
@@ -1147,20 +1128,7 @@ func TestWatchdogNotifier_NoEnvExitsImmediately(t *testing.T) {
 }
 
 func TestWatchdogNotifier_NoNotifySocketExits(t *testing.T) {
-	prev := os.Getenv("WATCHDOG_USEC")
-	prevAddr := os.Getenv("NOTIFY_SOCKET")
-	os.Setenv("WATCHDOG_USEC", "1000000")
-	_ = os.Unsetenv("NOTIFY_SOCKET")
-	defer func() {
-		if prev != "" {
-			os.Setenv("WATCHDOG_USEC", prev)
-		} else {
-			_ = os.Unsetenv("WATCHDOG_USEC")
-		}
-		if prevAddr != "" {
-			os.Setenv("NOTIFY_SOCKET", prevAddr)
-		}
-	}()
+	captureWatchdogEnv(t, "1000000", "")
 
 	d := New(&config.Config{}, nil, nil, "")
 	d.wg.Add(1)
@@ -1179,22 +1147,7 @@ func TestWatchdogNotifier_NoNotifySocketExits(t *testing.T) {
 }
 
 func TestWatchdogNotifier_InvalidUsecExits(t *testing.T) {
-	prev := os.Getenv("WATCHDOG_USEC")
-	prevAddr := os.Getenv("NOTIFY_SOCKET")
-	os.Setenv("WATCHDOG_USEC", "not-a-number")
-	os.Setenv("NOTIFY_SOCKET", "/tmp/test-socket")
-	defer func() {
-		if prev != "" {
-			os.Setenv("WATCHDOG_USEC", prev)
-		} else {
-			_ = os.Unsetenv("WATCHDOG_USEC")
-		}
-		if prevAddr != "" {
-			os.Setenv("NOTIFY_SOCKET", prevAddr)
-		} else {
-			_ = os.Unsetenv("NOTIFY_SOCKET")
-		}
-	}()
+	captureWatchdogEnv(t, "not-a-number", "/tmp/test-socket")
 
 	d := New(&config.Config{}, nil, nil, "")
 	d.wg.Add(1)
@@ -1213,22 +1166,7 @@ func TestWatchdogNotifier_InvalidUsecExits(t *testing.T) {
 }
 
 func TestWatchdogNotifier_ZeroUsecExits(t *testing.T) {
-	prev := os.Getenv("WATCHDOG_USEC")
-	prevAddr := os.Getenv("NOTIFY_SOCKET")
-	os.Setenv("WATCHDOG_USEC", "0")
-	os.Setenv("NOTIFY_SOCKET", "/tmp/test-socket")
-	defer func() {
-		if prev != "" {
-			os.Setenv("WATCHDOG_USEC", prev)
-		} else {
-			_ = os.Unsetenv("WATCHDOG_USEC")
-		}
-		if prevAddr != "" {
-			os.Setenv("NOTIFY_SOCKET", prevAddr)
-		} else {
-			_ = os.Unsetenv("NOTIFY_SOCKET")
-		}
-	}()
+	captureWatchdogEnv(t, "0", "/tmp/test-socket")
 
 	d := New(&config.Config{}, nil, nil, "")
 	d.wg.Add(1)
@@ -1251,23 +1189,8 @@ func TestWatchdogNotifier_ZeroUsecExits(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchdogNotifier_StopsOnSignal(t *testing.T) {
-	prev := os.Getenv("WATCHDOG_USEC")
-	prevAddr := os.Getenv("NOTIFY_SOCKET")
-	// 20 seconds in microseconds — minimum interval will be 10s
-	os.Setenv("WATCHDOG_USEC", "20000000")
-	os.Setenv("NOTIFY_SOCKET", "/tmp/nonexistent-wd-"+t.Name())
-	defer func() {
-		if prev != "" {
-			os.Setenv("WATCHDOG_USEC", prev)
-		} else {
-			_ = os.Unsetenv("WATCHDOG_USEC")
-		}
-		if prevAddr != "" {
-			os.Setenv("NOTIFY_SOCKET", prevAddr)
-		} else {
-			_ = os.Unsetenv("NOTIFY_SOCKET")
-		}
-	}()
+	// 20 seconds in microseconds; the ping interval floors at 10s.
+	captureWatchdogEnv(t, "20000000", "/tmp/nonexistent-wd")
 
 	d := New(&config.Config{}, nil, nil, "")
 	d.wg.Add(1)

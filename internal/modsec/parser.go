@@ -3,6 +3,7 @@ package modsec
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -85,6 +86,10 @@ func ParseRulesFileAll(path string) ([]Rule, error) {
 	}
 	defer f.Close()
 
+	return parseRules(f)
+}
+
+func parseRules(reader io.Reader) ([]Rule, error) {
 	// Phase 1: Read lines, joining backslash continuations into logical lines.
 	var logicalLines []string
 	var current strings.Builder
@@ -95,7 +100,7 @@ func ParseRulesFileAll(path string) ([]Rule, error) {
 		current.WriteString(part)
 		return nil
 	}
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(reader)
 	// Vendor packs (OWASP CRS, Comodo, Imunify360, cPanel modsec_assemble)
 	// ship assembled/minified directives that can exceed the default 64 KB
 	// token. Without a larger buffer Scan stops at ErrTooLong and the file's

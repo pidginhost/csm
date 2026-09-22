@@ -1,7 +1,11 @@
 package modsec
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -17,7 +21,8 @@ import (
 // lookup is the only signal that distinguishes a real deny from a noisy
 // pass-action informational rule.
 type Registry struct {
-	actions map[int]string
+	actions     map[int]string
+	fingerprint string
 }
 
 // Action returns the declared action for ruleID and whether it is known.
@@ -40,10 +45,20 @@ func (r *Registry) Len() int {
 	return len(r.actions)
 }
 
+// Fingerprint identifies the exact file contents used to build the registry.
+// Empty means the build was incomplete and must not be cached.
+func (r *Registry) Fingerprint() string {
+	if r == nil {
+		return ""
+	}
+	return r.fingerprint
+}
+
 // BuildRegistry walks every directory in dirs (recursively), parses each
-// .conf file via ParseRulesFileAll, and returns a Registry mapping rule IDs
-// to actions. Per-file parse errors are swallowed; a vendor pack with one
-// malformed file should not blank the whole registry.
+// .conf file, and returns a Registry mapping rule IDs
+// to actions. Read and parse errors are returned alongside the usable rules;
+// a vendor pack with one malformed file should not blank the whole registry,
+// but only builds that read every file in full can be cached as unchanged.
 //
 // Precedence: dirs is treated as most-specific-first. Within a single
 // directory, files are walked in lexical order and a duplicate rule ID
@@ -55,31 +70,38 @@ func (r *Registry) Len() int {
 func BuildRegistry(dirs []string) (*Registry, error) {
 	actions := make(map[int]string)
 	claimed := make(map[int]struct{})
+	digest := sha256.New()
+	// Read failures and parse failures are not the same for caching. Bytes
+	// that could not be read leave the tree unknown, so the build must not be
+	// cached. A file that was read in full but cannot be parsed -- a vendor
+	// file past the line ceiling, a truncated rule -- produces the same
+	// result on every pass, so it must not force a reparse every refresh.
+	var readErr, parseErr error
 	for _, dir := range dirs {
 		if dir == "" {
 			continue
 		}
 		perDirActions := make(map[int]string)
 		perDirClaimed := make(map[int]struct{})
-		walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		fmt.Fprintf(digest, "dir:%q\n", dir)
+		walkErr := walkRuleFiles(dir, func(path string) error {
+			var rules []Rule
+			var fileParseErr error
+			fileDigest, err := readRuleFile(path, func(reader io.Reader) error {
+				rules, fileParseErr = parseRules(reader)
+				// Read the rest even when the parser stopped early, so the
+				// digest always describes the whole file and matches what
+				// RuleTreeFingerprint computes for the same tree.
+				_, drainErr := io.Copy(io.Discard, reader)
+				return drainErr
+			})
 			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					return filepath.SkipDir
-				}
-				return nil
+				return err
 			}
-			if d.IsDir() {
-				return nil
+			fmt.Fprintf(digest, "file:%q:%x\n", path, fileDigest)
+			if fileParseErr != nil {
+				parseErr = errors.Join(parseErr, fmt.Errorf("%s: %w", path, fileParseErr))
 			}
-			if !strings.HasSuffix(strings.ToLower(d.Name()), ".conf") {
-				return nil
-			}
-			// Per-file parse errors are intentionally discarded so one
-			// malformed vendor file (truncated mid-rule, encoding glitch,
-			// in-flight modsec_assemble overwrite) does not blank the whole
-			// registry. The cost is silent on the leaf package; daemon-side
-			// telemetry surfaces the eventual rule count via the startup log.
-			rules, _ := ParseRulesFileAll(path)
 			for _, r := range rules {
 				perDirClaimed[r.ID] = struct{}{}
 				if r.Action != "" {
@@ -102,11 +124,38 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 				actions[id] = action
 			}
 		}
-		if walkErr != nil && !errors.Is(walkErr, fs.ErrNotExist) {
-			return &Registry{actions: actions}, walkErr
-		}
+		readErr = errors.Join(readErr, walkErr)
 	}
-	return &Registry{actions: actions}, nil
+	reg := &Registry{actions: actions}
+	if readErr == nil {
+		reg.fingerprint = hex.EncodeToString(digest.Sum(nil))
+	}
+	return reg, errors.Join(readErr, parseErr)
+}
+
+// Both the parser and fingerprint must see the same paths and precedence.
+// WalkDir visits files lexically and does not descend into symlinked dirs;
+// symlinked .conf files are opened by the visitor, following their targets.
+func walkRuleFiles(dir string, visit func(string) error) error {
+	var readErr error
+	walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// Candidate directories commonly do not exist on this platform.
+			// A failure inside an existing tree means the walk is incomplete.
+			if path != dir || !errors.Is(err, fs.ErrNotExist) {
+				readErr = errors.Join(readErr, err)
+			}
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(strings.ToLower(d.Name()), ".conf") {
+			return nil
+		}
+		if err := visit(path); err != nil {
+			readErr = errors.Join(readErr, fmt.Errorf("%s: %w", path, err))
+		}
+		return nil
+	})
+	return errors.Join(readErr, walkErr)
 }
 
 var globalRegistry atomic.Pointer[Registry]

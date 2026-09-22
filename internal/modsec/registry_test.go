@@ -3,6 +3,7 @@ package modsec
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -93,11 +94,8 @@ func TestBuildRegistry_MissingDirIsSoftFailure(t *testing.T) {
 	}
 }
 
-// TestBuildRegistry_BrokenSymlinkSkipped exercises the per-file I/O-error
-// swallow path: a .conf symlink whose target does not exist makes
-// ParseRulesFileAll return an open() error. BuildRegistry must keep going
-// and still load every rule from the surviving good file in the same
-// directory, with no fatal error returned to the caller.
+// An unreadable file must not discard good rules, but the caller needs to
+// know the build was incomplete so it does not cache a partial registry.
 func TestBuildRegistry_BrokenSymlinkSkipped(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "good.conf"), []byte(testRegistryCRSConf), 0644); err != nil {
@@ -108,11 +106,24 @@ func TestBuildRegistry_BrokenSymlinkSkipped(t *testing.T) {
 	}
 
 	reg, err := BuildRegistry([]string{dir})
-	if err != nil {
-		t.Errorf("broken symlink should not surface a fatal error: %v", err)
+	if err == nil {
+		t.Error("broken symlink should report an incomplete build")
 	}
 	if action, known := reg.Action(949110); !known || action != "deny" {
 		t.Errorf("rule 949110 from good.conf lost: known=%v action=%q", known, action)
+	}
+}
+
+func TestBuildRegistryReportsParseErrorsAndContinues(t *testing.T) {
+	dir := t.TempDir()
+	writeRule(t, filepath.Join(dir, "a_bad.conf"), strings.Repeat("x", maxModsecLineBytes+1))
+	writeRule(t, filepath.Join(dir, "b_good.conf"), testRegistryCRSConf)
+	reg, err := BuildRegistry([]string{dir})
+	if err == nil {
+		t.Error("overlong rule did not report an incomplete build")
+	}
+	if action, known := reg.Action(949110); !known || action != "deny" {
+		t.Errorf("good rule lost after parse failure: known=%v action=%q", known, action)
 	}
 }
 

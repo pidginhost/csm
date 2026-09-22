@@ -44,6 +44,12 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
 - **Rule activation** - ModSecurity reads rules only when the web server starts or reloads. When CSM's installed rule sections change, for example after an upgrade or `csm install`, the daemon runs `modsec.reload_command` at startup or during its WAF check. Each rule change reloads once. Standalone `csm check` runs never reload. A failed reload raises a `waf_status` warning and is retried. Without a command, CSM only warns at startup and the rules wait for the next web server restart.
 
+CSM checks the rule-action registry every five minutes and rebuilds it when rule
+file contents change. Read failures leave the build uncached so the next check
+retries. Files that were read in full but exceeded the parser's line limit are
+reported without forcing unchanged files to be parsed again. Rules appended
+after parsing reaches the end of a file are picked up on the next check.
+
 The reload command runs inside CSM's systemd sandbox. Use a service-manager
 command such as `systemctl reload lsws` for LiteSpeed, so the web server's service
 performs the reload. Direct reload scripts inherit CSM's filesystem restrictions

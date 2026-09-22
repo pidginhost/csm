@@ -13,6 +13,10 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 - Recovery rescans after a real-time event storm no longer pile up on each other. They run one at a time under a time budget, resume where they stopped, keep their original coverage window, and retry once the storm ends, so a storm can no longer drive the daemon into the sustained CPU use that produced more dropped events.
 - Stopping the daemon on a busy host no longer waits for the whole real-time scan backlog. The drain now has a time budget for starting queued scans; scans already in progress still finish before shutdown.
+- Rule-action refreshes recover after an empty startup or missing vendor rules, and pick up replacements that preserve timestamps or use linked files. Transient read failures are retried, and rules appended during a refresh are picked up on the next check.
+- An unresponsive systemd notification socket no longer blocks daemon startup, status updates or shutdown indefinitely.
+- The rule-action registry no longer re-detects the web server and reparses every vendor rule file every few minutes. It checks the rule tree for changes first, and keeps re-detecting only while no rules have loaded, which is the case that self-heal exists for.
+- The daemon no longer hands systemd's notification socket to the commands it runs. Every one of those children could write to it, and systemd logged each attempt as a rejected notification from the wrong process.
 - The public documentation site stopped rebuilding after the Go version moved forward, because its workflow repeated the version instead of reading it from the module file.
 
 ## [3.42.0] - 2026-09-21
