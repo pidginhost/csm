@@ -84,6 +84,17 @@ growth from GC headroom (rising `heap_alloc` = real growth; large
 For a deeper leak hunt, enable the loopback pprof endpoint (`debug.pprof_listen`)
 and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tunnel.
 
+The same endpoint serves `profile` (CPU, 30s by default), `goroutine`, `mutex`
+and `block`. Contention sampling for the last two starts with the listener and
+stops when the daemon stops, so a host without a pprof bind pays nothing for it.
+For a CPU investigation, collect the CPU profile first and the goroutine dump
+alongside it:
+
+```bash
+curl -o cpu.pb.gz 'http://127.0.0.1:<port>/debug/pprof/profile?seconds=60'
+curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
+```
+
 ### YARA-X worker (default-on; off only if `signatures.yara_worker_enabled: false`)
 
 - `csm_yara_worker_restarts_total` (counter): cumulative number of

@@ -4,12 +4,42 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"runtime"
 	"strings"
 	"time"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/obs"
 )
+
+const (
+	// mutexProfileFraction samples one in every N mutex contention events.
+	// The runtime records nothing at all until this is set, which is why the
+	// mutex profile the listener serves was empty on every host that ever
+	// fetched it. One in a hundred is enough to rank the contended locks in
+	// a daemon this size and keeps the accounting off the fast path.
+	mutexProfileFraction = 100
+
+	// blockProfileRate samples one blocking event per this many nanoseconds
+	// spent blocked, so a goroutine parked for 10 microseconds is recorded
+	// with probability one. Channel and lock waits inside CSM are measured in
+	// milliseconds, so this captures them while leaving brief runtime-internal
+	// waits unsampled.
+	blockProfileRate = 10_000
+)
+
+// enableContentionProfiles turns on the sampling the mutex and block profiles
+// depend on. Off by default in the Go runtime, and only worth its overhead
+// while an operator is actually collecting profiles.
+func enableContentionProfiles() {
+	runtime.SetMutexProfileFraction(mutexProfileFraction)
+	runtime.SetBlockProfileRate(blockProfileRate)
+}
+
+func disableContentionProfiles() {
+	runtime.SetMutexProfileFraction(0)
+	runtime.SetBlockProfileRate(0)
+}
 
 // pprofListen is replaceable in tests so listener lifecycle coverage does not
 // depend on the test sandbox allowing real sockets.
@@ -62,6 +92,10 @@ func (d *Daemon) startPprofListener(addr string) bool {
 		return false
 	}
 
+	// Sampling starts with the listener, not at daemon start: a host with no
+	// pprof bind pays nothing for profiles nobody can fetch.
+	enableContentionProfiles()
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           newPprofMux(),
@@ -81,6 +115,7 @@ func (d *Daemon) startPprofListener(addr string) bool {
 	})
 	obs.Go("pprof-shutdown", func() {
 		defer d.wg.Done()
+		defer disableContentionProfiles()
 		select {
 		case <-d.stopCh:
 			_ = srv.Close()
