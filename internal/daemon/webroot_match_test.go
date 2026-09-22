@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +42,7 @@ var webRootMatchPaths = []string{
 	"/usr/local/directadmin/data/users/u/domains/d/public_html/p/q.php",
 	"/home/alice/../bob/x", "//home//alice//f", "/home/alice/", "/tmp/sess_1",
 	"/var/lib/mysql/db/table.ibd", "/home/\\*/f", "/home/x/../x/f", "/home/a/b/c/d/e/f/g/h/i/j",
+	"..", "../..", "../f", "../../f", "../../home/alice/f", "./home/../f",
 }
 
 func TestPathMatchesWebRootPatternsAgreesWithReference(t *testing.T) {
@@ -61,12 +64,61 @@ func TestPathMatchesWebRootPatternsAgreesWithReference(t *testing.T) {
 	}
 }
 
+func TestPathMatchesWebRootPatternsGlobTableBounds(t *testing.T) {
+	// Keep the boundary values explicit: these must exercise both the full
+	// stack table and its fallback, with no broad glob hiding a missed entry.
+	for _, count := range []int{15, 16, 17, 32} {
+		t.Run(fmt.Sprintf("patterns=%d", count), func(t *testing.T) {
+			for _, tc := range []struct {
+				path string
+				glob string
+			}{
+				{"/home/alice/public_html/index.php", "/home/*"},
+				{"/home/alice/public_html/index.php", "/home[/]alice"},
+				{"/home/alice/public_html/index.php", "/home[^a]alice"},
+				{"/home/alice/public_html/index.php", `/home\/alice`},
+				{"/home/alice/public_html/index.php", "/home//*/ignored/../"},
+				{"../../home/alice/index.php", "../.."},
+				{"/index.php", "/"},
+				{"", ""},
+			} {
+				patterns := make([]string, count)
+				for i := range patterns {
+					patterns[i] = "/unrelated/["
+				}
+				check := func(want bool) {
+					t.Helper()
+					if referenceWebRootMatch(tc.path, patterns) != want {
+						t.Fatalf("invalid test case: path=%q patterns=%q want=%v", tc.path, patterns, want)
+					}
+					if got := pathMatchesWebRootPatterns(tc.path, patterns); got != want {
+						t.Fatalf("pathMatchesWebRootPatterns(%q, %q) = %v, want %v", tc.path, patterns, got, want)
+					}
+				}
+				check(false)
+				for i := range patterns {
+					patterns[i] = tc.glob
+					check(true)
+					patterns[i] = "/unrelated/["
+				}
+			}
+		})
+	}
+}
+
 func FuzzPathMatchesWebRootPatterns(f *testing.F) {
 	for i, g := range webRootMatchGlobs {
 		f.Add(g, webRootMatchPaths[i%len(webRootMatchPaths)])
 	}
+	for _, count := range []int{16, 17, 32} {
+		prefix := strings.Repeat("[\x00", count-1)
+		f.Add(prefix+"/home/*", "/home/alice/public_html/index.php")
+		f.Add(prefix+"[", "/home/alice/public_html/index.php")
+	}
 	f.Fuzz(func(t *testing.T, glob, path string) {
-		for _, patterns := range [][]string{{glob}, {"/home/*", glob}} {
+		// Retain the unsplit glob so NUL bytes are still tested literally,
+		// while the split form lets fuzzing vary the length and order of lists.
+		for _, patterns := range [][]string{{glob}, {"/home/*", glob}, strings.Split(glob, "\x00")} {
 			want := referenceWebRootMatch(path, patterns)
 			if got := pathMatchesWebRootPatterns(path, patterns); got != want {
 				t.Fatalf("pathMatchesWebRootPatterns(%q, %q) = %v, reference %v", path, patterns, got, want)
