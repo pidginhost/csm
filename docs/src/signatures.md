@@ -56,6 +56,14 @@ rules:
 - `max_file_bytes` - skip this rule when the complete scanned file is larger than the byte limit; omitted or `0` is unbounded
 - `max_file_bytes_exempt_regexes` - high-confidence regexes that let the rule continue normal evaluation above `max_file_bytes`
 
+A regex only runs on a file that contains the fixed text every match of it
+must contain, compared without regard to case: for `eval\s*\(\s*base64_decode`
+that is both `eval` and `base64_decode`. Write regexes around distinctive words
+such as function names: a regex with no fixed text of two or more characters
+runs over every file of its types, and realtime pays that cost on each write.
+Required text can include escaped bytes such as `\x00`; these remain part of
+the literal when checking whether a file could match.
+
 When a regex includes a literal listed in `patterns`, the same content can
 satisfy both entries. Use independent entries when a rule needs multiple pieces
 of evidence. The bundled HTTP tunnel rule requires both socket creation and a
@@ -205,8 +213,13 @@ run:
 YARA_FP_CORPUS=/path/to/corpus go test ./internal/signatures/ -run TestRepositoryYAMLRulesAgainstCleanCorpus -v
 ```
 
-The YAML engine lowercases every file it scans, so its run is far slower than
-the YARA one. Both gates require at least 5,000 non-empty files within the
+The same corpus also checks that no YAML regex is skipped on a file it matches:
+
+```bash
+YARA_FP_CORPUS=/path/to/corpus go test ./internal/signatures/ -run TestYAMLGatesSoundOnCleanCorpus -v
+```
+
+Both gates require at least 5,000 non-empty files within the
 default scheduled scan size limit. Rule-load, traversal, and read failures fail
 the relevant run instead of counting as clean; YARA backend errors do too.
 

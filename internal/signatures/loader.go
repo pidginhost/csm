@@ -34,10 +34,10 @@ type Rule struct {
 	MaxFileBytes              int      `yaml:"max_file_bytes"`
 	MaxFileBytesExemptRegexes []string `yaml:"max_file_bytes_exempt_regexes"`
 
-	// Compiled regexes (populated by Compile())
-	compiledRegexes                   []*regexp.Regexp
-	compiledExcludeRegexes            []*regexp.Regexp
-	compiledMaxFileBytesExemptRegexes []*regexp.Regexp
+	// Populated by compile().
+	compiledRegexes                   []*compiledRegex
+	compiledExcludeRegexes            []*compiledRegex
+	compiledMaxFileBytesExemptRegexes []*compiledRegex
 }
 
 // RuleFile is the top-level structure of a rules YAML file.
@@ -161,6 +161,7 @@ func (s *Scanner) Reload() error {
 		disabled[name] = struct{}{}
 	}
 	disabledSeen := make(map[string]struct{}, len(disabled))
+	shared := make(map[string]*compiledRegex)
 	// One corrupt or unreadable file must not abort the whole load: an
 	// attacker or a fat-fingered operator dropping one bad file would
 	// otherwise silently disable every other signature. Bad files/rules are
@@ -204,7 +205,7 @@ func (s *Scanner) Reload() error {
 				disabledCount++
 				continue
 			}
-			if err := rule.compile(); err != nil {
+			if err := rule.compileShared(shared); err != nil {
 				loadErrs = append(loadErrs, fmt.Errorf("compiling rule %q in %s: %w", rule.Name, path, err))
 				fmt.Fprintf(os.Stderr, "signatures: skipping rule %q in %s: %v\n", rule.Name, path, err)
 				continue
@@ -277,34 +278,44 @@ func (s *Scanner) setLoadErr(err error) {
 
 // compile pre-compiles regex patterns for a rule.
 func (r *Rule) compile() error {
+	return r.compileShared(make(map[string]*compiledRegex))
+}
+
+// compileShared compiles the rule, reusing a regex already compiled from the
+// same source for an earlier rule in shared, so a scan evaluates it once.
+func (r *Rule) compileShared(shared map[string]*compiledRegex) error {
 	if r.MaxFileBytes < 0 {
 		return fmt.Errorf("max_file_bytes must be non-negative")
 	}
-	r.compiledRegexes = nil
-	for _, pattern := range r.Regexes {
-		re, err := regexp.Compile("(?i)" + pattern) // case-insensitive
-		if err != nil {
-			return fmt.Errorf("invalid regex '%s': %w", pattern, err)
-		}
-		r.compiledRegexes = append(r.compiledRegexes, re)
+	var err error
+	if r.compiledRegexes, err = compileRuleRegexes(shared, r.Regexes, "invalid regex"); err != nil {
+		return err
 	}
-	r.compiledExcludeRegexes = nil
-	for _, pattern := range r.ExcludeRegexes {
-		re, err := regexp.Compile("(?i)" + pattern)
-		if err != nil {
-			return fmt.Errorf("invalid exclude regex '%s': %w", pattern, err)
-		}
-		r.compiledExcludeRegexes = append(r.compiledExcludeRegexes, re)
+	if r.compiledExcludeRegexes, err = compileRuleRegexes(shared, r.ExcludeRegexes, "invalid exclude regex"); err != nil {
+		return err
 	}
-	r.compiledMaxFileBytesExemptRegexes = nil
-	for _, pattern := range r.MaxFileBytesExemptRegexes {
-		re, err := regexp.Compile("(?i)" + pattern)
-		if err != nil {
-			return fmt.Errorf("invalid max_file_bytes_exempt_regex '%s': %w", pattern, err)
-		}
-		r.compiledMaxFileBytesExemptRegexes = append(r.compiledMaxFileBytesExemptRegexes, re)
+	if r.compiledMaxFileBytesExemptRegexes, err = compileRuleRegexes(shared, r.MaxFileBytesExemptRegexes, "invalid max_file_bytes_exempt_regex"); err != nil {
+		return err
 	}
 	return nil
+}
+
+func compileRuleRegexes(shared map[string]*compiledRegex, patterns []string, errLabel string) ([]*compiledRegex, error) {
+	var out []*compiledRegex
+	for _, pattern := range patterns {
+		src := "(?i)" + pattern // rule regexes are case-insensitive
+		cr, ok := shared[src]
+		if !ok {
+			re, err := regexp.Compile(src)
+			if err != nil {
+				return nil, fmt.Errorf("%s '%s': %w", errLabel, pattern, err)
+			}
+			cr = &compiledRegex{Regexp: re, gate: gateFor(src)}
+			shared[src] = cr
+		}
+		out = append(out, cr)
+	}
+	return out, nil
 }
 
 // Match represents a rule that matched a file.
@@ -346,6 +357,7 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 	}
 
 	contentLower := strings.ToLower(string(content))
+	eval := newRegexEval(content)
 	var matches []Match
 
 	for _, rule := range s.rules {
@@ -364,7 +376,7 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 		}
 		if !excluded {
 			for _, re := range rule.compiledExcludeRegexes {
-				if re.Match(content) {
+				if eval.match(re) {
 					excluded = true
 					break
 				}
@@ -377,7 +389,7 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 		if rule.MaxFileBytes > 0 && contentSize > int64(rule.MaxFileBytes) {
 			exempt := false
 			for _, re := range rule.compiledMaxFileBytesExemptRegexes {
-				if re.Match(content) {
+				if eval.match(re) {
 					exempt = true
 					break
 				}
@@ -398,7 +410,7 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 		}
 
 		for _, re := range rule.compiledRegexes {
-			if re.Match(content) {
+			if eval.match(re) {
 				matched = append(matched, re.String())
 				regexMatched = true
 			}
