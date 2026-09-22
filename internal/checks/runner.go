@@ -1034,9 +1034,11 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		}
 	}
 
-	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
-	sem := make(chan struct{}, 5)
-	dispatches := checkDispatches.begin(len(enabledChecks), cap(sem))
+	// Concurrency comes from the host-wide budget, so a periodic tier and an
+	// operator-triggered account scan cannot each run their own full set of
+	// checks on the same cores.
+	budget := scanBudgetFrom(scanCtx)
+	dispatches := checkDispatches.begin(len(enabledChecks), budget.size())
 	checkDispatches.observe(scanCtx, dispatches)
 
 	for i, nc := range enabledChecks {
@@ -1049,13 +1051,11 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		// check_panic immediately with a stack trace.
 		obs.SafeGo("check-runner", task.wrap(func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-scanCtx.Done():
+			if !budget.acquire(scanCtx) {
 				task.withdraw(scanCtx)
 				return
 			}
-			defer func() { <-sem }()
+			defer budget.release()
 			task.admit()
 
 			if scanCtx.Err() != nil {

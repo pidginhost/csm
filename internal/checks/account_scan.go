@@ -151,14 +151,14 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 		accountChecks = append(accountChecks, namedCheck{"file_index", CheckFileIndex})
 	}
 
-	// Run with bounded parallelism - filesystem checks all walk the same
-	// directory tree, so too many concurrent checks starve each other on
-	// loaded servers with slow I/O.
+	// Run under the host-wide scan budget - filesystem checks all walk the
+	// same directory tree, so too many concurrent checks starve each other on
+	// loaded servers with slow I/O, and a periodic tier may be running too.
 	scanCtx, truncations := withAccountScanTruncationCollector(ctx)
 	scanCtx = ContextWithAccountScope(scanCtx, account)
 	scanCtx = ContextWithScanOptions(scanCtx, opts)
 	scanCtx = withWPInstallCache(scanCtx)
-	findings := runAccountChecksBounded(scanCtx, cfg, store, accountChecks, 4)
+	findings := runAccountChecksBounded(scanCtx, cfg, store, accountChecks)
 
 	now := time.Now()
 	findings = append(findings, truncations.findings(now)...)
@@ -179,16 +179,16 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 	return stampTenantIDIfEmpty(filtered, account)
 }
 
-// runAccountChecksBounded runs checks with at most parallel of them at once.
+// runAccountChecksBounded runs checks under the host-wide scan budget.
 // A check still waiting for a slot when ctx is cancelled never starts: the
 // slot wait used to ignore the context, so an operator's cancel left every
 // queued check running to its (immediate) end and reporting a timeout.
-func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *state.Store, checks []namedCheck, parallel int) []alert.Finding {
+func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *state.Store, checks []namedCheck) []alert.Finding {
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, parallel)
-	dispatches := checkDispatches.begin(len(checks), parallel)
+	budget := scanBudgetFrom(ctx)
+	dispatches := checkDispatches.begin(len(checks), budget.size())
 	checkDispatches.observe(ctx, dispatches)
 
 	for i, nc := range checks {
@@ -201,13 +201,11 @@ func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *sta
 		// daemon alive.
 		obs.SafeGo("account-scan-runner", task.wrap(func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
+			if !budget.acquire(ctx) {
 				task.withdraw(ctx)
 				return
 			}
-			defer func() { <-sem }()
+			defer budget.release()
 			task.admit()
 			if ctx.Err() != nil {
 				task.withdraw(ctx)

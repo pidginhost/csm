@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -81,5 +82,31 @@ func TestUnitDenySyscallGroupsUseOneNegation(t *testing.T) {
 		if !regexp.MustCompile(`[~ ]` + regexp.QuoteMeta(group) + `(\s|$)`).MatchString(joined) {
 			t.Errorf("syscall group %s is no longer denied", group)
 		}
+	}
+}
+
+// CSM competes with the web server and the database it protects. Under CPU
+// contention the scanner should lose, and it can only lose if the unit gives
+// the kernel a reason to prefer everything else.
+func TestUnitYieldsCPUUnderContention(t *testing.T) {
+	var weight string
+	for _, line := range unitLines(t) {
+		if value, ok := strings.CutPrefix(line, "CPUWeight="); ok {
+			weight = strings.TrimSpace(value)
+		}
+		if strings.HasPrefix(line, "CPUQuota=") {
+			t.Errorf("unit sets %s: a hard cap delays detection even on an idle host", line)
+		}
+	}
+	if weight == "" {
+		t.Fatal("unit sets no CPUWeight, so the scanner competes with the web server on equal terms")
+	}
+	value, err := strconv.Atoi(weight)
+	if err != nil {
+		t.Fatalf("CPUWeight=%s is not a number", weight)
+	}
+	// 100 is the default every other service gets.
+	if value >= 100 {
+		t.Fatalf("CPUWeight=%d does not yield to the workload CSM protects", value)
 	}
 }

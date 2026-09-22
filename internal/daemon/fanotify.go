@@ -542,16 +542,31 @@ func fanotifyMountAnchor(pattern string) string {
 	return filepath.Dir(prefix)
 }
 
+const (
+	// minAnalyzerWorkers keeps one write from stalling every other event
+	// while it is scanned, without putting four content scans on a host that
+	// has two cores to serve requests with.
+	minAnalyzerWorkers = 2
+
+	// maxAnalyzerWorkers caps the pool on large hosts: past this the workers
+	// contend on disk rather than finishing sooner.
+	maxAnalyzerWorkers = 16
+)
+
+// analyzerWorkerCount sizes the analyzer pool from the host's core count.
+func analyzerWorkerCount(cpus int) int {
+	if cpus < minAnalyzerWorkers {
+		return minAnalyzerWorkers
+	}
+	if cpus > maxAnalyzerWorkers {
+		return maxAnalyzerWorkers
+	}
+	return cpus
+}
+
 // Run starts the file monitor event loop and analyzer workers.
 func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
-	// H7 - configurable workers: min 4, max 16, based on NumCPU
-	numWorkers := runtime.NumCPU()
-	if numWorkers < 4 {
-		numWorkers = 4
-	}
-	if numWorkers > 16 {
-		numWorkers = 16
-	}
+	numWorkers := analyzerWorkerCount(runtime.NumCPU())
 
 	for i := 0; i < numWorkers; i++ {
 		fm.wg.Add(1)

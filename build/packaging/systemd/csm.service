@@ -11,6 +11,13 @@ Restart=always
 RestartSec=10
 TimeoutStartSec=120
 WatchdogSec=300
+# CSM scans the machine it shares with the web server and the database it
+# protects, so under CPU contention it should be the one that waits. A weight
+# below the default 100 does that without capping anything: on an idle host the
+# daemon still gets whatever it asks for. CPUQuota is deliberately absent, as a
+# hard cap would delay detection even when the machine is doing nothing else.
+CPUWeight=50
+
 # Let the daemon stop its workers before systemd kills remaining processes.
 # A cgroup-wide SIGTERM can reach a worker before the daemon enters shutdown.
 KillMode=mixed
