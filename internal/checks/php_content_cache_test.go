@@ -24,7 +24,7 @@ const phpCacheMalicious = "<?php system($_POST['c']); // webshell padding go"
 
 func init() {
 	// Both fixtures must be the same byte length so a content swap can hold
-	// size constant and exercise the mtime+size cache key directly.
+	// size constant and isolate the other stamp fields.
 	if len(phpCacheBenign) != len(phpCacheMalicious) {
 		panic("php cache test fixtures must be equal length")
 	}
@@ -60,6 +60,7 @@ func TestPHPContentCacheSkipsUnchangedCleanFile(t *testing.T) {
 	cfg := &config.Config{}
 	path := filepath.Join(dir, "x.php")
 	writePHPFixture(t, path, phpCacheBenign, time.Unix(1_700_000_000, 0))
+	waitForPHPCacheStamp(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -67,23 +68,25 @@ func TestPHPContentCacheSkipsUnchangedCleanFile(t *testing.T) {
 		t.Fatalf("benign file should produce no finding, got %d", len(f1))
 	}
 
-	// Leave the file untouched but serve malicious bytes to any read. A
-	// cache hit skips the read, so nothing is found; a read would find it.
-	twin := filepath.Join(t.TempDir(), "twin.php")
-	writePHPFixture(t, twin, phpCacheMalicious, time.Unix(1_700_000_000, 0))
-	withMockOS(t, openRedirectOS{from: path, to: twin})
+	if _, ok := s1.next[path]; !ok {
+		t.Fatal("clean seed was not cached")
+	}
+	// The descriptor has the same identity but rejects reads. Retaining the
+	// stamp proves the hit skipped analysis; a forced read cannot cache it.
+	withMockOS(t, phpWriteOnlyOS{path: path})
 
+	want := s1.next[path]
 	s2 := newPHPContentScan(cfg, s1.next, false)
 	var f2 []alert.Finding
 	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
-	if len(f2) != 0 {
-		t.Fatalf("unchanged clean file was re-read: %d findings", len(f2))
+	if stamp, ok := s2.next[path]; len(f2) != 0 || !ok || stamp != want {
+		t.Fatalf("unchanged clean stamp was not reused: cache=%v findings=%v", s2.next, f2)
 	}
 	s3 := newPHPContentScan(cfg, s1.next, true)
 	var f3 []alert.Finding
 	s3.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f3)
-	if len(f3) == 0 {
-		t.Fatal("a forced read of the redirected file found nothing; the skip above proves nothing")
+	if _, ok := s3.next[path]; ok {
+		t.Fatal("forced read unexpectedly retained an unreadable file's stamp")
 	}
 }
 
@@ -98,6 +101,7 @@ func TestPHPContentCacheDetectsSwapThatRestoresMtime(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
+	waitForPHPCacheStamp(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -148,6 +152,7 @@ func TestPHPContentCacheReanalyzesOnMtimeChange(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
+	waitForPHPCacheStamp(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -169,6 +174,7 @@ func TestPHPContentCacheReanalyzesOnSizeChange(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
+	waitForPHPCacheStamp(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -190,14 +196,20 @@ func TestPHPContentCacheForceFullRescanIgnoresCache(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
+	waitForPHPCacheStamp(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
 
-	// Malicious swap with identical mtime+size would normally be skipped, but
-	// a forced full rescan ignores the cache and catches the mtime-reset
-	// evasion path.
+	// Model a filesystem returning a stale, matching stamp. A forced scan
+	// must read even when every cache field matches the current metadata.
 	writePHPFixture(t, path, phpCacheMalicious, mtime)
+	waitForPHPCacheStamp(t, path)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1.next[path] = phpFileStampOf(info)
 	s2 := newPHPContentScan(cfg, s1.next, true)
 	var f2 []alert.Finding
 	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
@@ -253,10 +265,16 @@ func TestPHPContentCacheDirtyFileAlwaysSurfaces(t *testing.T) {
 }
 
 func TestPHPContentCacheDoesNotCarryUnreadableCacheHit(t *testing.T) {
-	dir := "/scan"
+	dir := t.TempDir()
 	path := filepath.Join(dir, "x.php")
 	mtime := time.Unix(1_700_000_000, 0)
-	stamp := phpFileStamp{Mtime: mtime.Unix(), Size: int64(len(phpCacheBenign))}
+	writePHPFixture(t, path, phpCacheBenign, mtime)
+	waitForPHPCacheStamp(t, path)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := phpFileStampOf(info)
 
 	withMockOS(t, &mockOS{
 		readDir: func(name string) ([]os.DirEntry, error) {
@@ -267,7 +285,7 @@ func TestPHPContentCacheDoesNotCarryUnreadableCacheHit(t *testing.T) {
 		},
 		stat: func(name string) (os.FileInfo, error) {
 			if name == path {
-				return &fakeFileInfoMtime{name: "x.php", size: stamp.Size, mtime: mtime}, nil
+				return info, nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -294,6 +312,7 @@ func TestPHPContentCacheRecordsEmptyReadableFile(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, "", mtime)
+	waitForPHPCacheStamp(t, path)
 	s := newPHPContentScan(cfg, nil, false)
 	var findings []alert.Finding
 	s.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &findings)
@@ -312,6 +331,7 @@ func TestPHPContentCachePrunesDeletedFiles(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
+	waitForPHPCacheStamp(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -333,8 +353,8 @@ func TestPHPContentCachePrunesDeletedFiles(t *testing.T) {
 func TestPHPContentCacheRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	c := phpContentCache{
-		"/home/a/public_html/wp-content/plugins/a.php": {Mtime: 11, Size: 22},
-		"/home/b/public_html/wp-content/themes/b.php":  {Mtime: 33, Size: 44},
+		"/home/a/public_html/wp-content/plugins/a.php": {Mtime: 11, Size: 22, Dev: 2049, Inode: 1<<63 + 7, Ctime: 1700000000123456789},
+		"/home/b/public_html/wp-content/themes/b.php":  {Mtime: 33, Size: 44, Dev: 0, Inode: 99, Ctime: 1700000000987654321},
 	}
 	savePHPContentCache(dir, c)
 	got := loadPHPContentCache(dir)

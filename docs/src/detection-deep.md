@@ -70,6 +70,13 @@ preserve prior findings for that file. After a large deletion, scans rewalk the
 directories until the smaller baseline is adopted, so cached entries cannot
 restore removed paths or interrupt the consecutive-scan shrink guard.
 
+The PHP content scan reuses a clean result only when the file's identity and
+timestamps still match a stable read. Recently changed files, files that change
+during inspection, and files without usable identity metadata are read again
+on the next visit. Older cached results are refreshed as files are visited after
+upgrading; interrupted scans retain progress. Every sixth host scan bypasses
+the cache, and explicit full-content scans always read the files they visit.
+
 PHP execution heuristics distinguish attribute metadata and multiline string
 contents from executable calls. Literal examples do not establish callable
 bindings or invoke them, and scanning continues through code after attributes.

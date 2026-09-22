@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -1793,9 +1794,7 @@ func canStartPHPFunctionName(code string, start int) bool {
 type phpFileStamp struct {
 	Mtime int64 `json:"m"`
 	Size  int64 `json:"s"`
-	// Device, inode and change time: anyone who can write a file can set
-	// its mtime back, but not its change time, so a same-size swap still
-	// misses the cache.
+	// Unlike mtime, change time cannot be restored by a file's owner.
 	Dev   uint64 `json:"d,omitempty"`
 	Inode uint64 `json:"i,omitempty"`
 	Ctime int64  `json:"c,omitempty"`
@@ -1808,6 +1807,16 @@ func phpFileStampOf(info os.FileInfo) phpFileStamp {
 		stamp.Ctime = id.ChangeSec*1_000_000_000 + id.ChangeNsec
 	}
 	return stamp
+}
+
+func (stamp phpFileStamp) cacheableAt(start time.Time) bool {
+	// Missing identity must fail closed, including legacy mtime+size entries.
+	// A recent read cannot authorize future skips: Linux can give a later
+	// write the same coarse ctime. Wait a full second before the clean read,
+	// also covering filesystems with whole-second timestamps. Do not sleep in
+	// the scan; a later visit will read the file again and can then cache it.
+	return stamp.Inode != 0 && stamp.Ctime != 0 &&
+		time.Unix(0, stamp.Ctime).Before(start.Add(-time.Second))
 }
 
 // phpContentCache maps a file path to the stamp it carried when last confirmed
@@ -1862,10 +1871,8 @@ func savePHPContentCacheRun(stateDir string, scan *phpContentScan, generation ui
 }
 
 // phpContentHostScanCount drives a periodic forced full rescan that bypasses
-// the content cache, mirroring the file-index cadence. The cache keys on
-// mtime+size alone, so a content swap that preserves both (an attacker resetting
-// mtime after editing in place) would be skipped until the file changed again.
-// The forced rescan bounds that window; realtime fanotify covers it in between.
+// the content cache, mirroring the file-index cadence. This remains a backstop
+// for filesystems whose metadata does not reliably distinguish content changes.
 var phpContentHostScanCount int32
 
 // phpContentAccountScanCount keeps account-scoped scans from consuming the
@@ -2043,7 +2050,7 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 }
 
 // scanDir recursively scans dir for PHP files with malicious content patterns.
-// A file that was clean last cycle and is unchanged (same mtime+size) skips the
+// A file that was clean last cycle and has an unchanged stable stamp skips the
 // read+parse, unless this is a forced full rescan. Files that produce a finding
 // are never cached, so they re-surface on every cycle for the alert pipeline.
 func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, overlay phpHandlerOverlay, findings *[]alert.Finding) {
@@ -2125,23 +2132,13 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 		return
 	}
 
+	started := time.Now()
 	info, statErr := osFS.Stat(fullPath)
 	var stamp phpFileStamp
 	canCache := statErr == nil
 	if canCache {
 		stamp = phpFileStampOf(info)
-		// Cache hit: file was clean last cycle and has not changed. Skip
-		// the read+parse and carry the stamp forward only if the file is
-		// still readable. chmod does not update mtime or size, so a stale
-		// clean cache entry must not mask a file we can no longer inspect.
-		if !s.forceFull {
-			if cached && previous == stamp {
-				if phpContentReadable(fullPath) {
-					s.next[fullPath] = stamp
-					return
-				}
-			}
-		}
+		canCache = stamp.cacheableAt(started)
 	}
 
 	// Full-scan file-size guard: when the caller sets a per-file byte cap
@@ -2161,10 +2158,28 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 		return
 	}
 
+	f, err := osFS.Open(fullPath)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	opened, openStatErr := f.Stat()
+	canCache = canCache && openStatErr == nil && opened.Mode().IsRegular() && phpFileStampOf(opened) == stamp
+	// Opening alone proves readability, not identity: a path can be swapped
+	// between Stat and Open. Only reuse the clean result for the same inode.
+	if canCache && !s.forceFull && cached && previous == stamp {
+		s.next[fullPath] = stamp
+		return
+	}
+	var size int64 = -1
+	if openStatErr == nil {
+		size = opened.Size()
+	}
+
 	// Every PHP source file is content-analysed. No filename/path allowlist:
 	// clean files produce no finding, so there is no benefit to skipping
 	// them, and any skip is a place an attacker can hide a backdoor.
-	result := analyzePHPContent(fullPath)
+	result := analyzePHPContentReaderAt(fullPath, f, size)
 	if result.severity >= 0 {
 		details := result.details
 		if info != nil {
@@ -2182,21 +2197,17 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 		return
 	}
 
-	// Cache only files we read successfully and confirmed clean. An
-	// unreadable file might become readable later, so it must not be
-	// recorded as clean.
+	// A clean read only validates the stamp if both the path and the opened
+	// inode still match. Never attach one file's result to another's stamp or
+	// retain a clean result for an inode changed during the read.
 	if canCache && result.readOK {
-		s.next[fullPath] = stamp
+		afterPath, pathErr := osFS.Stat(fullPath)
+		afterFile, fileErr := f.Stat()
+		if pathErr == nil && fileErr == nil &&
+			phpFileStampOf(afterPath) == stamp && phpFileStampOf(afterFile) == stamp {
+			s.next[fullPath] = stamp
+		}
 	}
-}
-
-func phpContentReadable(path string) bool {
-	f, err := osFS.Open(path)
-	if err != nil {
-		return false
-	}
-	_ = f.Close()
-	return true
 }
 
 type phpAnalysisResult struct {
