@@ -4,7 +4,17 @@ CSM detects threats in under 2 seconds using kernel and log watchers running ins
 
 ## fanotify File Monitor (< 1 second)
 
-Monitors the mounts containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configured `account_roots`, and detected cPanel document roots.
+Monitors the filesystems containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configured `account_roots`, and detected cPanel document roots.
+
+A mark covers a whole filesystem rather than the path it names, which is what
+makes writes inside CloudLinux CageFS bind mounts visible. Where several watch
+roots live on one filesystem, they are marked once, and where a watch root is
+not its own mount point, the daemon receives events for every write on that
+filesystem and discards the ones no detector wants. The startup log names the
+scope that was actually applied, including which roots share a mark and which
+reach past themselves. `csm_fanotify_events_total` and
+`csm_fanotify_events_admitted_total` show how much of the delivered traffic
+survives the path filter.
 
 Atomic-save files enter the same bounded worker queue as ordinary writes.
 Where supported, create events inspect available content; close-write events inspect the

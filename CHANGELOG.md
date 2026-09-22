@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- The real-time monitor no longer marks the same filesystem once per watch root, and the startup log now describes the scope it actually applied instead of the paths it asked for. On a host where the watched paths share one filesystem, that scope is the whole filesystem, and two new metrics show how many delivered events the path filter discards.
 - Scheduled and account scans share one concurrency budget sized from the machine's core count, so a scan started from the interface during a scheduled one no longer doubles the load. A check still running after its caller gave up keeps its slot until it exits. The real-time scanner sizes its separate worker pool the same way, and both the packaged and the installer-generated service units yield CPU to the web server and database under contention.
 - The mutex and block profiles served by the optional debug endpoint were always empty, because the daemon never turned on the sampling they need. They now record while the endpoint is enabled, so a contention profile taken during an incident shows what was actually waiting.
 - Contention sampling stays active until the last debug listener exits, including when another listener fails. Failed binds do not enable or retain sampling.

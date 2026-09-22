@@ -158,6 +158,12 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   events waiting for the analyzer pool. The queue capacity is 4000;
   sustained values near that cap mean drops are imminent. Alert
   target: `max_over_time(csm_fanotify_queue_depth[5m]) > 3500`.
+- `csm_fanotify_events_total` (counter): fanotify events the kernel delivered. On a
+  host where the watch roots share one filesystem this counts every close-write on
+  the machine, not only writes under the watched paths.
+- `csm_fanotify_events_admitted_total` (counter): events queued for content analysis.
+  The gap to `csm_fanotify_events_total` is what the path filter discarded; a large
+  and growing gap is CPU spent deciding there was nothing to do.
 - `csm_fanotify_events_dropped_total` (counter): cumulative events
   dropped because the analyzer queue was full. The reconcile pass
   still rescans drop-affected directories 60 s later, so dropped
