@@ -104,6 +104,10 @@ type Daemon struct {
 	scanCtx          context.Context
 	scanCancel       context.CancelFunc // cancels in-flight periodic scans on shutdown
 	modsecReload     checks.ModSecReloadReconciler
+	// modsecRegistry carries what the last rule-action refresh learned, so a
+	// refresh that changes nothing costs a directory walk instead of a
+	// platform probe plus a full reparse of the vendor rule tree.
+	modsecRegistry   modsecRegistryState
 	abuseReportStop  chan struct{}
 	abuseReportDone  chan struct{}
 	wg               sync.WaitGroup

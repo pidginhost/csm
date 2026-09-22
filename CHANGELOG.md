@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- The rule-action registry no longer re-detects the web server and reparses every vendor rule file every few minutes. It checks the rule tree for changes first, and keeps re-detecting only while no rules have loaded, which is the case that self-heal exists for.
 - The daemon no longer hands systemd's notification socket to the commands it runs. Every one of those children could write to it, and systemd logged each attempt as a rejected notification from the wrong process.
 - The public documentation site stopped rebuilding after the Go version moved forward, because its workflow repeated the version instead of reading it from the module file.
 

@@ -10,10 +10,35 @@ import (
 )
 
 // modsecRegistryRefresh controls how often the rule-action registry is
-// rebuilt from disk. ModSec rule files change rarely (vendor pack updates,
+// checked against disk. ModSec rule files change rarely (vendor pack updates,
 // cPanel modsec_assemble nightly run), so a coarse interval keeps the cost
 // negligible while still picking up operator edits within minutes.
 const modsecRegistryRefresh = 5 * time.Minute
+
+// Seams: the refresh probes the platform and parses the rule tree, and tests
+// need to count both without a web server on the host.
+var (
+	// modsecProbeRuleDirs re-runs detection (not the cached Detect) so a
+	// web-server mis-detection at boot -- LiteSpeed probed before lsws
+	// finished starting, which points RuleDirs at non-existent directories --
+	// self-heals on a later refresh instead of staying wrong for the daemon's
+	// lifetime. Each call forks one process per candidate unit, which is why
+	// refreshModSecRegistry stops calling it once a rule set has loaded.
+	modsecProbeRuleDirs = func() []string { return modsec.RuleDirs(platform.DetectFreshWithOverrides()) }
+	modsecBuildRegistry = modsec.BuildRegistry
+)
+
+// modsecRegistryState carries what the last refresh learned. Only the refresh
+// path touches it: once at startup, then from the refresh goroutine.
+type modsecRegistryState struct {
+	dirs        []string
+	fingerprint string
+	// loaded records that a refresh has produced a non-empty rule set from
+	// these dirs. Until that happens the platform is probed on every refresh,
+	// because an empty registry is exactly the symptom of detection having
+	// resolved the wrong directories.
+	loaded bool
+}
 
 // initModSecRegistry builds the rule-action registry once at startup and
 // installs it as the package-level singleton. The registry tells the
@@ -33,13 +58,27 @@ func (d *Daemon) initModSecRegistry() {
 }
 
 func (d *Daemon) refreshModSecRegistry() {
-	// DetectFreshWithOverrides (not the cached Detect) so a web-server
-	// mis-detection at boot -- LiteSpeed probed before lsws finished starting,
-	// which points RuleDirs at non-existent directories -- self-heals on a
-	// later refresh once the host has settled, instead of staying wrong (and
-	// the registry empty) for the daemon's lifetime.
-	dirs := modsec.RuleDirs(platform.DetectFreshWithOverrides())
-	reg, err := modsec.BuildRegistry(dirs)
+	state := &d.modsecRegistry
+	if !state.loaded || len(state.dirs) == 0 {
+		state.dirs = modsecProbeRuleDirs()
+	}
+
+	fingerprint, present := modsec.RuleTreeFingerprint(state.dirs)
+	if state.loaded && !present {
+		// The directories the last detection resolved are gone: the web
+		// server was swapped out, or the vendor pack removed. Detection has
+		// to run again rather than keep reporting the old rule actions.
+		state.loaded = false
+		state.dirs = modsecProbeRuleDirs()
+		fingerprint, _ = modsec.RuleTreeFingerprint(state.dirs)
+	}
+	if state.loaded && fingerprint == state.fingerprint {
+		// Same files, same sizes, same timestamps as the build that produced
+		// the registry now installed. Parsing them again cannot change it.
+		return
+	}
+
+	reg, err := modsecBuildRegistry(state.dirs)
 	if err != nil {
 		csmlog.Warn("modsec rule-action registry build had errors", "err", err, "rules_loaded", reg.Len())
 	}
@@ -53,10 +92,12 @@ func (d *Daemon) refreshModSecRegistry() {
 			previousRules = prev.Len()
 		}
 		csmlog.Warn("modsec rule-action registry refresh returned 0 rules; keeping previous rule actions",
-			"previous_rules", previousRules, "dirs", len(dirs))
+			"previous_rules", previousRules, "dirs", len(state.dirs))
 		return
 	}
-	csmlog.Info("modsec rule-action registry loaded", "rules", reg.Len(), "dirs", len(dirs))
+	state.fingerprint = fingerprint
+	state.loaded = true
+	csmlog.Info("modsec rule-action registry loaded", "rules", reg.Len(), "dirs", len(state.dirs))
 }
 
 func (d *Daemon) modsecRegistryRefreshLoop() {
