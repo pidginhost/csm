@@ -28,7 +28,8 @@ func (o phpWriteOnlyOS) Open(path string) (*os.File, error) {
 // settlePHPCacheStamps moves the scan clock past the change-time window of
 // the given files, which a test needs before it expects a clean read to be
 // reusable. Chtimes cannot backdate change time, and sleeping it out costs a
-// second per fixture.
+// second per fixture. This does not advance the filesystem clock: tests that
+// need a later write's ctime to differ must use swapPreservingMtime.
 func settlePHPCacheStamps(t *testing.T, paths ...string) {
 	t.Helper()
 	settled := time.Now()
@@ -249,7 +250,7 @@ func TestPHPContentCacheRejectsChangeDuringRead(t *testing.T) {
 	writePHPFixture(t, path, phpCacheBenign, mtime)
 	settlePHPCacheStamps(t, path)
 	fs := &phpAfterReadOS{path: path, change: func() {
-		writePHPFixture(t, path, phpCacheMalicious, mtime)
+		swapPreservingMtime(t, path, phpCacheMalicious, mtime)
 	}}
 	withMockOS(t, fs)
 	scan := newPHPContentScan(&config.Config{}, nil, false)
