@@ -56,7 +56,8 @@ YARA and both taint engines require zero findings. YAML retains the existing
 reviewed false-positive budgets in `internal/signatures/corpus_fp_gate_test.go`;
 new rules default to zero. The pinned corpus currently produces 10 YAML hits
 across five rules, all within those existing budgets. This is a regression
-gate, not a claim that every engine has zero false positives.
+gate, not a claim that every engine has zero false positives. A second YAML
+check fails if any regex would be skipped on a corpus file it matches.
 
 The signature engines apply the production default 16 MiB bound and archive
 admission policy; 10,157 inputs reach each engine. PHP taint reads 10,171 inputs

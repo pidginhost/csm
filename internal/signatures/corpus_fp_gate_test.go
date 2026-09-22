@@ -111,7 +111,33 @@ func TestScanCleanCorpusYAMLSkipsCompressedArchives(t *testing.T) {
 
 func scanCleanCorpusYAML(t *testing.T, root string, scanner *Scanner) (map[string]int, map[string]string, int, error) {
 	t.Helper()
+	var (
+		mu       sync.Mutex
+		hits     = make(map[string]int)
+		examples = make(map[string]string)
+	)
+	scanned, err := forEachCleanCorpusFile(root, func(path string, data []byte) error {
+		matches := scanner.ScanContent(data, filepath.Ext(path))
+		mu.Lock()
+		defer mu.Unlock()
+		for _, match := range matches {
+			hits[match.RuleName]++
+			if _, seen := examples[match.RuleName]; !seen {
+				examples[match.RuleName] = path
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return hits, examples, scanned, nil
+}
 
+// forEachCleanCorpusFile hands every scannable corpus file to visit, spread
+// across cores. Compressed archives are skipped: the rules never see them.
+// The first read or visit error is returned, as is any walk error.
+func forEachCleanCorpusFile(root string, visit func(path string, data []byte) error) (int, error) {
 	paths := make(chan string)
 	var walkErr error
 	go func() {
@@ -129,13 +155,18 @@ func scanCleanCorpusYAML(t *testing.T, root string, scanner *Scanner) (map[strin
 	}()
 
 	var (
-		mu       sync.Mutex
-		hits     = make(map[string]int)
-		examples = make(map[string]string)
-		scanned  int
-		scanErr  error
-		wg       sync.WaitGroup
+		mu      sync.Mutex
+		scanned int
+		scanErr error
+		wg      sync.WaitGroup
 	)
+	fail := func(err error) {
+		mu.Lock()
+		if scanErr == nil {
+			scanErr = err
+		}
+		mu.Unlock()
+	}
 	for worker := 0; worker < runtime.NumCPU(); worker++ {
 		wg.Add(1)
 		go func() {
@@ -143,25 +174,18 @@ func scanCleanCorpusYAML(t *testing.T, root string, scanner *Scanner) (map[strin
 			for path := range paths {
 				data, err := readYAMLCorpusFile(path)
 				if err != nil {
-					mu.Lock()
-					if scanErr == nil {
-						scanErr = err
-					}
-					mu.Unlock()
+					fail(err)
 					continue
 				}
 				if contenttype.IsArchiveFile(path, data) {
 					continue
 				}
-				matches := scanner.ScanContent(data, filepath.Ext(path))
+				if err := visit(path, data); err != nil {
+					fail(err)
+					continue
+				}
 				mu.Lock()
 				scanned++
-				for _, match := range matches {
-					hits[match.RuleName]++
-					if _, seen := examples[match.RuleName]; !seen {
-						examples[match.RuleName] = path
-					}
-				}
 				mu.Unlock()
 			}
 		}()
@@ -169,12 +193,12 @@ func scanCleanCorpusYAML(t *testing.T, root string, scanner *Scanner) (map[strin
 	wg.Wait()
 
 	if walkErr != nil {
-		return nil, nil, 0, walkErr
+		return 0, walkErr
 	}
 	if scanErr != nil {
-		return nil, nil, 0, scanErr
+		return 0, scanErr
 	}
-	return hits, examples, scanned, nil
+	return scanned, nil
 }
 
 func readYAMLCorpusFile(path string) ([]byte, error) {

@@ -32,7 +32,7 @@ chmod -R go-w configs
 export CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)"
 go test -json -count=1 -timeout=30m -tags yara \
     ./internal/corpusgate ./internal/yara ./internal/signatures ./internal/phptaint ./internal/jstaint \
-    -run '^(TestRepositoryRulesAgainstCleanCorpus|TestRepositoryYAMLRulesAgainstCleanCorpus|TestCorpusGate|TestPreparePinnedCorpus|TestReportRejectsBadDetectorAndMissingInput|TestCleanCorpusGateRejectsAlwaysMatchingRule)$' \
+    -run '^(TestRepositoryRulesAgainstCleanCorpus|TestRepositoryYAMLRulesAgainstCleanCorpus|TestYAMLGatesSoundOnCleanCorpus|TestCorpusGate|TestPreparePinnedCorpus|TestReportRejectsBadDetectorAndMissingInput|TestCleanCorpusGateRejectsAlwaysMatchingRule)$' \
     | tee "$output/tests.jsonl"
 for engine in yara yaml phptaint jstaint; do
     test -s "$output/$engine.json"
