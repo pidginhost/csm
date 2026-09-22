@@ -125,6 +125,7 @@ func TestDemoteTmpExecPanelToolNeedsNoPackageWindow(t *testing.T) {
 	tmpExecPkgWindow = func(time.Time) bool { return false }
 	tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{panelTool: true} }
 	t.Cleanup(func() { tmpExecPkgWindow, tmpExecAncestry = oldW, oldA })
+	overridePanelToolRoots(t, cpanelRoots)
 
 	ok, reason := demoteTmpExec(0, 4242, time.Now())
 	if !ok {

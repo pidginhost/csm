@@ -176,11 +176,21 @@ func demoteTmpExec(uid uint32, pid int32, now time.Time) (bool, string) {
 	if uid != 0 || pid <= 0 {
 		return false, ""
 	}
+	// Both cheap gates first. The walk costs up to maxAncestryDepth procfs
+	// reads and runs for every root-owned executable written under a temp
+	// root, so it must not run when neither arm could change the verdict:
+	// no package transaction in the window, and no panel root for an exe to
+	// resolve inside.
+	window := tmpExecPkgWindow(now)
+	panelRooted := len(panelToolRoots()) > 0
+	if !window && !panelRooted {
+		return false, ""
+	}
 	ev := tmpExecAncestry(pid)
-	if ev.panelTool {
+	if panelRooted && ev.panelTool {
 		return true, "control panel maintenance ancestry"
 	}
-	if ev.packageManager && tmpExecPkgWindow(now) {
+	if window && ev.packageManager {
 		return true, "package manager ancestry during active package window"
 	}
 	return false, ""
