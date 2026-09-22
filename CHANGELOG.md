@@ -20,6 +20,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Signature update tracking now retries unreadable or changing rules without losing the last verified contents, and rejects files that could stall the watcher. Rules reached through symbolic links are tracked by their target contents.
 - Cron findings containing known persistence patterns now retain their severity during maintenance, including when the payload is encoded.
 - Control-panel provenance now requires a resolved executable even when process details come from the cache. Live cron writes containing persistence tokens retain their original severity during maintenance.
 

@@ -1,11 +1,17 @@
 package daemon
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -172,6 +178,187 @@ func TestSigWatchIdenticalRewriteDoesNotArmRescan(t *testing.T) {
 	}
 }
 
+// A failed read is not evidence that rules changed, and must not erase the
+// last good hash. Recovery has to compare with that hash even after restart.
+func TestSigWatchHashReadFailureRetainsBaseline(t *testing.T) {
+	for _, content := range []string{"v1", "v2"} {
+		t.Run(content, func(t *testing.T) {
+			w, rulesDir, alertCh, flag, cfg, sdb := newWatcherForTest(t)
+			stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+			path := writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+			w.tick()
+			baseline, err := sdb.GetSignatureFiles()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if baseline[path].SHA256 == "" {
+				t.Fatal("baseline hash missing")
+			}
+
+			newer := stamp.Add(time.Hour)
+			writeRule(t, rulesDir, "malware.yml", "v1", newer)
+			w.hashFile = func(string, os.FileInfo) (string, error) { return "", io.ErrUnexpectedEOF }
+			w.tick()
+			w.tick()
+			if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+				t.Error("unreadable identical rules armed a rescan")
+			}
+			persisted, err := sdb.GetSignatureFiles()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !sameSignatureState(baseline, persisted) || !sameSignatureState(baseline, w.last) {
+				t.Error("failed hash replaced the last good file state")
+			}
+
+			writeRule(t, rulesDir, "malware.yml", content, newer)
+			flag.Store(false)
+			w = newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return sdb }, flag, alertCh)
+			w.tick()
+			wantChange := content != "v1"
+			if flag.Load() != wantChange {
+				t.Errorf("recovered content %q: rescan = %v, want %v", content, flag.Load(), wantChange)
+			}
+			alerts := drainAlerts(alertCh)
+			if (wantChange && len(alerts) != 1) || (!wantChange && len(alerts) != 0) {
+				t.Errorf("recovered content %q: unexpected alerts: %v", content, alerts)
+			}
+			flag.Store(false)
+			w.tick()
+			if flag.Load() || len(drainAlerts(alertCh)) != 0 {
+				t.Error("recovered state armed more than once")
+			}
+		})
+	}
+}
+
+// An atomic replacement may have exactly the same stamp as the walked file.
+// Its bytes must not be committed with metadata obtained from the old inode.
+func TestSigWatchReplacementDuringHashRetries(t *testing.T) {
+	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	path := writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+	w.tick()
+	baseline, err := sdb.GetSignatureFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := stamp.Add(time.Hour)
+	writeRule(t, rulesDir, "malware.yml", "v1", newer)
+	replacement := writeRule(t, rulesDir, "replacement.tmp", "v2", newer)
+	w.hashFile = func(path string, info os.FileInfo) (string, error) {
+		if renameErr := os.Rename(replacement, path); renameErr != nil {
+			t.Fatal(renameErr)
+		}
+		return hashRulesFile(path, info)
+	}
+	w.tick()
+	if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+		t.Error("unstable file observation armed a rescan")
+	}
+	persisted, err := sdb.GetSignatureFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameSignatureState(baseline, persisted) {
+		t.Error("replacement hash was committed with the walked file's metadata")
+	}
+	w.hashFile = hashRulesFile
+	flag.Store(false)
+	w.tick()
+	if got := drainAlerts(alertCh); !flag.Load() || len(got) != 1 {
+		t.Errorf("stable replacement did not arm exactly once: flag %v, alerts %v", flag.Load(), got)
+	}
+	persisted, err = sdb.GetSignatureFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted[path].Mtime.Equal(newer) || persisted[path].SHA256 == baseline[path].SHA256 {
+		t.Errorf("replacement state not persisted: %+v", persisted[path])
+	}
+}
+
+func TestSigWatchHashRulesFileReadError(t *testing.T) {
+	path := t.TempDir()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest, err := hashRulesFile(path, info); err == nil || digest != "" {
+		t.Fatalf("directory hashed as a rules file: digest %q, error %v", digest, err)
+	}
+}
+
+func TestSigWatchHashRejectsReplacementFIFO(t *testing.T) {
+	dir := t.TempDir()
+	path := writeRule(t, dir, "rules.yml", "v1", time.Now())
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipe := filepath.Join(dir, "replacement.tmp")
+	if err := unix.Mkfifo(pipe, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(pipe, path); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := hashRulesFile(path, info)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("FIFO accepted as a rules file")
+		}
+	case <-time.After(time.Second):
+		// Release a blocking open/read before failing, so the regression
+		// itself does not leave a stuck goroutine in the test process.
+		writer, err := os.OpenFile(path, os.O_RDWR|unix.O_NONBLOCK, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = writer.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("hash reader did not exit after FIFO was released")
+		}
+		t.Fatal("hashing blocked on a FIFO replacement")
+	}
+}
+
+func TestSigWatchSymlinkUsesTargetState(t *testing.T) {
+	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	targetDir := t.TempDir()
+	target := writeRule(t, targetDir, "rules.txt", "v1", stamp)
+	path := filepath.Join(rulesDir, "malware.yml")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	w.tick()
+	baseline, err := sdb.GetSignatureFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline[path].SHA256 == "" || baseline[path].Size != 2 || !baseline[path].Mtime.Equal(stamp) {
+		t.Fatalf("symlink target state not recorded: %+v", baseline[path])
+	}
+	writeRule(t, targetDir, "rules.txt", "v1", stamp.Add(time.Hour))
+	w.tick()
+	if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+		t.Error("identical symlink target rewrite armed a rescan")
+	}
+	writeRule(t, targetDir, "rules.txt", "v2", stamp.Add(2*time.Hour))
+	w.tick()
+	if got := drainAlerts(alertCh); !flag.Load() || len(got) != 1 {
+		t.Errorf("changed symlink target did not arm once: flag %v, alerts %v", flag.Load(), got)
+	}
+}
+
 // --- State written before content hashes were tracked ---------------------
 
 // After an upgrade the store holds mtimes without hashes. A file whose mtime
@@ -203,6 +390,170 @@ func TestSigWatchStateWithoutHashes(t *testing.T) {
 	w.tick()
 	if flag.Load() {
 		t.Error("identical rewrite armed rescan; the hashless record was never completed")
+	}
+}
+
+func TestSigWatchLegacyReadFailureStillUsesMtime(t *testing.T) {
+	for _, moved := range []bool{false, true} {
+		t.Run(fmt.Sprint(moved), func(t *testing.T) {
+			w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+			stamp := time.Now().Add(-time.Hour).Truncate(time.Second)
+			path := writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+			recorded := stamp
+			if moved {
+				recorded = recorded.Add(-time.Hour)
+			}
+			if err := sdb.PutSignatureFiles(map[string]store.SignatureFileState{
+				path: {Mtime: recorded, Size: -1},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			w.hashFile = func(string, os.FileInfo) (string, error) { return "", io.ErrUnexpectedEOF }
+			w.tick()
+			alerts := drainAlerts(alertCh)
+			if flag.Load() != moved || (moved && len(alerts) != 1) || (!moved && len(alerts) != 0) {
+				t.Errorf("hashless read failure: flag %v, moved %v, alerts %v", flag.Load(), moved, alerts)
+			}
+			flag.Store(false)
+			w.tick()
+			w.hashFile = hashRulesFile
+			w.tick()
+			if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+				t.Error("legacy retry or recovery queued another rescan")
+			}
+			persisted, err := sdb.GetSignatureFiles()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if persisted[path].SHA256 == "" {
+				t.Error("read recovery did not complete the legacy record")
+			}
+		})
+	}
+}
+
+func TestSigWatchLegacyStoreUpgrade(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		symlink bool
+		moved   bool
+	}{
+		{name: "unchanged"},
+		{name: "moved", moved: true},
+		{name: "unchanged symlink", symlink: true},
+		{name: "moved symlink", symlink: true, moved: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+			stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+			var path string
+			if tc.symlink {
+				target := writeRule(t, t.TempDir(), "rules.txt", "v1", stamp)
+				path = filepath.Join(rulesDir, "malware.yml")
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				path = writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorded := info.ModTime()
+			if tc.moved {
+				recorded = recorded.Add(-time.Hour)
+			}
+			// Write the actual on-disk representation used by old builds.
+			payload, err := json.Marshal(map[string]time.Time{path: recorded})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if closeErr := sdb.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			raw, err := bolt.Open(sdb.Path(), 0600, &bolt.Options{Timeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = raw.Close() }()
+			if writeErr := raw.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte("sig_watch")).Put([]byte("last_mtimes"), payload)
+			}); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			if closeErr := raw.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			reopened, err := store.Open(filepath.Dir(sdb.Path()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			w.storeFunc = func() *store.DB { return reopened }
+			w.tick()
+			if flag.Load() != tc.moved {
+				t.Errorf("upgrade rescan = %v, want %v", flag.Load(), tc.moved)
+			}
+			alerts := drainAlerts(alertCh)
+			if (tc.moved && len(alerts) != 1) || (!tc.moved && len(alerts) != 0) {
+				t.Errorf("unexpected upgrade alerts: %v", alerts)
+			}
+			persisted, err := reopened.GetSignatureFiles()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if persisted[path].SHA256 == "" || persisted[path].Size != 2 || !persisted[path].Mtime.Equal(stamp) {
+				t.Errorf("legacy record not completed: %+v", persisted[path])
+			}
+			flag.Store(false)
+			w.tick()
+			if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+				t.Error("completed legacy record armed again")
+			}
+		})
+	}
+}
+
+func TestSigWatchRetriesFailedPersistence(t *testing.T) {
+	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	path := writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+	w.tick()
+	if err := sdb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeRule(t, rulesDir, "malware.yml", "v2", stamp.Add(time.Hour))
+	w.tick()
+	if got := drainAlerts(alertCh); !flag.Load() || len(got) != 1 || w.persisted {
+		t.Fatalf("failed write lost update: flag %v, alerts %v, persisted %v", flag.Load(), got, w.persisted)
+	}
+	flag.Store(false)
+	w.tick()
+	if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 || w.persisted {
+		t.Fatal("unchanged tick duplicated the rescan or marked the failed write as persisted")
+	}
+	reopened, err := store.Open(filepath.Dir(sdb.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	w.storeFunc = func() *store.DB { return reopened }
+	txID := reopened.WriteTxID()
+	w.tick()
+	persisted, err := reopened.GetSignatureFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.persisted || !sameSignatureState(w.last, persisted) || persisted[path].SHA256 == "" {
+		t.Fatalf("retry did not persist the changed rules: %v", persisted)
+	}
+	if reopened.WriteTxID() != txID+1 {
+		t.Error("retry did not commit exactly once")
+	}
+	w.tick()
+	if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 || reopened.WriteTxID() != txID+1 {
+		t.Error("successful retry duplicated a rescan or a database commit")
 	}
 }
 

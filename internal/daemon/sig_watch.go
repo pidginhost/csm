@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -84,6 +86,7 @@ type sigWatcher struct {
 	rescanFlag *atomic.Bool
 	alertCh    chan<- alert.Finding
 	interval   time.Duration
+	hashFile   func(string, os.FileInfo) (string, error)
 
 	// Initialised on first tick from store.GetSignatureFiles(); the
 	// in-memory map is the authoritative working copy for the loop.
@@ -104,6 +107,7 @@ func newSigWatcher(cfgFunc func() *config.Config, storeFunc func() *store.DB, fl
 		rescanFlag: flag,
 		alertCh:    alertCh,
 		interval:   sigWatchInterval,
+		hashFile:   hashRulesFile,
 	}
 }
 
@@ -156,27 +160,43 @@ func (w *sigWatcher) tick() {
 	current := walkRulesDir(rulesDir)
 	next := make(map[string]store.SignatureFileState, len(current))
 	var changed []sigWatchChange
-	for path, info := range current {
+	for path, file := range current {
+		info := file.info
 		old, seen := w.last[path]
 		if seen && old.SHA256 != "" && old.Size == info.Size() && old.Mtime.Equal(info.ModTime()) {
 			next[path] = old
 			continue
 		}
-		state := store.SignatureFileState{Mtime: info.ModTime(), Size: info.Size(), SHA256: hashRulesFile(path)}
+		digest, err := w.hashFile(path, info)
+		if err != nil {
+			csmlog.Warn("sig_watch: hashing rules", "path", path, "err", err)
+			if !seen {
+				continue
+			}
+			// Keep the last good comparison point, including its stamp, so
+			// the next tick retries instead of accepting an unreadable update.
+			if old.SHA256 != "" {
+				next[path] = old
+				continue
+			}
+			// With no recorded hash, preserve the legacy mtime fallback
+			// even when this read cannot establish a content baseline.
+		}
+		state := store.SignatureFileState{Mtime: info.ModTime(), Size: info.Size(), SHA256: digest}
 		next[path] = state
 		switch {
 		case !seen:
 			// New file. The spec treats first-observation as a
 			// non-event so a fresh `update-rules` install does not
 			// cause a rescan when the daemon also starts cold.
-		case old.SHA256 != "" && state.SHA256 != "":
+		case old.SHA256 != "":
 			if old.SHA256 != state.SHA256 {
 				changed = append(changed, sigWatchChange{Path: path, Old: old.Mtime, New: state.Mtime})
 			}
-		case old.Mtime.Equal(state.Mtime) && (old.Size < 0 || old.Size == state.Size):
-			// Recorded without a hash, or unreadable now: the file
-			// still carries the recorded stamp, so it is the file that
-			// was seen. The hash, when readable, completes the record.
+		case old.Size < 0 && old.Mtime.Equal(file.legacyMtime),
+			old.Size == state.Size && old.Mtime.Equal(state.Mtime):
+			// A legacy record with the same stamp gains a hash without
+			// treating the first tick after upgrade as a rules change.
 		default:
 			// The stamp moved and the contents cannot be compared, so
 			// this is treated as a change, as it was before content
@@ -213,19 +233,47 @@ func (w *sigWatcher) tick() {
 	}
 }
 
-// hashRulesFile returns the hex SHA-256 of a rules file, or "" when it
-// cannot be read.
-func hashRulesFile(path string) string {
-	f, err := os.Open(path) // #nosec G304 -- path comes from walking the operator-configured rules dir.
+// hashRulesFile accepts a hash only while the walked file, the open file and
+// the final pathname still identify the same regular file and stamp.
+func hashRulesFile(path string, expected os.FileInfo) (string, error) {
+	if !expected.Mode().IsRegular() {
+		return "", fmt.Errorf("rules file is not regular")
+	}
+	// A replacement by a FIFO between walk and open must not stall the watcher.
+	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0) // #nosec G304 -- path comes from walking the operator-configured rules dir and the opened identity is checked below.
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return ""
+	before, err := f.Stat()
+	if err != nil {
+		return "", err
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	if !sameRulesFile(expected, before) {
+		return "", fmt.Errorf("rules file changed before hashing or is not regular")
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, before.Size()+1))
+	if err != nil {
+		return "", err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	current, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if n != before.Size() || !sameRulesFile(before, after) || !sameRulesFile(after, current) {
+		return "", fmt.Errorf("rules file changed while hashing")
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func sameRulesFile(a, b os.FileInfo) bool {
+	return a.Mode().IsRegular() && b.Mode().IsRegular() && os.SameFile(a, b) &&
+		a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
 }
 
 func sameSignatureState(a, b map[string]store.SignatureFileState) bool {
@@ -241,13 +289,19 @@ func sameSignatureState(a, b map[string]store.SignatureFileState) bool {
 	return true
 }
 
-// walkRulesDir returns the file info of every signature file under dir.
+type sigWatchFile struct {
+	info os.FileInfo
+	// Old builds recorded the link's mtime for symlinks, not the target's.
+	legacyMtime time.Time
+}
+
+// walkRulesDir returns the target file info of every signature file under dir.
 // Sub-directories are walked too -- the YARA Forge updater puts
 // files under tier-named subfolders. Errors during walk (missing
 // dir, EACCES on a sub-tree) are swallowed; we want one bad path
 // not to crash the watcher or stop sibling traversal.
-func walkRulesDir(dir string) map[string]os.FileInfo {
-	out := map[string]os.FileInfo{}
+func walkRulesDir(dir string) map[string]sigWatchFile {
+	out := map[string]sigWatchFile{}
 	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Missing dir or EACCES on a sub-tree -- ignore so the
@@ -264,7 +318,13 @@ func walkRulesDir(dir string) map[string]os.FileInfo {
 		if !sigWatchExtMatches(ext) {
 			return nil
 		}
-		out[path] = info
+		file := sigWatchFile{info: info, legacyMtime: info.ModTime()}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if target, err := os.Stat(path); err == nil {
+				file.info = target
+			}
+		}
+		out[path] = file
 		return nil
 	})
 	return out
