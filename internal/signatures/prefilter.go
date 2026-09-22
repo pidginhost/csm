@@ -22,75 +22,94 @@ type compiledRegex struct {
 	gate regexGate
 }
 
-// regexGate lists lowercase ASCII literals of which every match of its regex
-// contains at least one, once the content is folded by foldForGate. The rule
-// regexes are case-insensitive, and Go's engine cannot use a literal to skip
-// ahead under case folding, so each one walks the whole file; a regex whose
-// literals are all absent cannot match and need not run. A nil gate admits
-// every input.
-type regexGate []string
+// regexGate is a conjunction of literal sets: every match of its regex
+// contains at least one literal of each set, once the content is folded by
+// foldForGate. The rule regexes are case-insensitive, and Go's engine cannot
+// use a literal to skip ahead under case folding, so each one walks the whole
+// file; a regex with a set none of whose literals is present cannot match and
+// need not run. A nil gate admits every input.
+type regexGate []literalSet
+
+// literalSet lists lowercase ASCII literals of which a match contains at
+// least one.
+type literalSet []string
 
 // gateFor derives the gate for a regex source written in the syntax
-// regexp.Compile accepts. It returns nil when no literal of at least
-// minGateLiteral bytes is required by every match.
+// regexp.Compile accepts. Sets whose shortest literal is under
+// minGateLiteral bytes are left out: dropping a set only weakens the gate.
 func gateFor(src string) regexGate {
 	re, err := syntax.Parse(src, syntax.Perl)
 	if err != nil {
 		return nil
 	}
-	gate := requiredLiterals(re)
-	for _, lit := range gate {
-		if len(lit) < minGateLiteral {
-			return nil
+	var gate regexGate
+	listed := map[string]bool{}
+	for _, set := range requiredSets(re) {
+		if shortest(set) < minGateLiteral {
+			continue
 		}
+		sort.Strings(set)
+		set = compactStrings(set)
+		key := strings.Join(set, "\x00")
+		if listed[key] {
+			continue
+		}
+		listed[key] = true
+		gate = append(gate, literalSet(set))
 	}
-	sort.Strings(gate)
-	return regexGate(compactStrings(gate))
+	sort.Slice(gate, func(i, j int) bool {
+		return strings.Join(gate[i], "\x00") < strings.Join(gate[j], "\x00")
+	})
+	return gate
 }
 
-// requiredLiterals returns literals of which every match of re contains at
-// least one, or nil when the structure admits a match without any. Each
-// literal is a lowercased maximal ASCII run of a literal node: a match of the
-// node contains that run, rune for rune up to case folding. Non-ASCII runes
-// end a run because their fold partners are not all representable in the
-// folded content.
-func requiredLiterals(re *syntax.Regexp) []string {
+// requiredSets returns literal sets that every match of re satisfies, each
+// by containing at least one of the set's literals; nil when none is known.
+// A literal is the lowercased longest ASCII run of a literal node: a match
+// of the node contains that run, rune for rune up to case folding.
+// Non-ASCII runes end a run because their fold partners are not all
+// representable in the folded content.
+func requiredSets(re *syntax.Regexp) [][]string {
 	switch re.Op {
 	case syntax.OpLiteral:
 		if lit := longestASCIIRun(re.Rune); lit != "" {
-			return []string{lit}
+			return [][]string{{lit}}
 		}
 		return nil
 	case syntax.OpCapture, syntax.OpPlus:
-		return requiredLiterals(re.Sub[0])
+		return requiredSets(re.Sub[0])
 	case syntax.OpRepeat:
 		if re.Min >= 1 {
-			return requiredLiterals(re.Sub[0])
+			return requiredSets(re.Sub[0])
 		}
 		return nil
 	case syntax.OpConcat:
-		// Every part of a concatenation is present in a match, so any one
-		// part's literals gate it; take the part whose shortest literal is
-		// longest, as it is the least likely to occur by chance.
-		var best []string
+		// Every part of a concatenation is present in a match, so every
+		// part's sets hold.
+		var all [][]string
 		for _, sub := range re.Sub {
-			if lits := requiredLiterals(sub); lits != nil && shortest(lits) > shortest(best) {
-				best = lits
-			}
-		}
-		return best
-	case syntax.OpAlternate:
-		// A match takes one branch, so the gate is the union of the
-		// branches' literals, and a single branch without any voids it.
-		var all []string
-		for _, sub := range re.Sub {
-			lits := requiredLiterals(sub)
-			if lits == nil {
-				return nil
-			}
-			all = append(all, lits...)
+			all = append(all, requiredSets(sub)...)
 		}
 		return all
+	case syntax.OpAlternate:
+		// A match takes one branch, so the branches' sets cannot be
+		// required together. Each branch contributes its strongest set to
+		// one union, and a branch without any voids it.
+		var union []string
+		for _, sub := range re.Sub {
+			sets := requiredSets(sub)
+			if len(sets) == 0 {
+				return nil
+			}
+			best := sets[0]
+			for _, set := range sets[1:] {
+				if shortest(set) > shortest(best) {
+					best = set
+				}
+			}
+			union = append(union, best...)
+		}
+		return [][]string{union}
 	}
 	return nil
 }
@@ -130,20 +149,26 @@ func compactStrings(sorted []string) []string {
 	return out
 }
 
-// admits reports whether folded content holds one of the gate's literals.
+// admits reports whether folded content holds a literal of every set.
 // seen memoizes literal presence for the scan in progress: many regexes
 // share literals such as "eval" or "base64_decode".
 func (g regexGate) admits(folded string, seen map[string]bool) bool {
-	if len(g) == 0 {
-		return true
-	}
-	for _, lit := range g {
-		present, known := seen[lit]
-		if !known {
-			present = strings.Contains(folded, lit)
-			seen[lit] = present
+	for _, set := range g {
+		if !set.present(folded, seen) {
+			return false
 		}
-		if present {
+	}
+	return true
+}
+
+func (set literalSet) present(folded string, seen map[string]bool) bool {
+	for _, lit := range set {
+		found, known := seen[lit]
+		if !known {
+			found = strings.Contains(folded, lit)
+			seen[lit] = found
+		}
+		if found {
 			return true
 		}
 	}

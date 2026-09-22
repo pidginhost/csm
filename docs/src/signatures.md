@@ -56,11 +56,11 @@ rules:
 - `max_file_bytes` - skip this rule when the complete scanned file is larger than the byte limit; omitted or `0` is unbounded
 - `max_file_bytes_exempt_regexes` - high-confidence regexes that let the rule continue normal evaluation above `max_file_bytes`
 
-A regex only runs on a file that contains at least one piece of fixed text
-that every match of the regex must contain, compared without regard to case.
-Write regexes around a distinctive word such as a function name: a regex with
-no fixed text of two or more characters runs over every file of its types, and
-realtime pays that cost on each write.
+A regex only runs on a file that contains the fixed text every match of it
+must contain, compared without regard to case: for `eval\s*\(\s*base64_decode`
+that is both `eval` and `base64_decode`. Write regexes around distinctive words
+such as function names: a regex with no fixed text of two or more characters
+runs over every file of its types, and realtime pays that cost on each write.
 
 When a regex includes a literal listed in `patterns`, the same content can
 satisfy both entries. Use independent entries when a rule needs multiple pieces

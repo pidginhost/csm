@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"sort"
 	"testing"
 )
 
@@ -13,31 +12,34 @@ func TestGateForExtractsRequiredLiterals(t *testing.T) {
 	tests := []struct {
 		name string
 		src  string
-		want []string
+		want [][]string
 	}{
-		{"single literal", `(?i)eval\s*\(`, []string{"eval"}},
-		{"alternation keeps every branch", `(?i)(?:system|passthru)\s*\(`, []string{"passthru", "system"}},
-		{"longest literal of a concatenation", `(?i)foo(?:bar)?bazqux`, []string{"bazqux"}},
-		{"required repeat keeps its literal", `(?i)(?:abcd){2,}`, []string{"abcd"}},
+		{"single literal", `(?i)eval\s*\(`, [][]string{{"eval"}}},
+		{"alternation keeps every branch", `(?i)(?:system|passthru)\s*\(`, [][]string{{"passthru", "system"}}},
+		{"every part of a concatenation is required", `(?i)foo(?:bar)?bazqux`, [][]string{{"bazqux"}, {"foo"}}},
+		{"conjunction across a gap", `(?i)eval\s*\(\s*base64_decode`, [][]string{{"base64_decode"}, {"eval"}}},
+		{"alternation takes each branch's strongest set", `(?i)(?:eval\s*\(\s*\$_post|assert\s*\(\s*\$_get)`, [][]string{{"$_post", "assert"}}},
+		{"required repeat keeps its literal", `(?i)(?:abcd){2,}`, [][]string{{"abcd"}}},
 		{"optional repeat gives no literal", `(?i)(?:abcd){0,3}`, nil},
 		{"star gives no literal", `(?i)(?:abcd)*`, nil},
 		{"character class gives no literal", `(?i)[a-z]+`, nil},
 		{"branch without a literal voids the alternation", `(?i)(?:system|[0-9]+)`, nil},
 		{"one-byte branch is too weak to gate", `(?i)(?:system|=)`, nil},
-		{"case-sensitive literal is folded", `(?i)(?-i:ABCD)`, []string{"abcd"}},
-		{"non-ASCII rune splits a literal", `(?i)caf\x{e9}teria`, []string{"teria"}},
-		{"folded long s is the letter s", `(?i)\x{17f}ystem`, []string{"system"}},
-		{"case-sensitive long s splits a literal", `(?i)(?-i:\x{17f}ystem)`, []string{"ystem"}},
-		{"capture group is transparent", `(?i)(base64_decode)\s*\(`, []string{"base64_decode"}},
-		{"escaped metacharacters are literal", `(?i)wp-config\.php`, []string{"wp-config.php"}},
-		{"empty-width assertions are ignored", `(?i)\beval\b`, []string{"eval"}},
+		{"weak set is dropped, strong one kept", `(?i)(?:system|=)\s*base64`, [][]string{{"base64"}}},
+		{"case-sensitive literal is folded", `(?i)(?-i:ABCD)`, [][]string{{"abcd"}}},
+		{"non-ASCII rune splits a literal", `(?i)caf\x{e9}teria`, [][]string{{"teria"}}},
+		{"folded long s is the letter s", `(?i)\x{17f}ystem`, [][]string{{"system"}}},
+		{"case-sensitive long s splits a literal", `(?i)(?-i:\x{17f}ystem)`, [][]string{{"ystem"}}},
+		{"capture group is transparent", `(?i)(base64_decode)\s*\(`, [][]string{{"base64_decode"}}},
+		{"escaped metacharacters are literal", `(?i)wp-config\.php`, [][]string{{"wp-config.php"}}},
+		{"empty-width assertions are ignored", `(?i)\beval\b`, [][]string{{"eval"}}},
+		{"repeated set is listed once", `(?i)eval.*eval`, [][]string{{"eval"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := []string(gateFor(tt.src))
-			sort.Strings(got)
-			if len(got) == 0 {
-				got = nil
+			var got [][]string
+			for _, set := range gateFor(tt.src) {
+				got = append(got, []string(set))
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("gateFor(%q) = %q, want %q", tt.src, got, tt.want)
@@ -69,13 +71,20 @@ func TestFoldForGate(t *testing.T) {
 }
 
 func TestGateAdmits(t *testing.T) {
-	gate := regexGate{"assert", "eval"}
+	gate := regexGate{{"assert", "eval"}}
 	seen := map[string]bool{}
 	if !gate.admits("<?php assert($x);", seen) {
 		t.Fatal("gate rejected content holding one of its literals")
 	}
 	if gate.admits("<?php echo 1;", map[string]bool{}) {
 		t.Fatal("gate admitted content holding none of its literals")
+	}
+	both := regexGate{{"eval"}, {"base64_decode"}}
+	if !both.admits("eval(base64_decode($x))", map[string]bool{}) {
+		t.Fatal("gate rejected content holding a literal from every set")
+	}
+	if both.admits("eval($x)", map[string]bool{}) {
+		t.Fatal("gate admitted content missing every literal of one set")
 	}
 	if !regexGate(nil).admits("anything", map[string]bool{}) {
 		t.Fatal("an empty gate must admit every input")
