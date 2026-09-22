@@ -9,6 +9,10 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ## [Unreleased]
 
+### Security
+
+- The temporary-file queue filter now preserves earlier detection and suppression decisions, including writes retained for self-deleting-file tracking.
+
 ### Fixed
 
 - Writes in the shared temporary directories are now judged when the event arrives instead of being queued for content analysis first. Session files, package working files and database temporaries no longer take a slot in the real-time queue to reach a verdict of nothing to report, while executables, PHP, configuration files and staged copies of them are still analysed exactly as before.

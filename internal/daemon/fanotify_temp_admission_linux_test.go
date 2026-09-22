@@ -157,3 +157,10 @@ func TestTempRootAtomicStagingNameIsQueued(t *testing.T) {
 		})
 	}
 }
+
+func TestTempRootAdmissionFailsOpenOnStatError(t *testing.T) {
+	fm := tempAdmissionMonitor(t)
+	if !fm.tempRootEventNeedsAnalysis("/tmp/session-data", -1) {
+		t.Fatal("an uninspectable event descriptor was rejected")
+	}
+}

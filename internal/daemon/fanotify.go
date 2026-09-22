@@ -981,11 +981,14 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	// no path-only content signal.
 	fm.invalidateDropperPHPHandlerCache(path)
 	contentInteresting := fm.isInteresting(path)
+	// Filtering must not reroute writes retained for dropper tracking: the
+	// dropper-only path bypasses normal suppressions and checksum verification.
+	contentNeedsAnalysis := contentInteresting
 	if contentInteresting && underTempRoot(path) {
-		contentInteresting = fm.tempRootEventNeedsAnalysis(path, fd)
+		contentNeedsAnalysis = fm.tempRootEventNeedsAnalysis(path, fd)
 	}
 	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)
-	if !contentInteresting && !dropperInteresting {
+	if !contentNeedsAnalysis && !dropperInteresting {
 		_ = unix.Close(fd)
 		return
 	}
@@ -1213,7 +1216,8 @@ func (fm *FileMonitor) tempRootEventNeedsAnalysis(path string, fd int) bool {
 	lower := strings.ToLower(content)
 	name := filepath.Base(lower)
 	switch {
-	case isPHPSourceExtension(name),
+	case strings.HasPrefix(path, cronSpoolDir()+"/"),
+		isPHPSourceExtension(name),
 		name == ".htaccess", name == ".user.ini", name == "php.ini",
 		knownWebshells[name],
 		strings.HasSuffix(lower, ".haxor"), strings.HasSuffix(lower, ".cgix"),
@@ -1226,7 +1230,7 @@ func (fm *FileMonitor) tempRootEventNeedsAnalysis(path string, fd int) bool {
 	if err := unix.Fstat(fd, &st); err != nil {
 		return true
 	}
-	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Mode&0o111 != 0
+	return st.Mode&unix.S_IFMT != unix.S_IFDIR && st.Mode&0o111 != 0
 }
 
 // credentialLogNames are filenames commonly used by phishing kits to store
