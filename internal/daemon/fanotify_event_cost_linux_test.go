@@ -202,3 +202,48 @@ func BenchmarkAnalyzeAdmittedPHP(b *testing.B) {
 		fm.analyzeFile(event)
 	}
 }
+
+// BenchmarkFanotifyEventTempRoot measures a write in the shared temporary
+// trees that carries no signal -- a PHP session file, a package work file, a
+// database temporary. These are the bulk of what those trees produce, and the
+// reader decides them from the descriptor it already holds.
+func BenchmarkFanotifyEventTempRoot(b *testing.B) {
+	fm := eventCostMonitor(b)
+	dir, err := os.MkdirTemp("/tmp", "eventcost-temp-")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "sess_a1b2c3d4e5")
+	if err := os.WriteFile(path, []byte("session|a:0:{}"), 0o600); err != nil {
+		b.Fatal(err)
+	}
+
+	fds := make([]int, b.N)
+	for i := range fds {
+		fd, openErr := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if openErr != nil {
+			b.Fatalf("open: %v", openErr)
+		}
+		fds[i] = fd
+	}
+	admitted := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for event := range fm.analyzerCh {
+			admitted++
+			_ = unix.Close(event.fd)
+		}
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fm.handleEvent(fds[i], 0, FAN_CLOSE_WRITE)
+	}
+	b.StopTimer()
+
+	close(fm.analyzerCh)
+	<-done
+	b.ReportMetric(float64(admitted)/float64(b.N), "admitted/op")
+}

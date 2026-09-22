@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Writes in the shared temporary directories are now judged when the event arrives instead of being queued for content analysis first. Session files, package working files and database temporaries no longer take a slot in the real-time queue to reach a verdict of nothing to report, while executables, PHP, configuration files and staged copies of them are still analysed exactly as before.
 - The real-time monitor shares filesystem watches and reports their actual scope, including bind mounts and partial watch failures. Event counters distinguish queued, rejected, and dropped work, with consistent snapshots during concurrent activity.
 - Non-Linux development builds compile again after the watch-scope logging change.
 - Scheduled and account scans share one concurrency budget sized from the machine's core count, so a scan started from the interface during a scheduled one no longer doubles the load. A check still running after its caller gave up keeps its slot until it exits. The real-time scanner sizes its separate worker pool the same way, and both the packaged and the installer-generated service units yield CPU to the web server and database under contention.
