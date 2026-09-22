@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Deciding whether a written file sits under an account or document root, which the real-time monitor does for every watched write, costs about a third of what it did.
 - Judging an executable written to a temporary directory no longer walks the process tree when nothing about the host could lower the severity. On a server with no package transaction running and no control panel installed, the walk was pure cost on every such write.
 - Process ancestry is available before file monitoring starts, including on hosts without kernel monitoring. Starting the optional process cache no longer races with ancestry readers.
 - Nightly control panel maintenance no longer pages as a system compromise. A cron drop-in or a staged executable written by the panel's own scheduled work is reported as a Warning instead of High or Critical, recognised by the program a parent process is actually running rather than the name it reports. Nothing is skipped, and a cron file carrying persistence tokens still reports at full severity.

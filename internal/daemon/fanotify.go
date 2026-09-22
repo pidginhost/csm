@@ -1154,23 +1154,6 @@ func (fm *FileMonitor) underAccountOrConfiguredDocRoot(path string) bool {
 		(len(fm.docRootPatterns) > 0 && fm.underDocRoot(path))
 }
 
-func pathMatchesWebRootPatterns(path string, patterns []string) bool {
-	dir := filepath.Clean(filepath.Dir(path))
-	for {
-		for _, pattern := range patterns {
-			matched, err := filepath.Match(filepath.Clean(pattern), dir)
-			if err == nil && matched {
-				return true
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return false
-		}
-		dir = parent
-	}
-}
-
 // tempRootPrefixes are the shared temporary trees. Anything may be written
 // there by anyone, so they are watched, but most of what lands there carries no
 // signal any detector acts on.
