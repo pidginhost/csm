@@ -226,6 +226,13 @@ type FileMonitor struct {
 	// keeps sendEvent non-blocking on the event-loop hot path.
 	reconcileSig chan struct{}
 
+	// reconcileRunning is set while a recovery pass is in flight, and
+	// reconcileLastPass is the unix-nano instant the last one ended. Passes
+	// are single-flight and rate-limited: recovery that keeps up with a
+	// storm's trigger rate feeds the storm.
+	reconcileRunning  atomic.Bool
+	reconcileLastPass atomic.Int64
+
 	// metricsOnce guards one-time registration of the fanotify-scoped
 	// Prometheus metrics. Each FileMonitor registers its own hooks when
 	// it first starts; subsequent calls are a no-op.
@@ -270,6 +277,19 @@ const (
 	// the minute tick so a drop near the start of a tick is still picked
 	// up by the reconcile that runs at tick end.
 	reconcileWindow = 70 * time.Second
+
+	// reconcileBudget bounds one recovery pass. The pass reads whole
+	// directories and scans their recent files inline, outside the analyzer
+	// pool's backpressure, so an unbounded pass competes with the very
+	// workers whose backlog caused the drops.
+	reconcileBudget = 10 * time.Second
+
+	// reconcileMinInterval is the shortest gap between recovery passes. The
+	// eager trigger fires once per few hundred drops, which during a
+	// sustained storm meant a pass every few seconds: recovery rescanned
+	// files that were still being written, spent CPU the analyzers needed,
+	// and produced the next round of drops.
+	reconcileMinInterval = 30 * time.Second
 
 	// analyzerChBufferSize sizes the channel feeding the analyzer pool.
 	// A cpanel package restore in production observed ~4189 events in a
@@ -2434,7 +2454,7 @@ func (fm *FileMonitor) overflowReporter() {
 			// any interesting file inside reconcileWindow. The minute
 			// tick will still fire its alert + drain the counters when
 			// it arrives.
-			fm.reconcileDrops()
+			fm.startReconcile()
 		case <-ticker.C:
 			droppedEv := atomic.SwapInt64(&fm.droppedEvents, 0)
 			droppedAl := atomic.SwapInt64(&fm.droppedAlerts, 0)
@@ -2444,7 +2464,7 @@ func (fm *FileMonitor) overflowReporter() {
 					"Possible event storm (backup, bulk update) or high-volume attack")
 				// Recover coverage: scan files in directories that saw drops
 				// so a threat landing during the storm is still detected.
-				fm.reconcileDrops()
+				fm.startReconcile()
 			}
 			if droppedAl > 0 {
 				fmt.Fprintf(os.Stderr, "[%s] alert channel full: %d alerts dropped in last minute\n", ts(), droppedAl)

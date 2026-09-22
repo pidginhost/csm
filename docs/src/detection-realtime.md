@@ -12,6 +12,9 @@ completed write. Scans read the original event descriptor even if the file has
 been renamed, replaced, or deleted before analysis. No rename event is needed
 to inspect those bytes. Repeated findings use the normal alert cooldown, and
 queue overflow schedules a directory rescan of files that remain on disk.
+That recovery runs one pass at a time, under a time budget and with a minimum
+gap between passes; directories a pass does not reach stay queued for the next
+one, so recovery never competes with the analyzers for the whole storm.
 Kernel notification loss still relies on the next deep scan. Shutdown drains
 the queue under a fixed time budget: events still waiting when it expires are
 released without being scanned, so the daemon stops well inside its service

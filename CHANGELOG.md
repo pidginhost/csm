@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Recovery rescans after a real-time event storm no longer pile up on each other. They run one at a time under a time budget, with work they do not reach carried to the next pass, so a storm can no longer drive the daemon into sustained CPU use that produced more dropped events.
 - Stopping the daemon on a busy host no longer waits for the whole real-time scan backlog. The drain now has a time budget, so the service stops in seconds instead of being killed by systemd after the stop timeout.
 - The public documentation site stopped rebuilding after the Go version moved forward, because its workflow repeated the version instead of reading it from the module file.
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
@@ -35,6 +36,12 @@ func (fm *FileMonitor) recordDroppedDir(path string) {
 	}
 	entry.lastDrop = now
 	fm.reconcileDirs[dir] = entry
+	fm.evictOverflowDirLocked(now)
+}
+
+// evictOverflowDirLocked drops the least recently refreshed directory once the
+// tracker is over its cap. The caller holds reconcileMu.
+func (fm *FileMonitor) evictOverflowDirLocked(now time.Time) {
 	if len(fm.reconcileDirs) <= reconcileDirCap {
 		return
 	}
@@ -48,6 +55,34 @@ func (fm *FileMonitor) recordDroppedDir(path string) {
 	}
 	fm.reconcileDirs[oldestKey].ticket.Reject(now)
 	delete(fm.reconcileDirs, oldestKey)
+}
+
+// startReconcile runs one recovery pass off the caller's goroutine. Passes
+// never overlap and never run closer together than reconcileMinInterval: the
+// eager trigger fires on drop volume, and a storm produces that volume far
+// faster than a pass can absorb it.
+func (fm *FileMonitor) startReconcile() {
+	select {
+	case <-fm.stopCh:
+		return
+	default:
+	}
+	now := time.Now()
+	if last := fm.reconcileLastPass.Load(); last != 0 && now.Sub(time.Unix(0, last)) < reconcileMinInterval {
+		return
+	}
+	if !fm.reconcileRunning.CompareAndSwap(false, true) {
+		return
+	}
+	fm.wg.Add(1)
+	obs.Go("fanotify-reconcile", func() {
+		defer fm.wg.Done()
+		defer func() {
+			fm.reconcileLastPass.Store(time.Now().UnixNano())
+			fm.reconcileRunning.Store(false)
+		}()
+		fm.reconcileDrops()
+	})
 }
 
 func (fm *FileMonitor) reconcileDrops() {
@@ -74,7 +109,12 @@ func (fm *FileMonitor) reconcileDrops() {
 		defer func() { fanotifyReconcileDur.Observe(time.Since(started).Seconds()) }()
 	}
 	cutoff := started.Add(-reconcileWindow)
+	deadline := started.Add(reconcileBudget)
 	for dir, entry := range dirs {
+		if fm.reconcilePassDone(deadline) {
+			fm.deferReconcileDirs(dirs)
+			return
+		}
 		complete := fm.reconcileDirectory(dir, cutoff)
 		// A refreshed drop cannot recover an older obligation outside this scan's window.
 		if complete && !entry.firstDrop.Before(cutoff) {
@@ -83,6 +123,45 @@ func (fm *FileMonitor) reconcileDrops() {
 			entry.ticket.Reject(time.Now())
 		}
 		delete(dirs, dir)
+	}
+}
+
+// reconcilePassDone reports whether this pass must stop: its budget is spent,
+// or the monitor is shutting down.
+func (fm *FileMonitor) reconcilePassDone(deadline time.Time) bool {
+	select {
+	case <-fm.stopCh:
+		return true
+	default:
+	}
+	return time.Now().After(deadline)
+}
+
+// deferReconcileDirs returns directories this pass did not reach to the
+// tracker so the next pass takes them, and empties the detached batch so the
+// panic guard does not count them as lost. A directory that took a new drop
+// while the pass ran is already represented by a waiting ticket; merging keeps
+// the older admission age rather than restarting the clock on it.
+func (fm *FileMonitor) deferReconcileDirs(dirs map[string]reconcileDirectory) {
+	now := time.Now()
+	fm.reconcileMu.Lock()
+	defer fm.reconcileMu.Unlock()
+	if fm.reconcileDirs == nil {
+		fm.reconcileDirs = make(map[string]reconcileDirectory)
+	}
+	for dir, entry := range dirs {
+		delete(dirs, dir)
+		if waiting, exists := fm.reconcileDirs[dir]; exists {
+			waiting.ticket.MergeRunning(entry.ticket, now)
+			if entry.firstDrop.Before(waiting.firstDrop) {
+				waiting.firstDrop = entry.firstDrop
+				fm.reconcileDirs[dir] = waiting
+			}
+			continue
+		}
+		entry.ticket.Requeue(now)
+		fm.reconcileDirs[dir] = entry
+		fm.evictOverflowDirLocked(now)
 	}
 }
 
