@@ -6,6 +6,7 @@ import (
 	"net/http/pprof"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -14,31 +15,43 @@ import (
 
 const (
 	// mutexProfileFraction samples one in every N mutex contention events.
-	// The runtime records nothing at all until this is set, which is why the
-	// mutex profile the listener serves was empty on every host that ever
-	// fetched it. One in a hundred is enough to rank the contended locks in
-	// a daemon this size and keeps the accounting off the fast path.
+	// Sampling limits stack collection overhead on busy hosts.
 	mutexProfileFraction = 100
 
 	// blockProfileRate samples one blocking event per this many nanoseconds
 	// spent blocked, so a goroutine parked for 10 microseconds is recorded
-	// with probability one. Channel and lock waits inside CSM are measured in
-	// milliseconds, so this captures them while leaving brief runtime-internal
-	// waits unsampled.
+	// with probability one. Shorter waits are sampled with proportionally lower
+	// probability, not excluded. Even unsampled waits incur timing overhead.
 	blockProfileRate = 10_000
 )
 
+// The runtime rates are process-wide. A listener stopping must not switch off
+// another listener that is still serving profiles.
+var contentionProfiles struct {
+	sync.Mutex
+	listeners int
+}
+
 // enableContentionProfiles turns on the sampling the mutex and block profiles
-// depend on. Off by default in the Go runtime, and only worth its overhead
-// while an operator is actually collecting profiles.
+// depend on for the lifetime of successfully bound listeners.
 func enableContentionProfiles() {
-	runtime.SetMutexProfileFraction(mutexProfileFraction)
-	runtime.SetBlockProfileRate(blockProfileRate)
+	contentionProfiles.Lock()
+	defer contentionProfiles.Unlock()
+	if contentionProfiles.listeners == 0 {
+		runtime.SetMutexProfileFraction(mutexProfileFraction)
+		runtime.SetBlockProfileRate(blockProfileRate)
+	}
+	contentionProfiles.listeners++
 }
 
 func disableContentionProfiles() {
-	runtime.SetMutexProfileFraction(0)
-	runtime.SetBlockProfileRate(0)
+	contentionProfiles.Lock()
+	defer contentionProfiles.Unlock()
+	contentionProfiles.listeners--
+	if contentionProfiles.listeners == 0 {
+		runtime.SetMutexProfileFraction(0)
+		runtime.SetBlockProfileRate(0)
+	}
 }
 
 // pprofListen is replaceable in tests so listener lifecycle coverage does not

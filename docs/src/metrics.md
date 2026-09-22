@@ -86,7 +86,16 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
 
 The same endpoint serves `profile` (CPU, 30s by default), `goroutine`, `mutex`
 and `block`. Contention sampling for the last two starts with the listener and
-stops when the daemon stops, so a host without a pprof bind pays nothing for it.
+stops when the last listener exits, including on a listener failure. Failed or
+refused binds do not enable sampling.
+
+While enabled, mutex profiling samples one in 100 contention events. Block
+profiling samples waits of at least 10 microseconds and a proportion of shorter
+waits. Timing and collecting these samples adds CPU overhead even when nobody
+fetches a profile, so use this endpoint for diagnostics and leave
+`debug.pprof_listen` empty when it is not needed. Profiles accumulate for the
+process lifetime; disabling sampling does not erase previously recorded data.
+
 For a CPU investigation, collect the CPU profile first and the goroutine dump
 alongside it:
 
