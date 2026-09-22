@@ -111,6 +111,10 @@ type watchRootMark struct {
 	scope     markScope
 	device    uint64
 	coveredBy string
+	// rootFS records that this root sits on the same filesystem as /, so a
+	// filesystem-scoped mark on it raises an event for every write on the
+	// machine. That is device identity, not an inference about containment.
+	rootFS bool
 }
 
 // devStatFunc reports the device a path lives on. Injected so the mark ladder
@@ -132,6 +136,7 @@ func markWatchRoots(fd int, roots []string, mark markFunc, statDev devStatFunc) 
 	var marks []watchRootMark
 	covering := make(map[uint64]string)
 	var failures []error
+	rootDevice, rootErr := statDev("/")
 	for _, path := range roots {
 		device, statErr := statDev(path)
 		if statErr != nil {
@@ -143,6 +148,7 @@ func markWatchRoots(fd int, roots []string, mark markFunc, statDev devStatFunc) 
 		if owner, covered := covering[device]; covered {
 			marks = append(marks, watchRootMark{
 				path: path, scope: markScopeFilesystem, device: device, coveredBy: owner,
+				rootFS: rootErr == nil && device == rootDevice,
 			})
 			continue
 		}
@@ -154,7 +160,10 @@ func markWatchRoots(fd int, roots []string, mark markFunc, statDev devStatFunc) 
 		if scope == markScopeFilesystem {
 			covering[device] = path
 		}
-		marks = append(marks, watchRootMark{path: path, scope: scope, device: device})
+		marks = append(marks, watchRootMark{
+			path: path, scope: scope, device: device,
+			rootFS: rootErr == nil && device == rootDevice,
+		})
 	}
 	// A later filesystem mark makes an earlier mount-only warning obsolete.
 	for i := range marks {
@@ -225,6 +234,9 @@ func watchScopeSummary(marks []watchRootMark) string {
 		coverage := "whole filesystem, including all bind mounts"
 		if m.scope == markScopeMount {
 			coverage = "whole containing mount, excluding other bind mounts"
+		}
+		if m.rootFS {
+			coverage += ", same filesystem as /"
 		}
 		parts = append(parts, fmt.Sprintf("%s (%s scope, device %d: %s)", m.path, m.scope, m.device, coverage))
 	}

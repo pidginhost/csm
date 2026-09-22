@@ -259,3 +259,44 @@ func TestWatchRootsFollowSymlinkDevice(t *testing.T) {
 		t.Fatalf("symlink target was not deduplicated: marked=%v records=%+v", marked, marks)
 	}
 }
+
+// Describing the scope as "the whole filesystem" is precise but leaves the
+// operator question unanswered: is that filesystem the one holding the rest of
+// the machine? That is the condition behind issue 76, and it is a fact about
+// device identity, not an inference from mount points.
+func TestWatchScopeSummaryNamesTheRootFilesystem(t *testing.T) {
+	onRoot := watchScopeSummary([]watchRootMark{
+		{path: "/home", scope: markScopeFilesystem, device: 64516, rootFS: true},
+	})
+	if !strings.Contains(onRoot, "same filesystem as /") {
+		t.Errorf("summary %q does not say the mark covers the root filesystem", onRoot)
+	}
+
+	ownVolume := watchScopeSummary([]watchRootMark{
+		{path: "/home", scope: markScopeFilesystem, device: 2049},
+	})
+	if strings.Contains(ownVolume, "same filesystem as /") {
+		t.Errorf("summary %q claims a separate volume is the root filesystem", ownVolume)
+	}
+}
+
+func TestWatchRootsRecordWhichRootsShareTheRootFilesystem(t *testing.T) {
+	mark := func(fd int, flags uint, mask uint64, dirFd int, path string) error { return nil }
+	devices := map[string]uint64{"/": 64516, "/home": 64516, "/dev/shm": 22}
+
+	marks, err := markWatchRoots(3, []string{"/home", "/dev/shm"}, mark, fakeDevStat(devices))
+	if err != nil {
+		t.Fatalf("markWatchRoots: %v", err)
+	}
+
+	byPath := map[string]watchRootMark{}
+	for _, m := range marks {
+		byPath[m.path] = m
+	}
+	if !byPath["/home"].rootFS {
+		t.Error("/home shares a device with / but was not recorded as the root filesystem")
+	}
+	if byPath["/dev/shm"].rootFS {
+		t.Error("/dev/shm has its own device but was recorded as the root filesystem")
+	}
+}

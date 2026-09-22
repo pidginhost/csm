@@ -12,8 +12,10 @@ share one mark. A root being a mount point does not restrict a filesystem mark
 to that path: symlinks and bind mounts can name only a subtree. On kernels that
 fall back to mount scope, the mark covers the whole containing mount and misses
 writes through other bind mounts. The startup log describes these scopes and
-which roots share a filesystem mark; failures to inspect or mark a root are
-reported even when other roots succeed. Missing roots are skipped.
+which roots share a filesystem mark, and says when a watch root sits on the same
+filesystem as `/`, which is when the mark raises an event for every write on the
+machine; failures to inspect or mark a root are reported even when other roots
+succeed. Missing roots are skipped.
 
 The daemon filters delivered file events before queueing them for analysis.
 `csm_fanotify_events_total`, `csm_fanotify_events_admitted_total`, and
