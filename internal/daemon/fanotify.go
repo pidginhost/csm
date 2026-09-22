@@ -179,6 +179,11 @@ type FileMonitor struct {
 	pipeFds    [2]int // [0]=read, [1]=write
 	pipeClosed int32  // atomic flag: 1 = pipe fds closed by drainAndClose
 
+	// drainDeadline is the unix-nano instant after which analyzer workers
+	// stop scanning queued events and only release them. Zero until the
+	// shutdown drain arms it.
+	drainDeadline atomic.Int64
+
 	// C2 - sync.Once for safe Stop
 	stopOnce  sync.Once
 	drainOnce sync.Once
@@ -272,6 +277,13 @@ const (
 	// without ever overflowing. Memory cost is bounded (fileEvent is a
 	// path string + fd + pid, ~40 bytes each, so <1 MiB at full buffer).
 	analyzerChBufferSize = 16384
+
+	// analyzerDrainBudget bounds how long the analyzer pool keeps scanning
+	// queued events after shutdown starts. The queue is deep on purpose, so
+	// a host that is saturated at SIGTERM has thousands of events left; the
+	// unit gives the daemon 90 seconds in total, and draining that backlog
+	// to completion spent all of it and ended in SIGKILL.
+	analyzerDrainBudget = 15 * time.Second
 
 	// eagerReconcileDropThreshold triggers an out-of-cycle reconcile
 	// when sustained drops cross this count within a single minute tick.
@@ -731,6 +743,7 @@ func (fm *FileMonitor) reportQueueOverflow() {
 // C1 - ensures no fd leak on shutdown.
 func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
+		fm.drainDeadline.Store(time.Now().Add(analyzerDrainBudget).UnixNano())
 		close(fm.analyzerCh)
 		fm.wg.Wait()
 		fm.discardReconcilePending()
@@ -980,12 +993,27 @@ var credentialLogNames = map[string]bool{
 
 // analyzerWorker processes file events from the bounded channel.
 // C1 - on channel close, drains remaining events and closes their fds.
+// Past the shutdown drain budget the remaining events are released without
+// being scanned: their files are still covered by the next scheduled deep
+// scan, while a backlog scanned to completion costs the daemon its whole
+// stop timeout and ends in SIGKILL.
 func (fm *FileMonitor) analyzerWorker() {
 	defer fm.wg.Done()
 	for event := range fm.analyzerCh {
+		if fm.drainBudgetSpent(time.Now()) {
+			event.queueTicket.Reject(time.Now())
+			_ = unix.Close(event.fd)
+			continue
+		}
 		fm.analyzeFileSafe(event)
 		_ = unix.Close(event.fd)
 	}
+}
+
+// drainBudgetSpent reports whether the shutdown drain has run out of time.
+func (fm *FileMonitor) drainBudgetSpent(now time.Time) bool {
+	deadline := fm.drainDeadline.Load()
+	return deadline != 0 && now.UnixNano() >= deadline
 }
 
 // fileAnalyzer analyzes one queued event. Var so tests can substitute a
