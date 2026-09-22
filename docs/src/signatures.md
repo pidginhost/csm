@@ -61,6 +61,8 @@ must contain, compared without regard to case: for `eval\s*\(\s*base64_decode`
 that is both `eval` and `base64_decode`. Write regexes around distinctive words
 such as function names: a regex with no fixed text of two or more characters
 runs over every file of its types, and realtime pays that cost on each write.
+Required text can include escaped bytes such as `\x00`; these remain part of
+the literal when checking whether a file could match.
 
 When a regex includes a literal listed in `patterns`, the same content can
 satisfy both entries. Use independent entries when a rule needs multiple pieces

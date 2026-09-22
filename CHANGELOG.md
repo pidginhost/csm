@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Custom signature rules no longer lose required-text checks when matching binary content, avoiding unnecessary pattern evaluations.
 - Real-time signature scanning costs a fraction of the CPU it did. Each rule pattern now runs only on files containing text it cannot match without, and a pattern shared by several rules runs once per file; what matches is unchanged.
 - Judging an executable written to a temporary directory no longer walks the process tree when nothing about the host could lower the severity. On a server with no package transaction running and no control panel installed, the walk was pure cost on every such write.
 - Process ancestry is available before file monitoring starts, including on hosts without kernel monitoring. Starting the optional process cache no longer races with ancestry readers.

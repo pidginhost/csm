@@ -34,6 +34,8 @@ func TestGateForExtractsRequiredLiterals(t *testing.T) {
 		{"escaped metacharacters are literal", `(?i)wp-config\.php`, [][]string{{"wp-config.php"}}},
 		{"empty-width assertions are ignored", `(?i)\beval\b`, [][]string{{"eval"}}},
 		{"repeated set is listed once", `(?i)eval.*eval`, [][]string{{"eval"}}},
+		{"reordered alternatives are listed once", `(?i)(?:aa|bb).*(?:bb|aa)`, [][]string{{"aa", "bb"}}},
+		{"embedded separators keep distinct sets", `(?i)(?:aa|bb\x00cc).*(?:aa\x00bb|cc)`, [][]string{{"aa", "bb\x00cc"}, {"aa\x00bb", "cc"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -88,6 +90,29 @@ func TestGateAdmits(t *testing.T) {
 	}
 	if !regexGate(nil).admits("anything", map[string]bool{}) {
 		t.Fatal("an empty gate must admit every input")
+	}
+}
+
+func TestGateKeepsLiteralContainingSetSeparator(t *testing.T) {
+	src := `(?i)(?:aa|bb).*aa\x00bb`
+	cr := &compiledRegex{Regexp: regexp.MustCompile(src), gate: gateFor(src)}
+	for _, tt := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"missing required literal", "aa", false},
+		{"complete match", "BBAA\x00BB", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			content := []byte(tt.content)
+			if got := cr.Match(content); got != tt.want {
+				t.Fatalf("invalid witness: regexp match = %t, want %t", got, tt.want)
+			}
+			if got := cr.gate.admits(foldForGate(content), map[string]bool{}); got != tt.want {
+				t.Fatalf("gate %q admits %q = %t, want %t", cr.gate, content, got, tt.want)
+			}
+		})
 	}
 }
 

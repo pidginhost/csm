@@ -3,7 +3,7 @@ package signatures
 import (
 	"regexp"
 	"regexp/syntax"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -43,24 +43,17 @@ func gateFor(src string) regexGate {
 		return nil
 	}
 	var gate regexGate
-	listed := map[string]bool{}
 	for _, set := range requiredSets(re) {
 		if shortest(set) < minGateLiteral {
 			continue
 		}
-		sort.Strings(set)
-		set = compactStrings(set)
-		key := strings.Join(set, "\x00")
-		if listed[key] {
-			continue
-		}
-		listed[key] = true
-		gate = append(gate, literalSet(set))
+		slices.Sort(set)
+		gate = append(gate, literalSet(slices.Compact(set)))
 	}
-	sort.Slice(gate, func(i, j int) bool {
-		return strings.Join(gate[i], "\x00") < strings.Join(gate[j], "\x00")
-	})
-	return gate
+	// Literals may contain any ASCII byte, so a joined string cannot
+	// distinguish a literal's bytes from separators between literals.
+	slices.SortFunc(gate, slices.Compare[literalSet])
+	return slices.CompactFunc(gate, slices.Equal[literalSet])
 }
 
 // requiredSets returns literal sets that every match of re satisfies, each
@@ -137,16 +130,6 @@ func shortest(lits []string) int {
 		n = min(n, len(lit))
 	}
 	return n
-}
-
-func compactStrings(sorted []string) []string {
-	out := sorted[:0]
-	for i, s := range sorted {
-		if i == 0 || s != sorted[i-1] {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // admits reports whether folded content holds a literal of every set.
