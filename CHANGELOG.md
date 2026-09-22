@@ -11,7 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
-- Rule-action refreshes recover after an empty startup or missing vendor rules, and pick up replacements that preserve timestamps or use linked files. A refresh that could not read every rule file is retried rather than cached.
+- Rule-action refreshes recover after an empty startup or missing vendor rules, and pick up replacements that preserve timestamps or use linked files. Transient read failures are retried, and rules appended during a refresh are picked up on the next check.
 - An unresponsive systemd notification socket no longer blocks daemon startup, status updates or shutdown indefinitely.
 - The rule-action registry no longer re-detects the web server and reparses every vendor rule file every few minutes. It checks the rule tree for changes first, and keeps re-detecting only while no rules have loaded, which is the case that self-heal exists for.
 - The daemon no longer hands systemd's notification socket to the commands it runs. Every one of those children could write to it, and systemd logged each attempt as a rejected notification from the wrong process.

@@ -58,7 +58,7 @@ func (r *Registry) Fingerprint() string {
 // .conf file, and returns a Registry mapping rule IDs
 // to actions. Read and parse errors are returned alongside the usable rules;
 // a vendor pack with one malformed file should not blank the whole registry,
-// but a refresh must not cache that incomplete build as unchanged.
+// but only builds that read every file in full can be cached as unchanged.
 //
 // Precedence: dirs is treated as most-specific-first. Within a single
 // directory, files are walked in lexical order and a duplicate rule ID

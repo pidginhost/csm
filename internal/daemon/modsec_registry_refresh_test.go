@@ -293,4 +293,16 @@ func TestModSecRefreshCachesDespiteAnUnparseableRuleFile(t *testing.T) {
 	if action, _ := modsec.Global().Action(210710); action != "pass" {
 		t.Fatalf("rules from the readable files were lost: action=%q", action)
 	}
+
+	if err := os.WriteFile(filepath.Join(dir, "oversized.conf"), []byte(`SecRule ARGS "@rx x" "id:99,deny"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.refreshModSecRegistry()
+	d.refreshModSecRegistry()
+	if probe.builds != 2 {
+		t.Fatalf("repaired rule file did not rebuild once then cache: builds=%d", probe.builds)
+	}
+	if action, _ := modsec.Global().Action(99); action != "deny" {
+		t.Fatalf("repaired rule file was not loaded: action=%q", action)
+	}
 }

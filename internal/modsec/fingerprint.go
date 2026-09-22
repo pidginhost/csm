@@ -55,15 +55,37 @@ func RuleTreeFingerprint(dirs []string) (string, bool) {
 // Hash the same stream the consumer reads so a concurrent rewrite cannot
 // associate parsed actions with a fingerprint of different file contents.
 func readRuleFile(path string, consume func(io.Reader) error) ([]byte, error) {
-	// #nosec G304 -- path comes from the operator's ModSec rule directories.
-	f, err := os.Open(path)
+	f, err := openRuleFile(path)
 	if err != nil {
 		return nil, err
 	}
 	digest := sha256.New()
-	readErr := consume(io.TeeReader(f, digest))
+	readErr := consume(&ruleFileReader{reader: io.TeeReader(f, digest)})
 	if err := errors.Join(readErr, f.Close()); err != nil {
 		return nil, err
 	}
 	return digest.Sum(nil), nil
+}
+
+// Tests inject read failures and appends at EOF through the file boundary.
+var openRuleFile = func(path string) (io.ReadCloser, error) {
+	// #nosec G304 -- path comes from the operator's ModSec rule directories.
+	return os.Open(path)
+}
+
+// The parser and drain share one terminal result. Retrying an I/O error
+// would misclassify an incomplete parse as cacheable. Reading past EOF
+// could hash a concurrent append that the parser never saw.
+type ruleFileReader struct {
+	reader io.Reader
+	err    error
+}
+
+func (r *ruleFileReader) Read(p []byte) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	var n int
+	n, r.err = r.reader.Read(p)
+	return n, r.err
 }
