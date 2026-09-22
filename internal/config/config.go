@@ -612,8 +612,8 @@ type Config struct {
 		AdminOverlapTrustedDomains []string `yaml:"admin_overlap_trusted_domains"`
 
 		// RescanOnSignatureUpdate fires a forced full-tree deep
-		// scan the next time any file under cfg.Signatures.RulesDir
-		// has its mtime advance. Tri-state *bool: nil = default-on,
+		// scan the next time the content of any file under
+		// cfg.Signatures.RulesDir changes. Tri-state *bool: nil = default-on,
 		// *true = explicit on, *false = explicit off. Off means the
 		// existing behaviour (deep-tier runs against the fanotify
 		// short-list when fanotify is active) is unchanged; new

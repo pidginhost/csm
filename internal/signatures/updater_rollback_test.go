@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rulesYAML builds a syntactically valid rules file with n distinct rules at
@@ -123,5 +124,35 @@ func TestUpdateReplacesUnparsableInstalledRules(t *testing.T) {
 
 	if _, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex, UpdateOptions{}); err != nil {
 		t.Fatalf("recovery update refused: %v", err)
+	}
+}
+
+// Re-downloading the ruleset that is already installed must leave the file
+// alone. Rewriting it moves its mtime, and the daemon treats a changed rules
+// file as a reason to rescan every file on the host.
+func TestUpdateLeavesIdenticalRulesUntouched(t *testing.T) {
+	rulesDir := t.TempDir()
+	installed := rulesYAML(7, 20)
+	installRules(t, rulesDir, installed)
+	path := filepath.Join(rulesDir, "malware.yml")
+	old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	pubHex := serveSignedRules(t, installed)
+
+	n, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex, UpdateOptions{})
+	if err != nil {
+		t.Fatalf("update with the installed ruleset failed: %v", err)
+	}
+	if n != 20 {
+		t.Fatalf("Update returned %d rules, want 20", n)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(old) {
+		t.Fatalf("identical ruleset was rewritten: mtime %v, want %v", info.ModTime(), old)
 	}
 }

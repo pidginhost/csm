@@ -90,31 +90,27 @@ func TestSigWatchFirstTickIsBaselineOnly(t *testing.T) {
 
 	_ = w
 	// The persisted map should now have both files.
-	persisted, err := sdb.GetSignatureMtimes()
+	persisted, err := sdb.GetSignatureFiles()
 	if err != nil {
-		t.Fatalf("GetSignatureMtimes: %v", err)
+		t.Fatalf("GetSignatureFiles: %v", err)
 	}
 	if len(persisted) != 2 {
 		t.Errorf("persisted = %d entries, want 2", len(persisted))
 	}
 }
 
-// --- mtime advance arms the flag ------------------------------------------
+// --- A content change arms the flag ---------------------------------------
 
-func TestSigWatchMtimeAdvanceArmsRescan(t *testing.T) {
+func TestSigWatchContentChangeArmsRescan(t *testing.T) {
 	w, rulesDir, alertCh, flag, _, _ := newWatcherForTest(t)
 
-	path := writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick() // baseline
 	if flag.Load() {
 		t.Fatalf("flag set after baseline tick")
 	}
 
-	// Advance mtime and re-tick.
-	newer := time.Now().Add(-time.Hour)
-	if err := os.Chtimes(path, newer, newer); err != nil {
-		t.Fatalf("Chtimes: %v", err)
-	}
+	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
 	w.tick()
 
 	if !flag.Load() {
@@ -129,23 +125,109 @@ func TestSigWatchMtimeAdvanceArmsRescan(t *testing.T) {
 	}
 }
 
-// --- Backwards mtime motion is also a change ------------------------------
+// --- A change carrying an older mtime is still a change ------------------
 
 func TestSigWatchBackwardsMtimeArmsRescan(t *testing.T) {
 	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
 
-	path := writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
+	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
 	w.tick()
 	flag.Store(false)
 
-	// Backwards motion: someone restored from a backup.
-	older := time.Now().Add(-2 * time.Hour)
-	if err := os.Chtimes(path, older, older); err != nil {
-		t.Fatalf("Chtimes: %v", err)
-	}
+	// Someone restored an older ruleset from a backup, mtime and all.
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick()
 	if !flag.Load() {
-		t.Error("backwards mtime advance did not arm rescan")
+		t.Error("restored older ruleset did not arm rescan")
+	}
+}
+
+// --- A rewrite with identical content is not a change ---------------------
+
+// Package upgrades and the rules updater rewrite files whose content has not
+// changed. Each rewrite moves the mtime, and each full rescan it would arm
+// reads every file on the host.
+func TestSigWatchIdenticalRewriteDoesNotArmRescan(t *testing.T) {
+	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
+	w.tick()
+
+	newer := time.Now().Add(-time.Hour).Truncate(time.Second)
+	path := writeRule(t, rulesDir, "malware.yml", "v1", newer)
+	w.tick()
+
+	if flag.Load() {
+		t.Error("rewriting identical content armed rescan")
+	}
+	if got := drainAlerts(alertCh); len(got) > 0 {
+		t.Errorf("rewriting identical content emitted %d alerts", len(got))
+	}
+	persisted, err := sdb.GetSignatureFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted[path].Mtime.Equal(newer) {
+		t.Errorf("persisted mtime = %v, want the rewrite's %v so the next tick does not hash again", persisted[path].Mtime, newer)
+	}
+}
+
+// --- State written before content hashes were tracked ---------------------
+
+// After an upgrade the store holds mtimes without hashes. A file whose mtime
+// still matches is the file that was recorded and must not arm; a file whose
+// mtime moved cannot be compared by content, so it arms as it always did.
+func TestSigWatchStateWithoutHashes(t *testing.T) {
+	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+
+	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	same := writeRule(t, rulesDir, "same.yml", "v1", stamp)
+	moved := writeRule(t, rulesDir, "moved.yml", "v1", time.Now().Add(-time.Hour))
+	if err := sdb.PutSignatureFiles(map[string]store.SignatureFileState{
+		same:  {Mtime: stamp, Size: -1},
+		moved: {Mtime: stamp, Size: -1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w.tick()
+	if !flag.Load() {
+		t.Fatal("file whose mtime moved since the hashless record did not arm rescan")
+	}
+
+	flag.Store(false)
+	if err := os.Remove(moved); err != nil {
+		t.Fatal(err)
+	}
+	writeRule(t, rulesDir, "same.yml", "v1", time.Now())
+	w.tick()
+	if flag.Load() {
+		t.Error("identical rewrite armed rescan; the hashless record was never completed")
+	}
+}
+
+// --- Unchanged state is not rewritten -------------------------------------
+
+// The watcher ticks every minute. Committing an unchanged map to bbolt each
+// time is a synced write for nothing.
+func TestSigWatchDoesNotRewriteUnchangedState(t *testing.T) {
+	w, rulesDir, _, _, _, sdb := newWatcherForTest(t)
+
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
+	w.tick()
+
+	sentinel := map[string]store.SignatureFileState{"/sentinel.yml": {Mtime: time.Unix(1, 0), Size: 1}}
+	if err := sdb.PutSignatureFiles(sentinel); err != nil {
+		t.Fatal(err)
+	}
+	w.tick()
+
+	persisted, err := sdb.GetSignatureFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := persisted["/sentinel.yml"]; !ok || len(persisted) != 1 {
+		t.Errorf("unchanged tick rewrote the persisted state: %v", persisted)
 	}
 }
 
@@ -167,7 +249,7 @@ func TestSigWatchRemovedFileDoesNotArmRescan(t *testing.T) {
 	if flag.Load() {
 		t.Error("removing a file armed rescan; should be silent per spec")
 	}
-	persisted, _ := sdb.GetSignatureMtimes()
+	persisted, _ := sdb.GetSignatureFiles()
 	if _, still := persisted[path]; still {
 		t.Errorf("removed file still in persisted mtime map")
 	}
@@ -206,22 +288,15 @@ func TestSigWatchTracksSubdirectories(t *testing.T) {
 	if err := os.MkdirAll(sub, 0755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	path := filepath.Join(sub, "core.yar")
-	if err := os.WriteFile(path, []byte("rule a {}"), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	old := time.Now().Add(-2 * time.Hour)
-	_ = os.Chtimes(path, old, old)
-
+	writeRule(t, sub, "core.yar", "rule a {}", time.Now().Add(-2*time.Hour))
 	w.tick() // baseline
 	flag.Store(false)
 
-	newer := time.Now().Add(-time.Hour)
-	_ = os.Chtimes(path, newer, newer)
+	writeRule(t, sub, "core.yar", "rule b {}", time.Now().Add(-time.Hour))
 	w.tick()
 
 	if !flag.Load() {
-		t.Error("mtime advance under a subdirectory did not arm rescan")
+		t.Error("changed rules under a subdirectory did not arm rescan")
 	}
 }
 
@@ -256,16 +331,15 @@ func TestSigWatchRestartDoesNotPhantomRescan(t *testing.T) {
 func TestSigWatchIgnoresUntrackedExtensions(t *testing.T) {
 	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
 
-	// Create files with extensions outside the tracked set; mtime
-	// changes on these should never arm the flag.
-	junkPath := writeRule(t, rulesDir, "README.md", "docs", time.Now().Add(-2*time.Hour))
-	scriptPath := writeRule(t, rulesDir, "update.sh", "#!/bin/sh", time.Now().Add(-2*time.Hour))
+	// Create files with extensions outside the tracked set; changes to
+	// these should never arm the flag.
+	writeRule(t, rulesDir, "README.md", "docs", time.Now().Add(-2*time.Hour))
+	writeRule(t, rulesDir, "update.sh", "#!/bin/sh", time.Now().Add(-2*time.Hour))
 
 	w.tick()
 
-	newer := time.Now().Add(-time.Hour)
-	_ = os.Chtimes(junkPath, newer, newer)
-	_ = os.Chtimes(scriptPath, newer, newer)
+	writeRule(t, rulesDir, "README.md", "docs v2", time.Now().Add(-time.Hour))
+	writeRule(t, rulesDir, "update.sh", "#!/bin/sh\nexit 0", time.Now().Add(-time.Hour))
 	w.tick()
 
 	if flag.Load() {
@@ -322,7 +396,7 @@ func TestSigWatchKillSwitchSilencesTick(t *testing.T) {
 	if got := drainAlerts(alertCh); len(got) > 0 {
 		t.Errorf("disabled watcher emitted alerts: %v", got)
 	}
-	persisted, _ := sdb.GetSignatureMtimes()
+	persisted, _ := sdb.GetSignatureFiles()
 	if len(persisted) != 0 {
 		t.Errorf("disabled watcher persisted %d entries, want 0", len(persisted))
 	}
@@ -364,10 +438,10 @@ func TestSigWatchHotReloadOfRulesDirIsHonored(t *testing.T) {
 	if flag.Load() {
 		t.Fatal("first observation of new file under newDir armed rescan")
 	}
-	_ = os.Chtimes(newFile, time.Now().Add(time.Minute), time.Now().Add(time.Minute))
+	writeRule(t, newDir, filepath.Base(newFile), "v2", time.Now().Add(time.Minute))
 	w.tick()
 	if !flag.Load() {
-		t.Error("mtime advance under newDir did not arm rescan after hot-reload")
+		t.Error("changed rules under newDir did not arm rescan after hot-reload")
 	}
 }
 
@@ -406,12 +480,12 @@ func TestSigWatchLazyStoreRecoversOnceAvailable(t *testing.T) {
 	defer func() { _ = sdb.Close() }()
 
 	w.tick()
-	persisted, err := sdb.GetSignatureMtimes()
+	persisted, err := sdb.GetSignatureFiles()
 	if err != nil {
-		t.Fatalf("GetSignatureMtimes: %v", err)
+		t.Fatalf("GetSignatureFiles: %v", err)
 	}
 	if len(persisted) == 0 {
-		t.Error("store became available but watcher never persisted mtimes")
+		t.Error("store became available but watcher never persisted its state")
 	}
 }
 
@@ -420,16 +494,15 @@ func TestSigWatchLazyStoreRecoversOnceAvailable(t *testing.T) {
 func TestSigWatchCoalescesMultipleChangesIntoOneFlagOnePerFile(t *testing.T) {
 	w, rulesDir, alertCh, flag, _, _ := newWatcherForTest(t)
 
-	a := writeRule(t, rulesDir, "a.yml", "v1", time.Now().Add(-2*time.Hour))
-	b := writeRule(t, rulesDir, "b.yar", "v1", time.Now().Add(-2*time.Hour))
-	c := writeRule(t, rulesDir, "c.yaml", "v1", time.Now().Add(-2*time.Hour))
+	for _, name := range []string{"a.yml", "b.yar", "c.yaml"} {
+		writeRule(t, rulesDir, name, "v1", time.Now().Add(-2*time.Hour))
+	}
 	w.tick()
 	flag.Store(false)
 
-	newer := time.Now().Add(-time.Hour)
-	_ = os.Chtimes(a, newer, newer)
-	_ = os.Chtimes(b, newer, newer)
-	_ = os.Chtimes(c, newer, newer)
+	for _, name := range []string{"a.yml", "b.yar", "c.yaml"} {
+		writeRule(t, rulesDir, name, "v2", time.Now().Add(-time.Hour))
+	}
 	w.tick()
 
 	if !flag.Load() {

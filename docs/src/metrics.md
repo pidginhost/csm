@@ -366,9 +366,11 @@ All series are prefixed `csm_php_relay_`. Registered when `email_protection.php_
 ### Signature retroactive rescans
 
 - `csm_signature_rescans_total` (counter): full deep-tier sweeps
-  completed because a signature file's mtime advanced. Steady-state
-  zero on hosts that don't auto-update rules; ticks once per
-  `update-rules` invocation otherwise.
+  completed because a signature file's content changed. Steady-state
+  zero on hosts that don't auto-update rules; ticks once per update
+  that installs different rules otherwise. Re-installing identical
+  rules, as a package upgrade or a repeated download does, does not
+  count.
 
 ## Counter reset semantics
 

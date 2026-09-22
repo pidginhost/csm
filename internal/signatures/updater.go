@@ -1,6 +1,7 @@
 package signatures
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -77,6 +78,12 @@ func Update(rulesDir, url, signingKey string, options UpdateOptions) (int, error
 	}
 
 	destPath := filepath.Join(rulesDir, "malware.yml")
+	// The daemon rescans every file on the host when a rules file changes on
+	// disk, so re-downloading the installed ruleset must not rewrite it.
+	// #nosec G304 -- destPath is under the operator-configured rules dir.
+	if installed, err := os.ReadFile(destPath); err == nil && bytes.Equal(installed, data) {
+		return len(rf.Rules), nil
+	}
 	if err := refuseRollback(destPath, rf, options.AllowRuleCountDecrease); err != nil {
 		return 0, err
 	}

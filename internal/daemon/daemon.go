@@ -132,7 +132,7 @@ type Daemon struct {
 	phpTaintSup *phptaintworker.Supervisor
 
 	// forceFullRescan is armed by the signature watcher
-	// (sig_watch.go) when any tracked rule file's mtime advances.
+	// (sig_watch.go) when any tracked rule file's content changes.
 	// The deep-tier scheduler reads + clears the flag at the start
 	// of each tick; when set, the tick bypasses the fanotify
 	// short-list and runs the full account tree against the new
@@ -1058,8 +1058,8 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("signature-updater", d.signatureUpdater)
 
-	// Start signature mtime watcher: arms forceFullRescan when any
-	// rule file's mtime advances. Disabled wholesale via
+	// Start signature watcher: arms forceFullRescan when any rule
+	// file's content changes. Disabled wholesale via
 	// detection.rescan_on_signature_update: false.
 	d.wg.Add(1)
 	obs.Go("signature-watcher", d.signatureWatcher)
@@ -1825,7 +1825,7 @@ func (d *Daemon) deepScanner() {
 			// If fanotify is NOT active, run the full deep tier.
 			//
 			// One exception: forceFullRescan is armed by the
-			// signature watcher when any rule file's mtime advances.
+			// signature watcher when any rule file's content changes.
 			// In that case we bypass the fanotify short-list so the
 			// new ruleset gets a full sweep against existing files;
 			// without this, only files that change AFTER the rule
