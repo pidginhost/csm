@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,24 +200,39 @@ func TestModSecRefreshRebuildsAfterMetadataPreservingReplacement(t *testing.T) {
 	}
 }
 
+// A build that could not read every rule file describes an unknown tree, so
+// it must not be cached: the next refresh has to look again, and only a build
+// that read everything ends the retries.
 func TestModSecRefreshRetriesIncompleteBuild(t *testing.T) {
 	installModSecRegistryForTest(t, map[int]string{1: "deny"})
-	probe := &modsecRefreshProbe{dirs: []string{modsecRuleDir(t, modsecTestRule)}}
-	probe.install(t)
-	build := modsecBuildRegistry
-	modsecBuildRegistry = func(dirs []string) (*modsec.Registry, error) {
-		reg, err := build(dirs)
-		if probe.builds == 1 {
-			return reg, errors.New("transient rule read failure")
-		}
-		return reg, err
+	dir := modsecRuleDir(t, modsecTestRule)
+	broken := filepath.Join(dir, "broken.conf")
+	if err := os.Symlink(filepath.Join(dir, "absent"), broken); err != nil {
+		t.Fatal(err)
 	}
+	probe := &modsecRefreshProbe{dirs: []string{dir}}
+	probe.install(t)
 	d := &Daemon{}
-	d.refreshModSecRegistry()
+
 	d.refreshModSecRegistry()
 	d.refreshModSecRegistry()
 	if probe.builds != 2 {
-		t.Fatalf("incomplete build was cached: builds=%d, want retry then cache", probe.builds)
+		t.Fatalf("incomplete build was cached: builds=%d, want one per refresh", probe.builds)
+	}
+
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(broken, []byte(strings.ReplaceAll(modsecTestRule, "210710", "214930")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.refreshModSecRegistry()
+	d.refreshModSecRegistry()
+	if probe.builds != 3 {
+		t.Fatalf("complete build was not cached: builds=%d, want 3", probe.builds)
+	}
+	if action, _ := modsec.Global().Action(214930); action != "pass" {
+		t.Fatalf("recovered file's rules were not loaded: action=%q", action)
 	}
 }
 
@@ -252,5 +266,31 @@ func TestModSecRefreshDoesNotCacheRulesFromATransientRewrite(t *testing.T) {
 	}
 	if probe.builds != 2 {
 		t.Fatalf("transient rewrite must rebuild once: builds=%d", probe.builds)
+	}
+}
+
+// A vendor file the parser cannot read to the end -- past the line ceiling,
+// truncated mid-rule -- is stable content. Rebuilding it every five minutes
+// produces the same registry and the same error, so it must not defeat the
+// cache the way an unread file does.
+func TestModSecRefreshCachesDespiteAnUnparseableRuleFile(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{1: "deny"})
+	dir := modsecRuleDir(t, modsecTestRule)
+	body := `SecRule ARGS "@rx ` + strings.Repeat("A", 9<<20) + `" "id:99,deny"`
+	if err := os.WriteFile(filepath.Join(dir, "oversized.conf"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	probe := &modsecRefreshProbe{dirs: []string{dir}}
+	probe.install(t)
+	d := &Daemon{}
+
+	d.refreshModSecRegistry()
+	d.refreshModSecRegistry()
+
+	if probe.builds != 1 {
+		t.Fatalf("rule tree parsed %d times with a stable unparseable file, want 1", probe.builds)
+	}
+	if action, _ := modsec.Global().Action(210710); action != "pass" {
+		t.Fatalf("rules from the readable files were lost: action=%q", action)
 	}
 }

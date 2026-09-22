@@ -71,7 +71,12 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 	actions := make(map[int]string)
 	claimed := make(map[int]struct{})
 	digest := sha256.New()
-	var buildErr error
+	// Read failures and parse failures are not the same for caching. Bytes
+	// that could not be read leave the tree unknown, so the build must not be
+	// cached. A file that was read in full but cannot be parsed -- a vendor
+	// file past the line ceiling, a truncated rule -- produces the same
+	// result on every pass, so it must not force a reparse every refresh.
+	var readErr, parseErr error
 	for _, dir := range dirs {
 		if dir == "" {
 			continue
@@ -81,13 +86,21 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 		fmt.Fprintf(digest, "dir:%q\n", dir)
 		walkErr := walkRuleFiles(dir, func(path string) error {
 			var rules []Rule
+			var fileParseErr error
 			fileDigest, err := readRuleFile(path, func(reader io.Reader) error {
-				var parseErr error
-				rules, parseErr = parseRules(reader)
-				return parseErr
+				rules, fileParseErr = parseRules(reader)
+				// Read the rest even when the parser stopped early, so the
+				// digest always describes the whole file and matches what
+				// RuleTreeFingerprint computes for the same tree.
+				_, drainErr := io.Copy(io.Discard, reader)
+				return drainErr
 			})
-			if err == nil {
-				fmt.Fprintf(digest, "file:%q:%x\n", path, fileDigest)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(digest, "file:%q:%x\n", path, fileDigest)
+			if fileParseErr != nil {
+				parseErr = errors.Join(parseErr, fmt.Errorf("%s: %w", path, fileParseErr))
 			}
 			for _, r := range rules {
 				perDirClaimed[r.ID] = struct{}{}
@@ -97,7 +110,7 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 					delete(perDirActions, r.ID)
 				}
 			}
-			return err
+			return nil
 		})
 		// Promote the per-directory map into the global map only for IDs
 		// that no earlier (more-specific) directory has already claimed.
@@ -111,13 +124,13 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 				actions[id] = action
 			}
 		}
-		buildErr = errors.Join(buildErr, walkErr)
+		readErr = errors.Join(readErr, walkErr)
 	}
 	reg := &Registry{actions: actions}
-	if buildErr == nil {
+	if readErr == nil {
 		reg.fingerprint = hex.EncodeToString(digest.Sum(nil))
 	}
-	return reg, buildErr
+	return reg, errors.Join(readErr, parseErr)
 }
 
 // Both the parser and fingerprint must see the same paths and precedence.

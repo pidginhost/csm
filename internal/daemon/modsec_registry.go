@@ -83,6 +83,9 @@ func (d *Daemon) refreshModSecRegistry() {
 		csmlog.Warn("modsec rule-action registry build had errors", "err", err, "rules_loaded", reg.Len())
 	}
 	state.loaded = reg.Len() > 0
+	// An empty fingerprint means the build could not read every rule file, so
+	// the next refresh has to look again. A parse failure over bytes that were
+	// read in full keeps its fingerprint: reparsing them changes nothing.
 	state.fingerprint = ""
 	// ReplaceGlobal keeps a previously-healthy registry rather than blanking
 	// it to empty: the vendor rule tree is briefly empty during cPanel's
@@ -97,9 +100,7 @@ func (d *Daemon) refreshModSecRegistry() {
 			"previous_rules", previousRules, "dirs", len(state.dirs))
 		return
 	}
-	if err == nil {
-		state.fingerprint = reg.Fingerprint()
-	}
+	state.fingerprint = reg.Fingerprint()
 	csmlog.Info("modsec rule-action registry loaded", "rules", reg.Len(), "dirs", len(state.dirs))
 }
 
