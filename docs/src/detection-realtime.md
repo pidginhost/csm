@@ -17,7 +17,18 @@ filesystem as `/`, which is when the mark raises an event for every write on the
 machine; failures to inspect or mark a root are reported even when other roots
 succeed. Missing roots are skipped.
 
-The daemon filters delivered file events before queueing them for analysis.
+The daemon filters delivered file events before queueing them for analysis. In
+the shared temporary trees (`/tmp`, `/var/tmp`, `/dev/shm`) that decision uses
+the event descriptor. Non-directory objects with executable permission bits are
+queued, as are watched user crontabs, PHP source, configuration files such as
+`.htaccess`, `.user.ini` or `php.ini`, known webshell names, files under `.config`
+directories, and images inside hosted trees. Writes needed for self-deleting-file
+tracking are also queued. Other writes are dropped without analysis.
+Files retained for tracking keep their normal analyzer route,
+including suppression and WordPress checksum checks. Staging names written by an
+atomic save are resolved first, so a configuration file saved through one is
+still analysed. A descriptor that cannot be inspected is analysed rather than
+skipped.
 `csm_fanotify_events_total`, `csm_fanotify_events_admitted_total`, and
 `csm_fanotify_events_dropped_total` distinguish completed admission decisions,
 queued events, and events lost to a full analyzer queue. Subtract both admitted

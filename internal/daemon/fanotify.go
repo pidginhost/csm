@@ -981,8 +981,14 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	// no path-only content signal.
 	fm.invalidateDropperPHPHandlerCache(path)
 	contentInteresting := fm.isInteresting(path)
+	// Filtering must not reroute writes retained for dropper tracking: the
+	// dropper-only path bypasses normal suppressions and checksum verification.
+	contentNeedsAnalysis := contentInteresting
+	if contentInteresting && underTempRoot(path) {
+		contentNeedsAnalysis = fm.tempRootEventNeedsAnalysis(path, fd)
+	}
 	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)
-	if !contentInteresting && !dropperInteresting {
+	if !contentNeedsAnalysis && !dropperInteresting {
 		_ = unix.Close(fd)
 		return
 	}
@@ -1110,15 +1116,15 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// Executables in /tmp or /dev/shm
-	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") || strings.HasPrefix(path, "/var/tmp/") {
+	// Writes in the shared temporary trees. The path alone cannot say whether
+	// one carries signal; the reader decides that from the event descriptor in
+	// tempRootEventNeedsAnalysis.
+	if underTempRoot(path) {
 		return true
 	}
 
 	// PHP in sensitive directories that should never contain PHP
-	if (strings.Contains(path, "/.ssh/") || strings.Contains(path, "/.cpanel/") ||
-		strings.Contains(path, "/mail/") || strings.Contains(path, "/.gnupg/") ||
-		strings.Contains(path, "/.cagefs/")) && isPHPExtension(strings.ToLower(filepath.Base(path))) {
+	if inSensitivePHPDir(path) && isPHPExtension(strings.ToLower(filepath.Base(path))) {
 		return true
 	}
 
@@ -1163,6 +1169,68 @@ func pathMatchesWebRootPatterns(path string, patterns []string) bool {
 		}
 		dir = parent
 	}
+}
+
+// tempRootPrefixes are the shared temporary trees. Anything may be written
+// there by anyone, so they are watched, but most of what lands there carries no
+// signal any detector acts on.
+var tempRootPrefixes = []string{"/tmp/", "/dev/shm/", "/var/tmp/"}
+
+// underTempRoot reports whether path is inside one of those trees.
+func underTempRoot(path string) bool {
+	for _, prefix := range tempRootPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// sensitivePHPDirs are directories that should never contain PHP, so a PHP
+// file in one is reported wherever the directory itself lives.
+var sensitivePHPDirs = []string{"/.ssh/", "/.cpanel/", "/mail/", "/.gnupg/", "/.cagefs/"}
+
+func inSensitivePHPDir(path string) bool {
+	for _, dir := range sensitivePHPDirs {
+		if strings.Contains(path, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// tempRootEventNeedsAnalysis decides from the descriptor the reader already
+// holds whether a write under a temp root can produce a finding. The analyzer
+// reaches the same verdict, but only after the event has taken a queue slot, a
+// descriptor and a worker wake-up. Every branch here mirrors a check the
+// analyzer runs before or inside its own temp-root branch; an event this
+// rejects is one the analyzer would have returned on without reporting.
+//
+// A descriptor it cannot stat is admitted: losing the mode is not a reason to
+// stop looking at a file.
+func (fm *FileMonitor) tempRootEventNeedsAnalysis(path string, fd int) bool {
+	// Judge the file the write is producing, not the staging name it is being
+	// written under: an editor saving .htaccess writes .temp.1..htaccess first,
+	// and both isInteresting and the analyzer resolve that before deciding.
+	content := atomicWriteContentPath(path)
+	lower := strings.ToLower(content)
+	name := filepath.Base(lower)
+	switch {
+	case strings.HasPrefix(path, cronSpoolDir()+"/"),
+		isPHPSourceExtension(name),
+		name == ".htaccess", name == ".user.ini", name == "php.ini",
+		knownWebshells[name],
+		strings.HasSuffix(lower, ".haxor"), strings.HasSuffix(lower, ".cgix"),
+		strings.Contains(content, "/.config/"),
+		isPHPExtension(name) && inSensitivePHPDir(content),
+		contenttype.IsImageExt(filepath.Ext(lower)) && fm.underAccountOrConfiguredDocRoot(content):
+		return true
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return true
+	}
+	return st.Mode&unix.S_IFMT != unix.S_IFDIR && st.Mode&0o111 != 0
 }
 
 // credentialLogNames are filenames commonly used by phishing kits to store
@@ -1470,7 +1538,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// Location-based severity escalation: PHP in dirs that should NEVER have PHP
 	if isPHPExtension(nameLower) {
-		for _, sensitive := range []string{"/.ssh/", "/.cpanel/", "/mail/", "/.gnupg/", "/.cagefs/"} {
+		for _, sensitive := range sensitivePHPDirs {
 			if strings.Contains(path, sensitive) {
 				fm.sendAlertWithPath(alert.Critical, "php_in_sensitive_dir_realtime",
 					fmt.Sprintf("PHP file in critical directory: %s", path),
@@ -1540,7 +1608,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// Executables in /tmp or /dev/shm - detect dropped malware/miners
 	// Uses unix.Fstat on event fd for TOCTOU safety (attacker can't chmod -x after event)
-	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") || strings.HasPrefix(path, "/var/tmp/") {
+	if underTempRoot(path) {
 		var tmpStat unix.Stat_t
 		if err := unix.Fstat(event.fd, &tmpStat); err == nil {
 			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
