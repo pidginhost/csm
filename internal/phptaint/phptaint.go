@@ -278,7 +278,7 @@ func analyze(ctx context.Context, src []byte) Report {
 	if err := ctx.Err(); err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
-	if !isCandidate(src) {
+	if !IsCandidate(src) {
 		return Report{Status: StatusNotCandidate}
 	}
 	root, status, reason := parseSource(src)

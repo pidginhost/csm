@@ -142,8 +142,18 @@ func (s *Supervisor) Stop() error {
 }
 
 // Analyze runs one analysis in the worker. It never returns a status a caller
-// could read as clean unless the worker actually produced one.
+// could read as clean unless the worker actually produced one, or unless the
+// pre-filter the worker applies before parsing already rejects the content.
 func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
+	// The deep scan hands every file it reads to this analyzer, and the
+	// worker serves one request at a time. Content the pre-filter rejects
+	// needs no parser, so answering it here keeps images and plain text from
+	// queuing behind real analyses or forking a worker. Size and
+	// cancellation are the answers the worker path gives first, so they
+	// still take precedence.
+	if len(src) <= phptaint.MaxSourceBytes && ctx.Err() == nil && !phptaint.IsCandidate(src) {
+		return phptaint.Report{Status: phptaint.StatusNotCandidate}
+	}
 	work := s.health.begin()
 	completed := false
 	defer func() { work.finishCaller(completed) }()

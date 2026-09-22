@@ -63,10 +63,10 @@ func TestAnalyzePropagatesPartialParse(t *testing.T) {
 	}
 }
 
-// TestPreFilterGatesParsing pins down that isCandidate genuinely gates the
+// TestPreFilterGatesParsing pins down that IsCandidate genuinely gates the
 // parse step in Analyze. An earlier version had both branches of the
-// isCandidate check return StatusNotCandidate, so a regression making
-// isCandidate always report true would have passed every existing test
+// IsCandidate check return StatusNotCandidate, so a regression making
+// IsCandidate always report true would have passed every existing test
 // unnoticed. Now a candidate reaches the parser and yields a parse-derived
 // status instead.
 func TestPreFilterGatesParsing(t *testing.T) {
@@ -77,7 +77,7 @@ func TestPreFilterGatesParsing(t *testing.T) {
 	}
 
 	// Same broken syntax, but now with a source/sink keyword pair present so
-	// isCandidate admits it to the parser.
+	// IsCandidate admits it to the parser.
 	candidateBroken := []byte("<?php curl_exec($c); eval($d); function f( {")
 	rep = Analyze(context.Background(), candidateBroken)
 	if rep.Status != StatusParseError && rep.Status != StatusPartialParse {

@@ -1,8 +1,10 @@
 package phptaintworker
 
 import (
+	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -15,6 +17,17 @@ import (
 // helperChild lets a test stand in for the real `csm phptaint-worker`. Mode
 // picks the behaviour: a normal worker, one that hangs forever on the first
 // request, or one that exits immediately.
+// workerInput passes the pre-filter, so it reaches the worker. Content the
+// pre-filter rejects is answered without one.
+const workerInput = "<?php $p = curl_exec($c); eval($p);"
+
+// candidateOfSize pads workerInput to n bytes.
+func candidateOfSize(n int) []byte {
+	src := bytes.Repeat([]byte(" "), n)
+	copy(src, workerInput)
+	return src
+}
+
 func helperChild(t *testing.T, mode string) SupervisorConfig {
 	t.Helper()
 	return SupervisorConfig{
@@ -288,7 +301,7 @@ func TestSupervisorBoundsAWriteToAnUnresponsiveWorker(t *testing.T) {
 	defer func() { _ = s.Stop() }()
 
 	start := time.Now()
-	rep := s.Analyze(context.Background(), make([]byte, phptaint.MaxSourceBytes))
+	rep := s.Analyze(context.Background(), candidateOfSize(phptaint.MaxSourceBytes))
 	if rep.Status != phptaint.StatusTimeout {
 		t.Fatalf("status = %v (%s), want StatusTimeout", rep.Status, rep.Reason)
 	}
@@ -559,5 +572,48 @@ func TestSupervisorCancelledTrialDoesNotFreeASpawn(t *testing.T) {
 	}
 	if delta := s.SpawnCount() - spawns; delta > 1 {
 		t.Fatalf("cancelled requests spawned %d workers, want at most the one trial", delta)
+	}
+}
+
+// Content the pre-filter rejects is answered in this process. It never
+// starts, queues behind or waits for the worker, and a missing or stopped
+// worker is not a gap in its coverage: there was nothing to examine.
+func TestSupervisorAnswersNonCandidatesWithoutWorker(t *testing.T) {
+	s, err := NewSupervisor(SupervisorConfig{Command: filepath.Join(t.TempDir(), "missing-worker"), Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonCandidates := []string{"<?php echo 'safe';", "body { color: red }", "\x89PNG\r\n\x1a\n\x00\x00"}
+	for _, src := range nonCandidates {
+		if rep := s.Analyze(context.Background(), []byte(src)); rep.Status != phptaint.StatusNotCandidate {
+			t.Fatalf("non-candidate %q returned %s (%s)", src, rep.Status, rep.Reason)
+		}
+	}
+	if q := workerQueue(t, s, time.Now()); q.InFlight != 0 || q.Depth != 0 || q.DroppedTotal != 0 || s.SpawnCount() != 0 {
+		t.Fatalf("non-candidates reached the worker: %+v spawns=%d", q, s.SpawnCount())
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if rep := s.Analyze(context.Background(), []byte(nonCandidates[0])); rep.Status != phptaint.StatusNotCandidate {
+		t.Fatalf("stopped supervisor turned a non-candidate into %s", rep.Status)
+	}
+}
+
+// The in-process answer must not reorder the checks the worker path makes
+// first: an oversize source is still oversize and a withdrawn caller is
+// still canceled, whatever the content.
+func TestSupervisorNonCandidateKeepsSizeAndCancelOrder(t *testing.T) {
+	s, err := NewSupervisor(helperChild(t, "ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep := s.Analyze(context.Background(), make([]byte, phptaint.MaxSourceBytes+1)); rep.Status != phptaint.StatusOversize {
+		t.Fatalf("oversize non-candidate returned %s", rep.Status)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if rep := s.Analyze(ctx, []byte("<?php echo 'safe';")); rep.Status != phptaint.StatusCanceled {
+		t.Fatalf("canceled non-candidate returned %s", rep.Status)
 	}
 }
