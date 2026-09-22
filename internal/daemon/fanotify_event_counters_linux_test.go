@@ -5,6 +5,9 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -98,4 +101,113 @@ func TestEventCountersCountDroppedEventsAsDelivered(t *testing.T) {
 	event := <-fm.analyzerCh
 	_ = unix.Close(event.fd)
 	assertFDClosed(t, second, "event dropped by a full queue")
+}
+
+func TestEventCountersSnapshotDoesNotInventFilteredEvents(t *testing.T) {
+	fm := eventCounterMonitor(t)
+	dir := eventFilterDir(t)
+	fd := openEventFD(t, filepath.Join(dir, "shell.php"))
+	defer func() { _ = unix.Close(fd) }()
+	defer func() {
+		for len(fm.analyzerCh) > 0 {
+			_ = unix.Close((<-fm.analyzerCh).fd)
+		}
+	}()
+
+	const writers, events = 4, 250
+	var wg sync.WaitGroup
+	for range writers {
+		wg.Go(func() {
+			for range events {
+				dup, err := unix.Dup(fd)
+				if err != nil {
+					t.Errorf("dup: %v", err)
+					return
+				}
+				fm.handleEvent(dup, 0, FAN_CLOSE_WRITE)
+			}
+		})
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	var inconsistent *EventStats
+	for {
+		stats := fm.EventStats()
+		if stats.Filtered() != 0 && inconsistent == nil {
+			inconsistent = &stats
+		}
+		select {
+		case <-done:
+			if inconsistent != nil {
+				t.Errorf("only interesting events were delivered, but snapshot invented filtered events: %+v", *inconsistent)
+			}
+			stats = fm.EventStats()
+			if stats.Received != writers*events || stats.Admitted != 8 || stats.Dropped != writers*events-8 {
+				t.Fatalf("final event accounting: %+v", stats)
+			}
+			return
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func TestEventCountersKeepLifetimeDropsAfterMinuteReset(t *testing.T) {
+	fm := eventCounterMonitor(t)
+	fm.analyzerCh = make(chan fileEvent)
+	fd := openEventFD(t, filepath.Join(eventFilterDir(t), "shell.php"))
+	fm.handleEvent(fd, 0, FAN_CLOSE_WRITE)
+	if got := atomic.SwapInt64(&fm.droppedEvents, 0); got != 1 {
+		t.Fatalf("minute drops = %d, want 1", got)
+	}
+	stats := fm.EventStats()
+	if stats.Received != 1 || stats.Dropped != 1 || stats.Filtered() != 0 {
+		t.Fatalf("minute reset lost lifetime accounting: %+v", stats)
+	}
+}
+
+func TestEventCountersCountUnresolvableFDOnce(t *testing.T) {
+	fm := eventCounterMonitor(t)
+	fm.handleEvent(-1, 0, FAN_CLOSE_WRITE)
+	stats := fm.EventStats()
+	if stats.Received != 1 || stats.Admitted != 0 || stats.Dropped != 0 || stats.Filtered() != 1 {
+		t.Fatalf("unresolvable event accounting: %+v", stats)
+	}
+}
+
+func TestEventCountersCountDirectoryRejectionOnce(t *testing.T) {
+	fm := eventCounterMonitor(t)
+	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm.handleEvent(fd, 0, FAN_CLOSE_WRITE)
+	stats := fm.EventStats()
+	if stats.Received != 1 || stats.Admitted != 0 || stats.Dropped != 0 || stats.Filtered() != 1 {
+		t.Fatalf("directory event accounting: %+v", stats)
+	}
+	assertFDClosed(t, fd, "directory rejection")
+}
+
+func TestEventCountersIncludeDropperOnlyAdmission(t *testing.T) {
+	fm := eventCounterMonitor(t)
+	dir := eventFilterDir(t)
+	path := filepath.Join(dir, "executable.rst")
+	fd := openEventFD(t, path)
+	if err := os.Chmod(path, 0o700); err != nil {
+		_ = unix.Close(fd)
+		t.Fatal(err)
+	}
+	fm.dropper = &dropperEngine{}
+	fm.dropperDocroots.Store([]string{dir})
+	fm.handleEvent(fd, 0, FAN_CLOSE_WRITE)
+	stats := fm.EventStats()
+	if stats.Received != 1 || stats.Admitted != 1 || stats.Dropped != 0 || stats.Filtered() != 0 {
+		t.Fatalf("dropper-only event accounting: %+v", stats)
+	}
+	event := <-fm.analyzerCh
+	_ = unix.Close(event.fd)
+	if !event.dropperOnly {
+		t.Fatal("control event was admitted by the content filter")
+	}
 }

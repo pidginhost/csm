@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -34,6 +36,8 @@ func TestFanotifyRegisterMetricsExposesExpectedNames(t *testing.T) {
 	body := scrapeBody(t)
 
 	for _, name := range []string{
+		"csm_fanotify_events_total",
+		"csm_fanotify_events_admitted_total",
 		"csm_fanotify_queue_depth",
 		"csm_fanotify_events_dropped_total",
 		"csm_fanotify_reconcile_latency_seconds",
@@ -96,4 +100,29 @@ func readHistogramCount(body, name string) float64 {
 		return v
 	}
 	return 0
+}
+
+func TestFanotifyEventMetricsMatchAdmissionOutcomes(t *testing.T) {
+	fm := eventCounterMonitor(t)
+	fm.analyzerCh = make(chan fileEvent, 1)
+	fm.registerMetrics()
+	beforeReceived := fanotifyEventsTotal.Value()
+	beforeAdmitted := fanotifyEventsAdmittedTotal.Value()
+	beforeDropped := fanotifyDroppedTotal.Value()
+	dir := eventFilterDir(t)
+	for _, name := range []string{"first.php", "dropped.php", "filtered.rst"} {
+		fm.handleEvent(openEventFD(t, filepath.Join(dir, name)), 0, FAN_CLOSE_WRITE)
+	}
+	fm.handleEvent(-1, 0, FAN_CLOSE_WRITE)
+	event := <-fm.analyzerCh
+	_ = unix.Close(event.fd)
+	if got := fanotifyEventsTotal.Value() - beforeReceived; got != 4 {
+		t.Errorf("received metric delta = %g, want 4", got)
+	}
+	if got := fanotifyEventsAdmittedTotal.Value() - beforeAdmitted; got != 1 {
+		t.Errorf("admitted metric delta = %g, want 1", got)
+	}
+	if got := fanotifyDroppedTotal.Value() - beforeDropped; got != 1 {
+		t.Errorf("dropped metric delta = %g, want 1", got)
+	}
 }

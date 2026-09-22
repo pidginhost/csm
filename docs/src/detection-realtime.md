@@ -6,15 +6,21 @@ CSM detects threats in under 2 seconds using kernel and log watchers running ins
 
 Monitors the filesystems containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configured `account_roots`, and detected cPanel document roots.
 
-A mark covers a whole filesystem rather than the path it names, which is what
-makes writes inside CloudLinux CageFS bind mounts visible. Where several watch
-roots live on one filesystem, they are marked once, and where a watch root is
-not its own mount point, the daemon receives events for every write on that
-filesystem and discards the ones no detector wants. The startup log names the
-scope that was actually applied, including which roots share a mark and which
-reach past themselves. `csm_fanotify_events_total` and
-`csm_fanotify_events_admitted_total` show how much of the delivered traffic
-survives the path filter.
+A filesystem mark covers the whole filesystem, including all its bind mounts,
+which makes writes inside CloudLinux CageFS visible. Roots on that filesystem
+share one mark. A root being a mount point does not restrict a filesystem mark
+to that path: symlinks and bind mounts can name only a subtree. On kernels that
+fall back to mount scope, the mark covers the whole containing mount and misses
+writes through other bind mounts. The startup log describes these scopes and
+which roots share a filesystem mark; failures to inspect or mark a root are
+reported even when other roots succeed. Missing roots are skipped.
+
+The daemon filters delivered file events before queueing them for analysis.
+`csm_fanotify_events_total`, `csm_fanotify_events_admitted_total`, and
+`csm_fanotify_events_dropped_total` distinguish completed admission decisions,
+queued events, and events lost to a full analyzer queue. Subtract both admitted
+and dropped events from the received total to count events rejected before
+queue admission, including those whose file path could not be resolved.
 
 Atomic-save files enter the same bounded worker queue as ordinary writes.
 Where supported, create events inspect available content; close-write events inspect the
