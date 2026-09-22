@@ -17,6 +17,11 @@ type reconcileDirectory struct {
 	firstDrop time.Time
 	lastDrop  time.Time
 	ticket    queuehealth.Ticket
+
+	// Keep the original scan window and progress when a pass yields.
+	cutoff time.Time
+	after  string
+	failed bool
 }
 
 // Repeated drops refresh eviction priority without postponing recovery age.
@@ -34,6 +39,8 @@ func (fm *FileMonitor) recordDroppedDir(path string) {
 		entry.firstDrop = now
 		entry.ticket = fm.reconcileHealth.Begin(now)
 	}
+	// A new write may precede the saved cursor and must be examined again.
+	entry.after = ""
 	entry.lastDrop = now
 	fm.reconcileDirs[dir] = entry
 	fm.evictOverflowDirLocked(now)
@@ -67,13 +74,25 @@ func (fm *FileMonitor) startReconcile() {
 		return
 	default:
 	}
-	now := time.Now()
-	if last := fm.reconcileLastPass.Load(); last != 0 && now.Sub(time.Unix(0, last)) < reconcileMinInterval {
-		return
-	}
 	if !fm.reconcileRunning.CompareAndSwap(false, true) {
 		return
 	}
+	// Acquire single-flight ownership before reading the completion time:
+	// the previous pass may finish while this caller is being scheduled.
+	now := time.Now()
+	if last := fm.reconcileLastPass.Load(); last != 0 && now.Sub(time.Unix(0, last)) < reconcileMinInterval {
+		fm.reconcileRunning.Store(false)
+		return
+	}
+	fm.reconcileMu.Lock()
+	pending := len(fm.reconcileDirs) > 0
+	fm.reconcileMu.Unlock()
+	if !pending {
+		fm.reconcileRunning.Store(false)
+		return
+	}
+	// The overflow reporter owns a wg count until its last call returns,
+	// so shutdown cannot observe zero while this Add is possible.
 	fm.wg.Add(1)
 	obs.Go("fanotify-reconcile", func() {
 		defer fm.wg.Done()
@@ -91,8 +110,12 @@ func (fm *FileMonitor) reconcileDrops() {
 	dirs := fm.reconcileDirs
 	fm.reconcileDirs = make(map[string]reconcileDirectory)
 	started := time.Now()
-	for _, entry := range dirs {
+	for dir, entry := range dirs {
 		entry.ticket.Start(started)
+		if entry.cutoff.IsZero() {
+			entry.cutoff = started.Add(-reconcileWindow)
+		}
+		dirs[dir] = entry
 	}
 	fm.reconcileMu.Unlock()
 	if len(dirs) == 0 {
@@ -108,16 +131,19 @@ func (fm *FileMonitor) reconcileDrops() {
 	if fanotifyReconcileDur != nil {
 		defer func() { fanotifyReconcileDur.Observe(time.Since(started).Seconds()) }()
 	}
-	cutoff := started.Add(-reconcileWindow)
 	deadline := started.Add(reconcileBudget)
 	for dir, entry := range dirs {
 		if fm.reconcilePassDone(deadline) {
 			fm.deferReconcileDirs(dirs)
 			return
 		}
-		complete := fm.reconcileDirectory(dir, cutoff)
+		if !fm.reconcileDirectory(dir, &entry, deadline) {
+			dirs[dir] = entry
+			fm.deferReconcileDirs(dirs)
+			return
+		}
 		// A refreshed drop cannot recover an older obligation outside this scan's window.
-		if complete && !entry.firstDrop.Before(cutoff) {
+		if !entry.failed && !entry.firstDrop.Before(entry.cutoff) {
 			entry.ticket.Finish(time.Now())
 		} else {
 			entry.ticket.Reject(time.Now())
@@ -134,7 +160,7 @@ func (fm *FileMonitor) reconcilePassDone(deadline time.Time) bool {
 		return true
 	default:
 	}
-	return time.Now().After(deadline)
+	return !time.Now().Before(deadline)
 }
 
 // deferReconcileDirs returns directories this pass did not reach to the
@@ -155,8 +181,14 @@ func (fm *FileMonitor) deferReconcileDirs(dirs map[string]reconcileDirectory) {
 			waiting.ticket.MergeRunning(entry.ticket, now)
 			if entry.firstDrop.Before(waiting.firstDrop) {
 				waiting.firstDrop = entry.firstDrop
-				fm.reconcileDirs[dir] = waiting
 			}
+			if waiting.cutoff.IsZero() || entry.cutoff.Before(waiting.cutoff) {
+				waiting.cutoff = entry.cutoff
+			}
+			// The new admission may concern a file behind the old cursor.
+			waiting.after = ""
+			waiting.failed = waiting.failed || entry.failed
+			fm.reconcileDirs[dir] = waiting
 			continue
 		}
 		entry.ticket.Requeue(now)
@@ -168,13 +200,23 @@ func (fm *FileMonitor) deferReconcileDirs(dirs map[string]reconcileDirectory) {
 // A tree removed before recovery ran holds nothing left to scan, so the
 // kernel loss that started the recovery is the only loss. Reads that failed
 // for any other reason left work the operator can still act on.
-func (fm *FileMonitor) reconcileDirectory(dir string, cutoff time.Time) bool {
+// Returns false only when the pass yields; read failures stay on the
+// obligation until completion so a later pass cannot conceal partial loss.
+func (fm *FileMonitor) reconcileDirectory(dir string, work *reconcileDirectory, deadline time.Time) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return errors.Is(err, fs.ErrNotExist)
+		work.failed = work.failed || !errors.Is(err, fs.ErrNotExist)
+		return true
 	}
-	complete := true
 	for _, entry := range entries {
+		if fm.reconcilePassDone(deadline) {
+			return false
+		}
+		// os.ReadDir sorts names, so continuation does not rescan the prefix.
+		if entry.Name() <= work.after {
+			continue
+		}
+		work.after = entry.Name()
 		if entry.IsDir() {
 			continue
 		}
@@ -185,18 +227,18 @@ func (fm *FileMonitor) reconcileDirectory(dir string, cutoff time.Time) bool {
 		info, err := entry.Info()
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
-				complete = false
+				work.failed = true
 			}
 			continue
 		}
-		if info.ModTime().Before(cutoff) {
+		if info.ModTime().Before(work.cutoff) {
 			continue
 		}
 		if !fm.reconcileFile(path) {
-			complete = false
+			work.failed = true
 		}
 	}
-	return complete
+	return true
 }
 
 func (fm *FileMonitor) reconcileFile(path string) bool {

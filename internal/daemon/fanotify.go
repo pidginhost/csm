@@ -212,9 +212,9 @@ type FileMonitor struct {
 	wpPendingInit sync.Once
 
 	// Drop-recovery reconcile: directories that had fanotify events dropped
-	// because the analyzer queue was full. The overflow reporter walks this
-	// set once a minute and scans any interesting file modified within
-	// reconcileWindow so bulk filesystem operations (unzip, backup restore)
+	// because the analyzer queue was full. The overflow reporter schedules
+	// bounded passes over interesting files within the original recovery
+	// window so bulk filesystem operations (unzip, backup restore)
 	// do not blind detection to actual threats landing in the storm.
 	reconcileMu   sync.Mutex
 	reconcileDirs map[string]reconcileDirectory
@@ -267,13 +267,13 @@ const (
 	// drop branch. A 2026-04-28 cpanel package restore overflowed the
 	// previous 64-entry cap inside seconds (every wp-content subdir was
 	// a distinct parent), evicting older dirs before reconcileDrops ran.
-	// 1024 entries fits typical cpanel restore bursts comfortably while
-	// staying tiny in memory (each entry is a string-pointer + time, so
-	// the whole map peaks under ~100 KiB even at full cap).
+	// 1024 entries fits typical cpanel restore bursts while bounding the
+	// retained paths, scan cursors and queue tickets.
 	reconcileDirCap = 1024
 
 	// reconcileWindow scopes which files reconcileDrops will rescan: only
-	// files whose mtime is within this window of "now". Sized just over
+	// files whose mtime is within this window of the first pass. The cutoff
+	// stays fixed across retries. Sized just over
 	// the minute tick so a drop near the start of a tick is still picked
 	// up by the reconcile that runs at tick end.
 	reconcileWindow = 70 * time.Second
@@ -2431,10 +2431,11 @@ func (fm *FileMonitor) shouldAlert(check, filePath string) bool {
 
 // M7 - overflowReporter reports dropped events and alerts separately.
 //
-// Two timers feed this loop:
+// Periodic ticks and eager signals feed this loop:
 //   - 1-minute ticker: emits the periodic fanotify_overflow alert,
 //     resets drop counters, runs reconcileDrops, and evicts stale alert
 //     dedup entries.
+//   - retry ticker: retries pending work even after new drops stop.
 //   - reconcileSig: out-of-cycle reconcile triggered by sendEvent when
 //     sustained drops cross eagerReconcileDropThreshold within the
 //     current tick. Closes the latency gap between a drop and its
@@ -2443,11 +2444,16 @@ func (fm *FileMonitor) overflowReporter() {
 	defer fm.wg.Done()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
+	// Retried work must not depend on another drop or a nonzero alert counter.
+	retry := time.NewTicker(reconcileMinInterval)
+	defer retry.Stop()
 
 	for {
 		select {
 		case <-fm.stopCh:
 			return
+		case <-retry.C:
+			fm.startReconcile()
 		case <-fm.reconcileSig:
 			// Eager reconcile: do not reset counters, do not emit the
 			// minute-tick alert. Just walk the tracked dirs and surface

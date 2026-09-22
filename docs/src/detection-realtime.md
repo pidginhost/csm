@@ -13,12 +13,14 @@ been renamed, replaced, or deleted before analysis. No rename event is needed
 to inspect those bytes. Repeated findings use the normal alert cooldown, and
 queue overflow schedules a directory rescan of files that remain on disk.
 That recovery runs one pass at a time, under a time budget and with a minimum
-gap between passes; directories a pass does not reach stay queued for the next
-one, so recovery never competes with the analyzers for the whole storm.
+gap between passes. Unfinished directories stay queued and retry even after
+new drops stop. Recovery resumes within a directory and retains its original
+scan window so deferred files do not age out while waiting.
 Kernel notification loss still relies on the next deep scan. Shutdown drains
 the queue under a fixed time budget: events still waiting when it expires are
-released without being scanned, so the daemon stops well inside its service
-stop timeout, and those files are covered by the next deep scan. A rename-only
+released without being scanned; files still on disk are covered by the next
+deep scan. Both budgets are checked between scans, so a scan or directory
+read already in progress must still finish before shutdown completes. A rename-only
 arrival without a usable create or close-write event is also first examined
 by the rolling content scan; the watcher does not subscribe to rename events.
 
