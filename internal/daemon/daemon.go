@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3558,32 +3557,29 @@ func registerWHMPlugin(confPath string) error {
 	return nil
 }
 
+// watchdogInterval keeps a safety margin under the interval systemd expects,
+// and never pings faster than every ten seconds: a unit configured with a very
+// short WatchdogSec would otherwise spend the daemon's time on keepalives.
+func watchdogInterval(timeout time.Duration) time.Duration {
+	interval := timeout / 2
+	if interval < 10*time.Second {
+		interval = 10 * time.Second
+	}
+	return interval
+}
+
 // watchdogNotifier sends systemd watchdog keepalives on its own ticker.
 // Runs at half the WatchdogSec interval so there's always margin.
 // Completely independent of scan goroutines — never blocks.
 func (d *Daemon) watchdogNotifier() {
 	defer d.wg.Done()
 
-	usecStr := os.Getenv("WATCHDOG_USEC")
-	if usecStr == "" {
-		return // watchdog not configured
-	}
-	addr := os.Getenv("NOTIFY_SOCKET")
-	if addr == "" {
-		return
+	timeout, configured := sdnotify.WatchdogTimeout()
+	if !configured || !sdnotify.Enabled() {
+		return // watchdog not configured, or nothing to notify
 	}
 
-	usec, err := strconv.ParseInt(usecStr, 10, 64)
-	if err != nil || usec <= 0 {
-		return
-	}
-
-	// Notify at half the watchdog interval for safety margin
-	interval := time.Duration(usec) * time.Microsecond / 2
-	if interval < 10*time.Second {
-		interval = 10 * time.Second
-	}
-
+	interval := watchdogInterval(timeout)
 	csmlog.Info("systemd watchdog active", "interval", interval.String())
 
 	ticker := time.NewTicker(interval)
@@ -3599,16 +3595,6 @@ func (d *Daemon) watchdogNotifier() {
 			}
 		}
 	}
-}
-
-func sdNotify(addr, msg string) {
-	conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
-	if err != nil {
-		return
-	}
-	defer func() { _ = syscall.Close(conn) }()
-	sa := &syscall.SockaddrUnix{Name: addr}
-	_ = syscall.Sendmsg(conn, []byte(msg), nil, sa, 0)
 }
 
 func ts() string {

@@ -24,6 +24,7 @@ import (
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/phptaintworker"
+	"github.com/pidginhost/csm/internal/sdnotify"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -325,6 +326,12 @@ func initDaemonPlatform(cfg *config.Config, version, buildHash string) error {
 }
 
 func runDaemon() {
+	// Take the systemd variables out of the environment before anything runs
+	// a subprocess. Config validation and platform detection both shell out,
+	// and a child holding NOTIFY_SOCKET writes notifications systemd refuses
+	// (NotifyAccess=main) and logs.
+	sdnotify.Capture()
+
 	cfg := loadConfigLite()
 
 	// Platform overrides first, then Sentry, before any goroutines spawn.

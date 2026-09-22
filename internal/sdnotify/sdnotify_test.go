@@ -10,6 +10,7 @@ func TestReady_NoSocketIsNoop(t *testing.T) {
 	if err := os.Unsetenv("NOTIFY_SOCKET"); err != nil {
 		t.Fatal(err)
 	}
+	Capture()
 	sent, err := Ready()
 	if err != nil {
 		t.Fatalf("expected no error when not under systemd, got %v", err)
@@ -23,6 +24,7 @@ func TestStatus_NoSocketIsNoop(t *testing.T) {
 	if err := os.Unsetenv("NOTIFY_SOCKET"); err != nil {
 		t.Fatal(err)
 	}
+	Capture()
 	sent, err := Status("watchers attached: 4")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -36,6 +38,7 @@ func TestWatchdog_NoSocketIsNoop(t *testing.T) {
 	if err := os.Unsetenv("NOTIFY_SOCKET"); err != nil {
 		t.Fatal(err)
 	}
+	Capture()
 	sent, err := Watchdog()
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)

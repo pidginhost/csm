@@ -733,22 +733,7 @@ func TestSignatureUpdater_CustomIntervalsStopsOnSignal(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchdogNotifier_NegativeUsecExits(t *testing.T) {
-	prev := os.Getenv("WATCHDOG_USEC")
-	prevAddr := os.Getenv("NOTIFY_SOCKET")
-	os.Setenv("WATCHDOG_USEC", "-100")
-	os.Setenv("NOTIFY_SOCKET", "/tmp/test-socket")
-	defer func() {
-		if prev != "" {
-			os.Setenv("WATCHDOG_USEC", prev)
-		} else {
-			_ = os.Unsetenv("WATCHDOG_USEC")
-		}
-		if prevAddr != "" {
-			os.Setenv("NOTIFY_SOCKET", prevAddr)
-		} else {
-			_ = os.Unsetenv("NOTIFY_SOCKET")
-		}
-	}()
+	captureWatchdogEnv(t, "-100", "/tmp/test-socket")
 
 	d := New(&config.Config{}, nil, nil, "")
 	d.wg.Add(1)
@@ -771,23 +756,8 @@ func TestWatchdogNotifier_NegativeUsecExits(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchdogNotifier_SmallUsecUsesMinInterval(t *testing.T) {
-	prev := os.Getenv("WATCHDOG_USEC")
-	prevAddr := os.Getenv("NOTIFY_SOCKET")
-	// 2 seconds in microseconds; half is 1s which is < 10s minimum.
-	os.Setenv("WATCHDOG_USEC", "2000000")
-	os.Setenv("NOTIFY_SOCKET", "/tmp/nonexistent-wd-min-"+t.Name())
-	defer func() {
-		if prev != "" {
-			os.Setenv("WATCHDOG_USEC", prev)
-		} else {
-			_ = os.Unsetenv("WATCHDOG_USEC")
-		}
-		if prevAddr != "" {
-			os.Setenv("NOTIFY_SOCKET", prevAddr)
-		} else {
-			_ = os.Unsetenv("NOTIFY_SOCKET")
-		}
-	}()
+	// 2 seconds in microseconds; half is 1s which is under the 10s minimum.
+	captureWatchdogEnv(t, "2000000", "/tmp/nonexistent-wd-min")
 
 	d := New(&config.Config{}, nil, nil, "")
 	d.wg.Add(1)
