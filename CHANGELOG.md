@@ -9,6 +9,18 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ## [Unreleased]
 
+### Fixed
+
+- Process ancestry is available before file monitoring starts, including on hosts without kernel monitoring. Starting the optional process cache no longer races with ancestry readers.
+- Nightly control panel maintenance no longer pages as a system compromise. A cron drop-in or a staged executable written by the panel's own scheduled work is reported as a Warning instead of High or Critical, recognised by the program a parent process is actually running rather than the name it reports. Nothing is skipped, and a cron file carrying persistence tokens still reports at full severity.
+- The scheduled cron.d comparison now scores a changed or new file the same way the realtime write detector does. It was the one cron path with no provenance rescoring and no check for persistence tokens, so a vendor cron update reported High there while the same write was a Warning.
+- Sensitive-file findings are rescored using process ancestry on every Linux host. Until now that evidence was only read on hosts running the optional kernel monitoring, so the same write scored differently depending on the build.
+
+### Security
+
+- Cron findings containing known persistence patterns now retain their severity during maintenance, including when the payload is encoded.
+- Control-panel provenance now requires a resolved executable even when process details come from the cache. Live cron writes containing persistence tokens retain their original severity during maintenance.
+
 ## [3.43.0] - 2026-09-22
 
 ### Highlights

@@ -205,9 +205,14 @@ func TestRescoreSensitiveAncestryHookDemotes(t *testing.T) {
 	pkgManagerLogs = []string{filepath.Join(t.TempDir(), "missing.log")}
 	t.Cleanup(func() { pkgManagerLogs = oldPaths })
 
-	oldProbe := AncestryProbe
-	AncestryProbe = func(pid uint32) bool { return pid == 4242 }
-	t.Cleanup(func() { AncestryProbe = oldProbe })
+	oldProbe := AncestryProvenance
+	AncestryProvenance = func(pid uint32) string {
+		if pid == 4242 {
+			return "ancestor is package manager"
+		}
+		return ""
+	}
+	t.Cleanup(func() { AncestryProvenance = oldProbe })
 
 	in := alert.Finding{Severity: alert.High}
 	out := rescoreSensitive(in, "cron", []byte("0 0 * * * root /usr/sbin/foo\n"), 4242, time.Now())
@@ -221,21 +226,21 @@ func TestRescoreSensitiveAncestryHookNilSafe(t *testing.T) {
 	pkgManagerLogs = []string{filepath.Join(t.TempDir(), "missing.log")}
 	t.Cleanup(func() { pkgManagerLogs = oldPaths })
 
-	oldProbe := AncestryProbe
-	AncestryProbe = nil
-	t.Cleanup(func() { AncestryProbe = oldProbe })
+	oldProbe := AncestryProvenance
+	AncestryProvenance = nil
+	t.Cleanup(func() { AncestryProvenance = oldProbe })
 
 	in := alert.Finding{Severity: alert.High}
 	out := rescoreSensitive(in, "cron", []byte("0 0 * * * root /usr/sbin/foo\n"), 9999, time.Now())
 	if out.Severity != alert.High {
-		t.Fatalf("nil AncestryProbe must be safe and not demote, got %v", out.Severity)
+		t.Fatalf("nil AncestryProvenance must be safe and not demote, got %v", out.Severity)
 	}
 }
 
 func TestRescoreSensitiveAncestryDangerVeto(t *testing.T) {
-	oldProbe := AncestryProbe
-	AncestryProbe = func(pid uint32) bool { return true }
-	t.Cleanup(func() { AncestryProbe = oldProbe })
+	oldProbe := AncestryProvenance
+	AncestryProvenance = func(uint32) string { return "ancestor is package manager" }
+	t.Cleanup(func() { AncestryProvenance = oldProbe })
 
 	in := alert.Finding{Severity: alert.High}
 	out := rescoreSensitive(in, "cron", []byte("* * * * * root /tmp/x.sh\n"), 1, time.Now())

@@ -84,14 +84,15 @@ func toContext(e processEntry) *ProcessContext {
 		startedAt = &t
 	}
 	return &ProcessContext{
-		PID:       e.PID,
-		PPID:      e.PPID,
-		UID:       e.UID,
-		User:      e.User,
-		Account:   e.Account,
-		Comm:      e.Comm,
-		Exe:       e.Exe,
-		Cmdline:   append([]string(nil), e.Cmdline...),
-		StartedAt: startedAt,
+		PID:         e.PID,
+		PPID:        e.PPID,
+		UID:         e.UID,
+		User:        e.User,
+		Account:     e.Account,
+		Comm:        e.Comm,
+		Exe:         e.Exe,
+		ExeResolved: e.ProcRead && e.Exe != "",
+		Cmdline:     append([]string(nil), e.Cmdline...),
+		StartedAt:   startedAt,
 	}
 }

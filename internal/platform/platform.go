@@ -124,6 +124,19 @@ func (i Info) AccountHomeRoots() []string {
 	return []string{"/home"}
 }
 
+// PanelToolRoots returns the directories holding the control panel's own
+// root-run tooling. cPanel keeps its maintenance scripts and binaries under
+// /usr/local/cpanel; a panel-less host has no such tree. Provenance checks
+// use this to tell the panel's own nightly work from a process that merely
+// named itself after it, so the path has to come from detection rather than
+// being written into the detector.
+func (i Info) PanelToolRoots() []string {
+	if i.Panel == PanelCPanel {
+		return []string{"/usr/local/cpanel"}
+	}
+	return nil
+}
+
 // WebServerUsers returns the account(s) the web server serves requests as
 // on this platform: cPanel's nobody, DirectAdmin's apache (plus nobody for
 // its suEXEC fallback), Plesk's distribution web user, and for a panel-less

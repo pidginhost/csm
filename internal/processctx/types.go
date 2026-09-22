@@ -38,6 +38,9 @@ type ProcessContext struct {
 	Cmdline   []string        `json:"cmdline,omitempty"`
 	StartedAt *time.Time      `json:"started_at,omitempty"`
 	Parent    *ProcessContext `json:"parent,omitempty"`
+	// Exec events carry the requested filename, which can name a symlink or
+	// script. Only procfs enrichment supplies the resolved executable.
+	ExeResolved bool `json:"-"`
 }
 
 // MaxParentDepth caps the parent chain walked during materialization.

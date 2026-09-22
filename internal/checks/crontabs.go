@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -150,20 +151,24 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 		hash := hashBytes(data)
 		key := fmt.Sprintf("_crond:%s", filepath.Base(path))
 		prev, exists := store.GetRaw(key)
+		// The same file reaches the realtime write detector, which rescores
+		// a vendor-driven change instead of paging. Scoring the scheduled
+		// diff on its own left an upgrade or a panel maintenance run
+		// reporting High through whichever detector saw it first.
 		switch {
 		case exists && prev != hash:
-			findings = append(findings, alert.Finding{
+			findings = append(findings, rescoreSensitive(alert.Finding{
 				Severity: alert.High,
 				Check:    "crond_change",
 				Message:  fmt.Sprintf("Cron.d file modified: %s", path),
-			})
+			}, "cron", data, 0, time.Now()))
 		case !exists && cronDBaselined:
-			findings = append(findings, alert.Finding{
+			findings = append(findings, rescoreSensitive(alert.Finding{
 				Severity: alert.High,
 				Check:    "crond_change",
 				Message:  fmt.Sprintf("Cron.d file added: %s", path),
 				Details:  fmt.Sprintf("File: %s\nContent: %s", path, alert.RedactCommandLine(truncate(strings.TrimSpace(string(data)), cronDExcerptLen))),
-			})
+			}, "cron", data, 0, time.Now()))
 		}
 		store.SetRaw(key, hash)
 	}

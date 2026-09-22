@@ -1,5 +1,9 @@
 package daemon
 
+// Provenance must be available before any detector starts, even when the
+// optional BPF monitors never initialize the process-context cache.
+func init() { wireAncestryProvenance() }
+
 // pkgManagerComms are the process names CSM treats as evidence that an
 // observed sensitive-file write originated from a legitimate root-driven
 // package transaction. The list intentionally omits shells (sh, bash) and
