@@ -152,6 +152,11 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 	// cancellation are the answers the worker path gives first, so they
 	// still take precedence.
 	if len(src) <= phptaint.MaxSourceBytes && ctx.Err() == nil && !phptaint.IsCandidate(src) {
+		// Cancellation may arrive during the byte scan. The IPC path
+		// observes it while waiting for a reply; a local answer must too.
+		if err := ctx.Err(); err != nil {
+			return gap(phptaint.StatusCanceled, err.Error())
+		}
 		return phptaint.Report{Status: phptaint.StatusNotCandidate}
 	}
 	work := s.health.begin()
