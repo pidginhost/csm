@@ -55,7 +55,7 @@ func longestNeedle(groups ...[][]byte) int {
 // something about a file they cannot analyze in full -- an oversize file, say
 // -- and would otherwise have to guess.
 //
-// It is deliberately weaker than isCandidate: no sink or source keyword is
+// It is deliberately weaker than IsCandidate: no sink or source keyword is
 // required, because a caller holding only a prefix cannot conclude anything
 // from their absence. Judging by content rather than by name or extension is
 // the point; a scanner that decided what to examine from a path would be
@@ -66,14 +66,17 @@ func MayBePHPSource(prefix []byte) bool {
 	return containsAnyFold(prefix, phpOpenTags)
 }
 
-// isCandidate is a cheap byte scan run before parsing. It is intentionally
-// over-inclusive; the AST pass decides whether a real flow exists. PHP
+// IsCandidate is the cheap byte scan Analyze runs before parsing; content
+// it rejects is StatusNotCandidate. No parser runs, so a caller that isolates
+// Analyze in another process can apply it in its own process first and skip
+// the round trip. It is intentionally over-inclusive; the AST pass decides
+// whether a real flow exists. PHP
 // function names and language constructs are case-insensitive (EVAL, Eval
 // and eval all execute the same construct), so admission matches
 // case-insensitively too, on pain of a false negative admitting less than
 // the AST rules would. The open-tag check runs first so a file that never
 // looks like PHP never pays for the sink/source keyword scans either.
-func isCandidate(src []byte) bool {
+func IsCandidate(src []byte) bool {
 	if !MayBePHPSource(src) {
 		return false
 	}

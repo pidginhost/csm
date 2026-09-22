@@ -1,6 +1,9 @@
 package phptaint
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // rejectFixture returns a 2 MiB source with a PHP open tag but no sink or
 // source keyword: the common case when a daemon walks millions of real
@@ -21,7 +24,7 @@ func BenchmarkIsCandidateReject(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		isCandidate(src)
+		IsCandidate(src)
 	}
 }
 
@@ -54,8 +57,8 @@ func TestPrefilterAdmitsSourceAndSinkTogether(t *testing.T) {
 		{"whitespace", "<?php\n\n$d\t=\tfread($h, 1);\n\ninclude_once\t$d;"},
 	}
 	for _, c := range admit {
-		if !isCandidate([]byte(c.src)) {
-			t.Errorf("%s: isCandidate = false, want true", c.name)
+		if !IsCandidate([]byte(c.src)) {
+			t.Errorf("%s: IsCandidate = false, want true", c.name)
 		}
 	}
 }
@@ -74,8 +77,8 @@ func TestPrefilterMatchesAcrossChunkBoundary(t *testing.T) {
 	copy(src, "<?php eval(")
 	copy(src[pos:], needle)
 	copy(src[pos+len(needle):], ");")
-	if !isCandidate(src) {
-		t.Fatal("isCandidate = false, want true: curl_exec straddles a fold-window boundary")
+	if !IsCandidate(src) {
+		t.Fatal("IsCandidate = false, want true: curl_exec straddles a fold-window boundary")
 	}
 }
 
@@ -87,8 +90,31 @@ func TestPrefilterRejectsWithoutBothHalves(t *testing.T) {
 		{"empty", ""},
 	}
 	for _, c := range reject {
-		if isCandidate([]byte(c.src)) {
-			t.Errorf("%s: isCandidate = true, want false", c.name)
+		if IsCandidate([]byte(c.src)) {
+			t.Errorf("%s: IsCandidate = true, want false", c.name)
+		}
+	}
+}
+
+// IsCandidate lets a caller that runs Analyze in another process skip the
+// round trip for content the pre-filter rejects, so it must give exactly
+// the answer Analyze gives by status.
+func TestIsCandidateAgreesWithAnalyze(t *testing.T) {
+	inputs := []string{
+		"<?php $p = curl_exec($c); eval($p);",
+		"<?php echo 'safe';",
+		"<?php include $_GET['f'];",
+		"<?PHP $b = FILE_GET_CONTENTS($u); ASSERT($b);",
+		"body { color: red }",
+		"\x89PNG\r\n\x1a\n<?php eval(fread($h, 9));",
+		"eval(curl_exec($c)); // no open tag",
+		"<?= wp_remote_retrieve_body($r); require $x;",
+		"",
+	}
+	for _, in := range inputs {
+		want := Analyze(context.Background(), []byte(in)).Status != StatusNotCandidate
+		if got := IsCandidate([]byte(in)); got != want {
+			t.Errorf("IsCandidate(%q) = %v, Analyze treats it as candidate = %v", in, got, want)
 		}
 	}
 }

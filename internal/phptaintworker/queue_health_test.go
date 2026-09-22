@@ -62,7 +62,7 @@ func TestWorkerQueueWaitingCallersCancelWithoutLoss(t *testing.T) {
 	defer cancel()
 	results := make(chan phptaint.Report, 3)
 	for range 3 {
-		go func() { results <- s.Analyze(ctx, []byte("<?php echo 'safe';")) }()
+		go func() { results <- s.Analyze(ctx, []byte(workerInput)) }()
 	}
 	until := time.Now().Add(time.Second)
 	for {
@@ -141,7 +141,7 @@ func TestWorkerQueueRetainsRPCBeyondCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan phptaint.Report, 1)
-	go func() { done <- s.Analyze(ctx, []byte("<?php echo 'safe';")) }()
+	go func() { done <- s.Analyze(ctx, []byte(workerInput)) }()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -188,7 +188,7 @@ func TestWorkerQueueTimeoutLossSurvivesLateReply(t *testing.T) {
 	}
 	_, release := installHeldReply(t, s)
 	defer release()
-	rep := s.Analyze(context.Background(), []byte("<?php echo 'safe';"))
+	rep := s.Analyze(context.Background(), []byte(workerInput))
 	if rep.Status != phptaint.StatusTimeout {
 		t.Fatalf("timeout became %s", rep.Status)
 	}
@@ -224,7 +224,7 @@ func TestWorkerQueueKnownFailureDuringCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan phptaint.Report, 1)
-	go func() { done <- s.Analyze(context.Background(), []byte("<?php echo 'safe';")) }()
+	go func() { done <- s.Analyze(context.Background(), []byte(workerInput)) }()
 	select {
 	case <-entered:
 	case <-time.After(3 * time.Second):
@@ -253,7 +253,7 @@ func TestWorkerQueueSpawnFailuresAndBreakerRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 6; i++ {
-		if rep := s.Analyze(context.Background(), []byte("<?php echo 'safe';")); rep.Status != phptaint.StatusWorkerFailure {
+		if rep := s.Analyze(context.Background(), []byte(workerInput)); rep.Status != phptaint.StatusWorkerFailure {
 			t.Fatalf("failed/refused request %d returned %s", i, rep.Status)
 		}
 	}
@@ -263,7 +263,7 @@ func TestWorkerQueueSpawnFailuresAndBreakerRefusals(t *testing.T) {
 	if err := s.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if rep := s.Analyze(context.Background(), []byte("<?php echo 'safe';")); rep.Status != phptaint.StatusWorkerFailure || rep.Reason != "worker_failure: supervisor stopped" {
+	if rep := s.Analyze(context.Background(), []byte(workerInput)); rep.Status != phptaint.StatusWorkerFailure || rep.Reason != "worker_failure: supervisor stopped" {
 		t.Fatalf("stopped supervisor accepted work: %+v", rep)
 	}
 	if q := workerQueue(t, s, time.Now().Add(time.Minute)); q.Status != "ok" || q.DroppedTotal != 6 || q.Depth != 0 || q.InFlight != 0 {
@@ -294,7 +294,7 @@ func TestWorkerQueueHonorsLongConfiguredRPC(t *testing.T) {
 	entered, release := installHeldReply(t, s)
 	defer func() { release(); _ = s.Stop() }()
 	done := make(chan phptaint.Report, 1)
-	go func() { done <- s.Analyze(context.Background(), []byte("<?php echo 'safe';")) }()
+	go func() { done <- s.Analyze(context.Background(), []byte(workerInput)) }()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -359,7 +359,7 @@ func TestWorkerQueueBufferedReplyHasIndependentBudget(t *testing.T) {
 	defer func() { finish(); _ = s.Stop() }()
 	done := make(chan phptaint.Report, 1)
 	go func() {
-		done <- s.Analyze(heldWorkerContext{context.Background(), entered, release}, []byte("<?php echo 'safe';"))
+		done <- s.Analyze(heldWorkerContext{context.Background(), entered, release}, []byte(workerInput))
 	}()
 	select {
 	case <-entered:
@@ -407,7 +407,7 @@ func TestWorkerQueueRPCExitCountsOnce(t *testing.T) {
 	_, release := installHeldReply(t, s)
 	release()
 	s.child.stdout = exitingReplyPipe{}
-	rep := s.Analyze(context.Background(), []byte("<?php echo 'safe';"))
+	rep := s.Analyze(context.Background(), []byte(workerInput))
 	if rep.Status != phptaint.StatusTimeout {
 		t.Fatalf("missing RPC reply changed status: %s", rep.Status)
 	}

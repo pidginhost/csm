@@ -39,7 +39,7 @@ eval($x);`)
 
 	// Each benign fixture below carries one unrelated, non-flowing call from
 	// whichever keyword class (source/sink) its scenario otherwise lacks.
-	// isCandidate requires both a source and a sink keyword present in the
+	// IsCandidate requires both a source and a sink keyword present in the
 	// byte stream before parsing runs at all (see TestPrefilterRejectsWithoutBothHalves
 	// in prefilter_test.go); a fixture with only one half is StatusNotCandidate,
 	// never reaching the deep analysis this test exercises.

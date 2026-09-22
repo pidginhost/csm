@@ -33,14 +33,11 @@ const phpTaintDeepPerFileTimeout = 30 * time.Second
 // example paths.
 // maxPHPTaintGapPaths bounds the exact paths one run retains for carry-forward.
 //
-// The bound matters here in a way it does not for the JS consumer. That
-// analyzer runs in-process and answers StatusNotCandidate for non-JS content,
-// so a gap needs a genuinely failing JS file. PHP analysis happens in a
-// separate process, and its pre-filter lives THERE, so when the worker is
-// unavailable every readable file on the host becomes a gap -- millions of
-// retained path strings for the length of a scan. Past the bound the run stops
-// enumerating and reports itself as unable to enumerate, which suppresses the
-// purge wholesale rather than carrying forward an arbitrary prefix.
+// The supervisor rejects non-candidates in-process, but an unavailable worker
+// can still leave every candidate unexamined. Bound retained path strings for
+// large scans. Past the bound the run stops enumerating and reports itself as
+// unable to enumerate, which suppresses the purge wholesale rather than
+// carrying forward an arbitrary prefix.
 const maxPHPTaintGapPaths = 50_000
 
 const (

