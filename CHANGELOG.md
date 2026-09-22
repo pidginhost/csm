@@ -9,24 +9,45 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ## [Unreleased]
 
-### Security
+## [3.43.0] - 2026-09-22
 
-- The temporary-file queue filter now preserves earlier detection and suppression decisions, including writes retained for self-deleting-file tracking.
+### Highlights
+
+- This release is about what CSM costs the machine it protects. On a host where the watched paths share one filesystem, the real-time monitor receives an event for every write on the server, and several parts of the daemon did more work per event than they needed to.
+- Stopping the daemon no longer waits for its real-time backlog. A busy host used to spend the whole systemd stop timeout draining queued scans and was killed at the end of it; the drain is now bounded and in-progress scans still finish.
+- Recovery after an event storm no longer feeds the storm. Rescans ran on top of each other, competing with the workers whose backlog caused them, which produced more dropped events; they now run one at a time under a time budget and resume where they stopped.
+- Scheduled and account scans share one concurrency budget sized from the machine's core count, and the service unit yields CPU to the web server and database under contention. A scan started from the Web UI during a scheduled one no longer doubles the load.
+- Writes in the shared temporary directories are judged as the event arrives instead of being queued first. Session files and package working files no longer occupy the real-time queue to reach a verdict of nothing to report; executables, PHP and configuration files are analysed exactly as before.
+- The startup log now describes the watch scope that was actually applied, including when a watched path sits on the same filesystem as `/`, and two new metrics show how many delivered events survive the path filter.
+- Notice after upgrading: events still queued when the shutdown budget expires are covered by the next deep scan rather than at shutdown, and the temporary-directory filter is new. Read the first day of findings rather than dismissing it.
+- Contention profiles from the optional debug endpoint are no longer empty, which is what a CPU investigation on a live host needs.
 
 ### Fixed
 
-- Writes in the shared temporary directories are now judged when the event arrives instead of being queued for content analysis first. Session files, package working files and database temporaries no longer take a slot in the real-time queue to reach a verdict of nothing to report, while executables, PHP, configuration files and staged copies of them are still analysed exactly as before.
-- The real-time monitor shares filesystem watches and reports their actual scope, including bind mounts and partial watch failures. Event counters distinguish queued, rejected, and dropped work, with consistent snapshots during concurrent activity.
-- Non-Linux development builds compile again after the watch-scope logging change.
-- Scheduled and account scans share one concurrency budget sized from the machine's core count, so a scan started from the interface during a scheduled one no longer doubles the load. A check still running after its caller gave up keeps its slot until it exits. The real-time scanner sizes its separate worker pool the same way, and both the packaged and the installer-generated service units yield CPU to the web server and database under contention.
-- The mutex and block profiles served by the optional debug endpoint were always empty, because the daemon never turned on the sampling they need. They now record while the endpoint is enabled, so a contention profile taken during an incident shows what was actually waiting.
-- Contention sampling stays active until the last debug listener exits, including when another listener fails. Failed binds do not enable or retain sampling.
-- Recovery rescans after a real-time event storm no longer pile up on each other. They run one at a time under a time budget, resume where they stopped, keep their original coverage window, and retry once the storm ends, so a storm can no longer drive the daemon into the sustained CPU use that produced more dropped events.
-- Stopping the daemon on a busy host no longer waits for the whole real-time scan backlog. The drain now has a time budget for starting queued scans; scans already in progress still finish before shutdown.
+#### Real-time monitoring
+
+- Stopping the daemon on a busy host no longer waits for the whole real-time scan backlog. The drain has a time budget for starting queued scans, and scans already in progress still finish before shutdown.
+- Recovery rescans after an event storm no longer pile up on each other. They run one at a time under a time budget, resume where they stopped, keep their original coverage window, and retry once the storm ends.
+- Writes in the shared temporary directories are judged when the event arrives instead of being queued for content analysis first, while executables, PHP, configuration files and staged copies of them are still analysed as before. Earlier detection and suppression decisions are preserved, including writes retained for self-deleting-file tracking.
+- The monitor shares one watch per filesystem instead of marking the same filesystem once per watched path, and reports the scope it actually applied, including bind mounts, partial watch failures, and whether a watched path sits on the same filesystem as `/`.
+- New counters distinguish events the kernel delivered, events queued for analysis, and events dropped by a full queue, so the cost of a wide watch scope is visible.
+- The real-time scanner sizes its worker pool from the machine's core count instead of never dropping below four workers.
+
+#### Scans
+
+- Scheduled and account scans share one concurrency budget sized from the machine's core count, so a scan started from the interface during a scheduled one no longer doubles the load. A check still running after its caller gave up keeps its slot until it exits.
+- Both the packaged and the installer-generated service units now yield CPU to the web server and database under contention, without capping what the daemon can use on an idle host.
+
+#### ModSecurity
+
+- The rule-action registry no longer re-detects the web server and reparses every vendor rule file every few minutes. It checks the rule tree for changes first, and keeps re-detecting only while no rules have loaded.
 - Rule-action refreshes recover after an empty startup or missing vendor rules, and pick up replacements that preserve timestamps or use linked files. Transient read failures are retried, and rules appended during a refresh are picked up on the next check.
-- An unresponsive systemd notification socket no longer blocks daemon startup, status updates or shutdown indefinitely.
-- The rule-action registry no longer re-detects the web server and reparses every vendor rule file every few minutes. It checks the rule tree for changes first, and keeps re-detecting only while no rules have loaded, which is the case that self-heal exists for.
+
+#### Health and diagnostics
+
+- The mutex and block profiles served by the optional debug endpoint were always empty, because the daemon never turned on the sampling they need. They now record while the endpoint is enabled, and stop when the last listener exits.
 - The daemon no longer hands systemd's notification socket to the commands it runs. Every one of those children could write to it, and systemd logged each attempt as a rejected notification from the wrong process.
+- An unresponsive systemd notification socket no longer blocks daemon startup, status updates or shutdown indefinitely.
 - The public documentation site stopped rebuilding after the Go version moved forward, because its workflow repeated the version instead of reading it from the module file.
 
 ## [3.42.0] - 2026-09-21
@@ -175,6 +196,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - `csm doctor` and the components view now keep reporting the YARA-X scanning worker as failed while it keeps crashing after restarts, instead of only when it cannot start at all. A restarted worker counts as recovered once it stays up for 30 seconds.
 - The YARA-X worker crash alert now reports the current scanning outage without claiming recovery. It distinguishes scanning becoming available after a restart from worker health recovering after the replacement stays up for 30 seconds.
 
+[3.43.0]: https://github.com/pidginhost/csm/compare/v3.42.0...v3.43.0
 [3.42.0]: https://github.com/pidginhost/csm/compare/v3.41.0...v3.42.0
 [3.41.0]: https://github.com/pidginhost/csm/compare/v3.40.0...v3.41.0
 [3.40.0]: https://github.com/pidginhost/csm/compare/v3.39.0...v3.40.0
