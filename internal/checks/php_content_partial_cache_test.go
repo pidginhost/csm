@@ -55,6 +55,7 @@ func TestCheckPHPContentPersistsCacheWhenCutShort(t *testing.T) {
 
 	first := seedPHPAccount(t, homeRoot, "aaa", mtime)
 	last := seedPHPAccount(t, homeRoot, "zzz", mtime)
+	settlePHPCacheStamps(t, first, last)
 
 	prevRoots := accountHomeRoots
 	t.Cleanup(func() { accountHomeRoots = prevRoots })
@@ -90,6 +91,7 @@ func TestCheckPHPContentPrunesDeletedFileFromVisitedDir(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	kept := seedPHPAccount(t, homeRoot, "aaa", mtime)
+	settlePHPCacheStamps(t, kept)
 	gone := filepath.Join(filepath.Dir(kept), "deleted.php")
 
 	prevRoots := accountHomeRoots
@@ -144,7 +146,14 @@ func TestPHPContentPartialCacheInvalidatesAttemptedFile(t *testing.T) {
 			withMockOS(t, interruptedPHPReadOS{path: path, cancel: cancel, unreadable: unreadable})
 			stamp := phpFileStamp{Mtime: mtime.Unix() - 1, Size: 1}
 			if unreadable {
-				stamp = phpFileStamp{Mtime: mtime.Unix(), Size: int64(len(rollingDormantPHP))}
+				// The file's own stamp, so the scan takes the cache-hit path
+				// and meets the unreadable file there.
+				settlePHPCacheStamps(t, path)
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stamp = phpFileStampOf(info)
 			}
 			scan := newPHPContentScan(&config.Config{}, phpContentCache{path: stamp}, false)
 			var findings []alert.Finding
@@ -163,6 +172,7 @@ func TestPHPContentCacheInvalidatesEarlierReadInSameRun(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a.php")
 	writeFile(t, path, phpCacheBenign)
+	settlePHPCacheStamps(t, path)
 	scan := newPHPContentScan(&config.Config{}, nil, false)
 	var findings []alert.Finding
 	scan.scanFile(context.Background(), path, phpHandlerOverlay{}, &findings)
@@ -205,6 +215,7 @@ func TestCheckPHPContentLateCanceledRunCannotReplaceNewerCache(t *testing.T) {
 	writePHPFixture(t, path, rollingBenignPHP, mtime)
 	slow := filepath.Join(filepath.Dir(path), "z.php")
 	writePHPFixture(t, slow, rollingBenignPHP, mtime)
+	settlePHPCacheStamps(t, path, slow)
 	previousRoots := accountHomeRoots
 	accountHomeRoots = func() []string { return []string{homeRoot} }
 	t.Cleanup(func() { accountHomeRoots = previousRoots })
