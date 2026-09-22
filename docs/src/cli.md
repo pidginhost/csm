@@ -15,6 +15,13 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 |---------|-------------|
 | `csm daemon` | Run as persistent daemon (fanotify + inotify + PAM + periodic checks). Signals systemd `READY=1` after watchers attach and pings `WATCHDOG=1` on the configured interval. The systemd notification variables are read once at startup and removed from the environment, so no command the daemon runs inherits them. |
 
+Notification writes time out if systemd stops reading its socket, so they cannot
+block the daemon indefinitely. ModSecurity rule actions are checked every five
+minutes using file contents, including linked rule files. Unchanged rule trees
+skip parsing; empty or incomplete builds keep retrying, and platform detection
+resumes when the selected directories no longer yield rules. A temporarily
+empty tree keeps the last loaded actions until a replacement is available.
+
 ## Checks
 
 | Command | Description |

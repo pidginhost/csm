@@ -102,6 +102,11 @@ func notify(state string) (bool, error) {
 		return false, err
 	}
 	defer func() { _ = conn.Close() }()
+	// A bound socket can stop draining its queue. Do not let a notification
+	// hold startup, status updates or watchdog shutdown indefinitely.
+	if err := conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		return false, err
+	}
 	if _, err := conn.Write([]byte(state)); err != nil {
 		return false, err
 	}

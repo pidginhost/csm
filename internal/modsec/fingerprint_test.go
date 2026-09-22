@@ -87,3 +87,68 @@ func TestRuleTreeFingerprintReportsAnAbsentTree(t *testing.T) {
 		t.Fatal("fingerprint reported a rule tree that does not exist")
 	}
 }
+
+func TestRuleTreeFingerprintTracksContentsWithPreservedMetadata(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		t.Run(map[bool]string{false: "rewrite", true: "replace"}[replace], func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "vendor.conf")
+			writeRule(t, path, `SecRule ARGS "@rx x" "id:1,pass"`)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := RuleTreeFingerprint([]string{dir})
+			target := path
+			if replace {
+				target = filepath.Join(dir, "replacement")
+			}
+			writeRule(t, target, `SecRule ARGS "@rx x" "id:1,deny"`)
+			if err := os.Chtimes(target, info.ModTime(), info.ModTime()); err != nil {
+				t.Fatal(err)
+			}
+			if replace {
+				if err := os.Rename(target, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			after, _ := RuleTreeFingerprint([]string{dir})
+			if before == after {
+				t.Fatal("changed rule contents retained the cached fingerprint")
+			}
+		})
+	}
+}
+
+func TestRuleTreeFingerprintTracksSymlinkTargets(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "rules.txt")
+	writeRule(t, target, `SecRule ARGS "@rx x" "id:1,pass"`)
+	if err := os.Symlink(target, filepath.Join(dir, "vendor.CONF")); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := RuleTreeFingerprint([]string{dir})
+	writeRule(t, target, `SecRule ARGS "@rx x" "id:1,deny"`)
+	after, _ := RuleTreeFingerprint([]string{dir})
+	reg, err := BuildRegistry([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action, _ := reg.Action(1); action != "deny" {
+		t.Fatalf("registry did not read the symlink target: %q", action)
+	}
+	if before == after {
+		t.Fatal("fingerprint missed a changed file that BuildRegistry reads")
+	}
+}
+
+func TestRuleTreeFingerprintDoesNotCacheUnreadableFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeRule(t, filepath.Join(dir, "good.conf"), `SecRule ARGS "@rx x" "id:1,pass"`)
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "broken.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint, present := RuleTreeFingerprint([]string{dir}); fingerprint != "" || !present {
+		t.Fatalf("unreadable tree: fingerprint=%q present=%v, want empty and true", fingerprint, present)
+	}
+}

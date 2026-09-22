@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/modsec"
@@ -120,9 +122,135 @@ func TestModSecRefreshProbesAgainWhenTheRuleDirsDisappear(t *testing.T) {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
+	probe.dirs = []string{modsecRuleDir(t, strings.ReplaceAll(modsecTestRule, "pass", "deny"))}
+	d.refreshModSecRegistry()
 	d.refreshModSecRegistry()
 
+	if probe.probes != 2 || probe.builds != 2 {
+		t.Fatalf("replacement tree was not cached: probes=%d builds=%d, want 2 and 2", probe.probes, probe.builds)
+	}
+	if action, _ := modsec.Global().Action(210710); action != "deny" {
+		t.Fatalf("disappearing directories did not trigger replacement rules: action=%q", action)
+	}
+}
+
+func TestModSecRefreshRecoversFromEmptyStartup(t *testing.T) {
+	previous := modsec.Global()
+	modsec.SetGlobal(nil)
+	t.Cleanup(func() { modsec.SetGlobal(previous) })
+	probe := &modsecRefreshProbe{dirs: []string{t.TempDir()}}
+	probe.install(t)
+	d := &Daemon{}
+	d.refreshModSecRegistry()
+
+	probe.dirs = []string{modsecRuleDir(t, modsecTestRule)}
+	d.refreshModSecRegistry()
 	if probe.probes != 2 {
-		t.Fatalf("platform was probed %d times after its rule directories vanished, want 2", probe.probes)
+		t.Errorf("empty startup stopped platform detection: probes=%d", probe.probes)
+	}
+	if action, _ := modsec.Global().Action(210710); action != "pass" {
+		t.Fatalf("boot-time misdetect did not self-heal: action=%q", action)
+	}
+}
+
+func TestModSecRefreshRecoversWhenRulesDisappearButDirectoryRemains(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{1: "deny"})
+	dir := modsecRuleDir(t, modsecTestRule)
+	probe := &modsecRefreshProbe{dirs: []string{dir}}
+	probe.install(t)
+	d := &Daemon{}
+	d.refreshModSecRegistry()
+	if err := os.Remove(filepath.Join(dir, "vendor.conf")); err != nil {
+		t.Fatal(err)
+	}
+	d.refreshModSecRegistry()
+	if action, _ := modsec.Global().Action(210710); action != "pass" {
+		t.Fatal("empty tree discarded the last healthy registry")
+	}
+	probe.dirs = []string{modsecRuleDir(t, strings.ReplaceAll(modsecTestRule, "pass", "deny"))}
+	d.refreshModSecRegistry()
+	if action, _ := modsec.Global().Action(210710); action != "deny" {
+		t.Fatalf("refresh did not discover the replacement rule tree: action=%q", action)
+	}
+}
+
+func TestModSecRefreshRebuildsAfterMetadataPreservingReplacement(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{1: "deny"})
+	dir := modsecRuleDir(t, modsecTestRule)
+	path := filepath.Join(dir, "vendor.conf")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &modsecRefreshProbe{dirs: []string{dir}}
+	probe.install(t)
+	d := &Daemon{}
+	d.refreshModSecRegistry()
+	if err := os.WriteFile(path, []byte(strings.ReplaceAll(modsecTestRule, "pass", "deny")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	d.refreshModSecRegistry()
+	if action, _ := modsec.Global().Action(210710); action != "deny" {
+		t.Fatalf("registry retained outdated action %q", action)
+	}
+	if probe.probes != 1 || probe.builds != 2 {
+		t.Fatalf("refresh: probes=%d builds=%d, want 1 and 2", probe.probes, probe.builds)
+	}
+}
+
+func TestModSecRefreshRetriesIncompleteBuild(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{1: "deny"})
+	probe := &modsecRefreshProbe{dirs: []string{modsecRuleDir(t, modsecTestRule)}}
+	probe.install(t)
+	build := modsecBuildRegistry
+	modsecBuildRegistry = func(dirs []string) (*modsec.Registry, error) {
+		reg, err := build(dirs)
+		if probe.builds == 1 {
+			return reg, errors.New("transient rule read failure")
+		}
+		return reg, err
+	}
+	d := &Daemon{}
+	d.refreshModSecRegistry()
+	d.refreshModSecRegistry()
+	d.refreshModSecRegistry()
+	if probe.builds != 2 {
+		t.Fatalf("incomplete build was cached: builds=%d, want retry then cache", probe.builds)
+	}
+}
+
+func TestModSecRefreshDoesNotCacheRulesFromATransientRewrite(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{1: "deny"})
+	dir := modsecRuleDir(t, modsecTestRule)
+	path := filepath.Join(dir, "vendor.conf")
+	probe := &modsecRefreshProbe{dirs: []string{dir}}
+	probe.install(t)
+	build := modsecBuildRegistry
+	modsecBuildRegistry = func(dirs []string) (*modsec.Registry, error) {
+		if probe.builds != 0 {
+			return build(dirs)
+		}
+		// A vendor rewrite starts after fingerprinting, then rolls back
+		// after parsing. The cache key must describe the bytes parsed.
+		if err := os.WriteFile(path, []byte(strings.ReplaceAll(modsecTestRule, "pass", "deny")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		reg, err := build(dirs)
+		if restoreErr := os.WriteFile(path, []byte(modsecTestRule), 0o644); restoreErr != nil {
+			t.Fatal(restoreErr)
+		}
+		return reg, err
+	}
+	d := &Daemon{}
+	d.refreshModSecRegistry()
+	d.refreshModSecRegistry()
+	if action, _ := modsec.Global().Action(210710); action != "pass" {
+		t.Fatalf("transient contents were cached against the restored file: action=%q", action)
+	}
+	if probe.builds != 2 {
+		t.Fatalf("transient rewrite must rebuild once: builds=%d", probe.builds)
 	}
 }

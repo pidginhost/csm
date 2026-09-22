@@ -33,8 +33,8 @@ var (
 type modsecRegistryState struct {
 	dirs        []string
 	fingerprint string
-	// loaded records that a refresh has produced a non-empty rule set from
-	// these dirs. Until that happens the platform is probed on every refresh,
+	// loaded records whether the last build produced a non-empty rule set
+	// from these dirs. Otherwise the platform is probed on every refresh,
 	// because an empty registry is exactly the symptom of detection having
 	// resolved the wrong directories.
 	loaded bool
@@ -72,9 +72,9 @@ func (d *Daemon) refreshModSecRegistry() {
 		state.dirs = modsecProbeRuleDirs()
 		fingerprint, _ = modsec.RuleTreeFingerprint(state.dirs)
 	}
-	if state.loaded && fingerprint == state.fingerprint {
-		// Same files, same sizes, same timestamps as the build that produced
-		// the registry now installed. Parsing them again cannot change it.
+	if state.loaded && fingerprint != "" && fingerprint == state.fingerprint {
+		// Only a complete fingerprint can establish that the rule contents
+		// match the last successful build.
 		return
 	}
 
@@ -82,6 +82,8 @@ func (d *Daemon) refreshModSecRegistry() {
 	if err != nil {
 		csmlog.Warn("modsec rule-action registry build had errors", "err", err, "rules_loaded", reg.Len())
 	}
+	state.loaded = reg.Len() > 0
+	state.fingerprint = ""
 	// ReplaceGlobal keeps a previously-healthy registry rather than blanking
 	// it to empty: the vendor rule tree is briefly empty during cPanel's
 	// modsec_assemble rewrite, and a blank registry loses known pass and deny
@@ -95,8 +97,9 @@ func (d *Daemon) refreshModSecRegistry() {
 			"previous_rules", previousRules, "dirs", len(state.dirs))
 		return
 	}
-	state.fingerprint = fingerprint
-	state.loaded = true
+	if err == nil {
+		state.fingerprint = reg.Fingerprint()
+	}
 	csmlog.Info("modsec rule-action registry loaded", "rules", reg.Len(), "dirs", len(state.dirs))
 }
 
