@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"runtime"
+	"sync/atomic"
 )
 
 const (
@@ -68,17 +69,37 @@ func newScanBudget(slots int) *scanBudget {
 	return &scanBudget{slots: make(chan struct{}, slots)}
 }
 
-// acquire blocks until a slot is free or ctx is done, reporting whether a slot
-// was taken. A caller that gets false must not release.
-func (b *scanBudget) acquire(ctx context.Context) bool {
+// acquire blocks until a slot is free or ctx is done. The runner and its
+// asynchronous execution share ownership so cancellation cannot free a slot
+// while a check that ignores its context is still consuming resources.
+func (b *scanBudget) acquire(ctx context.Context) *scanSlot {
 	select {
 	case b.slots <- struct{}{}:
-		return true
+		slot := &scanSlot{budget: b}
+		slot.owners.Store(1)
+		return slot
 	case <-ctx.Done():
-		return false
+		return nil
 	}
 }
 
-func (b *scanBudget) release() { <-b.slots }
-
 func (b *scanBudget) size() int { return cap(b.slots) }
+
+func (b *scanBudget) hasCapacity() bool { return len(b.slots) < b.size() }
+
+type scanSlot struct {
+	budget *scanBudget
+	owners atomic.Int32
+}
+
+func (s *scanSlot) retain() {
+	if s != nil {
+		s.owners.Add(1)
+	}
+}
+
+func (s *scanSlot) release() {
+	if s != nil && s.owners.Add(-1) == 0 {
+		<-s.budget.slots
+	}
+}

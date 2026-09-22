@@ -2,12 +2,20 @@
 
 Deep checks run every 60 minutes and cover thorough filesystem, CMS, email, and database scans.
 
-Checks run concurrently under one budget for the whole daemon, sized from the
-machine's core count. A scan started from the Web UI or the CLI while a
-scheduled one is running shares that budget instead of adding to it. The
-service unit also gives CSM a lower CPU weight than the default, so the web
-server and database win the machine when they need it, while an idle host still
-lets a scan use what it asks for.
+Scheduled and account scan checks share one budget within the daemon, sized
+from the machine's core count with a minimum of two and a maximum of five
+concurrent checks. Web UI scans and CLI jobs submitted with `csm scan --full`
+share this budget. Standalone CLI scans run in a separate process. A cancelled
+or timed-out check retains its slot until it actually exits, while its caller
+can return promptly. Waiting for slots occupied by another scan does not count
+as stalled dispatch in queue health.
+
+The real-time scanner has a separate pool of two to sixteen workers, also
+sized from the core count. Its two-worker minimum lets other events progress
+while one content scan is slow. Both the packaged and installer-generated
+service units give CSM a lower CPU weight than the default. Under contention,
+this favors sibling services with default weights while allowing scans to use
+spare CPU on an idle host; it is not a CPU quota.
 
 ## Scan coverage alerts
 

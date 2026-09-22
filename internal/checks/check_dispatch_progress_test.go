@@ -66,10 +66,10 @@ func TestCheckDispatchProgressKeepsOwnedDeadlines(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, progress := WithCheckDispatchProgress(context.Background())
 		_, unrelated := WithCheckDispatchProgress(context.Background())
-		tasks := checkDispatches.begin(2, 2)
+		tasks := checkDispatches.begin(2, newScanBudget(2))
 		checkDispatches.observe(ctx, tasks)
 		for _, task := range tasks {
-			task.admit()
+			task.admit(context.Background())
 		}
 		heavy, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()

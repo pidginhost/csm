@@ -11,7 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
-- Scans no longer size their own concurrency. One budget now covers the whole daemon, taken from the machine's core count, so a scan started from the interface during a scheduled one no longer doubles the load. The real-time scanner sizes its workers the same way, and the service unit yields CPU to the web server and database under contention.
+- Scheduled and account scans share one concurrency budget sized from the machine's core count, so a scan started from the interface during a scheduled one no longer doubles the load. A check still running after its caller gave up keeps its slot until it exits. The real-time scanner sizes its separate worker pool the same way, and both the packaged and the installer-generated service units yield CPU to the web server and database under contention.
 - The mutex and block profiles served by the optional debug endpoint were always empty, because the daemon never turned on the sampling they need. They now record while the endpoint is enabled, so a contention profile taken during an incident shows what was actually waiting.
 - Contention sampling stays active until the last debug listener exits, including when another listener fails. Failed binds do not enable or retain sampling.
 - Recovery rescans after a real-time event storm no longer pile up on each other. They run one at a time under a time budget, resume where they stopped, keep their original coverage window, and retry once the storm ends, so a storm can no longer drive the daemon into the sustained CPU use that produced more dropped events.
