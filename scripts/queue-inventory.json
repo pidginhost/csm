@@ -169,18 +169,6 @@
       "queue": "events"
     },
     {
-      "id": "internal/checks/account_scan.go::runAccountChecksBounded::sem::channel::1",
-      "path": "internal/checks/account_scan.go",
-      "owner": "runAccountChecksBounded",
-      "target": "sem",
-      "kind": "channel",
-      "source": "make(chan struct{}, parallel)",
-      "capacity": "parallel",
-      "class": "work",
-      "rationale": "Bounds concurrent runner wrappers; the dispatch owner tracks pending checks before slot admission.",
-      "queue": "checks.dispatch"
-    },
-    {
       "id": "internal/checks/check_execution_health.go::*checkExecutionMonitor.begin::done::channel::1",
       "path": "internal/checks/check_execution_health.go",
       "owner": "*checkExecutionMonitor.begin",
@@ -317,15 +305,18 @@
       "queue": "checks.reputation_queries"
     },
     {
-      "id": "internal/checks/runner.go::runParallelWithContext::sem::channel::1",
-      "path": "internal/checks/runner.go",
-      "owner": "runParallelWithContext",
-      "target": "sem",
+      "id": "internal/checks/scan_budget.go::newScanBudget::slots::channel::1",
+      "path": "internal/checks/scan_budget.go",
+      "owner": "newScanBudget",
+      "target": "slots",
       "kind": "channel",
-      "source": "make(chan struct{}, 5)",
-      "capacity": "5",
+      "source": "make(chan struct{}, slots)",
+      "capacity": "slots",
+      "defaults": [
+        "slots = 1"
+      ],
       "class": "work",
-      "rationale": "Bounds concurrent runner wrappers; the dispatch owner tracks pending checks before slot admission.",
+      "rationale": "Bounds concurrent checks across every scan path; the dispatch owner tracks pending checks before slot admission.",
       "queue": "checks.dispatch"
     },
     {
