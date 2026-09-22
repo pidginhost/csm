@@ -4,12 +4,55 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/obs"
 )
+
+const (
+	// mutexProfileFraction samples one in every N mutex contention events.
+	// Sampling limits stack collection overhead on busy hosts.
+	mutexProfileFraction = 100
+
+	// blockProfileRate samples one blocking event per this many nanoseconds
+	// spent blocked, so a goroutine parked for 10 microseconds is recorded
+	// with probability one. Shorter waits are sampled with proportionally lower
+	// probability, not excluded. Even unsampled waits incur timing overhead.
+	blockProfileRate = 10_000
+)
+
+// The runtime rates are process-wide. A listener stopping must not switch off
+// another listener that is still serving profiles.
+var contentionProfiles struct {
+	sync.Mutex
+	listeners int
+}
+
+// enableContentionProfiles turns on the sampling the mutex and block profiles
+// depend on for the lifetime of successfully bound listeners.
+func enableContentionProfiles() {
+	contentionProfiles.Lock()
+	defer contentionProfiles.Unlock()
+	if contentionProfiles.listeners == 0 {
+		runtime.SetMutexProfileFraction(mutexProfileFraction)
+		runtime.SetBlockProfileRate(blockProfileRate)
+	}
+	contentionProfiles.listeners++
+}
+
+func disableContentionProfiles() {
+	contentionProfiles.Lock()
+	defer contentionProfiles.Unlock()
+	contentionProfiles.listeners--
+	if contentionProfiles.listeners == 0 {
+		runtime.SetMutexProfileFraction(0)
+		runtime.SetBlockProfileRate(0)
+	}
+}
 
 // pprofListen is replaceable in tests so listener lifecycle coverage does not
 // depend on the test sandbox allowing real sockets.
@@ -62,6 +105,10 @@ func (d *Daemon) startPprofListener(addr string) bool {
 		return false
 	}
 
+	// Sampling starts with the listener, not at daemon start: a host with no
+	// pprof bind pays nothing for profiles nobody can fetch.
+	enableContentionProfiles()
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           newPprofMux(),
@@ -81,6 +128,7 @@ func (d *Daemon) startPprofListener(addr string) bool {
 	})
 	obs.Go("pprof-shutdown", func() {
 		defer d.wg.Done()
+		defer disableContentionProfiles()
 		select {
 		case <-d.stopCh:
 			_ = srv.Close()

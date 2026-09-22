@@ -871,6 +871,7 @@ retention:
 debug:
   pprof_listen: ""                      # e.g. "127.0.0.1:6060"; MUST be loopback. Empty disables.
                                         # Reach it over SSH: go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+                                        # While listening, samples mutex and block contention; adds CPU overhead even without a profile request.
 
 # --- Sentry (error reporting) ---
 sentry:
