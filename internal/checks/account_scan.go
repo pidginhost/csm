@@ -188,7 +188,7 @@ func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *sta
 	var findings []alert.Finding
 	var wg sync.WaitGroup
 	budget := scanBudgetFrom(ctx)
-	dispatches := checkDispatches.begin(len(checks), budget.size())
+	dispatches := checkDispatches.begin(len(checks), budget)
 	checkDispatches.observe(ctx, dispatches)
 
 	for i, nc := range checks {
@@ -201,12 +201,10 @@ func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *sta
 		// daemon alive.
 		obs.SafeGo("account-scan-runner", task.wrap(func() {
 			defer wg.Done()
-			if !budget.acquire(ctx) {
+			if !task.admit(ctx) {
 				task.withdraw(ctx)
 				return
 			}
-			defer budget.release()
-			task.admit()
 			if ctx.Err() != nil {
 				task.withdraw(ctx)
 				return

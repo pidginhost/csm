@@ -63,7 +63,7 @@ func TestCheckDispatchHealthSnapshotDoesNotWaitForContext(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			m := newCheckDispatchMonitor()
-			task := m.begin(1, 1)[0]
+			task := m.begin(1, newScanBudget(1))[0]
 			parent, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			entered, release := make(chan struct{}), make(chan struct{})
@@ -74,7 +74,7 @@ func TestCheckDispatchHealthSnapshotDoesNotWaitForContext(t *testing.T) {
 			go func() {
 				defer close(done)
 				task.wrap(func() {
-					task.admit()
+					task.admit(context.Background())
 					if deadline {
 						task.executing(ctx)
 					} else {
@@ -100,7 +100,7 @@ func TestCheckDispatchHealthSnapshotDoesNotWaitForContext(t *testing.T) {
 func TestCheckDispatchHealthPendingAndControlPhases(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newCheckDispatchMonitor()
-		tasks := m.begin(3, 2)
+		tasks := m.begin(3, newScanBudget(2))
 		status := checkDispatchStatus(t, m)
 		if status.Depth != 3 || status.InFlight != 0 || status.Status != "ok" {
 			t.Fatalf("batch was not registered before dispatch: %+v", status)
@@ -110,7 +110,7 @@ func TestCheckDispatchHealthPendingAndControlPhases(t *testing.T) {
 		if status.Depth != 3 || status.LagSeconds != 60 || status.Reason != "backlog_lag" {
 			t.Fatalf("unused worker capacity concealed stuck dispatch: %+v", status)
 		}
-		tasks[0].admit()
+		tasks[0].admit(context.Background())
 		time.Sleep(time.Minute)
 		status = checkDispatchStatus(t, m)
 		if status.Depth != 2 || status.InFlight != 1 || status.ProcessingSeconds != 60 || status.Reason != "processing_lag" {
@@ -129,11 +129,11 @@ func TestCheckDispatchHealthPendingAndControlPhases(t *testing.T) {
 func TestCheckDispatchHealthUsesExecutionDeadlineThenControlBudget(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newCheckDispatchMonitor()
-		tasks := m.begin(3, 2)
+		tasks := m.begin(3, newScanBudget(2))
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 		for _, task := range tasks[:2] {
-			task.admit()
+			task.admit(context.Background())
 			task.executing(ctx)
 		}
 		time.Sleep(6 * time.Minute)
@@ -148,7 +148,7 @@ func TestCheckDispatchHealthUsesExecutionDeadlineThenControlBudget(t *testing.T)
 			t.Fatalf("result handling borrowed the heavy check deadline: %+v", status)
 		}
 		tasks[0].wrap(func() {})()
-		tasks[2].admit()
+		tasks[2].admit(context.Background())
 		tasks[2].executing(ctx)
 		status = checkDispatchStatus(t, m)
 		if status.Depth != 0 || status.InFlight != 2 || status.Status != "ok" {
@@ -163,10 +163,10 @@ func TestCheckDispatchHealthUsesExecutionDeadlineThenControlBudget(t *testing.T)
 func TestCheckDispatchHealthDoesNotHideFreeWorkerSlots(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newCheckDispatchMonitor()
-		tasks := m.begin(3, 2)
+		tasks := m.begin(3, newScanBudget(2))
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
-		tasks[0].admit()
+		tasks[0].admit(context.Background())
 		tasks[0].executing(ctx)
 		time.Sleep(time.Minute)
 		status := checkDispatchStatus(t, m)
@@ -188,7 +188,7 @@ func TestCheckDispatchHealthCountsAbnormalWrappers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				m := newCheckDispatchMonitor()
-				tasks := m.begin(3, 3)
+				tasks := m.begin(3, newScanBudget(3))
 				var wg sync.WaitGroup
 				var recovered atomic.Int32
 				for _, task := range tasks {
@@ -201,7 +201,7 @@ func TestCheckDispatchHealthCountsAbnormalWrappers(t *testing.T) {
 							}
 						}()
 						task.wrap(func() {
-							task.admit()
+							task.admit(context.Background())
 							if panics {
 								panic("controlled dispatch failure")
 							}
@@ -236,7 +236,7 @@ func TestCheckDispatchHealthDeadlineBeforeExecutionCountsLoss(t *testing.T) {
 		m := newCheckDispatchMonitor()
 		for _, deadline := range []bool{false, true} {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			tasks := m.begin(3, 2)
+			tasks := m.begin(3, newScanBudget(2))
 			if deadline {
 				<-ctx.Done()
 			} else {
@@ -261,12 +261,12 @@ func TestCheckDispatchHealthDeadlineBeforeExecutionCountsLoss(t *testing.T) {
 func TestCheckDispatchHealthLateDeadlineDoesNotUndoCompletedWork(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newCheckDispatchMonitor()
-		task := m.begin(1, 1)[0]
+		task := m.begin(1, newScanBudget(1))[0]
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		filtered := false
 		task.wrap(func() {
-			task.admit()
+			task.admit(context.Background())
 			// A throttle refusal completes the scheduling decision without
 			// executing a check. Later cancellation cannot undo that decision.
 			filtered = true
@@ -444,11 +444,11 @@ func TestCheckDispatchHealthRunnerDeadlinePartitionsLoss(t *testing.T) {
 func TestCheckDispatchHealthProgressDoesNotHideOverduePeer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newCheckDispatchMonitor()
-		held := m.begin(1, 1)[0]
-		held.admit()
+		held := m.begin(1, newScanBudget(1))[0]
+		held.admit(context.Background())
 		for range 3 {
-			peer := m.begin(1, 1)[0]
-			peer.admit()
+			peer := m.begin(1, newScanBudget(1))[0]
+			peer.admit(context.Background())
 			time.Sleep(30 * time.Second)
 			peer.wrap(func() {})()
 		}
@@ -467,8 +467,8 @@ func TestCheckDispatchHealthProgressDoesNotHideOverduePeer(t *testing.T) {
 func TestCheckDispatchHealthWithoutADeadlineIsNotLate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := newCheckDispatchMonitor()
-		tasks := m.begin(1, 1)
-		tasks[0].admit()
+		tasks := m.begin(1, newScanBudget(1))
+		tasks[0].admit(context.Background())
 		tasks[0].executing(context.Background())
 		time.Sleep(time.Hour)
 		if status := checkDispatchStatus(t, m); status.Status != "ok" || status.InFlight != 1 {

@@ -22,14 +22,15 @@ type checkDispatchMonitor struct {
 type checkDispatchBatch struct {
 	monitor  *checkDispatchMonitor
 	tasks    map[*checkDispatch]struct{}
-	parallel int
+	budget   *scanBudget
 	progress time.Time
 	observer *CheckDispatchProgress
 }
 
-// All mutable task and batch fields are guarded by the monitor mutex.
+// Timing, failure and batch membership fields are guarded by the monitor mutex.
 type checkDispatch struct {
 	batch    *checkDispatchBatch
+	slot     *scanSlot // set by the runner before starting the execution
 	started  time.Time
 	deadline time.Time
 	failed   bool
@@ -42,11 +43,11 @@ func newCheckDispatchMonitor() *checkDispatchMonitor {
 	}
 }
 
-func (m *checkDispatchMonitor) begin(count, parallel int) []*checkDispatch {
+func (m *checkDispatchMonitor) begin(count int, budget *scanBudget) []*checkDispatch {
 	now := time.Now()
 	batch := &checkDispatchBatch{
 		monitor: m, tasks: make(map[*checkDispatch]struct{}, count),
-		parallel: parallel, progress: now,
+		budget: budget, progress: now,
 	}
 	tasks := make([]*checkDispatch, count)
 	for i := range tasks {
@@ -61,7 +62,11 @@ func (m *checkDispatchMonitor) begin(count, parallel int) []*checkDispatch {
 	return tasks
 }
 
-func (t *checkDispatch) admit() {
+func (t *checkDispatch) admit(ctx context.Context) bool {
+	t.slot = t.batch.budget.acquire(ctx)
+	if t.slot == nil {
+		return false
+	}
 	m := t.batch.monitor
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -69,6 +74,7 @@ func (t *checkDispatch) admit() {
 	t.started = now
 	t.deadline = now.Add(checkDispatchControlBudget)
 	t.batch.progressed(now)
+	return true
 }
 
 func (t *checkDispatch) executing(ctx context.Context) {
@@ -117,6 +123,7 @@ func (t *checkDispatch) wrap(fn func()) func() {
 	return func() {
 		completed := false
 		defer func() {
+			t.slot.release()
 			m := t.batch.monitor
 			m.mu.Lock()
 			defer m.mu.Unlock()
@@ -161,9 +168,9 @@ func (m *checkDispatchMonitor) QueueStatus(now time.Time) queuehealth.Status {
 		if waiting > 0 {
 			lag := now.Sub(batch.progress)
 			status.LagSeconds = max(status.LagSeconds, lag.Seconds())
-			// A busy pool is expected while checks use their own budgets.
-			// Free slots with no progress expose stalled dispatch separately.
-			dispatchLate = dispatchLate || (running < batch.parallel && lag >= checkDispatchControlBudget)
+			// Other batches and withdrawn executions can still own slots.
+			// Only unused shared capacity indicates stalled dispatch.
+			dispatchLate = dispatchLate || (batch.budget.hasCapacity() && lag >= checkDispatchControlBudget)
 		}
 	}
 	switch {

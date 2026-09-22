@@ -1038,7 +1038,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// operator-triggered account scan cannot each run their own full set of
 	// checks on the same cores.
 	budget := scanBudgetFrom(scanCtx)
-	dispatches := checkDispatches.begin(len(enabledChecks), budget.size())
+	dispatches := checkDispatches.begin(len(enabledChecks), budget)
 	checkDispatches.observe(scanCtx, dispatches)
 
 	for i, nc := range enabledChecks {
@@ -1051,12 +1051,10 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		// check_panic immediately with a stack trace.
 		obs.SafeGo("check-runner", task.wrap(func() {
 			defer wg.Done()
-			if !budget.acquire(scanCtx) {
+			if !task.admit(scanCtx) {
 				task.withdraw(scanCtx)
 				return
 			}
-			defer budget.release()
-			task.admit()
 
 			if scanCtx.Err() != nil {
 				task.withdraw(scanCtx)

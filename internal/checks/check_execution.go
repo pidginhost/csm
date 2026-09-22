@@ -20,6 +20,7 @@ func executeCheckAsync(ctx context.Context, component string, fn func() []alert.
 }
 
 func (e *checkExecution) run(component string, fn func() []alert.Finding) {
+	defer e.slot.release()
 	e.monitor.mu.Lock()
 	e.started = time.Now()
 	e.monitor.mu.Unlock()

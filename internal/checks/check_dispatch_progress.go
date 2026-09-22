@@ -57,16 +57,15 @@ func (p *CheckDispatchProgress) Snapshot(now time.Time) DispatchProgressSnapshot
 	defer p.monitor.mu.Unlock()
 	s := DispatchProgressSnapshot{Active: len(p.batches) != 0, LastProgress: p.last}
 	for batch := range p.batches {
-		waiting, running := 0, 0
+		waiting := 0
 		for task := range batch.tasks {
 			if task.started.IsZero() {
 				waiting++
 			} else {
-				running++
 				s.Overdue = s.Overdue || !now.Before(task.deadline)
 			}
 		}
-		if waiting > 0 && running < batch.parallel && now.Sub(batch.progress) >= checkDispatchControlBudget {
+		if waiting > 0 && batch.budget.hasCapacity() && now.Sub(batch.progress) >= checkDispatchControlBudget {
 			s.Overdue = true
 		}
 	}

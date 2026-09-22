@@ -29,6 +29,7 @@ func newCheckExecutionMonitor() *checkExecutionMonitor {
 type checkExecution struct {
 	monitor   *checkExecutionMonitor
 	dispatch  *checkDispatch
+	slot      *scanSlot
 	queued    time.Time
 	started   time.Time // guarded by monitor.mu
 	deadline  time.Time
@@ -59,6 +60,10 @@ func (m *checkExecutionMonitor) execute(ctx context.Context, component string, f
 	execution := m.begin(deadline)
 	execution.dispatch = checkDispatchFrom(ctx)
 	execution.dispatch.executing(ctx)
+	if execution.dispatch != nil {
+		execution.slot = execution.dispatch.slot
+		execution.slot.retain()
+	}
 	go execution.run(component, fn)
 	return execution
 }
