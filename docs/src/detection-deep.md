@@ -74,8 +74,8 @@ The PHP content scan reuses a clean result only when the file's identity and
 timestamps still match a stable read. Recently changed files, files that change
 during inspection, and files without usable identity metadata are read again
 on the next visit. Older cached results are refreshed as files are visited after
-upgrading; interrupted scans retain progress. Every sixth host scan bypasses
-the cache, and explicit full-content scans always read the files they visit.
+upgrading; interrupted scans retain progress. Periodic host scans bypass the
+cache, and explicit full-content scans always read the files they visit.
 
 PHP execution heuristics distinguish attribute metadata and multiline string
 contents from executable calls. Literal examples do not establish callable
