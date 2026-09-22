@@ -12,6 +12,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 ### Fixed
 
 - A rules download or package upgrade that leaves the rules unchanged no longer queues a full rescan of every file on the host. On hosts with a rules download URL set, the unchanged download rewrote the installed rules daily and after each restart, each time queuing a full rescan and a warning finding.
+- A rules file reached through a symbolic link is now watched by the file it points to, so updating it queues the rescan that new rules need. A rules file that cannot be read, or is replaced while being read, keeps its last known contents and is retried.
 - Judging an executable written to a temporary directory no longer walks the process tree when nothing about the host could lower the severity. On a server with no package transaction running and no control panel installed, the walk was pure cost on every such write.
 - Process ancestry is available before file monitoring starts, including on hosts without kernel monitoring. Starting the optional process cache no longer races with ancestry readers.
 - Nightly control panel maintenance no longer pages as a system compromise. A cron drop-in or a staged executable written by the panel's own scheduled work is reported as a Warning instead of High or Critical, recognised by the program a parent process is actually running rather than the name it reports. Nothing is skipped, and a cron file carrying persistence tokens still reports at full severity.
@@ -20,7 +21,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
-- Signature update tracking now retries unreadable or changing rules without losing the last verified contents, and rejects files that could stall the watcher. Rules reached through symbolic links are tracked by their target contents.
 - Cron findings containing known persistence patterns now retain their severity during maintenance, including when the payload is encoded.
 - Control-panel provenance now requires a resolved executable even when process details come from the cache. Live cron writes containing persistence tokens retain their original severity during maintenance.
 
