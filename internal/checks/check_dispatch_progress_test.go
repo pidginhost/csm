@@ -30,9 +30,9 @@ func TestCheckDispatchProgressRealRunners(t *testing.T) {
 				go func() {
 					defer close(done)
 					if host {
-						runParallelWithContext(ctx, &config.Config{}, nil, list, "test", true)
+						runParallelWithContext(withScanBudget(ctx, 4), &config.Config{}, nil, list, "test", true)
 					} else {
-						runAccountChecksBounded(ctx, &config.Config{}, nil, list, 4)
+						runAccountChecksBounded(withScanBudget(ctx, 4), &config.Config{}, nil, list)
 					}
 				}()
 				synctest.Wait()

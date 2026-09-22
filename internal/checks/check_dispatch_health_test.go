@@ -281,10 +281,13 @@ func TestCheckDispatchHealthLateDeadlineDoesNotUndoCompletedWork(t *testing.T) {
 
 func TestCheckDispatchHealthTracksBothRunners(t *testing.T) {
 	for _, host := range []bool{false, true} {
-		name, parallel := "account", 4
+		name := "account"
 		if host {
-			name, parallel = "host", 5
+			name = "host"
 		}
+		// Both runners now draw from the same host-wide budget, so the
+		// expected in-flight count is that budget, not a per-path constant.
+		const parallel = 4
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				previous, previousTimeout := checkDispatches, timeoutForFunc
@@ -306,10 +309,10 @@ func TestCheckDispatchHealthTracksBothRunners(t *testing.T) {
 				done := make(chan []alert.Finding, 1)
 				go func() {
 					if host {
-						findings, _ := runParallel(&config.Config{}, nil, checks, "test", true)
+						findings, _ := runParallelWithContext(withScanBudget(context.Background(), parallel), &config.Config{}, nil, checks, "test", true)
 						done <- findings
 					} else {
-						done <- runAccountChecksBounded(context.Background(), &config.Config{}, nil, checks, parallel)
+						done <- runAccountChecksBounded(withScanBudget(context.Background(), parallel), &config.Config{}, nil, checks)
 					}
 				}()
 				synctest.Wait()
@@ -359,7 +362,7 @@ func TestCheckDispatchHealthConcurrentBatchesCancelQueuedDemand(t *testing.T) {
 		}
 		done := make(chan []alert.Finding, 4)
 		for range 4 {
-			go func() { done <- runAccountChecksBounded(ctx, &config.Config{}, nil, checks, 2) }()
+			go func() { done <- runAccountChecksBounded(withScanBudget(ctx, 2), &config.Config{}, nil, checks) }()
 		}
 		synctest.Wait()
 		status := checkDispatchStatus(t, checkDispatches)
@@ -388,10 +391,13 @@ func TestCheckDispatchHealthConcurrentBatchesCancelQueuedDemand(t *testing.T) {
 
 func TestCheckDispatchHealthRunnerDeadlinePartitionsLoss(t *testing.T) {
 	for _, host := range []bool{false, true} {
-		name, parallel := "account", 4
+		name := "account"
 		if host {
-			name, parallel = "host", 5
+			name = "host"
 		}
+		// Both runners now draw from the same host-wide budget, so the
+		// expected in-flight count is that budget, not a per-path constant.
+		const parallel = 4
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				previousDispatch, previousExecutions := checkDispatches, checkExecutions
@@ -413,9 +419,9 @@ func TestCheckDispatchHealthRunnerDeadlinePartitionsLoss(t *testing.T) {
 				}
 				var findings []alert.Finding
 				if host {
-					findings, _ = runParallelWithContext(ctx, &config.Config{}, nil, checks, "test", true)
+					findings, _ = runParallelWithContext(withScanBudget(ctx, parallel), &config.Config{}, nil, checks, "test", true)
 				} else {
-					findings = runAccountChecksBounded(ctx, &config.Config{}, nil, checks, parallel)
+					findings = runAccountChecksBounded(withScanBudget(ctx, parallel), &config.Config{}, nil, checks)
 				}
 				synctest.Wait()
 				dispatch := checkDispatchStatus(t, checkDispatches)

@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Scans no longer size their own concurrency. One budget now covers the whole daemon, taken from the machine's core count, so a scan started from the interface during a scheduled one no longer doubles the load. The real-time scanner sizes its workers the same way, and the service unit yields CPU to the web server and database under contention.
 - Recovery rescans after a real-time event storm no longer pile up on each other. They run one at a time under a time budget, resume where they stopped, keep their original coverage window, and retry once the storm ends, so a storm can no longer drive the daemon into the sustained CPU use that produced more dropped events.
 - Stopping the daemon on a busy host no longer waits for the whole real-time scan backlog. The drain now has a time budget for starting queued scans; scans already in progress still finish before shutdown.
 - Rule-action refreshes recover after an empty startup or missing vendor rules, and pick up replacements that preserve timestamps or use linked files. Transient read failures are retried, and rules appended during a refresh are picked up on the next check.

@@ -2,6 +2,13 @@
 
 Deep checks run every 60 minutes and cover thorough filesystem, CMS, email, and database scans.
 
+Checks run concurrently under one budget for the whole daemon, sized from the
+machine's core count. A scan started from the Web UI or the CLI while a
+scheduled one is running shares that budget instead of adding to it. The
+service unit also gives CSM a lower CPU weight than the default, so the web
+server and database win the machine when they need it, while an idle host still
+lets a scan use what it asks for.
+
 ## Scan coverage alerts
 
 PHP, JavaScript, YARA, host-wide WordPress database coverage, and unfinished email

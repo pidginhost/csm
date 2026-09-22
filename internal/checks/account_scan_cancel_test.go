@@ -40,7 +40,7 @@ func TestRunAccountScanCheckCancelledParentEmitsNoTimeout(t *testing.T) {
 // start at all; the slot wait used to ignore the context, so every queued
 // check still ran (and then reported a timeout) after the operator cancelled.
 func TestRunAccountChecksBoundedSkipsQueuedChecksAfterCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(withScanBudget(context.Background(), 2))
 	var started atomic.Int32
 	release := make(chan struct{})
 	blocker := func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
@@ -54,7 +54,7 @@ func TestRunAccountChecksBoundedSkipsQueuedChecksAfterCancel(t *testing.T) {
 	}
 
 	done := make(chan []alert.Finding, 1)
-	go func() { done <- runAccountChecksBounded(ctx, &config.Config{}, nil, checks, 2) }()
+	go func() { done <- runAccountChecksBounded(ctx, &config.Config{}, nil, checks) }()
 	for started.Load() < 2 {
 		time.Sleep(time.Millisecond)
 	}
