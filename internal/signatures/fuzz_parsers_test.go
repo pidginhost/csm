@@ -2,8 +2,27 @@ package signatures
 
 import (
 	"bytes"
+	"regexp"
 	"testing"
 )
+
+// Custom YAML rules may use syntax absent from the shipped rules, so mutate
+// both the regex and its input instead of holding the rule set fixed.
+func FuzzRegexGatesAreSound(f *testing.F) {
+	for _, seed := range regexGateSoundnessCases {
+		f.Add(seed.src, []byte(seed.content))
+	}
+	f.Fuzz(func(t *testing.T, src string, content []byte) {
+		re, err := regexp.Compile(src)
+		if err != nil {
+			return
+		}
+		cr := &compiledRegex{Regexp: re, gate: gateFor(src)}
+		if got, want := newRegexEval(content).match(cr), re.Match(content); got != want {
+			t.Fatalf("gate %q changed match for regex %q on %q: got %t, want %t", cr.gate, src, content, got, want)
+		}
+	})
+}
 
 func FuzzReferencedPayloadPaths(f *testing.F) {
 	f.Add([]byte("<?php include'payload.jpe';"))

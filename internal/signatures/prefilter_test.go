@@ -82,6 +82,58 @@ func TestGateAdmits(t *testing.T) {
 	}
 }
 
+var regexGateSoundnessCases = []struct {
+	name    string
+	src     string
+	content string
+	want    bool
+}{
+	{"zero repeat", `(?i)^(?:system){0}$`, "", true},
+	{"optional repeat absent", `(?i)^(?:system){0,2}$`, "", true},
+	{"optional repeat at maximum", `(?i)^(?:system){0,2}$`, "SYSTEMsystem", true},
+	{"required repeat at minimum", `(?i)^(?:system){1,3}$`, "system", true},
+	{"required repeat at maximum", `(?i)^(?:system){1,3}$`, "systemSYSTEM\u017fy\u017ftem", true},
+	{"required repeat beyond maximum", `(?i)^(?:system){1,3}$`, "systemsystemsystemsystem", false},
+	{"repeat of nullable operand", `(?i)^(?:(?:system)?){2,3}$`, "", true},
+	{"plus of nullable operand", `(?i)^(?:(?:system)?)+$`, "", true},
+	{"nested alternative without literal", `(?i)^(?:system|(?:key|[0-9]+))$`, "123", true},
+	{"nested empty alternative", `(?i)^(?:system|(?:key|))$`, "", true},
+	{"empty alternative before required literal", `(?i)^(?:system|)key$`, "\u212Aey", true},
+	{"empty expression", `(?i)`, "", true},
+	{"empty group", `(?i)^(?:)$`, "", true},
+	{"empty alternative with assertion", `(?i)^(?:system|\b)$`, "", false},
+	{"nested required alternatives", `(?i)^(?:system|(?:key|eval)){1,2}$`, "\u212AeyEVAL", true},
+	{"scoped case flags", `(?i)^(?-i:AB)(?i:cd)$`, "ABcD", true},
+	{"scoped case flags reject wrong case", `(?i)^(?-i:AB)(?i:cd)$`, "abCD", false},
+	{"flags in alternate branch", `(?i)^(?:(?-i:AB)|system)$`, "\u017fy\u017ftem", true},
+	{"unscoped flags within group", `(?i)^(?:foo(?-i)BAR)baz$`, "FOOBARbaz", true},
+	{"case sensitive long s", `(?i)^(?-i:\x{17f}ystem)$`, "\u017fystem", true},
+	{"folded literal and content", `(?i)^\x{17f}y\x{17f}tem\x{212a}ey$`, "SYSTEMkey", true},
+	{"folded character class", `(?i)^[s]y[s]tem$`, "\u017fy\u017ftem", true},
+	{"invalid UTF-8 before literal", `(?i)^\x{fffd}system$`, "\xffSYSTEM", true},
+	{"non-ASCII rune between ASCII runs", `(?i)^ab\x{e9}cd$`, "AB\u00c9CD", true},
+}
+
+// Every positive case is a known match, so soundness cannot pass merely
+// because none of the test inputs exercises the regex branch in question.
+func TestRegexEvalMatchesRegexpOnSyntaxEdges(t *testing.T) {
+	for _, tt := range regexGateSoundnessCases {
+		t.Run(tt.name, func(t *testing.T) {
+			cr := &compiledRegex{Regexp: regexp.MustCompile(tt.src), gate: gateFor(tt.src)}
+			content := []byte(tt.content)
+			if got := cr.Match(content); got != tt.want {
+				t.Fatalf("invalid witness: regexp match = %t, want %t", got, tt.want)
+			}
+			eval := newRegexEval(content)
+			for attempt := range 2 {
+				if got := eval.match(cr); got != tt.want {
+					t.Fatalf("attempt %d: gated match = %t, want %t (gate %q)", attempt, got, tt.want, cr.gate)
+				}
+			}
+		})
+	}
+}
+
 // A gate must never reject content its regex matches. The inputs below
 // reach the regexes through the case-folding paths most likely to be
 // missed: mixed case, the long s and the Kelvin sign.

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/corpusgate"
 )
 
@@ -25,6 +26,9 @@ func referenceScan(s *Scanner, content []byte, fileExt string, contentSize int64
 		return nil
 	}
 	extLower := strings.ToLower(fileExt)
+	if contenttype.IsArchiveExt(extLower) && contenttype.IsCompressedArchive(content) {
+		return nil
+	}
 	if contentSize < int64(len(content)) {
 		contentSize = int64(len(content))
 	}
@@ -88,6 +92,36 @@ func referenceScan(s *Scanner, content []byte, fileExt string, contentSize int64
 		}
 	}
 	return matches
+}
+
+func TestReferenceScanArchivePolicy(t *testing.T) {
+	rule := Rule{Name: "marker", Regexes: []string{"marker"}, MinMatch: 1}
+	if err := rule.compile(); err != nil {
+		t.Fatal(err)
+	}
+	s := &Scanner{rules: []Rule{rule}}
+	matched := []Match{{RuleName: "marker", Matched: []string{"(?i)marker"}}}
+	for _, tt := range []struct {
+		name    string
+		content string
+		ext     string
+		want    []Match
+	}{
+		{"archive name and magic", "PK\x03\x04marker", ".zip", nil},
+		{"mixed case archive extension", "PK\x03\x04marker", ".ZiP", nil},
+		{"archive magic on executable", "PK\x03\x04marker", ".php", matched},
+		{"archive name without magic", "marker", ".zip", matched},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			content := []byte(tt.content)
+			if got := s.ScanContent(content, tt.ext); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("scanner = %+v, want %+v", got, tt.want)
+			}
+			if got := referenceScan(s, content, tt.ext, int64(len(content))); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("reference = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
 }
 
 // oracleSamples collects every string literal in this package's tests. The
@@ -271,7 +305,8 @@ func TestYAMLGatesSoundOnCleanCorpus(t *testing.T) {
 }
 
 // BenchmarkShippedRulesRealtimeShape scans the PHP files of the clean corpus
-// the way realtime does: the shipped rules over at most the first 64 KiB.
+// the way realtime does: the shipped rules over at most the first 64 KiB,
+// retaining the complete file size for per-rule bounds and exemptions.
 //
 //	YARA_FP_CORPUS=/path/to/corpus go test ./internal/signatures -run XXX -bench ShippedRulesRealtimeShape -benchtime 1x
 func BenchmarkShippedRulesRealtimeShape(b *testing.B) {
@@ -295,7 +330,7 @@ func BenchmarkShippedRulesRealtimeShape(b *testing.B) {
 		if err != nil {
 			return err
 		}
-		files = append(files, data[:min(len(data), 64<<10)])
+		files = append(files, data)
 		return nil
 	})
 	if walkErr != nil {
@@ -307,8 +342,45 @@ func BenchmarkShippedRulesRealtimeShape(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		for _, data := range files {
-			s.ScanContent(data, ".php")
+			scanRealtimeSample(s, data)
 		}
 	}
 	b.ReportMetric(float64(b.Elapsed().Microseconds())/float64(b.N*len(files)), "us/file")
+}
+
+func scanRealtimeSample(s *Scanner, data []byte) []Match {
+	return s.ScanContentWithSize(data[:min(len(data), 64<<10)], ".php", int64(len(data)))
+}
+
+func TestRealtimeBenchmarkSampleUsesFullSize(t *testing.T) {
+	rule := Rule{
+		Name: "bounded", Patterns: []string{"marker"}, MinMatch: 1,
+		MaxFileBytes: 64 << 10, MaxFileBytesExemptRegexes: []string{"override"},
+	}
+	if err := rule.compile(); err != nil {
+		t.Fatal(err)
+	}
+	s := &Scanner{rules: []Rule{rule}}
+	matched := []Match{{RuleName: "bounded", Matched: []string{"marker"}}}
+	pad := func(prefix string, size int) string {
+		return prefix + strings.Repeat(" ", size-len(prefix))
+	}
+	for _, tt := range []struct {
+		name    string
+		content string
+		want    []Match
+	}{
+		{"small file", "marker", matched},
+		{"at size limit", pad("marker", 64<<10), matched},
+		{"above size limit", pad("marker", 64<<10+1), nil},
+		{"exemption in prefix", pad("marker override", 64<<10+1), matched},
+		{"exemption past prefix", pad("marker", 64<<10) + "override", nil},
+		{"match past prefix", pad("override", 64<<10) + "marker", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scanRealtimeSample(s, []byte(tt.content)); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("benchmark sample matches = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
 }
