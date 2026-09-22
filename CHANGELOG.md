@@ -9,14 +9,9 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ## [Unreleased]
 
-### Security
-
-- Deferred real-time recovery now resumes after an event storm ends and keeps its original coverage window, preventing delayed rescans from silently missing files.
-
 ### Fixed
 
-- Recovery yields between files in large directories and resumes unfinished work without repeating the completed prefix. Shutdown stops starting recovery scans as soon as it is signaled.
-- Recovery rescans after a real-time event storm no longer pile up on each other. They run one at a time under a time budget, with work they do not reach carried to the next pass, so a storm can no longer drive the daemon into sustained CPU use that produced more dropped events.
+- Recovery rescans after a real-time event storm no longer pile up on each other. They run one at a time under a time budget, resume where they stopped, keep their original coverage window, and retry once the storm ends, so a storm can no longer drive the daemon into the sustained CPU use that produced more dropped events.
 - Stopping the daemon on a busy host no longer waits for the whole real-time scan backlog. The drain now has a time budget for starting queued scans; scans already in progress still finish before shutdown.
 - The public documentation site stopped rebuilding after the Go version moved forward, because its workflow repeated the version instead of reading it from the module file.
 
