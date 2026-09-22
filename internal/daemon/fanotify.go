@@ -179,6 +179,11 @@ type FileMonitor struct {
 	pipeFds    [2]int // [0]=read, [1]=write
 	pipeClosed int32  // atomic flag: 1 = pipe fds closed by drainAndClose
 
+	// drainDeadline is the unix-nano instant after which analyzer workers
+	// stop scanning queued events and only release them. Zero until the
+	// shutdown drain arms it.
+	drainDeadline atomic.Int64
+
 	// C2 - sync.Once for safe Stop
 	stopOnce  sync.Once
 	drainOnce sync.Once
@@ -207,9 +212,9 @@ type FileMonitor struct {
 	wpPendingInit sync.Once
 
 	// Drop-recovery reconcile: directories that had fanotify events dropped
-	// because the analyzer queue was full. The overflow reporter walks this
-	// set once a minute and scans any interesting file modified within
-	// reconcileWindow so bulk filesystem operations (unzip, backup restore)
+	// because the analyzer queue was full. The overflow reporter schedules
+	// bounded passes over interesting files within the original recovery
+	// window so bulk filesystem operations (unzip, backup restore)
 	// do not blind detection to actual threats landing in the storm.
 	reconcileMu   sync.Mutex
 	reconcileDirs map[string]reconcileDirectory
@@ -220,6 +225,13 @@ type FileMonitor struct {
 	// shape collapses multiple triggers in the same window into one and
 	// keeps sendEvent non-blocking on the event-loop hot path.
 	reconcileSig chan struct{}
+
+	// reconcileRunning is set while a recovery pass is in flight, and
+	// reconcileLastPass is the unix-nano instant the last one ended. Passes
+	// are single-flight and rate-limited: recovery that keeps up with a
+	// storm's trigger rate feeds the storm.
+	reconcileRunning  atomic.Bool
+	reconcileLastPass atomic.Int64
 
 	// metricsOnce guards one-time registration of the fanotify-scoped
 	// Prometheus metrics. Each FileMonitor registers its own hooks when
@@ -255,16 +267,29 @@ const (
 	// drop branch. A 2026-04-28 cpanel package restore overflowed the
 	// previous 64-entry cap inside seconds (every wp-content subdir was
 	// a distinct parent), evicting older dirs before reconcileDrops ran.
-	// 1024 entries fits typical cpanel restore bursts comfortably while
-	// staying tiny in memory (each entry is a string-pointer + time, so
-	// the whole map peaks under ~100 KiB even at full cap).
+	// 1024 entries fits typical cpanel restore bursts while bounding the
+	// retained paths, scan cursors and queue tickets.
 	reconcileDirCap = 1024
 
 	// reconcileWindow scopes which files reconcileDrops will rescan: only
-	// files whose mtime is within this window of "now". Sized just over
+	// files whose mtime is within this window of the first pass. The cutoff
+	// stays fixed across retries. Sized just over
 	// the minute tick so a drop near the start of a tick is still picked
 	// up by the reconcile that runs at tick end.
 	reconcileWindow = 70 * time.Second
+
+	// reconcileBudget bounds one recovery pass. The pass reads whole
+	// directories and scans their recent files inline, outside the analyzer
+	// pool's backpressure, so an unbounded pass competes with the very
+	// workers whose backlog caused the drops.
+	reconcileBudget = 10 * time.Second
+
+	// reconcileMinInterval is the shortest gap between recovery passes. The
+	// eager trigger fires once per few hundred drops, which during a
+	// sustained storm meant a pass every few seconds: recovery rescanned
+	// files that were still being written, spent CPU the analyzers needed,
+	// and produced the next round of drops.
+	reconcileMinInterval = 30 * time.Second
 
 	// analyzerChBufferSize sizes the channel feeding the analyzer pool.
 	// A cpanel package restore in production observed ~4189 events in a
@@ -272,6 +297,13 @@ const (
 	// without ever overflowing. Memory cost is bounded (fileEvent is a
 	// path string + fd + pid, ~40 bytes each, so <1 MiB at full buffer).
 	analyzerChBufferSize = 16384
+
+	// analyzerDrainBudget bounds how long the analyzer pool keeps scanning
+	// queued events after shutdown starts. The queue is deep on purpose, so
+	// a host that is saturated at SIGTERM has thousands of events left; the
+	// unit gives the daemon 90 seconds in total, and draining that backlog
+	// to completion spent all of it and ended in SIGKILL.
+	analyzerDrainBudget = 15 * time.Second
 
 	// eagerReconcileDropThreshold triggers an out-of-cycle reconcile
 	// when sustained drops cross this count within a single minute tick.
@@ -731,6 +763,7 @@ func (fm *FileMonitor) reportQueueOverflow() {
 // C1 - ensures no fd leak on shutdown.
 func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
+		fm.drainDeadline.Store(time.Now().Add(analyzerDrainBudget).UnixNano())
 		close(fm.analyzerCh)
 		fm.wg.Wait()
 		fm.discardReconcilePending()
@@ -980,12 +1013,27 @@ var credentialLogNames = map[string]bool{
 
 // analyzerWorker processes file events from the bounded channel.
 // C1 - on channel close, drains remaining events and closes their fds.
+// Past the shutdown drain budget the remaining events are released without
+// being scanned: their files are still covered by the next scheduled deep
+// scan, while a backlog scanned to completion costs the daemon its whole
+// stop timeout and ends in SIGKILL.
 func (fm *FileMonitor) analyzerWorker() {
 	defer fm.wg.Done()
 	for event := range fm.analyzerCh {
+		if fm.drainBudgetSpent(time.Now()) {
+			event.queueTicket.Reject(time.Now())
+			_ = unix.Close(event.fd)
+			continue
+		}
 		fm.analyzeFileSafe(event)
 		_ = unix.Close(event.fd)
 	}
+}
+
+// drainBudgetSpent reports whether the shutdown drain has run out of time.
+func (fm *FileMonitor) drainBudgetSpent(now time.Time) bool {
+	deadline := fm.drainDeadline.Load()
+	return deadline != 0 && now.UnixNano() >= deadline
 }
 
 // fileAnalyzer analyzes one queued event. Var so tests can substitute a
@@ -2383,10 +2431,11 @@ func (fm *FileMonitor) shouldAlert(check, filePath string) bool {
 
 // M7 - overflowReporter reports dropped events and alerts separately.
 //
-// Two timers feed this loop:
+// Periodic ticks and eager signals feed this loop:
 //   - 1-minute ticker: emits the periodic fanotify_overflow alert,
 //     resets drop counters, runs reconcileDrops, and evicts stale alert
 //     dedup entries.
+//   - retry ticker: retries pending work even after new drops stop.
 //   - reconcileSig: out-of-cycle reconcile triggered by sendEvent when
 //     sustained drops cross eagerReconcileDropThreshold within the
 //     current tick. Closes the latency gap between a drop and its
@@ -2395,18 +2444,23 @@ func (fm *FileMonitor) overflowReporter() {
 	defer fm.wg.Done()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
+	// Retried work must not depend on another drop or a nonzero alert counter.
+	retry := time.NewTicker(reconcileMinInterval)
+	defer retry.Stop()
 
 	for {
 		select {
 		case <-fm.stopCh:
 			return
+		case <-retry.C:
+			fm.startReconcile()
 		case <-fm.reconcileSig:
 			// Eager reconcile: do not reset counters, do not emit the
 			// minute-tick alert. Just walk the tracked dirs and surface
 			// any interesting file inside reconcileWindow. The minute
 			// tick will still fire its alert + drain the counters when
 			// it arrives.
-			fm.reconcileDrops()
+			fm.startReconcile()
 		case <-ticker.C:
 			droppedEv := atomic.SwapInt64(&fm.droppedEvents, 0)
 			droppedAl := atomic.SwapInt64(&fm.droppedAlerts, 0)
@@ -2416,7 +2470,7 @@ func (fm *FileMonitor) overflowReporter() {
 					"Possible event storm (backup, bulk update) or high-volume attack")
 				// Recover coverage: scan files in directories that saw drops
 				// so a threat landing during the storm is still detected.
-				fm.reconcileDrops()
+				fm.startReconcile()
 			}
 			if droppedAl > 0 {
 				fmt.Fprintf(os.Stderr, "[%s] alert channel full: %d alerts dropped in last minute\n", ts(), droppedAl)
