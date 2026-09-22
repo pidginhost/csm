@@ -1,13 +1,18 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -26,12 +31,17 @@ import (
 //
 // The watcher polls cfg.Signatures.RulesDir every sigWatchInterval,
 // stat()s every *.yaml / *.yml / *.yar / *.yara file, and sets the
-// daemon's forceFullRescan flag whenever any tracked file's mtime
-// advances. The next deep-tier tick reads + clears the flag and runs
+// daemon's forceFullRescan flag whenever any tracked file's content
+// changes. The next deep-tier tick reads + clears the flag and runs
 // the full account tree instead of the fanotify short-list.
 //
-// The mtime map is persisted in bbolt (sig_watch bucket) so a daemon
-// restart does not look like "all files are new" and trigger a
+// A file is hashed only when its mtime or size moved. Package upgrades
+// and the rules updater rewrite files whose content is unchanged, and a
+// full rescan reads every file on the host, so a moved mtime alone is
+// not a reason to arm.
+//
+// The per-file state is persisted in bbolt (sig_watch bucket) so a
+// daemon restart does not look like "all files are new" and trigger a
 // phantom rescan on first tick.
 
 const sigWatchInterval = 60 * time.Second
@@ -76,10 +86,14 @@ type sigWatcher struct {
 	rescanFlag *atomic.Bool
 	alertCh    chan<- alert.Finding
 	interval   time.Duration
+	hashFile   func(string, os.FileInfo) (string, error)
 
-	// Initialised on first tick from store.GetSignatureMtimes(); the
+	// Initialised on first tick from store.GetSignatureFiles(); the
 	// in-memory map is the authoritative working copy for the loop.
-	lastMtimes map[string]time.Time
+	last map[string]store.SignatureFileState
+	// persisted is false until last has been written to bbolt, and again
+	// after it changes, so an unchanged tick commits nothing.
+	persisted bool
 }
 
 // newSigWatcher constructs a watcher with production defaults.
@@ -93,32 +107,33 @@ func newSigWatcher(cfgFunc func() *config.Config, storeFunc func() *store.DB, fl
 		rescanFlag: flag,
 		alertCh:    alertCh,
 		interval:   sigWatchInterval,
+		hashFile:   hashRulesFile,
 	}
 }
 
-// loadInitial pulls the persisted mtime map into memory. Called once
-// when w.lastMtimes is nil. A read error here is non-fatal -- the
-// watcher operates with an empty map and the next tick re-persists,
-// so the cost of a transient bbolt error is at most one phantom
-// rescan.
+// loadInitial pulls the persisted state into memory. Called once when
+// w.last is nil. A read error here is non-fatal -- the watcher operates
+// with an empty map and the next tick re-persists, so the cost of a
+// transient bbolt error is at most one phantom rescan.
 func (w *sigWatcher) loadInitial(sdb *store.DB) {
 	if sdb == nil {
-		w.lastMtimes = map[string]time.Time{}
+		w.last = map[string]store.SignatureFileState{}
 		return
 	}
-	got, err := sdb.GetSignatureMtimes()
+	got, err := sdb.GetSignatureFiles()
 	if err != nil {
-		csmlog.Warn("sig_watch: loading persisted mtimes", "err", err)
-		w.lastMtimes = map[string]time.Time{}
+		csmlog.Warn("sig_watch: loading persisted state", "err", err)
+		w.last = map[string]store.SignatureFileState{}
 		return
 	}
-	w.lastMtimes = got
+	w.last = got
+	w.persisted = true
 }
 
 // tick performs one walk of the rules dir and arms the rescan flag
-// when any tracked file's mtime advances. Removed files drop out of
-// the persisted map without triggering a rescan -- the spec calls
-// out only mtime-advance as a trigger.
+// when any tracked file's content changed. Removed files drop out of
+// the persisted map without triggering a rescan -- the spec calls out
+// only a change to an existing file as a trigger.
 func (w *sigWatcher) tick() {
 	cfg := w.cfgFunc()
 	if !sigWatchEnabled(cfg) {
@@ -134,33 +149,71 @@ func (w *sigWatcher) tick() {
 	// store. A nil store on the first tick (race against bbolt
 	// open) means we operate purely in-memory; once bbolt is up,
 	// the next tick triggers loadInitial as if for the first time
-	// because lastMtimes is still nil.
-	if w.lastMtimes == nil && sdb != nil {
+	// because last is still nil.
+	if w.last == nil && sdb != nil {
 		w.loadInitial(sdb)
 	}
-	if w.lastMtimes == nil {
-		w.lastMtimes = map[string]time.Time{}
+	if w.last == nil {
+		w.last = map[string]store.SignatureFileState{}
 	}
 
 	current := walkRulesDir(rulesDir)
+	next := make(map[string]store.SignatureFileState, len(current))
 	var changed []sigWatchChange
-	for path, mtime := range current {
-		old, ok := w.lastMtimes[path]
+	for path, file := range current {
+		info := file.info
+		old, seen := w.last[path]
+		if seen && old.SHA256 != "" && old.Size == info.Size() && old.Mtime.Equal(info.ModTime()) {
+			next[path] = old
+			continue
+		}
+		digest, err := w.hashFile(path, info)
+		if err != nil {
+			csmlog.Warn("sig_watch: hashing rules", "path", path, "err", err)
+			if !seen {
+				continue
+			}
+			// Keep the last good comparison point, including its stamp, so
+			// the next tick retries instead of accepting an unreadable update.
+			if old.SHA256 != "" {
+				next[path] = old
+				continue
+			}
+			// With no recorded hash, preserve the legacy mtime fallback
+			// even when this read cannot establish a content baseline.
+		}
+		state := store.SignatureFileState{Mtime: info.ModTime(), Size: info.Size(), SHA256: digest}
+		next[path] = state
 		switch {
-		case !ok:
+		case !seen:
 			// New file. The spec treats first-observation as a
 			// non-event so a fresh `update-rules` install does not
 			// cause a rescan when the daemon also starts cold.
-			// Track the mtime forward without arming.
-		case !mtime.Equal(old):
-			changed = append(changed, sigWatchChange{Path: path, Old: old, New: mtime})
+		case old.SHA256 != "":
+			if old.SHA256 != state.SHA256 {
+				changed = append(changed, sigWatchChange{Path: path, Old: old.Mtime, New: state.Mtime})
+			}
+		case old.Size < 0 && old.Mtime.Equal(file.legacyMtime),
+			old.Size == state.Size && old.Mtime.Equal(state.Mtime):
+			// A legacy record with the same stamp gains a hash without
+			// treating the first tick after upgrade as a rules change.
+		default:
+			// The stamp moved and the contents cannot be compared, so
+			// this is treated as a change, as it was before content
+			// hashes were tracked.
+			changed = append(changed, sigWatchChange{Path: path, Old: old.Mtime, New: state.Mtime})
 		}
 	}
 
-	w.lastMtimes = current
-	if sdb != nil {
-		if err := sdb.PutSignatureMtimes(current); err != nil {
-			csmlog.Warn("sig_watch: persisting mtimes", "err", err)
+	if !sameSignatureState(w.last, next) {
+		w.persisted = false
+	}
+	w.last = next
+	if sdb != nil && !w.persisted {
+		if err := sdb.PutSignatureFiles(next); err != nil {
+			csmlog.Warn("sig_watch: persisting state", "err", err)
+		} else {
+			w.persisted = true
 		}
 	}
 
@@ -180,13 +233,75 @@ func (w *sigWatcher) tick() {
 	}
 }
 
-// walkRulesDir returns mtimes for every signature file under dir.
+// hashRulesFile accepts a hash only while the walked file, the open file and
+// the final pathname still identify the same regular file and stamp.
+func hashRulesFile(path string, expected os.FileInfo) (string, error) {
+	if !expected.Mode().IsRegular() {
+		return "", fmt.Errorf("rules file is not regular")
+	}
+	// A replacement by a FIFO between walk and open must not stall the watcher.
+	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0) // #nosec G304 -- path comes from walking the operator-configured rules dir and the opened identity is checked below.
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	before, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !sameRulesFile(expected, before) {
+		return "", fmt.Errorf("rules file changed before hashing or is not regular")
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, before.Size()+1))
+	if err != nil {
+		return "", err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	current, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if n != before.Size() || !sameRulesFile(before, after) || !sameRulesFile(after, current) {
+		return "", fmt.Errorf("rules file changed while hashing")
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func sameRulesFile(a, b os.FileInfo) bool {
+	return a.Mode().IsRegular() && b.Mode().IsRegular() && os.SameFile(a, b) &&
+		a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
+}
+
+func sameSignatureState(a, b map[string]store.SignatureFileState) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for path, x := range a {
+		y, ok := b[path]
+		if !ok || x.Size != y.Size || x.SHA256 != y.SHA256 || !x.Mtime.Equal(y.Mtime) {
+			return false
+		}
+	}
+	return true
+}
+
+type sigWatchFile struct {
+	info os.FileInfo
+	// Old builds recorded the link's mtime for symlinks, not the target's.
+	legacyMtime time.Time
+}
+
+// walkRulesDir returns the target file info of every signature file under dir.
 // Sub-directories are walked too -- the YARA Forge updater puts
 // files under tier-named subfolders. Errors during walk (missing
 // dir, EACCES on a sub-tree) are swallowed; we want one bad path
 // not to crash the watcher or stop sibling traversal.
-func walkRulesDir(dir string) map[string]time.Time {
-	out := map[string]time.Time{}
+func walkRulesDir(dir string) map[string]sigWatchFile {
+	out := map[string]sigWatchFile{}
 	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Missing dir or EACCES on a sub-tree -- ignore so the
@@ -203,7 +318,13 @@ func walkRulesDir(dir string) map[string]time.Time {
 		if !sigWatchExtMatches(ext) {
 			return nil
 		}
-		out[path] = info.ModTime()
+		file := sigWatchFile{info: info, legacyMtime: info.ModTime()}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if target, err := os.Stat(path); err == nil {
+				file.info = target
+			}
+		}
+		out[path] = file
 		return nil
 	})
 	return out
@@ -233,7 +354,7 @@ func sigWatchEnabled(cfg *config.Config) bool {
 	return *cfg.Detection.RescanOnSignatureUpdate
 }
 
-// sigWatchChange records one mtime advance for the alert detail
+// sigWatchChange records one changed file for the alert detail
 // message.
 type sigWatchChange struct {
 	Path string
@@ -243,7 +364,7 @@ type sigWatchChange struct {
 
 // signatureWatcher is the daemon's signature-watch goroutine. Runs
 // until d.stopCh is closed; ticks every sigWatchInterval, sets
-// d.forceFullRescan when any tracked rule file's mtime advances.
+// d.forceFullRescan when any tracked rule file's content changes.
 //
 // Cfg and store are accessed via getter closures (not captured
 // values) so a hot-reload of signatures.rules_dir takes effect on

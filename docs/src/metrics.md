@@ -366,9 +366,19 @@ All series are prefixed `csm_php_relay_`. Registered when `email_protection.php_
 ### Signature retroactive rescans
 
 - `csm_signature_rescans_total` (counter): full deep-tier sweeps
-  completed because a signature file's mtime advanced. Steady-state
-  zero on hosts that don't auto-update rules; ticks once per
-  `update-rules` invocation otherwise.
+  completed because a tracked signature file's content changed.
+  Re-installing identical rules, as a package upgrade or a repeated
+  download does, does not count. Multiple updates before the next
+  sweep can coalesce into one rescan.
+
+The watcher compares content hashes when a file's mtime or size changes;
+symbolic links use the target file's metadata. Failed reads and files
+replaced during hashing are retried without discarding the last verified
+state. First observations and file removals do not queue a rescan.
+
+State from older builds contains only mtimes. The first successful read
+adds a hash without queuing a rescan if the recorded mtime still matches.
+A moved mtime without a recorded hash conservatively queues one rescan.
 
 ## Counter reset semantics
 
