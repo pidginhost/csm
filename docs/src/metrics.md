@@ -158,6 +158,16 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   events waiting for the analyzer pool. The queue capacity is 4000;
   sustained values near that cap mean drops are imminent. Alert
   target: `max_over_time(csm_fanotify_queue_depth[5m]) > 3500`.
+- `csm_fanotify_events_total` (counter): delivered fanotify file events whose
+  admission decision has completed. Filesystem marks receive writes anywhere on
+  their superblocks, including other bind mounts. Kernel queue overflow
+  notifications are counted separately.
+- `csm_fanotify_events_admitted_total` (counter): events queued for analysis,
+  including dropper tracking. Subtract this counter and
+  `csm_fanotify_events_dropped_total` from `csm_fanotify_events_total` to count
+  events rejected before queue admission. This includes path-resolution failures
+  as well as filter rejections. Use rates over the same interval to compare
+  these independently scraped counters.
 - `csm_fanotify_events_dropped_total` (counter): cumulative events
   dropped because the analyzer queue was full. The reconcile pass
   still rescans drop-affected directories 60 s later, so dropped

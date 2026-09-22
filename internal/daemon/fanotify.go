@@ -103,6 +103,146 @@ func markWatchRoot(fd int, path string, mark markFunc) (markScope, error) {
 	return markScopeNone, lastErr
 }
 
+// watchRootMark records what a watch root ended up being watched by. coveredBy
+// names the root whose filesystem-scoped mark covers this one. A later
+// filesystem mark can also cover an earlier mount mark.
+type watchRootMark struct {
+	path      string
+	scope     markScope
+	device    uint64
+	coveredBy string
+	// rootFS records that this root sits on the same filesystem as /, so a
+	// filesystem-scoped mark on it raises an event for every write on the
+	// machine. That is device identity, not an inference about containment.
+	rootFS bool
+}
+
+// devStatFunc reports the device a path lives on. Injected so the mark ladder
+// can be exercised without a filesystem laid out like a production host.
+type devStatFunc func(path string) (uint64, error)
+
+func statDevice(path string) (uint64, error) {
+	var st unix.Stat_t
+	if err := unix.Stat(path, &st); err != nil {
+		return 0, err
+	}
+	return uint64(st.Dev), nil // #nosec G115 -- device ids are non-negative on Linux
+}
+
+// markWatchRoots skips roots covered by a successful filesystem mark, never
+// by a mount mark. The returned error includes partial failures so startup can
+// report unwatched roots while continuing with the marks that succeeded.
+func markWatchRoots(fd int, roots []string, mark markFunc, statDev devStatFunc) ([]watchRootMark, error) {
+	var marks []watchRootMark
+	covering := make(map[uint64]string)
+	var failures []error
+	rootDevice, rootErr := statDev("/")
+	for _, path := range roots {
+		device, statErr := statDev(path)
+		if statErr != nil {
+			if !errors.Is(statErr, os.ErrNotExist) {
+				failures = append(failures, fmt.Errorf("cannot inspect watch root %s: %w", path, statErr))
+			}
+			continue
+		}
+		if owner, covered := covering[device]; covered {
+			marks = append(marks, watchRootMark{
+				path: path, scope: markScopeFilesystem, device: device, coveredBy: owner,
+				rootFS: rootErr == nil && device == rootDevice,
+			})
+			continue
+		}
+		scope, err := markWatchRoot(fd, path, mark)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("cannot watch %s: %w", path, err))
+			continue
+		}
+		if scope == markScopeFilesystem {
+			covering[device] = path
+		}
+		marks = append(marks, watchRootMark{
+			path: path, scope: scope, device: device,
+			rootFS: rootErr == nil && device == rootDevice,
+		})
+	}
+	// A later filesystem mark makes an earlier mount-only warning obsolete.
+	for i := range marks {
+		if owner, covered := covering[marks[i].device]; covered && owner != marks[i].path {
+			marks[i].scope = markScopeFilesystem
+			marks[i].coveredBy = owner
+		}
+	}
+	if len(marks) == 0 && len(failures) == 0 {
+		failures = append(failures, fmt.Errorf("no watch root exists"))
+	}
+	return marks, errors.Join(failures...)
+}
+
+// EventStats reports completed admission decisions for delivered file events.
+type EventStats struct {
+	Received int64
+	Admitted int64
+	Dropped  int64
+}
+
+// Filtered counts events rejected before queue admission, including events
+// whose file descriptor could not be resolved to a path.
+func (s EventStats) Filtered() int64 { return s.Received - s.Admitted - s.Dropped }
+
+// EventStats returns a coherent snapshot. In-progress admission decisions are
+// published with their outcome so they cannot appear as filtered events.
+func (fm *FileMonitor) EventStats() EventStats {
+	fm.eventStatsMu.Lock()
+	defer fm.eventStatsMu.Unlock()
+	return fm.eventStats
+}
+
+func (fm *FileMonitor) recordEvent(admitted, dropped bool) {
+	fm.eventStatsMu.Lock()
+	defer fm.eventStatsMu.Unlock()
+	fm.eventStats.Received++
+	if fanotifyEventsTotal != nil {
+		fanotifyEventsTotal.Inc()
+	}
+	if admitted {
+		fm.eventStats.Admitted++
+		if fanotifyEventsAdmittedTotal != nil {
+			fanotifyEventsAdmittedTotal.Inc()
+		}
+	}
+	if dropped {
+		fm.eventStats.Dropped++
+		if fanotifyDroppedTotal != nil {
+			fanotifyDroppedTotal.Inc()
+		}
+	}
+}
+
+// WatchScopeSummary describes what the monitor actually watches.
+func (fm *FileMonitor) WatchScopeSummary() string { return watchScopeSummary(fm.watchRoots) }
+
+// A mount point does not establish filesystem containment: symlinks and bind
+// mounts can name a subtree of the same superblock. Describe the scope itself
+// instead of inferring a boundary by comparing a root's device to its parent's.
+func watchScopeSummary(marks []watchRootMark) string {
+	parts := make([]string, 0, len(marks))
+	for _, m := range marks {
+		if m.coveredBy != "" {
+			parts = append(parts, fmt.Sprintf("%s (covered by %s)", m.path, m.coveredBy))
+			continue
+		}
+		coverage := "whole filesystem, including all bind mounts"
+		if m.scope == markScopeMount {
+			coverage = "whole containing mount, excluding other bind mounts"
+		}
+		if m.rootFS {
+			coverage += ", same filesystem as /"
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s scope, device %d: %s)", m.path, m.scope, m.device, coverage))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // fanotifyEventMetadata is the header for each fanotify event.
 type fanotifyEventMetadata struct {
 	EventLen    uint32
@@ -157,7 +297,10 @@ type FileMonitor struct {
 	kernelQueueHealth *queuehealth.Tracker
 	kernelQueue       *notificationQueue
 
-	// M7 - separate counters for dropped events and alerts
+	// Publish each completed decision atomically with its lifetime totals.
+	// The minute overflow alert drains droppedEvents independently.
+	eventStatsMu  sync.Mutex
+	eventStats    EventStats
 	droppedEvents int64
 	droppedAlerts int64
 
@@ -202,6 +345,10 @@ type FileMonitor struct {
 	// webRootPatterns is the immutable PHP configuration root set captured at
 	// startup from account_roots and platform discovery.
 	webRootPatterns []string
+
+	// watchRoots records what each watch root ended up watching, including
+	// roots an earlier filesystem-scoped mark already covers.
+	watchRoots []watchRootMark
 
 	// WordPress checksum verifier: skips detection on unmodified core and
 	// plugin files and judges staged update packages file by file.
@@ -316,6 +463,8 @@ const (
 // Package-level Prometheus metrics for fanotify. Instantiated once per
 // process; one FileMonitor per daemon instance reuses them.
 var (
+	fanotifyEventsTotal         *metrics.Counter
+	fanotifyEventsAdmittedTotal *metrics.Counter
 	fanotifyDroppedTotal        *metrics.Counter
 	fanotifyKernelOverflowTotal *metrics.Counter
 	fanotifyReconcileDur        *metrics.Histogram
@@ -330,6 +479,18 @@ var fanotifyMetricsInit sync.Once
 func (fm *FileMonitor) registerMetrics() {
 	fm.metricsOnce.Do(func() {
 		fanotifyMetricsInit.Do(func() {
+			fanotifyEventsTotal = metrics.NewCounter(
+				"csm_fanotify_events_total",
+				"Delivered fanotify file events with completed admission decisions, including events rejected before analysis. Excludes kernel queue overflow notifications, which have their own counter.",
+			)
+			metrics.MustRegister("csm_fanotify_events_total", fanotifyEventsTotal)
+
+			fanotifyEventsAdmittedTotal = metrics.NewCounter(
+				"csm_fanotify_events_admitted_total",
+				"Fanotify file events queued for analysis, including dropper tracking. Subtract this and csm_fanotify_events_dropped_total from csm_fanotify_events_total to count events rejected before queue admission.",
+			)
+			metrics.MustRegister("csm_fanotify_events_admitted_total", fanotifyEventsAdmittedTotal)
+
 			fanotifyDroppedTotal = metrics.NewCounter(
 				"csm_fanotify_events_dropped_total",
 				"Fanotify events dropped because the analyzer queue was full. Sustained growth indicates an event storm (bulk unzip, backup restore) or an attack producing more file activity than the scanner can analyse; the reconcile pass still rescans affected directories, so dropped events do not vanish from detection, they arrive delayed.",
@@ -419,26 +580,19 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	// Mark mount points; M2 - track successful mounts
 	webRootPatterns := checks.PHPConfigRealtimeRootPatterns(cfg)
 	mountPaths := fanotifyMountPaths(webRootPatterns)
-	mountOK := 0
+	marks, markErr := markWatchRoots(fd, mountPaths, unix.FanotifyMark, statDevice)
+	if len(marks) == 0 {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("no mount points could be watched (tried %v): %w", mountPaths, markErr)
+	}
+	if markErr != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: %v\n", ts(), markErr)
+	}
 	var mountScoped []string
-	for index, path := range mountPaths {
-		if index >= 4 {
-			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-				continue
-			} else if statErr != nil {
-				fmt.Fprintf(os.Stderr, "[%s] Warning: cannot inspect configured watch root %s: %v\n", ts(), path, statErr)
-				continue
-			}
+	for _, m := range marks {
+		if m.coveredBy == "" && m.scope == markScopeMount {
+			mountScoped = append(mountScoped, m.path)
 		}
-		scope, markErr := markWatchRoot(fd, path, unix.FanotifyMark)
-		if markErr != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), path, markErr)
-			continue
-		}
-		if scope == markScopeMount {
-			mountScoped = append(mountScoped, path)
-		}
-		mountOK++
 	}
 	if len(mountScoped) > 0 {
 		// Worth saying out loud: on these roots a write that arrives through a
@@ -446,12 +600,6 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		// content scan will meet it.
 		fmt.Fprintf(os.Stderr, "[%s] Warning: watching %v per-mount only; writes through bind mounts on them are not seen in real time\n",
 			ts(), mountScoped)
-	}
-
-	// M2 - error on zero successful mounts
-	if mountOK == 0 {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("no mount points could be watched (tried %v)", mountPaths)
 	}
 
 	// Directory-scoped watch on /var/spool/cron so any user crontab write
@@ -481,6 +629,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 
 	fm := &FileMonitor{
 		fd:                  fd,
+		watchRoots:          marks,
 		cfg:                 cfg,
 		alertCh:             alertCh,
 		analyzerCh:          make(chan fileEvent, analyzerChBufferSize),
@@ -812,6 +961,8 @@ func (fm *FileMonitor) Stop() {
 }
 
 func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
+	var admitted, dropped bool
+	defer func() { fm.recordEvent(admitted, dropped) }()
 	// Get the file path from the fd via /proc/self/fd/N
 	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
 	if err != nil {
@@ -845,16 +996,15 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 		path:        path, fd: fd, pid: pid, mask: mask,
 		dropperOnly: !contentInteresting, phpExecutable: phpExecutable,
 	}:
+		admitted = true
 	default:
 		// Queue full - drop event, count, and record the parent dir so the
 		// reconcile pass in overflowReporter can rescan it. Without this
 		// every file in a bulk burst past buffer capacity is invisible to
 		// detection forever.
 		ticket.Reject(time.Now())
+		dropped = true
 		n := atomic.AddInt64(&fm.droppedEvents, 1)
-		if fanotifyDroppedTotal != nil {
-			fanotifyDroppedTotal.Inc()
-		}
 		if n%100 == 0 {
 			fmt.Fprintf(os.Stderr, "[%s] fanotify: %d events dropped (analyzer queue full)\n", ts(), n)
 		}

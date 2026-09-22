@@ -2525,7 +2525,7 @@ func (d *Daemon) startFileMonitor() {
 		defer d.wg.Done()
 		fm.Run(d.stopCh)
 	})
-	csmlog.Info("fanotify file monitor active", "paths", "/home, /tmp, /dev/shm")
+	csmlog.Info("fanotify file monitor active", "roots", fm.WatchScopeSummary())
 	d.MarkWatcher("fanotify", true)
 }
 
