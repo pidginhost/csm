@@ -144,7 +144,13 @@ func TestPHPContentPartialCacheInvalidatesAttemptedFile(t *testing.T) {
 			withMockOS(t, interruptedPHPReadOS{path: path, cancel: cancel, unreadable: unreadable})
 			stamp := phpFileStamp{Mtime: mtime.Unix() - 1, Size: 1}
 			if unreadable {
-				stamp = phpFileStamp{Mtime: mtime.Unix(), Size: int64(len(rollingDormantPHP))}
+				// The file's own stamp, so the scan takes the cache-hit path
+				// and meets the unreadable file there.
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stamp = phpFileStampOf(info)
 			}
 			scan := newPHPContentScan(&config.Config{}, phpContentCache{path: stamp}, false)
 			var findings []alert.Finding

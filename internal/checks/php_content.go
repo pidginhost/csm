@@ -1789,10 +1789,25 @@ func canStartPHPFunctionName(code string, start int) bool {
 // user-authored PHP: wp-content/languages, wp-content/upgrade, wp-content/mu-plugins,
 // and also checks any PHP files flagged by the file index as new.
 // phpFileStamp is the cheap content-version key for a scanned PHP file. A file
-// whose mtime and size both match the previous cycle is treated as unchanged.
+// whose stamp matches the previous cycle is treated as unchanged.
 type phpFileStamp struct {
 	Mtime int64 `json:"m"`
 	Size  int64 `json:"s"`
+	// Device, inode and change time: anyone who can write a file can set
+	// its mtime back, but not its change time, so a same-size swap still
+	// misses the cache.
+	Dev   uint64 `json:"d,omitempty"`
+	Inode uint64 `json:"i,omitempty"`
+	Ctime int64  `json:"c,omitempty"`
+}
+
+func phpFileStampOf(info os.FileInfo) phpFileStamp {
+	stamp := phpFileStamp{Mtime: info.ModTime().Unix(), Size: info.Size()}
+	if id, ok := selfWriteIdentityFromFileInfo(info); ok {
+		stamp.Dev, stamp.Inode = id.Device, id.Inode
+		stamp.Ctime = id.ChangeSec*1_000_000_000 + id.ChangeNsec
+	}
+	return stamp
 }
 
 // phpContentCache maps a file path to the stamp it carried when last confirmed
@@ -2114,7 +2129,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 	var stamp phpFileStamp
 	canCache := statErr == nil
 	if canCache {
-		stamp = phpFileStamp{Mtime: info.ModTime().Unix(), Size: info.Size()}
+		stamp = phpFileStampOf(info)
 		// Cache hit: file was clean last cycle and has not changed. Skip
 		// the read+parse and carry the stamp forward only if the file is
 		// still readable. chmod does not update mtime or size, so a stale

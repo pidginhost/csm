@@ -15,10 +15,9 @@ import (
 // The php_content deep scan reads and parses every .php file under every
 // account's wp-content tree on every cycle. On large multi-tenant hosts that
 // is hundreds of thousands of files and pushes the check against its timeout.
-// A per-file mtime+size cache lets unchanged, previously-clean files skip the
-// read+parse. These tests pin the cache's exact semantics, including the
-// deliberate trade-off (a content swap that preserves mtime+size is invisible
-// until the next forced full rescan) and the safety nets that bound it.
+// A per-file stamp cache lets unchanged, previously-clean files skip the
+// read+parse. These tests pin the cache's exact semantics and the safety nets
+// that bound it.
 
 const phpCacheBenign = "<?php echo 1; // benign filler kept long enough!!"
 const phpCacheMalicious = "<?php system($_POST['c']); // webshell padding go"
@@ -41,7 +40,58 @@ func writePHPFixture(t *testing.T, path, content string, mtime time.Time) {
 	}
 }
 
+// openRedirectOS serves the real filesystem except that opening one path
+// yields another file's content. Stat still reports the real file, so a scan
+// sees an unchanged stamp while any read it makes returns the other bytes.
+type openRedirectOS struct {
+	realOS
+	from, to string
+}
+
+func (o openRedirectOS) Open(name string) (*os.File, error) {
+	if name == o.from {
+		return os.Open(o.to)
+	}
+	return o.realOS.Open(name)
+}
+
 func TestPHPContentCacheSkipsUnchangedCleanFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	path := filepath.Join(dir, "x.php")
+	writePHPFixture(t, path, phpCacheBenign, time.Unix(1_700_000_000, 0))
+	s1 := newPHPContentScan(cfg, nil, false)
+	var f1 []alert.Finding
+	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
+	if len(f1) != 0 {
+		t.Fatalf("benign file should produce no finding, got %d", len(f1))
+	}
+
+	// Leave the file untouched but serve malicious bytes to any read. A
+	// cache hit skips the read, so nothing is found; a read would find it.
+	twin := filepath.Join(t.TempDir(), "twin.php")
+	writePHPFixture(t, twin, phpCacheMalicious, time.Unix(1_700_000_000, 0))
+	withMockOS(t, openRedirectOS{from: path, to: twin})
+
+	s2 := newPHPContentScan(cfg, s1.next, false)
+	var f2 []alert.Finding
+	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
+	if len(f2) != 0 {
+		t.Fatalf("unchanged clean file was re-read: %d findings", len(f2))
+	}
+	s3 := newPHPContentScan(cfg, s1.next, true)
+	var f3 []alert.Finding
+	s3.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f3)
+	if len(f3) == 0 {
+		t.Fatal("a forced read of the redirected file found nothing; the skip above proves nothing")
+	}
+}
+
+// Anyone who can write a file can also set its mtime back, and a same-size
+// swap then matched the old mtime+size stamp and skipped analysis until the
+// next forced rescan. The inode change time cannot be set from user space,
+// so the stamp includes it.
+func TestPHPContentCacheDetectsSwapThatRestoresMtime(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{}
 	path := filepath.Join(dir, "x.php")
@@ -51,20 +101,43 @@ func TestPHPContentCacheSkipsUnchangedCleanFile(t *testing.T) {
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
-	if len(f1) != 0 {
-		t.Fatalf("benign file should produce no finding, got %d", len(f1))
-	}
 
-	// Swap in malicious content but keep size and mtime identical. A cache
-	// hit must skip the re-read, so the now-malicious file is NOT detected
-	// this cycle. This documents the trade-off, not a bug: realtime fanotify
-	// and the periodic forced rescan are the safety nets (see other tests).
-	writePHPFixture(t, path, phpCacheMalicious, mtime)
+	swapPreservingMtime(t, path, phpCacheMalicious, mtime)
 	s2 := newPHPContentScan(cfg, s1.next, false)
 	var f2 []alert.Finding
 	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
-	if len(f2) != 0 {
-		t.Fatalf("cache hit should skip re-analysis, got %d findings", len(f2))
+	if len(f2) == 0 {
+		t.Fatal("same-size swap with the mtime restored was skipped as unchanged")
+	}
+}
+
+// swapPreservingMtime rewrites path in place and restores its mtime, retrying
+// until the change time has moved: Linux stamps it from a coarse clock, so a
+// rewrite in the same tick as the previous change can carry the same value.
+func swapPreservingMtime(t *testing.T, path, content string, mtime time.Time) {
+	t.Helper()
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	was, ok := selfWriteIdentityFromFileInfo(before)
+	if !ok {
+		t.Fatal("platform exposes no inode change time")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		writePHPFixture(t, path, content, mtime)
+		after, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if now, _ := selfWriteIdentityFromFileInfo(after); now != was {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("inode change time never moved")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
