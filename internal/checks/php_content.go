@@ -1809,6 +1809,10 @@ func phpFileStampOf(info os.FileInfo) phpFileStamp {
 	return stamp
 }
 
+// phpContentNow is indirected so tests can treat fixtures they just wrote as
+// settled without sleeping out the change-time window.
+var phpContentNow = time.Now
+
 func (stamp phpFileStamp) cacheableAt(start time.Time) bool {
 	// Missing identity must fail closed, including legacy mtime+size entries.
 	// A recent read cannot authorize future skips: Linux can give a later
@@ -2132,7 +2136,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 		return
 	}
 
-	started := time.Now()
+	started := phpContentNow()
 	info, statErr := osFS.Stat(fullPath)
 	var stamp phpFileStamp
 	canCache := statErr == nil

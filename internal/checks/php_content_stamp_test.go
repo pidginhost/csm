@@ -25,20 +25,28 @@ func (o phpWriteOnlyOS) Open(path string) (*os.File, error) {
 	return o.realOS.Open(path)
 }
 
-// Let the filesystem's change-time tick expire before a test expects a clean
-// read to be reusable. Chtimes cannot backdate change time.
-func waitForPHPCacheStamp(t *testing.T, paths ...string) {
+// settlePHPCacheStamps moves the scan clock past the change-time window of
+// the given files, which a test needs before it expects a clean read to be
+// reusable. Chtimes cannot backdate change time, and sleeping it out costs a
+// second per fixture.
+func settlePHPCacheStamps(t *testing.T, paths ...string) {
 	t.Helper()
+	settled := time.Now()
 	for _, path := range paths {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		stamp := phpFileStampOf(info)
-		if delay := time.Until(time.Unix(0, stamp.Ctime).Add(time.Second)); delay > 0 {
-			time.Sleep(delay)
+		if ctime := time.Unix(0, phpFileStampOf(info).Ctime); ctime.After(settled) {
+			settled = ctime
 		}
 	}
+	// Scans in this test start past the change-time window of every stamp
+	// written so far, as if the files had been left alone for a while.
+	start := settled.Add(time.Second + time.Millisecond)
+	previous := phpContentNow
+	phpContentNow = func() time.Time { return start }
+	t.Cleanup(func() { phpContentNow = previous })
 }
 
 type phpNoIdentityInfo struct{ os.FileInfo }
@@ -82,7 +90,7 @@ func TestPHPContentCacheLegacyEntryMissesOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.php")
 	mtime := time.Unix(1700000000, 0)
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	stateDir := t.TempDir()
 	legacy, err := json.Marshal(map[string]map[string]int64{
 		path: {"m": mtime.Unix(), "s": int64(len(phpCacheBenign))},
@@ -163,7 +171,7 @@ func TestPHPContentCacheRejectsRecentStamp(t *testing.T) {
 		t.Fatal("recent clean read was cached before a same-tick write could change ctime")
 	}
 	withMockOS(t, realOS{})
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	scan.scanFile(context.Background(), path, phpHandlerOverlay{}, &findings)
 	if _, ok := scan.next[path]; !ok {
 		t.Fatal("stable clean file was not cached on its next read")
@@ -186,7 +194,7 @@ func TestPHPContentCacheBindsStampToOpenedFile(t *testing.T) {
 			mtime := time.Unix(1700000000, 0)
 			writePHPFixture(t, path, content, mtime)
 			writePHPFixture(t, twin, openedContent, mtime)
-			waitForPHPCacheStamp(t, path, twin)
+			settlePHPCacheStamps(t, path, twin)
 			prev := phpContentCache{}
 			if cacheHit {
 				info, err := os.Stat(path)
@@ -239,7 +247,7 @@ func TestPHPContentCacheRejectsChangeDuringRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.php")
 	mtime := time.Unix(1700000000, 0)
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	fs := &phpAfterReadOS{path: path, change: func() {
 		writePHPFixture(t, path, phpCacheMalicious, mtime)
 	}}
@@ -264,7 +272,7 @@ func TestPHPContentCacheRejectsFailedRevalidation(t *testing.T) {
 		t.Run(statErr.Error(), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "x.php")
 			writePHPFixture(t, path, phpCacheBenign, time.Unix(1700000000, 0))
-			waitForPHPCacheStamp(t, path)
+			settlePHPCacheStamps(t, path)
 			withMockOS(t, &phpAfterReadOS{path: path, statErr: statErr})
 			scan := newPHPContentScan(&config.Config{}, nil, false)
 			var findings []alert.Finding

@@ -111,7 +111,7 @@ func TestRollingContentKeepsStampsFromEarlierWindows(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dir, "a.php"), rollingBenignPHP)
 	writeFile(t, filepath.Join(dir, "b.php"), rollingBenignPHP)
-	waitForPHPCacheStamp(t, filepath.Join(dir, "a.php"), filepath.Join(dir, "b.php"))
+	settlePHPCacheStamps(t, filepath.Join(dir, "a.php"), filepath.Join(dir, "b.php"))
 	withMockOS(t, rollingRootOS{root: root})
 	useRollingStore(t)
 
@@ -189,14 +189,14 @@ func TestRollingContentPeriodicRefreshInvalidatesUnvisitedStamps(t *testing.T) {
 	path := filepath.Join(root, payloads["aaa"])
 	mtime := time.Unix(1700000000, 0)
 	writePHPFixture(t, path, rollingBenignPHP, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	CheckPHPContent(context.Background(), cfg, nil)
 	if _, ok := loadPHPContentCache(cfg.StatePath)[payloads["aaa"]]; !ok {
 		t.Fatal("rolling scan did not cache the clean seed")
 	}
 	payload := rollingDormantPHP + strings.Repeat(" ", len(rollingBenignPHP)-len(rollingDormantPHP))
 	writePHPFixture(t, path, payload, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	// Model unchanged metadata so only the periodic refresh can invalidate
 	// this entry, even on filesystems that distinguish the two writes.
 	info, err := os.Stat(path)

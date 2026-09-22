@@ -60,7 +60,7 @@ func TestPHPContentCacheSkipsUnchangedCleanFile(t *testing.T) {
 	cfg := &config.Config{}
 	path := filepath.Join(dir, "x.php")
 	writePHPFixture(t, path, phpCacheBenign, time.Unix(1_700_000_000, 0))
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -101,7 +101,7 @@ func TestPHPContentCacheDetectsSwapThatRestoresMtime(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -152,7 +152,7 @@ func TestPHPContentCacheReanalyzesOnMtimeChange(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -174,7 +174,7 @@ func TestPHPContentCacheReanalyzesOnSizeChange(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -196,7 +196,7 @@ func TestPHPContentCacheForceFullRescanIgnoresCache(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -204,7 +204,7 @@ func TestPHPContentCacheForceFullRescanIgnoresCache(t *testing.T) {
 	// Model a filesystem returning a stale, matching stamp. A forced scan
 	// must read even when every cache field matches the current metadata.
 	writePHPFixture(t, path, phpCacheMalicious, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +269,7 @@ func TestPHPContentCacheDoesNotCarryUnreadableCacheHit(t *testing.T) {
 	path := filepath.Join(dir, "x.php")
 	mtime := time.Unix(1_700_000_000, 0)
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +312,7 @@ func TestPHPContentCacheRecordsEmptyReadableFile(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, "", mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	s := newPHPContentScan(cfg, nil, false)
 	var findings []alert.Finding
 	s.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &findings)
@@ -331,7 +331,7 @@ func TestPHPContentCachePrunesDeletedFiles(t *testing.T) {
 	mtime := time.Unix(1_700_000_000, 0)
 
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)

@@ -105,7 +105,7 @@ func TestFullScanForceContentRereadsCachedCleanFile(t *testing.T) {
 
 	// Seed the cache: scan benign content -> s1.next holds a clean stamp.
 	writePHPFixture(t, path, phpCacheBenign, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
 	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
@@ -116,7 +116,7 @@ func TestFullScanForceContentRereadsCachedCleanFile(t *testing.T) {
 	// Simulate a stale cache hit even when the filesystem stamp matches.
 	// ForceContent must bypass all stamp fields, not just mtime and size.
 	writePHPFixture(t, path, phpCacheMalicious, mtime)
-	waitForPHPCacheStamp(t, path)
+	settlePHPCacheStamps(t, path)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

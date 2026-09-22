@@ -19,7 +19,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
-- Scheduled PHP scans more reliably recheck changed files and retry files whose metadata cannot validate a previous clean result. Existing caches are refreshed as files are visited after upgrading.
+- The scheduled PHP content scan no longer skips a file that was edited in place with its size kept and its modification time set back; the change time, which cannot be set that way, is now compared as well. The first scan after upgrading reads every PHP file once.
 - Cron findings containing known persistence patterns now retain their severity during maintenance, including when the payload is encoded.
 - Control-panel provenance now requires a resolved executable even when process details come from the cache. Live cron writes containing persistence tokens retain their original severity during maintenance.
 
