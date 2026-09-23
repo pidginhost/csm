@@ -31,11 +31,13 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 ### Changed
 
 - The roadmap clarifies planned response safeguards, capacity validation and operator visibility when automatic action cannot safely proceed. Existing response controls remain unchanged.
+- Recorded finding streams now carry salted finding ids, and the recording tool's summary and errors no longer repeat check names, paths or input values.
 
 ### Added
 
 - The privileged-operation JSON inventory now includes action risk and current safety and recovery coverage.
 - The capability matrix and `csm privileges` now show a risk tier for every privileged operation, from read-only detection to destructive responses.
+- The finding-stream tool can anonymize the action and firewall audit logs alongside a recording and write a manifest of digests, join counts and missing streams. Rows it cannot classify refuse the run, and a failed run leaves earlier output in place.
 
 ## [3.43.0] - 2026-09-22
 

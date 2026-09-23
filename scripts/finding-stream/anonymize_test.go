@@ -69,7 +69,7 @@ func anonymizeAll(t *testing.T, salt []byte, events []alert.AuditEvent) ([]alert
 }
 
 func TestAnonymizerReplacesStructuredIdentitiesDeterministically(t *testing.T) {
-	first, _ := anonymizeAll(t, testSalt(), sampleEvents())
+	first, a := anonymizeAll(t, testSalt(), sampleEvents())
 	second, _ := anonymizeAll(t, testSalt(), sampleEvents())
 	for i := range first {
 		if !equalEvents(first[i], second[i]) {
@@ -88,7 +88,7 @@ func TestAnonymizerReplacesStructuredIdentitiesDeterministically(t *testing.T) {
 	if e.Hostname == "srv.example.com" || !strings.HasPrefix(e.Hostname, "host-") {
 		t.Fatalf("hostname = %q", e.Hostname)
 	}
-	if e.FindingID != "f1" || !e.Timestamp.Equal(sampleEvents()[0].Timestamp) || e.Check != "db_rogue_admin" || e.Severity != "CRITICAL" {
+	if e.FindingID != a.ID(idFinding, "f1") || !e.Timestamp.Equal(sampleEvents()[0].Timestamp) || e.Check != "db_rogue_admin" || e.Severity != "CRITICAL" {
 		t.Fatalf("non-identity fields changed: %+v", e)
 	}
 	mail := first[1]
@@ -262,12 +262,13 @@ func TestRunAnonymizesFilesEndToEnd(t *testing.T) {
 		}
 	}
 	manifest := stdout.String()
-	for _, want := range []string{"events: 10", "db_rogue_admin", "salt fingerprint:"} {
+	for _, want := range []string{"events: 10", "checks: 5 distinct", "salt fingerprint:"} {
 		if !strings.Contains(manifest, want) {
 			t.Errorf("summary lacks %q:\n%s", want, manifest)
 		}
 	}
-	if strings.Contains(manifest, "alice") || strings.Contains(manifest, "example.com") {
+	// Check names come from the input; the summary counts them instead.
+	if strings.Contains(manifest, "alice") || strings.Contains(manifest, "example.com") || strings.Contains(manifest, "db_rogue_admin") {
 		t.Errorf("summary leaks an identifier:\n%s", manifest)
 	}
 

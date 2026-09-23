@@ -226,15 +226,6 @@ func TestTypedVocabulariesMatchReviewedWriters(t *testing.T) {
 	}
 }
 
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
-}
-
 func TestActionKnownWriterFixtures(t *testing.T) {
 	for _, tc := range []struct{ op, action, target, kind string }{
 		{"respond.block_ip", "block", "203.0.113.9", "ip"},
@@ -736,6 +727,21 @@ func TestVerifyMasksOnlyEmittedIDs(t *testing.T) {
 	}
 	if problems := a.Verify([]alert.AuditEvent{{Message: "row fid-" + strings.Repeat("cd", 16)}}); len(problems) == 0 {
 		t.Fatal("forged id-shaped token hid a learned account")
+	}
+}
+
+// A finding row's id must be one this run emitted. An id-shaped value with
+// nothing else wrong in the row is still refused.
+func TestVerifyFindingIDMustBeEmitted(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	emitted := a.ID(idFinding, "raw")
+	if problems := a.Verify([]alert.AuditEvent{{FindingID: emitted}}); len(problems) != 0 {
+		t.Fatalf("emitted id refused: %v", problems)
+	}
+	for _, id := range []string{"fid-" + strings.Repeat("ef", 16), a.ID(idAction, "raw"), "raw"} {
+		if problems := a.Verify([]alert.AuditEvent{{FindingID: id}}); len(problems) == 0 {
+			t.Errorf("finding id %q accepted", id)
+		}
 	}
 }
 

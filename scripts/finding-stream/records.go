@@ -302,28 +302,34 @@ func (a *Anonymizer) learnRawID(id string) {
 	a.rawIDText[id] = struct{}{}
 }
 
-// Action returns the typed, anonymized copy of an action record.
-func (a *Anonymizer) Action(r actionlog.Record) (anonAction, error) {
+// validateAction checks an action record without the salt, so a bad row is
+// refused before anything is created. It returns the parsed target.
+func validateAction(r actionlog.Record) (parsedTarget, error) {
 	if r.V != actionlog.SchemaVersion {
-		return anonAction{}, errRecordVersion
+		return parsedTarget{}, errRecordVersion
 	}
 	if r.Timestamp.IsZero() {
-		return anonAction{}, errRecordTime
+		return parsedTarget{}, errRecordTime
 	}
 	shape, ok := actionOps[r.Op]
 	if !ok {
-		return anonAction{}, errUnknownOp
+		return parsedTarget{}, errUnknownOp
 	}
 	if !actionAllowed(shape, r.Op, r.Action) {
-		return anonAction{}, errUnknownAction
+		return parsedTarget{}, errUnknownAction
 	}
 	if !actionActors[string(r.Actor)] {
-		return anonAction{}, errUnknownActor
+		return parsedTarget{}, errUnknownActor
 	}
 	if !actionResults[string(r.Result)] {
-		return anonAction{}, errUnknownResult
+		return parsedTarget{}, errUnknownResult
 	}
-	target, err := a.actionTarget(shape, r.Action, r.Target)
+	return parseActionTarget(shape, r.Action, r.Target)
+}
+
+// Action returns the typed, anonymized copy of an action record.
+func (a *Anonymizer) Action(r actionlog.Record) (anonAction, error) {
+	target, err := validateAction(r)
 	if err != nil {
 		return anonAction{}, err
 	}
@@ -333,9 +339,9 @@ func (a *Anonymizer) Action(r actionlog.Record) (anonAction, error) {
 		Op: r.Op, Action: r.Action, Actor: string(r.Actor),
 		FindingID: a.ID(idFinding, r.FindingID), IncidentID: a.ID(idIncident, r.IncidentID),
 		ActionID: a.ID(idAction, r.ActionID), ActionVersion: r.ActionVersion, UndoOf: a.ID(idAction, r.UndoOf),
-		anonTarget: target, ReasonKind: reasonKind(r.Reason), Result: string(r.Result), HasError: r.Error != "",
+		anonTarget: a.mapTarget(target), ReasonKind: reasonKind(r.Reason), Result: string(r.Result), HasError: r.Error != "",
 	}
-	a.actorDetail(&out, r.ActorDetail)
+	kept := a.actorDetail(&out, r.ActorDetail)
 	if r.Before != nil {
 		exists := r.Before.Exists
 		out.BeforeExists = &exists
@@ -344,7 +350,50 @@ func (a *Anonymizer) Action(r actionlog.Record) (anonAction, error) {
 		exists := r.After.Exists
 		out.AfterExists = &exists
 	}
+	a.drop("action.actor_detail", r.ActorDetail != "" && !kept)
+	a.drop("action.reason", r.Reason != "")
+	a.drop("action.error", r.Error != "")
+	a.drop("action.command", len(r.Command) > 0)
+	a.drop("action.undo", r.Undo != "")
+	a.drop("action.recovery_path", r.RecoveryPath != "")
+	a.dropState("action.before.", r.Before)
+	a.dropState("action.after.", r.After)
 	return out, nil
+}
+
+// droppedFieldKeys is every input field whose content can be discarded. A
+// manifest reports each, zero included, so its key set never depends on input.
+var droppedFieldKeys = []string{
+	"action.actor_detail", "action.reason", "action.error", "action.command", "action.undo", "action.recovery_path",
+	"action.before.sha256", "action.before.size", "action.before.mode", "action.before.uid", "action.before.gid",
+	"action.after.sha256", "action.after.size", "action.after.mode", "action.after.uid", "action.after.gid",
+	"firewall.reason",
+}
+
+func (a *Anonymizer) drop(key string, nonempty bool) {
+	if nonempty {
+		a.dropped[key]++
+	}
+}
+
+func (a *Anonymizer) dropState(prefix string, s *actionlog.FileState) {
+	if s == nil {
+		return
+	}
+	a.drop(prefix+"sha256", s.Digest != "")
+	a.drop(prefix+"size", s.Size != 0)
+	a.drop(prefix+"mode", s.Mode != "")
+	a.drop(prefix+"uid", s.UID != 0)
+	a.drop(prefix+"gid", s.GID != 0)
+}
+
+// Dropped reports how many nonempty values of each field were discarded.
+func (a *Anonymizer) Dropped() map[string]int {
+	out := make(map[string]int, len(droppedFieldKeys))
+	for _, key := range droppedFieldKeys {
+		out[key] = a.dropped[key]
+	}
+	return out
 }
 
 func actionAllowed(shape opShape, op, action string) bool {
@@ -366,84 +415,116 @@ func (a *Anonymizer) recordAccount(raw string) string {
 // Only two actor details are kept: a positive block lease, and an operator
 // address, which maps like any other address. Executable paths and command
 // names are dropped.
-func (a *Anonymizer) actorDetail(out *anonAction, detail string) {
+func (a *Anonymizer) actorDetail(out *anonAction, detail string) bool {
 	if rest, ok := strings.CutPrefix(detail, "expires in "); ok {
 		if d, err := time.ParseDuration(rest); err == nil && d > 0 {
 			out.DurationNS = int64(d)
+			return true
 		}
-		return
+		return false
 	}
 	if addr, ok := parseTargetAddr(detail); ok {
 		out.ActorIP = a.mapAddr(addr)
+		return true
 	}
+	return false
 }
 
-func (a *Anonymizer) actionTarget(shape opShape, action, raw string) (anonTarget, error) {
+// parsedTarget is a validated target before mapping. raw is kept only for
+// path and opaque targets, which map to a salted id.
+type parsedTarget struct {
+	kind       string
+	addr       netip.Addr
+	bits, port int
+	proto      string
+	raw        string
+}
+
+func parseActionTarget(shape opShape, action, raw string) (parsedTarget, error) {
 	switch {
 	case shape == opFile || manualFirewallFileActions[action]:
-		return a.opaqueTarget(raw, "path")
+		return parseOpaqueTarget(raw, "path")
 	case shape == opProcess:
-		return a.opaqueTarget(raw, "opaque")
+		return parseOpaqueTarget(raw, "opaque")
 	case firewallOpaqueActions[action] && raw != "":
-		return a.opaqueTarget(raw, "opaque")
+		return parseOpaqueTarget(raw, "opaque")
 	}
-	return a.addressTarget(raw)
+	return parseAddressTarget(raw)
 }
 
-func (a *Anonymizer) opaqueTarget(raw, kind string) (anonTarget, error) {
+func parseOpaqueTarget(raw, kind string) (parsedTarget, error) {
 	if raw == "" {
-		return anonTarget{}, errTargetMissing
+		return parsedTarget{}, errTargetMissing
 	}
-	return anonTarget{Target: a.ID(idTarget, raw), TargetKind: kind}, nil
+	return parsedTarget{kind: kind, raw: raw}, nil
 }
 
-// addressTarget parses the forms the firewall writes: an address, a network,
-// "address:port/proto" (IPv6 unbracketed, as fmt.Sprintf emits it) or
-// nothing. The address map is not topology preserving: two pseudonyms say
-// nothing about whether their networks overlap.
-func (a *Anonymizer) addressTarget(raw string) (anonTarget, error) {
+// parseAddressTarget accepts the forms the firewall writes: an address, a
+// network, "address:port/proto" (IPv6 unbracketed, as fmt.Sprintf emits it)
+// or nothing.
+func parseAddressTarget(raw string) (parsedTarget, error) {
 	if raw == "" {
-		return anonTarget{TargetKind: "empty"}, nil
+		return parsedTarget{kind: "empty"}, nil
 	}
 	if head, proto, ok := cutLast(raw, '/'); ok && (proto == "tcp" || proto == "udp") {
 		host, portText, ok := cutLast(head, ':')
 		if !ok {
-			return anonTarget{}, errTargetAddress
+			return parsedTarget{}, errTargetAddress
 		}
 		port, err := strconv.ParseUint(portText, 10, 16)
 		if err != nil || port == 0 || strconv.FormatUint(port, 10) != portText {
-			return anonTarget{}, errTargetAddress
+			return parsedTarget{}, errTargetAddress
 		}
 		addr, ok := parseTargetAddr(host)
 		if !ok {
-			return anonTarget{}, errTargetAddress
+			return parsedTarget{}, errTargetAddress
 		}
-		return anonTarget{Target: a.mapAddr(addr), TargetKind: "endpoint", TargetPort: int(port), TargetProto: proto}, nil
+		return parsedTarget{kind: "endpoint", addr: addr, port: int(port), proto: proto}, nil
 	}
 	if strings.Contains(raw, "/") {
 		p, err := netip.ParsePrefix(raw)
 		if err != nil {
-			return anonTarget{}, errTargetAddress
+			return parsedTarget{}, errTargetAddress
 		}
 		addr, bits := p.Addr(), p.Bits()
 		if addr.Is4In6() {
 			if bits < 96 {
-				return anonTarget{}, errTargetAddress
+				return parsedTarget{}, errTargetAddress
 			}
 			addr, bits = addr.Unmap(), bits-96
 		}
 		// No writer blocks a whole address family.
 		if bits == 0 {
-			return anonTarget{}, errTargetAddress
+			return parsedTarget{}, errTargetAddress
 		}
-		network := netip.PrefixFrom(addr, bits).Masked()
-		return anonTarget{Target: a.mapAddr(network.Addr()), TargetKind: "cidr", TargetPrefix: bits}, nil
+		return parsedTarget{kind: "cidr", addr: netip.PrefixFrom(addr, bits).Masked().Addr(), bits: bits}, nil
 	}
 	addr, ok := parseTargetAddr(raw)
 	if !ok {
-		return anonTarget{}, errTargetAddress
+		return parsedTarget{}, errTargetAddress
 	}
-	return anonTarget{Target: a.mapAddr(addr), TargetKind: "ip"}, nil
+	return parsedTarget{kind: "ip", addr: addr}, nil
+}
+
+// mapTarget replaces a parsed target's identity. The address map is not
+// topology preserving: two pseudonyms say nothing about whether their
+// networks overlap.
+func (a *Anonymizer) mapTarget(p parsedTarget) anonTarget {
+	switch p.kind {
+	case "empty":
+		return anonTarget{TargetKind: "empty"}
+	case "path", "opaque":
+		return anonTarget{Target: a.ID(idTarget, p.raw), TargetKind: p.kind}
+	}
+	return anonTarget{Target: a.mapAddr(p.addr), TargetKind: p.kind, TargetPrefix: p.bits, TargetPort: p.port, TargetProto: p.proto}
+}
+
+func (a *Anonymizer) addressTarget(raw string) (anonTarget, error) {
+	p, err := parseAddressTarget(raw)
+	if err != nil {
+		return anonTarget{}, err
+	}
+	return a.mapTarget(p), nil
 }
 
 func cutLast(s string, sep byte) (string, string, bool) {
@@ -471,35 +552,46 @@ func (a *Anonymizer) mapAddr(addr netip.Addr) string {
 	return a.IPv6(addr.String())
 }
 
-// FirewallAudit returns the typed, anonymized copy of a firewall audit entry.
-func (a *Anonymizer) FirewallAudit(e firewall.AuditEntry) (anonFirewallAudit, error) {
+// validateFirewallAudit checks a firewall audit entry without the salt and
+// returns its parsed target, source and lease.
+func validateFirewallAudit(e firewall.AuditEntry) (parsedTarget, string, time.Duration, error) {
 	if e.Timestamp.IsZero() {
-		return anonFirewallAudit{}, errRecordTime
+		return parsedTarget{}, "", 0, errRecordTime
 	}
 	if !firewallAuditActions[e.Action] {
-		return anonFirewallAudit{}, errUnknownAction
+		return parsedTarget{}, "", 0, errUnknownAction
 	}
 	source := e.Source
 	if source == "" {
 		source = firewall.SourceUnknown
 	}
 	if !firewallSources[source] {
-		return anonFirewallAudit{}, errUnknownSource
+		return parsedTarget{}, "", 0, errUnknownSource
 	}
 	var duration time.Duration
 	if e.Duration != "" {
 		d, err := time.ParseDuration(e.Duration)
 		if err != nil || d <= 0 {
-			return anonFirewallAudit{}, errDuration
+			return parsedTarget{}, "", 0, errDuration
 		}
 		duration = d
 	}
-	target, err := a.addressTarget(e.IP)
+	target, err := parseAddressTarget(e.IP)
+	if err != nil {
+		return parsedTarget{}, "", 0, err
+	}
+	return target, source, duration, nil
+}
+
+// FirewallAudit returns the typed, anonymized copy of a firewall audit entry.
+func (a *Anonymizer) FirewallAudit(e firewall.AuditEntry) (anonFirewallAudit, error) {
+	target, source, duration, err := validateFirewallAudit(e)
 	if err != nil {
 		return anonFirewallAudit{}, err
 	}
+	a.drop("firewall.reason", e.Reason != "")
 	return anonFirewallAudit{
-		Format: recordFormatVersion, Timestamp: e.Timestamp, Action: e.Action, anonTarget: target,
+		Format: recordFormatVersion, Timestamp: e.Timestamp, Action: e.Action, anonTarget: a.mapTarget(target),
 		ReasonKind: reasonKind(e.Reason), Source: source, DurationNS: int64(duration),
 	}, nil
 }

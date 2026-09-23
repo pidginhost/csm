@@ -205,36 +205,42 @@ func TestConcurrentSaltCreationNeverReplacesKey(t *testing.T) {
 	}
 }
 
-func TestWriteEventsPreservesExistingOutputOnFailure(t *testing.T) {
+func TestStageOutputPreservesExistingOutputOnFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.gz")
 	const original = "previous output"
 	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeEvents(path, []alert.AuditEvent{{Timestamp: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}}); err == nil {
+	rows := []alert.AuditEvent{{Timestamp: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}}
+	if _, err := stageOutput(osFileOps(), path, func(w io.Writer) error { return encodeRows(w, rows) }); err == nil {
 		t.Fatal("expected invalid timestamp to fail encoding")
 	}
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != original {
 		t.Fatalf("failed write destroyed previous output: %q, %v", got, err)
 	}
+	assertNoStaging(t, filepath.Dir(path))
 }
 
-func TestWriteEventsReplacesOutputWithPrivateFile(t *testing.T) {
+func TestPublishReplacesOutputWithPrivateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.gz")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeEvents(path, sampleEvents()); err != nil {
+	staged, err := stageOutput(osFileOps(), path, func(w io.Writer) error { return encodeRows(w, sampleEvents()) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = publishOutputs(osFileOps(), []stagedOutput{staged}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("output is not private: %v", err)
 	}
-	got, err := readEvents(path)
-	if err != nil || len(got) != len(sampleEvents()) {
-		t.Fatalf("output incomplete: count=%d err=%v", len(got), err)
+	var rows int
+	if _, err = readStream(path, kindFindings, 1, func(int, []byte) (time.Time, error) { rows++; return joinTS, nil }); err != nil || rows != len(sampleEvents()) {
+		t.Fatalf("output incomplete: count=%d err=%v", rows, err)
 	}
 	entries, err := os.ReadDir(filepath.Dir(path))
 	if err != nil || len(entries) != 1 {
@@ -246,20 +252,24 @@ type failingStreamWriter struct{ err error }
 
 func (w failingStreamWriter) Write([]byte) (int, error) { return 0, w.err }
 
-func TestEncodeEventsReturnsFinalizationErrors(t *testing.T) {
+func TestEncodeRowsReturnsFinalizationErrors(t *testing.T) {
 	want := errors.New("write failed")
 	// No rows: the failure occurs only when closing the gzip stream.
-	if err := encodeEvents(failingStreamWriter{want}, nil); !errors.Is(err, want) {
+	if err := encodeRows(failingStreamWriter{want}, []alert.AuditEvent(nil)); !errors.Is(err, want) {
 		t.Fatalf("gzip finalization error lost: %v", err)
 	}
-	if err := encodeEvents(io.Discard, sampleEvents()); err != nil {
+	if err := encodeRows(io.Discard, sampleEvents()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestReadEventsRejectsTruncatedGzip(t *testing.T) {
+func TestReadStreamRejectsTruncatedGzip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "input.gz")
-	if err := writeEvents(path, sampleEvents()); err != nil {
+	staged, err := stageOutput(osFileOps(), path, func(w io.Writer) error { return encodeRows(w, sampleEvents()) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = publishOutputs(osFileOps(), []stagedOutput{staged}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -269,7 +279,7 @@ func TestReadEventsRejectsTruncatedGzip(t *testing.T) {
 	if err := os.Truncate(path, info.Size()-4); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readEvents(path); err == nil {
+	if _, err := readStream(path, kindFindings, 1, func(int, []byte) (time.Time, error) { return joinTS, nil }); err == nil {
 		t.Fatal("truncated gzip accepted")
 	}
 }
@@ -305,12 +315,15 @@ func TestRunRejectsOutputOverSaltOrInput(t *testing.T) {
 	}
 }
 
+// The transform below leaks the account it was given. Only the verifier
+// stands between that and the output, and it must leave any previous output
+// as it was and print no summary.
 func TestRunRefusalLeavesOutputUntouched(t *testing.T) {
 	for _, existing := range []bool{false, true} {
 		t.Run(fmt.Sprint(existing), func(t *testing.T) {
 			dir := t.TempDir()
 			input, output := filepath.Join(dir, "input.jsonl"), filepath.Join(dir, "alice.example.com.gz")
-			raw, err := json.Marshal(alert.AuditEvent{FindingID: "alice", TenantID: "alice"})
+			raw, err := json.Marshal(sampleEvents()[0])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -322,9 +335,15 @@ func TestRunRefusalLeavesOutputUntouched(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			r := newRun()
+			r.event = func(a *Anonymizer, e alert.AuditEvent) alert.AuditEvent {
+				out := a.Event(e)
+				out.Details = e.TenantID
+				return out
+			}
 			var summary bytes.Buffer
-			err = run([]string{"anonymize", "--salt-file", filepath.Join(dir, "salt"), "--out", output, input}, &summary)
-			if err == nil || !strings.Contains(err.Error(), "leak check failed") || summary.Len() != 0 {
+			err = r.execute([]string{"anonymize", "--salt-file", filepath.Join(dir, "salt"), "--out", output, input}, &summary)
+			if !errors.Is(err, errLeak) || summary.Len() != 0 {
 				t.Fatalf("expected refusal without summary, got %v", err)
 			}
 			body, readErr := os.ReadFile(output)

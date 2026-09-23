@@ -33,6 +33,7 @@ type Anonymizer struct {
 	ids        map[string]idKind   // emitted salted id -> its domain
 	rawIDs     map[string]struct{} // learned raw ids made of id token bytes
 	rawIDText  map[string]struct{} // learned raw ids with other bytes
+	dropped    map[string]int      // discarded nonempty values per input field
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
@@ -48,6 +49,7 @@ func NewAnonymizer(salt []byte) *Anonymizer {
 		ids:        make(map[string]idKind),
 		rawIDs:     make(map[string]struct{}),
 		rawIDText:  make(map[string]struct{}),
+		dropped:    make(map[string]int),
 	}
 }
 
@@ -232,6 +234,7 @@ func (a *Anonymizer) learnEmail(addr string) {
 // Event returns the anonymized copy of e.
 func (a *Anonymizer) Event(e alert.AuditEvent) alert.AuditEvent {
 	out := e
+	out.FindingID = a.ID(idFinding, e.FindingID)
 	out.Hostname = a.Host(e.Hostname)
 	out.TenantID = a.Account(e.TenantID)
 	out.Domain = a.Domain(e.Domain)
@@ -619,6 +622,10 @@ func (a *Anonymizer) Verify(events []alert.AuditEvent) []string {
 	var problems []string
 	for i := range events {
 		found := a.leaksIn(eventText(events[i]))
+		// An output id must be one this run emitted, not merely id-shaped.
+		if id := events[i].FindingID; id != "" && !a.emittedID(id, idFinding) {
+			found = append(found, "finding id not emitted")
+		}
 		if len(found) > 0 {
 			sort.Strings(found)
 			problems = append(problems, fmt.Sprintf("event %d (%s): %s", i, events[i].Check, strings.Join(found, ", ")))

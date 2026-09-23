@@ -46,20 +46,28 @@ What the tool replaces, in every structured field and in free text:
 - The details of a credential-leak finding are dropped entirely, and generic
   `password=`, `secret:` and `token=` material is blanked anywhere, including
   quoted keys and values containing spaces.
-- Timestamps, check names, severities, finding ids, path structure below
-  the account, plugin and file names, and process names are kept unless they
-  contain an identity: they are what calibration reads. Paths and mailboxes
-  in process command lines and parent processes also teach the scrubber
-  which identities to remove elsewhere.
+- Finding ids become `fid-<id>`, a salted id of at least 128 bits that keeps
+  case, so an action row can name its finding without exposing the raw id.
+- Timestamps, check names, severities, path structure below the account,
+  plugin and file names, and process names are kept unless they contain an
+  identity: they are what calibration reads. Paths and mailboxes in process
+  command lines and parent processes also teach the scrubber which
+  identities to remove elsewhere.
 
 Before writing, the tool scans its own output for every identity it learned
 from structured fields, paths and mail addresses, for domain-shaped names,
-and for any mailbox or address outside the reserved ranges. It refuses to
-write if it finds one. This independent scan also checks preserved metadata
-such as check names and finding ids. A name glued to underscores or file
-extensions is still found. The summary prints counts by check and replacement
-kind, the time span, and a salt fingerprint, never identities, paths or the
-salt itself. Refusal diagnostics can name leaked identities; keep them private.
+for raw ids, and for any mailbox or address outside the reserved ranges. It
+refuses to write if it finds one. This independent scan also checks preserved
+metadata such as check names, and accepts only ids this run emitted. A name
+glued to underscores or file extensions is still found. The summary prints
+row counts, the number of distinct checks, replacement counts, the time span
+and a salt fingerprint, never identities, check names, paths or the salt
+itself. An error names only the stream, the file's position on the command
+line, the line number and a fixed reason.
+
+Every row must parse as exactly one JSON object of the known schema, with a
+supported version and a timestamp. Unknown or repeated fields, nulls, data
+after the object and values over the size limits refuse the whole run.
 
 Handling rules:
 
@@ -72,16 +80,91 @@ Handling rules:
   replacing it; retry after the creator finishes. Keep it private and
   reuse it for every host whose stream should be joinable with the others;
   losing it makes new recordings unjoinable with old ones.
-- Output cannot replace a salt or input file, including an existing alias.
-  A complete gzip stream is written to a private temporary file and renamed
-  into place; failures leave any previous recording intact. Output has mode
-  0600 even when replacing a less restricted file.
+- Outputs cannot replace an input, the salt, the input manifest or each
+  other, whether named by path, through a symlinked directory or as a hard
+  link, and an existing output must be a regular file. These checks run
+  before the salt is created. Every output is written to a private temporary
+  file beside its destination, and all are complete before any is renamed
+  into place; if publishing fails partway, the outputs already replaced are
+  restored. New directories have mode 0700 and outputs mode 0600, even when
+  replacing a less restricted file.
 - Recorded streams stay outside the repository entirely, in a private
   directory such as `~/.local/share/csm/finding-streams/` with mode 0700. A
   pseudonymized stream still describes real incidents on a real host, and this
   repository is public. Do not keep them in an ignored directory inside the
   checkout: `git clean -fdx` removes ignored files too, and a recording that
   took a host weeks to accumulate is not reproducible from anywhere else.
+
+## Joining actions and firewall entries
+
+The action log (`actions.jsonl`) and the firewall audit log
+(`<state>/firewall/audit.jsonl`) say what CSM did about the findings. The same
+run can anonymize both next to the findings, so the three streams share
+pseudonyms. A joined run needs a manifest, and a manifest needs a build of a
+known commit without local changes, so build the tool from a clean checkout
+first:
+
+```bash
+go build -o /tmp/finding-stream ./scripts/finding-stream
+/tmp/finding-stream anonymize \
+    --salt-file ~/.local/share/csm/finding-streams/salt \
+    --out host-a/findings.jsonl.gz \
+    --actions raw/actions.jsonl --actions-out host-a/actions.jsonl.gz \
+    --firewall-audit raw/firewall-audit.jsonl --firewall-out host-a/firewall.jsonl.gz \
+    --manifest host-a/manifest.json \
+    raw/audit.jsonl raw/audit.jsonl-*.gz
+```
+
+Action and firewall rows are rebuilt from a closed list of fields rather than
+scrubbed:
+
+- An action row keeps its time, operation and action, actor kind, result, a
+  reason category, whether an error occurred, whether the file existed before
+  and after, a block lease, and salted ids for the finding, incident, action
+  and the action it undoes. Addresses map as in findings, networks keep their
+  prefix length and endpoints their port and protocol. File paths, process ids
+  and other targets become `tid-<id>`. Command lines, error and reason text,
+  undo commands, recovery paths, digests, sizes, modes and owners are dropped.
+  Account names are always mapped, system users included.
+- A firewall row keeps its time, action, target, reason category, source and
+  lease. Firewall entries carry no ids, so nothing joins them to actions or
+  findings; the manifest says so rather than guessing from times or addresses.
+- An operation, action, actor, result or source the tool has not been
+  reviewed against refuses the run instead of passing through.
+
+The manifest is written last and is the bundle's completion marker. It lists
+every input and output with its stream kind, position, SHA-256 of the exact
+bytes, record count and time span, the tool's source revision, the salt
+fingerprint, join counts, counts of discarded fields, action results by value,
+and coverage for each stream. Check every output's digest against it; a bundle
+without a manifest, or with a digest that does not match, is incomplete.
+
+- An action is matched when it names a finding id present in the recording,
+  and nothing more. Actions naming a finding the recording lacks, and actions
+  naming none, are counted apart.
+- Repeated finding rows are kept and counted. A durable action row repeated
+  exactly is a retransmission and does not count as another outcome; rows that
+  share an action id and version but differ are reported as conflicting, never
+  resolved by taking the latest.
+- A result is what the writer recorded. An applied block or a firewall entry
+  is an observation, not a verified effect or a reviewed correct action.
+
+`--input-manifest` takes the collector's inventory of what the host has:
+
+```json
+{"v": 1, "streams": [
+  {"kind": "findings", "availability": "present", "sha256": "<digest of the copied file>", "records": 1200},
+  {"kind": "actions", "availability": "not_recorded"},
+  {"kind": "firewall_audit", "availability": "absent"}
+]}
+```
+
+Every supplied file must appear as a present entry with its digest and record
+count, and every present entry must be supplied. `absent` means the collector
+looked and found none; `not_recorded` means the host does not keep that
+stream. Ledger and review streams can only be stated absent or not recorded.
+Without an inventory, a stream that was not supplied is reported as not
+supplied.
 
 ## What a recording does and does not contain
 
