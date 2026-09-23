@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -66,5 +67,39 @@ func TestThreatBulkWhitelistUsesCanonicalIP(t *testing.T) {
 	entries := checks.GetThreatDB().WhitelistedIPs()
 	if len(entries) != 1 || entries[0].IP != "2001:db8::5" {
 		t.Fatalf("threat whitelist = %+v, want canonical IPv6", entries)
+	}
+}
+
+// Whitelist, temporary whitelist and Unblock & Clear release an address the
+// same way, so each reports the same trailing steps, cPHulk included.
+func TestThreatReleaseActionsReportTheSameSteps(t *testing.T) {
+	s := newTestServer(t, "tok")
+	for _, tc := range []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+		body    string
+	}{
+		{"whitelist", s.apiThreatWhitelistIP, `{"ip":"203.0.113.7"}`},
+		{"temp whitelist", s.apiThreatTempWhitelistIP, `{"ip":"203.0.113.8","hours":2}`},
+		{"clear", s.apiThreatClearIP, `{"ip":"203.0.113.9"}`},
+	} {
+		name := tc.name
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/", strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		tc.handler(w, req)
+		if w.Code != 200 {
+			t.Fatalf("%s: status = %d body = %s", name, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Actions []string `json:"actions"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		n := len(resp.Actions)
+		if n < 2 || resp.Actions[n-2] != "removed from subnet block history" || resp.Actions[n-1] != "flushed cPanel login history" {
+			t.Errorf("%s: actions = %q", name, resp.Actions)
+		}
 	}
 }

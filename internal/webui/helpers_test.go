@@ -848,3 +848,18 @@ func TestQuarantineRestoreTargetRejectsTheRootItself(t *testing.T) {
 		}
 	}
 }
+
+// Findings about CSM's own work (what it already blocked or answered, a check
+// that timed out, its health) are not listed as findings to act on.
+func TestOperatorFacingCheck(t *testing.T) {
+	for _, check := range []string{"auto_response", "auto_block", "check_timeout", "health"} {
+		if operatorFacingCheck(check) {
+			t.Errorf("%s is listed as a finding to act on", check)
+		}
+	}
+	for _, check := range []string{"webshell", "brute_force", "healthcheck", ""} {
+		if !operatorFacingCheck(check) {
+			t.Errorf("%q is hidden from the finding lists", check)
+		}
+	}
+}

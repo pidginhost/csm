@@ -201,7 +201,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 	suppressions := s.store.LoadSuppressions()
 	var result []entryView
 	for _, f := range latest {
-		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+		if !operatorFacingCheck(f.Check) {
 			continue
 		}
 		// Skip suppressed findings
@@ -307,7 +307,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]enrichedFinding, 0)
 	for _, f := range latest {
-		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+		if !operatorFacingCheck(f.Check) {
 			continue
 		}
 		if s.store.IsSuppressed(f, suppressions) {

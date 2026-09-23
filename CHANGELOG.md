@@ -103,6 +103,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- Whitelist and temporary whitelist now list the cPanel login history flush they perform, as Unblock & Clear already did.
 - The Web UI server now checks at build time that the firewall offers every action the pages use, so a renamed firewall method can no longer turn an action into an error or a skipped step.
 - The Web UI now ships Chart.js 4.5.1, Tabler 1.5.1 and Tabler Icons 3.48.0, with the icon font in WOFF2 only and no references to source maps it does not ship.
 - The Web UI's shared script is split by purpose and every script keeps its helpers to itself, so scripts can no longer clash over names; scripts stay within ES2019.

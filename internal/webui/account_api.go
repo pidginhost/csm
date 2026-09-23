@@ -85,7 +85,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 	var accountFindings []findingView
 	latest := s.store.LatestFindings()
 	for _, f := range latest {
-		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+		if !operatorFacingCheck(f.Check) {
 			continue
 		}
 		if accountFindingMatches(f, name, homePrefixes) {

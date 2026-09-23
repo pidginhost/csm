@@ -312,6 +312,17 @@ func parseDuration(s string) (time.Duration, error) {
 	return d, nil
 }
 
+// operatorFacingCheck reports whether findings of a check belong in the
+// finding lists operators act on. auto_response and auto_block record what
+// CSM already did; check_timeout and health describe CSM itself.
+func operatorFacingCheck(check string) bool {
+	switch check {
+	case "auto_response", "auto_block", "check_timeout", "health":
+		return false
+	}
+	return true
+}
+
 // isPathUnder returns true if the cleaned path is strictly under the base
 // directory. It prevents path traversal via ".." and prefix tricks
 // (e.g., /home/username is not under /home/user).
