@@ -789,6 +789,19 @@ func (s *Store) ReadHistorySince(since time.Time) []alert.Finding {
 	return out
 }
 
+// HistoryMark changes whenever history does. The JSONL fallback uses the
+// history file's size and modification time.
+func (s *Store) HistoryMark() string {
+	if db := store.Global(); db != nil {
+		return db.HistoryMark()
+	}
+	info, err := os.Stat(filepath.Join(s.path, "history.jsonl"))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d|%d", info.Size(), info.ModTime().UnixNano())
+}
+
 // LatestByCheck returns the timestamp of the newest history entry of every
 // check. The bbolt store keeps an index; the JSONL fallback reads history.
 func (s *Store) LatestByCheck() map[string]time.Time {

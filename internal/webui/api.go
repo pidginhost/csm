@@ -679,141 +679,34 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, entries)
 }
 
-// apiStats returns severity counts and per-check breakdown.
+// apiStats returns severity counts and per-check breakdown for the last 24
+// hours. The summary is shared with the dashboard page and recomputed only
+// when history changes.
 func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
-	last24h := time.Now().Add(-24 * time.Hour)
-	findings := s.store.ReadHistorySince(last24h)
-
-	critical, high, warning := 0, 0, 0
-	byCheck := make(map[string]int)
-
-	for _, f := range findings {
-		switch f.Severity {
-		case alert.Critical:
-			critical++
-		case alert.High:
-			high++
-		case alert.Warning:
-			warning++
-		}
-		byCheck[f.Check]++
+	sum := s.statsSummary24h()
+	lastCriticalAgo, lastCriticalISO := "None", ""
+	if !sum.lastCritical.IsZero() {
+		lastCriticalAgo = timeAgo(sum.lastCritical)
+		lastCriticalISO = sum.lastCritical.Format(time.RFC3339)
 	}
-
-	// Find most recent critical finding for "time since last critical"
-	// (findings are newest-first from ReadHistorySince)
-	lastCriticalAgo := "None"
-	lastCriticalISO := ""
-	for _, f := range findings {
-		if f.Severity == alert.Critical {
-			lastCriticalAgo = timeAgo(f.Timestamp)
-			lastCriticalISO = f.Timestamp.Format(time.RFC3339)
-			break
-		}
-	}
-
-	// Compute accounts at risk: accounts with critical/high findings in 24h
-	accountRisk := make(map[string]int) // account -> highest severity
-	// Auto-response summary: count actions by type in 24h
-	autoBlocked, autoQuarantined, autoKilled := 0, 0, 0
-	// Top targeted accounts
-	accountHits := make(map[string]int)
-	// Brute force summary
-	bruteForceIPs := make(map[string]int)   // IP -> total attempts
-	bruteForceTypes := make(map[string]int) // "wp-login" / "xmlrpc" -> count
-
-	for _, f := range findings {
-		// Extract account from finding path/message
-		acct := extractAccountFromFinding(f)
-		if acct != "" {
-			accountHits[acct]++
-			sev := int(f.Severity)
-			if prev, ok := accountRisk[acct]; !ok || sev > prev {
-				accountRisk[acct] = sev
-			}
-		}
-		// Count auto-response actions
-		switch f.Check {
-		case "auto_block":
-			autoBlocked++
-		case "auto_response":
-			if strings.Contains(f.Message, "quarantin") {
-				autoQuarantined++
-			} else if strings.Contains(f.Message, "kill") || strings.Contains(f.Message, "Kill") {
-				autoKilled++
-			}
-		case "wp_login_bruteforce":
-			bruteForceTypes["wp-login"]++
-			if ip := checks.ExtractIPFromFinding(f); ip != "" {
-				bruteForceIPs[ip]++
-			}
-		case "xmlrpc_abuse":
-			bruteForceTypes["xmlrpc"]++
-			if ip := checks.ExtractIPFromFinding(f); ip != "" {
-				bruteForceIPs[ip]++
-			}
-		case "modsec_block_escalation", "modsec_csm_block_escalation":
-			if strings.Contains(f.Message, "xmlrpc") || strings.Contains(f.Message, "900006") || strings.Contains(f.Message, "900007") {
-				bruteForceTypes["xmlrpc-modsec"]++
-			}
-		}
-	}
-
-	// Accounts at risk: those with critical or high severity
-	var atRisk []map[string]interface{}
-	for acct, sev := range accountRisk {
-		if sev >= int(alert.High) {
-			atRisk = append(atRisk, map[string]interface{}{
-				"account":  acct,
-				"severity": sev,
-				"findings": accountHits[acct],
-			})
-		}
-	}
-	// Sort by severity desc, then findings desc
-	sort.Slice(atRisk, func(i, j int) bool {
-		if atRisk[i]["severity"].(int) != atRisk[j]["severity"].(int) {
-			return atRisk[i]["severity"].(int) > atRisk[j]["severity"].(int)
-		}
-		return atRisk[i]["findings"].(int) > atRisk[j]["findings"].(int)
-	})
-	if len(atRisk) > 50 {
-		atRisk = atRisk[:50]
-	}
-
-	// Top targeted accounts (by finding count)
-	type acctCount struct {
-		Account string `json:"account"`
-		Count   int    `json:"count"`
-	}
-	var topAccounts []acctCount
-	for acct, count := range accountHits {
-		topAccounts = append(topAccounts, acctCount{acct, count})
-	}
-	sort.Slice(topAccounts, func(i, j int) bool {
-		return topAccounts[i].Count > topAccounts[j].Count
-	})
-	if len(topAccounts) > 5 {
-		topAccounts = topAccounts[:5]
-	}
-
 	result := map[string]interface{}{
 		"last_24h": map[string]interface{}{
-			"critical": critical,
-			"high":     high,
-			"warning":  warning,
-			"total":    critical + high + warning,
+			"critical": sum.critical,
+			"high":     sum.high,
+			"warning":  sum.warning,
+			"total":    sum.critical + sum.high + sum.warning,
 		},
-		"by_check":          byCheck,
+		"by_check":          sum.byCheck,
 		"last_critical_ago": lastCriticalAgo,
 		"last_critical_iso": lastCriticalISO,
-		"accounts_at_risk":  atRisk,
+		"accounts_at_risk":  sum.atRisk,
 		"auto_response": map[string]int{
-			"blocked":     autoBlocked,
-			"quarantined": autoQuarantined,
-			"killed":      autoKilled,
+			"blocked":     sum.autoBlocked,
+			"quarantined": sum.autoQuarantined,
+			"killed":      sum.autoKilled,
 		},
-		"top_accounts": topAccounts,
-		"brute_force":  buildBruteForceSummary(bruteForceIPs, bruteForceTypes),
+		"top_accounts": sum.topAccounts,
+		"brute_force":  sum.bruteForce,
 	}
 	writeJSON(w, result)
 }
@@ -865,7 +758,9 @@ func (s *Server) apiStatsTrend(w http.ResponseWriter, r *http.Request) {
 // apiStatsTimeline returns 24 hourly buckets for the findings timeline chart.
 // Uses efficient bbolt cursor seeking instead of loading all findings into memory.
 func (s *Server) apiStatsTimeline(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.store.AggregateByHour())
+	writeJSON(w, s.timelineMemo.get(s.store.HistoryMark(), func() any {
+		return s.store.AggregateByHour()
+	}))
 }
 
 // apiHealth returns daemon health status.

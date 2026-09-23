@@ -425,6 +425,12 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	kindFilter := q.Get("kind")
+	writeJSON(w, s.emailMemo("groups?"+q.Encode(), func() any {
+		return s.buildEmailGroupsResponse(from, to, kindFilter, limit)
+	}))
+}
+
+func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string, limit int) emailGroupsResponse {
 	var findings []alert.Finding
 	if s.store != nil {
 		// Filter while walking history so unrelated findings, or findings
@@ -450,11 +456,20 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 		groups = groups[:limit]
 	}
 
-	writeJSON(w, emailGroupsResponse{
+	return emailGroupsResponse{
 		Groups:    groups,
 		From:      from.UTC().Format(time.RFC3339),
 		To:        to.UTC().Format(time.RFC3339),
 		Scanned:   scanned,
 		Truncated: truncated,
-	})
+	}
+}
+
+// emailMemo reuses an email workbench result for the same query while
+// history is unchanged; the page polls these every minute.
+func (s *Server) emailMemo(key string, compute func() any) any {
+	if s.store == nil {
+		return compute()
+	}
+	return s.emailMemos.memo(key).get(s.store.HistoryMark(), compute)
 }

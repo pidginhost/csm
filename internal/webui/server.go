@@ -152,6 +152,10 @@ type Server struct {
 	// scanInProgress reports scans the UI did not start; per server so
 	// handler tests can hold one without running checks.
 	scanInProgress func() bool
+	// Results computed from recent history, reused while it is unchanged.
+	statsMemo    historyMemo
+	timelineMemo historyMemo
+	emailMemos   historyMemos
 	// accountRoots and scanAccounts are the platform's account inventory;
 	// per server so handler tests can supply their own tree.
 	accountRoots func() []string

@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 )
 
@@ -75,63 +74,38 @@ type quarantineEntry struct {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
-	last24h := time.Now().Add(-24 * time.Hour)
-	findings := s.store.ReadHistorySince(last24h)
+	sum := s.statsSummary24h()
 
-	var recent []historyEntry
-	critical, high, warning := 0, 0, 0
-
-	for _, f := range findings {
-		// Count all findings by severity
-		switch f.Severity {
-		case alert.Critical:
-			critical++
-		case alert.High:
-			high++
-		case alert.Warning:
-			warning++
-		}
-
-		// Skip internal checks from the live feed
-		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
-			continue
-		}
-
-		if len(recent) < 10 {
-			recent = append(recent, historyEntry{
-				Severity:     severityLabel(f.Severity),
-				SevClass:     severityClass(f.Severity),
-				Check:        f.Check,
-				Message:      f.Message,
-				Details:      f.Details,
-				Timestamp:    f.Timestamp.Format("15:04:05"),
-				TimestampISO: f.Timestamp.Format(time.RFC3339),
-				TimeAgo:      timeAgo(f.Timestamp),
-				HasFix:       checks.HasFix(f.Check),
-				FixDesc:      checks.FixDescription(f.Check, f.Message, f.FilePath),
-				Key:          f.Key(),
-			})
-		}
+	recent := make([]historyEntry, 0, len(sum.recent))
+	for _, f := range sum.recent {
+		recent = append(recent, historyEntry{
+			Severity:     severityLabel(f.Severity),
+			SevClass:     severityClass(f.Severity),
+			Check:        f.Check,
+			Message:      f.Message,
+			Details:      f.Details,
+			Timestamp:    f.Timestamp.Format("15:04:05"),
+			TimestampISO: f.Timestamp.Format(time.RFC3339),
+			TimeAgo:      timeAgo(f.Timestamp),
+			HasFix:       checks.HasFix(f.Check),
+			FixDesc:      checks.FixDescription(f.Check, f.Message, f.FilePath),
+			Key:          f.Key(),
+		})
 	}
 
-	// Find most recent critical finding (findings are newest-first)
-	lastCriticalAgo := "None"
-	lastCriticalISO := ""
-	for _, f := range findings {
-		if f.Severity == alert.Critical {
-			lastCriticalAgo = timeAgo(f.Timestamp)
-			lastCriticalISO = f.Timestamp.Format(time.RFC3339)
-			break
-		}
+	lastCriticalAgo, lastCriticalISO := "None", ""
+	if !sum.lastCritical.IsZero() {
+		lastCriticalAgo = timeAgo(sum.lastCritical)
+		lastCriticalISO = sum.lastCritical.Format(time.RFC3339)
 	}
 
 	data := dashboardData{
 		Hostname:        s.cfg.Hostname,
 		Uptime:          time.Since(s.startTime).Round(time.Second).String(),
-		Critical:        critical,
-		High:            high,
-		Warning:         warning,
-		Total:           critical + high + warning,
+		Critical:        sum.critical,
+		High:            sum.high,
+		Warning:         sum.warning,
+		Total:           sum.critical + sum.high + sum.warning,
 		SigCount:        s.signatureCount(),
 		FanotifyActive:  s.fanotifyRunning(),
 		LogWatchers:     s.logWatchersRunning(),

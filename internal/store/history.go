@@ -95,6 +95,29 @@ func nextHistoryKey(b *bolt.Bucket, timestamp time.Time, start int) string {
 	}
 }
 
+// HistoryMark is a cheap value that changes whenever the history bucket
+// does: its entry count and oldest and newest keys. Callers compare it to
+// reuse results computed from history.
+func (db *DB) HistoryMark() string {
+	var mark string
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("history"))
+		if b == nil {
+			return nil
+		}
+		count := ""
+		if v := tx.Bucket([]byte("meta")).Get([]byte("history:count")); v != nil {
+			count = string(v)
+		}
+		c := b.Cursor()
+		first, _ := c.First()
+		last, _ := c.Last()
+		mark = count + "|" + string(first) + "|" + string(last)
+		return nil
+	})
+	return mark
+}
+
 // ReadHistory reads findings from the history bucket, newest-first.
 // It returns up to limit findings starting at offset, plus the total count.
 func (db *DB) ReadHistory(limit, offset int) ([]alert.Finding, int) {

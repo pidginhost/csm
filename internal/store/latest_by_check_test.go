@@ -36,6 +36,28 @@ func TestLatestByCheckKeepsTheNewestTimestamp(t *testing.T) {
 	}
 }
 
+// HistoryMark changes whenever history does, so callers can reuse results
+// computed from it while it stays the same.
+func TestHistoryMarkFollowsHistory(t *testing.T) {
+	db := openTestDB(t)
+	empty := db.HistoryMark()
+	if db.HistoryMark() != empty {
+		t.Fatal("mark changed without a write")
+	}
+	now := time.Now()
+	writeFindings(t, db, []alert.Finding{{Timestamp: now, Severity: alert.High, Check: "a"}})
+	added := db.HistoryMark()
+	if added == empty {
+		t.Fatal("mark unchanged after an append")
+	}
+	if _, err := db.SweepHistoryOlderThan(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if db.HistoryMark() == added {
+		t.Fatal("mark unchanged after retention removed entries")
+	}
+}
+
 // A host upgrading from a build without the index fills it from history once.
 func TestBackfillLatestByCheckRunsOnce(t *testing.T) {
 	db := openTestDB(t)

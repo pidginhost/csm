@@ -81,14 +81,19 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 		from, to = to, from
 	}
 
+	writeJSON(w, s.emailMemo("relay?"+q.Encode(), func() any {
+		return s.buildRelayAbuseResponse(from, to, limit)
+	}))
+}
+
+func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbuseResponse {
 	resp := relayAbuseResponse{
 		Entries: []relayAbuseEntry{},
 		From:    from.UTC().Format(time.RFC3339),
 		To:      to.UTC().Format(time.RFC3339),
 	}
 	if s.store == nil {
-		writeJSON(w, resp)
-		return
+		return resp
 	}
 
 	// Filter while walking newest-first history and cap the matches, so
@@ -123,7 +128,7 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 	for _, f := range rows {
 		resp.Entries = append(resp.Entries, toRelayAbuseEntry(f))
 	}
-	writeJSON(w, resp)
+	return resp
 }
 
 func toRelayAbuseEntry(f alert.Finding) relayAbuseEntry {
