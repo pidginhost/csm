@@ -122,3 +122,11 @@ test('textContent replaces children and data attributes map to dataset', () => {
     assert.equal(d.children.length, 0);
     assert.equal(d.innerHTML, 'plain');
 });
+
+test('selecting input text records its full selection', () => {
+    const { document } = createWindow('<input id="value" value="maintenance">');
+    const input = document.getElementById('value');
+    input.select();
+    assert.equal(input.selectionStart, 0);
+    assert.equal(input.selectionEnd, input.value.length);
+});

@@ -101,3 +101,42 @@ func TestNotificationButtonReportsItsState(t *testing.T) {
 		}
 	}
 }
+
+func TestSkipTargetKeepsAVisibleFocusIndicator(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := regexp.MustCompile(`#csm-main:focus(?:-visible)?\s*\{([^}]+)\}`).FindAllStringSubmatch(string(src), -1)
+	visible := false
+	for _, rule := range rules {
+		if strings.Contains(rule[1], "outline: none") || strings.Contains(rule[1], "outline: 0") {
+			t.Fatal("the skip target suppresses its focus indicator")
+		}
+		visible = visible || strings.Contains(rule[1], "outline:")
+	}
+	if !visible {
+		t.Fatal("the skip target has no visible focus indicator")
+	}
+}
+
+func TestFindingShortcutDocumentationStaysInOneTable(t *testing.T) {
+	src, err := os.ReadFile("../../docs/src/webui.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(src), "### Findings page\n")
+	if !ok {
+		t.Fatal("missing Findings shortcuts")
+	}
+	_, table, ok := strings.Cut(section, "|-----|--------|\n")
+	if !ok {
+		t.Fatal("missing shortcut table")
+	}
+	for _, key := range []string{"j / k", "o", "d", "f"} {
+		rows, _, _ := strings.Cut(table, "\n\n")
+		if !strings.Contains(rows, "| `"+key+"`") {
+			t.Errorf("%s is outside the shortcuts table", key)
+		}
+	}
+}

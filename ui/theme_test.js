@@ -48,3 +48,17 @@ test('a theme change repaints chart tooltips as well as axes', () => {
     assert.equal(chart.options.scales.x.ticks.color, '#94a3b8');
     assert.equal(chart.updated, 2);
 });
+
+test('theme initialization works without storage or matchMedia', () => {
+    const page = loadPage('', ['theme-init.js'],
+        { globals: { localStorage: blockedStorage, matchMedia: undefined } });
+    assert.equal(page.document.documentElement.getAttribute('data-bs-theme'), 'dark');
+    assert.equal(page.document.documentElement.className, 'theme-dark');
+});
+
+test('an invalid stored theme falls back to the system preference', () => {
+    const page = loadPage('', ['theme-init.js'], { storage: { 'csm-theme': 'invalid' },
+        globals: { matchMedia: () => ({ matches: true }) } });
+    assert.equal(page.document.documentElement.getAttribute('data-bs-theme'), 'light');
+    assert.equal(page.document.documentElement.className, 'theme-light');
+});

@@ -15,7 +15,7 @@ function confirmModal() {
 }
 
 function page() {
-    return loadPage(confirmModal() + '<button id="opener">Open</button>', SHARED);
+    return loadPage(confirmModal() + '<main id="csm-main" tabindex="-1"><button id="opener">Open</button></main>', SHARED);
 }
 
 function key(p, k, opts) {
@@ -81,4 +81,174 @@ test('the prompt names its input, keeps Tab inside and cancels on Escape', async
     await done.then(() => {}, () => { cancelled = true; });
     assert.equal(cancelled, true, 'Escape did not cancel the prompt');
     assert.equal(p.document.activeElement, opener);
+});
+
+// Unlike the pagekit's immediate transitions, this fixture keeps showing and
+// hiding separate. Bootstrap ignores modal hide() while a show is in flight.
+function transitions(p, kind) {
+    let el, shown = false, showing = false, hiding = false;
+    const event = name => el.dispatchEvent(new p.window.Event(name + '.bs.' + kind.toLowerCase()));
+    const instance = {
+        show() {
+            if (shown || showing || hiding) return;
+            showing = true;
+            event('show');
+            el.classList.add(kind === 'Modal' ? 'show' : 'showing');
+        },
+        hide() {
+            if (!shown || showing || hiding) return;
+            hiding = true;
+            event('hide');
+            el.classList.remove('show');
+            if (el.contains(p.document.activeElement)) p.document.body.focus();
+        }
+    };
+    p.window.bootstrap[kind] = { getOrCreateInstance(node) { el = node; return instance; } };
+    return {
+        shown() {
+            assert.ok(showing, 'no show transition pending');
+            showing = false; shown = true;
+            el.classList.remove('showing'); el.classList.add('show');
+            el.focus(); event('shown');
+        },
+        hidden() {
+            assert.ok(hiding, 'no hide transition pending');
+            hiding = false; shown = false;
+            el.classList.remove('show'); event('hidden');
+        }
+    };
+}
+
+test('replacing a showing panel preserves the original opener', () => {
+    const p = page();
+    const t = transitions(p, 'Offcanvas');
+    const opener = p.document.getElementById('opener');
+    opener.focus();
+    p.window.CSM.detailPanel.open({ bodyHTML: '<button id="inside">Act</button>' });
+    p.document.getElementById('inside').focus();
+    p.window.CSM.detailPanel.open({ bodyHTML: '<button>Replacement</button>' });
+    t.shown();
+    p.window.CSM.detailPanel.close();
+    t.hidden();
+    assert.equal(p.document.activeElement, opener);
+});
+
+test('reopening a closing panel retains focus until the final hide', () => {
+    const p = page();
+    const t = transitions(p, 'Offcanvas');
+    const opener = p.document.getElementById('opener');
+    opener.focus();
+    p.window.CSM.detailPanel.open({ title: 'First' });
+    t.shown();
+    p.window.CSM.detailPanel.close();
+    assert.notEqual(p.document.activeElement, opener, 'focus returned before hidden');
+    p.window.CSM.detailPanel.open({ title: 'Second' });
+    t.hidden(); t.shown();
+    p.window.CSM.detailPanel.close();
+    t.hidden();
+    assert.equal(p.document.activeElement, opener);
+});
+
+test('removing a panel opener returns focus to main content', () => {
+    const p = page();
+    const opener = p.document.getElementById('opener');
+    opener.focus();
+    p.window.CSM.detailPanel.open({ title: 'Finding' });
+    const panel = p.window.CSM.detailPanel.element();
+    panel.focus(); opener.remove();
+    p.window.CSM.detailPanel.close();
+    assert.equal(p.document.activeElement, p.document.getElementById('csm-main'));
+});
+
+for (const kind of ['confirm', 'prompt']) {
+    test(kind + ' waits for show and hide before returning focus', async () => {
+        const p = page();
+        const t = transitions(p, 'Modal');
+        const opener = p.document.getElementById('opener');
+        opener.focus();
+        const done = p.window.CSM[kind]('Continue?');
+        const cancelled = done.then(() => assert.fail('cancel confirmed'), () => {});
+        key(p, 'Escape'); // Escape before the show animation finishes.
+        assert.notEqual(p.document.activeElement, opener, 'focus returned during showing');
+        t.shown();
+        t.hidden();
+        await cancelled;
+        assert.equal(p.document.activeElement, opener);
+    });
+
+    test(kind + ' restores safe focus after its opener is removed', async () => {
+        const p = page();
+        const opener = p.document.getElementById('opener');
+        opener.focus();
+        const done = p.window.CSM[kind]('Continue?');
+        opener.remove();
+        p.document.getElementById('csm-confirm-ok').click();
+        await done;
+        assert.equal(p.document.activeElement, p.document.getElementById('csm-main'));
+    });
+}
+
+test('a prompt keeps its input focused after Bootstrap finishes showing', async () => {
+    const p = page();
+    const t = transitions(p, 'Modal');
+    const done = p.window.CSM.prompt('Reason?', 'maintenance');
+    await new Promise(r => setTimeout(r, 120));
+    t.shown();
+    const input = p.document.querySelector('#csm-confirm-body input');
+    assert.equal(p.document.activeElement, input);
+    assert.equal(input.selectionStart, 0);
+    assert.equal(input.selectionEnd, input.value.length);
+    p.document.getElementById('csm-confirm-ok').click(); t.hidden();
+    await done;
+});
+
+test('replacing a dialog during hide preserves its opener and focus', async () => {
+    const p = page();
+    const t = transitions(p, 'Modal');
+    const opener = p.document.getElementById('opener');
+    opener.focus();
+    const first = p.window.CSM.confirm('First?');
+    t.shown();
+    p.document.getElementById('csm-confirm-ok').click();
+    const second = p.window.CSM.prompt('Second?', 'value');
+    t.hidden(); t.shown();
+    assert.equal(p.document.activeElement, p.document.querySelector('#csm-confirm-body input'));
+    p.document.getElementById('csm-confirm-ok').click(); t.hidden();
+    await first;
+    assert.equal(await second, 'value');
+    assert.equal(p.document.activeElement, opener);
+});
+
+test('closing a showing panel waits for the transition before restoring focus', () => {
+    const p = page();
+    const t = transitions(p, 'Offcanvas');
+    const opener = p.document.getElementById('opener');
+    opener.focus();
+    p.window.CSM.detailPanel.open({ title: 'First' });
+    p.window.CSM.detailPanel.close();
+    t.shown(); t.hidden();
+    assert.equal(p.document.activeElement, opener);
+});
+
+test('replacing focused panel content keeps focus inside the panel', () => {
+    const p = page();
+    p.window.CSM.detailPanel.open({ bodyHTML: '<button id="inside">Act</button>' });
+    p.document.getElementById('inside').focus();
+    p.window.CSM.detailPanel.open({ bodyHTML: '<button>Replacement</button>' });
+    assert.equal(p.document.activeElement, p.window.CSM.detailPanel.element());
+});
+
+test('Escape during modal hiding does not close its parent panel', async () => {
+    const p = page();
+    p.window.CSM.detailPanel.open({ bodyHTML: '<button id="inside">Act</button>' });
+    await tick();
+    p.document.getElementById('inside').focus();
+    const t = transitions(p, 'Modal');
+    const done = p.window.CSM.confirm('Continue?');
+    t.shown();
+    p.document.getElementById('csm-confirm-ok').click();
+    key(p, 'Escape');
+    assert.ok(p.window.CSM.detailPanel.element().classList.contains('show'));
+    t.hidden(); await done;
+    assert.equal(p.document.activeElement, p.document.getElementById('inside'));
 });

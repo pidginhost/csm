@@ -71,3 +71,40 @@ test('the connection banner can be dismissed until the next outage', () => {
     conn.down(); conn.down(); conn.down();
     assert.equal(banner.classList.contains('d-none'), false, 'a new outage stayed hidden');
 });
+
+for (const spec of [
+    { page: 'account', url: '/account?name=alice', script: 'account.js', endpoint: '/api/v1/account' },
+    { page: 'performance', script: 'performance.js', endpoint: '/api/v1/performance' },
+    { page: 'email', script: 'email.js', endpoint: '/api/v1/email/groups?' },
+    { page: 'email', script: 'email.js', endpoint: 'kind=auth_failure', tab: '#email-tab-auth', event: 'shown.bs.tab' },
+    { page: 'incident', script: 'incident.js', endpoint: '/api/v1/incidents/groups?', tab: '#grouped-tab', event: 'click' },
+    { page: 'modsec', script: 'modsec.js', endpoint: '/api/v1/modsec/blocks' }
+]) {
+    test(spec.page + ' announces a failed list request: ' + spec.endpoint, async () => {
+        const page = loadPage('<div id="csm-toasts"></div>' + templateBody(spec.page),
+            SHARED.concat([spec.script]), { url: 'https://csm.example.test' + (spec.url || '/' + spec.page) });
+        if (spec.tab) page.document.querySelector(spec.tab).dispatchEvent(new page.window.Event(spec.event, { bubbles: true }));
+        await settle();
+        page.respond(spec.endpoint, 500, { error: 'Temporary failure' });
+        await settle();
+        const alert = page.document.querySelector('[role="alert"]');
+        assert.ok(alert && /failed|could not|unable|failure/i.test(alert.textContent), 'load error is not announced');
+    });
+}
+
+test('Firewall deep links and programmatic switches keep the selected tab in sync', () => {
+    const page = loadPage(templateBody('firewall'), SHARED.concat(['firewall.js']),
+        { url: 'https://csm.example.test/firewall?view=allow' });
+    function selected(view) {
+        const tabs = page.document.querySelectorAll('#fw-subview-nav [data-fw-nav]');
+        for (const tab of tabs) {
+            const active = tab.getAttribute('data-fw-nav') === view;
+            assert.equal(tab.getAttribute('aria-selected'), String(active));
+            assert.equal(tab.getAttribute('tabindex'), active ? '0' : '-1');
+            assert.equal(page.document.getElementById(tab.getAttribute('aria-controls')).hidden, !active);
+        }
+    }
+    selected('allow');
+    page.window.switchFirewallView('blocks');
+    selected('blocks');
+});

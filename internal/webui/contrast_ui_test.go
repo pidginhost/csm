@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"regexp"
@@ -79,7 +80,7 @@ func TestStatusTextHasReadableContrast(t *testing.T) {
 	for _, rule := range []string{
 		".text-critical { color: var(--csm-critical-text); }",
 		".text-high { color: var(--csm-high-text); }",
-		".text-warning { color: var(--csm-warning-text); }",
+		".text-warning { color: var(--csm-warning-text) !important; }",
 		".stat-delta.up   { color: var(--csm-critical-text); }",
 		".stat-delta.down { color: var(--csm-low-text); }",
 		"#system-health-pill.health-ok   { background: rgba(47, 179, 68, 0.12); color: var(--csm-low-text); }",
@@ -155,5 +156,94 @@ func TestChartAxisTextHasReadableContrast(t *testing.T) {
 				t.Errorf("%s light axis text %s: %.2f:1", file, m[2], r)
 			}
 		}
+	}
+}
+
+// Check actual surfaces and opacity, not just opaque tokens on white.
+func TestCompositedStatusTextHasReadableContrast(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(src)
+	declaration := func(selector, property string) string {
+		t.Helper()
+		re := regexp.MustCompile(regexp.QuoteMeta(selector) + `\s*\{([^}]+)\}`)
+		m := re.FindStringSubmatch(css)
+		if m == nil {
+			t.Fatalf("missing selector %s", selector)
+		}
+		for _, part := range strings.Split(m[1], ";") {
+			k, v, _ := strings.Cut(part, ":")
+			if strings.TrimSpace(k) == property {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+	mix := func(fg, bg string, alpha float64) string {
+		a, err := strconv.ParseUint(strings.TrimPrefix(fg, "#"), 16, 32)
+		if err != nil {
+			t.Fatalf("invalid foreground %q: %v", fg, err)
+		}
+		b, err := strconv.ParseUint(strings.TrimPrefix(bg, "#"), 16, 32)
+		if err != nil {
+			t.Fatalf("invalid background %q: %v", bg, err)
+		}
+		var rgb uint64
+		for _, shift := range []uint{16, 8, 0} {
+			v := math.Round(float64((a>>shift)&255)*alpha + float64((b>>shift)&255)*(1-alpha))
+			rgb |= uint64(v) << shift
+		}
+		return fmt.Sprintf("#%06x", rgb)
+	}
+	for _, theme := range []string{":root", ".theme-dark"} {
+		tok := cssTokens(t, css, theme)
+		resolve := func(v string) string {
+			v = strings.TrimSuffix(v, " !important")
+			if strings.HasPrefix(v, "var(") {
+				return tok[strings.TrimSuffix(strings.TrimPrefix(v, "var("), ")")]
+			}
+			return v
+		}
+		for _, selector := range []string{".stat-delta.up", ".stat-delta.down", ".stat-delta.flat", "#system-health-pill.health-crit", ".csm-palette__hint", ".csm-palette__empty"} {
+			fg := resolve(declaration(selector, "color"))
+			bg := tok["--csm-bg-card"]
+			alpha := 1.0
+			if strings.HasPrefix(selector, ".stat-delta.") {
+				if opacity := declaration(".stat-delta", "opacity"); opacity != "" {
+					alpha, err = strconv.ParseFloat(opacity, 64)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if strings.HasPrefix(selector, "#system-health-pill") {
+				bg = mix("#d63939", bg, 0.15)
+			}
+			if r := contrast(t, mix(fg, bg, alpha), bg); r < 4.5 {
+				t.Errorf("%s %s renders at %.2f:1", theme, selector, r)
+			}
+		}
+		fg := resolve(declaration(".csm-palette__row.is-selected .csm-palette__rowgroup", "color"))
+		if r := contrast(t, fg, mix("#206bc4", tok["--csm-bg-card"], 0.18)); r < 4.5 {
+			t.Errorf("%s selected palette group renders at %.2f:1", theme, r)
+		}
+	}
+}
+
+func TestWarningTextOverridesVendorUtility(t *testing.T) {
+	vendor, err := os.ReadFile("../../ui/static/css/tabler.min.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vendorRule := regexp.MustCompile(`\.text-warning\{[^}]*color:[^}]*!important`).Match(vendor)
+	customRule := regexp.MustCompile(`\.text-warning\s*\{[^}]*color:\s*var\(--csm-warning-text\)\s*!important`).Match(css)
+	if vendorRule && !customRule {
+		t.Fatal("Tabler's important warning color overrides the readable theme token")
 	}
 }

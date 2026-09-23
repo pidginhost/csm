@@ -446,6 +446,27 @@ CSM.focusTrap = function(container, e) {
     }
 };
 
+// Capture a return point before an overlay takes focus. Refreshes can remove
+// the opener, so fall back to its still-open panel or the main landmark.
+CSM.captureFocus = function() {
+    var opener = document.activeElement;
+    var panel = opener && opener.closest ? opener.closest('.offcanvas') : null;
+    return function() {
+        var candidates = [opener, panel, document.getElementById('csm-main')];
+        for (var i = 0; i < candidates.length; i++) {
+            var el = candidates[i];
+            if (!el || el === document.body || !document.contains(el) || el.disabled) continue;
+            if (el.closest('[hidden], .d-none, [aria-hidden="true"]')) continue;
+            var overlay = el.closest('.offcanvas, .modal');
+            if (overlay && !overlay.classList.contains('show')) continue;
+            if (typeof el.focus === 'function') {
+                el.focus();
+                if (document.activeElement === el) return;
+            }
+        }
+    };
+};
+
 // Detail panel helper. Thin wrapper around the Bootstrap offcanvas that
 // ships with Tabler. Mounts a single shared offcanvas element on first use
 // so callers do not need page-specific markup.
@@ -466,14 +487,16 @@ CSM.detailPanel = (function() {
     var closing = false;
     var hidingOnClose = null;
     var pendingShow = false;
+    var showing = false;
+    var pendingHide = false;
     // returnFocus is what had focus when the panel opened; closing puts
     // focus back there, so a keyboard user stays in place in the list.
     var returnFocus = null;
 
     function restoreFocus() {
-        var el = returnFocus;
+        var restore = returnFocus;
         returnFocus = null;
-        if (el && document.contains(el) && typeof el.focus === 'function') el.focus();
+        if (restore) restore();
     }
 
     function fireClose() {
@@ -499,7 +522,7 @@ CSM.detailPanel = (function() {
     function onKey(e) {
         if (!isOpen()) return;
         // A dialog opened from the panel owns the keyboard while it is shown.
-        if (document.querySelector('.modal.show')) return;
+        if (document.querySelector('.modal.show, .modal.csm-dialog-active')) return;
         if (e.key === 'Escape' || e.key === 'Esc' || e.keyCode === 27) {
             e.preventDefault();
             api.close();
@@ -585,6 +608,14 @@ CSM.detailPanel = (function() {
         // hidden.bs.offcanvas runs after the backdrop click handler so we
         // can lean on it to drop the global listeners even when the close
         // happens through Bootstrap's own backdrop or ESC path.
+        panelEl.addEventListener('show.bs.offcanvas', function() { showing = true; });
+        panelEl.addEventListener('shown.bs.offcanvas', function() {
+            showing = false;
+            if (pendingHide) {
+                pendingHide = false;
+                api.close();
+            }
+        });
         panelEl.addEventListener('hide.bs.offcanvas', function() {
             closing = true;
             hidingOnClose = currentOnClose;
@@ -615,11 +646,10 @@ CSM.detailPanel = (function() {
         open: function(opts) {
             var el = ensureMount();
             opts = opts || {};
-            if (!isOpen() && !closing) {
-                var active = document.activeElement;
-                returnFocus = active && active !== document.body && !el.contains(active) ? active : null;
-            }
+            if (!returnFocus) returnFocus = CSM.captureFocus();
             currentOnClose = typeof opts.onClose === 'function' ? opts.onClose : null;
+            var active = document.activeElement;
+            var focusInside = el.contains(active);
             var titleEl = el.querySelector('.csm-detail-panel__title');
             var bodyEl  = el.querySelector('.csm-detail-panel__body');
             var footEl  = el.querySelector('.csm-detail-panel__footer');
@@ -643,19 +673,25 @@ CSM.detailPanel = (function() {
                 footEl.hidden = true;
             }
 
+            if (focusInside && !el.contains(active)) el.focus();
             if (closing) pendingShow = true;
-            else showPanel();
+            else {
+                pendingHide = false;
+                showPanel();
+            }
         },
         close: function() {
             pendingShow = false;
             unbindDismissShortcuts();
             fireClose();
-            if (instance) {
+            if (showing) {
+                pendingHide = true;
+            } else if (instance) {
                 instance.hide();
             } else if (panelEl) {
                 panelEl.classList.remove('show');
+                restoreFocus();
             }
-            restoreFocus();
         },
         element: function() { return panelEl; }
     };

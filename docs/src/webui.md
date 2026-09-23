@@ -230,13 +230,15 @@ for the security principles behind opaque identifiers, expiry and revocation.
 | `j / k` | Move selection down/up (focus moves to the row) |
 | `o` / `Enter` | Open selected finding |
 | `d` | Dismiss selected finding |
+| `f` | Fix selected finding |
 
 Finding and incident rows, finding group headers and sortable table headers
 also work from the keyboard: Tab to them and press Enter or Space. A sorted
 header reports its order to screen readers. Closing the detail panel or a
 dialog returns focus to what opened it, and a dialog opened from the detail
-panel keeps Tab and Escape to itself.
-| `f` | Fix selected finding |
+panel keeps Tab and Escape to itself. If a refresh removes the opener, focus
+returns to the open detail panel or main content. Shortcuts act on the focused
+finding and stay inactive while a dialog or detail panel is open.
 
 Each finding row offers up to four actions: **Fix** (apply the automated
 remediation, shown only when one exists), **Re-check** (re-evaluate the finding

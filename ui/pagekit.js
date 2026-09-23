@@ -40,14 +40,15 @@ function templateBody(name) {
 
 function bootstrapStub() {
     const instances = new Map();
-    function component() {
+    function component(kind) {
+        const event = (el, name) => el.dispatchEvent(new el.ownerDocument.defaultView.Event(name + '.bs.' + kind));
         return {
             getOrCreateInstance(el) {
                 if (!instances.has(el)) {
                     instances.set(el, {
                         shown: false,
-                        show() { this.shown = true; el.classList.add('show'); },
-                        hide() { this.shown = false; el.classList.remove('show'); },
+                        show() { if (this.shown) return; event(el, 'show'); this.shown = true; el.classList.add('show'); el.removeAttribute('aria-hidden'); event(el, 'shown'); },
+                        hide() { if (!this.shown) return; event(el, 'hide'); this.shown = false; el.classList.remove('show'); el.setAttribute('aria-hidden', 'true'); event(el, 'hidden'); },
                         toggle() { this.shown ? this.hide() : this.show(); },
                         dispose() { instances.delete(el); }
                     });
@@ -57,7 +58,7 @@ function bootstrapStub() {
             getInstance(el) { return instances.get(el) || null; }
         };
     }
-    return { Modal: component(), Tab: component(), Offcanvas: component(), Dropdown: component(), Tooltip: component(), Collapse: component() };
+    return { Modal: component('modal'), Tab: component('tab'), Offcanvas: component('offcanvas'), Dropdown: component('dropdown'), Tooltip: component('tooltip'), Collapse: component('collapse') };
 }
 
 function source(name) {

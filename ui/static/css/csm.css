@@ -14,7 +14,7 @@
   --csm-high-outline-text: #9a4d00;
   --csm-warning-outline-text: #7a4f00;
   /* Text in a status colour: 4.5:1 or better on the page and card. */
-  --csm-critical-text: #c92a2a;
+  --csm-critical-text: #b92424;
   --csm-high-text: #9a4d00;
   --csm-warning-text: #7a4f00;
   --csm-low-text: #1f7a31;
@@ -54,7 +54,7 @@
     padding: .5rem 1rem; border: 2px solid var(--tblr-primary); border-radius: .375rem;
     background: var(--csm-bg-card); color: var(--csm-text);
 }
-#csm-main:focus { outline: none; }
+#csm-main:focus { outline: 2px solid var(--csm-info-text); outline-offset: -2px; }
 
 /* --- click-to-copy cursor ------------------------------------------------ */
 .csm-copy { cursor: pointer; }
@@ -98,7 +98,7 @@
 .theme-dark .badge-secondary { color: #1a1a1a; }
 .text-critical { color: var(--csm-critical-text); }
 .text-high { color: var(--csm-high-text); }
-.text-warning { color: var(--csm-warning-text); }
+.text-warning { color: var(--csm-warning-text) !important; }
 
 /* --- Readable text on solid-color Tabler badges -------------------------- */
 /* White only where it reaches 4.5:1; lighter fills take dark text. */
@@ -283,7 +283,7 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 .theme-dark .stat-card:hover {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
-.stat-delta { font-weight: 500; opacity: 0.85; white-space: nowrap; }
+.stat-delta { font-weight: 500; white-space: nowrap; }
 .stat-delta.up   { color: var(--csm-critical-text); }
 .stat-delta.down { color: var(--csm-low-text); }
 .stat-delta.flat { color: var(--csm-text-muted); }
@@ -325,7 +325,7 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 #system-health-pill .status-dot { vertical-align: middle; }
 #system-health-pill.health-ok   { background: rgba(47, 179, 68, 0.12); color: var(--csm-low-text); }
 #system-health-pill.health-warn { background: rgba(245, 159, 0, 0.14); color: var(--csm-warning-text); }
-#system-health-pill.health-crit { background: rgba(214, 57, 57, 0.15); color: var(--csm-critical); }
+#system-health-pill.health-crit { background: rgba(214, 57, 57, 0.15); color: var(--csm-critical-text); }
 
 /* --- dashboard.html: hidden feed items (filter chips) ------------------- */
 .feed-item.feed-hidden { display: none !important; }
@@ -1255,6 +1255,7 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 .csm-palette__rowicon { font-size: 16px; color: var(--csm-text-muted); }
 .csm-palette__row.is-selected .csm-palette__rowicon { color: var(--csm-info-text); }
 .csm-palette__rowlabel { flex: 1; }
+.csm-palette__row.is-selected .csm-palette__rowgroup { color: var(--csm-text); }
 .csm-palette__rowgroup {
     font-size: 11px;
     color: var(--csm-text-muted);
@@ -1264,14 +1265,14 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 .csm-palette__empty {
     padding: 16px;
     text-align: center;
-    color: #64748b;
+    color: var(--csm-text-muted);
     font-size: 13px;
 }
 .csm-palette__hint {
     border-top: 1px solid rgba(255, 255, 255, 0.08);
     padding: 6px 12px;
     font-size: 11px;
-    color: #64748b;
+    color: var(--csm-text-muted);
     text-align: right;
 }
 

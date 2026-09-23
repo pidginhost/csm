@@ -316,6 +316,7 @@ class Element extends Node {
     }
     getBoundingClientRect() { return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }; }
     scrollIntoView() {}
+    select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
     focus() {
         const doc = this.ownerDocument;
         if (doc.activeElement === this) return;

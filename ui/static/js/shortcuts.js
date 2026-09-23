@@ -69,8 +69,18 @@ CSM.shortcuts = (function() {
 
     function _getVisibleFindingRows() {
         return Array.from(document.querySelectorAll('.finding-row')).filter(function(r) {
-            return r.style.display !== 'none';
+            return r.offsetParent !== null;
         });
+    }
+
+    // Tab and table sorting can change focus independently of j/k.
+    function _focusedRowIndex() {
+        var rows = _getVisibleFindingRows();
+        var active = document.activeElement;
+        var row = active && active.closest ? active.closest('.finding-row') : null;
+        if (row) return rows.indexOf(row);
+        var selected = document.querySelector('.finding-row.csm-kbd-selected');
+        return rows.indexOf(selected);
     }
 
     function _clearSelection() {
@@ -217,6 +227,9 @@ CSM.shortcuts = (function() {
             return;
         }
 
+        // Overlays own their keyboard, including while Bootstrap animates.
+        if (document.querySelector('.modal.csm-dialog-active, .modal.show, .modal.showing, .modal.hiding, .offcanvas.show, .offcanvas.showing, .offcanvas.hiding')) return;
+
         // Don't activate shortcuts when typing in form elements
         if (_isInputFocused()) {
             return;
@@ -266,6 +279,7 @@ CSM.shortcuts = (function() {
 
         // Findings-page shortcuts
         if (_isFindingsPage()) {
+            _selectedRowIndex = _focusedRowIndex();
             if (e.key === 'j') {
                 e.preventDefault();
                 _selectRow(_selectedRowIndex + 1);

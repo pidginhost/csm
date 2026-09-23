@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Web UI keyboard focus now survives refreshes and dialog transitions, and finding shortcuts follow the focused row without acting behind dialogs. Warning text, dashboard indicators and command palette hints are readable in both themes, and the skip link keeps a visible focus indicator.
 - On a phone the Web UI header now wraps instead of running off the screen, and on a desktop the ModSecurity apply bar no longer covers the sidebar.
 - Web UI widgets now report their role and state to screen readers: Firewall subviews are keyboard-navigable tabs, dashboard charts carry text descriptions, History expand buttons say whether details are open, and the connection-lost banner can be dismissed until the next outage.
 - Every Web UI page now starts with a Skip to content link, and section headings follow the page title in order so screen reader users can move through the page outline.

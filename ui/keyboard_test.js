@@ -102,3 +102,67 @@ test('an incident row opens with Enter', async () => {
     await settle();
     assert.equal(page.pending('/api/v1/incidents/inc_a').length, 1);
 });
+
+for (const move of ['Tab', 'sort']) {
+    test('finding shortcuts act on the focused row after ' + move, async () => {
+        const page = await findingsPage(['shortcuts.js']);
+        const rows = page.document.querySelectorAll('.finding-row');
+        key(page, page.document.body, 'j');
+        if (move === 'Tab') rows[1].focus();
+        else page.document.querySelectorAll('#findings-table thead th')[2].click();
+        key(page, page.document.activeElement, 'o');
+        await settle();
+        const requests = page.pending('/api/v1/finding-detail');
+        assert.equal(requests.length, 1);
+        assert.equal(new URL(requests[0].url, 'https://csm.example.test').searchParams.get('check'),
+            move === 'Tab' ? 'perf_load' : 'webshell');
+    });
+}
+
+test('finding shortcuts do not run behind an open detail panel or modal', async () => {
+    const page = await findingsPage(['shortcuts.js']);
+    key(page, page.document.body, 'j');
+    let dismissed = 0;
+    page.document.querySelector('.finding-row .dismiss-btn').addEventListener('click', () => dismissed++);
+    page.window.CSM.detailPanel.open({ bodyHTML: '<button id="panel-action">Action</button>' });
+    const action = page.document.getElementById('panel-action');
+    action.focus();
+    key(page, action, 'd'); key(page, action, 'j'); key(page, action, 'o');
+    assert.equal(dismissed, 0);
+    assert.equal(page.document.activeElement, action);
+    assert.equal(page.pending('/api/v1/finding-detail').length, 0);
+    page.window.CSM.detailPanel.close();
+    const modal = page.document.createElement('div');
+    modal.className = 'modal show';
+    modal.innerHTML = '<button id="modal-action">Cancel</button>';
+    page.document.body.appendChild(modal);
+    const cancel = page.document.getElementById('modal-action');
+    cancel.focus();
+    key(page, cancel, 'd'); key(page, cancel, 'j'); key(page, cancel, 'o');
+    assert.equal(dismissed, 0);
+    assert.equal(page.document.activeElement, cancel);
+    assert.equal(page.pending('/api/v1/finding-detail').length, 0);
+});
+
+test('Space opens a row without scrolling and input keys do not open it', async () => {
+    const page = await findingsPage(['shortcuts.js']);
+    const row = page.document.querySelector('.finding-row');
+    const cb = row.querySelector('input');
+    cb.focus();
+    for (const k of [' ', 'Enter', 'o', 'd', 'f', 'j', 'k']) key(page, cb, k);
+    assert.equal(page.pending('/api/v1/finding-detail').length, 0);
+    row.focus();
+    assert.equal(key(page, row, ' ').defaultPrevented, true);
+    assert.equal(page.pending('/api/v1/finding-detail').length, 1);
+});
+
+test('finding labels keep hostile and long data inside the label', async () => {
+    const message = '\"><img src=x onerror="alert(1)"> ' + 'x'.repeat(4096);
+    const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
+    page.respond('/api/v1/findings/enriched', 200, { findings: [finding('webshell', message, 'alice')], total: 1 });
+    await settle();
+    const row = page.document.querySelector('.finding-row');
+    assert.equal(row.querySelector('input').getAttribute('aria-label'), 'Select finding webshell: ' + message);
+    assert.equal(row.querySelector('img'), null);
+    assert.equal(row.querySelectorAll('input').length, 1);
+});
