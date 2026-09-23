@@ -295,6 +295,9 @@ CSM.apiUrl = function(path) {
 //   silent      bool     default false. Suppresses the auto-toast on
 //                        failure (used by background pollers that have
 //                        their own error UI).
+//   refresh     bool     true marks a GET as a data load; false excludes
+//                        detail lookups even during page load. Otherwise
+//                        the page-load or refresh-handler context decides.
 // All other keys are forwarded to fetch() unchanged.
 // Every page request goes through CSM.request, so connection health and
 // session expiry are tracked here. The banner is the single signal for an
@@ -378,7 +381,7 @@ CSM.request = function(url, options) {
     // loads, by a refresh tick or handler, or marked refresh (pollers). An
     // action or a detail lookup does not make the page fresher.
     var dataLoad = String(options.method || 'GET').toUpperCase() === 'GET' &&
-        (options.refresh === true || !CSM.refresh || CSM.refresh.inDataLoad);
+        options.refresh !== false && (options.refresh === true || !CSM.refresh || CSM.refresh.inDataLoad);
     var allowNonOK = !!options.allowNonOK;
     var silent = !!options.silent;
     var controller = new AbortController();

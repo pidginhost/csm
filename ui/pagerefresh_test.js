@@ -36,11 +36,15 @@ async function refreshes(t, name, scripts, endpoint, opts = {}) {
     page.window.dispatchEvent(new page.window.Event('load'));
     const before = page.requests.filter(r => r.url.includes(endpoint)).length;
     assert.ok(before >= 1, name + ' did not load ' + endpoint + ' at start');
+    let updates = 0;
+    page.window.addEventListener('csm:refresh-bump', () => { updates++; });
     page.window.CSM.refresh.manual();
     await settle();
     assert.equal(reloads, 0, name + ': Refresh reloaded the whole page');
     const after = page.requests.filter(r => r.url.includes(endpoint)).length;
     assert.ok(after > before, name + ': Refresh did not load ' + endpoint + ' again');
+    await answerAll(page, opts.bodies);
+    assert.ok(updates > 0, name + ': refreshed data did not update the timestamp');
     return page;
 }
 
@@ -114,4 +118,137 @@ test('a server-rendered page still reloads on Refresh', () => {
     page.window.location.reload = () => { reloads++; };
     page.window.CSM.refresh.manual();
     assert.equal(reloads, 1);
+});
+
+test('edits made while verified bots are refreshing survive the response', async () => {
+    const page = loadPage(templateBody('verified-bots'), SHARED.concat(['verified-bots.js']));
+    const body = { etag: 'e', bots: [{ name: 'examplebot', ua_substrings: ['examplebot'] }] };
+    await answerAll(page, { '/api/v1/verified-bots': body });
+    page.window.CSM.refresh.manual();
+    await settle();
+    page.document.querySelector('.vb-name').value = 'new edit';
+    page.respond('/api/v1/verified-bots', 200, body);
+    await settle();
+    assert.equal(page.document.querySelector('.vb-name').value, 'new edit');
+});
+
+test('Refresh waits for a verified-bot save already in flight', async () => {
+    const page = loadPage(templateBody('verified-bots'), SHARED.concat(['verified-bots.js']));
+    await answerAll(page, { '/api/v1/verified-bots': { etag: 'e', bots: [] } });
+    page.document.getElementById('vbots-save').click();
+    await settle();
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending().filter(r => r.method === 'GET' && r.url.includes('/verified-bots')).length, 0);
+    page.respond('/api/v1/verified-bots/apply', 200, { new_etag: 'e2', count: 0 });
+    await settle();
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending('/api/v1/verified-bots').length, 1);
+});
+
+const settingsSection = {
+    etag: 'e1', section: { id: 'alerts', title: 'Alerts', fields: [
+        { yaml_path: 'alerts.enabled', label: 'Enabled', type: 'bool' }
+    ] }, values: { alerts: { enabled: false } }
+};
+
+async function settingsPage() {
+    const p = loadPage(templateBody('settings'), SHARED.concat(['settings.js']));
+    p.document.dispatchEvent(new p.window.Event('DOMContentLoaded'));
+    p.respond('/api/v1/settings', 200, { sections: [{ id: 'alerts', title: 'Alerts', group: 'Core' }], groups: ['Core'] });
+    await settle();
+    return p;
+}
+
+test('settings Refresh waits for the first section instead of requesting null', async () => {
+    const p = await settingsPage();
+    const before = p.requests.length;
+    p.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(p.requests.length, before);
+});
+
+test('settings initial section counts as data even after window load', async () => {
+    const p = loadPage(templateBody('settings'), SHARED.concat(['settings.js']));
+    p.document.dispatchEvent(new p.window.Event('DOMContentLoaded'));
+    p.window.dispatchEvent(new p.window.Event('load'));
+    p.respond('/api/v1/settings', 200, { sections: [{ id: 'alerts', title: 'Alerts', group: 'Core' }], groups: ['Core'] });
+    await settle();
+    let updates = 0;
+    p.window.addEventListener('csm:refresh-bump', () => { updates++; });
+    p.respond('/api/v1/settings/alerts', 200, settingsSection);
+    await settle();
+    assert.equal(updates, 1);
+});
+
+test('settings Refresh cannot replace the form while it is saving', async () => {
+    const p = await settingsPage();
+    p.respond('/api/v1/settings/alerts', 200, settingsSection);
+    await settle();
+    const field = p.document.querySelector('#settings-panel input');
+    field.checked = true;
+    field.dispatchEvent(new p.window.Event('change', { bubbles: true }));
+    p.document.getElementById('settings-save').click();
+    await settle();
+    assert.equal(p.pending('/api/v1/settings/alerts').filter(r => r.method === 'POST').length, 1);
+    p.window.CSM.confirm = () => Promise.resolve();
+    p.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(p.pending('/api/v1/settings/alerts').filter(r => r.method === 'GET').length, 0);
+    assert.equal(p.document.querySelector('#settings-panel input'), field);
+});
+
+test('account refresh follows the current tab when requests finish out of order', async () => {
+    const p = loadPage(templateBody('account'), SHARED.concat(['account.js']), { url: 'https://csm.example.test/account?name=alice' });
+    p.respond('/api/v1/account', 200, { findings: [], quarantined: [], history: [] });
+    await settle();
+    p.window.CSM.refresh.manual();
+    p.document.querySelector('#account-tabs [data-tab="history"]').click();
+    const pending = p.pending('/api/v1/account');
+    assert.ok(pending.length >= 1);
+    // Answer the current tab request first, then the earlier refresh.
+    for (const req of pending.slice().reverse()) {
+        req.settled = true;
+        req.resolve({ status: 200, ok: true, json: () => Promise.resolve({ findings: [], history: [] }) });
+        await settle();
+    }
+    assert.match(p.document.getElementById('account-tab-content').textContent, /History/i);
+    assert.doesNotMatch(p.document.getElementById('account-tab-content').textContent, /Active Findings/i);
+});
+
+test('account refresh preserves the custom History date filter', async () => {
+    const p = loadPage(templateBody('account'), SHARED.concat(['account.js']), { url: 'https://csm.example.test/account?name=alice' });
+    const data = { findings: [], history: [{ check: 'webshell', message: 'old', severity: 1, timestamp: '2026-09-20T12:00:00Z' }] };
+    p.respond('/api/v1/account', 200, data);
+    await settle();
+    p.document.querySelector('#account-tabs [data-tab="history"]').click();
+    const from = p.document.getElementById('account-history-from');
+    from.value = '2026-09-23';
+    from.dispatchEvent(new p.window.Event('change'));
+    p.window.CSM.refresh.manual();
+    p.respond('/api/v1/account', 200, data);
+    await settle();
+    assert.equal(p.document.getElementById('account-history-from').value, '2026-09-23');
+    assert.equal(p.document.querySelector('#account-history-table tr[data-index="0"]').style.display, 'none');
+});
+
+test('a pending settings refresh cannot replace a newly selected section', async () => {
+    const p = loadPage(templateBody('settings'), SHARED.concat(['settings.js']));
+    p.document.dispatchEvent(new p.window.Event('DOMContentLoaded'));
+    p.respond('/api/v1/settings', 200, { sections: [
+        { id: 'alerts', title: 'Alerts', group: 'Core' }, { id: 'logging', title: 'Logging', group: 'Core' }
+    ], groups: ['Core'] });
+    await settle();
+    p.respond('/api/v1/settings/alerts', 200, settingsSection);
+    await settle();
+    p.window.CSM.refresh.manual();
+    await settle();
+    p.document.querySelector('[data-section="logging"]').click();
+    await settle();
+    p.respond('/api/v1/settings/logging', 200, { etag: 'e2', section: { id: 'logging', title: 'Logging', fields: [] }, values: {} });
+    await settle();
+    p.respond('/api/v1/settings/alerts', 200, settingsSection);
+    await settle();
+    assert.equal(p.document.querySelector('.settings-panel-title').textContent.trim(), 'Logging');
 });

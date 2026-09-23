@@ -85,6 +85,14 @@ rule changes) it asks before discarding them. Hardening's Refresh reloads the
 stored report and does not run a new audit. Pages rendered by the server,
 such as Sessions, reload.
 
+The visible History tab refreshes with its current filters and page size.
+Editors wait for an ongoing save or load before accepting another refresh;
+Verified Bots keeps edits made while a reload is pending. ModSecurity
+exclusion controls wait for the exclusion list to load, and a failed load
+stays visible instead of appearing as an empty list. Late responses cannot
+replace a newer account tab, settings section, history page, or finding
+detail, or reopen a finding detail that was closed.
+
 ## Notifications
 
 Success and information notices fade after five seconds. An error stays
@@ -97,6 +105,9 @@ A confirmation for an action that deletes data, blocks traffic, turns
 protection off or ends sessions names the action on a red button, such as
 Delete or Block, and starts with Cancel focused, so pressing Enter does not
 carry it out. Logging out every browser session asks first.
+Cancel keeps focus after the dialog finishes opening. A later text prompt
+uses its own normal OK button, and bulk actions keep one confirmation open
+at a time.
 
 ## Bulk file actions
 

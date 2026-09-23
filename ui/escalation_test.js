@@ -102,6 +102,97 @@ test('a failed exclusion leaves the list unchanged', async () => {
     assert.equal(page.document.getElementById('escalation-rule-id').value, '900200', 'the typed rule ID was lost');
 });
 
+test('the rule table cannot erase an exclusion-list load failure', async () => {
+    const page = loadPage(templateBody('modsec-rules'), SHARED.concat(['modsec-rules.js']));
+    page.respond('/api/v1/modsec/rules/escalation', 500, { error: 'store unavailable' });
+    await settle();
+    const error = page.document.getElementById('escalation-list').textContent;
+    assert.match(error, /failed|retry/i);
+    page.respond('/api/v1/modsec/rules', 200, RULES);
+    await settle();
+    assert.equal(page.document.getElementById('escalation-list').textContent, error);
+});
+
+test('a delayed rules snapshot cannot undo an exclusion just saved', async () => {
+    const page = loadPage(templateBody('modsec-rules'), SHARED.concat(['modsec-rules.js']));
+    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: [900112] });
+    await settle();
+    await submitExclusion(page, 900200);
+    page.respond('/api/v1/modsec/rules/escalation', 200, { ok: true });
+    await settle();
+    page.respond('/api/v1/modsec/rules', 200, RULES);
+    await settle();
+    assert.deepEqual(listedIDs(page), [900112, 900200]);
+    assert.equal(page.document.querySelector('.escalate-toggle[data-id="900200"]').checked, false);
+    assert.equal(page.document.getElementById('stat-no-escalate').textContent, '2');
+});
+
+test('Refresh cannot read an old exclusion set while a write is pending', async () => {
+    const page = await modsecRules(RULES, [900112]);
+    await submitExclusion(page, 900200);
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending('/api/v1/modsec/rules').filter(r => r.method === 'GET').length, 0);
+    page.respond('/api/v1/modsec/rules/escalation', 200, { ok: true });
+    await settle();
+    assert.deepEqual(listedIDs(page), [900112, 900200]);
+});
+
+test('an escalation confirmation also holds Refresh until it is cancelled', async () => {
+    const page = await modsecRules(RULES, [900112]);
+    let reject;
+    page.window.CSM.confirm = () => new Promise((_, no) => { reject = no; });
+    const toggle = page.document.querySelector('.escalate-toggle[data-id="900200"]');
+    toggle.checked = false;
+    toggle.dispatchEvent(new page.window.Event('change'));
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending('/api/v1/modsec/rules').length, 0);
+    reject(null);
+    await settle();
+    assert.equal(toggle.checked, true);
+    assert.equal(toggle.disabled, false);
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending('/api/v1/modsec/rules').length, 2);
+});
+
+test('exclusion edits wait until the list finishes loading', async () => {
+    const page = await modsecRules(RULES, [900112]);
+    page.window.CSM.refresh.manual();
+    await settle();
+    await submitExclusion(page, 900200);
+    assert.equal(page.pending('/api/v1/modsec/rules/escalation').filter(r => r.method === 'POST').length, 0);
+    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: [900112, 900200] });
+    page.respond('/api/v1/modsec/rules', 200, RULES);
+    await settle();
+    assert.deepEqual(listedIDs(page), [900112, 900200]);
+});
+
+test('refreshing an unconfigured ruleset hides obsolete management controls', async () => {
+    const page = await modsecRules(RULES, [900112]);
+    page.window.CSM.refresh.manual();
+    await settle();
+    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: [900112] });
+    page.respond('/api/v1/modsec/rules', 200, { configured: false, missing: ['rules_file'] });
+    await settle();
+    assert.ok(page.document.getElementById('modsec-rules-content').classList.contains('d-none'));
+    assert.deepEqual(listedIDs(page), [900112]);
+});
+
+test('staged rule controls stay locked while Refresh replaces their snapshot', async () => {
+    const page = await modsecRules(RULES, [900112]);
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.document.querySelector('.enable-toggle').disabled, true);
+    assert.equal(page.document.getElementById('btn-apply').disabled, true);
+    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: [900112] });
+    page.respond('/api/v1/modsec/rules', 200, RULES);
+    await settle();
+    assert.equal(page.document.querySelector('.enable-toggle').disabled, false);
+    assert.equal(page.document.getElementById('btn-apply').disabled, false);
+});
+
 function removeButton(page, id) {
     return page.document.querySelector('#escalation-list [data-escalation-remove="' + id + '"]');
 }

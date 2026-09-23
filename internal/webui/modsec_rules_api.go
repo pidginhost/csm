@@ -219,28 +219,24 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 // GET  /api/v1/modsec/rules/escalation - rule IDs excluded from escalation
 // POST /api/v1/modsec/rules/escalation - toggle escalation for a single rule
 func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		ids := []int{}
-		if db := store.Global(); db != nil {
-			for id := range db.GetModSecNoEscalateRules() {
-				ids = append(ids, id)
-			}
-		}
-		sort.Ints(ids)
-		writeJSON(w, map[string]interface{}{"rules": ids})
-		return
-	}
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	db := store.Global()
 	if db == nil {
 		writeJSONError(w, "Store not available", http.StatusInternalServerError)
 		return
 	}
-
+	if r.Method == http.MethodGet {
+		ids := []int{}
+		for id := range db.GetModSecNoEscalateRules() {
+			ids = append(ids, id)
+		}
+		sort.Ints(ids)
+		writeJSON(w, map[string]interface{}{"rules": ids})
+		return
+	}
 	var req struct {
 		RuleID   int  `json:"rule_id"`
 		Escalate bool `json:"escalate"`

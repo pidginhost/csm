@@ -6,10 +6,22 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
 
-const tick = () => new Promise(resolve => setTimeout(resolve, 5)).then(settle);
-
 test('the findings poll compares versions instead of fetching the list', async () => {
-    const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
+    const timers = new Map();
+    let nextID = 0;
+    const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']), { globals: {
+        setTimeout(fn, delay) { const id = ++nextID; timers.set(id, { fn, delay }); return id; },
+        clearTimeout(id) { timers.delete(id); }
+    } });
+    async function tick() {
+        // Exercise the scheduled poll; manual refresh also reloads the list.
+        const pending = [...timers.entries()].filter(([, t]) => t.delay >= 15000 && t.delay < 20000);
+        assert.equal(pending.length, 1, 'expected one scheduled version poll');
+        const [id, timer] = pending[0];
+        timers.delete(id);
+        timer.fn();
+        await settle();
+    }
     page.respond('/api/v1/findings/enriched', 200, {
         findings: [{ key: 'k1', check: 'webshell', severity: 'CRITICAL', message: 'm' }],
         check_types: ['webshell'], accounts: [], total: 1, version: 'v1'
@@ -17,7 +29,6 @@ test('the findings poll compares versions instead of fetching the list', async (
     await settle();
     const banner = page.document.getElementById('refresh-banner');
 
-    page.window.dispatchEvent(new page.window.CustomEvent('csm:refresh-now'));
     await tick();
     let polls = page.pending('/api/v1/findings/enriched');
     assert.equal(polls.length, 1, 'no poll sent');
@@ -26,7 +37,6 @@ test('the findings poll compares versions instead of fetching the list', async (
     await settle();
     assert.ok(banner.classList.contains('d-none'), 'banner shown for an unchanged list');
 
-    page.window.dispatchEvent(new page.window.CustomEvent('csm:refresh-now'));
     await tick();
     page.respond('/api/v1/findings/enriched', 200, { version: 'v2', total: 2 });
     await settle();

@@ -5,6 +5,8 @@
     var etag = '';
     // saved is the list as last loaded or saved; a different form is unsaved work.
     var saved = '[]';
+    var saving = false;
+    var loading = false;
     var listEl = document.getElementById('vbots-list');
     var loadingEl = document.getElementById('vbots-loading');
     var emptyEl = document.getElementById('vbots-empty');
@@ -117,8 +119,16 @@
         document.getElementById('vbots-ranges-prefixes').textContent = parts.join(', ');
     }
 
-    function load() {
-        CSM.get('/api/v1/verified-bots').then(function (data) {
+    function load(options) {
+        if (loading || saving) return;
+        loading = true;
+        var snapshot = JSON.stringify(collect());
+        document.getElementById('vbots-save').disabled = true;
+        CSM.get('/api/v1/verified-bots', options).then(function (data) {
+            if (JSON.stringify(collect()) !== snapshot) {
+                CSM.toast('Kept edits made while the verified bots were loading. Refresh again to reload.', 'warning');
+                return;
+            }
             etag = data.etag || '';
             renderRanges(data.bot_ranges);
             listEl.innerHTML = '';
@@ -127,10 +137,16 @@
             saved = JSON.stringify(collect());
         }).catch(function () {
             loadingEl.querySelector('.csm-empty__reason').textContent = 'Failed to load verified bots.';
+        }).then(function () {
+            loading = false;
+            document.getElementById('vbots-save').disabled = false;
         });
     }
 
     function save() {
+        if (saving || loading) return;
+        saving = true;
+        document.getElementById('vbots-save').disabled = true;
         clearErrors();
         var bots = collect();
         CSM.request('/api/v1/verified-bots/apply', {
@@ -155,12 +171,16 @@
                 CSM.toast('Validation failed — see highlighted entries', 'error');
             } else if (res.status === 412) {
                 CSM.toast('Config changed on disk; reloading the current list', 'warning');
+                saving = false;
                 load();
             } else {
                 CSM.toast((res.body && res.body.error) || ('HTTP ' + res.status), 'error');
             }
         }).catch(function (err) {
             CSM.toast('Save failed: ' + err.message, 'error');
+        }).then(function () {
+            saving = false;
+            document.getElementById('vbots-save').disabled = loading;
         });
     }
 
@@ -176,8 +196,9 @@
 
     load();
     if (CSM.refresh) CSM.refresh.onRefresh(function () {
+        if (saving || loading) return;
         var ask = JSON.stringify(collect()) === saved ? Promise.resolve() :
             CSM.confirm('Discard unsaved verified bot changes and reload?', { danger: true, okLabel: 'Discard' });
-        ask.then(load, function () { /* kept */ });
+        ask.then(function () { load({ refresh: true }); }, function () { /* kept */ });
     });
 })();

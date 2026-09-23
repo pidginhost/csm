@@ -123,3 +123,20 @@ test('the same file selected twice gets one rule', async () => {
     await settle();
     assert.equal(page.pending('/api/v1/suppressions').length, 0);
 });
+
+test('bulk suppression opens one confirmation and unlocks after cancellation', async () => {
+    const page = await findingsPage([finding('webshell', 'shell', '/home/a/x.php')]);
+    selectAll(page);
+    let reject, asks = 0;
+    page.window.CSM.confirm = () => { asks++; return new Promise((_, no) => { reject = no; }); };
+    clickSuppress(page);
+    clickSuppress(page);
+    assert.equal(asks, 1);
+    reject(null);
+    await settle();
+    clickSuppress(page);
+    assert.equal(asks, 2);
+    assert.equal(page.pending('/api/v1/suppressions').length, 0);
+    reject(null);
+    await settle();
+});

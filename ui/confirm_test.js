@@ -48,6 +48,32 @@ test('an ordinary confirm keeps the primary OK button after a danger one', async
     await second;
 });
 
+test('danger confirmation keeps Cancel focused after the modal transition', async () => {
+    const p = page();
+    const modal = p.document.getElementById('csm-confirm-modal');
+    const done = p.window.CSM.confirm('Delete?', { danger: true, okLabel: 'Delete' });
+    // Bootstrap activates its focus trap before emitting shown.bs.modal.
+    modal.focus();
+    modal.dispatchEvent(new p.window.Event('shown.bs.modal'));
+    assert.equal(p.document.activeElement, p.document.getElementById('csm-confirm-cancel'));
+    p.document.getElementById('csm-confirm-ok').click();
+    await done;
+});
+
+test('a prompt resets the button after a danger confirmation', async () => {
+    const p = page();
+    const ok = p.document.getElementById('csm-confirm-ok');
+    const done = p.window.CSM.confirm('Delete?', { danger: true, okLabel: 'Delete' });
+    ok.click();
+    await done;
+    const prompt = p.window.CSM.prompt('Reason?', 'maintenance');
+    assert.equal(ok.textContent, 'OK');
+    assert.ok(ok.classList.contains('btn-primary'));
+    assert.ok(!ok.classList.contains('btn-danger'));
+    ok.click();
+    assert.equal(await prompt, 'maintenance');
+});
+
 test('Log out all sessions asks first and submits only when confirmed', async () => {
     const p = page(templateBody('sessions'));
     const form = p.document.querySelector('form input[name="id"][value="all"]').closest('form');
@@ -67,4 +93,12 @@ test('Log out all sessions asks first and submits only when confirmed', async ()
     form.dispatchEvent(new p.window.Event('submit', { bubbles: true, cancelable: true }));
     await settle();
     assert.equal(submitted, 1);
+});
+
+test('a form without a confirmation attribute submits normally', () => {
+    const p = page('<form id="ordinary"><button type="submit">Submit</button></form>');
+    p.window.CSM.confirm = () => { throw new Error('unexpected confirmation'); };
+    const ev = new p.window.Event('submit', { bubbles: true, cancelable: true });
+    p.document.getElementById('ordinary').dispatchEvent(ev);
+    assert.equal(ev.defaultPrevented, false);
 });

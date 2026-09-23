@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // --- handleModSec / handleModSecRules (page rendering) ----------------
@@ -127,5 +129,17 @@ func TestAPIModSecRulesEscalationListsExclusions(t *testing.T) {
 		if !slices.Contains(resp.Rules, id) {
 			t.Errorf("rules %v missing %d", resp.Rules, id)
 		}
+	}
+}
+
+func TestAPIModSecRulesEscalationRequiresStore(t *testing.T) {
+	s := newTestServer(t, "tok")
+	previous := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(previous) })
+	w := httptest.NewRecorder()
+	s.apiModSecRulesEscalation(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("unavailable store = %d, want 500; body: %s", w.Code, w.Body.String())
 	}
 }

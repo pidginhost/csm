@@ -20,9 +20,9 @@ function severityRank(label) {
 }
 
 // --- Fetch and render findings from enriched API ---
-function loadFindings() {
+function loadFindings(options) {
     var seq = ++_findingsLoadSeq;
-    CSM.get('/api/v1/findings/enriched')
+    CSM.get('/api/v1/findings/enriched', options)
         .then(function(data) {
             if (seq !== _findingsLoadSeq) return;
             if (data.error) throw new Error(data.error);
@@ -702,8 +702,8 @@ function bulkSuppress(items) {
     }
     var question = 'Suppress ' + rules.length + ' file(s)?\n\nOne rule per file: matching findings are hidden, and their alerts and remediation stop. IP blocking is not affected.';
     if (skipped) question += '\n\n' + skipped + ' selected finding(s) without a file are skipped.';
+    _bulkSuppressInFlight = true;
     CSM.confirm(question).then(function() {
-        _bulkSuppressInFlight = true;
         var saved = 0, warnings = [];
         function next() {
             if (saved >= rules.length) return Promise.resolve();
@@ -723,7 +723,7 @@ function bulkSuppress(items) {
             clearAllSelections();
             refreshFindings();
         });
-    }, function() { /* cancelled */ });
+    }, function() { _bulkSuppressInFlight = false; });
 }
 
 // --- Scan account ---
@@ -953,14 +953,20 @@ function blockFindingIP(check, ip, btn) {
 }
 
 // --- Open finding detail in shared CSM.detailPanel (replaces inline row expansion) ---
+var _findingDetailSeq = 0;
 function toggleFindingDetail(row) {
+    var seq = ++_findingDetailSeq;
     var check = row.dataset.check;
     var message = row.dataset.message;
     var hasFix = row.getAttribute('data-hasFix') === 'true';
     var key = row.getAttribute('data-key') || (check + ':' + message);
     // The open finding is part of the URL, so the view can be shared or reloaded.
     CSM.urlState.set({ key: key });
-    function onClose() { CSM.urlState.set({ key: '' }); }
+    function onClose() {
+        if (seq !== _findingDetailSeq) return;
+        _findingDetailSeq++;
+        CSM.urlState.set({ key: '' });
+    }
     var filepath = row.getAttribute('data-filepath') || '';
     var account = row.getAttribute('data-account') || '';
     var blockIP = row.getAttribute('data-block-ip') || '';
@@ -971,8 +977,9 @@ function toggleFindingDetail(row) {
         onClose: onClose
     });
 
-    CSM.get('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message))
+    CSM.get('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message), { refresh: false })
         .then(function(data) {
+            if (seq !== _findingDetailSeq) return;
             var html = '<div class="csm-fs-sm">';
             if (account) {
                 var accountURL = CSM.accountURL(account);
@@ -1037,6 +1044,7 @@ function toggleFindingDetail(row) {
             });
         })
         .catch(function(err) {
+            if (seq !== _findingDetailSeq) return;
             console.error('findingDetail:', err);
             CSM.detailPanel.open({
                 title: check,
@@ -1107,7 +1115,14 @@ window.addEventListener('beforeunload', function() {
 
 // Bind refresh button (replaces inline onclick for CSP compliance)
 var refreshBtn = document.getElementById('refresh-page-btn');
-if (refreshBtn) refreshBtn.addEventListener('click', function(e) { e.preventDefault(); location.reload(); });
+if (refreshBtn) refreshBtn.addEventListener('click', function(e) {
+    e.preventDefault();
+    loadFindings({ refresh: true });
+});
+
+if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    if (document.getElementById('tab-active').classList.contains('active')) refreshFindings();
+});
 
 // --- Kick off ---
 loadFindings();

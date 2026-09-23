@@ -5,9 +5,20 @@
 
 var _rules = [];
 var _noEscalate = [];      // rule IDs excluded from escalation, sorted
+var _escalationLoaded = false;
+var _escalationLoading = false;
+var _escalationBusy = false;
 var _originalEnabled = {}; // ruleID → original enabled state
 var _pendingChanges = {};  // ruleID → new enabled state (only if changed)
 var _rulesTable = null;    // CSM.Table instance
+var _rulesLoading = false;
+
+function setRulesLoading(loading) {
+    _rulesLoading = loading;
+    document.querySelectorAll('.enable-toggle, #btn-apply, #btn-discard').forEach(function(el) {
+        el.disabled = loading;
+    });
+}
 
 function setRowAttr(id, attr, value) {
     var row = document.getElementById('rule-row-' + id);
@@ -37,18 +48,27 @@ function resetPendingToggleState() {
     refreshRulesTable();
 }
 
-function loadRules() {
-    CSM.get('/api/v1/modsec/rules')
+function loadRules(options) {
+    setRulesLoading(true);
+    CSM.get('/api/v1/modsec/rules', options)
         .then(function(data) {
             document.getElementById('modsec-rules-loading').classList.add('d-none');
 
             if (!data.configured) {
+                _rules = [];
+                if (_rulesTable) { _rulesTable.destroy(); _rulesTable = null; }
+                document.getElementById('modsec-rules-content').classList.add('d-none');
                 document.getElementById('modsec-rules-unconfigured').classList.remove('d-none');
                 document.getElementById('missing-fields').textContent = (data.missing || []).join(', ');
+                renderEscalation();
                 return;
             }
 
+            document.getElementById('modsec-rules-unconfigured').classList.add('d-none');
             _rules = data.rules || [];
+            if (_escalationLoaded) {
+                _rules.forEach(function(rule) { rule.escalate = _noEscalate.indexOf(rule.id) < 0; });
+            }
             document.getElementById('modsec-rules-content').classList.remove('d-none');
             renderStats(data);
             renderTable();
@@ -61,7 +81,7 @@ function loadRules() {
                     title: 'Failed to load rules',
                     reason: err.message || 'unknown'
                 });
-        });
+        }).then(function() { setRulesLoading(false); });
 }
 
 function renderStats(data) {
@@ -132,6 +152,7 @@ function renderTable() {
     // Bind enable/disable toggles (staged)
     document.querySelectorAll('.enable-toggle').forEach(function(toggle) {
         toggle.addEventListener('change', function() {
+            if (this.disabled) return;
             var id = parseInt(this.getAttribute('data-id'), 10);
             var newEnabled = this.checked;
             var row = setRowAttr(id, 'data-status', newEnabled ? 'enabled' : 'disabled');
@@ -151,11 +172,14 @@ function renderTable() {
     // Bind escalation toggles (immediate save with confirmation)
     document.querySelectorAll('.escalate-toggle').forEach(function(toggle) {
         toggle.addEventListener('change', function() {
+            if (this.disabled) return;
             var id = parseInt(this.getAttribute('data-id'), 10);
             var escalate = this.checked;
             var self = this;
 
             var action = escalate ? 'Enable' : 'Disable';
+            _escalationBusy = true;
+            updateEscalationControls();
             CSM.confirm(action + ' escalation for rule ' + id + '?').then(function() {
                 setEscalation(id, escalate).catch(function(e) {
                     escalationFailed(id, e);
@@ -163,14 +187,31 @@ function renderTable() {
                 });
             }).catch(function() {
                 self.checked = !escalate; // revert toggle on cancel
+                _escalationBusy = false;
+                updateEscalationControls();
             });
         });
+    });
+    updateEscalationControls();
+}
+
+function updateEscalationControls() {
+    var disabled = !_escalationLoaded || _escalationLoading || _escalationBusy;
+    document.getElementById('escalation-add-btn').disabled = disabled;
+    document.querySelectorAll('.escalate-toggle, [data-escalation-remove]').forEach(function(el) {
+        el.disabled = disabled;
     });
 }
 
 // setEscalation turns firewall escalation on or off for one rule and brings
 // the rule table and the exclusion list up to date.
 function setEscalation(id, escalate) {
+    _escalationBusy = true;
+    updateEscalationControls();
+    function finish() {
+        _escalationBusy = false;
+        updateEscalationControls();
+    }
     return CSM.post('/api/v1/modsec/rules/escalation', {rule_id: id, escalate: escalate})
         .then(function(data) {
             // CSM.post rejects non-OK responses, so a server-side failure
@@ -178,7 +219,7 @@ function setEscalation(id, escalate) {
             if (!data || !data.ok) throw new Error((data && data.error) || 'unknown');
             applyEscalation(id, escalate);
             CSM.toast('Escalation updated for rule ' + id, 'success');
-        });
+        }).then(finish, function(err) { finish(); throw err; });
 }
 
 function escalationFailed(id, e) {
@@ -203,18 +244,34 @@ function applyEscalation(id, escalate) {
     renderEscalation();
 }
 
-function loadEscalation() {
-    CSM.get('/api/v1/modsec/rules/escalation')
+function loadEscalation(options) {
+    _escalationLoading = true;
+    _escalationLoaded = false;
+    updateEscalationControls();
+    CSM.get('/api/v1/modsec/rules/escalation', options)
         .then(function(data) {
             _noEscalate = ((data && data.rules) || []).slice().sort(function(a, b) { return a - b; });
+            _escalationLoaded = true;
+            _rules.forEach(function(rule) {
+                rule.escalate = _noEscalate.indexOf(rule.id) < 0;
+                var toggle = document.querySelector('.escalate-toggle[data-id="' + rule.id + '"]');
+                if (toggle) toggle.checked = rule.escalate;
+                setRowAttr(rule.id, 'data-escalate', rule.escalate ? 'yes' : 'no');
+            });
+            refreshRulesTable();
+            renderStats({total: _rules.length, active: countActive()});
             renderEscalation();
         })
         .catch(function() {
             CSM.loadError(document.getElementById('escalation-list'), loadEscalation);
+        }).then(function() {
+            _escalationLoading = false;
+            updateEscalationControls();
         });
 }
 
 function renderEscalation() {
+    if (!_escalationLoaded) return;
     var container = document.getElementById('escalation-list');
     if (!container) return;
     if (_noEscalate.length === 0) {
@@ -236,14 +293,17 @@ function renderEscalation() {
         btn.addEventListener('click', function() {
             if (btn.disabled) return;
             var ruleID = parseInt(btn.getAttribute('data-escalation-remove'), 10);
-            btn.disabled = true;
+            _escalationBusy = true;
+            updateEscalationControls();
             CSM.confirm('Stop excluding rule ' + ruleID + '?\n\nMatching requests will again escalate to a firewall block.').then(function() {
                 return setEscalation(ruleID, true).catch(function(e) { escalationFailed(ruleID, e); });
             }).catch(function() { /* cancelled */ }).then(function() {
-                btn.disabled = false;
+                _escalationBusy = false;
+                updateEscalationControls();
             });
         });
     });
+    updateEscalationControls();
 }
 
 document.getElementById('escalation-form').addEventListener('submit', function(e) {
@@ -315,6 +375,7 @@ function updateApplyBar() {
 
 // Apply Changes
 document.getElementById('btn-apply').addEventListener('click', function() {
+    if (_rulesLoading || this.disabled) return;
     var btn = this;
     var changeCount = Object.keys(_pendingChanges).length;
 
@@ -409,6 +470,7 @@ loadRules();
 
 // Refresh reloads the rules, which drops staged toggles; ask first.
 if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    if (_escalationBusy || _escalationLoading || document.getElementById('btn-apply').disabled) return;
     var staged = Object.keys(_pendingChanges).length;
     var ask = staged === 0 ? Promise.resolve() :
         CSM.confirm('Discard ' + staged + ' staged rule change' + (staged !== 1 ? 's' : '') + ' and reload?', { danger: true, okLabel: 'Discard' });
@@ -416,8 +478,8 @@ if (CSM.refresh) CSM.refresh.onRefresh(function() {
         resetPendingToggleState();
         _pendingChanges = {};
         updateApplyBar();
-        loadEscalation();
-        loadRules();
+        loadEscalation({ refresh: true });
+        loadRules({ refresh: true });
     }, function() { /* kept */ });
 });
 

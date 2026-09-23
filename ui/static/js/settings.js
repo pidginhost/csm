@@ -18,6 +18,8 @@
     let initialValues = {};
     let dirty = false;
     let saving = false;
+    let sectionLoading = false;
+    let sectionLoadSeq = 0;
     const dirtySections = new Set();
     let pendingLeaveConfirm = null;
     let pendingPopstateSection = null;
@@ -311,6 +313,8 @@
     // ---- Section loader --------------------------------------------------
     async function loadSection(id, opts) {
         opts = opts || {};
+        const seq = ++sectionLoadSeq;
+        sectionLoading = true;
         setActiveNav(id);
         updateSectionURL(id, opts.urlMode || "replace");
 
@@ -329,12 +333,16 @@
         // so a single catch is enough — no separate resp.ok branch.
         let data;
         try {
-            const resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}});
+            const resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}, refresh: opts.refresh});
             data = await resp.json();
         } catch (e) {
+            if (seq !== sectionLoadSeq) return;
+            sectionLoading = false;
             renderError("Failed to load: " + (e && e.message ? e.message : "request failed"));
             return;
         }
+        if (seq !== sectionLoadSeq) return;
+        sectionLoading = false;
         currentSection = id;
         currentETag = data.etag;
         currentSchema = data.section;
@@ -1351,13 +1359,15 @@
             }
             const target = isKnown(qsSection) ? qsSection
                 : (isKnown(hash) ? hash : first);
-            loadSection(target, {urlMode: "replace"});
+            loadSection(target, {urlMode: "replace", refresh: true});
             checkPendingRollbackOnLoad();
             // Refresh reloads the open section; unsaved edits get the same
             // discard question as leaving the section.
             if (CSM.refresh) CSM.refresh.onRefresh(function () {
+                if (!currentSection || sectionLoading || saving || tentativeApplyRunning) return;
                 confirmLeaveIfDirty().then(function () {
-                    loadSection(currentSection, {urlMode: "none"});
+                    if (sectionLoading || saving || tentativeApplyRunning) return;
+                    loadSection(currentSection, {urlMode: "none", refresh: true});
                 }, function () { /* kept */ });
             });
             // Back/forward changes the visible section without a full page

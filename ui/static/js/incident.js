@@ -628,8 +628,8 @@
         if (_incidentBulkInFlight) return;
         var ids = incidentBulk().selectedValues();
         if (ids.length === 0) return;
+        _incidentBulkInFlight = true;
         CSM.confirm('Mark ' + ids.length + ' incident(s) ' + status + '?').then(function() {
-            _incidentBulkInFlight = true;
             var done = 0;
             function next() {
                 if (done >= ids.length) return Promise.resolve();
@@ -650,7 +650,7 @@
                 incidentBulk().clear();
                 loadIncidents();
             });
-        }, function() { /* cancelled */ });
+        }, function() { _incidentBulkInFlight = false; });
     }
 
     document.querySelectorAll('#incidents-bulk-bar [data-bulk-status]').forEach(function(btn) {

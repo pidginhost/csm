@@ -86,3 +86,36 @@ test('a poller also shows the pause control', () => {
     assert.ok(!p.document.getElementById('csm-refresh-toggle').classList.contains('d-none'));
     if (stop && stop.stop) stop.stop();
 });
+
+test('a request started before load remains a data load when it finishes later', async () => {
+    const p = page();
+    const done = p.window.CSM.get('/api/v1/stats');
+    finishLoading(p);
+    p.respond('/api/v1/stats', 200, {});
+    await done;
+    assert.ok(p.window.CSM.refresh.lastFetchAt > 0);
+});
+
+test('allowNonOK updates freshness only for successful data loads', async () => {
+    const p = page();
+    finishLoading(p);
+    let done = p.window.CSM.request('/api/v1/stats', { refresh: true, allowNonOK: true });
+    p.respond('/api/v1/stats', 500, {});
+    await done;
+    assert.equal(p.window.CSM.refresh.lastFetchAt, 0);
+    done = p.window.CSM.request('/api/v1/stats', { refresh: true, allowNonOK: true });
+    p.respond('/api/v1/stats', 200, {});
+    await done;
+    assert.ok(p.window.CSM.refresh.lastFetchAt > 0);
+});
+
+test('a throwing refresh handler cannot classify later lookups as data loads', async () => {
+    const p = page();
+    finishLoading(p);
+    p.window.CSM.refresh.onRefresh(() => { throw new Error('render failed'); });
+    p.window.CSM.refresh.manual();
+    const done = p.window.CSM.get('/api/v1/finding-detail?check=x');
+    p.respond('/api/v1/finding-detail', 200, {});
+    await done;
+    assert.equal(p.window.CSM.refresh.lastFetchAt, 0);
+});

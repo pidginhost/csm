@@ -427,11 +427,24 @@ CSM.detailPanel = (function() {
     var api = null;
     // onClose of the content on show; runs once when the panel closes.
     var currentOnClose = null;
+    var closing = false;
+    var hidingOnClose = null;
+    var pendingShow = false;
 
     function fireClose() {
         var fn = currentOnClose;
         currentOnClose = null;
         if (fn) fn();
+    }
+
+    function showPanel() {
+        if (window.bootstrap && window.bootstrap.Offcanvas) {
+            instance = window.bootstrap.Offcanvas.getOrCreateInstance(panelEl);
+            instance.show();
+        } else {
+            panelEl.classList.add('show');
+        }
+        bindDismissShortcuts();
     }
 
     function isOpen() {
@@ -525,8 +538,27 @@ CSM.detailPanel = (function() {
         // hidden.bs.offcanvas runs after the backdrop click handler so we
         // can lean on it to drop the global listeners even when the close
         // happens through Bootstrap's own backdrop or ESC path.
-        panelEl.addEventListener('hidden.bs.offcanvas', unbindDismissShortcuts);
-        panelEl.addEventListener('hidden.bs.offcanvas', fireClose);
+        panelEl.addEventListener('hide.bs.offcanvas', function() {
+            closing = true;
+            hidingOnClose = currentOnClose;
+            currentOnClose = null;
+        });
+        panelEl.addEventListener('hidden.bs.offcanvas', function() {
+            unbindDismissShortcuts();
+            if (closing) {
+                var fn = hidingOnClose;
+                hidingOnClose = null;
+                if (fn) fn();
+            } else {
+                fireClose();
+            }
+            closing = false;
+            // Bootstrap finishes hiding before a replacement can be shown.
+            if (pendingShow) {
+                pendingShow = false;
+                showPanel();
+            }
+        });
         return panelEl;
     }
 
@@ -558,15 +590,11 @@ CSM.detailPanel = (function() {
                 footEl.hidden = true;
             }
 
-            if (window.bootstrap && window.bootstrap.Offcanvas) {
-                instance = window.bootstrap.Offcanvas.getOrCreateInstance(el);
-                instance.show();
-            } else {
-                el.classList.add('show');
-            }
-            bindDismissShortcuts();
+            if (closing) pendingShow = true;
+            else showPanel();
         },
         close: function() {
+            pendingShow = false;
             unbindDismissShortcuts();
             fireClose();
             if (instance) {

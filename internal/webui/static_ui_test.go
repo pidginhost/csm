@@ -3401,7 +3401,7 @@ func TestSettingsPageUsesQueryStringDeepLink(t *testing.T) {
 		`CSM.urlState.set({section: id}, opts);`,
 		`CSM.urlState.get("section")`,
 		`url.hash = "";`,
-		`loadSection(target, {urlMode: "replace"});`,
+		`loadSection(target, {urlMode: "replace", refresh: true});`,
 		`loadSection(target, {urlMode: "none"});`,
 		`loadSection(currentSection, {urlMode: "replace"});`,
 		`confirmLeaveIfDirty().then(function () {`,
@@ -5439,9 +5439,11 @@ func TestDestructiveActionsConfirmAndOfferUndo(t *testing.T) {
 		t.Error("modsec-rules.js exclusion removal must confirm before re-arming firewall escalation for the rule")
 	}
 	if !strings.Contains(modsecRulesText, "if (btn.disabled) return;\n            var ruleID = parseInt") ||
-		!strings.Contains(modsecRulesText, "btn.disabled = true;\n            CSM.confirm") ||
+		!strings.Contains(modsecRulesText, "_escalationBusy = true;\n            updateEscalationControls();\n            CSM.confirm") ||
 		!strings.Contains(modsecRulesText, "return setEscalation(ruleID, true).catch(") ||
-		!strings.Contains(modsecRulesText, "btn.disabled = false;") {
+		!strings.Contains(modsecRulesText, "_escalationBusy = false;\n                updateEscalationControls();") ||
+		!strings.Contains(modsecRulesText, "var disabled = !_escalationLoaded || _escalationLoading || _escalationBusy;") ||
+		!strings.Contains(modsecRulesText, "el.disabled = disabled;") {
 		t.Error("modsec-rules.js exclusion removal must latch during confirm/save and restore on cancel or failure")
 	}
 

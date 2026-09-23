@@ -10,6 +10,8 @@
     var cachedData = null;
     var currentTab = 'findings';
     var tabTables = {};
+    var loadSeq = 0;
+    var tabInputs = {};
 
     var sevLabels = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
     var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
@@ -30,6 +32,10 @@
     }
 
     function loadTab(tab) {
+        var seq = ++loadSeq;
+        var values = tabInputs[currentTab] || {};
+        content.querySelectorAll('input[id], select[id]').forEach(function(el) { values[el.id] = el.value; });
+        tabInputs[currentTab] = values;
         currentTab = tab;
         setActiveTab(tab);
 
@@ -41,6 +47,7 @@
         showSpinner();
         CSM.fetch('/api/v1/account?name=' + encodeURIComponent(name))
             .then(function(data) {
+                if (seq !== loadSeq) return;
                 if (data.error) {
                     content.innerHTML = '<div class="alert alert-danger">' + CSM.esc(data.error) + '</div>';
                     return;
@@ -49,8 +56,17 @@
                 renderTabContent(tab, data);
             })
             .catch(function(err) {
+                if (seq !== loadSeq) return;
                 content.innerHTML = '<div class="card-body text-center text-danger py-4">Failed to load: ' + CSM.esc(err.message || 'Unknown error') + '</div>';
             });
+    }
+
+    function restoreTabInputs(tab) {
+        var values = tabInputs[tab] || {};
+        Object.keys(values).forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.value = values[id];
+        });
     }
 
     function renderTabContent(tab, data) {
@@ -116,6 +132,7 @@
         }
         html += '</div>';
         content.innerHTML = html;
+        restoreTabInputs('findings');
         if (findings.length > 0) {
             tabTables.findings = new CSM.Table({
                 tableId: 'account-findings-table',
@@ -149,6 +166,7 @@
         }
         html += '</div>';
         content.innerHTML = html;
+        restoreTabInputs('quarantine');
         if (quarantined.length > 0) {
             tabTables.quarantine = new CSM.Table({
                 tableId: 'account-quarantine-table',
@@ -195,6 +213,7 @@
         }
         html += '</div>';
         content.innerHTML = html;
+        restoreTabInputs('history');
         if (history.length > 0) {
             var fromEl = document.getElementById('account-history-from');
             var toEl = document.getElementById('account-history-to');

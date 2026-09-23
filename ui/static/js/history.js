@@ -13,6 +13,7 @@
     // days; the dashboard's 24h counts link here with it.
     var windowHours = 0;
     var historyLoaded = false;
+    var loadSeq = 0;
 
     var sevLabels = {}; for (var sk in CSM.sevMap) sevLabels[sk] = CSM.sevMap[sk].label;
     var sevClasses = {}; for (var sk2 in CSM.sevMap) sevClasses[sk2] = CSM.sevMap[sk2].cls;
@@ -57,15 +58,20 @@
     }
 
     function loadHistory() {
+        var seq = ++loadSeq;
         var url = '/api/v1/history?limit=' + perPage + '&offset=' + (page * perPage) + filterQuery();
         syncCSVLink();
 
         CSM.get(url)
             .then(function(data) {
+                if (seq !== loadSeq) return;
                 renderTable(data.findings || [], data.total || 0);
                 renderPager(data.total || 0);
             })
-            .catch(function() { CSM.loadError(document.getElementById('history-content'), loadHistory); });
+            .catch(function() {
+                if (seq !== loadSeq) return;
+                CSM.loadError(document.getElementById('history-content'), loadHistory);
+            });
         syncURL();
     }
 
@@ -337,6 +343,10 @@
     if (historyTabLink) {
         historyTabLink.addEventListener('shown.bs.tab', initHistory);
     }
+
+    if (CSM.refresh) CSM.refresh.onRefresh(function() {
+        if (document.getElementById('tab-history').classList.contains('active')) loadHistory();
+    });
 
     function activateHistoryTabFallback() {
         var activeTabLink = document.querySelector('[href="#tab-active"]');

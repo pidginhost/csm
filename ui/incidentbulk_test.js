@@ -87,3 +87,21 @@ test('select-all reaches the incidents on this page', async () => {
     all.dispatchEvent(new page.window.Event('change'));
     assert.equal(page.document.getElementById('incidents-selected-count').textContent, '2');
 });
+
+test('bulk status opens one confirmation and unlocks after cancellation', async () => {
+    const page = await incidentsPage(['inc_a']);
+    select(page, 'inc_a');
+    let reject, asks = 0;
+    page.window.CSM.confirm = () => { asks++; return new Promise((_, no) => { reject = no; }); };
+    const button = page.document.querySelector('#incidents-bulk-bar [data-bulk-status="resolved"]');
+    button.click();
+    button.click();
+    assert.equal(asks, 1);
+    reject(null);
+    await settle();
+    button.click();
+    assert.equal(asks, 2);
+    assert.equal(page.pending('/status').length, 0);
+    reject(null);
+    await settle();
+});

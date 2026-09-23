@@ -172,8 +172,14 @@
             }
 
             var settled = false;
+            function focusConfirm() {
+                if (!settled) (danger ? noBtn : okBtn).focus();
+            }
+            // Bootstrap focuses the modal when its transition finishes.
+            modal.addEventListener('shown.bs.modal', focusConfirm);
 
             function cleanup() {
+                modal.removeEventListener('shown.bs.modal', focusConfirm);
                 if (activeDialogCancel === cancelSelf) activeDialogCancel = null;
                 okBtn.removeEventListener('click', onOk);
                 noBtn.removeEventListener('click', onCancel);
@@ -217,7 +223,7 @@
             noBtn.addEventListener('click', onCancel);
             document.addEventListener('keydown', onKeydown);
             activeDialogCancel = cancelSelf;
-            (danger ? noBtn : okBtn).focus();
+            focusConfirm();
 
             var _origCleanup = cleanup;
             cleanup = function() {
@@ -247,6 +253,10 @@
                 if (val !== null) { resolve(val); } else { reject(); }
                 return;
             }
+
+            okBtn.textContent = 'OK';
+            okBtn.classList.remove('btn-danger');
+            okBtn.classList.add('btn-primary');
 
             body.textContent = '';
             var lines = message.split('\n');
