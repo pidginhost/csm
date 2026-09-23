@@ -194,26 +194,10 @@
     }
 
     function renderGroupedPagination() {
-        var footer = document.getElementById('grouped-pagination');
-        if (!footer) return;
-        var limit = currentGroupedPageSize();
-        if (groupedPageTotal <= 0) {
-            footer.classList.add('d-none');
-            return;
-        }
-        footer.classList.remove('d-none');
-        var pageNum = Math.floor(groupedPageOffset / limit) + 1;
-        var totalPages = Math.max(1, Math.ceil(groupedPageTotal / limit));
-        var first = groupedPageOffset + 1;
-        var last = Math.min(groupedPageOffset + groupedPageReturned, groupedPageTotal);
-        var summary = document.getElementById('grouped-page-summary');
-        if (summary) summary.textContent = 'Showing ' + first + '-' + last + ' of ' + groupedPageTotal;
-        var indicator = document.getElementById('grouped-page-indicator');
-        if (indicator) indicator.textContent = pageNum + ' / ' + totalPages;
-        var pf = document.getElementById('grouped-page-first'); if (pf) pf.disabled = groupedPageOffset === 0;
-        var pp = document.getElementById('grouped-page-prev');  if (pp) pp.disabled = groupedPageOffset === 0;
-        var pn = document.getElementById('grouped-page-next');  if (pn) pn.disabled = groupedPageOffset + limit >= groupedPageTotal;
-        var pl = document.getElementById('grouped-page-last');  if (pl) pl.disabled = groupedPageOffset + limit >= groupedPageTotal;
+        CSM.pager(document.getElementById('grouped-pagination'), {
+            total: groupedPageTotal, offset: groupedPageOffset, limit: currentGroupedPageSize(),
+            count: groupedPageReturned, onOffset: setGroupedPageOffset
+        });
     }
 
     function renderGroups(data, content, footer) {
@@ -374,27 +358,10 @@
     }
 
     function renderPagination() {
-        var footer = document.getElementById('incidents-pagination');
-        if (!footer) return;
-        var limit = currentPageSize();
-        if (pageTotal <= 0) {
-            footer.classList.add('d-none');
-            return;
-        }
-        footer.classList.remove('d-none');
-        var pageNum = Math.floor(pageOffset / limit) + 1;
-        var totalPages = Math.max(1, Math.ceil(pageTotal / limit));
-        var first = pageOffset + 1;
-        var last = Math.min(pageOffset + incidents.length, pageTotal);
-        document.getElementById('incidents-page-summary').textContent =
-            'Showing ' + first + '-' + last + ' of ' + pageTotal;
-        document.getElementById('incidents-page-indicator').textContent =
-            pageNum + ' / ' + totalPages;
-
-        document.getElementById('incidents-page-first').disabled = pageOffset === 0;
-        document.getElementById('incidents-page-prev').disabled = pageOffset === 0;
-        document.getElementById('incidents-page-next').disabled = pageOffset + limit >= pageTotal;
-        document.getElementById('incidents-page-last').disabled = pageOffset + limit >= pageTotal;
+        CSM.pager(document.getElementById('incidents-pagination'), {
+            total: pageTotal, offset: pageOffset, limit: currentPageSize(),
+            count: incidents.length, onOffset: setPageOffset
+        });
     }
 
     function setPageOffset(off) {
@@ -801,14 +768,6 @@
     if (groupedKind) groupedKind.addEventListener('change', function() { groupedPageOffset = 0; loadGroups(); });
     var groupedPageSize = document.getElementById('grouped-page-size');
     if (groupedPageSize) groupedPageSize.addEventListener('change', function() { groupedPageOffset = 0; loadGroups(); });
-    var gpf = document.getElementById('grouped-page-first');
-    if (gpf) gpf.addEventListener('click', function() { setGroupedPageOffset(0); });
-    var gpp = document.getElementById('grouped-page-prev');
-    if (gpp) gpp.addEventListener('click', function() { setGroupedPageOffset(groupedPageOffset - currentGroupedPageSize()); });
-    var gpn = document.getElementById('grouped-page-next');
-    if (gpn) gpn.addEventListener('click', function() { setGroupedPageOffset(groupedPageOffset + currentGroupedPageSize()); });
-    var gpl = document.getElementById('grouped-page-last');
-    if (gpl) gpl.addEventListener('click', function() { setGroupedPageOffset(lastGroupedPageOffset()); });
     document.getElementById('incidents-refresh-btn').addEventListener('click', loadIncidents);
     document.getElementById('incident-status-filter').addEventListener('change', function() {
         selectedID = '';
@@ -822,14 +781,6 @@
             loadIncidents();
         });
     }
-    var pf = document.getElementById('incidents-page-first');
-    if (pf) pf.addEventListener('click', function() { setPageOffset(0); });
-    var pp = document.getElementById('incidents-page-prev');
-    if (pp) pp.addEventListener('click', function() { setPageOffset(pageOffset - currentPageSize()); });
-    var pn = document.getElementById('incidents-page-next');
-    if (pn) pn.addEventListener('click', function() { setPageOffset(pageOffset + currentPageSize()); });
-    var pl = document.getElementById('incidents-page-last');
-    if (pl) pl.addEventListener('click', function() { setPageOffset(lastPageOffset()); });
     document.getElementById('incident-search-btn').addEventListener('click', loadTimeline);
     document.getElementById('incident-query').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') loadTimeline();

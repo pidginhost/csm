@@ -64,7 +64,7 @@
             .then(function(data) {
                 if (seq !== loadSeq) return;
                 renderTable(data.findings || [], data.total || 0);
-                renderPager(data.total || 0);
+                renderPager(data.total || 0, (data.findings || []).length);
             })
             .catch(function() {
                 if (seq !== loadSeq) return;
@@ -190,52 +190,11 @@
         container.appendChild(wrap);
     }
 
-    function renderPager(total) {
-        var pager = document.getElementById('history-pager');
-        if (!pager) return;
-        var totalPages = Math.ceil(total / perPage);
-        if (totalPages <= 1) { pager.textContent = ''; return; }
-
-        pager.textContent = '';
-        var start = page * perPage + 1;
-        var end = Math.min((page + 1) * perPage, total);
-        var info = document.createElement('div');
-        info.className = 'text-muted small';
-        info.textContent = 'Showing ' + start + '–' + end + ' of ' + total;
-        pager.appendChild(info);
-
-        var btnGroup = document.createElement('div');
-        btnGroup.className = 'd-flex gap-1';
-
-        function pageBtn(label, target, opts) {
-            var b = document.createElement('button');
-            var cls = 'btn btn-sm ' + ((opts && opts.active) ? 'btn-primary' : 'btn-ghost-secondary');
-            b.className = cls;
-            b.textContent = label;
-            if (opts && opts.disabled) b.disabled = true;
-            if (!opts || !opts.disabled) {
-                b.addEventListener('click', function() {
-                    if (target < 0 || target >= totalPages) return;
-                    page = target;
-                    loadHistory();
-                });
-            }
-            return b;
-        }
-
-        if (page > 0) btnGroup.appendChild(pageBtn('Previous', page - 1));
-
-        // Sliding window of up to 7 page numbers around the current page
-        var startPage = Math.max(0, page - 3);
-        var endPage = Math.min(totalPages - 1, startPage + 6);
-        startPage = Math.max(0, endPage - 6);
-        for (var p = startPage; p <= endPage; p++) {
-            btnGroup.appendChild(pageBtn(String(p + 1), p, { active: p === page, disabled: p === page }));
-        }
-
-        if (page < totalPages - 1) btnGroup.appendChild(pageBtn('Next', page + 1));
-
-        pager.appendChild(btnGroup);
+    function renderPager(total, count) {
+        CSM.pager(document.getElementById('history-pager'), {
+            total: total, offset: page * perPage, limit: perPage, count: count,
+            onOffset: function(offset) { page = Math.floor(offset / perPage); loadHistory(); }
+        });
     }
 
     function setWindow(hours) {

@@ -166,6 +166,63 @@ CSM.accountURL = function(name) {
     return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? '/account?name=' + encodeURIComponent(name) : '';
 };
 
+// pager renders the footer of a server-paged list into footer: a summary
+// and first/previous/next/last buttons around a page indicator. o.total,
+// o.offset and o.limit describe the list, o.count the rows on this page, and
+// o.onOffset(offset) loads another page. An empty list hides the footer.
+CSM.pager = function(footer, o) {
+    if (!footer) return;
+    var total = Math.max(0, o.total || 0);
+    var limit = Math.max(1, o.limit || 1);
+    var offset = Math.max(0, o.offset || 0);
+    var count = o.count == null ? Math.min(limit, total - offset) : o.count;
+    footer.replaceChildren();
+    footer.classList.toggle('d-none', total === 0);
+    if (total === 0) return;
+    var pages = Math.max(1, Math.ceil(total / limit));
+    var atStart = offset === 0;
+    var atEnd = offset + limit >= total;
+    var row = document.createElement('div');
+    row.className = 'd-flex align-items-center justify-content-between flex-wrap gap-2 w-100';
+    var summary = document.createElement('div');
+    summary.className = 'text-muted small';
+    summary.textContent = 'Showing ' + (offset + 1) + '-' + Math.min(offset + count, total) + ' of ' + total;
+    row.appendChild(summary);
+    var list = document.createElement('ul');
+    list.className = 'pagination pagination-sm m-0';
+    function item(name, label, icon, target, disabled) {
+        var li = document.createElement('li');
+        li.className = 'page-item' + (disabled ? ' disabled' : '');
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'page-link';
+        b.setAttribute('data-pager', name);
+        b.setAttribute('aria-label', label);
+        b.disabled = disabled;
+        var i = document.createElement('i');
+        i.className = 'ti ' + icon;
+        i.setAttribute('aria-hidden', 'true');
+        b.appendChild(i);
+        b.addEventListener('click', function() { if (!b.disabled) o.onOffset(target); });
+        li.appendChild(b);
+        list.appendChild(li);
+    }
+    item('first', 'First page', 'ti-chevrons-left', 0, atStart);
+    item('prev', 'Previous page', 'ti-chevron-left', Math.max(0, offset - limit), atStart);
+    var here = document.createElement('li');
+    here.className = 'page-item active';
+    var indicator = document.createElement('span');
+    indicator.className = 'page-link';
+    indicator.setAttribute('data-pager', 'indicator');
+    indicator.textContent = (Math.floor(offset / limit) + 1) + ' / ' + pages;
+    here.appendChild(indicator);
+    list.appendChild(here);
+    item('next', 'Next page', 'ti-chevron-right', offset + limit, atEnd);
+    item('last', 'Last page', 'ti-chevrons-right', (pages - 1) * limit, atEnd);
+    row.appendChild(list);
+    footer.appendChild(row);
+};
+
 // statusChip builds one chip of a page's status strip. The value and label
 // are set as text.
 CSM.statusChip = function(opts) {
