@@ -37,8 +37,8 @@ scope. The header links to session management.
 | **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts. A queued finding opens its own detail, and each 24h severity count opens the History tab for the last 24 hours at that severity |
 | **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, a permanent Block for findings that report an attacker address, sticky bulk operations (fix, dismiss, suppress), modal account scan. The open finding is kept in the URL as `?key=<finding key>`, so the link reopens it |
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings, newest first, with date range and severity filters, 25 to 200 rows per page (`hperpage`), CSV export; `window=24h` (1 to 720 hours) shows a rolling window instead of calendar days |
-| **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
-| **Cleanup History** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
+| **Quarantine** | `/quarantine` | Every file backup: quarantined files and cleaners' pre-clean backups, with type, live state of the original path, content preview, restore and delete; filters by account, detector, type and date |
+| **Cleanup History** | `/cleanup-history` | DB-object backups with preview and restore controls; file backups are on the Quarantine page |
 | **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), the whitelist and allow rules (Allow Rules tab), search, audit log; the lookup links to Threat Intel for the same address; destructive actions live under the Danger tab |
 | **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, Blocked IPs / Events tabs, and a Manage Rules link to ModSecurity Rules. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
 | **ModSecurity Rules** | `/modsec/rules` | Enable or disable CSM rules (applied with one reload) and firewall escalation exclusions; the exclusion list works even when rule management is not configured |
@@ -132,15 +132,15 @@ at a time.
 Select-all and every bulk action reach only the rows the table currently
 shows. Rows on other pages or hidden by a search or filter are never selected
 or acted on; set the page size to All to act on every row.
-Cleanup selection counts and buttons are refreshed whenever the visible rows change.
+Quarantine selection counts and buttons are refreshed whenever the visible rows change.
 
 A failed file restore cleans up its own destination copy while retaining the
 quarantined evidence. A replacement created by another writer is preserved.
 
-Quarantine and Cleanup delete large file selections in sequential batches.
+Quarantine deletes large file selections in sequential batches.
 If a request fails, later batches are not sent; the page reports the confirmed
 deletion count and refreshes the list. File restore and delete controls stay
-disabled until the operation and refresh finish.
+disabled until the operation and refresh finish, and Refresh waits for them.
 
 Threat Intel bulk block and whitelist actions accept up to 100 selected IPs
 and retain one undo action. Larger selections must be narrowed before sending.

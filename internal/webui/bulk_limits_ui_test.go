@@ -31,14 +31,17 @@ func TestQuarantineBulkDeleteSendsBatchesWithinServerLimit(t *testing.T) {
 			t.Fatalf("csrf.js missing %q", fragment)
 		}
 	}
-	for _, page := range []string{"quarantine.js", "cleanup-history.js"} {
-		src := readUIScript(t, page)
-		if strings.Contains(src, "CSM.post('/api/v1/quarantine/bulk-delete'") {
-			t.Errorf("%s sends the whole selection in one bulk-delete request", page)
-		}
-		if !strings.Contains(src, "CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,") {
-			t.Errorf("%s does not batch bulk-delete within the server limit", page)
-		}
+	src := readUIScript(t, "quarantine.js")
+	if strings.Contains(src, "CSM.post('/api/v1/quarantine/bulk-delete'") {
+		t.Error("quarantine.js sends the whole selection in one bulk-delete request")
+	}
+	if !strings.Contains(src, "CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,") {
+		t.Error("quarantine.js does not batch bulk-delete within the server limit")
+	}
+	// Cleanup History listed the same files with a second delete path; the
+	// Quarantine page is now the only one.
+	if strings.Contains(readUIScript(t, "cleanup-history.js"), "/api/v1/quarantine") {
+		t.Error("cleanup-history.js still lists or deletes file backups")
 	}
 }
 
@@ -117,17 +120,19 @@ func TestBulkFixRequestBodyBoundary(t *testing.T) {
 	}
 }
 
-func TestCleanupLocksRowRestoresDuringBulkDelete(t *testing.T) {
-	src := readUIScript(t, "cleanup-history.js")
+// The file backup list moved from Cleanup History to Quarantine with this
+// guard: a row restore waits for a running bulk delete.
+func TestQuarantineLocksRowRestoresDuringBulkDelete(t *testing.T) {
+	src := readUIScript(t, "quarantine.js")
 	for _, fragment := range []string{
-		"if (fileMutationBusy) return Promise.resolve();",
-		"fileMutationBusy = true;",
-		"fileMutationBusy = false;",
-		"btn.disabled = fileMutationBusy;",
-		"return withFileBulkButtons(null, '', function()",
+		"function restoreFile(id) {\n    if (_quarMutationBusy) return;",
+		"if (_quarMutationBusy) return Promise.resolve();",
+		"_quarMutationBusy = true;",
+		"_quarMutationBusy = false;",
+		"btn.disabled = _quarMutationBusy;",
 	} {
 		if !strings.Contains(src, fragment) {
-			t.Errorf("cleanup-history.js missing row restore guard %q", fragment)
+			t.Errorf("quarantine.js missing row restore guard %q", fragment)
 		}
 	}
 }

@@ -100,6 +100,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- Quarantine is now the one list of file backups: it shows pre-clean backups with their type and the live state of the original path, and filters by type. Cleanup History keeps the database object backups and links to it.
 - The History tab now pages with the same first, previous, next and last controls and summary as the Incidents lists.
 - The Findings select-all box now shows a partial state when only some visible findings are selected, as the other bulk tables do.
 - Web UI layout fixes: stat cards and incident filters size to their content, whitelist and allow buttons use the warning colour, grouped incidents filter on every status, and the History tab offers 25 to 200 rows per page.

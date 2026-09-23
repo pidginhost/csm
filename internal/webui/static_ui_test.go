@@ -805,9 +805,6 @@ func TestSizeAndSeverityColumnsSortNumerically(t *testing.T) {
 	}
 	cleanupText := string(cleanup)
 	for _, want := range []string{
-		`var size = Number(f.size || 0);`,
-		`if (!isFinite(size)) size = 0;`,
-		`'<td data-sort="' + size + '">' + formatSize(f.size) + '</td>'`,
 		`var bodyBytes = Number(b.body_bytes || 0);`,
 		`if (!isFinite(bodyBytes)) bodyBytes = 0;`,
 		`'<td data-sort="' + bodyBytes + '">' + formatSize(b.body_bytes) + '</td>'`,
@@ -1233,26 +1230,30 @@ func TestInventoryPagesAdoptCsmToolbar(t *testing.T) {
 	}
 }
 
-func TestCleanupHistoryBulkButtonsLockTogether(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/cleanup-history.js")
+// The bulk buttons moved from Cleanup History to Quarantine: both lock
+// together while one runs, and the running one shows progress and gets its
+// own markup, icon included, back afterwards.
+func TestQuarantineBulkButtonsLockTogether(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/quarantine.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(src)
 	for _, want := range []string{
-		`var buttonIDs = ['cleanup-files-restore-btn', 'cleanup-files-delete-btn'];`,
-		`states.push({ btn: btn, disabled: btn.disabled, html: btn.innerHTML });`,
-		`btn.disabled = true;`,
-		`activeBtn.innerHTML = busyHTML;`,
-		`state.btn.innerHTML = state.html;`,
-		`updateFileBulkButtons();`,
+		`['bulk-restore-btn', 'bulk-delete-btn'].forEach(function(id) {`,
+		`if (btn) btn.disabled = true;`,
+		`var idleHTML = busyBtn ? busyBtn.innerHTML : '';`,
+		`if (busyBtn) busyBtn.innerHTML = busy.html;`,
+		`if (busyBtn) busyBtn.innerHTML = idleHTML;`,
+		`{ id: 'bulk-restore-btn', html: '<i class="ti ti-restore me-1"></i>Restoring...' }`,
+		`{ id: 'bulk-delete-btn', html: '<i class="ti ti-trash me-1"></i>Deleting...' }`,
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("cleanup-history.js missing bulk-button lock fragment %q", want)
+			t.Errorf("quarantine.js missing bulk-button lock fragment %q", want)
 		}
 	}
 	if strings.Contains(text, `var origText = btn.textContent`) || strings.Contains(text, `btn.textContent = label`) {
-		t.Error("cleanup-history.js must preserve button HTML; textContent drops the action icons")
+		t.Error("quarantine.js must preserve button HTML; textContent drops the action icons")
 	}
 }
 
@@ -2971,7 +2972,8 @@ func TestBulkHelperWired(t *testing.T) {
 		`var total = visible().length;`,
 		`selectAll.indeterminate = (n > 0 && n < total);`,
 		`visible().forEach(function(cb) { cb.checked = v; });`,
-		`b.el.textContent = b.labelTemplate.replace(/\{n\}/g, n);`,
+		`setButtonLabel(b.el, b.labelTemplate.replace(/\{n\}/g, n));`,
+		`btn.insertBefore(icon, btn.firstChild);`,
 		`b.el.disabled = (n === 0);`,
 		`b.el.classList.toggle('d-none', n === 0);`,
 		`if (cb.dataset.csmBulkBound === '1') return;`,

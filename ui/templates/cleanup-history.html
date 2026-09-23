@@ -4,54 +4,19 @@
     <div class="csm-page-header mb-3">
         <div class="csm-page-header__main">
             <h1 class="csm-page-header__title"><i class="ti ti-history"></i>&nbsp;Cleanup History</h1>
+            <div class="csm-page-header__subtitle">File backups, pre-clean backups included, are on the <a href="/quarantine">Quarantine</a> page.</div>
         </div>
     </div>
 
-    <ul class="nav nav-tabs mb-3" role="tablist">
-        <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="file-backups-tab" data-bs-toggle="tab" data-bs-target="#file-backups-pane" type="button" role="tab" aria-controls="file-backups-pane" aria-selected="true">
-                <i class="ti ti-file-zip"></i>&nbsp;File Backups
-            </button>
-        </li>
-        <li class="nav-item" role="presentation">
-            <button class="nav-link" id="db-backups-tab" data-bs-toggle="tab" data-bs-target="#db-backups-pane" type="button" role="tab" aria-controls="db-backups-pane" aria-selected="false">
-                <i class="ti ti-database"></i>&nbsp;DB Objects
-            </button>
-        </li>
-    </ul>
-
-    <div class="tab-content">
-        <div class="tab-pane fade show active" id="file-backups-pane" role="tabpanel" aria-labelledby="file-backups-tab" tabindex="0">
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title" id="cleanup-files-title"><i class="ti ti-file-zip"></i>&nbsp;File Backups</h2>
-                </div>
-                <div class="csm-toolbar">
-                    <input type="text" id="cleanup-files-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search file backups..." aria-label="Search file backups">
-                    <span class="csm-toolbar__spacer"></span>
-                    <div class="csm-toolbar__actions">
-                        <button class="btn btn-warning btn-sm d-none" id="cleanup-files-restore-btn"><i class="ti ti-restore"></i>&nbsp;Restore Selected</button>
-                        <button class="btn btn-danger btn-sm d-none" id="cleanup-files-delete-btn"><i class="ti ti-trash"></i>&nbsp;Delete Selected</button>
-                    </div>
-                </div>
-                <div id="cleanup-files-content">
-                    <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                </div>
-            </div>
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title" id="cleanup-db-title"><i class="ti ti-database"></i>&nbsp;DB Object Backups</h2>
         </div>
-
-        <div class="tab-pane fade" id="db-backups-pane" role="tabpanel" aria-labelledby="db-backups-tab" tabindex="0">
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title" id="cleanup-db-title"><i class="ti ti-database"></i>&nbsp;DB Object Backups</h2>
-                </div>
-                <div class="csm-toolbar">
-                    <input type="text" id="cleanup-db-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search DB backups..." aria-label="Search DB backups">
-                </div>
-                <div id="cleanup-db-content">
-                    <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                </div>
-            </div>
+        <div class="csm-toolbar">
+            <input type="text" id="cleanup-db-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search DB backups..." aria-label="Search DB backups">
+        </div>
+        <div id="cleanup-db-content">
+            <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
         </div>
     </div>
 {{end}}

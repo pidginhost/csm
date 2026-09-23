@@ -489,13 +489,22 @@ CSM.bulk = function(opts) {
             var b = buttons[i];
             if (!b || !b.el) continue;
             if (b.labelTemplate) {
-                b.el.textContent = b.labelTemplate.replace(/\{n\}/g, n);
+                setButtonLabel(b.el, b.labelTemplate.replace(/\{n\}/g, n));
             }
             b.el.disabled = (n === 0);
             b.el.classList.toggle('d-none', n === 0);
         }
         var values = sel.map(function(cb) { return cb.getAttribute(valueAttr); });
         changeCb(n, values);
+    }
+
+    // setButtonLabel writes the count into a button and keeps its icon.
+    function setButtonLabel(btn, text) {
+        var icon = btn.querySelector('i.ti');
+        btn.textContent = text;
+        if (!icon) return;
+        icon.classList.add('me-1');
+        btn.insertBefore(icon, btn.firstChild);
     }
 
     function bindRowListeners() {
