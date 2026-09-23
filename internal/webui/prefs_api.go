@@ -276,7 +276,7 @@ func (s *Server) handleListSavedViews(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, v)
 	}
-	writeJSON(w, out)
+	writeAll(w, out)
 }
 
 func (s *Server) handlePutSavedView(w http.ResponseWriter, r *http.Request) {

@@ -3,7 +3,7 @@
 // finding groups, incidents and the command palette now link to it.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 function finding(check, message, account) {
     return {
@@ -15,7 +15,7 @@ function finding(check, message, account) {
 async function findingsPage() {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
     page.respond('/api/v1/findings/enriched', 200, {
-        findings: [
+        items: [
             finding('webshell', 'shell in /home/alice/a.php', 'alice'),
             finding('perf_load', 'load high', '')
         ],
@@ -79,7 +79,7 @@ test('Threat Intel links the accounts an address targeted', async () => {
         ip: '203.0.113.9', verdict: 'malicious', unified_score: 90, local_score: 90, abuse_score: -1,
         attack_record: { event_count: 3, accounts: { alice: 2, 'x<y': 1 }, attack_counts: {} }
     });
-    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, []);
+    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, items([]));
     await settle();
     const result = page.document.getElementById('tr-lookup-result');
     assert.ok(result.querySelector('a[href="/account?name=alice"]'), 'no link for a targeted account');
@@ -97,7 +97,7 @@ test('Threat Intel labels attack types from the server list', async () => {
         ip: '203.0.113.9', verdict: 'malicious', unified_score: 90, local_score: 90, abuse_score: -1,
         attack_record: { event_count: 3, attack_counts: { brute_force: 2, auth_success: 1 } }
     });
-    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, []);
+    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, items([]));
     await settle();
     const text = page.document.getElementById('tr-lookup-result').textContent;
     assert.match(text, /Brute Force: 2/);

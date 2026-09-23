@@ -80,14 +80,15 @@ function auditActorLabel(e) {
 }
 
 function loadAudit() {
-    CSM.get('/api/v1/audit').then(function(entries){
+    CSM.get('/api/v1/audit').then(function(data){
+        var entries = data.items;
         var el = document.getElementById('audit-content');
         var _auditFromInput = document.getElementById('audit-from');
         var _auditToInput = document.getElementById('audit-to');
         resetAuditTable();
         // Update card title with count
         var title = document.querySelector('.card-title');
-        if (title) title.innerHTML = '<i class="ti ti-clipboard-list"></i>&nbsp;Audit Log (' + (entries ? entries.length : 0) + ')';
+        if (title) title.innerHTML = '<i class="ti ti-clipboard-list"></i>&nbsp;Audit Log (' + entries.length + ')';
         if (!entries || entries.length === 0) {
             populateAuditActionFilter(entries);
             _auditURLUnbind = CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });

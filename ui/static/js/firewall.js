@@ -272,7 +272,8 @@ function loadStatus() {
 
 function loadSubnets() {
     CSM.get('/api/v1/firewall/subnets', {silent: true})
-        .then(function(subs) {
+        .then(function(data) {
+            var subs = data.items;
             var el = document.getElementById('subnet-content');
             resetFirewallTable('subnets', 'subnets-table-controls');
             if (!subs || subs.length === 0) {
@@ -354,7 +355,8 @@ function blockedTableStateKey() {
 
 function loadBlocked() {
     CSM.get('/api/v1/blocked-ips', {silent: true})
-        .then(function(ips) {
+        .then(function(data) {
+            var ips = data.items;
             var el = document.getElementById('blocked-content');
             resetFirewallTable('blocked', 'blocked-table-controls');
             if (!ips || ips.length === 0) {
@@ -540,7 +542,8 @@ function loadAllowed() {
 
 function loadWhitelist() {
     CSM.get('/api/v1/threat/whitelist', {silent: true})
-        .then(function(ips) {
+        .then(function(data) {
+            var ips = data.items;
             var el = document.getElementById('whitelist-content');
             resetFirewallTable('whitelist', 'whitelist-table-controls');
             if (!ips || ips.length === 0) {
@@ -583,7 +586,8 @@ function loadWhitelist() {
 
 function loadAudit() {
     CSM.get(currentAuditURL(), {silent: true})
-        .then(function(entries) {
+        .then(function(data) {
+            var entries = data.items;
             var el = document.getElementById('fw-audit-content');
             resetFirewallTable('audit', 'firewall-audit-table-controls');
             if (!entries || entries.length === 0) {

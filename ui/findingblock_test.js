@@ -14,7 +14,7 @@ function finding(check, message, blockIP) {
 
 async function openDetail(f) {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
-    page.respond('/api/v1/findings/enriched', 200, { findings: [f], check_types: [], accounts: [], total: 1 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [f], check_types: [], accounts: [], total: 1 });
     await settle();
     page.document.querySelector('.finding-row').querySelectorAll('td')[2].click();
     await settle();

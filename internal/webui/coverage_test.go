@@ -905,13 +905,8 @@ func TestAPIFindingsEmpty(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	// Empty findings serializes as `null` (because result is a nil slice).
-	// Also accept "[]" if the implementation ever switches to
-	// pre-allocating an empty slice.
-	if body != "null" && body != "[]" {
-		t.Errorf("body = %q, want null or []", body)
-	}
+	// Empty findings answer an empty, non-null items list with total 0.
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 func TestAPIFindingsWithStoreEntries(t *testing.T) {
@@ -930,9 +925,7 @@ func TestAPIFindingsWithStoreEntries(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var result []map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
-	}
+	decodeItems(t, w.Body.Bytes(), &result)
 	// auto_block should be filtered out; expect 2 results.
 	if len(result) != 2 {
 		t.Errorf("got %d findings, want 2 (auto_block filtered)", len(result))
@@ -1632,12 +1625,9 @@ func TestAPIEmailQuarantineListNoQuarantineConfigured(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.apiEmailQuarantineList(w, req)
 	if w.Code != http.StatusOK {
-		t.Errorf("code = %d, want 200 (empty array)", w.Code)
+		t.Errorf("code = %d, want 200 (empty items)", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if body != "[]" {
-		t.Errorf("body = %q, want []", body)
-	}
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 func TestAPIEmailQuarantineListMethodNotAllowed(t *testing.T) {

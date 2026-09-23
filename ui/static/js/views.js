@@ -28,7 +28,7 @@ CSM.savedViews = (function() {
             allowNonOK: true,
             silent: true
         }).then(function(r) {
-            return r && r.ok ? r.json() : [];
+            return r && r.ok ? r.json().then(function(data) { return data.items; }) : [];
         }).catch(function() { return []; });
     }
 

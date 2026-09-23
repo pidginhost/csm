@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 const chartStub = { Chart: function () { return { destroy() {}, update() {} }; } };
 
@@ -28,7 +28,7 @@ test('a whitelist action on Threat Intel still reaches the server', async () => 
     const page = threatPage();
     await settle();
     page.window.CSM.confirm = () => Promise.resolve();
-    page.respond('/api/v1/threat/top-attackers', 200, [{ ip: '203.0.113.9', event_count: 1, verdict: 'suspicious' }]);
+    page.respond('/api/v1/threat/top-attackers', 200, items([{ ip: '203.0.113.9', event_count: 1, verdict: 'suspicious' }]));
     await settle();
     page.document.querySelector('.quick-wl-btn[data-ip="203.0.113.9"]').click();
     await settle();
@@ -43,7 +43,7 @@ test('a Threat Intel lookup links to the Firewall view of the address', async ()
     await settle();
     page.respond('/api/v1/threat/ip?ip=203.0.113.9', 200,
         { ip: '203.0.113.9', verdict: 'clean', unified_score: 0, local_score: 0, abuse_score: -1 });
-    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, []);
+    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, items([]));
     await settle();
     const result = page.document.getElementById('tr-lookup-result');
     assert.ok(result.querySelector('a[href="/firewall?ip=203.0.113.9"]'), 'no Firewall link in the lookup result');

@@ -33,13 +33,10 @@ func TestAPIAccountsNoHome(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	// Expect JSON array or "null" (nil slice marshals to "null" in Go).
-	// On dev machines without /home, the function either returns [] or
-	// a list of directory entries. Both are valid.
-	if !strings.HasPrefix(body, "[") && body != "null" {
-		t.Errorf("body = %q, expected JSON array or null", body)
-	}
+	// Expect an items list, never null. On dev machines without /home, items
+	// is either [] or a list of directory entries. Both are valid.
+	var accounts []interface{}
+	decodeItems(t, w.Body.Bytes(), &accounts)
 }
 
 // ---------------------------------------------------------------------------

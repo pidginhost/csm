@@ -104,7 +104,7 @@ func (s *Server) apiEmailQuarantineList(w http.ResponseWriter, r *http.Request) 
 	}
 	quarantine := s.emailQuarantineHandle()
 	if quarantine == nil {
-		writeJSON(w, []emailav.QuarantineMetadata{})
+		writeAll(w, []emailav.QuarantineMetadata{})
 		return
 	}
 	msgs, err := quarantine.ListMessages()
@@ -112,10 +112,7 @@ func (s *Server) apiEmailQuarantineList(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "Failed to list quarantine", http.StatusInternalServerError)
 		return
 	}
-	if msgs == nil {
-		msgs = []emailav.QuarantineMetadata{}
-	}
-	writeJSON(w, msgs)
+	writeAll(w, msgs)
 }
 
 // apiEmailQuarantineAction handles GET, POST (release), and DELETE operations on

@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,9 +46,7 @@ func TestModSecBlocksExtendedFieldsPopulated(t *testing.T) {
 	}
 
 	var resp []modsecBlockView
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
-	}
+	decodeItems(t, w.Body.Bytes(), &resp)
 	if len(resp) != 2 {
 		t.Fatalf("got %d block rows, want 2 (one per IP+rule)", len(resp))
 	}
@@ -133,9 +130,7 @@ func TestModSecBlocksLegacyFieldsUnchanged(t *testing.T) {
 	s.apiModSecBlocks(w, httptest.NewRequest("GET", "/", nil))
 
 	var raw []map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &raw)
 	if len(raw) != 1 {
 		t.Fatalf("rows = %d, want 1", len(raw))
 	}
@@ -179,9 +174,7 @@ func TestModSecEventsReturnsNewestFirst(t *testing.T) {
 	}
 
 	var resp []modsecEventView
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
-	}
+	decodeItems(t, w.Body.Bytes(), &resp)
 	if len(resp) != 2 {
 		t.Fatalf("events = %d, want 2: %+v", len(resp), resp)
 	}
@@ -208,9 +201,7 @@ func TestModSecEventsExposeISOTimestamp(t *testing.T) {
 	}
 
 	var resp []modsecEventView
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
-	}
+	decodeItems(t, w.Body.Bytes(), &resp)
 	if len(resp) != 1 {
 		t.Fatalf("events = %d, want 1", len(resp))
 	}
@@ -298,9 +289,7 @@ func TestModSecBlocksMarksEscalatedAddresses(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.apiModSecBlocks(w, httptest.NewRequest("GET", "/", nil))
 	var rows []modsecBlockView
-	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &rows)
 	escalated := map[string]int{}
 	plain := map[string]int{}
 	for _, r := range rows {

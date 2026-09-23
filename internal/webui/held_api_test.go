@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,9 +47,7 @@ func TestApiEmailHeldListSerialization(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var got []quarantine.HeldMessage
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	if len(got) != 1 || got[0].Forwarder != "sales@shop.example" || got[0].Recipient != "owner@yahoo.com" {
 		t.Errorf("held list = %+v", got)
 	}
@@ -61,9 +58,10 @@ func TestApiEmailHeldListEmptyWhenNoStore(t *testing.T) {
 	s.forwardHeld = nil
 	w := httptest.NewRecorder()
 	s.apiEmailHeldList(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/held", nil))
-	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
-		t.Errorf("want empty array, got %d %q", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 with empty items, got %d %q", w.Code, w.Body.String())
 	}
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 func TestApiEmailHeldRelease(t *testing.T) {

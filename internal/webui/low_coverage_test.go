@@ -207,10 +207,8 @@ func TestAPIEmailQuarantineListWithQuarantine(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// Should return empty array since quarantine dir has no messages
-	if w.Body.String() != "[]" && !strings.HasPrefix(w.Body.String(), "[") {
-		t.Errorf("expected JSON array, got: %s", w.Body.String())
-	}
+	// Should return empty items since quarantine dir has no messages
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 func TestAPIEmailQuarantineActionMissingMsgID(t *testing.T) {
@@ -559,9 +557,7 @@ func TestAPIFirewallAuditWithActionFilter(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var result []json.RawMessage
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &result)
 	if len(result) != 1 {
 		t.Errorf("filtered count = %d, want 1", len(result))
 	}
@@ -1232,9 +1228,7 @@ func TestAPIModSecBlocksWithFindings(t *testing.T) {
 	}
 	// Should return valid JSON array
 	var result []modsecBlockView
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &result)
 }
 
 func TestAPIModSecEventsWithLimit(t *testing.T) {
@@ -1268,9 +1262,7 @@ func TestAPIModSecEventsWithLimit(t *testing.T) {
 	}
 
 	var result []modsecEventView
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &result)
 	if len(result) > 1 {
 		t.Errorf("events count = %d, want <= 1", len(result))
 	}

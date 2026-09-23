@@ -10,10 +10,11 @@ import (
 )
 
 type relayAbuseResponse struct {
-	Entries   []relayAbuseEntry `json:"entries"`
+	Entries   []relayAbuseEntry `json:"items"`
+	Total     int               `json:"total"`
+	Limit     int               `json:"limit"`
 	From      string            `json:"from"`
 	To        string            `json:"to"`
-	Matched   int               `json:"matched"`
 	Truncated bool              `json:"truncated"`
 }
 
@@ -89,6 +90,7 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbuseResponse {
 	resp := relayAbuseResponse{
 		Entries: []relayAbuseEntry{},
+		Limit:   limit,
 		From:    from.UTC().Format(time.RFC3339),
 		To:      to.UTC().Format(time.RFC3339),
 	}
@@ -106,7 +108,7 @@ func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbu
 		rows = rows[:emailGroupsScanCap]
 		resp.Truncated = true
 	}
-	resp.Matched = len(rows)
+	resp.Total = len(rows)
 
 	sort.SliceStable(rows, func(i, j int) bool {
 		if !rows[i].Timestamp.Equal(rows[j].Timestamp) {

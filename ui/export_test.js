@@ -37,7 +37,7 @@ test('incident CSV export neutralises formula cells', async () => {
         url: 'https://csm.example.test/incident?ip=203.0.113.9',
         globals: { URL: capturingURL(blobs) }
     });
-    page.respond('/api/v1/incident?', 200, { events: [{
+    page.respond('/api/v1/incident?', 200, { items: [{
         timestamp: '2026-09-23T00:00:00Z', severity: 2, type: 'finding',
         summary: '=HYPERLINK("http://203.0.113.9/x","open")', details: '@SUM(1+1)'
     }] });

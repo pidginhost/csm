@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle, RUNTIME } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle, RUNTIME } = require('./pagekit.js');
 
 function zone(tz) {
     return { 'csm-prefs': JSON.stringify({ timezone: tz }) };
@@ -154,10 +154,10 @@ test('quarantine date filters use days in the operator zone', async () => {
         url: 'https://csm.example.test/quarantine?from=2026-09-23&to=2026-09-23'
     });
     const item = (id, at) => ({ id, original_path: '/home/alice/public_html/' + id + '.php', size: 1, quarantined_at: at, reason: 'webshell: test' });
-    page.respond('/api/v1/quarantine', 200, [
+    page.respond('/api/v1/quarantine', 200, items([
         item('inside', '2026-09-22T12:00:00Z'),  // 00:45 on the 23rd in Chatham
         item('outside', '2026-09-23T12:00:00Z')  // 00:45 on the 24th in Chatham
-    ]);
+    ]));
     await settle();
     const visible = page.document.querySelectorAll('#quarantine-table tbody tr')
         .filter(r => r.style.display !== 'none' && r.getAttribute('data-path'))

@@ -53,7 +53,8 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 		missing = append(missing, "reload_command")
 	}
 	if len(missing) > 0 {
-		writeJSON(w, map[string]interface{}{
+		writeItems(w, []struct{}{}, map[string]interface{}{
+			"total":      0,
 			"configured": false,
 			"missing":    missing,
 		})
@@ -126,8 +127,7 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"rules":      rules,
+	writeItems(w, rules, map[string]interface{}{
 		"total":      len(rules),
 		"active":     active,
 		"disabled":   disabledIDs,
@@ -232,7 +232,7 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 			ids = append(ids, id)
 		}
 		sort.Ints(ids)
-		writeJSON(w, map[string]interface{}{"rules": ids})
+		writeAll(w, ids)
 		return
 	}
 	var req struct {

@@ -27,7 +27,7 @@ func TestWPVerificationSummaryAccountAttribution(t *testing.T) {
 				w := httptest.NewRecorder()
 				s.apiFindingsEnriched(w, httptest.NewRequest(http.MethodGet, "/api/findings/enriched", nil))
 				var data struct {
-					Findings []enrichedFinding `json:"findings"`
+					Findings []enrichedFinding `json:"items"`
 				}
 				if w.Code != http.StatusOK {
 					t.Fatalf("status = %d", w.Code)

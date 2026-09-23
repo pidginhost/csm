@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -72,9 +71,7 @@ func decodeComponentRows(t *testing.T, s *Server) []componentRow {
 		t.Fatalf("status %d", w.Code)
 	}
 	var rows []componentRow
-	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &rows)
 	return rows
 }
 
@@ -231,13 +228,13 @@ func TestAPIComponents_StaleLatestFindingDoesNotAttributeToWatcher(t *testing.T)
 	}
 }
 
-func TestAPIComponents_NoProviderReturnsEmptyArray(t *testing.T) {
+func TestAPIComponents_NoProviderReturnsEmptyItems(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.provider = nil
 
 	rows := decodeComponentRows(t, s)
 	if len(rows) != 0 {
-		t.Errorf("expected empty array, got %+v", rows)
+		t.Errorf("expected empty items, got %+v", rows)
 	}
 }
 

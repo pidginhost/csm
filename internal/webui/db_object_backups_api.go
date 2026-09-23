@@ -46,7 +46,7 @@ const dbObjectBackupPreviewBytes = 8 * 1024
 func (s *Server) apiDBObjectBackups(w http.ResponseWriter, _ *http.Request) {
 	sdb := store.Global()
 	if sdb == nil {
-		writeJSON(w, []dbObjectBackupEntry{})
+		writeAll(w, []dbObjectBackupEntry{})
 		return
 	}
 	records, keys, err := sdb.ListDBObjectBackupsAll()
@@ -79,7 +79,7 @@ func (s *Server) apiDBObjectBackups(w http.ResponseWriter, _ *http.Request) {
 	// reversed. Doing it in Go keeps the contract explicit.
 	sortDBObjectBackupsNewestFirst(out)
 
-	writeJSON(w, out)
+	writeAll(w, out)
 }
 
 // apiDBObjectBackupPreview returns a bounded CREATE SQL preview for one

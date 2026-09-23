@@ -353,8 +353,8 @@
 
     function loadBlocked() {
         CSM.get('/api/v1/modsec/blocks' + modsecQuery())
-            .then(function(blocks) {
-                _modsecBlocks = blocks || [];
+            .then(function(data) {
+                _modsecBlocks = data.items;
                 populateCountryFilter('modsec-country-filter', _modsecBlocks);
                 renderActiveWAFPressure(_modsecBlocks);
                 renderSideSummaries(_modsecBlocks);
@@ -463,7 +463,7 @@
                                     throw new Error('ModSecurity rule management is not configured');
                                 }
                                 var disabledSet = Object.create(null);
-                                (data.rules || []).forEach(function(rule) {
+                                data.items.forEach(function(rule) {
                                     var id = modsecRuleID(rule.id);
                                     if (id !== null && rule.enabled === false) disabledSet[id] = true;
                                 });
@@ -500,8 +500,8 @@
         if (eventsLoaded) return;
         eventsLoaded = true;
         CSM.get('/api/v1/modsec/events' + modsecQuery() + '&limit=100')
-            .then(function(events) {
-                _modsecEvents = events || [];
+            .then(function(data) {
+                _modsecEvents = data.items;
                 populateCountryFilter('events-country-filter', _modsecEvents);
                 _strip.latest = _modsecEvents.length > 0 ? _modsecEvents[0].time : '';
                 refreshStatusStrip();

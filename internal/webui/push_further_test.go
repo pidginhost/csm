@@ -571,7 +571,7 @@ func TestAPIIncidentIncludesAuditActions(t *testing.T) {
 		Events []struct {
 			Type   string `json:"type"`
 			Source string `json:"source"`
-		} `json:"events"`
+		} `json:"items"`
 		Total int `json:"total"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

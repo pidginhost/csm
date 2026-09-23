@@ -158,8 +158,8 @@
         if (kind) qs += '&kind=' + encodeURIComponent(kind);
         CSM.get('/api/v1/incidents/groups?' + qs)
             .then(function(data) {
-                groupedPageTotal = (data && typeof data.total_groups === 'number') ? data.total_groups : 0;
-                groupedPageReturned = (data && Array.isArray(data.groups)) ? data.groups.length : 0;
+                groupedPageTotal = data.total;
+                groupedPageReturned = data.items.length;
                 if (groupedPageTotal > 0 && groupedPageReturned === 0 && groupedPageOffset >= groupedPageTotal) {
                     groupedPageOffset = lastGroupedPageOffset();
                     loadGroups();
@@ -198,7 +198,7 @@
 
     function renderGroups(data, content, footer) {
         content.replaceChildren();
-        var groups = (data && data.groups) || [];
+        var groups = data.items;
         if (groups.length === 0) {
             var empty = document.createElement('div');
             empty.className = 'csm-empty';
@@ -234,7 +234,7 @@
             content.appendChild(item);
         }
         if (footer) {
-            var summary = data.total_groups + ' group' + (data.total_groups === 1 ? '' : 's')
+            var summary = data.total + ' group' + (data.total === 1 ? '' : 's')
                 + ' from ' + data.scanned_incidents + ' incident' + (data.scanned_incidents === 1 ? '' : 's');
             if (data.truncated) summary += ' (scan capped)';
             footer.textContent = summary;
@@ -329,18 +329,9 @@
         params += '&status=' + encodeURIComponent(statusParam);
         CSM.get('/api/v1/incidents?' + params)
             .then(function(data) {
-                if (data && Array.isArray(data.items)) {
-                    incidents = data.items;
-                    pageTotal = typeof data.total === 'number' ? data.total : data.items.length;
-                    pageOffset = typeof data.offset === 'number' ? data.offset : pageOffset;
-                } else if (Array.isArray(data)) {
-                    incidents = data;
-                    pageTotal = data.length;
-                    pageOffset = 0;
-                } else {
-                    incidents = [];
-                    pageTotal = 0;
-                }
+                incidents = data.items;
+                pageTotal = data.total;
+                pageOffset = data.offset;
                 if (pageTotal > 0 && incidents.length === 0 && pageOffset >= pageTotal) {
                     pageOffset = lastPageOffset();
                     selectedID = '';
@@ -694,7 +685,7 @@
 
     function renderTimeline(data) {
         var container = document.getElementById('incident-content');
-        var events = data.events || [];
+        var events = data.items;
         if (events.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No events found for this query.</div>';
             return;

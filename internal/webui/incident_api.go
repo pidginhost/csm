@@ -92,7 +92,15 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	// Search newest-first and stop once the timeline has enough matching
 	// history rows. Busy hosts can retain large 30-day windows, so response
 	// size alone is not a safe bound for the read path.
-	allHistory := s.store.SearchHistorySince(cutoff, incidentTimelineEventLimit, matchesHistoryQuery)
+	allHistory := s.store.SearchHistorySince(cutoff, incidentTimelineEventLimit+1, matchesHistoryQuery)
+	historyCapped := len(allHistory) > incidentTimelineEventLimit
+	if historyCapped {
+		// The extra row only tells that more exist; forget it so an
+		// incident event it duplicates is still listed.
+		dropped := allHistory[incidentTimelineEventLimit]
+		delete(dedup, dedupKey(dropped.Timestamp, dropped.Check+": "+dropped.Message))
+		allHistory = allHistory[:incidentTimelineEventLimit]
+	}
 	for _, f := range allHistory {
 		summary := f.Check + ": " + f.Message
 		events = append(events, timelineEvent{
@@ -111,10 +119,10 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	// incident object still carries the full timeline. Walk every
 	// incident, match by RemoteIP for IP queries or by Account / Mailbox /
 	// Domain for account queries, and emit each matching timeline event.
-	truncated := false
+	truncated := historyCapped
 	if s.incidentCorrelator != nil {
 		snap, totalIncidents := s.incidentCorrelator.SnapshotPageStatuses(nil, 0, incidentSnapshotScanCap)
-		truncated = totalIncidents > len(snap)
+		truncated = truncated || totalIncidents > len(snap)
 		for _, inc := range snap {
 			incMatches := incidentMatchesAccount(inc, account)
 			for _, ev := range inc.Timeline {
@@ -186,7 +194,8 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		return events[i].Timestamp > events[j].Timestamp
 	})
 
-	if len(events) > incidentTimelineEventLimit {
+	total := len(events)
+	if total > incidentTimelineEventLimit {
 		events = events[:incidentTimelineEventLimit]
 		truncated = true
 	}
@@ -194,9 +203,8 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		w.Header().Set("X-CSM-Truncated", "1")
 	}
-	writeJSON(w, map[string]interface{}{
-		"events":        events,
-		"total":         len(events),
+	writeItems(w, events, map[string]interface{}{
+		"total":         total,
 		"query_ip":      ip,
 		"query_account": account,
 		"hours":         hours,
@@ -225,17 +233,10 @@ const maxIncidentPageSize = 500
 // limit. Tuned to fit comfortably on one screen.
 const defaultIncidentPageSize = 50
 
-// apiIncidentList serves GET /api/v1/incidents.
-//
-// Default (no query parameters): returns the full Snapshot as a bare
-// JSON array, preserving the wire shape the existing API consumers
-// (phpanel, SIEM tooling) decode against.
-//
-// When the client passes any of ?limit=, ?offset=, ?status=, the
-// response switches to an envelope: {"items":[...], "total":N,
-// "offset":N, "limit":N, "status":"..."}. Servers that pass the
-// envelope must always include all five fields so the client can
-// render an accurate page header without a second probe.
+// apiIncidentList serves GET /api/v1/incidents as one page:
+// {"items":[...], "total":N, "offset":N, "limit":N, "status":"..."}.
+// limit defaults to defaultIncidentPageSize; total counts every incident
+// the status filter matches, so a client pages on through offset.
 //
 // status accepts the four spec values (open/contained/resolved/dismissed)
 // plus the UI-only convenience "active" that means
@@ -243,20 +244,7 @@ const defaultIncidentPageSize = 50
 // rejected with 400 Bad Request rather than silently widening to all,
 // which would hide a typo like ?status=opn.
 func (s *Server) apiIncidentList(w http.ResponseWriter, r *http.Request) {
-	if s.incidentCorrelator == nil {
-		writeJSON(w, []incident.Incident{})
-		return
-	}
-
-	q := r.URL.Query()
-	hasPagingParams := q.Has("limit") || q.Has("offset") || q.Has("status")
-
-	if !hasPagingParams {
-		writeJSON(w, s.incidentCorrelator.Snapshot())
-		return
-	}
-
-	statusParam := q.Get("status")
+	statusParam := r.URL.Query().Get("status")
 	statuses, err := parseIncidentStatusFilter(statusParam)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
@@ -275,9 +263,12 @@ func (s *Server) apiIncidentList(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 
-	items, total := s.incidentPage(statuses, offset, limit)
-	writeJSON(w, map[string]any{
-		"items":  items,
+	var items []incident.Incident
+	total := 0
+	if s.incidentCorrelator != nil {
+		items, total = s.incidentPage(statuses, offset, limit)
+	}
+	writeItems(w, items, map[string]any{
 		"total":  total,
 		"offset": offset,
 		"limit":  limit,

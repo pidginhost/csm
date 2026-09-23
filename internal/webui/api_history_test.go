@@ -171,7 +171,7 @@ func TestAPIHistoryEmitsStructuredAccountAndIP(t *testing.T) {
 			Check   string `json:"check"`
 			Account string `json:"account"`
 			IP      string `json:"ip"`
-		} `json:"findings"`
+		} `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -299,7 +299,7 @@ func TestAPIHistoryFilteredOffsetPastEnd(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	findings := resp["findings"]
+	findings := resp["items"]
 	if findings != nil {
 		arr, ok := findings.([]interface{})
 		if ok && len(arr) > 0 {
@@ -348,7 +348,7 @@ func TestAPIHistoryChecksDateFilterFindsRowsOlderThanOldScanCap(t *testing.T) {
 		t.Fatalf("X-CSM-Truncated = %q, want unset for exact store-filtered results", got)
 	}
 	var resp struct {
-		Findings  []alert.Finding `json:"findings"`
+		Findings  []alert.Finding `json:"items"`
 		Total     int             `json:"total"`
 		Truncated bool            `json:"truncated"`
 	}
@@ -395,7 +395,7 @@ func TestAPIHistoryDateFilterFindsRowsOlderThanScanCap(t *testing.T) {
 		t.Fatalf("X-CSM-Truncated = %q, want unset for exact store-filtered results", got)
 	}
 	var resp struct {
-		Findings  []alert.Finding `json:"findings"`
+		Findings  []alert.Finding `json:"items"`
 		Total     int             `json:"total"`
 		Truncated bool            `json:"truncated"`
 	}
@@ -429,9 +429,7 @@ func TestAPIBlockedIPsReadsEngineStateNotStore(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	ips := map[string]bool{}
 	for _, e := range data {
 		if ip, ok := e["ip"].(string); ok {

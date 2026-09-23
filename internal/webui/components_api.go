@@ -154,7 +154,7 @@ var componentCheckOrigin = map[string]string{
 func (s *Server) apiComponents(w http.ResponseWriter, _ *http.Request) {
 	cp, _ := s.provider.(componentsProvider)
 	if cp == nil {
-		writeJSON(w, []componentRow{})
+		writeAll(w, []componentRow{})
 		return
 	}
 
@@ -203,7 +203,7 @@ func (s *Server) apiComponents(w http.ResponseWriter, _ *http.Request) {
 		return rows[i].Label < rows[j].Label
 	})
 
-	writeJSON(w, rows)
+	writeAll(w, rows)
 }
 
 type watcherEvent struct {

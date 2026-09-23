@@ -23,7 +23,7 @@ the same management operations as these admin-only endpoints:
 
 | Method | Path | Result |
 | --- | --- | --- |
-| GET | `/api/v1/sessions` | `sessions` array with `id`, `name`, `created`, `last_seen`, `expires`, `remote_ip`, `user_agent`, `current` |
+| GET | `/api/v1/sessions` | `items` list of sessions with `id`, `name`, `created`, `last_seen`, `expires`, `remote_ip`, `user_agent`, `current` |
 | DELETE | `/api/v1/sessions/<id>` | Revoke that session; unknown IDs are an idempotent success |
 | DELETE | `/api/v1/sessions` | Revoke all browser sessions, including the caller's |
 
@@ -50,6 +50,27 @@ webui:
 ```
 
 The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
+
+## Lists
+
+Every GET route that returns a list answers a JSON object, never a bare
+array. The list is under `items`, and an empty list is `[]`, never null.
+
+- `total` is the number of matches the server counted. It is larger than
+  the length of `items` when the route pages or cuts the list.
+- `offset` and `limit` come with routes that page or cap the list.
+- `truncated` is true when matches were left out: past the page, past the
+  limit, or past a scan cap. When a scan cap stopped the count, `total`
+  counts only what was scanned.
+- Other keys next to `items` describe the whole list, such as
+  `check_types` on `/findings/enriched` or `summary` on `/email/forwarders`.
+
+`/audit`, `/threat/top-attackers` and `/threat/events` do not count every
+match. They send `limit` and `truncated` without `total`.
+
+```json
+{"items": [{"ip": "203.0.113.9", "reason": "wp_login_bruteforce"}], "total": 1}
+```
 
 ## Status & Data
 
@@ -90,7 +111,8 @@ GET  /api/v1/health              Daemon health (fanotify, watchers, engines)
 GET  /api/v1/findings            Current active findings
 GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info, and a list version.
                                  ?limit=N orders by severity, then newest, even when all rows fit;
-                                 returns at most N rows, while counts cover all.
+                                 returns at most N rows with limit and truncated, while total and
+                                 the severity counts cover all.
                                  ?fields=version returns only {version, total}, for change polling.
                                  block_ip is set only for checks that report an attacker address,
                                  the same evidence auto-block acts on
@@ -108,7 +130,7 @@ GET  /api/v1/db-object-backup-preview Preview captured CREATE SQL (?key=)
 GET  /api/v1/blocked-ips         Blocked IPs with reason and expiry
 GET  /api/v1/accounts            Accounts a server-wide scan covers
 GET  /api/v1/account             Per-account findings, quarantine, history (?name=)
-GET  /api/v1/audit               UI audit log; each entry names the credential that acted (actor) and whether it came as an API token or a browser login (via)
+GET  /api/v1/audit               Newest 200 UI audit log entries; truncated marks older ones. Each entry names the credential that acted (actor) and whether it came as an API token or a browser login (via)
 GET  /api/v1/export              Export state (suppressions, whitelist)
 GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
 GET  /api/v1/performance         Performance metrics snapshot (admin scope)
@@ -1097,14 +1119,17 @@ prefs encode as empty strings; the UI applies `comfortable`, `local`, and
 Response shape for `GET /api/v1/prefs/views`:
 
 ```json
-[
-  {
-    "name": "Critical SSH",
-    "page": "findings",
-    "params": { "severity": "critical", "check": "smtp_bruteforce" },
-    "updated": 1779743255
-  }
-]
+{
+  "items": [
+    {
+      "name": "Critical SSH",
+      "page": "findings",
+      "params": { "severity": "critical", "check": "smtp_bruteforce" },
+      "updated": 1779743255
+    }
+  ],
+  "total": 1
+}
 ```
 
 Saved views are operator-scoped and capped at 200 per operator. The saved
@@ -1183,12 +1208,14 @@ Fields are omitted when the daemon could not attribute them. Orchestrators shoul
 
 ## Incidents
 
-`GET /api/v1/incidents/groups` is a read-scope rollup of active incidents by kind and source. It accepts `status=active|all|open|contained|resolved|dismissed`, `kind`, and `limit`, allowing a credential spray to render as one row per attacker rather than one row per target.
+`GET /api/v1/incidents/groups` is a read-scope rollup of active incidents by kind and source. It accepts `status=active|all|open|contained|resolved|dismissed`, `kind`, `limit` and `offset`, allowing a credential spray to render as one row per attacker rather than one row per target. `total` counts the groups and `scanned_incidents` the incidents they came from; `truncated` is true when the scan cap left incidents out.
 
 ### `GET /api/v1/incidents`
 
-Returns every incident (open, contained, resolved, dismissed) sorted by
-`updated_at` descending.
+Returns one page of incidents sorted by `updated_at` descending, with
+`items`, `total`, `offset`, `limit` and `status`. `limit` defaults to 50
+and is at most 500. `status` filters by `open`, `contained`, `resolved`,
+`dismissed`, or `active` for open and contained; empty means all.
 
 ### `GET /api/v1/incidents/<id>`
 

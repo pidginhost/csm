@@ -1,7 +1,7 @@
 // Run with: node --test ui/threat_test.js
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 function autoObject() {
     return new Proxy({}, { get(t, k) { if (typeof k === 'symbol') return t[k]; if (!(k in t)) t[k] = autoObject(); return t[k]; } });
@@ -31,7 +31,7 @@ async function threatPage(rows, opts = {}) {
     page.window.CSM.toast = (message, kind) => { log.toasts.push({ message, kind }); };
     page.window.CSM.undo = { offer(entry) { log.undo.push(entry); } };
     page.respond('/api/v1/threat/stats', 200, {});
-    page.respond('/api/v1/threat/top-attackers', 200, rows || []);
+    page.respond('/api/v1/threat/top-attackers', 200, items(rows || []));
     await settle();
     return { page, log };
 }
@@ -57,7 +57,7 @@ async function lookup(intel) {
     page.respond('/api/v1/threat/ip?ip=203.0.113.9', 200, Object.assign({
         ip: '203.0.113.9', verdict: 'suspicious', unified_score: 40, local_score: 40, abuse_score: -1
     }, intel));
-    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, []);
+    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, items([]));
     await settle();
     return { html: page.document.getElementById('tr-lookup-result').innerHTML, CSM: page.window.CSM };
 }

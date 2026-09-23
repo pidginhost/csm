@@ -41,7 +41,7 @@ test('History pages through the shared pager', async () => {
         { url: 'https://csm.example.test/findings?tab=history' });
     page.document.querySelector('[href="#tab-history"]').dispatchEvent(new page.window.Event('shown.bs.tab'));
     await settle();
-    page.respond('/api/v1/history', 200, { findings: [{ severity: 1, check: 'x', message: 'm', timestamp: '2026-09-22T10:00:00Z' }], total: 120 });
+    page.respond('/api/v1/history', 200, { items: [{ severity: 1, check: 'x', message: 'm', timestamp: '2026-09-22T10:00:00Z' }], total: 120 });
     await settle();
     const footer = page.document.getElementById('history-pager');
     footer.querySelector('[data-pager="next"]').click();

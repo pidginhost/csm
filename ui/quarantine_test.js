@@ -5,7 +5,7 @@
 // points here.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 function file(id, extra) {
     return Object.assign({
@@ -17,7 +17,7 @@ function file(id, extra) {
 async function quarantinePage(files) {
     const page = loadPage(templateBody('quarantine'), SHARED.concat(['quarantine.js']));
     page.window.CSM.confirm = () => Promise.resolve();
-    page.respond('/api/v1/quarantine', 200, files);
+    page.respond('/api/v1/quarantine', 200, items(files));
     await settle();
     return page;
 }
@@ -67,7 +67,7 @@ test('Quarantine keeps a row restore from racing a batched delete', async () => 
     page.respond('/api/v1/quarantine/bulk-delete', 200, { count: 2 });
     await settle();
     assert.equal(page.document.querySelector('.restore-btn').disabled, true, 'unlocked before the list reloaded');
-    page.respond('/api/v1/quarantine', 200, [file('c')]);
+    page.respond('/api/v1/quarantine', 200, items([file('c')]));
     await settle();
     assert.equal(page.document.querySelector('.restore-btn').disabled, false);
 });
@@ -119,7 +119,7 @@ test('Quarantine bulk buttons show progress and keep their icons', async () => {
     assert.ok(del.querySelector('i.ti'), 'the busy label dropped the icon');
     page.respond('/api/v1/quarantine/bulk-delete', 200, { count: 1 });
     await settle();
-    page.respond('/api/v1/quarantine', 200, [file('b')]);
+    page.respond('/api/v1/quarantine', 200, items([file('b')]));
     await settle();
     assert.doesNotMatch(del.textContent, /Deleting/);
     assert.ok(del.querySelector('i.ti'));

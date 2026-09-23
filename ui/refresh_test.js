@@ -1,7 +1,7 @@
 // Run with: node --test ui/refresh_test.js
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle, RUNTIME } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle, RUNTIME } = require('./pagekit.js');
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const chartStub = function () { return { destroy() {}, update() {}, data: { datasets: [] }, options: {} }; };
@@ -119,13 +119,13 @@ test('the idle watcher list stays open across a dashboard refresh', async () => 
         { name: 'fanotify', label: 'File monitor', status: 'ok' },
         { name: 'modsec', label: 'ModSecurity', status: 'idle' }
     ];
-    page.respond('/api/v1/components', 200, rows);
+    page.respond('/api/v1/components', 200, items(rows));
     await settle();
     const details = page.document.querySelector('details.csm-idle-watchers');
     assert.ok(details, 'no idle watcher list');
     details.open = true;
     page.document.getElementById('components-refresh').click();
-    page.respond('/api/v1/components', 200, rows);
+    page.respond('/api/v1/components', 200, items(rows));
     await settle();
     assert.equal(page.document.querySelector('details.csm-idle-watchers').open, true, 'the list collapsed under the operator');
 });

@@ -32,7 +32,7 @@ test('a failed unban shows the server reason and no success', async () => {
 test('a fix that did not apply shows why and allows a retry', async () => {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
     const toasts = recordToasts(page);
-    page.respond('/api/v1/findings/enriched', 200, { findings: [{
+    page.respond('/api/v1/findings/enriched', 200, { items: [{
         key: 'webshell:x', severity: 'HIGH', check: 'webshell', message: 'x', has_fix: true,
         first_seen: '2026-09-22T10:00:00Z', last_seen: '2026-09-22T10:00:00Z'
     }], total: 1 });

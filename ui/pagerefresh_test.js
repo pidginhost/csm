@@ -5,7 +5,7 @@
 // A page with unsaved edits asks before Refresh discards them.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 const chart = function () { return { destroy() {}, update() {}, data: { datasets: [] }, options: {} }; };
 chart.defaults = { color: '', borderColor: '' };
@@ -19,7 +19,7 @@ async function answerAll(page, bodies) {
         for (const req of pending) {
             if (req.settled) continue;
             const hit = Object.keys(bodies || {}).find(k => req.url.includes(k));
-            page.respond(req.url, 200, hit ? bodies[hit] : {});
+            page.respond(req.url, 200, hit ? bodies[hit] : items([]));
         }
         await settle();
     }
@@ -55,7 +55,7 @@ const PAGES = [
     ['incident', ['incident.js'], '/api/v1/incidents?'],
     ['modsec-rules', ['modsec-rules.js'], '/api/v1/modsec/rules'],
     ['rules', ['rules.js'], '/api/v1/suppressions'],
-    ['threat', ['threat.js'], '/api/v1/threat/stats', { bodies: { '/api/v1/threat/top-attackers': [] } }],
+    ['threat', ['threat.js'], '/api/v1/threat/stats', { bodies: { '/api/v1/threat/top-attackers': items([]) } }],
     ['verified-bots', ['verified-bots.js'], '/api/v1/verified-bots'],
     ['settings', ['settings.js'], '/api/v1/settings/alerts', {
         bodies: {
@@ -74,8 +74,8 @@ for (const [name, scripts, endpoint, opts] of PAGES) {
 test('Refresh asks before discarding staged ModSecurity rule changes', async () => {
     const page = loadPage(templateBody('modsec-rules'), SHARED.concat(['modsec-rules.js']));
     await answerAll(page, {
-        '/api/v1/modsec/rules/escalation': { rules: [] },
-        '/api/v1/modsec/rules': { configured: true, total: 1, active: 1, rules: [
+        '/api/v1/modsec/rules/escalation': { items: [], total: 0 },
+        '/api/v1/modsec/rules': { configured: true, total: 1, active: 1, items: [
             { id: 900200, description: 'x', action: 'deny', status_code: 403, phase: 2, enabled: true, escalate: true }] }
     });
     const toggle = page.document.querySelector('.enable-toggle[data-id="900200"]');
@@ -94,7 +94,7 @@ test('Refresh asks before discarding staged ModSecurity rule changes', async () 
 
 test('Refresh asks before discarding unsaved verified bot edits', async () => {
     const page = loadPage(templateBody('verified-bots'), SHARED.concat(['verified-bots.js']));
-    await answerAll(page, { '/api/v1/verified-bots': { etag: 'e', bots: [{ name: 'examplebot', ua_substrings: ['examplebot'] }] } });
+    await answerAll(page, { '/api/v1/verified-bots': { etag: 'e', items: [{ name: 'examplebot', ua_substrings: ['examplebot'] }], total: 1 } });
     page.document.querySelector('.vb-name').value = 'renamed';
     const asked = [];
     page.window.CSM.confirm = (message, opts) => { asked.push({ message, opts }); return Promise.reject(null); };
@@ -122,7 +122,7 @@ test('a server-rendered page still reloads on Refresh', () => {
 
 test('edits made while verified bots are refreshing survive the response', async () => {
     const page = loadPage(templateBody('verified-bots'), SHARED.concat(['verified-bots.js']));
-    const body = { etag: 'e', bots: [{ name: 'examplebot', ua_substrings: ['examplebot'] }] };
+    const body = { etag: 'e', items: [{ name: 'examplebot', ua_substrings: ['examplebot'] }], total: 1 };
     await answerAll(page, { '/api/v1/verified-bots': body });
     page.window.CSM.refresh.manual();
     await settle();
@@ -134,7 +134,7 @@ test('edits made while verified bots are refreshing survive the response', async
 
 test('Refresh waits for a verified-bot save already in flight', async () => {
     const page = loadPage(templateBody('verified-bots'), SHARED.concat(['verified-bots.js']));
-    await answerAll(page, { '/api/v1/verified-bots': { etag: 'e', bots: [] } });
+    await answerAll(page, { '/api/v1/verified-bots': { etag: 'e', items: [], total: 0 } });
     page.document.getElementById('vbots-save').click();
     await settle();
     page.window.CSM.refresh.manual();

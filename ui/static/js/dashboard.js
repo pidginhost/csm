@@ -82,7 +82,7 @@
     function pollFindings() {
         CSM.get('/api/v1/history?limit=10&offset=0')
             .then(function(data) {
-                var findings = data.findings || [];
+                var findings = data.items;
                 var maxTs = lastNotifTimestamp;
                 for (var i = findings.length - 1; i >= 0; i--) {
                     var f = findings[i];
@@ -494,7 +494,8 @@
         if (!canvas) return;
 
         CSM.get('/api/v1/stats/timeline')
-            .then(function(hours) {
+            .then(function(data) {
+                var hours = data.items;
                 CSM.clearLoadError(canvas.parentElement);
                 if (!hours || !hours.length) return;
 
@@ -783,7 +784,8 @@
         if (title) title.textContent = days + '-Day Trend';
 
         CSM.get('/api/v1/stats/trend?days=' + days)
-            .then(function(rows) {
+            .then(function(data) {
+                var rows = data.items;
                 CSM.clearLoadError(canvas.parentElement);
                 if (!rows || !rows.length) return;
                 renderStatDeltas(rows);
@@ -1072,8 +1074,7 @@
             var findData = results[1];
             var statsData = results[2];
             var incidents = [];
-            if (incData && Array.isArray(incData.items)) incidents = incData.items;
-            else if (Array.isArray(incData)) incidents = incData;
+            if (incData) incidents = incData.items;
 
             // incidents is only the first page (limit=5) used to render the
             // queue. The subtitle count must be the true active-incident total
@@ -1081,12 +1082,7 @@
             // reads "5 active incidents" while hundreds are open or contained.
             var activeTotal = (incData && typeof incData.total === 'number') ? incData.total : incidents.length;
 
-            var findings = [];
-            if (findData && Array.isArray(findData.findings)) {
-                findings = findData.findings;
-            } else if (Array.isArray(findData)) {
-                findings = findData;
-            }
+            var findings = findData ? findData.items : [];
 
             // The subtitle is labelled "(24h)", so its critical/high counts must
             // come from /stats (genuinely 24h-windowed). The findings/enriched
@@ -1209,7 +1205,8 @@
         var el = document.getElementById('components-matrix');
         if (!el) return;
         CSM.get('/api/v1/components', { silent: true })
-            .then(function(rows) {
+            .then(function(data) {
+                var rows = data.items;
                 if (!rows || rows.length === 0) {
                     el.innerHTML = '<div class="csm-empty py-3"><div class="csm-empty__reason text-muted text-center">No watchers registered</div></div>';
                     return;

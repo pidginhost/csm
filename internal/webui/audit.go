@@ -219,11 +219,16 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/v1/audit - return UI audit log
+// uiAuditPageLimit is how many of the newest UI audit entries the API returns.
+const uiAuditPageLimit = 200
+
+// GET /api/v1/audit - return the newest UI audit log entries
 func (s *Server) apiUIAudit(w http.ResponseWriter, r *http.Request) {
-	entries := readUIAuditLog(s.cfg.StatePath, 200)
-	if entries == nil {
-		entries = []UIAuditEntry{}
+	// One entry past the limit tells whether older entries were left out.
+	entries := readUIAuditLog(s.cfg.StatePath, uiAuditPageLimit+1)
+	truncated := len(entries) > uiAuditPageLimit
+	if truncated {
+		entries = entries[:uiAuditPageLimit]
 	}
-	writeJSON(w, entries)
+	writeItems(w, entries, map[string]interface{}{"limit": uiAuditPageLimit, "truncated": truncated})
 }

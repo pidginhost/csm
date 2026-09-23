@@ -306,7 +306,7 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		w.Header().Set("X-CSM-Truncated", "1")
 	}
-	writeJSON(w, result)
+	writeItems(w, result, map[string]interface{}{"total": len(result), "truncated": truncated})
 }
 
 // apiModSecEvents returns the most recent individual ModSecurity events.
@@ -321,12 +321,14 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 	findings := deduplicateModSecFindings(s.modsecFindings(r))
 
 	result := make([]modsecEventView, 0, limit)
+	total := 0
 	for _, f := range findings {
 		if isModSecEscalation(f.Check) {
 			continue
 		}
+		total++
 		if len(result) >= limit {
-			break
+			continue
 		}
 		ip := extractModSecIP(f)
 		country, _ := s.modsecCountryOf(ip)
@@ -342,7 +344,7 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, result)
+	writeCapped(w, result, total, limit, nil)
 }
 
 // deduplicateModSecFindings merges Apache + LiteSpeed duplicate events.

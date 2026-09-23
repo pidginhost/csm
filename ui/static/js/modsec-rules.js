@@ -65,7 +65,7 @@ function loadRules(options) {
             }
 
             document.getElementById('modsec-rules-unconfigured').classList.add('d-none');
-            _rules = data.rules || [];
+            _rules = data.items;
             if (_escalationLoaded) {
                 _rules.forEach(function(rule) { rule.escalate = _noEscalate.indexOf(rule.id) < 0; });
             }
@@ -250,7 +250,7 @@ function loadEscalation(options) {
     updateEscalationControls();
     CSM.get('/api/v1/modsec/rules/escalation', options)
         .then(function(data) {
-            _noEscalate = ((data && data.rules) || []).slice().sort(function(a, b) { return a - b; });
+            _noEscalate = data.items.slice().sort(function(a, b) { return a - b; });
             _escalationLoaded = true;
             _rules.forEach(function(rule) {
                 rule.escalate = _noEscalate.indexOf(rule.id) < 0;

@@ -4,7 +4,7 @@
 // and its table forced them hidden, so the details could never be read.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle, jsonResponse } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle, jsonResponse } = require('./pagekit.js');
 
 async function answerAll(page, bodies) {
     for (let round = 0; round < 8; round++) {
@@ -13,7 +13,7 @@ async function answerAll(page, bodies) {
         for (const req of pending) {
             req.settled = true;
             const hit = Object.keys(bodies).find(k => req.url.includes(k));
-            req.resolve(jsonResponse(200, hit ? bodies[hit] : {}));
+            req.resolve(jsonResponse(200, hit ? bodies[hit] : items([])));
         }
         await settle();
     }
@@ -29,7 +29,7 @@ function shown(el) {
 
 async function emailPage() {
     const page = loadPage(templateBody('email'), SHARED.concat(['email.js']));
-    await answerAll(page, { '/api/v1/history?': { findings: [
+    await answerAll(page, { '/api/v1/history?': { items: [
         { severity: 2, check: 'email_phishing_content', account: 'alice', message: 'phish', details: 'Subject: urgent', timestamp: '2026-09-22T10:00:00Z' },
         { severity: 1, check: 'email_spam_outbreak', account: 'bob', message: 'spam', timestamp: '2026-09-22T09:00:00Z' }
     ], total: 2 } });

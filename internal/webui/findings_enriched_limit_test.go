@@ -11,7 +11,7 @@ import (
 )
 
 type enrichedResponse struct {
-	Findings      []enrichedFinding `json:"findings"`
+	Findings      []enrichedFinding `json:"items"`
 	Total         int               `json:"total"`
 	CriticalCount int               `json:"critical_count"`
 	Version       string            `json:"version"`

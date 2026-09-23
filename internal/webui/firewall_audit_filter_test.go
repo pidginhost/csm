@@ -45,9 +45,7 @@ func TestFirewallAuditTimestampsAreInstants(t *testing.T) {
 	var got []struct {
 		Timestamp string `json:"timestamp"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	if len(got) != 1 || got[0].Timestamp != "2026-09-23T00:00:00Z" {
 		t.Fatalf("timestamps = %+v, want RFC 3339 UTC", got)
 	}
@@ -78,9 +76,7 @@ func TestFirewallAuditSearchReachesOlderEntries(t *testing.T) {
 	var got []struct {
 		IP string `json:"ip"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	if len(got) != 1 || got[0].IP != "203.0.113.77" {
 		t.Fatalf("search returned %+v, want the older block", got)
 	}
@@ -89,9 +85,7 @@ func TestFirewallAuditSearchReachesOlderEntries(t *testing.T) {
 	w = httptest.NewRecorder()
 	s.apiFirewallAudit(w, httptest.NewRequest(http.MethodGet, "/api/v1/firewall/audit?limit=50", nil))
 	got = nil
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	if len(got) != 50 {
 		t.Fatalf("unfiltered page = %d entries, want 50", len(got))
 	}

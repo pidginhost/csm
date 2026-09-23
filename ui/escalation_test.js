@@ -4,11 +4,11 @@
 // list and the add form work in both states.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 const RULES = {
     configured: true, total: 2, active: 2,
-    rules: [
+    items: [
         { id: 900112, description: 'WP user enumeration', action: 'deny', status_code: 403, phase: 2, enabled: true, escalate: false },
         { id: 900200, description: 'Webshell upload', action: 'deny', status_code: 403, phase: 2, enabled: true, escalate: true }
     ]
@@ -18,7 +18,7 @@ async function modsecRules(rules, excluded) {
     const page = loadPage(templateBody('modsec-rules'), SHARED.concat(['modsec-rules.js']));
     page.window.CSM.confirm = () => Promise.resolve();
     await settle();
-    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: excluded });
+    page.respond('/api/v1/modsec/rules/escalation', 200, items(excluded));
     page.respond('/api/v1/modsec/rules', 200, rules);
     await settle();
     return page;
@@ -36,7 +36,7 @@ async function submitExclusion(page, id) {
 }
 
 test('exclusions are listed and editable without rule management configured', async () => {
-    const page = await modsecRules({ configured: false, missing: ['rules_file'] }, [900112]);
+    const page = await modsecRules({ configured: false, missing: ['rules_file'], items: [], total: 0 }, [900112]);
     assert.ok(!page.document.getElementById('escalation-card').classList.contains('d-none'));
     assert.deepEqual(listedIDs(page), [900112]);
     await submitExclusion(page, 900300);
@@ -48,7 +48,7 @@ test('exclusions are listed and editable without rule management configured', as
 });
 
 test('an exclusion outside the CSM range is refused before sending', async () => {
-    const page = await modsecRules({ configured: false, missing: ['rules_file'] }, []);
+    const page = await modsecRules({ configured: false, missing: ['rules_file'], items: [], total: 0 }, []);
     await submitExclusion(page, 123);
     assert.equal(page.pending('/api/v1/modsec/rules/escalation').length, 0);
 });
@@ -115,7 +115,7 @@ test('the rule table cannot erase an exclusion-list load failure', async () => {
 
 test('a delayed rules snapshot cannot undo an exclusion just saved', async () => {
     const page = loadPage(templateBody('modsec-rules'), SHARED.concat(['modsec-rules.js']));
-    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: [900112] });
+    page.respond('/api/v1/modsec/rules/escalation', 200, items([900112]));
     await settle();
     await submitExclusion(page, 900200);
     page.respond('/api/v1/modsec/rules/escalation', 200, { ok: true });
@@ -163,7 +163,7 @@ test('exclusion edits wait until the list finishes loading', async () => {
     await settle();
     await submitExclusion(page, 900200);
     assert.equal(page.pending('/api/v1/modsec/rules/escalation').filter(r => r.method === 'POST').length, 0);
-    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: [900112, 900200] });
+    page.respond('/api/v1/modsec/rules/escalation', 200, items([900112, 900200]));
     page.respond('/api/v1/modsec/rules', 200, RULES);
     await settle();
     assert.deepEqual(listedIDs(page), [900112, 900200]);
@@ -173,8 +173,8 @@ test('refreshing an unconfigured ruleset hides obsolete management controls', as
     const page = await modsecRules(RULES, [900112]);
     page.window.CSM.refresh.manual();
     await settle();
-    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: [900112] });
-    page.respond('/api/v1/modsec/rules', 200, { configured: false, missing: ['rules_file'] });
+    page.respond('/api/v1/modsec/rules/escalation', 200, items([900112]));
+    page.respond('/api/v1/modsec/rules', 200, { configured: false, missing: ['rules_file'], items: [], total: 0 });
     await settle();
     assert.ok(page.document.getElementById('modsec-rules-content').classList.contains('d-none'));
     assert.deepEqual(listedIDs(page), [900112]);
@@ -186,7 +186,7 @@ test('staged rule controls stay locked while Refresh replaces their snapshot', a
     await settle();
     assert.equal(page.document.querySelector('.enable-toggle').disabled, true);
     assert.equal(page.document.getElementById('btn-apply').disabled, true);
-    page.respond('/api/v1/modsec/rules/escalation', 200, { rules: [900112] });
+    page.respond('/api/v1/modsec/rules/escalation', 200, items([900112]));
     page.respond('/api/v1/modsec/rules', 200, RULES);
     await settle();
     assert.equal(page.document.querySelector('.enable-toggle').disabled, false);

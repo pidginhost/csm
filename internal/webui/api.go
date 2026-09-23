@@ -24,6 +24,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)
@@ -225,7 +226,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 			HasFix:    checks.HasFix(f.Check),
 		})
 	}
-	writeJSON(w, result)
+	writeAll(w, result)
 }
 
 // enrichedFinding is the JSON response type for the enriched findings endpoint.
@@ -376,22 +377,21 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(accounts)
 
-	total := len(items)
-	if limit := queryInt(r, "limit", 0); limit > 0 {
-		sortEnrichedBySeverity(items)
-		items = items[:min(limit, len(items))]
-	}
-
-	writeJSON(w, map[string]interface{}{
-		"findings":       items,
+	extra := map[string]interface{}{
 		"check_types":    checkTypes,
 		"accounts":       accounts,
 		"critical_count": critCount,
 		"high_count":     highCount,
 		"warning_count":  warnCount,
-		"total":          total,
 		"version":        version,
-	})
+	}
+	if limit := queryInt(r, "limit", 0); limit > 0 {
+		sortEnrichedBySeverity(items)
+		writeCapped(w, items, len(items), limit, extra)
+		return
+	}
+	extra["total"] = len(items)
+	writeItems(w, items, extra)
 }
 
 // sortEnrichedBySeverity orders findings most severe first, newest first
@@ -446,8 +446,7 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	findings, total := s.readHistoryPage(q, limit, offset)
-	writeJSON(w, map[string]interface{}{
-		"findings":  withAccountIP(findings),
+	writeItems(w, withAccountIP(findings), map[string]interface{}{
 		"total":     total,
 		"limit":     limit,
 		"offset":    offset,
@@ -732,7 +731,7 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 		return entries[i].quarantinedAt.After(entries[j].quarantinedAt)
 	})
 
-	writeJSON(w, entries)
+	writeAll(w, entries)
 }
 
 // apiStats returns severity counts and per-check breakdown for the last 24
@@ -808,15 +807,16 @@ func (s *Server) apiStatsTrend(w http.ResponseWriter, r *http.Request) {
 			days = n
 		}
 	}
-	writeJSON(w, s.store.AggregateByDayN(days))
+	writeAll(w, s.store.AggregateByDayN(days))
 }
 
 // apiStatsTimeline returns 24 hourly buckets for the findings timeline chart.
 // Uses efficient bbolt cursor seeking instead of loading all findings into memory.
 func (s *Server) apiStatsTimeline(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.timelineMemo.get(s.store.HistoryMark(), func() any {
+	buckets, _ := s.timelineMemo.get(s.store.HistoryMark(), func() any {
 		return s.store.AggregateByHour()
-	}))
+	}).([]store.HourBucket)
+	writeAll(w, buckets)
 }
 
 // apiHealth returns daemon health status.
@@ -1139,7 +1139,7 @@ func (s *Server) apiAccounts(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, "Could not list accounts", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, accounts)
+	writeAll(w, accounts)
 }
 
 // --- Action endpoints ---
@@ -1426,7 +1426,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 		// A present engine state file wins even when empty. blocked_ips.json
 		// is only a legacy fallback when the engine file does not exist.
 		if fwStatErr == nil || len(fwState.Blocked) > 0 {
-			writeJSON(w, result)
+			writeAll(w, result)
 			return
 		}
 	}
@@ -1436,7 +1436,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	// #nosec G304 -- filepath.Join under operator-configured StatePath.
 	data, err := os.ReadFile(stateFile)
 	if os.IsNotExist(err) {
-		writeJSON(w, result)
+		writeAll(w, result)
 		return
 	}
 	if err != nil {
@@ -1457,7 +1457,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 			result = append(result, view)
 		}
 	}
-	writeJSON(w, result)
+	writeAll(w, result)
 }
 
 // apiDismissFinding marks a finding as baseline (acknowledged/dismissed).
@@ -2023,6 +2023,40 @@ func writeJSONStatus(w http.ResponseWriter, code int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+// writeItems answers a collection: {"items": [...]} plus extra, which holds
+// "total" when the handler counted the matches, the paging keys and side
+// data. A nil list goes out as [] so an empty collection is never null.
+func writeItems[T any](w http.ResponseWriter, items []T, extra map[string]interface{}) {
+	if items == nil {
+		items = []T{}
+	}
+	body := make(map[string]interface{}, len(extra)+1)
+	for k, v := range extra {
+		body[k] = v
+	}
+	body["items"] = items
+	writeJSON(w, body)
+}
+
+// writeAll answers a collection that holds every match, with their count.
+func writeAll[T any](w http.ResponseWriter, items []T) {
+	writeItems(w, items, map[string]interface{}{"total": len(items)})
+}
+
+// writeCapped answers a collection cut to limit items out of total matches.
+func writeCapped[T any](w http.ResponseWriter, items []T, total, limit int, extra map[string]interface{}) {
+	if extra == nil {
+		extra = map[string]interface{}{}
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	extra["total"] = total
+	extra["limit"] = limit
+	extra["truncated"] = total > len(items)
+	writeItems(w, items, extra)
 }
 
 // writeOK answers a successful action: "ok": true plus the action's fields.

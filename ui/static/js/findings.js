@@ -62,7 +62,7 @@ function linkedFindingGone() {
 }
 
 function renderFindings(data) {
-    var findings = data.findings || [];
+    var findings = data.items;
     var checkTypes = data.check_types || [];
     var accounts = data.accounts || [];
     var total = data.total || 0;
@@ -723,9 +723,9 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
 });
 
 // Load account list for scan autocomplete dropdown
-CSM.get('/api/v1/accounts', { silent: true }).then(function(accounts) {
+CSM.get('/api/v1/accounts', { silent: true }).then(function(data) {
     var dl = document.getElementById('account-list');
-    (accounts||[]).forEach(function(a) {
+    data.items.forEach(function(a) {
         var opt = document.createElement('option');
         opt.value = a;
         dl.appendChild(opt);

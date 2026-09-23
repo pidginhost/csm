@@ -4,7 +4,7 @@
 // banner can be dismissed until the next outage.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 function key(page, target, k) {
     const ev = new page.window.Event('keydown', { bubbles: true, cancelable: true });
@@ -43,7 +43,7 @@ test('History names its details column and reports expanded rows', async () => {
         { url: 'https://csm.example.test/findings?tab=history' });
     page.document.querySelector('[href="#tab-history"]').dispatchEvent(new page.window.Event('shown.bs.tab'));
     await settle();
-    page.respond('/api/v1/history', 200, { findings: [
+    page.respond('/api/v1/history', 200, { items: [
         { severity: 2, check: 'webshell', message: 'shell', details: 'more', timestamp: '2026-09-22T10:00:00Z' }
     ], total: 1 });
     await settle();
@@ -106,7 +106,7 @@ test('Firewall deep links and programmatic switches keep the selected tab in syn
     }
     selected('allow');
     // Inspect on a blocked address switches to the Overview lookup.
-    page.respond('/api/v1/blocked-ips', 200, [{ ip: '192.0.2.1', reason: 'r', source: 'web_ui' }]);
+    page.respond('/api/v1/blocked-ips', 200, items([{ ip: '192.0.2.1', reason: 'r', source: 'web_ui' }]));
     await settle();
     page.document.querySelector('.fw-inspect-btn[data-ip="192.0.2.1"]').click();
     selected('overview');

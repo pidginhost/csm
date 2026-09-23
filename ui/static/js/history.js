@@ -63,8 +63,8 @@
         CSM.get(url)
             .then(function(data) {
                 if (seq !== loadSeq) return;
-                renderTable(data.findings || [], data.total || 0);
-                renderPager(data.total || 0, (data.findings || []).length);
+                renderTable(data.items, data.total);
+                renderPager(data.total, data.items.length);
             })
             .catch(function(err) {
                 if (seq !== loadSeq) return;

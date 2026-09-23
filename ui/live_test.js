@@ -107,7 +107,7 @@ function finding(check, message) {
 test('Findings offers the new list as soon as a finding arrives', async () => {
     const { streams, globals } = streamGlobals();
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']), { globals });
-    page.respond('/api/v1/findings/enriched', 200, { findings: [finding('webshell', 'a')], total: 1, version: 'v1' });
+    page.respond('/api/v1/findings/enriched', 200, { items: [finding('webshell', 'a')], total: 1, version: 'v1' });
     await settle();
     const s = connect(page, streams);
     send(s, { check: 'webshell', message: 'b' });

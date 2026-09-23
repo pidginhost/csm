@@ -60,7 +60,7 @@ func (s *Server) apiRulesList(w http.ResponseWriter, _ *http.Request) {
 	entries, err := os.ReadDir(rulesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			writeJSON(w, files)
+			writeAll(w, files)
 			return
 		}
 		writeJSONError(w, fmt.Sprintf("reading rules directory: %v", err), http.StatusInternalServerError)
@@ -96,7 +96,7 @@ func (s *Server) apiRulesList(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
-	writeJSON(w, files)
+	writeAll(w, files)
 }
 
 // POST /api/v1/rules/reload

@@ -150,4 +150,10 @@ function settle(rounds = 3) {
     return p;
 }
 
-module.exports = { loadPage, settle, jsonResponse, templateBody, SHARED, RUNTIME };
+// items builds a list response the way the API sends one: the list under
+// "items", with its count and any other keys the route adds.
+function items(list, extra) {
+    return Object.assign({ items: list, total: list.length }, extra || {});
+}
+
+module.exports = { loadPage, settle, jsonResponse, templateBody, items, SHARED, RUNTIME };

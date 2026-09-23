@@ -13,7 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/incident"
 )
 
-func TestIncidentAPIListReturnsJSONArray(t *testing.T) {
+func TestIncidentAPIListReturnsItems(t *testing.T) {
 	c := incident.NewCorrelator(incident.CorrelatorConfig{})
 	_, _, _ = c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()})
 
@@ -27,9 +27,7 @@ func TestIncidentAPIListReturnsJSONArray(t *testing.T) {
 		t.Fatalf("status: %d", w.Code)
 	}
 	var list []incident.Incident
-	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &list)
 	if len(list) != 1 {
 		t.Errorf("expected 1 incident, got %d", len(list))
 	}

@@ -59,10 +59,15 @@ func (s *Server) apiIncidentGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.incidentCorrelator == nil {
-		writeJSON(w, incident.GroupsResponse{Groups: []incident.Group{}})
-		return
+	var resp incident.GroupsResponse
+	if s.incidentCorrelator != nil {
+		resp = incident.BuildGroups(s.incidentCorrelator.Snapshot(), filter)
 	}
-	resp := incident.BuildGroups(s.incidentCorrelator.Snapshot(), filter)
-	writeJSON(w, resp)
+	writeItems(w, resp.Groups, map[string]interface{}{
+		"total":             resp.TotalGroups,
+		"offset":            offset,
+		"limit":             limit,
+		"scanned_incidents": resp.ScannedIncidents,
+		"truncated":         resp.Truncated,
+	})
 }

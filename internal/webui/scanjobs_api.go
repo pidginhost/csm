@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/store"
@@ -32,10 +31,7 @@ func (s *Server) apiScanJobsList(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, "failed to list scan jobs: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if jobs == nil {
-		jobs = []store.ScanJobRecord{}
-	}
-	writeJSON(w, map[string]any{"jobs": jobs})
+	writeAll(w, jobs)
 }
 
 // apiScanJobsRouter handles /api/v1/scan-jobs/{id} and
@@ -118,12 +114,8 @@ func (s *Server) apiScanJobFindings(w http.ResponseWriter, r *http.Request, db *
 		writeJSONError(w, "failed to list findings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if findings == nil {
-		findings = []alert.Finding{}
-	}
-	writeJSON(w, map[string]any{
+	writeItems(w, findings, map[string]any{
 		"job_id":    id,
-		"findings":  findings,
 		"total":     total,
 		"offset":    offset,
 		"limit":     limit,

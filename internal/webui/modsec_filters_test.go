@@ -75,9 +75,7 @@ func TestAPIModSecBlocksWindowFilter(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	var resp []modsecBlockView
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &resp)
 	if len(resp) != 1 || resp[0].IP != "203.0.113.11" {
 		t.Fatalf("window=1h got %d rows %+v, want only the 30m-old IP", len(resp), resp)
 	}
@@ -96,9 +94,7 @@ func TestAPIModSecBlocksSeverityFilter(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.apiModSecBlocks(w, httptest.NewRequest("GET", "/?severity=critical", nil))
 	var resp []modsecBlockView
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &resp)
 	if len(resp) != 1 || resp[0].IP != "203.0.113.21" {
 		t.Fatalf("severity=critical got %+v, want only the critical IP", resp)
 	}
@@ -144,9 +140,7 @@ func TestAPIModSecBlocksIncludesCountryField(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.apiModSecBlocks(w, httptest.NewRequest("GET", "/", nil))
 	var raw []map[string]json.RawMessage
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &raw)
 	if len(raw) != 1 {
 		t.Fatalf("got %d rows", len(raw))
 	}
@@ -168,9 +162,7 @@ func TestAPIModSecEventsWindowAndSeverity(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.apiModSecEvents(w, httptest.NewRequest("GET", "/?window=1h&severity=critical", nil))
 	var resp []modsecEventView
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &resp)
 	if len(resp) != 1 || resp[0].IP != "203.0.113.41" {
 		t.Fatalf("events window+severity got %+v, want only critical recent", resp)
 	}

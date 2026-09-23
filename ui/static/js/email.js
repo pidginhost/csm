@@ -268,7 +268,7 @@
     function loadBlockedIPCount() {
         CSM.get('/api/v1/blocked-ips', { silent: true })
             .then(function(data) {
-                var ips = data.ips || data || [];
+                var ips = data.items;
                 var count = 0;
                 for (var i = 0; i < ips.length; i++) {
                     var reason = (ips[i].reason || '').toLowerCase();
@@ -379,7 +379,7 @@
         var qs = emailDateQuery('limit=50');
         CSM.get('/api/v1/email/groups?' + qs)
             .then(function(data) {
-                renderActionGroups(data.groups || []);
+                renderActionGroups(data.items);
                 CSM.truncationNote(document.getElementById('email-action-groups'), data.truncated, 'email findings');
             })
             .catch(function(err) {
@@ -482,7 +482,7 @@
                 var el = document.getElementById('email-auth-groups');
                 if (!el) return;
                 el.replaceChildren();
-                var groups = data.groups || [];
+                var groups = data.items;
                 if (groups.length === 0) {
                     el.appendChild(buildEmpty('lock-check', 'No auth-failure clusters', 'No mailbox or IP exceeded the auth-failure threshold in this window.'));
                     return;
@@ -523,12 +523,11 @@
         CSM.get('/api/v1/history?' + params)
             .then(function(data) {
                 if (seq !== _emailFindingsLoadSeq) return;
-                var findings = data.findings || [];
+                var findings = data.items;
                 renderFindingsTable(findings);
                 var label = document.getElementById('email-total-label');
                 if (label) {
-                    var totalAll = data.total != null ? data.total : findings.length;
-                    label.textContent = findings.length + ' / ' + totalAll;
+                    label.textContent = findings.length + ' / ' + data.total;
                 }
             })
             .catch(function(err) {
@@ -693,7 +692,8 @@
     function loadQuarantine() {
         quarantineLoaded = true;
         CSM.get('/api/v1/email/quarantine')
-            .then(function(data) {
+            .then(function(resp) {
+                var data = resp.items;
                 var container = document.getElementById('quarantine-table');
                 if (!container) return;
                 var fromEl = document.getElementById('email-quar-from');
@@ -865,7 +865,7 @@
         forwardersLoaded = true;
         CSM.get('/api/v1/email/forwarders')
             .then(function(data) {
-                _forwarders = (data && data.forwarders) || [];
+                _forwarders = data.items;
                 renderForwarders();
             })
             .catch(function(err) {
@@ -880,7 +880,7 @@
         if (heldLoaded) return;
         heldLoaded = true;
         CSM.get('/api/v1/email/held')
-            .then(renderHeld)
+            .then(function(data) { renderHeld(data.items); })
             .catch(function(err) {
                 heldLoaded = false;
                 CSM.loadError(document.getElementById('email-held-tbody'), loadHeld, { title: 'Failed to load held forwards', error: err });
@@ -1128,7 +1128,7 @@
 
     function renderOutboundAbuse(resp) {
         var body = document.getElementById('outbound-abuse-body');
-        var entries = (resp && resp.entries) || [];
+        var entries = (resp && resp.items) || [];
         if (entries.length === 0) {
             body.innerHTML = '<div class="csm-empty"><div class="csm-empty__reason">No outbound mail abuse detected.</div></div>';
             return;

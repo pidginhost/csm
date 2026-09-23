@@ -105,9 +105,7 @@ func TestAPIStatsTrendHonoursDaysParam(t *testing.T) {
 			t.Fatalf("%s: status = %d", tc.query, w.Code)
 		}
 		var got []map[string]interface{}
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("%s: bad JSON: %v", tc.query, err)
-		}
+		decodeItems(t, w.Body.Bytes(), &got)
 		if len(got) != tc.wantLen {
 			t.Errorf("%s: len = %d, want %d", tc.query, len(got), tc.wantLen)
 		}

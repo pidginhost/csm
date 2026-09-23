@@ -41,7 +41,9 @@ type emailGroup struct {
 }
 
 type emailGroupsResponse struct {
-	Groups    []emailGroup `json:"groups"`
+	Groups    []emailGroup `json:"items"`
+	Total     int          `json:"total"`
+	Limit     int          `json:"limit"`
 	From      string       `json:"from"`
 	To        string       `json:"to"`
 	Scanned   int          `json:"scanned"`
@@ -451,6 +453,7 @@ func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string,
 	scanned := len(findings)
 
 	groups := buildEmailGroups(findings, from, to, kindFilter)
+	total := len(groups)
 	if len(groups) > limit {
 		truncated = true
 		groups = groups[:limit]
@@ -458,6 +461,8 @@ func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string,
 
 	return emailGroupsResponse{
 		Groups:    groups,
+		Total:     total,
+		Limit:     limit,
 		From:      from.UTC().Format(time.RFC3339),
 		To:        to.UTC().Format(time.RFC3339),
 		Scanned:   scanned,

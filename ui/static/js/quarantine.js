@@ -121,7 +121,8 @@ function _populateQuarFilterOptions(files) {
 }
 
 function loadQuarantine() {
-    return CSM.get('/api/v1/quarantine').then(function(files){
+    return CSM.get('/api/v1/quarantine').then(function(data){
+        var files = data.items;
         var el = document.getElementById('quarantine-content');
         var fromEl = document.getElementById('quarantine-from');
         var toEl = document.getElementById('quarantine-to');

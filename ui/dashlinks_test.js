@@ -23,7 +23,7 @@ function findingsPage(url) {
 test('?key= opens that finding', async () => {
     const f = finding('webshell', 'shell in /home/a/x.php');
     const page = findingsPage('/findings?key=' + encodeURIComponent(f.key));
-    page.respond('/api/v1/findings/enriched', 200, { findings: [finding('perf_load', 'load'), f], total: 2 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [finding('perf_load', 'load'), f], total: 2 });
     await settle();
     const detail = page.pending('/api/v1/finding-detail');
     assert.equal(detail.length, 1, 'the linked finding was not opened');
@@ -33,14 +33,14 @@ test('?key= opens that finding', async () => {
 test('a linked finding past page one opens once across refreshes', async () => {
     const findings = Array.from({ length: 30 }, (_, i) => finding('webshell', 'file ' + i));
     const page = findingsPage('/findings?key=' + encodeURIComponent(findings[29].key));
-    page.respond('/api/v1/findings/enriched', 200, { findings, total: 30 });
+    page.respond('/api/v1/findings/enriched', 200, { items: findings, total: 30 });
     await settle();
     const req = page.respond('/api/v1/finding-detail', 200, {});
     assert.equal(new URLSearchParams(req.url.split('?')[1]).get('message'), 'file 29');
     await settle();
     page.window.CSM.detailPanel.close();
     page.window.CSM.refresh.manual();
-    page.respond('/api/v1/findings/enriched', 200, { findings, total: 30 });
+    page.respond('/api/v1/findings/enriched', 200, { items: findings, total: 30 });
     await settle();
     assert.equal(page.requests.filter(r => r.url.includes('/finding-detail')).length, 1);
 });
@@ -49,19 +49,19 @@ test('a linked finding missing from an empty list is removed once', async () => 
     const page = findingsPage('/findings?key=missing&hperpage=100');
     const toasts = [];
     page.window.CSM.toast = message => { toasts.push(message); };
-    page.respond('/api/v1/findings/enriched', 200, { findings: [], total: 0 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [], total: 0 });
     await settle();
     assert.equal(new URLSearchParams(page.window.location.search).get('key'), null);
     assert.equal(new URLSearchParams(page.window.location.search).get('hperpage'), '100');
     page.window.CSM.refresh.manual();
-    page.respond('/api/v1/findings/enriched', 200, { findings: [], total: 0 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [], total: 0 });
     await settle();
     assert.equal(toasts.length, 1);
 });
 
 test('the new-findings banner refreshes data without reloading the document', async () => {
     const page = findingsPage('/findings');
-    page.respond('/api/v1/findings/enriched', 200, { findings: [], total: 0 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [], total: 0 });
     await settle();
     let reloads = 0;
     let updates = 0;
@@ -71,7 +71,7 @@ test('the new-findings banner refreshes data without reloading the document', as
     page.document.getElementById('refresh-page-btn').click();
     assert.equal(reloads, 0);
     assert.equal(page.pending('/api/v1/findings/enriched').length, 1);
-    page.respond('/api/v1/findings/enriched', 200, { findings: [], total: 0 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [], total: 0 });
     await settle();
     assert.equal(updates, 1);
 });
@@ -80,7 +80,7 @@ test('?key= for a finding that is gone says so', async () => {
     const page = findingsPage('/findings?key=' + encodeURIComponent('webshell:old'));
     const toasts = [];
     page.window.CSM.toast = (message, kind) => toasts.push({ message, kind });
-    page.respond('/api/v1/findings/enriched', 200, { findings: [finding('perf_load', 'load')], total: 1 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [finding('perf_load', 'load')], total: 1 });
     await settle();
     assert.equal(page.pending('/api/v1/finding-detail').length, 0);
     assert.ok(toasts.some(t => /no longer active/.test(t.message)), JSON.stringify(toasts));
@@ -89,7 +89,7 @@ test('?key= for a finding that is gone says so', async () => {
 test('a closed linked finding stays closed when its details arrive', async () => {
     const f = finding('webshell', 'old');
     const page = findingsPage('/findings?key=' + encodeURIComponent(f.key) + '&hperpage=100');
-    page.respond('/api/v1/findings/enriched', 200, { findings: [f], total: 1 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [f], total: 1 });
     await settle();
     page.window.CSM.detailPanel.close();
     page.respond('/api/v1/finding-detail', 200, {});
@@ -104,7 +104,7 @@ test('an older detail response cannot replace the latest linked finding', async 
     const a = finding('webshell', 'old');
     const b = finding('http_scanner', 'new');
     const page = findingsPage('/findings?key=' + encodeURIComponent(a.key));
-    page.respond('/api/v1/findings/enriched', 200, { findings: [a, b], total: 2 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [a, b], total: 2 });
     await settle();
     page.document.querySelector('[data-check="http_scanner"] td').click();
     page.respond('finding-detail?check=http_scanner', 200, {});
@@ -118,7 +118,7 @@ test('an older detail response cannot replace the latest linked finding', async 
 test('opening a finding puts it in the URL and closing takes it out', async () => {
     const f = finding('webshell', 'shell in /home/a/x.php');
     const page = findingsPage('/findings?check=webshell');
-    page.respond('/api/v1/findings/enriched', 200, { findings: [f], check_types: ['webshell'], total: 1 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [f], check_types: ['webshell'], total: 1 });
     await settle();
     page.document.querySelector('.finding-row').querySelectorAll('td')[2].click();
     await settle();
@@ -181,14 +181,14 @@ test('History page size is chosen and kept in the URL', async () => {
     const page = findingsPage('/findings?tab=history');
     page.document.querySelector('[href="#tab-history"]').dispatchEvent(new page.window.Event('shown.bs.tab'));
     await settle();
-    assert.equal(historyLimit(page.respond('/api/v1/history', 200, { findings: [], total: 0 })), '50');
+    assert.equal(historyLimit(page.respond('/api/v1/history', 200, { items: [], total: 0 })), '50');
     await settle();
     const size = page.document.getElementById('history-per-page');
     assert.ok(size, 'no page size control');
     size.value = '200';
     size.dispatchEvent(new page.window.Event('change'));
     await settle();
-    assert.equal(historyLimit(page.respond('/api/v1/history', 200, { findings: [], total: 0 })), '200');
+    assert.equal(historyLimit(page.respond('/api/v1/history', 200, { items: [], total: 0 })), '200');
     await settle();
     assert.equal(new URLSearchParams(page.window.location.search).get('hperpage'), '200');
 
@@ -204,7 +204,7 @@ test('Refresh reloads the visible History tab with its rolling window', async ()
     page.document.getElementById('tab-active').classList.remove('active');
     page.document.getElementById('tab-history').classList.add('active');
     page.document.querySelector('[href="#tab-history"]').dispatchEvent(new page.window.Event('shown.bs.tab'));
-    page.respond('/api/v1/history', 200, { findings: [], total: 0 });
+    page.respond('/api/v1/history', 200, { items: [], total: 0 });
     await settle();
     page.window.CSM.refresh.manual();
     await settle();
@@ -225,7 +225,7 @@ test('changing History page size ignores the previous page response', async () =
     for (const [idx, req] of requests.map((r, i) => [i, r]).reverse()) {
         req.settled = true;
         req.resolve({ status: 200, ok: true, json: () => Promise.resolve({
-            findings: [{ check: 'webshell', message: idx ? 'current page' : 'stale page', severity: 1 }], total: 1
+            items: [{ check: 'webshell', message: idx ? 'current page' : 'stale page', severity: 1 }], total: 1
         }) });
         await settle();
     }
@@ -236,7 +236,7 @@ test('changing History page size ignores the previous page response', async () =
 test('a finding lookup before window load does not update page freshness', async () => {
     const f = finding('webshell', 'linked');
     const page = findingsPage('/findings?key=' + encodeURIComponent(f.key));
-    page.respond('/api/v1/findings/enriched', 200, { findings: [f], total: 1 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [f], total: 1 });
     await settle();
     let updates = 0;
     page.window.addEventListener('csm:refresh-bump', () => { updates++; });

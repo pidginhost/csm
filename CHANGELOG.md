@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- The incident timeline, UI audit log, threat event, top attacker and ModSecurity event APIs now say when entries were left out, and the incident timeline no longer reports its page size as the total.
 - Importing an exported state bundle works again, temporary whitelist entries stay temporary, and clearing cPHulk login history reports a failure instead of claiming success.
 - Icons that showed blank, on the ModSecurity and Hardening firewall links and a Settings header, now display.
 - Shared Web UI formatting helpers no longer pass an unreadable time or a non-number through as raw text, and a zero value is no longer shown as blank.
@@ -104,6 +105,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- **Breaking:** API routes that return a list now answer an object with the list under `items`, next to `total` and, where the list is paged or capped, `offset`, `limit` and `truncated`, instead of a bare array or a route-specific key. An empty list is `[]`, never null, and `/api/v1/incidents` always answers one page with its total.
 - **Breaking:** API actions now answer `"ok": true` with their fields instead of `status` verbs or `success` flags (`success` stays on the firewall check and unban routes for existing callers). An action that did not happen, such as a fix that did not apply, an undeliverable test alert, a failed rule reload, a batch where nothing changed or an unknown rule or session, answers with an error status instead of 200.
 - **Breaking:** read-only API routes that ran for any HTTP method now answer 405 to anything but GET.
 - **Breaking:** every API failure, including CSRF, origin, rate-limit and wrong-method refusals, now answers with a JSON `{"error": ...}` body, and an unknown `/api/` path answers 404 instead of the dashboard page. Changing the status of an unknown incident answers 404.

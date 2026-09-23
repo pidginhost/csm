@@ -179,7 +179,7 @@ func TestSavedViewsCRUD(t *testing.T) {
 		t.Fatalf("empty list status=%d", rec.Code)
 	}
 	var list []savedView
-	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	decodeItems(t, rec.Body.Bytes(), &list)
 	if len(list) != 0 {
 		t.Fatalf("expected empty, got %v", list)
 	}
@@ -196,7 +196,7 @@ func TestSavedViewsCRUD(t *testing.T) {
 	// List shows it.
 	rec = httptest.NewRecorder()
 	s.apiPrefsViews(rec, authReq("GET", "/api/v1/prefs/views?page=findings", ""))
-	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	decodeItems(t, rec.Body.Bytes(), &list)
 	if len(list) != 1 || list[0].Name != "Critical SSH" {
 		t.Fatalf("expected one view, got %v", list)
 	}
@@ -207,7 +207,7 @@ func TestSavedViewsCRUD(t *testing.T) {
 	// Other page sees nothing.
 	rec = httptest.NewRecorder()
 	s.apiPrefsViews(rec, authReq("GET", "/api/v1/prefs/views?page=audit", ""))
-	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	decodeItems(t, rec.Body.Bytes(), &list)
 	if len(list) != 0 {
 		t.Fatalf("page filter not applied: %v", list)
 	}
@@ -223,7 +223,7 @@ func TestSavedViewsCRUD(t *testing.T) {
 	// Empty again.
 	rec = httptest.NewRecorder()
 	s.apiPrefsViews(rec, authReq("GET", "/api/v1/prefs/views?page=findings", ""))
-	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	decodeItems(t, rec.Body.Bytes(), &list)
 	if len(list) != 0 {
 		t.Fatalf("delete did not remove: %v", list)
 	}

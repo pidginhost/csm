@@ -49,9 +49,7 @@ func TestAPIThreatTopAttackersReturnsEnrichedRecords(t *testing.T) {
 		t.Fatalf("status: %d", w.Code)
 	}
 	var results []map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &results); err != nil {
-		t.Fatalf("decode body: %v (body=%s)", err, w.Body.String())
-	}
+	decodeItems(t, w.Body.Bytes(), &results)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 records, got %d: %+v", len(results), results)
 	}

@@ -16,7 +16,7 @@ function finding(check, message, filePath) {
 async function findingsPage(findings) {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
     page.respond('/api/v1/findings/enriched', 200, {
-        findings, check_types: [], accounts: [], total: findings.length
+        items: findings, check_types: [], accounts: [], total: findings.length
     });
     await settle();
     page.window.CSM.confirm = message => { page.confirmed = message; return Promise.resolve(); };

@@ -15,7 +15,7 @@ function finding(check, message, account) {
 async function findingsPage() {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
     page.respond('/api/v1/findings/enriched', 200, {
-        findings: [
+        items: [
             finding('webshell', 'shell in /home/alice/a.php', 'alice'),
             finding('webshell', 'shell in /home/bob/b.php', 'bob'),
             finding('perf_load', 'load high', ''),
@@ -110,7 +110,7 @@ test('turning grouping off removes the headers', async () => {
 
 test('an empty refresh retires the previous findings table', async () => {
     const page = await findingsPage();
-    await dismissAndRefresh(page, { findings: [], check_types: [], accounts: [], total: 0 });
+    await dismissAndRefresh(page, { items: [], check_types: [], accounts: [], total: 0 });
     const search = page.document.getElementById('findings-search');
     search.value = 'shell';
     search.dispatchEvent(new page.window.Event('input'));
@@ -123,7 +123,7 @@ test('grouped refresh keeps all rows and restores the chosen page size', async (
     const page = await findingsPage();
     setGroupBy(page, 'check');
     const findings = Array.from({ length: 30 }, (_, i) => finding('webshell', 'shell ' + i, 'alice'));
-    await dismissAndRefresh(page, { findings, check_types: ['webshell'], accounts: ['alice'], total: 30 });
+    await dismissAndRefresh(page, { items: findings, check_types: ['webshell'], accounts: ['alice'], total: 30 });
     assert.equal(layout(page).filter(r => r[0] === 'row').length, 30);
     assertGrouped(page);
     setGroupBy(page, 'none');

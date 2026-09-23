@@ -390,26 +390,25 @@ func TestAPIUIAuditWithEntries(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var entries []UIAuditEntry
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
-		t.Fatalf("json: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &entries)
 	if len(entries) != 3 {
 		t.Errorf("entries = %d, want 3", len(entries))
 	}
 }
 
-// apiUIAudit returns an empty array (not null) when the log file
+// apiUIAudit returns empty items (not null) when the log file
 // is missing.
-func TestAPIUIAuditEmptyArrayWhenMissing(t *testing.T) {
+func TestAPIUIAuditEmptyItemsWhenMissing(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiUIAudit(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if body != "[]" {
-		t.Errorf("body = %q, want []", body)
+	var entries []UIAuditEntry
+	decodeItems(t, w.Body.Bytes(), &entries)
+	if len(entries) != 0 {
+		t.Errorf("entries = %d, want an empty list", len(entries))
 	}
 }
 

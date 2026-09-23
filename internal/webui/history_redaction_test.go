@@ -25,7 +25,7 @@ func TestHistoryResponsesRedactStoredCredentials(t *testing.T) {
 			t.Fatalf("history status = %d", w.Code)
 		}
 		var response struct {
-			Findings []historyFinding `json:"findings"`
+			Findings []historyFinding `json:"items"`
 			Total    int              `json:"total"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {

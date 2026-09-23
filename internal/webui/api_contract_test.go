@@ -122,9 +122,7 @@ func TestAPIComponentsContract(t *testing.T) {
 	s.apiComponents(rec, httptest.NewRequest(http.MethodGet, "/api/v1/components", nil))
 
 	var raw []map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("unmarshal components: %v", err)
-	}
+	decodeItems(t, rec.Body.Bytes(), &raw)
 	if len(raw) != 1 {
 		t.Fatalf("component rows = %d, want 1", len(raw))
 	}
@@ -153,9 +151,9 @@ func TestAPIEmailGroupsContract(t *testing.T) {
 		t.Fatalf("unmarshal email groups: %v", err)
 	}
 	assertJSONKeys(t, raw, jsonStructKeys(reflect.TypeOf(emailGroupsResponse{})))
-	groups, ok := raw["groups"].([]any)
+	groups, ok := raw["items"].([]any)
 	if !ok {
-		t.Fatalf("groups payload = %T, want array", raw["groups"])
+		t.Fatalf("groups payload = %T, want array", raw["items"])
 	}
 	if len(groups) != 1 {
 		t.Fatalf("groups = %d, want 1", len(groups))
@@ -189,9 +187,9 @@ func TestAPIEmailForwardersContract(t *testing.T) {
 		t.Fatalf("unmarshal email forwarders: %v", err)
 	}
 	assertJSONKeys(t, raw, jsonStructKeys(reflect.TypeOf(forwardersResponse{})))
-	forwarders, ok := raw["forwarders"].([]any)
+	forwarders, ok := raw["items"].([]any)
 	if !ok {
-		t.Fatalf("forwarders payload = %T, want array", raw["forwarders"])
+		t.Fatalf("forwarders payload = %T, want array", raw["items"])
 	}
 	if len(forwarders) != 1 {
 		t.Fatalf("forwarders = %d, want 1", len(forwarders))
@@ -234,9 +232,7 @@ func TestAPIModSecBlocksContract(t *testing.T) {
 	s.apiModSecBlocks(rec, httptest.NewRequest(http.MethodGet, "/api/v1/modsec/blocks", nil))
 
 	var raw []map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("unmarshal modsec blocks: %v", err)
-	}
+	decodeItems(t, rec.Body.Bytes(), &raw)
 	if len(raw) != 1 {
 		t.Fatalf("modsec rows = %d, want 1", len(raw))
 	}

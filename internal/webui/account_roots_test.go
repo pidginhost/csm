@@ -108,9 +108,7 @@ func TestAPIAccountsListsTheScanAccounts(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.apiAccounts(w, httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil))
 	var got []string
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	if strings.Join(got, ",") != "alice,bob" {
 		t.Fatalf("accounts = %v, want alice,bob", got)
 	}

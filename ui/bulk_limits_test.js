@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 function script(name) {
     return fs.readFileSync(path.join(__dirname, 'static/js', name), 'utf8');
@@ -71,7 +71,7 @@ async function quarantinePage(count = 1) {
     const toasts = [];
     page.window.CSM.confirm = () => Promise.resolve();
     page.window.CSM.toast = (message, kind) => { toasts.push({ message, kind }); };
-    page.respond('/api/v1/quarantine', 200, files);
+    page.respond('/api/v1/quarantine', 200, items(files));
     await settle();
     selectAll(page);
     return { page, files, toasts };
@@ -100,7 +100,7 @@ test('quarantine reports the confirmed count when the second batch fails', async
     assert.equal(deletes(page).length, 2, 'third batch must not run');
     assert.deepEqual(toasts, [{ message: 'Deleted 100 file(s), then failed: offline', kind: 'error' }]);
     assert.equal(reloads(page).length, 1);
-    page.respond('/api/v1/quarantine', 200, files.slice(100));
+    page.respond('/api/v1/quarantine', 200, items(files.slice(100)));
     await settle();
     selectAll(page);
     assert.equal(page.document.getElementById('bulk-delete-btn').disabled, false);
@@ -112,7 +112,7 @@ test('quarantine reports files the server could not delete', async () => {
     await settle();
     page.respond('/api/v1/quarantine/bulk-delete', 200, { count: 2, failed: ['id-1'] });
     await settle();
-    page.respond('/api/v1/quarantine', 200, files.slice(1, 2));
+    page.respond('/api/v1/quarantine', 200, items(files.slice(1, 2)));
     await settle();
     assert.deepEqual(toasts, [{ message: 'Deleted 2 file(s); 1 could not be deleted and stay listed', kind: 'warning' }]);
 });
@@ -141,7 +141,7 @@ for (const failure of [false, true]) {
         else page.respond('/api/v1/quarantine/bulk-delete', 200, { count: 1 });
         await settle();
         assert.equal(byId('bulk-delete-btn').disabled, true, 'refresh still pending');
-        page.respond('/api/v1/quarantine', 200, files);
+        page.respond('/api/v1/quarantine', 200, items(files));
         await settle();
         assert.equal(rowRestore().disabled, false);
         selectAll(page);

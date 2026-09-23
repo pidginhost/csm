@@ -304,10 +304,6 @@ func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 	// Filters apply to the whole log and the limit to what they matched, so a
 	// search reaches entries older than the newest page.
 	entries := firewall.ReadAuditLog(s.cfg.StatePath, 0)
-	if entries == nil {
-		writeJSON(w, []interface{}{})
-		return
-	}
 
 	type auditView struct {
 		Timestamp string `json:"timestamp"`
@@ -351,10 +347,16 @@ func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 			TimeAgo:   timeAgo(e.Timestamp),
 		})
 	}
-	if limit > 0 && len(result) > limit {
-		result = result[len(result)-limit:]
+	if limit == 0 {
+		writeAll(w, result)
+		return
 	}
-	writeJSON(w, result)
+	// The newest entries are last in the log.
+	total := len(result)
+	if total > limit {
+		result = result[total-limit:]
+	}
+	writeCapped(w, result, total, limit, nil)
 }
 
 // apiFirewallSubnets returns currently blocked subnets.
@@ -389,11 +391,7 @@ func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
 		v.ExpiresIn = formatRemaining(sn.ExpiresAt)
 		result = append(result, v)
 	}
-	if result == nil {
-		writeJSON(w, []interface{}{})
-		return
-	}
-	writeJSON(w, result)
+	writeAll(w, result)
 }
 
 // apiFirewallDenySubnet blocks a subnet via the firewall engine.

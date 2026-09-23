@@ -39,7 +39,8 @@ type forwardersSummary struct {
 }
 
 type forwardersResponse struct {
-	Forwarders []forwarderEntry  `json:"forwarders"`
+	Forwarders []forwarderEntry  `json:"items"`
+	Total      int               `json:"total"`
 	Summary    forwardersSummary `json:"summary"`
 }
 
@@ -77,6 +78,7 @@ func (s *Server) apiEmailForwarders(w http.ResponseWriter, r *http.Request) {
 	for _, f := range fwds {
 		resp.Forwarders = append(resp.Forwarders, toForwarderEntry(f))
 		resp.Summary.Total++
+		resp.Total++
 		if f.HasExternal() {
 			resp.Summary.External++
 		}

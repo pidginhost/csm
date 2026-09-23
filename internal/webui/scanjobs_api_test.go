@@ -188,7 +188,7 @@ func TestScanJobsList_ReadScopeAllowed(t *testing.T) {
 	}
 
 	var resp struct {
-		Jobs []store.ScanJobRecord `json:"jobs"`
+		Jobs []store.ScanJobRecord `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -213,7 +213,7 @@ func TestScanJobsList_EmptyWhenNoJobs(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var resp struct {
-		Jobs []store.ScanJobRecord `json:"jobs"`
+		Jobs []store.ScanJobRecord `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -282,7 +282,7 @@ func TestScanJobsRouter_Findings_Pagination(t *testing.T) {
 	}
 	var resp struct {
 		JobID    string          `json:"job_id"`
-		Findings []alert.Finding `json:"findings"`
+		Findings []alert.Finding `json:"items"`
 		Total    int             `json:"total"`
 		Offset   int             `json:"offset"`
 		Limit    int             `json:"limit"`
@@ -326,7 +326,7 @@ func TestScanJobsRouter_Findings_DefaultPageIsBounded(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+tok)
 		s.requireRead(http.HandlerFunc(s.apiScanJobsRouter)).ServeHTTP(w, req)
 		var resp struct {
-			Findings  []alert.Finding `json:"findings"`
+			Findings  []alert.Finding `json:"items"`
 			Total     int             `json:"total"`
 			Limit     int             `json:"limit"`
 			Truncated bool            `json:"truncated"`
@@ -368,7 +368,7 @@ func TestScanJobsRouter_Findings_NilBecomesEmpty(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var resp struct {
-		Findings []alert.Finding `json:"findings"`
+		Findings []alert.Finding `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)

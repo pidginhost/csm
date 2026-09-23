@@ -18,7 +18,8 @@
     }
 
     function loadDBBackups() {
-        getJSON('/api/v1/db-object-backups').then(function(items) {
+        getJSON('/api/v1/db-object-backups').then(function(data) {
+            var items = data.items;
             var el = document.getElementById('cleanup-db-content');
             var title = document.getElementById('cleanup-db-title');
             removeEl('cleanup-db-table-controls');

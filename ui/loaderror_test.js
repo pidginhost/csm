@@ -5,7 +5,7 @@
 // Retry or on the next successful refresh.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle, jsonResponse } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle, jsonResponse } = require('./pagekit.js');
 
 function autoObject() {
     return new Proxy({}, { get(t, k) { if (typeof k === 'symbol') return t[k]; if (!(k in t)) t[k] = autoObject(); return t[k]; } });
@@ -99,7 +99,7 @@ async function driveFailing(page, fails, bodies) {
                 continue;
             }
             const hit = Object.keys(bodies || {}).find(k => req.url.includes(k));
-            req.resolve(jsonResponse(200, hit ? bodies[hit] : {}));
+            req.resolve(jsonResponse(200, hit ? bodies[hit] : items([])));
         }
         await settle();
     }
@@ -115,7 +115,7 @@ function answer(page, match, body) {
 test('Rules: Retry after a failed status load fills the stats', async () => {
     const page = loadPage(templateBody('rules'), SHARED.concat(['rules.js']));
     const status = u => u.includes('/api/v1/rules/status');
-    await driveFailing(page, status, { '/api/v1/rules/list': [] });
+    await driveFailing(page, status, { '/api/v1/rules/list': items([]) });
     const error = page.document.querySelector('.csm-load-error');
     assert.ok(error, 'no error state');
     error.querySelector('button').click();
@@ -135,7 +135,7 @@ test('Rules: Retry after a failed file list fills the table', async () => {
     assert.ok(tbody, 'the failed load removed the table');
     tbody.querySelector('.csm-load-error button').click();
     await settle();
-    answer(page, list, [{ name: 'malware.yml', type: 'yaml', size: 10 }]);
+    answer(page, list, items([{ name: 'malware.yml', type: 'yaml', size: 10 }]));
     await settle();
     assert.match(page.document.getElementById('rules-tbody').textContent, /malware\.yml/);
 });
@@ -259,7 +259,7 @@ test('a dashboard chart that failed and then loads empty drops the error', async
     assert.ok(parent.querySelector('.csm-load-error'));
     page.window.CSM.refresh.manual();
     await settle();
-    answer(page, timeline, []);
+    answer(page, timeline, items([]));
     await settle();
     assert.equal(parent.querySelector('.csm-load-error'), null);
 });

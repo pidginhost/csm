@@ -22,7 +22,8 @@ function loadStatus() {
 }
 
 function loadFiles() {
-    CSM.get('/api/v1/rules/list').then(function(data) {
+    CSM.get('/api/v1/rules/list').then(function(resp) {
+        var data = resp.items;
         var tbody = document.getElementById('rules-tbody');
         if (!data || data.length === 0) {
             tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No rule files found</td></tr>';
@@ -100,7 +101,8 @@ document.getElementById('btn-test-alert').addEventListener('click', function() {
 });
 
 function loadSuppressions() {
-    CSM.get('/api/v1/suppressions').then(function(data) {
+    CSM.get('/api/v1/suppressions').then(function(resp) {
+        var data = resp.items;
         var container = document.getElementById('suppressions-content');
         if (!data || data.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No suppression rules configured.</div>';
@@ -226,7 +228,8 @@ document.getElementById('suppression-form').addEventListener('submit', function(
 
 // Populate check-type datalist from active findings
 function loadCheckTypes() {
-    CSM.get('/api/v1/findings', { silent: true }).then(function(findings) {
+    CSM.get('/api/v1/findings', { silent: true }).then(function(data) {
+        var findings = data.items;
         var types = {};
         for (var i = 0; i < findings.length; i++) {
             if (findings[i].check) types[findings[i].check] = true;

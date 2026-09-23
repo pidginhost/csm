@@ -41,7 +41,7 @@ func (s *Server) apiEmailHeldList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.forwardHeld == nil {
-		writeJSON(w, []quarantine.HeldMessage{})
+		writeAll(w, []quarantine.HeldMessage{})
 		return
 	}
 	msgs, err := s.forwardHeld.List()
@@ -49,10 +49,7 @@ func (s *Server) apiEmailHeldList(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Failed to list held forwards", http.StatusInternalServerError)
 		return
 	}
-	if msgs == nil {
-		msgs = []quarantine.HeldMessage{}
-	}
-	writeJSON(w, msgs)
+	writeAll(w, msgs)
 }
 
 // apiEmailHeldAction handles POST /api/v1/email/held/{id}/release (re-inject the

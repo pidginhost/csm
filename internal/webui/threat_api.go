@@ -32,18 +32,22 @@ func (s *Server) apiThreatStats(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/threat/top-attackers?limit=25
 func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
-	adb := attackdb.Global()
-	if adb == nil {
-		writeJSON(w, []struct{}{})
-		return
-	}
-
 	limit := queryInt(r, "limit", 25)
 	if limit > 200 {
 		limit = 200
 	}
+	adb := attackdb.Global()
+	if adb == nil {
+		writeItems(w, []struct{}{}, map[string]interface{}{"limit": limit, "truncated": false})
+		return
+	}
 
-	recs := adb.TopAttackers(limit)
+	// One record past the limit tells whether the list was cut.
+	recs := adb.TopAttackers(limit + 1)
+	truncated := len(recs) > limit
+	if truncated {
+		recs = recs[:limit]
+	}
 
 	// Enrich with unified intelligence
 	ips := make([]string, len(recs))
@@ -80,7 +84,7 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, results)
+	writeItems(w, results, map[string]interface{}{"limit": limit, "truncated": truncated})
 }
 
 // GET /api/v1/threat/ip?ip=1.2.3.4
@@ -122,15 +126,17 @@ func (s *Server) apiThreatEvents(w http.ResponseWriter, r *http.Request) {
 
 	adb := attackdb.Global()
 	if adb == nil {
-		writeJSON(w, []struct{}{})
+		writeItems(w, []attackdb.Event{}, map[string]interface{}{"limit": limit, "truncated": false})
 		return
 	}
 
-	events := adb.QueryEvents(ip, limit)
-	if events == nil {
-		events = []attackdb.Event{}
+	// One event past the limit tells whether older events were left out.
+	events := adb.QueryEvents(ip, limit+1)
+	truncated := len(events) > limit
+	if truncated {
+		events = events[:limit]
 	}
-	writeJSON(w, events)
+	writeItems(w, events, map[string]interface{}{"limit": limit, "truncated": truncated})
 }
 
 // GET /api/v1/threat/db-stats
@@ -207,10 +213,10 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiThreatWhitelist(w http.ResponseWriter, r *http.Request) {
 	tdb := checks.GetThreatDB()
 	if tdb == nil {
-		writeJSON(w, []string{})
+		writeAll(w, []checks.WhitelistIP{})
 		return
 	}
-	writeJSON(w, tdb.WhitelistedIPs())
+	writeAll(w, tdb.WhitelistedIPs())
 }
 
 // POST /api/v1/threat/unwhitelist-ip - remove an IP from the whitelist

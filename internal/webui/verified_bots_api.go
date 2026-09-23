@@ -42,11 +42,8 @@ func (s *Server) apiVerifiedBots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bots := disk.Reputation.VerifiedBots
-	if bots == nil {
-		bots = []config.VerifiedBot{}
-	}
-	writeJSON(w, map[string]interface{}{
-		"bots":       bots,
+	writeItems(w, bots, map[string]interface{}{
+		"total":      len(bots),
 		"etag":       disk.Integrity.ConfigHash,
 		"bot_ranges": botRangesSummary(disk),
 	})

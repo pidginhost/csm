@@ -4,7 +4,7 @@
 // controls follow the selection.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 function finding(check, message, hasFix) {
     return {
@@ -20,7 +20,7 @@ function tick(page, el) {
 
 test('Findings select-all shows a partial selection and follows the fix button', async () => {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
-    page.respond('/api/v1/findings/enriched', 200, { findings: [
+    page.respond('/api/v1/findings/enriched', 200, { items: [
         finding('webshell', 'a', true), finding('perf_load', 'b', false)
     ], total: 2 });
     await settle();
@@ -40,7 +40,7 @@ test('Findings select-all shows a partial selection and follows the fix button',
 
 test('Findings select-all skips rows of a collapsed group', async () => {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
-    page.respond('/api/v1/findings/enriched', 200, { findings: [
+    page.respond('/api/v1/findings/enriched', 200, { items: [
         finding('webshell', 'a', true), finding('perf_load', 'b', false)
     ], total: 2 });
     await settle();
@@ -59,10 +59,10 @@ test('Firewall select-all skips blocked IPs a filter hides', async () => {
     const page = loadPage(templateBody('firewall'), SHARED.concat(['firewall.js']),
         { url: 'https://csm.example.test/firewall?view=blocks' });
     await settle();
-    page.respond('/api/v1/blocked-ips', 200, [
+    page.respond('/api/v1/blocked-ips', 200, items([
         { ip: '192.0.2.1', reason: 'r', source: 'web_ui', expires_at: '2026-09-30T00:00:00Z', expires_in: '6d' },
         { ip: '192.0.2.2', reason: 'r', source: 'web_ui' }
-    ]);
+    ]));
     await settle();
     const lifetime = page.document.getElementById('blocked-lifetime-filter');
     lifetime.value = 'temporary';
@@ -76,7 +76,7 @@ test('Firewall select-all skips blocked IPs a filter hides', async () => {
 
 test('Findings exports the rows it shows', async () => {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
-    page.respond('/api/v1/findings/enriched', 200, { findings: [
+    page.respond('/api/v1/findings/enriched', 200, { items: [
         finding('webshell', 'a', true), finding('perf_load', 'b', false)
     ], total: 2 });
     await settle();
@@ -91,10 +91,10 @@ test('Firewall selection drives the bulk unblock button', async () => {
     const page = loadPage(templateBody('firewall'), SHARED.concat(['firewall.js']),
         { url: 'https://csm.example.test/firewall?view=blocks' });
     await settle();
-    page.respond('/api/v1/blocked-ips', 200, [
+    page.respond('/api/v1/blocked-ips', 200, items([
         { ip: '192.0.2.1', reason: 'r', source: 'web_ui' },
         { ip: '192.0.2.2', reason: 'r', source: 'web_ui' }
-    ]);
+    ]));
     await settle();
     const btn = page.document.getElementById('blocked-bulk-unblock-btn');
     assert.equal(btn.classList.contains('d-none'), true);

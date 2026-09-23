@@ -131,7 +131,7 @@ func TestBrowserSessionManagementRequiresAdminAndCSRF(t *testing.T) {
 		Sessions []struct {
 			ID      string `json:"id"`
 			Current bool   `json:"current"`
-		}
+		} `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)

@@ -260,7 +260,8 @@ function loadTopAttackers() {
     var seq = ++_attackersLoadSeq;
     if (_attackersTable) { _attackersTable.destroy(); _attackersTable = null; }
     resetAttackerSelection();
-    CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
+    CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(resp){
+    var data = resp.items;
     if (seq !== _attackersLoadSeq) return;
     var tbody=document.getElementById('attackers-tbody');
     var fromEl = document.getElementById('attackers-from');
@@ -388,7 +389,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         getJSONAllowError('/api/v1/threat/ip?ip='+encodeURIComponent(ip)),
         getJSONAllowError('/api/v1/threat/events?ip='+encodeURIComponent(ip)+'&limit=20')
     ]).then(function(results){
-        var intel=results[0], events=results[1];
+        var intel=results[0], events=results[1].items;
         if(intel.error){status.textContent=intel.error;status.className='text-danger small';return;}
         status.textContent='';
         result.classList.remove('d-none');

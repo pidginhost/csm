@@ -314,7 +314,7 @@ func TestAPIQuarantineListsSeededEntryFinalCoverage(t *testing.T) {
 
 // =============================================================================
 // apiAccounts — cannot override /home const; just verify JSON shape is OK.
-// Depending on host, this returns [] or a list of dirs.
+// Depending on host, items is [] or a list of dirs.
 // =============================================================================
 
 func TestAPIAccountsReturnsValidJSONFinalCoverage(t *testing.T) {
@@ -324,17 +324,9 @@ func TestAPIAccountsReturnsValidJSONFinalCoverage(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if !strings.HasPrefix(body, "[") && body != "null" {
-		t.Errorf("body = %q, expected JSON array or null", body)
-	}
-	// If non-empty, items should decode as strings (account names).
-	if strings.HasPrefix(body, "[") && body != "[]" {
-		var names []string
-		if err := json.Unmarshal(w.Body.Bytes(), &names); err != nil {
-			t.Errorf("expected []string, decode err: %v", err)
-		}
-	}
+	// Items must be a list; when non-empty they decode as strings (account names).
+	var names []string
+	decodeItems(t, w.Body.Bytes(), &names)
 }
 
 // =============================================================================
@@ -449,16 +441,14 @@ func TestAPIScanAccountReleaseLockOnReturnFinalCoverage(t *testing.T) {
 func TestAPIThreatTopAttackersLimitClampFinalCoverage(t *testing.T) {
 	s := newTestServer(t, "tok")
 	// Even without attackdb.Global() initialized, the handler should early-
-	// return with an empty array. Still exercises the limit parse logic.
+	// return with empty items. Still exercises the limit parse logic.
 	w := httptest.NewRecorder()
 	s.apiThreatTopAttackers(w, httptest.NewRequest("GET", "/?limit=9999", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if body != "[]" && !strings.HasPrefix(body, "[") {
-		t.Errorf("body = %q", body)
-	}
+	var items []json.RawMessage
+	decodeItems(t, w.Body.Bytes(), &items)
 }
 
 func TestAPIThreatTopAttackersNegativeLimitFinalCoverage(t *testing.T) {
@@ -586,7 +576,7 @@ func TestAPIModSecRulesConfiguredWithRuleFinalCoverage(t *testing.T) {
 	if resp["configured"] != true {
 		t.Errorf("configured = %v, want true", resp["configured"])
 	}
-	rules, _ := resp["rules"].([]interface{})
+	rules, _ := resp["items"].([]interface{})
 	if len(rules) == 0 {
 		t.Errorf("rules array is empty; expected rule 900200 to be parsed")
 	}

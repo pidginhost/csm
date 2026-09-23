@@ -59,7 +59,7 @@ func (s *Server) apiSessions(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "Session store unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		writeJSON(w, map[string]any{"sessions": views})
+		writeAll(w, views)
 	case http.MethodDelete:
 		if s.sessions == nil {
 			writeJSONError(w, "Session store unavailable", http.StatusServiceUnavailable)

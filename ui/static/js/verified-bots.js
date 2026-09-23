@@ -133,7 +133,7 @@
             etag = data.etag || '';
             renderRanges(data.bot_ranges);
             listEl.innerHTML = '';
-            (data.bots || []).forEach(addRow);
+            data.items.forEach(addRow);
             updateVisibility();
             saved = JSON.stringify(collect());
         }).catch(function (err) {

@@ -117,7 +117,7 @@ func TestAPIModSecRulesEscalationListsExclusions(t *testing.T) {
 		t.Fatalf("GET escalation = %d", w.Code)
 	}
 	var resp struct {
-		Rules []int `json:"rules"`
+		Rules []int `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)

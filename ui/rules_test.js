@@ -1,13 +1,13 @@
 // Run with: node --test ui/rules_test.js
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js');
 
 // A suppression for a check name nothing uses is saved but matches nothing;
 // the server says so and the page must pass that on, not report plain success.
 test('a suppression for an unknown check shows the server warning', async () => {
     const page = loadPage(templateBody('rules'), SHARED.concat(['rules.js']));
-    page.respond('/api/v1/suppressions', 200, []); // the page's initial list
+    page.respond('/api/v1/suppressions', 200, items([])); // the page's initial list
     const toasts = [];
     page.window.CSM.toast = (message, kind) => toasts.push({ message, kind });
     page.document.getElementById('suppress-check').value = 'webshel';

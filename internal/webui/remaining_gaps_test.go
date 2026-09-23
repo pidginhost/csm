@@ -74,10 +74,7 @@ func TestAPIRulesListMissingDirReturnsEmpty(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if body != "null" && body != "[]" {
-		t.Errorf("body = %q, expected null or []", body)
-	}
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 func TestAPIRulesListFiltersByExtension(t *testing.T) {
@@ -114,9 +111,7 @@ func TestAPIRulesListFiltersByExtension(t *testing.T) {
 	}
 
 	var got []map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("json: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	// 6 valid rule files: .yml, .yaml, .yar, .yara (x2 uppercase), .hidden.yml
 	if len(got) < 6 {
 		t.Errorf("want >=6 rule files, got %d: %v", len(got), got)

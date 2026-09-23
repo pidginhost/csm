@@ -23,7 +23,7 @@ test('the findings poll compares versions instead of fetching the list', async (
         await settle();
     }
     page.respond('/api/v1/findings/enriched', 200, {
-        findings: [{ key: 'k1', check: 'webshell', severity: 'CRITICAL', message: 'm' }],
+        items: [{ key: 'k1', check: 'webshell', severity: 'CRITICAL', message: 'm' }],
         check_types: ['webshell'], accounts: [], total: 1, version: 'v1'
     });
     await settle();

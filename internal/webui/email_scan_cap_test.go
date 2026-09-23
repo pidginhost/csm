@@ -84,8 +84,8 @@ func TestRelayAbuseFindsMatchesBehindUnrelatedFindings(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Matched != 1 || resp.Truncated {
-		t.Fatalf("matched=%d truncated=%v, want the relay finding behind the noise", resp.Matched, resp.Truncated)
+	if resp.Total != 1 || resp.Truncated {
+		t.Fatalf("total=%d truncated=%v, want the relay finding behind the noise", resp.Total, resp.Truncated)
 	}
 }
 
@@ -116,7 +116,7 @@ func TestEmailListsReportTheirResultLimit(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatal(err)
 		}
-		if len(resp.Entries) != 1 || resp.Matched != 2 || !resp.Truncated {
+		if len(resp.Entries) != 1 || resp.Total != 2 || !resp.Truncated {
 			t.Fatalf("got %+v; want one of two entries with truncation", resp)
 		}
 	})

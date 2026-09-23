@@ -333,7 +333,7 @@ func TestAPIFindingsEnrichedCountsAndAccounts(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Findings      []enrichedFinding `json:"findings"`
+		Findings      []enrichedFinding `json:"items"`
 		CheckTypes    []string          `json:"check_types"`
 		Accounts      []string          `json:"accounts"`
 		CriticalCount int               `json:"critical_count"`
@@ -653,7 +653,7 @@ func TestAPIIncidentWithAccount(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Events       []timelineEvent `json:"events"`
+		Events       []timelineEvent `json:"items"`
 		Total        int             `json:"total"`
 		QueryAccount string          `json:"query_account"`
 		Hours        int             `json:"hours"`
@@ -802,16 +802,12 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	var data struct {
-		Findings []enrichedFinding `json:"findings"`
+	var items []enrichedFinding
+	decodeItems(t, w.Body.Bytes(), &items)
+	if len(items) != 1 {
+		t.Fatalf("findings = %d, want 1", len(items))
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
-	if len(data.Findings) != 1 {
-		t.Fatalf("findings = %d, want 1", len(data.Findings))
-	}
-	f := data.Findings[0]
+	f := items[0]
 	if f.Key == "" {
 		t.Error("enriched finding key should not be empty")
 	}
@@ -851,14 +847,10 @@ func TestAPIFindingsEnrichedBlockIP(t *testing.T) {
 	})
 	w := httptest.NewRecorder()
 	s.apiFindingsEnriched(w, httptest.NewRequest("GET", "/", nil))
-	var data struct {
-		Findings []enrichedFinding `json:"findings"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	var items []enrichedFinding
+	decodeItems(t, w.Body.Bytes(), &items)
 	got := map[string]string{}
-	for _, f := range data.Findings {
+	for _, f := range items {
 		got[f.Check] = f.BlockIP
 	}
 	if got["wp_login_bruteforce"] != "203.0.113.5" {
@@ -884,14 +876,10 @@ func TestAPIFindingsEnrichedHasVerify(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	var data struct {
-		Findings []enrichedFinding `json:"findings"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	var items []enrichedFinding
+	decodeItems(t, w.Body.Bytes(), &items)
 	byCheck := map[string]enrichedFinding{}
-	for _, f := range data.Findings {
+	for _, f := range items {
 		byCheck[f.Check] = f
 	}
 	if !byCheck["webshell"].HasVerify {
@@ -924,9 +912,7 @@ func TestAPIFindingsSkipsInternalChecks(t *testing.T) {
 	var data []struct {
 		Check string `json:"check"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) != 1 {
 		t.Errorf("findings count = %d, want 1 (only webshell)", len(data))
 	}

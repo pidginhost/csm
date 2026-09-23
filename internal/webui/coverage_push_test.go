@@ -976,7 +976,7 @@ func TestAPIIncidentHoursCappedAt720(t *testing.T) {
 // suppressions_api.go — full CRUD cycle
 // =========================================================================
 
-func TestAPISuppressionsGETReturnsEmptyArray(t *testing.T) {
+func TestAPISuppressionsGETReturnsEmptyItems(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiSuppressions(w, httptest.NewRequest("GET", "/", nil))
@@ -984,9 +984,7 @@ func TestAPISuppressionsGETReturnsEmptyArray(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 }
 
 func TestAPISuppressionsCreateAndDelete(t *testing.T) {
@@ -1069,9 +1067,7 @@ func TestAPIBlockedIPsFallbackFirewallStateJSON(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) < 1 {
 		t.Error("expected at least 1 blocked IP from legacy file")
 	}
@@ -1093,9 +1089,7 @@ func TestAPIBlockedIPsFallbackBlockedIPsJSON(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) < 1 {
 		t.Error("expected at least 1 blocked IP from legacy blocked_ips.json")
 	}

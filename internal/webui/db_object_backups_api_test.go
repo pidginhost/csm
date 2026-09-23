@@ -44,9 +44,7 @@ func TestAPIDBObjectBackupsEmptyStore(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	var got []map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	decodeItems(t, rr.Body.Bytes(), &got)
 	if len(got) != 0 {
 		t.Errorf("expected empty list, got %d entries", len(got))
 	}
@@ -81,9 +79,7 @@ func TestAPIDBObjectBackupsListsAllRecordsNewestFirst(t *testing.T) {
 	srv.apiDBObjectBackups(rr, req)
 
 	var got []dbObjectBackupEntry
-	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	decodeItems(t, rr.Body.Bytes(), &got)
 	if len(got) != 2 {
 		t.Fatalf("entries = %d, want 2", len(got))
 	}

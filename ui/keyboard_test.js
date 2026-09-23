@@ -23,7 +23,7 @@ function finding(check, message, account) {
 async function findingsPage(extra) {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js'], extra || []));
     page.respond('/api/v1/findings/enriched', 200, {
-        findings: [finding('webshell', 'shell a', 'alice'), finding('perf_load', 'load high', '')],
+        items: [finding('webshell', 'shell a', 'alice'), finding('perf_load', 'load high', '')],
         check_types: ['webshell', 'perf_load'], total: 2
     });
     await settle();
@@ -159,7 +159,7 @@ test('Space opens a row without scrolling and input keys do not open it', async 
 test('finding labels keep hostile and long data inside the label', async () => {
     const message = '\"><img src=x onerror="alert(1)"> ' + 'x'.repeat(4096);
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
-    page.respond('/api/v1/findings/enriched', 200, { findings: [finding('webshell', message, 'alice')], total: 1 });
+    page.respond('/api/v1/findings/enriched', 200, { items: [finding('webshell', message, 'alice')], total: 1 });
     await settle();
     const row = page.document.querySelector('.finding-row');
     assert.equal(row.querySelector('input').getAttribute('aria-label'), 'Select finding webshell: ' + message);

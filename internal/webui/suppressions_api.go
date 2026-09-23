@@ -36,11 +36,7 @@ func (s *Server) knownCheck(name string) bool {
 func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rules := s.store.LoadSuppressions()
-		if rules == nil {
-			rules = []state.SuppressionRule{}
-		}
-		writeJSON(w, rules)
+		writeAll(w, s.store.LoadSuppressions())
 
 	case http.MethodPost:
 		var req struct {
