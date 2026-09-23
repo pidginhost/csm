@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"fmt"
 	"os"
 	"sync"
 
@@ -24,7 +23,7 @@ func (c *binaryHashCache) get(path string) string {
 	if err != nil {
 		return ""
 	}
-	key := binaryFileKey(before)
+	key := integrity.FileChangeKey(before)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.hash != "" && key == c.key {
@@ -36,14 +35,9 @@ func (c *binaryHashCache) get(path string) string {
 	}
 	// A file replaced while it was read gives a hash of neither version
 	// for certain; report it but do not keep it.
-	if after, err := os.Stat(path); err != nil || binaryFileKey(after) != key {
+	if after, err := os.Stat(path); err != nil || integrity.FileChangeKey(after) != key {
 		return h
 	}
 	c.key, c.hash = key, h
 	return h
-}
-
-// binaryFileKey changes when the file at a path is replaced or rewritten.
-func binaryFileKey(info os.FileInfo) string {
-	return fmt.Sprintf("%d:%d:%s", info.Size(), info.ModTime().UnixNano(), fileChangeIdentity(info))
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
@@ -329,6 +330,25 @@ func isPathWithin(path, base string) bool {
 	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator))
 }
 
+// hashLiveStateFile hashes a file for quarantineLiveState; a var so tests
+// can count reads.
+var hashLiveStateFile = integrity.HashFile
+
+// liveStates remembers how a quarantine archive compared with its live file,
+// keyed by both files' change keys, so the list does not hash every pair on
+// every request. It is cleared when it grows past liveStatesMax entries.
+var (
+	liveStatesMu sync.Mutex
+	liveStates   = map[string]liveStateResult{}
+)
+
+const liveStatesMax = 10000
+
+type liveStateResult struct {
+	keys  string
+	state string
+}
+
 func quarantineLiveState(archivePath, originalPath string) string {
 	origInfo, err := os.Stat(originalPath)
 	if os.IsNotExist(err) {
@@ -353,18 +373,33 @@ func quarantineLiveState(archivePath, originalPath string) string {
 	if origInfo.Size() != archInfo.Size() {
 		return "live_differs"
 	}
-	origHash, err := integrity.HashFile(originalPath)
+	pair := archivePath + "\x00" + originalPath
+	keys := integrity.FileChangeKey(origInfo) + "|" + integrity.FileChangeKey(archInfo)
+	liveStatesMu.Lock()
+	cached, ok := liveStates[pair]
+	liveStatesMu.Unlock()
+	if ok && cached.keys == keys {
+		return cached.state
+	}
+	origHash, err := hashLiveStateFile(originalPath)
 	if err != nil {
 		return "unknown"
 	}
-	archHash, err := integrity.HashFile(archivePath)
+	archHash, err := hashLiveStateFile(archivePath)
 	if err != nil {
 		return "unknown"
 	}
+	state := "live_differs"
 	if origHash == archHash {
-		return "restored_identical"
+		state = "restored_identical"
 	}
-	return "live_differs"
+	liveStatesMu.Lock()
+	if len(liveStates) >= liveStatesMax {
+		liveStates = map[string]liveStateResult{}
+	}
+	liveStates[pair] = liveStateResult{keys: keys, state: state}
+	liveStatesMu.Unlock()
+	return state
 }
 
 const preCleanQuarantineIDPrefix = "pre_clean:"

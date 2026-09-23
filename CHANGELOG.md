@@ -74,6 +74,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- The quarantine list no longer hashes every quarantined file and its live copy on each request; a pair is compared again only when either file changes.
 - Filtering, sorting and searching long tables no longer slows down with the number of rows squared.
 - The dashboard now receives only the findings it shows, most severe first, and the Findings page checks for changes with a short version string every 15 seconds instead of downloading the full list.
 - Web UI pages now link scripts and styles with a content version, so browsers cache them for a year and still load the new files after an upgrade; text files are sent gzip-compressed.
