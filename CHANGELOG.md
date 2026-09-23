@@ -105,7 +105,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 - The Web UI now ships Chart.js 4.5.1, Tabler 1.5.1 and Tabler Icons 3.48.0, with the icon font in WOFF2 only and no references to source maps it does not ship.
 - The Web UI's shared script is split by purpose and every script keeps its helpers to itself, so scripts can no longer clash over names; scripts stay within ES2019.
-- Removed unused Web UI code, including a read-only sidebar variant that no page could show, since every page needs an admin credential.
+- Removed unused Web UI and Web UI server code, including a read-only sidebar variant that no page could show, since every page needs an admin credential.
 - Quarantine is now the one list of file backups: it shows pre-clean backups with their type and the live state of the original path, and filters by type. Cleanup History keeps the database object backups and links to it.
 - The History tab now pages with the same first, previous, next and last controls and summary as the Incidents lists.
 - The Findings select-all box now shows a partial state when only some visible findings are selected, as the other bulk tables do.

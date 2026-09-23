@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -705,9 +704,6 @@ func originPort(u *url.URL) string {
 	}
 }
 
-// Broadcast is a no-op kept for daemon compatibility; dashboard uses polling.
-func (s *Server) Broadcast(_ []alert.Finding) {}
-
 // SetSigCount sets the loaded signature count for the status API.
 func (s *Server) SetSigCount(count int) {
 	s.sigCountMu.Lock()
@@ -809,15 +805,8 @@ func (s *Server) SetScanJobs(c ScanJobController) {
 	s.scanJobs = c
 }
 
-// csmConfigJSON returns a JSON string of feature flags for the frontend.
-func (s *Server) csmConfigJSON() string {
-	b, _ := json.Marshal(s.csmConfig())
-	return string(b)
-}
-
-// csmConfig returns the feature-flag map used by the frontend. Template
-// rendering goes through jsonForScript; the csmConfigJSON wrapper exists
-// for code paths that need a pre-marshaled JSON string.
+// csmConfig returns the feature-flag map used by the frontend. Templates
+// render it through jsonForScript.
 func (s *Server) csmConfig() map[string]interface{} {
 	cfg := s.liveCfg()
 	return map[string]interface{}{

@@ -345,6 +345,12 @@ func TestScanJobsRouter_Findings_DefaultPageIsBounded(t *testing.T) {
 	if n, _, _, truncated := get("?offset=" + strconv.Itoa(scanJobFindingsDefaultLimit)); n != 5 || truncated {
 		t.Fatalf("last page: n=%d truncated=%v", n, truncated)
 	}
+	// A negative or non-numeric offset or limit falls back to the defaults.
+	for _, q := range []string{"?offset=-5&limit=-1", "?offset=x&limit=y", "?limit=0"} {
+		if n, _, limit, truncated := get(q); n != scanJobFindingsDefaultLimit || limit != scanJobFindingsDefaultLimit || !truncated {
+			t.Fatalf("%s: n=%d limit=%d truncated=%v, want the default first page", q, n, limit, truncated)
+		}
+	}
 }
 
 func TestScanJobsRouter_Findings_NilBecomesEmpty(t *testing.T) {

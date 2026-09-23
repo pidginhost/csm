@@ -333,7 +333,7 @@ func ensureTargetStillNamesInfo(target *safepath.Target, fileInfo os.FileInfo) e
 func openQuarantineRestoreTarget(path string, roots []string, createParents bool) (*safepath.Target, error) {
 	var root string
 	for _, base := range roots {
-		if isPathWithin(path, base) && path != base && len(base) > len(root) {
+		if isPathUnder(path, base) && len(base) > len(root) {
 			root = base
 		}
 	}

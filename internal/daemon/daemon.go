@@ -1576,11 +1576,6 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// response set while applying their rules before notification fanout.
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 
-	// Broadcast findings (no-op; dashboard uses polling)
-	if d.webServer != nil {
-		d.webServer.Broadcast(newFindings)
-	}
-
 	// Apply notification policy after the phpanel stream and passive
 	// observers receive the findings, so muting email does not lose evidence.
 	auditSources = append(auditSources, responseFindings...)

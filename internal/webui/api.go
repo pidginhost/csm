@@ -1105,8 +1105,6 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// apiFixPreview returns what a fix would do without applying it.
-// GET /api/v1/fix-preview?check=...&message=...
 // apiAccounts returns the account names for the scan dropdown: the accounts a
 // server-wide scan covers.
 //
@@ -1946,6 +1944,8 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
+// queryInt reads a non-negative integer query parameter. A missing, negative
+// or non-numeric value gives defaultVal.
 func queryInt(r *http.Request, key string, defaultVal int) int {
 	val := r.URL.Query().Get(key)
 	if val == "" {

@@ -24,15 +24,15 @@ func TestSetEmailAVWatcherMode(t *testing.T) {
 
 // TestSetVersion is in coverage_test.go.
 
-func TestCsmConfigJSON(t *testing.T) {
+func TestCsmConfigRendersForThePage(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.cfg.Firewall = &firewall.FirewallConfig{Enabled: true}
 	s.version = "2.2.2"
 
-	raw := s.csmConfigJSON()
+	raw := string(jsonForScript(s.csmConfig()))
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		t.Fatalf("csmConfigJSON not valid JSON: %v\nraw: %q", err, raw)
+		t.Fatalf("page config is not valid JSON: %v\nraw: %q", err, raw)
 	}
 	if data["version"] != "2.2.2" {
 		t.Errorf("version = %v", data["version"])
@@ -45,11 +45,6 @@ func TestCsmConfigJSON(t *testing.T) {
 	if _, ok := data["authScope"]; ok {
 		t.Errorf("authScope = %v; no page renders for another scope", data["authScope"])
 	}
-}
-
-func TestBroadcastNoPanic(t *testing.T) {
-	s := newTestServer(t, "tok")
-	s.Broadcast(nil)
 }
 
 func TestSetGeoIPDB(t *testing.T) {

@@ -3,7 +3,6 @@ package webui
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -105,11 +104,8 @@ const (
 // apiScanJobFindings handles GET /api/v1/scan-jobs/{id}/findings.
 // Query params: offset (default 0), limit (default 500, at most 5000).
 func (s *Server) apiScanJobFindings(w http.ResponseWriter, r *http.Request, db *store.DB, id string) {
-	offset := parseQueryInt(r, "offset", 0)
-	if offset < 0 {
-		offset = 0
-	}
-	limit := parseQueryInt(r, "limit", scanJobFindingsDefaultLimit)
+	offset := queryInt(r, "offset", 0)
+	limit := queryInt(r, "limit", scanJobFindingsDefaultLimit)
 	if limit <= 0 {
 		limit = scanJobFindingsDefaultLimit
 	}
@@ -234,18 +230,4 @@ func (s *Server) apiScanJobsCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditLog(r, "scan_job_cancel", id, "cancel requested")
 	writeJSON(w, map[string]any{"job_id": id, "state": "canceling"})
-}
-
-// parseQueryInt parses a query parameter as int. Returns def on missing or
-// non-numeric values.
-func parseQueryInt(r *http.Request, key string, def int) int {
-	raw := r.URL.Query().Get(key)
-	if raw == "" {
-		return def
-	}
-	v, err := strconv.Atoi(raw)
-	if err != nil {
-		return def
-	}
-	return v
 }

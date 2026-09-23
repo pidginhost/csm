@@ -836,3 +836,15 @@ func TestFlushCphulkIPsRevalidatesAndBatches(t *testing.T) {
 		t.Fatalf("whmapi1 args = %q", string(got))
 	}
 }
+
+// A restore path that names a restore root itself, spelled with a trailing
+// separator, is the root and not a file under it.
+func TestQuarantineRestoreTargetRejectsTheRootItself(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{root, root + "/", root + "/."} {
+		if target, err := openQuarantineRestoreTarget(path, []string{root}, false); err == nil {
+			target.Close()
+			t.Errorf("openQuarantineRestoreTarget(%q) accepted the restore root itself", path)
+		}
+	}
+}
