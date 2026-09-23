@@ -116,7 +116,7 @@
         var checkTypes = {};
         findings.forEach(function(f) { if (f.check) checkTypes[f.check] = true; });
         var checkList = Object.keys(checkTypes).sort();
-        var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Active Findings (' + findings.length + ')</h3></div>';
+        var html = '<div class="card mb-3"><div class="card-header"><h2 class="card-title">Active Findings (' + findings.length + ')</h2></div>';
         html += _buildFindingsToolbar(checkList);
         if (findings.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-findings-table"><thead><tr><th>Severity</th><th>Check</th><th>Message</th></tr></thead><tbody>';
@@ -150,7 +150,7 @@
 
     function renderQuarantine(quarantined) {
         tabTables.quarantine = null;
-        var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Quarantined Files (' + quarantined.length + ')</h3></div>';
+        var html = '<div class="card mb-3"><div class="card-header"><h2 class="card-title">Quarantined Files (' + quarantined.length + ')</h2></div>';
         html += '<div class="csm-toolbar"><input type="text" id="account-quarantine-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search by path..." aria-label="Search quarantined files"></div>';
         if (quarantined.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-quarantine-table"><thead><tr><th>Path</th><th>Size</th><th>Reason</th></tr></thead><tbody>';
@@ -196,7 +196,7 @@
 
     function renderHistory(history) {
         tabTables.history = null;
-        var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Recent History (' + history.length + ')</h3></div>';
+        var html = '<div class="card mb-3"><div class="card-header"><h2 class="card-title">Recent History (' + history.length + ')</h2></div>';
         html += _buildHistoryToolbar();
         if (history.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-history-table"><thead><tr><th>Severity</th><th>Check</th><th>Message</th><th>Time</th></tr></thead><tbody>';

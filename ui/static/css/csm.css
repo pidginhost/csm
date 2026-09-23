@@ -48,6 +48,14 @@
   --csm-border: #2d3a4e;
 }
 
+/* --- skip link: visible only when focused ------------------------------- */
+.csm-skip-link:focus {
+    position: fixed; top: .5rem; left: .5rem; z-index: 2000;
+    padding: .5rem 1rem; border: 2px solid var(--tblr-primary); border-radius: .375rem;
+    background: var(--csm-bg-card); color: var(--csm-text);
+}
+#csm-main:focus { outline: none; }
+
 /* --- click-to-copy cursor ------------------------------------------------ */
 .csm-copy { cursor: pointer; }
 .csm-copy:hover { text-decoration: underline dotted; }

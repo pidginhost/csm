@@ -434,7 +434,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
 
         // Events timeline
         if(events&&events.length>0){
-            html+='<div class="card mt-2"><div class="card-header"><h3 class="card-title">Recent Events</h3></div>';
+            html+='<div class="card mt-2"><div class="card-header"><h2 class="card-title">Recent Events</h2></div>';
             html+='<div class="table-responsive"><table class="table table-sm table-vcenter card-table">';
             html+='<thead><tr><th>Time</th><th>Type</th><th>Check</th><th>Account</th><th>Message</th></tr></thead><tbody>';
             for(var i=0;i<events.length;i++){

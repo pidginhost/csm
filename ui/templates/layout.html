@@ -13,6 +13,7 @@
     <script src="{{asset "js/theme-init.js"}}"></script>
 </head>
 <body class="layout-fluid" data-csm-page="{{template "page" .}}">
+    <a class="visually-hidden-focusable csm-skip-link" href="#csm-main">Skip to content</a>
     <div class="page">
         <aside class="navbar navbar-vertical navbar-expand-lg csm-sidebar" data-bs-theme="dark" aria-label="Primary navigation">
             <div class="container-fluid">
@@ -217,7 +218,7 @@
                 <span><strong>Update available:</strong> <span id="csm-update-version"></span> &mdash; current version is <span id="csm-update-current"></span>. Run <code id="csm-update-cmd">apt upgrade csm</code> to upgrade.</span>
                 <a href="https://github.com/pidginhost/csm/releases" target="_blank" rel="noopener" class="ms-2">Release notes</a>
             </div>
-            <main class="page-body">
+            <main class="page-body" id="csm-main" tabindex="-1">
                 <div class="container-xl">
                     {{template "content" .}}
                 </div>

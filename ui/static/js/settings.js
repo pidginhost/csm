@@ -370,7 +370,7 @@
         // Header
         const header = document.createElement("div");
         header.className = "settings-panel-header";
-        const h = document.createElement("h3");
+        const h = document.createElement("h2");
         h.className = "settings-panel-title";
         h.appendChild(iconEl("ti-" + (sectionMeta(data.section.id).icon || "settings")));
         h.appendChild(document.createTextNode(" " + data.section.title));
