@@ -145,6 +145,17 @@ func (s *Server) handleHistoryRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
+// handleBlockedRedirect sends the Firewall page's old address to the page.
+func (s *Server) handleBlockedRedirect(w http.ResponseWriter, r *http.Request) {
+	target := "/firewall"
+	if qs := r.URL.RawQuery; qs != "" {
+		target += "?" + qs
+	}
+	// #nosec G710 -- target always starts with the fixed same-origin
+	// /firewall path; the incoming query can only add parameters.
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
 func (s *Server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, r, "quarantine.html", quarantineData{
 		Hostname: s.cfg.Hostname,

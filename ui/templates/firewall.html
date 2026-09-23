@@ -24,7 +24,7 @@
         <button type="button" class="btn btn-ghost-secondary" data-fw-nav="blocks" aria-pressed="false" title="Blocked IPs and subnets">
             <i class="ti ti-shield-off"></i>&nbsp;Blocks
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="allow" aria-pressed="false" title="Allow rules, trusted IPs, port exceptions">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="allow" aria-pressed="false" title="Allow rules, whitelisted IPs, port exceptions">
             <i class="ti ti-shield-up"></i>&nbsp;Allow Rules
         </button>
         <button type="button" class="btn btn-ghost-secondary" data-fw-nav="config" aria-pressed="false" title="Read-only firewall configuration summary">
@@ -259,7 +259,7 @@
     <section data-fw-view="allow" hidden>
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Trust IP</h3>
+                <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Allow or Whitelist an IP</h3>
             </div>
             <div class="card-body">
                 <form id="trust-form" class="row g-2 align-items-end">
@@ -271,7 +271,7 @@
                         <label class="form-label mb-1" for="trust-mode">Mode</label>
                         <select id="trust-mode" class="form-select">
                             <option value="firewall">Firewall allow rule only</option>
-                            <option value="trusted">Trusted IP</option>
+                            <option value="trusted">Whitelist</option>
                         </select>
                     </div>
                     <div class="col-lg-3">

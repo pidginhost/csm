@@ -1030,6 +1030,7 @@ body.theme-dark { background-color: var(--csm-bg-page); }
     .page-wrapper { margin-left: 244px; }
 }
 .csm-sidebar .navbar-brand a { color: inherit; }
+.csm-sidebar-brand-rest { display: block; font-size: .75rem; font-weight: 500; opacity: .75; }
 .csm-sidebar .navbar-brand a:hover { text-decoration: none; }
 
 .csm-nav-group { padding: 0.25rem 0 0.5rem; }

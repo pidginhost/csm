@@ -14,9 +14,12 @@ groups only reorder visibility:
 
 - **Overview** - Dashboard
 - **Triage** - Incidents, Findings (Active and History tabs)
-- **Response** - Firewall, Quarantine, Cleanup, Email, ModSecurity, Threat Intel
-- **Operations** - Performance, Hardening, Audit
-- **Configuration** - Rules, ModSec Rules, Verified Bots, Settings
+- **Response** - Firewall, Quarantine, Cleanup History, Email Security, ModSecurity, Threat Intelligence
+- **Operations** - Performance, Server Hardening, Audit Log
+- **Configuration** - Rules, ModSecurity Rules, Verified Bots, Settings
+
+A page has the same name in the sidebar, the browser tab and its heading.
+The old `/blocked` address redirects to `/firewall`.
 
 Sidebar group expand/collapse state is saved in the browser. On
 viewports under 992px the sidebar collapses into a top-bar drawer
@@ -35,18 +38,18 @@ scope. The header links to session management.
 | **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, a permanent Block for findings that report an attacker address, sticky bulk operations (fix, dismiss, suppress), modal account scan. The open finding is kept in the URL as `?key=<finding key>`, so the link reopens it |
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export; `window=24h` (1 to 720 hours) shows a rolling window instead of calendar days |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
-| **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
+| **Cleanup History** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
 | **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), the whitelist and allow rules (Allow Rules tab), search, audit log; the lookup links to Threat Intel for the same address; destructive actions live under the Danger tab |
-| **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, Blocked IPs / Events tabs, and a Manage Rules link to ModSec Rules. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
-| **ModSec Rules** | `/modsec/rules` | Enable or disable CSM rules (applied with one reload) and firewall escalation exclusions; the exclusion list works even when rule management is not configured |
-| **Email** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
+| **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, Blocked IPs / Events tabs, and a Manage Rules link to ModSecurity Rules. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
+| **ModSecurity Rules** | `/modsec/rules` | Enable or disable CSM rules (applied with one reload) and firewall escalation exclusions; the exclusion list works even when rule management is not configured |
+| **Email Security** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
-| **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN (`?ip=<address>` runs it on load), 24 hour and permanent block and whitelist actions (single and bulk), top attackers, attack type charts, trends; the lookup links to Firewall for the same address, and the whitelist itself is kept under Firewall > Allow Rules |
-| **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
+| **Threat Intelligence** | `/threat` | IP lookup with scoring/GeoIP/ASN (`?ip=<address>` runs it on load), 24 hour and permanent block and whitelist actions (single and bulk), top attackers, attack type charts, trends; the lookup links to Firewall for the same address, and the whitelist itself is kept under Firewall > Allow Rules |
+| **Server Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
 | **Incidents** | `/incident` | Correlated incident list with detail panel and bulk status changes (contained, resolved, dismissed) for the selected incidents on the page, plus forensic timeline search by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |
 | **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
-| **Audit** | `/audit` | Every operator action in the Web UI and API, including logins, logouts and session revocations, with the credential that acted, search, action and date filters, URL state, and export. Failed logins go to the daemon log instead |
+| **Audit Log** | `/audit` | Every operator action in the Web UI and API, including logins, logouts and session revocations, with the credential that acted, search, action and date filters, URL state, and export. Failed logins go to the daemon log instead |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
 | **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer. Commands, file paths, sockets and environment variable names are shown read-only and change only in `csm.yaml`; changing the rspamd or upstream address requires entering its credential again |
 | **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session (confirmed first) |

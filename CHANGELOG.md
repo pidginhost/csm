@@ -86,6 +86,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- Web UI pages now carry the same name in the sidebar, the browser tab and the heading, the product is named Continuous Security Monitor throughout, the Firewall page calls its whitelist mode Whitelist, and the old /blocked address redirects to the Firewall page.
 - The Refresh button now reloads each page's data in place instead of reloading the whole page on some of them, and asks before discarding unsaved Settings, Verified Bots or staged ModSec rule changes.
 - The Web UI header now says when the page's data was last loaded instead of when any request last succeeded, and shows the auto-refresh pause button only on pages that refresh on a timer.
 - Web UI error notices now stay until closed instead of fading after five seconds, the same error is not stacked, and failure messages no longer read Error: Error:.

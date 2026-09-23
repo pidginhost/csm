@@ -1023,14 +1023,14 @@ function updateTrustForm() {
     var mode = modeEl.value || 'firewall';
     if (mode === 'trusted') {
         durationEl.innerHTML = [
-            '<option value="permanent">Permanent trusted IP</option>',
-            '<option value="24">Temporary trusted IP: 24 hours</option>',
-            '<option value="168">Temporary trusted IP: 7 days</option>'
+            '<option value="permanent">Permanent</option>',
+            '<option value="24">24 hours</option>',
+            '<option value="168">7 days</option>'
         ].join('');
         reasonGroupEl.classList.add('d-none');
         reasonEl.value = '';
-        submitEl.innerHTML = '<i class="ti ti-shield-check"></i>&nbsp;Trust IP';
-        helpEl.textContent = 'Trusted IP clears current blocks, adds a firewall allow, and prevents future auto-blocking until it expires or is removed.';
+        submitEl.innerHTML = '<i class="ti ti-shield-check"></i>&nbsp;Whitelist IP';
+        helpEl.textContent = 'Whitelisting clears current blocks, adds a firewall allow rule, and prevents future auto-blocking until it expires or is removed.';
         return;
     }
 

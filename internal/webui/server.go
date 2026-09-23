@@ -283,7 +283,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/history", s.requireAuth(http.HandlerFunc(s.handleHistoryRedirect)))
 		mux.Handle("/quarantine", s.requireAuth(http.HandlerFunc(s.handleQuarantine)))
 		mux.Handle("/cleanup-history", s.requireAuth(http.HandlerFunc(s.handleCleanupHistory)))
-		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleFirewall))) // redirect old URL
+		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleBlockedRedirect)))
 		mux.Handle("/firewall", s.requireAuth(http.HandlerFunc(s.handleFirewall)))
 		mux.Handle("/threat", s.requireAuth(http.HandlerFunc(s.handleThreat)))
 		mux.Handle("/rules", s.requireAuth(http.HandlerFunc(s.handleRules)))
