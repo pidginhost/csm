@@ -512,11 +512,17 @@ function dismissOne(key) {
 // A suppression without a path pattern hides every finding of the check and
 // stops its remediation, so that scope is a separate, explicit choice in one
 // dialog that says what the rule will cover before it is saved.
+// suppressDefaultPattern pre-fills the finding's own file. The pattern is a
+// glob, so characters the server's matcher treats as syntax are escaped to
+// match that file literally.
 function suppressDefaultPattern(message, filePath) {
-    if (filePath) return filePath;
-    // e.g. "YARA rule match: /home/user/file.php"
-    var m = (message || '').match(/:\s*(\/\S+)/);
-    return m ? m[1] : '';
+    var path = filePath;
+    if (!path) {
+        // e.g. "YARA rule match: /home/user/file.php"
+        var m = (message || '').match(/:\s*(\/\S+)/);
+        path = m ? m[1] : '';
+    }
+    return path.replace(/[\\*?[\]]/g, '\\$&');
 }
 
 function suppressDialogScope() {

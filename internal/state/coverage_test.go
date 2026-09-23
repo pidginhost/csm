@@ -1028,6 +1028,19 @@ func TestIsSuppressedPathPatternFilePath(t *testing.T) {
 	}
 }
 
+// The Web UI escapes glob characters when it pre-fills a file's own path, so
+// a rule made from a finding matches that file literally and nothing else.
+func TestIsSuppressedEscapedPatternMatchesTheLiteralFile(t *testing.T) {
+	s := openTestStore(t)
+	rules := []SuppressionRule{{Check: "malware", PathPattern: `/home/u/public_html/\[slug\]/p\?g\*.php`}}
+	if !s.IsSuppressed(alert.Finding{Check: "malware", FilePath: "/home/u/public_html/[slug]/p?g*.php"}, rules) {
+		t.Error("escaped pattern should match the literal file")
+	}
+	if s.IsSuppressed(alert.Finding{Check: "malware", FilePath: "/home/u/public_html/s/pag1.php"}, rules) {
+		t.Error("escaped pattern must not match other names")
+	}
+}
+
 func TestIsSuppressedNoMatch(t *testing.T) {
 	s := openTestStore(t)
 	rules := []SuppressionRule{{Check: "malware", PathPattern: "/opt/*"}}

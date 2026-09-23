@@ -80,6 +80,17 @@ test('opening the dialog pre-fills the finding path and path scope', () => {
     assert.equal(el('suppress-finding-check').textContent, 'webshell');
 });
 
+// The pattern is a glob. A file named with [, ], * or ? pre-filled as-is
+// matched other names or none, so the rule never hid the finding it was made
+// from. The pre-filled pattern escapes them, as the server's matcher expects.
+test('the pre-filled pattern matches the file literally', () => {
+    const { context, el } = dialog();
+    context.suppressFinding('webshell', 'found', '/home/a/public_html/[slug]/p?g*.php');
+    assert.equal(el('suppress-finding-pattern').value, '/home/a/public_html/\\[slug\\]/p\\?g\\*.php');
+    context.suppressFinding('webshell', 'YARA rule match: /home/a/[x].php', '');
+    assert.equal(el('suppress-finding-pattern').value, '/home/a/\\[x\\].php');
+});
+
 test('submitting with no path and path scope sends nothing', async () => {
     const { context, el, requests } = dialog();
     context.suppressFinding('webshell', 'no path in this message', '');

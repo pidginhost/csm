@@ -356,7 +356,7 @@ A dispatch uses one slot only when email or a generic webhook successfully deliv
 
 Create suppression rules to silence known false positives:
 
-- From the **Findings** page: click the suppress button on any finding
+- From the **Findings** page: click the suppress button on any finding. The path pattern is a glob; the dialog pre-fills the finding's own file with `[`, `]`, `*`, `?` and `\` escaped, so the rule matches that file only
 - From the **Rules** page: manage suppression rules directly
 - Via API: `POST /api/v1/suppressions`
 
