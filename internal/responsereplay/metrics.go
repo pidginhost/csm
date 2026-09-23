@@ -1,6 +1,7 @@
 package responsereplay
 
 import (
+	"maps"
 	"math"
 	"slices"
 	"time"
@@ -36,12 +37,47 @@ func Distribute(samples []int64) Distribution {
 // neither merges nor drops one; admission's own counter still keys on the
 // formatted local hour.
 func HourlyCounts(times []time.Time, first, last time.Time) []int64 {
-	start := first.Truncate(time.Hour)
-	counts := make([]int64, int(last.Truncate(time.Hour).Sub(start)/time.Hour)+1)
+	start := hourIndex(first)
+	counts := make([]int64, int(hourIndex(last)-start)+1)
 	for _, t := range times {
-		if i := int(t.Truncate(time.Hour).Sub(start) / time.Hour); i >= 0 && i < len(counts) {
+		if i := int(hourIndex(t) - start); i >= 0 && i < len(counts) {
 			counts[i]++
 		}
 	}
 	return counts
+}
+
+// HourlyDistribution includes empty elapsed hours without allocating a sample
+// per hour. Sparse recordings can span more than a time.Duration can hold.
+func HourlyDistribution(times []time.Time, first, last time.Time) Distribution {
+	start, end := hourIndex(first), hourIndex(last)
+	occupied := map[int64]int64{}
+	for _, t := range times {
+		if hour := hourIndex(t); hour >= start && hour <= end {
+			occupied[hour]++
+		}
+	}
+	n := int(end-start) + 1
+	frequencies := map[int64]int{0: n - len(occupied)}
+	for _, count := range occupied {
+		frequencies[count]++
+	}
+	values := slices.Sorted(maps.Keys(frequencies))
+	rank := func(percent int) *int64 {
+		// Split the multiplication to avoid overflow for large populations.
+		remaining := n/100*percent + (n%100*percent+99)/100
+		for _, value := range values {
+			remaining -= frequencies[value]
+			if remaining <= 0 {
+				return &value
+			}
+		}
+		return nil
+	}
+	return Distribution{Count: n, P50: rank(50), P90: rank(90), P99: rank(99), Max: rank(100)}
+}
+
+func hourIndex(t time.Time) int64 {
+	// Truncate before dividing so pre-epoch partial hours round down too.
+	return t.Truncate(time.Hour).Unix() / 3600
 }

@@ -3,6 +3,7 @@ package responsereplay
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -81,5 +82,33 @@ func TestNonScanReasonPrefixesAreTheApplyBlockReasons(t *testing.T) {
 	want := []string{"challenge timeout: ", "central-intel (locally corroborated)", "CSM credential_spray: ", "CSM incident: "}
 	if strings.Join(NonScanReasonPrefixes, "|") != strings.Join(want, "|") {
 		t.Fatalf("prefixes = %q", NonScanReasonPrefixes)
+	}
+}
+
+func TestBundleRejectsNegativeCounters(t *testing.T) {
+	for _, field := range []string{"applied", "action.reason", "finding_rows", "unique_finding_ids", "duplicate_finding_rows", "finding_rows_without_id",
+		"action_rows", "action_rows_with_finding_id", "action_rows_matched", "action_rows_missing_finding", "action_rows_without_finding_id",
+		"durable_rows", "durable_keys", "durable_identical_duplicates", "durable_conflicting_keys", "firewall_rows"} {
+		t.Run(field, func(t *testing.T) {
+			var m map[string]any
+			if err := json.Unmarshal([]byte(bundleFixture), &m); err != nil {
+				t.Fatal(err)
+			}
+			section := "join"
+			switch field {
+			case "applied":
+				section = "action_results"
+			case "action.reason":
+				section = "dropped_fields"
+			}
+			m[section].(map[string]any)[field] = -1
+			body, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := ReadBundleManifest(writeBundle(t, string(body))); !errors.Is(err, errBundle) {
+				t.Fatalf("negative %s accepted: %v", field, err)
+			}
+		})
 	}
 }

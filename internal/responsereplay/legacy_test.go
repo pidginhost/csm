@@ -385,6 +385,17 @@ func TestLegacyRefusesBackwardsTimeAndBadConfig(t *testing.T) {
 	}
 }
 
+func TestLegacyFirstBatchBeforeZeroTime(t *testing.T) {
+	l := newTestLegacy(t, testConfig(10), LegacyState{})
+	start := time.Date(0, 6, 1, 12, 0, 0, 0, time.UTC)
+	if out := step(t, l, hardBatch(start, "203.0.113.1")); out.Blocked != 1 {
+		t.Fatalf("first batch was not applied: %+v", out)
+	}
+	if _, err := l.Step(Batch{At: start.Add(-time.Nanosecond)}); !errors.Is(err, errTimeBackwards) {
+		t.Fatalf("backwards time accepted after the first batch: %v", err)
+	}
+}
+
 func TestLegacyStateCopiesAreIsolated(t *testing.T) {
 	initial := LegacyState{Pending: []PendingEntry{{Finding: hard("203.0.113.1"), IP: "203.0.113.1"}}, Entries: []TempEntry{{IP: "198.51.100.1", BlockedAt: t0, ExpiresAt: t0.Add(time.Hour)}}}
 	l := newTestLegacy(t, testConfig(10), initial)

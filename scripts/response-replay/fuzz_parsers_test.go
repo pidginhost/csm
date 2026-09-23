@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/responsereplay"
@@ -14,13 +15,15 @@ func FuzzClassifyObservation(f *testing.F) {
 		{"WARNING", "AUTO-BLOCK [dry-run]: 203.0.113.4 would be blocked (expires in 1h0m0s)", "Reason: x"},
 		{"CRITICAL", "AUTO-BLOCK-SUBNET: 203.0.113.0/24 blocked", ""},
 		{"CRITICAL", "AUTO-BLOCK:  blocked (expires in 1h)", "Reason: CSM credential_spray: "},
+		{"CRITICAL", "AUTO-BLOCK: alice.example.net blocked (expires in 1h)", "Reason: challenge timeout: x"},
+		{"CRITICAL", "AUTO-BLOCK: 203.0.113.1:443 blocked (expires in 1h)", "Reason: CSM incident: x"},
 	} {
 		f.Add(seed[0], seed[1], seed[2])
 	}
 	f.Fuzz(func(t *testing.T, severity, message, details string) {
 		obs, kind := classifyObservation(responsereplay.Finding{Check: "auto_block", Severity: severity, Message: message, Details: details})
-		// Only a positive lease on a named target is ever applied.
-		if kind == observationNonScan && (obs.TTL <= 0 || obs.IP == "") {
+		// Only a positive lease on a single IP address is ever applied.
+		if kind == observationNonScan && (obs.TTL <= 0 || net.ParseIP(obs.IP) == nil) {
 			t.Fatalf("applied observation %+v", obs)
 		}
 		if kind == observationNone {

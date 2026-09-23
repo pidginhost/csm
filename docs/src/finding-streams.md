@@ -252,7 +252,9 @@ go build -o /tmp/response-replay ./scripts/response-replay
   on the machine running the replay.
 - A recorded block from a challenge timeout, central intel, a credential
   spray or an incident is applied as recorded: it takes a firewall slot but
-  not the hourly budget. A permanent one is counted, not modelled.
+  not the hourly budget. Only a single IP address is accepted as the block
+  target; malformed targets are counted as unclassified rows. A permanent
+  block is counted, not modelled.
 - Batches are inferred from equal timestamps. Recordings hold no empty scans,
   so queued work drains only when another finding arrives. Rows without a
   timestamp are counted and left out.
@@ -263,9 +265,15 @@ go build -o /tmp/response-replay ./scripts/response-replay
   allowlist protection, verdict callbacks, subnet blocks, permanent
   escalation, retries and failures, and manual unblocks. It carries no
   address, id, name or text from the recording.
+- Hourly distributions include empty elapsed hours across the full recorded
+  time span, without allocating a sample for each empty hour. The first
+  stamped row establishes the replay clock, including dates before year one.
 - With `--manifest`, the report checks that the manifest describes this exact
   recording and carries its coverage and recorded outcomes beside the
   replay. Without one, the report says the recording has no statement of
-  what was collected with it.
+  what was collected with it. Negative outcome and join counts are refused.
+- A report cannot replace its recording or manifest, including through
+  symbolic links, parent-directory traversal or hard links. It is staged
+  beside the resolved destination and published as a private file.
 - Like a manifest, a report needs a build of a known commit without local
   changes.

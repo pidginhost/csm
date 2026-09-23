@@ -124,8 +124,21 @@ func validBundle(m BundleManifest) bool {
 			return false
 		}
 	}
-	for k := range m.ActionResults {
-		if !bundleResults[k] {
+	for k, count := range m.ActionResults {
+		if !bundleResults[k] || count < 0 {
+			return false
+		}
+	}
+	for _, count := range m.DroppedFields {
+		if count < 0 {
+			return false
+		}
+	}
+	j := m.Join
+	for _, count := range []int{j.FindingRows, j.UniqueFindingIDs, j.DuplicateFindingRows, j.FindingRowsWithoutID,
+		j.ActionRows, j.ActionRowsWithFindingID, j.ActionRowsMatched, j.ActionRowsMissingFinding, j.ActionRowsWithoutFindingID,
+		j.DurableRows, j.DurableKeys, j.DurableIdenticalDuplicates, j.DurableConflictingKeys, j.FirewallRows} {
+		if count < 0 {
 			return false
 		}
 	}

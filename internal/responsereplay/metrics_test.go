@@ -82,3 +82,16 @@ func TestHourlyBucketsAcrossDaylightSavingChanges(t *testing.T) {
 		t.Fatalf("spring forward buckets = %v", got)
 	}
 }
+
+func TestHourlyBucketsBeyondDurationRange(t *testing.T) {
+	first := time.Date(1700, 1, 1, 0, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wantHours := int((last.Unix()-first.Unix())/3600) + 1
+	counts := HourlyCounts([]time.Time{first, last.Add(-time.Hour), last}, first, last)
+	if len(counts) != wantHours {
+		t.Fatalf("hour count = %d, want %d", len(counts), wantHours)
+	}
+	if counts[0] != 1 || counts[len(counts)-2] != 1 || counts[len(counts)-1] != 1 {
+		t.Fatal("distant hours were merged")
+	}
+}

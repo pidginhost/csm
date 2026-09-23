@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -240,7 +241,7 @@ func classifyObservation(f responsereplay.Finding) (responsereplay.ObservedBlock
 		return responsereplay.ObservedBlock{}, observationNone
 	}
 	m := autoBlockMessage.FindStringSubmatch(f.Message)
-	if f.Severity != alert.Critical.String() || m == nil {
+	if f.Severity != alert.Critical.String() || m == nil || net.ParseIP(m[1]) == nil {
 		return responsereplay.ObservedBlock{}, observationUnclassified
 	}
 	reason, ok := strings.CutPrefix(f.Details, "Reason: ")
@@ -379,7 +380,7 @@ func (r *replayRun) execute(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err = checkOutput(o); err != nil {
+	if err = checkOutput(&o); err != nil {
 		return err
 	}
 	tool := r.revision()
@@ -501,8 +502,8 @@ func replay(rep *report, rec responsereplay.Recording, policy policyInfo, loc *t
 	if len(batches) > 0 {
 		first, last := batches[0].At.UTC(), batches[len(batches)-1].At.UTC()
 		rep.Input.FirstTS, rep.Input.LastTS = &first, &last
-		rep.Distributions.HourlyScanBlocks = responsereplay.Distribute(responsereplay.HourlyCounts(scanTimes, first, last))
-		rep.Distributions.HourlyAllBlocks = responsereplay.Distribute(responsereplay.HourlyCounts(allTimes, first, last))
+		rep.Distributions.HourlyScanBlocks = responsereplay.HourlyDistribution(scanTimes, first, last)
+		rep.Distributions.HourlyAllBlocks = responsereplay.HourlyDistribution(allTimes, first, last)
 	}
 	return nil
 }
@@ -510,20 +511,30 @@ func replay(rep *report, rec responsereplay.Recording, policy policyInfo, loc *t
 // checkOutput runs before anything is read or written: the report must not
 // be the recording or the manifest, by path, through a symlinked directory
 // or as a hard link, and an existing report path must be a regular file.
-func checkOutput(o options) error {
+func checkOutput(o *options) error {
 	if info, err := os.Lstat(o.out); err == nil && !info.Mode().IsRegular() {
 		return errUnsafeOutput
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errWrite
 	}
-	out := resolve(o.out)
+	out, err := resolve(o.out)
+	if err != nil {
+		return errWrite
+	}
 	for _, p := range []string{o.findings, o.manifest} {
 		if p == "" {
 			continue
 		}
-		other := resolve(p)
+		other, err := resolve(p)
+		if err != nil {
+			return errWrite
+		}
 		if out.path == other.path || (out.info != nil && other.info != nil && os.SameFile(out.info, other.info)) {
 			return errOutputAlias
 		}
 	}
+	// Stage and publish beside the exact destination that was checked.
+	o.out = out.path
 	return nil
 }
 
@@ -532,24 +543,63 @@ type resolved struct {
 	info os.FileInfo
 }
 
-// resolve follows every symlink it can: the whole path when it exists, else
-// its directory. A path that cannot be resolved compares lexically.
-func resolve(p string) resolved {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		abs = p
+// Resolve links before '..', including in destinations not created yet.
+// Cleaning the spelling first can hide an alias of a protected input.
+func resolve(p string) (resolved, error) {
+	if !filepath.IsAbs(p) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return resolved{}, errWrite
+		}
+		p = wd + string(filepath.Separator) + p
 	}
-	path := abs
-	if full, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
-		path = full
-	} else if dir, dirErr := filepath.EvalSymlinks(filepath.Dir(abs)); dirErr == nil {
-		path = filepath.Join(dir, filepath.Base(abs))
+	path := string(filepath.Separator)
+	parts := strings.Split(p, string(filepath.Separator))
+	links := 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			path = filepath.Dir(path)
+			continue
+		}
+		next := filepath.Join(path, part)
+		info, err := os.Lstat(next)
+		if errors.Is(err, os.ErrNotExist) {
+			path = next
+			continue
+		}
+		if err != nil {
+			return resolved{}, errWrite
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			links++
+			if links > 255 {
+				return resolved{}, errWrite
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return resolved{}, errWrite
+			}
+			if filepath.IsAbs(target) {
+				path = string(filepath.Separator)
+			}
+			parts = append(strings.Split(target, string(filepath.Separator)), parts...)
+			continue
+		}
+		if len(parts) > 0 && !info.IsDir() {
+			return resolved{}, errWrite
+		}
+		path = next
 	}
 	info, err := os.Stat(path)
-	if err != nil {
-		info = nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return resolved{}, errWrite
 	}
-	return resolved{path, info}
+	return resolved{path, info}, nil
 }
 
 // writeReport publishes the report whole or not at all, owner-only.

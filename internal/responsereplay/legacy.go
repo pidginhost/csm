@@ -109,6 +109,7 @@ type Legacy struct {
 	state   LegacyState
 	rng     *rand.Rand
 	now     time.Time
+	started bool
 }
 
 var (
@@ -171,11 +172,12 @@ func (l *Legacy) Blocked(ip string, now time.Time) bool {
 
 // Step applies one batch at batch.At.
 func (l *Legacy) Step(batch Batch) (BatchOutcome, error) {
-	if batch.At.Before(l.now) {
+	if l.started && batch.At.Before(l.now) {
 		return BatchOutcome{}, errTimeBackwards
 	}
 	now := batch.At
 	l.now = now
+	l.started = true
 	var out BatchOutcome
 	l.state.Entries = slices.DeleteFunc(l.state.Entries, func(e TempEntry) bool {
 		return !e.ExpiresAt.IsZero() && !e.ExpiresAt.After(now)

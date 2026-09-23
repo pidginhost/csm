@@ -508,6 +508,104 @@ func TestReplayRefusals(t *testing.T) {
 	}
 }
 
+func TestReplayRefusesTraversalAliases(t *testing.T) {
+	for _, target := range []string{"findings", "manifest"} {
+		for _, traversed := range []string{"input", "output"} {
+			t.Run(target+"/"+traversed, func(t *testing.T) {
+				dir := t.TempDir()
+				parent := filepath.Join(dir, "private")
+				child := filepath.Join(parent, "child")
+				if err := os.MkdirAll(child, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				findings := writeStream(t, parent, "findings.jsonl.gz", fixtureEvents()...)
+				manifest := bundleFor(t, findings, 5)
+				protected := findings
+				if target == "manifest" {
+					protected = manifest
+				}
+				before, err := os.ReadFile(protected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				link := filepath.Join(dir, "link")
+				if err = os.Symlink(child, link); err != nil {
+					t.Fatal(err)
+				}
+				alias := link + "/../" + filepath.Base(protected)
+				out := alias
+				if traversed == "input" {
+					out = protected
+					if target == "manifest" {
+						manifest = alias
+					} else {
+						findings = alias
+					}
+				}
+				var stdout bytes.Buffer
+				if err = testRun().execute(fixtureArgs(findings, out, "--manifest", manifest), &stdout); !errors.Is(err, errOutputAlias) || stdout.Len() != 0 {
+					t.Errorf("alias not refused: %v; summary %q", err, stdout.String())
+				}
+				after, err := os.ReadFile(protected)
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("protected input was replaced: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestReplayCreatesReportThroughTraversal(t *testing.T) {
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "findings.jsonl.gz", fixtureEvents()...)
+	parent := filepath.Join(dir, "private")
+	if err := os.MkdirAll(filepath.Join(parent, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(filepath.Join(parent, "child"), link); err != nil {
+		t.Fatal(err)
+	}
+	out := link + "/../reports/report.json"
+	if err := testRun().execute(fixtureArgs(findings, out), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	readReport(t, filepath.Join(parent, "reports", "report.json"))
+	if _, err := os.Stat(filepath.Join(dir, "reports")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("created a directory outside the resolved destination: %v", err)
+	}
+}
+
+func TestReplayObservationRequiresAnAddress(t *testing.T) {
+	for _, target := range []string{"alice.example.net", "203.0.113.0/24", "203.0.113.1:443", "[2001:db8::1]"} {
+		f := responsereplay.Finding{Check: "auto_block", Severity: "CRITICAL",
+			Message: "AUTO-BLOCK: " + target + " blocked (expires in 1h0m0s)", Details: "Reason: challenge timeout: x"}
+		if _, kind := classifyObservation(f); kind != observationUnclassified {
+			t.Errorf("non-address %q counted as a live block: %v", target, kind)
+		}
+	}
+}
+
+func TestReplaySparseLongRecording(t *testing.T) {
+	first := time.Date(1600, 1, 1, 0, 0, 0, 0, time.UTC)
+	last := time.Date(9999, 12, 31, 23, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "findings.jsonl.gz",
+		event(first, "smtp_bruteforce", alert.Critical, "SMTP brute force from 203.0.113.1", ""),
+		event(last, "smtp_bruteforce", alert.Critical, "SMTP brute force from 203.0.113.2", ""))
+	out := filepath.Join(dir, "report.json")
+	if err := testRun().execute(fixtureArgs(findings, out), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := readReport(t, out)
+	want := map[string]any{"count": float64((last.Unix()-first.Unix())/3600 + 1), "p50": 0.0, "p90": 0.0, "p99": 0.0, "max": 1.0}
+	for _, kind := range []string{"hourly_scan_blocks", "hourly_all_blocks"} {
+		if got := sub(r, "distributions", kind); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s = %v, want %v", kind, got, want)
+		}
+	}
+}
+
 func TestReplayResolvesDefaults(t *testing.T) {
 	dir := t.TempDir()
 	findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
