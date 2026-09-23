@@ -36,9 +36,9 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.releaseScan()
 
-	// Extend write deadline for this long-running request
+	// The audit can outlast the server's WriteTimeout; extend, never shorten.
 	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Now().Add(3 * time.Minute))
+	_ = rc.SetWriteDeadline(time.Now().Add(longRequestTimeout))
 
 	report := checks.RunHardeningAudit(s.liveCfg())
 	s.auditLog(r, "hardening_run", "server", "hardening audit run")

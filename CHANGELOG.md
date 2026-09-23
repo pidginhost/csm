@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- A hardening audit that runs longer than three minutes now returns its report instead of failing after saving it.
 - Block, allow, remove-allow, cPHulk clear and unban now record an IPv6 address typed in any spelling under its canonical form, so audit entries and incident records match the firewall state.
 - The scan jobs API now rejects request bodies with unknown fields or more than a few kilobytes, so a misspelt option no longer starts a scan without it.
 - The History CSV export now applies the date range, severity and search shown on the History tab, so narrowing the filters reaches entries older than the newest 5,000. The button no longer claims to export the full history.

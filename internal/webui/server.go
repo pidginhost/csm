@@ -89,6 +89,13 @@ func (d noListDir) Open(name string) (http.File, error) {
 	return f, nil
 }
 
+// serverWriteTimeout bounds a response. Handlers that run longer (account
+// scans, the hardening audit) extend their own deadline to longRequestTimeout.
+const (
+	serverWriteTimeout = 300 * time.Second
+	longRequestTimeout = 10 * time.Minute
+)
+
 // Server is the web UI HTTP server. Serves API always; serves HTML pages
 // and static files only if the UI directory exists on disk.
 type Server struct {
@@ -442,9 +449,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	s.httpSrv = &http.Server{
 		Addr:              cfg.WebUI.Listen,
 		Handler:           s.securityHeaders(mux),
-		ReadHeaderTimeout: 10 * time.Second,  // slowloris protection
-		ReadTimeout:       30 * time.Second,  // max time to read full request
-		WriteTimeout:      300 * time.Second, // account scans can take several minutes
+		ReadHeaderTimeout: 10 * time.Second, // slowloris protection
+		ReadTimeout:       30 * time.Second, // max time to read full request
+		WriteTimeout:      serverWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1MB
 		TLSConfig: &tls.Config{
