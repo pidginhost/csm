@@ -574,7 +574,7 @@
         h += '</tr></thead><tbody>';
         for (var i = 0; i < events.length; i++) {
             var e = events[i];
-            var sevClass = CSM.severityClassFromLabel(e.severity);
+            var sevClass = CSM.severity(e.severity).cls;
             h += '<tr>';
             h += '<td class="text-nowrap" data-sort="' + CSM.attr(e.time_iso || '') + '">' + CSM.esc(CSM.fmtDate(e.time_iso)) + '</td>';
             h += '<td><code>' + CSM.esc(e.ip) + '</code></td>';

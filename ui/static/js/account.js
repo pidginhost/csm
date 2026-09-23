@@ -13,8 +13,6 @@
     var loadSeq = 0;
     var tabInputs = {};
 
-    var sevLabels = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
-    var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
 
     function showSpinner() {
         CSM.loading(content);
@@ -123,7 +121,7 @@
             for (var i = 0; i < findings.length; i++) {
                 var f = findings[i];
                 html += '<tr data-index="' + i + '" data-severity="' + String(f.severity || 0) + '" data-check="' + CSM.attr(f.check || '') + '">';
-                html += '<td data-sort="' + Number(f.severity || 0) + '"><span class="badge badge-' + (sevClasses[f.severity] || 'warning') + '">' + (sevLabels[f.severity] || 'WARNING') + '</span></td>';
+                html += '<td data-sort="' + CSM.severity(f.severity).rank + '"><span class="badge badge-' + CSM.severity(f.severity).cls + '">' + CSM.severity(f.severity).label + '</span></td>';
                 html += '<td><code>' + CSM.esc(f.check) + '</code></td><td>' + CSM.esc(f.message) + '</td></tr>';
             }
             html += '</tbody></table></div>';
@@ -203,7 +201,7 @@
             for (var h = 0; h < history.length; h++) {
                 var e = history[h];
                 html += '<tr data-index="' + h + '" data-severity="' + String(e.severity || 0) + '" data-timestamp="' + CSM.attr(e.timestamp || '') + '">';
-                html += '<td data-sort="' + Number(e.severity || 0) + '"><span class="badge badge-' + (sevClasses[e.severity] || 'warning') + '">' + (sevLabels[e.severity] || 'WARNING') + '</span></td>';
+                html += '<td data-sort="' + CSM.severity(e.severity).rank + '"><span class="badge badge-' + CSM.severity(e.severity).cls + '">' + CSM.severity(e.severity).label + '</span></td>';
                 html += '<td><code>' + CSM.esc(e.check) + '</code></td><td>' + CSM.esc(e.message) + '</td>';
                 html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '" data-time-ago="' + CSM.esc(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td></tr>';
             }
@@ -277,7 +275,7 @@
             if (currentTab === 'findings') {
                 rows = _filteredRowsForTab('findings', cachedData.findings || []).map(function(f) {
                     return {
-                        severity: sevLabels[f.severity] || 'WARNING',
+                        severity: CSM.severity(f.severity).label,
                         check:    f.check || '',
                         message:  f.message || ''
                     };
@@ -287,7 +285,7 @@
             } else if (currentTab === 'history') {
                 rows = _filteredRowsForTab('history', cachedData.history || []).map(function(h) {
                     return {
-                        severity:  sevLabels[h.severity] || 'WARNING',
+                        severity:  CSM.severity(h.severity).label,
                         check:     h.check || '',
                         message:   h.message || '',
                         timestamp: h.timestamp || ''

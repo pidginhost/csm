@@ -222,8 +222,6 @@
             });
     }
 
-    var sevClasses = {}; for (var sk in CSM.sevMap) sevClasses[sk] = CSM.sevMap[sk].cls;
-    var sevLabelsMap = {}; for (var sl in CSM.sevMap) sevLabelsMap[sl] = CSM.sevMap[sl].label;
 
     function renderAccountsAtRisk(accounts) {
         var el = document.getElementById('accounts-at-risk');
@@ -240,14 +238,14 @@
         list.className = 'list-group list-group-flush';
         for (var i = 0; i < accounts.length; i++) {
             var a = accounts[i];
-            var cls = sevClasses[a.severity] || 'warning';
+            var cls = CSM.severity(a.severity).cls;
             var item = document.createElement('div');
             item.className = 'list-group-item';
             var flex = document.createElement('div');
             flex.className = 'd-flex align-items-center';
             var badge = document.createElement('span');
             badge.className = 'badge badge-' + cls + ' me-2';
-            badge.textContent = sevLabelsMap[a.severity] || '?';
+            badge.textContent = CSM.severity(a.severity).label;
             var link = document.createElement('a');
             link.href = '/account?name=' + encodeURIComponent(a.account);
             link.className = 'font-monospace';
@@ -1109,17 +1107,9 @@
         return 'unknown';
     }
 
-    function _sevForIncident(s) {
-        if (s === 'CRITICAL') return { sevClass: 'critical', sevLabel: 'CRITICAL' };
-        if (s === 'HIGH')     return { sevClass: 'high',     sevLabel: 'HIGH' };
-        return { sevClass: 'warning', sevLabel: 'WARNING' };
-    }
-
-    function _sevForFinding(severity) {
-        var s = String(severity || '').toUpperCase();
-        if (s === 'CRITICAL') return { sevClass: 'critical', sevLabel: 'CRITICAL' };
-        if (s === 'HIGH')     return { sevClass: 'high',     sevLabel: 'HIGH' };
-        return { sevClass: 'warning', sevLabel: 'WARNING' };
+    function _sev(severity) {
+        var s = CSM.severity(severity);
+        return { sevClass: s.cls, sevLabel: s.label };
     }
 
     function _updateSubtitle(activeIncidents, critFindings, highFindings) {
@@ -1170,7 +1160,7 @@
             var items = [];
             for (var i = 0; i < Math.min(incidents.length, 5); i++) {
                 var inc = incidents[i];
-                var sevInfo = _sevForIncident(inc.severity);
+                var sevInfo = _sev(inc.severity);
                 var owner = _incidentOwner(inc);
                 items.push({
                     sevClass: sevInfo.sevClass,
@@ -1194,7 +1184,7 @@
             }
             for (var k = 0; k < critHighFindings.length; k++) {
                 var fi = critHighFindings[k];
-                var fSev = _sevForFinding(fi.severity);
+                var fSev = _sev(fi.severity);
                 items.push({
                     sevClass: fSev.sevClass,
                     sevLabel: fSev.sevLabel,

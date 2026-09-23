@@ -26,9 +26,7 @@
     }
 
     function sevLabel(sev) {
-        if (sev >= 2) return 'CRITICAL';
-        if (sev >= 1) return 'HIGH';
-        return 'WARNING';
+        return CSM.severity(sev).label;
     }
 
     // colorClass returns a Bootstrap text color class based on thresholds.

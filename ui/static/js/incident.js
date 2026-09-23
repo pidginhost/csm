@@ -69,11 +69,6 @@
         return k;
     }
 
-    function severityNumber(label) {
-        if (label === 'CRITICAL') return 2;
-        if (label === 'HIGH') return 1;
-        return 0;
-    }
 
     function incidentSourceIP(inc) {
         if (!inc) return '';
@@ -249,7 +244,7 @@
             if (g.contained_count) meta += ', ' + g.contained_count + ' contained';
             if (g.resolved_count) meta += ', ' + g.resolved_count + ' resolved';
             var item = CSM.summaryItem({
-                severity: severityNumber(g.severity_max),
+                severity: CSM.severity(g.severity_max).level,
                 titleHTML: titleHTML,
                 meta: meta,
                 count: g.incident_count,
@@ -439,7 +434,7 @@
             html += '<tr data-incident-id="' + CSM.attr(inc.id) + '" tabindex="0"' + active + '>';
             html += '<td><input type="checkbox" class="form-check-input incident-cb" data-incident-id="' + CSM.attr(inc.id) + '" aria-label="Select incident ' + CSM.attr(labelize(inc.kind) + ' ' + owner) + '"></td>';
             html += '<td><span class="badge bg-' + (statusClasses[inc.status] || 'secondary') + '-lt">' + CSM.esc(inc.status) + '</span></td>';
-            html += '<td data-sort="' + severityNumber(inc.severity) + '"><span class="badge badge-' + CSM.severityClassFromLabel(inc.severity) + '">' + CSM.esc(inc.severity || 'UNKNOWN') + '</span></td>';
+            html += '<td data-sort="' + CSM.severity(inc.severity).rank + '"><span class="badge badge-' + CSM.severity(inc.severity).cls + '">' + CSM.esc(inc.severity || 'UNKNOWN') + '</span></td>';
             html += '<td>' + CSM.esc(labelize(inc.kind)) + '</td>';
             html += '<td><span class="text-truncate d-inline-block csm-tw-260">' + CSM.esc(owner) + '</span></td>';
             html += '<td>' + ((inc.findings || []).length) + '</td>';
@@ -749,8 +744,10 @@
 
         for (var i = 0; i < events.length; i++) {
             var e = events[i];
-            var sevClass = CSM.sevMap[e.severity] ? CSM.sevMap[e.severity].cls : 'info';
-            var sevLabel = CSM.sevMap[e.severity] ? CSM.sevMap[e.severity].label : 'INFO';
+            // Timeline entries without a severity are actions, shown as INFO.
+            var evSev = CSM.severity(e.severity);
+            var sevClass = evSev.level < 0 ? 'info' : evSev.cls;
+            var sevLabel = evSev.level < 0 ? 'INFO' : evSev.label;
             var typeLabel = e.type === 'finding' ? 'Finding' : e.type === 'action' ? 'Action' : 'Event';
             var ago = CSM.timeAgo(e.timestamp);
 
@@ -775,7 +772,7 @@
                 var rows = events.map(function(ev) {
                     return {
                         timestamp: ev.timestamp || '',
-                        severity: CSM.sevMap[ev.severity] ? CSM.sevMap[ev.severity].label : 'WARNING',
+                        severity: CSM.severity(ev.severity).label,
                         type: ev.type || '',
                         summary: ev.summary || '',
                         details: ev.details || ''

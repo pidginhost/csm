@@ -773,8 +773,8 @@ func TestSizeAndSeverityColumnsSortNumerically(t *testing.T) {
 	}
 	findingsText := string(findings)
 	for _, want := range []string{
-		"function severityRank(label) {",
-		`'<td data-sort="' + severityRank(f.severity) + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">'`,
+		// The rank comes from the shared severity table; ui/severity_test.js.
+		`'<td data-sort="' + CSM.severity(f.severity).rank + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">'`,
 	} {
 		if !strings.Contains(findingsText, want) {
 			t.Errorf("findings.js missing severity sort-rank fragment %q", want)
@@ -1053,14 +1053,13 @@ func TestSeverityBadgesUseCanonicalTokenClasses(t *testing.T) {
 	}
 	uiText := string(ui)
 	for _, want := range []string{
-		"var cls = 'secondary', label = 'UNKNOWN';",
-		"else if (severity === 0) { cls = 'warning'; label = 'WARNING'; }",
-		"return 'secondary';",
-		"CSM.severityClassFromLabel = function(label) {",
-		"String(label || '').trim().toUpperCase()",
-		"case 'CRITICAL': return 'critical';",
-		"case 'HIGH': return 'high';",
-		"case 'WARNING': return 'warning';",
+		// One table for levels and labels; ui/severity_test.js drives it.
+		"CSM.severity = function(value) {",
+		"{ level: 2, label: 'CRITICAL', cls: 'critical',",
+		"{ level: 1, label: 'HIGH', cls: 'high',",
+		"{ level: 0, label: 'WARNING', cls: 'warning',",
+		"label: 'UNKNOWN', cls: 'secondary'",
+		"var label = value.trim().toUpperCase();",
 	} {
 		if !strings.Contains(uiText, want) {
 			t.Errorf("csm-ui.js missing canonical severity helper fragment %q", want)
@@ -1092,8 +1091,8 @@ func TestSeverityBadgesUseCanonicalTokenClasses(t *testing.T) {
 	if strings.Contains(incidentText, "sevClasses[inc.severity]") {
 		t.Error("incident.js still renders the incident-list severity from its own sevClasses map")
 	}
-	if !strings.Contains(incidentText, `'<td data-sort="' + severityNumber(inc.severity) + '"><span class="badge badge-' + CSM.severityClassFromLabel(inc.severity) + '">'`) {
-		t.Error("incident.js list severity cell must render the canonical token badge via CSM.severityClassFromLabel")
+	if !strings.Contains(incidentText, `'<td data-sort="' + CSM.severity(inc.severity).rank + '"><span class="badge badge-' + CSM.severity(inc.severity).cls + '">'`) {
+		t.Error("incident.js list severity cell must render the canonical token badge via CSM.severity")
 	}
 
 	modsec, err := os.ReadFile("../../ui/static/js/modsec.js")
@@ -1105,7 +1104,7 @@ func TestSeverityBadgesUseCanonicalTokenClasses(t *testing.T) {
 		t.Error("modsec.js events table still uses the solid bg-red/bg-orange/bg-yellow severity scale")
 	}
 	for _, want := range []string{
-		"var sevClass = CSM.severityClassFromLabel(e.severity);",
+		"var sevClass = CSM.severity(e.severity).cls;",
 		`'<td><span class="badge badge-' + sevClass + '">'`,
 	} {
 		if !strings.Contains(modsecText, want) {
@@ -2700,9 +2699,9 @@ func TestAccountTablesUseSortableNumericColumns(t *testing.T) {
 	}
 	text := string(src)
 	for _, fragment := range []string{
-		`data-sort="' + Number(f.severity || 0) + '"`,
+		`data-sort="' + CSM.severity(f.severity).rank + '"`,
 		`data-sort="' + size + '"`,
-		`data-sort="' + Number(e.severity || 0) + '"`,
+		`data-sort="' + CSM.severity(e.severity).rank + '"`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Errorf("account.js missing numeric sort fragment %q", fragment)
@@ -2721,7 +2720,7 @@ func TestIncidentCSMTableDoesNotShadowServerPagination(t *testing.T) {
 		`search: false`,
 		`controls: false`,
 		`persistPerPage: false`,
-		`data-sort="' + severityNumber(inc.severity) + '"`,
+		`data-sort="' + CSM.severity(inc.severity).rank + '"`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Errorf("incident.js missing server-pagination-safe CSM.Table fragment %q", fragment)

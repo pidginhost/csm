@@ -15,8 +15,6 @@
     var historyLoaded = false;
     var loadSeq = 0;
 
-    var sevLabels = {}; for (var sk in CSM.sevMap) sevLabels[sk] = CSM.sevMap[sk].label;
-    var sevClasses = {}; for (var sk2 in CSM.sevMap) sevClasses[sk2] = CSM.sevMap[sk2].cls;
 
     function syncURL() {
         var params = new URLSearchParams(window.location.search);
@@ -118,8 +116,8 @@
         for (var i = 0; i < findings.length; i++) {
             var f = findings[i];
             var sev = f.severity !== undefined ? f.severity : 0;
-            var sevClass = sevClasses[sev] || 'warning';
-            var sevLabel = sevLabels[sev] || 'WARNING';
+            var sevClass = CSM.severity(sev).cls;
+            var sevLabel = CSM.severity(sev).label;
             var ago = f.timestamp ? CSM.timeAgo(f.timestamp) : '';
 
             var tr = document.createElement('tr');

@@ -1,47 +1,38 @@
 // CSM.ui - Shared rendering primitives (no modal/confirm logic - that stays in toast.js)
 var CSM = CSM || {};
 
-// Severity badge HTML
-var _sevTitles = {
-    2: 'Critical: immediate action required',
-    1: 'High: should be addressed promptly',
-    0: 'Warning: low-risk issue to review'
-};
-CSM.severityBadge = function(severity) {
-    var cls = 'secondary', label = 'UNKNOWN';
-    if (severity === 2) { cls = 'critical'; label = 'CRITICAL'; }
-    else if (severity === 1) { cls = 'high'; label = 'HIGH'; }
-    else if (severity === 0) { cls = 'warning'; label = 'WARNING'; }
-    var title = _sevTitles[severity] || 'Unknown severity value';
-    return '<span class="badge badge-' + cls + '" title="' + title + '">' + label + '</span>';
-};
-
-// Severity class name from numeric severity
-CSM.severityClass = function(severity) {
-    if (severity === 2) return 'critical';
-    if (severity === 1) return 'high';
-    if (severity === 0) return 'warning';
-    return 'secondary';
-};
-
-// Severity class name from a string label (CRITICAL/HIGH/WARNING, any case).
-// Centralizes the label->class mapping so pages that carry the severity as a
-// text label render the same token-backed .badge-* color as the numeric paths,
-// instead of inventing their own Bootstrap/Tabler color scale.
-CSM.severityClassFromLabel = function(label) {
-    switch (String(label || '').trim().toUpperCase()) {
-        case 'CRITICAL': return 'critical';
-        case 'HIGH': return 'high';
-        case 'WARNING': return 'warning';
+// The severity table. Findings carry a numeric level (0-2) and some APIs a
+// label; CSM.severity accepts either, in any case, and returns the label, the
+// token-backed .badge-* class, the level and a sort rank. Anything else is
+// UNKNOWN with the neutral class, never a guessed severity.
+var _severities = [
+    { level: 0, label: 'WARNING', cls: 'warning', title: 'Warning: low-risk issue to review' },
+    { level: 1, label: 'HIGH', cls: 'high', title: 'High: should be addressed promptly' },
+    { level: 2, label: 'CRITICAL', cls: 'critical', title: 'Critical: immediate action required' }
+];
+CSM.severity = function(value) {
+    var found = null;
+    if (typeof value === 'number') {
+        found = _severities[value] || null;
+    } else if (typeof value === 'string') {
+        var label = value.trim().toUpperCase();
+        for (var i = 0; i < _severities.length; i++) {
+            if (_severities[i].label === label) found = _severities[i];
+        }
     }
-    return 'secondary';
+    if (!found) return { level: -1, rank: 0, label: 'UNKNOWN', cls: 'secondary', title: 'Unknown severity value' };
+    return { level: found.level, rank: found.level + 1, label: found.label, cls: found.cls, title: found.title };
 };
 
-// Centralized severity map: numeric level → { label, cls }
-CSM.sevMap = {
-    2: { label: 'CRITICAL', cls: 'critical' },
-    1: { label: 'HIGH', cls: 'high' },
-    0: { label: 'WARNING', cls: 'warning' }
+// Severity badge HTML
+CSM.severityBadge = function(severity) {
+    var s = CSM.severity(severity);
+    return '<span class="badge badge-' + s.cls + '" title="' + s.title + '">' + s.label + '</span>';
+};
+
+// Severity badge class name
+CSM.severityClass = function(severity) {
+    return CSM.severity(severity).cls;
 };
 
 // Empty state placeholder HTML
