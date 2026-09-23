@@ -28,18 +28,11 @@
             }
         }
 
-        var bgClass = {
-            success: 'bg-success',
-            error:   'bg-danger',
-            warning: 'bg-warning',
-            info:    'bg-info'
-        }[type] || 'bg-info';
-
-        var textClass = (type === 'warning') ? 'text-dark' : 'text-white';
+        if (type !== 'success' && type !== 'error' && type !== 'warning') type = 'info';
 
         var toast = document.createElement('div');
         toast._csmKey = key;
-        toast.className = 'alert ' + bgClass + ' ' + textClass + ' d-flex align-items-center mb-2';
+        toast.className = 'alert csm-toast--' + type + ' d-flex align-items-center mb-2';
         // WEB_ROADMAP P4.2: errors interrupt with assertive so screen
         // readers announce them immediately; success/warning/info use
         // polite so they don't preempt the user mid-utterance.

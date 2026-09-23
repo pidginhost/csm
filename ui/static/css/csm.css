@@ -13,8 +13,14 @@
   --csm-secondary: #6c757d;
   --csm-high-outline-text: #9a4d00;
   --csm-warning-outline-text: #7a4f00;
+  /* Text in a status colour: 4.5:1 or better on the page and card. */
+  --csm-critical-text: #c92a2a;
+  --csm-high-text: #9a4d00;
+  --csm-warning-text: #7a4f00;
+  --csm-low-text: #1f7a31;
+  --csm-info-text: #1864ab;
   --csm-text: #1e293b;
-  --csm-text-muted: #64748b;
+  --csm-text-muted: #5f6f84;
   --csm-bg-page: #f5f7fb;
   --csm-bg-card: #ffffff;
   --csm-border: #e2e8f0;
@@ -30,6 +36,11 @@
   --csm-secondary: #94a3b8;
   --csm-high-outline-text: var(--csm-high);
   --csm-warning-outline-text: var(--csm-warning);
+  --csm-critical-text: #ff6b6b;
+  --csm-high-text: #ff922b;
+  --csm-warning-text: #ffd43b;
+  --csm-low-text: #51cf66;
+  --csm-info-text: #74c0fc;
   --csm-text: #c8d3e0;
   --csm-text-muted: #8d99ad;
   --csm-bg-page: #1a2234;
@@ -77,24 +88,26 @@
 .badge-secondary { background: var(--csm-secondary); color: #fff; }
 .theme-dark .badge-critical { color: #1a1a1a; }
 .theme-dark .badge-secondary { color: #1a1a1a; }
-.text-critical { color: var(--csm-critical); }
-.text-high { color: var(--csm-high); }
-.text-warning { color: var(--csm-warning); }
+.text-critical { color: var(--csm-critical-text); }
+.text-high { color: var(--csm-high-text); }
+.text-warning { color: var(--csm-warning-text); }
 
 /* --- Readable text on solid-color Tabler badges -------------------------- */
+/* White only where it reaches 4.5:1; lighter fills take dark text. */
 .badge.bg-red,
-.badge.bg-orange,
-.badge.bg-green,
 .badge.bg-blue,
-.badge.bg-teal,
-.badge.bg-cyan,
 .badge.bg-purple,
 .badge.bg-dark,
 .badge.bg-secondary,
-.badge.bg-danger,
-.badge.bg-success {
-    color: #fff !important;
+.badge.bg-danger {
+    color: #ffffff !important;
 }
+.badge.bg-green,
+.badge.bg-success,
+.badge.bg-teal,
+.badge.bg-cyan,
+.badge.bg-orange,
+.badge.bg-info,
 .badge.bg-yellow,
 .badge.bg-warning {
     color: #1a1a1a !important;
@@ -153,6 +166,11 @@ body.theme-dark { background-color: var(--csm-bg-page); }
 
 /* Prevent selects from stretching in flex/grid containers */
 .csm-auto-width { width: auto; }
+/* Toast colours reach 4.5:1 for their text. */
+.csm-toast--success { background: #1f7a31; color: #ffffff; }
+.csm-toast--error { background: #c92a2a; color: #ffffff; }
+.csm-toast--warning { background: #f59f00; color: #1a1a1a; }
+.csm-toast--info { background: #1864ab; color: #ffffff; }
 /* Rows and headers that open or sort from the keyboard show where focus is. */
 tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(--tblr-primary); outline-offset: -2px; }
 .csm-group-toggle { background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; }
@@ -253,8 +271,8 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 .stat-delta { font-weight: 500; opacity: 0.85; white-space: nowrap; }
-.stat-delta.up   { color: var(--csm-critical); }
-.stat-delta.down { color: var(--csm-low); }
+.stat-delta.up   { color: var(--csm-critical-text); }
+.stat-delta.down { color: var(--csm-low-text); }
 .stat-delta.flat { color: var(--csm-text-muted); }
 .csm-posture-stat {
     min-height: 4.35rem;
@@ -292,8 +310,8 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 /* --- dashboard.html: system health pill ---------------------------------- */
 #system-health-pill { padding: 0.35rem 0.6rem; font-size: 0.8125rem; }
 #system-health-pill .status-dot { vertical-align: middle; }
-#system-health-pill.health-ok   { background: rgba(47, 179, 68, 0.12); color: var(--csm-low); }
-#system-health-pill.health-warn { background: rgba(245, 159, 0, 0.14); color: var(--csm-warning); }
+#system-health-pill.health-ok   { background: rgba(47, 179, 68, 0.12); color: var(--csm-low-text); }
+#system-health-pill.health-warn { background: rgba(245, 159, 0, 0.14); color: var(--csm-warning-text); }
 #system-health-pill.health-crit { background: rgba(214, 57, 57, 0.15); color: var(--csm-critical); }
 
 /* --- dashboard.html: hidden feed items (filter chips) ------------------- */
@@ -348,7 +366,7 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 .settings-nav-link.active {
     background: rgba(66, 153, 225, 0.12);
     border-left-color: var(--csm-info);
-    color: var(--csm-info);
+    color: var(--csm-info-text);
     font-weight: 600;
 }
 .settings-nav-link.active .ti { color: var(--csm-info); }

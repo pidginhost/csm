@@ -22,7 +22,7 @@
     // --- Chart.js global defaults for dark/light theme ---
     var isDark = document.documentElement.classList.contains('theme-dark');
     var gridColor = isDark ? 'rgba(45,58,78,0.6)' : 'rgba(230,232,235,0.8)';
-    var textColor = isDark ? '#6b7a8d' : '#9da9b5';
+    var textColor = isDark ? '#94a3b8' : '#64748b';
 
     Chart.defaults.color = textColor;
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
