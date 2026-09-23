@@ -389,8 +389,9 @@ func readInputs(o options) (*inputs, error) {
 	return in, nil
 }
 
-// decodeFindingLine decodes one audit log row: the known schema, the
-// supported version and a timestamp.
+// decodeFindingLine decodes one audit log row: the known schema and the
+// supported version. Logs from before timestamps were filled in hold rows
+// with a zero time; they are kept, counted and left out of time spans.
 func decodeFindingLine(data []byte) (alert.AuditEvent, error) {
 	var e alert.AuditEvent
 	if err := decodeStrict(data, &e); err != nil {
@@ -399,7 +400,12 @@ func decodeFindingLine(data []byte) (alert.AuditEvent, error) {
 	if e.V != alert.AuditSchemaVersion {
 		return alert.AuditEvent{}, errRecordVersion
 	}
-	if e.Timestamp.IsZero() {
+	// The writer always emits ts; a zero time is a real row, a missing key
+	// is not. The strict pass above already fixed the exact key set.
+	var present struct {
+		TS json.RawMessage `json:"ts"`
+	}
+	if err := json.Unmarshal(data, &present); err != nil || present.TS == nil {
 		return alert.AuditEvent{}, errRecordTime
 	}
 	return e, nil

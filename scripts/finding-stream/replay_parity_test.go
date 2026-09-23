@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,9 +14,9 @@ import (
 
 // The replay reader decodes recordings with its own copy of the strict
 // decoder, because it may import nothing outside the standard library. Both
-// must accept and refuse the same finding rows. The one intended difference
-// is a zero timestamp: the recording tool refuses it, while replay counts the
-// row as unplaceable and leaves it out.
+// must accept and refuse the same finding rows. A zero timestamp is accepted
+// by both: the recording tool keeps and counts the row, replay counts it as
+// unplaceable and leaves it out.
 func TestReplayReaderAgreesWithRecordingDecoder(t *testing.T) {
 	valid := `{"v":1,"ts":"2026-09-08T10:00:00Z","finding_id":"fid-1","severity":"HIGH","check":"a","message":"m","details":"d","hostname":"h"}`
 	with := func(old, repl string) string { return strings.Replace(valid, old, repl, 1) }
@@ -78,7 +77,7 @@ func TestReplayReaderAgreesWithRecordingDecoder(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec, replayErr := responsereplay.ReadFindings(path)
-	if _, err := decodeFindingLine([]byte(zero)); !errors.Is(err, errRecordTime) || replayErr != nil || rec.Unstamped != 1 || len(rec.Findings) != 0 {
+	if _, err := decodeFindingLine([]byte(zero)); err != nil || replayErr != nil || rec.Unstamped != 1 || len(rec.Findings) != 0 {
 		t.Fatalf("zero timestamp: recording %v, replay %+v %v", err, rec, replayErr)
 	}
 }

@@ -53,7 +53,11 @@ type streamFile struct {
 	MaxTS   *time.Time `json:"max_ts,omitempty"`
 }
 
+// observe widens the time span. A zero time has no place in it.
 func (f *streamFile) observe(ts time.Time) {
+	if ts.IsZero() {
+		return
+	}
 	ts = ts.UTC()
 	if f.MinTS == nil || ts.Before(*f.MinTS) {
 		f.MinTS = &ts
@@ -207,6 +211,7 @@ type joinCounts struct {
 	UniqueFindingIDs           int `json:"unique_finding_ids"`
 	DuplicateFindingRows       int `json:"duplicate_finding_rows"`
 	FindingRowsWithoutID       int `json:"finding_rows_without_id"`
+	FindingRowsUnstamped       int `json:"finding_rows_unstamped"`
 	ActionRows                 int `json:"action_rows"`
 	ActionRowsWithFindingID    int `json:"action_rows_with_finding_id"`
 	ActionRowsMatched          int `json:"action_rows_matched"`
@@ -228,6 +233,9 @@ func joinRecords(findings []alert.AuditEvent, actions []actionlog.Record, audits
 	ids := map[string]bool{}
 	for _, e := range findings {
 		c.FindingRows++
+		if e.Timestamp.IsZero() {
+			c.FindingRowsUnstamped++
+		}
 		switch {
 		case e.FindingID == "":
 			c.FindingRowsWithoutID++

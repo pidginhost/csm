@@ -69,7 +69,9 @@ itself. An error names only the stream, the file's position on the command
 line, the line number and a fixed reason.
 
 Every row must parse as exactly one JSON object of the known schema, with a
-supported version and a timestamp. Unknown or repeated fields, nulls, data
+supported version and a timestamp field. Rows that older CSM versions wrote
+with a zero time are kept, counted in the manifest and left out of time
+spans. Unknown or repeated fields, nulls, data
 after the object and values over the size limits refuse the whole run.
 Malformed Unicode, non-JSON whitespace and timestamps that cannot be written
 back as JSON also refuse the run before a salt is created. Typed rows accept

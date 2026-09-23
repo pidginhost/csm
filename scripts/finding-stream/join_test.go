@@ -290,7 +290,7 @@ func TestRunJoinsRecordedOutcomes(t *testing.T) {
 	assertManifestKeys(t, manifest)
 	join := manifest["join"].(map[string]any)
 	wantJoin := map[string]any{
-		"finding_rows": 2.0, "unique_finding_ids": 2.0, "duplicate_finding_rows": 0.0, "finding_rows_without_id": 0.0,
+		"finding_rows": 2.0, "unique_finding_ids": 2.0, "duplicate_finding_rows": 0.0, "finding_rows_without_id": 0.0, "finding_rows_unstamped": 0.0,
 		"action_rows": 3.0, "action_rows_with_finding_id": 2.0, "action_rows_matched": 1.0,
 		"action_rows_missing_finding": 1.0, "action_rows_without_finding_id": 1.0,
 		"durable_rows": 0.0, "durable_keys": 0.0, "durable_identical_duplicates": 0.0, "durable_conflicting_keys": 0.0,
@@ -631,8 +631,8 @@ func TestRunInputErrorsAreFixedCodes(t *testing.T) {
 		want   string
 	}{
 		"finding unknown field":  {"findings", `{"v":1,"ts":"2026-09-08T10:00:00Z","finding_id":"x","severity":"HIGH","check":"c","message":"m","hostname":"h","alice":1}`, "findings input 1 line 3: " + string(errUnknownField)},
+		"finding without time":   {"findings", `{"v":1,"finding_id":"x","severity":"HIGH","check":"c","message":"m","hostname":"h"}`, "findings input 1 line 3: " + string(errRecordTime)},
 		"finding version":        {"findings", `{"v":2,"ts":"2026-09-08T10:00:00Z","finding_id":"x","severity":"HIGH","check":"c","message":"m","hostname":"h"}`, "findings input 1 line 3: " + string(errRecordVersion)},
-		"finding zero time":      {"findings", `{"v":1,"ts":"0001-01-01T00:00:00Z","finding_id":"x","severity":"HIGH","check":"c","message":"m","hostname":"h"}`, "findings input 1 line 3: " + string(errRecordTime)},
 		"finding nested field":   {"findings", `{"v":1,"ts":"2026-09-08T10:00:00Z","finding_id":"x","severity":"HIGH","check":"c","message":"m","hostname":"h","process":{"pid":1,"ppid":0,"uid":0,"alice":1}}`, "findings input 1 line 3: " + string(errUnknownField)},
 		"action vocabulary":      {"actions", `{"v":1,"ts":"2026-09-08T10:00:00Z","op":"respond.block_ip","action":"alice","actor":"daemon","target":"203.0.113.9","result":"applied"}`, "actions input 1 line 4: " + string(errUnknownAction)},
 		"action unknown field":   {"actions", `{"v":1,"ts":"2026-09-08T10:00:00Z","op":"respond.block_ip","action":"block","actor":"daemon","target":"203.0.113.9","result":"applied","alice":"x"}`, "actions input 1 line 4: " + string(errUnknownField)},
@@ -1081,4 +1081,33 @@ func TestPublishEncodingErrorKeepsPreviousOutput(t *testing.T) {
 	}
 	assertUnchanged(t, before)
 	assertNoStaging(t, filepath.Dir(f.out))
+}
+
+// Audit logs from before timestamps were filled in carry rows with a zero
+// time. They are kept and counted, and do not stretch the time span.
+func TestRunKeepsAndCountsUnstampedFindings(t *testing.T) {
+	f := newJoinFixture(t)
+	unstamped := f.findingsRaw[0]
+	unstamped.Timestamp, unstamped.FindingID = time.Time{}, "aaaabbbbccccdddd"
+	f.findingsRaw = append(f.findingsRaw, unstamped)
+	f.findingRows = encodeLines(t, anySlice(f.findingsRaw)...)
+	f.write(t)
+	if err := testRun().execute(f.args(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	findings, _ := readGzipRows(t, f.out)
+	if len(findings) != 3 || findings[2]["ts"] != "0001-01-01T00:00:00Z" {
+		t.Fatalf("unstamped row not kept: %v", findings)
+	}
+	manifest, _ := readManifest(t, f.manifest)
+	if got := manifest["join"].(map[string]any)["finding_rows_unstamped"]; got != 1.0 {
+		t.Fatalf("finding_rows_unstamped = %v", got)
+	}
+	in := manifest["inputs"].([]any)[0].(map[string]any)
+	out := manifest["outputs"].([]any)[0].(map[string]any)
+	for _, file := range []map[string]any{in, out} {
+		if file["records"] != 3.0 || file["min_ts"] != "2026-09-08T10:00:00Z" || file["max_ts"] != "2026-09-08T10:01:00Z" {
+			t.Fatalf("unstamped row changed the span: %v", file)
+		}
+	}
 }

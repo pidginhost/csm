@@ -54,6 +54,7 @@ type BundleJoin struct {
 	UniqueFindingIDs           int `json:"unique_finding_ids"`
 	DuplicateFindingRows       int `json:"duplicate_finding_rows"`
 	FindingRowsWithoutID       int `json:"finding_rows_without_id"`
+	FindingRowsUnstamped       int `json:"finding_rows_unstamped"`
 	ActionRows                 int `json:"action_rows"`
 	ActionRowsWithFindingID    int `json:"action_rows_with_finding_id"`
 	ActionRowsMatched          int `json:"action_rows_matched"`
@@ -135,7 +136,7 @@ func validBundle(m BundleManifest) bool {
 		}
 	}
 	j := m.Join
-	for _, count := range []int{j.FindingRows, j.UniqueFindingIDs, j.DuplicateFindingRows, j.FindingRowsWithoutID,
+	for _, count := range []int{j.FindingRows, j.UniqueFindingIDs, j.DuplicateFindingRows, j.FindingRowsWithoutID, j.FindingRowsUnstamped,
 		j.ActionRows, j.ActionRowsWithFindingID, j.ActionRowsMatched, j.ActionRowsMissingFinding, j.ActionRowsWithoutFindingID,
 		j.DurableRows, j.DurableKeys, j.DurableIdenticalDuplicates, j.DurableConflictingKeys, j.FirewallRows} {
 		if count < 0 {
