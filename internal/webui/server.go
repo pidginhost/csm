@@ -1012,7 +1012,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		// API rate limiting: 600 requests per minute per IP. /metrics takes
 		// a bearer token too, so guessing it shares the same budget.
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/metrics" {
-			ip := clientIPKey(r.RemoteAddr)
+			ip := rateLimitKey(r.RemoteAddr)
 			s.apiMu.Lock()
 			now := time.Now()
 			cutoff := now.Add(-time.Minute)

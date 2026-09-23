@@ -163,6 +163,21 @@ func clientIPKey(remoteAddr string) string {
 	return remoteAddr
 }
 
+// rateLimitKey is the client a rate limit counts: the IPv4 address, or the
+// /64 of an IPv6 address, since one IPv6 client is routed a whole /64 and can
+// rotate addresses inside it.
+func rateLimitKey(remoteAddr string) string {
+	host := clientIPKey(remoteAddr)
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return (&net.IPNet{IP: ip.Mask(net.CIDRMask(64, 128)), Mask: net.CIDRMask(64, 128)}).String()
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Redirect already-authenticated users to dashboard
 	if r.Method == http.MethodGet && s.isAuthenticated(r) {
@@ -180,8 +195,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit: 5 attempts per minute per IP (strip port from RemoteAddr)
-	ip := clientIPKey(r.RemoteAddr)
+	// Rate limit: 5 attempts per minute per client (IPv4 address or IPv6 /64)
+	ip := rateLimitKey(r.RemoteAddr)
 	s.loginMu.Lock()
 	now := time.Now()
 	attempts := s.loginAttempts[ip]
