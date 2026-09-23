@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Dates now use the saved time zone preference from the first render of a page, and changing the time zone re-renders the page. Before, a page could show dates in the browser zone until it was reloaded.
 - The "Server time" display preference now shows the server's own time zone. It always showed UTC because the page was never told the server's zone.
 - Pages opened in a background tab no longer double their refresh traffic when first shown, returning to a tab no longer reloads everything while auto-refresh is paused, and the Dashboard idle watcher list stays open across refreshes.
 - Grouped findings stay grouped while searching, filtering or sorting, and a collapsed group stays collapsed. The group headers used to pile up at the top of the table after a search.

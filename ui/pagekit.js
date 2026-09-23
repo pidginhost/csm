@@ -102,6 +102,7 @@ function loadPage(bodyHTML, scripts, options = {}) {
     window.AbortController = AbortController;
     window.EventSource = undefined;
     window.bootstrap = bootstrapStub();
+    Object.entries(options.storage || {}).forEach(([k, v]) => window.localStorage.setItem(k, v));
     Object.assign(window, options.globals || {});
     const context = vm.createContext(window);
     for (const name of scripts) {

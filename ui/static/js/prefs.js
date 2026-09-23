@@ -8,7 +8,8 @@
 //
 // All UI consumers should access state through CSM.prefs.user, never via
 // localStorage directly, so that one operator's preferences travel with their
-// token across browsers and devices.
+// token across browsers and devices. The server copy is the source of truth;
+// this browser keeps the last one it saw so the first render already uses it.
 var CSM = CSM || {};
 
 CSM.prefs = (function() {
@@ -18,6 +19,8 @@ CSM.prefs = (function() {
         auto_refresh: 'on',
         table_columns: {}
     };
+
+    var CACHE_KEY = 'csm-prefs';
 
     var state = cloneDefaults();
     var loadPromise = null;
@@ -49,6 +52,34 @@ CSM.prefs = (function() {
         return target;
     }
 
+    // replaceState swaps in src while keeping the one object CSM.prefs.user
+    // exposes.
+    function replaceState(src) {
+        var next = merge(cloneDefaults(), src);
+        Object.keys(state).forEach(function(k) { delete state[k]; });
+        Object.assign(state, next);
+    }
+
+    function readCache() {
+        try {
+            var raw = window.localStorage.getItem(CACHE_KEY);
+            return raw ? JSON.parse(raw) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // writeCache reports whether the next page load will see state.
+    function writeCache() {
+        try {
+            var raw = JSON.stringify(state);
+            window.localStorage.setItem(CACHE_KEY, raw);
+            return window.localStorage.getItem(CACHE_KEY) === raw;
+        } catch (e) {
+            return false;
+        }
+    }
+
     function applyDensity() {
         var density = state.density === 'compact' ? 'compact' : 'comfortable';
         document.documentElement.setAttribute('data-csm-density', density);
@@ -60,9 +91,8 @@ CSM.prefs = (function() {
         // saved "off" preference does not override an explicit per-device "on".
         if (!CSM || !CSM.refresh || typeof CSM.refresh.setEnabled !== 'function') return;
         if (CSM.refresh.hasPersistedChoice) return;
-        if (state.auto_refresh === 'off') {
-            CSM.refresh.setEnabled(false, { transient: true });
-        }
+        var want = state.auto_refresh !== 'off';
+        if (CSM.refresh.enabled !== want) CSM.refresh.setEnabled(want, { transient: true });
     }
 
     function applyAll() {
@@ -73,6 +103,12 @@ CSM.prefs = (function() {
             try { fn(state); } catch (e) { /* listeners must not throw */ }
         });
     }
+
+    // Dates already on screen were formatted in this zone. A different zone
+    // needs a reload, because pages do not re-render their dates.
+    merge(state, readCache());
+    var renderedZone = state.timezone;
+    applyAll();
 
     function load() {
         if (loadPromise) return loadPromise;
@@ -88,8 +124,16 @@ CSM.prefs = (function() {
         }).then(function(r) {
             return r && r.ok ? r.json() : null;
         }).then(function(blob) {
-            merge(state, blob);
+            if (!blob) {
+                applyAll();
+                return state;
+            }
+            replaceState(blob);
+            var cached = writeCache();
             applyAll();
+            // Only reload when the next load will start from this copy, so a
+            // browser that cannot store it never reloads in a loop.
+            if (cached && state.timezone !== renderedZone) window.location.reload();
             return state;
         }).catch(function() {
             applyAll();
@@ -117,9 +161,10 @@ CSM.prefs = (function() {
             body: JSON.stringify(next),
             allowNonOK: false
         }).then(function(r) { return r.json(); }).then(function(blob) {
-            state = cloneDefaults();
-            merge(state, blob);
+            replaceState(blob);
+            writeCache();
             applyAll();
+            if (state.timezone !== renderedZone) window.location.reload();
             return state;
         });
     }
@@ -196,8 +241,8 @@ CSM.prefs = (function() {
     };
 })();
 
-// Kick off loading immediately. Pages that need to wait can chain on
-// CSM.prefs.load(); pages that don't simply benefit from the eventual apply.
+// Kick off loading immediately. The last known copy is already applied, so
+// pages rendering before the server answers use it.
 if (typeof CSM !== 'undefined' && CSM.prefs) {
     CSM.prefs.load();
 }
