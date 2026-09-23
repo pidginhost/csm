@@ -722,7 +722,9 @@ CSM.sse = (function() {
             return;
         }
         closeStream();
-        setState(state === STATES.connected ? STATES.reconnecting : STATES.connecting);
+        // A retry after a drop stays "reconnecting"; only a first connection
+        // or one after the tab was hidden reads "connecting".
+        setState(state === STATES.connected || state === STATES.reconnecting ? STATES.reconnecting : STATES.connecting);
         var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
         var source = null;
         try {
