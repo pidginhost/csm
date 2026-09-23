@@ -274,15 +274,9 @@
         return findingsEl;
     }
 
-    function renderPerformanceError() {
+    function renderPerformanceError(err) {
         var findingsEl = setFindingsBusy(false);
-        if (findingsEl) {
-            findingsEl.textContent = '';
-            var item = document.createElement('div');
-            item.className = 'list-group-item text-danger';
-            item.textContent = 'Failed to load performance findings';
-            findingsEl.appendChild(item);
-        }
+        CSM.loadError(findingsEl, update, { title: 'Failed to load performance findings', error: err });
         _perfBulkSignature = null;
         renderBulkActions([]);
     }
@@ -485,7 +479,7 @@
             .catch(function(err) {
                 if (updateSeq !== _perfUpdateSeq) return;
                 console.error('performance update:', err);
-                renderPerformanceError();
+                renderPerformanceError(err);
             });
     }
 

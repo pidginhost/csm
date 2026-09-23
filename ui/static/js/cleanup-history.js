@@ -84,8 +84,8 @@
             el.innerHTML = html;
             fileTable = new CSM.Table({ tableId: 'cleanup-files-table', perPage: 25, searchId: 'cleanup-files-search', sortable: true, stateKey: 'csm-cleanup-files-table', onRender: updateFileBulkButtons });
             bindFileBackupActions(el);
-        }).catch(function() {
-            CSM.loadError(document.getElementById('cleanup-files-content'), loadFileBackups);
+        }).catch(function(err) {
+            CSM.loadError(document.getElementById('cleanup-files-content'), loadFileBackups, { title: 'Failed to load file backups', error: err });
         });
     }
 
@@ -271,8 +271,8 @@
             el.innerHTML = html;
             new CSM.Table({ tableId: 'cleanup-db-table', perPage: 25, searchId: 'cleanup-db-search', sortable: true, stateKey: 'csm-cleanup-db-table' });
             bindDBBackupActions(el);
-        }).catch(function() {
-            CSM.loadError(document.getElementById('cleanup-db-content'), loadDBBackups);
+        }).catch(function(err) {
+            CSM.loadError(document.getElementById('cleanup-db-content'), loadDBBackups, { title: 'Failed to load database backups', error: err });
         });
     }
 

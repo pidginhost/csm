@@ -3,7 +3,9 @@
 var fmtSize = CSM.formatSize;
 
 function loadStatus() {
+    var stats = document.getElementById('stat-yaml').closest('.row');
     CSM.get('/api/v1/rules/status').then(function(data) {
+        CSM.clearLoadError(stats);
         document.getElementById('stat-yaml').textContent = data.yaml_rules || 0;
         document.getElementById('stat-yara').textContent = data.yara_available ? (data.yara_rules || 0) : 'N/A';
         if (!data.yara_available) {
@@ -14,7 +16,7 @@ function loadStatus() {
         if (data.rules_dir) {
             document.getElementById('rules-dir').textContent = 'Rules directory: ' + data.rules_dir;
         }
-    }).catch(function() { CSM.loadError(document.getElementById('stat-yaml').closest('.card') || document.getElementById('stat-yaml').parentElement, loadStatus); });
+    }).catch(function(err) { CSM.loadError(stats, loadStatus, { title: 'Failed to load rule status', error: err }); });
 }
 
 function loadFiles() {
@@ -54,7 +56,7 @@ function loadFiles() {
                 reason: 'Try clearing the search or type filter.'
             }
         });
-    }).catch(function() { CSM.loadError(document.getElementById('rules-tbody').parentElement.parentElement.parentElement, loadFiles); });
+    }).catch(function(err) { CSM.loadError(document.getElementById('rules-tbody'), loadFiles, { title: 'Failed to load rule files', error: err }); });
 }
 
 document.getElementById('btn-reload').addEventListener('click', function() {

@@ -55,7 +55,7 @@
             })
             .catch(function(err) {
                 if (seq !== loadSeq) return;
-                content.innerHTML = '<div class="card-body text-center text-danger py-4">Failed to load: ' + CSM.esc(err.message || 'Unknown error') + '</div>';
+                CSM.loadError(content, function() { loadTab(tab); }, { title: 'Failed to load the account', error: err });
             });
     }
 

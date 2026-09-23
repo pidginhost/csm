@@ -104,22 +104,6 @@
             .catch(function(err) { console.error('pollFindings:', err); });
     }
 
-        // Centralised empty/error-state renderer for the three summary cards.
-    // Cards that fail to load get a visible error instead of a permanent
-    // "Loading..." spinner.
-    function renderCardError(id, msg) {
-        var el = document.getElementById(id);
-        if (!el) return;
-        el.textContent = '';
-        var box = document.createElement('div');
-        box.className = 'text-center text-muted py-3';
-        var ic = document.createElement('i');
-        ic.className = 'ti ti-alert-circle me-1 text-warning';
-        box.appendChild(ic);
-        box.appendChild(document.createTextNode(msg));
-        el.appendChild(box);
-    }
-
     // --- System health pill (top of page) ---
     function renderHealthPill(cls, dotCls, label, title) {
         var pill = document.getElementById('system-health-pill');
@@ -216,9 +200,9 @@
             })
             .catch(function(err) {
                 console.error('refreshStats:', err);
-                renderCardError('accounts-at-risk', 'Failed to load');
-                renderCardError('auto-response-summary', 'Failed to load');
-                renderCardError('brute-force-summary', 'Failed to load');
+                ['accounts-at-risk', 'auto-response-summary', 'brute-force-summary'].forEach(function(id) {
+                    CSM.loadError(document.getElementById(id), refreshStats, { title: 'Failed to load dashboard stats', error: err });
+                });
             });
     }
 
@@ -518,9 +502,8 @@
 
         CSM.get('/api/v1/stats/timeline')
             .then(function(hours) {
+                CSM.clearLoadError(canvas.parentElement);
                 if (!hours || !hours.length) return;
-                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
-                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
 
                 var labels = [];
                 var critData = [], highData = [], warnData = [];
@@ -634,14 +617,7 @@
             })
             .catch(function(err) {
                 console.error('loadTimeline:', err);
-                var parent = canvas.parentElement;
-                if (parent && !parent.querySelector('.chart-error')) {
-                    var msg = document.createElement('div');
-                    msg.className = 'text-muted text-center py-3 chart-error';
-                    msg.textContent = 'Failed to load timeline data';
-                    parent.appendChild(msg);
-                    canvas.style.display = 'none';
-                }
+                CSM.loadError(canvas.parentElement, loadTimeline, { title: 'Failed to load timeline data', error: err });
             });
     }
 
@@ -671,8 +647,7 @@
 
         CSM.get('/api/v1/threat/stats')
             .then(function(data) {
-                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
-                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
+                CSM.clearLoadError(canvas.parentElement);
                 // Prefer the 24h-scoped map so this card matches the adjacent
                 // "Findings Timeline (24h)". Fall back to lifetime `by_type`
                 // to stay compatible with older daemons during rollout.
@@ -765,14 +740,7 @@
             })
             .catch(function(err) {
                 console.error('loadAttackTypes:', err);
-                var parent = canvas.parentElement;
-                if (parent && !parent.querySelector('.chart-error')) {
-                    var msg = document.createElement('div');
-                    msg.className = 'text-muted text-center py-3 chart-error';
-                    msg.textContent = 'Failed to load attack-type data';
-                    parent.appendChild(msg);
-                    canvas.style.display = 'none';
-                }
+                CSM.loadError(canvas.parentElement, loadAttackTypes, { title: 'Failed to load attack-type data', error: err });
             });
     }
 
@@ -823,9 +791,8 @@
 
         CSM.get('/api/v1/stats/trend?days=' + days)
             .then(function(rows) {
+                CSM.clearLoadError(canvas.parentElement);
                 if (!rows || !rows.length) return;
-                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
-                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
                 renderStatDeltas(rows);
 
                 var labels = [], critData = [], highData = [], warnData = [];
@@ -939,14 +906,7 @@
             })
             .catch(function(err) {
                 console.error('loadTrend:', err);
-                var parent = canvas.parentElement;
-                if (parent && !parent.querySelector('.chart-error')) {
-                    var msg = document.createElement('div');
-                    msg.className = 'text-muted text-center py-3 chart-error';
-                    msg.textContent = 'Failed to load trend data';
-                    parent.appendChild(msg);
-                    canvas.style.display = 'none';
-                }
+                CSM.loadError(canvas.parentElement, loadTrend, { title: 'Failed to load trend data', error: err });
             });
     }
 

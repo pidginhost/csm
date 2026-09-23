@@ -360,14 +360,10 @@
                 renderSideSummaries(_modsecBlocks);
                 renderBlockedTable(_modsecBlocks);
             })
-            .catch(function(e) {
-                document.getElementById('modsec-content').innerHTML = '<div class="card-body text-center text-danger py-3">Failed to load blocks</div>';
+            .catch(function(err) {
+                CSM.loadError(document.getElementById('modsec-content'), loadBlocked, { title: 'Failed to load blocks', error: err });
                 resetModSecBulkButton();
-                var p = document.getElementById('modsec-pressure');
-                if (p) {
-                    p.replaceChildren();
-                    p.appendChild(buildEmpty('alert-circle', 'Could not load WAF pressure', 'Retry from the refresh button.'));
-                }
+                CSM.loadError(document.getElementById('modsec-pressure'), loadBlocked, { title: 'Failed to load WAF pressure', error: err });
             });
     }
 
@@ -511,10 +507,9 @@
                 refreshStatusStrip();
                 renderEvents(_modsecEvents);
             })
-            .catch(function() {
-                var el = document.getElementById('modsec-events');
-                if (el) el.innerHTML = '<div class="card-body text-center text-danger py-3">Failed to load events</div>';
+            .catch(function(err) {
                 eventsLoaded = false;
+                CSM.loadError(document.getElementById('modsec-events'), loadEvents, { title: 'Failed to load events', error: err });
             });
     }
 

@@ -157,7 +157,7 @@ function loadQuarantine() {
         // CSM.bulk owns the select-all and per-row checkbox listeners
         // (re-bind is idempotent via the data-csm-bulk-bound flag).
         updateBulkRestore();
-    }).catch(function(){ CSM.loadError(document.getElementById('quarantine-content'), loadQuarantine); });
+    }).catch(function(err){ CSM.loadError(document.getElementById('quarantine-content'), loadQuarantine, { title: 'Failed to load quarantined files', error: err }); });
 }
 function restoreFile(id) {
     if (_quarMutationBusy) return;

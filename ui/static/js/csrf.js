@@ -242,15 +242,85 @@ CSM.errorText = function(err) {
     return 'request failed';
 };
 
-// Render an error state with retry button
-CSM.loadError = function(el, retryFn) {
+// loadError shows that a load failed inside el: what failed, why, and a
+// Retry button. It hides el's content instead of replacing it, so a loader
+// that fills elements inside el still finds them. A loader that rebuilds el
+// wipes the error with it; one that only fills elements inside el calls
+// CSM.clearLoadError(el) when it succeeds. Inside a table body the error is
+// one row across the table.
+//   opts.title  what failed (default "Failed to load data")
+//   opts.error  the caught failure, shown as the reason
+CSM.loadError = function(el, retryFn, opts) {
     if (!el) return;
-    el.innerHTML = '<div class="card-body text-center py-4"><div class="text-danger mb-2">Failed to load data</div>' +
-        (retryFn ? '<button class="btn btn-sm btn-outline-secondary csm-retry-btn">Retry</button>' : '') + '</div>';
-    if (retryFn) {
-        var btn = el.querySelector('.csm-retry-btn');
-        if (btn) btn.addEventListener('click', retryFn);
+    opts = opts || {};
+    CSM.clearLoadError(el);
+    var inTable = el.tagName === 'TBODY';
+    var body = document.createElement(inTable ? 'td' : 'div');
+    // Card padding, unless el already is a padded card body.
+    var padded = !inTable && !el.classList.contains('card-body');
+    body.className = (padded ? 'card-body ' : '') + 'text-center py-4';
+    var title = document.createElement('div');
+    title.className = 'text-danger mb-2';
+    title.textContent = opts.title || 'Failed to load data';
+    body.appendChild(title);
+    if (opts.error) {
+        var reason = document.createElement('div');
+        reason.className = 'text-muted small mb-2';
+        reason.textContent = CSM.errorText(opts.error);
+        body.appendChild(reason);
     }
+    if (retryFn) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm btn-outline-secondary csm-retry-btn';
+        btn.textContent = 'Retry';
+        btn.addEventListener('click', function() {
+            CSM.clearLoadError(el);
+            retryFn();
+        });
+        body.appendChild(btn);
+    }
+    Array.prototype.slice.call(el.childNodes).forEach(function(node) {
+        if (node.nodeType === 3) {
+            if (!/\S/.test(node.nodeValue)) return;
+            var span = document.createElement('span');
+            el.replaceChild(span, node);
+            span.appendChild(node);
+            node = span;
+        }
+        if (node.nodeType !== 1 || node.hidden) return;
+        node.hidden = true;
+        node.setAttribute('data-csm-load-error-hidden', '');
+    });
+    var block = body;
+    if (inTable) {
+        block = document.createElement('tr');
+        body.setAttribute('colspan', String(tableColumns(el)));
+        block.appendChild(body);
+    }
+    block.classList.add('csm-load-error');
+    el.appendChild(block);
+
+    function tableColumns(tbody) {
+        var table = tbody.parentNode;
+        var head = table && table.querySelector('thead tr');
+        var row = head || tbody.querySelector('tr');
+        return row && row.children.length ? row.children.length : 1;
+    }
+};
+
+// clearLoadError removes the error CSM.loadError put in el and shows the
+// content it hid.
+CSM.clearLoadError = function(el) {
+    if (!el) return;
+    Array.prototype.slice.call(el.children).forEach(function(child) {
+        if (child.classList.contains('csm-load-error')) {
+            el.removeChild(child);
+        } else if (child.hasAttribute('data-csm-load-error-hidden')) {
+            child.removeAttribute('data-csm-load-error-hidden');
+            child.hidden = false;
+        }
+    });
 };
 
 // Click-to-copy: delegated handler for .csm-copy elements

@@ -168,15 +168,11 @@
                 renderGroups(data, content, footer);
                 renderGroupedPagination();
             })
-            .catch(function() {
+            .catch(function(err) {
                 groupedPageTotal = 0;
                 groupedPageReturned = 0;
                 content.replaceChildren();
-                var empty = document.createElement('div');
-                empty.className = 'csm-empty';
-                empty.innerHTML = '<div class="csm-empty__icon"><i class="ti ti-alert-circle"></i></div>'
-                    + '<div class="csm-empty__reason">Could not load groups.</div>';
-                content.appendChild(empty);
+                CSM.loadError(content, loadGroups, { title: 'Failed to load incident groups', error: err });
                 if (footer) footer.textContent = '';
                 renderGroupedPagination();
             });
@@ -354,7 +350,7 @@
                 renderIncidentList();
                 renderPagination();
             })
-            .catch(function() { CSM.loadError(container, loadIncidents); });
+            .catch(function(err) { CSM.loadError(container, loadIncidents, { title: 'Failed to load incidents', error: err }); });
     }
 
     function renderPagination() {
@@ -693,7 +689,7 @@
 
         CSM.get(url)
             .then(function(data) { renderTimeline(data); })
-            .catch(function() { CSM.loadError(container, loadTimeline); });
+            .catch(function(err) { CSM.loadError(container, loadTimeline, { title: 'Failed to load the timeline', error: err }); });
     }
 
     function renderTimeline(data) {

@@ -147,10 +147,10 @@
                     _pendingSenders = data.top_senders || [];
                 }
             })
-            .catch(function() {
-                CSM.loadError(document.getElementById('protection-queue'));
-                CSM.loadError(document.getElementById('queue-health'));
-                CSM.loadError(document.getElementById('smtp-firewall'));
+            .catch(function(err) {
+                CSM.loadError(document.getElementById('protection-queue'), loadEmailStats, { title: 'Failed to load the mail queue', error: err });
+                CSM.loadError(document.getElementById('queue-health'), loadEmailStats, { title: 'Failed to load the mail queue', error: err });
+                CSM.loadError(document.getElementById('smtp-firewall'), loadEmailStats, { title: 'Failed to load the SMTP firewall', error: err });
             });
     }
 
@@ -382,12 +382,8 @@
                 renderActionGroups(data.groups || []);
                 CSM.truncationNote(document.getElementById('email-action-groups'), data.truncated, 'email findings');
             })
-            .catch(function() {
-                var el = document.getElementById('email-action-groups');
-                if (el) {
-                    el.replaceChildren();
-                    el.appendChild(buildEmpty('alert-circle', 'Could not load action groups', 'Retry from the refresh button.'));
-                }
+            .catch(function(err) {
+                CSM.loadError(document.getElementById('email-action-groups'), loadActionGroups, { title: 'Failed to load action groups', error: err });
             });
     }
 
@@ -505,12 +501,9 @@
                 }
                 CSM.truncationNote(el, data.truncated, 'auth-failure findings');
             })
-            .catch(function() {
-                var el = document.getElementById('email-auth-groups');
-                if (!el) return;
-                el.replaceChildren();
-                el.appendChild(buildEmpty('alert-circle', 'Could not load clusters', 'Retry from the refresh button.'));
+            .catch(function(err) {
                 authGroupsLoaded = false;
+                CSM.loadError(document.getElementById('email-auth-groups'), loadAuthGroups, { title: 'Failed to load auth failure clusters', error: err });
             });
     }
 
@@ -538,12 +531,11 @@
                     label.textContent = findings.length + ' / ' + totalAll;
                 }
             })
-            .catch(function() {
+            .catch(function(err) {
                 if (seq !== _emailFindingsLoadSeq) return;
                 resetEmailFindingsTable();
                 clearEmailFindingsState();
-                var tbody = document.getElementById('email-tbody');
-                if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-4">Failed to load findings</td></tr>';
+                CSM.loadError(document.getElementById('email-tbody'), loadFindings, { title: 'Failed to load email findings', error: err });
             });
     }
 
@@ -776,10 +768,9 @@
                 _bindEmailQuarURLState(fromEl, toEl);
                 _emailQuarUpdateBulk();
             })
-            .catch(function() {
+            .catch(function(err) {
                 quarantineLoaded = false;
-                var container = document.getElementById('quarantine-table');
-                if (container) container.innerHTML = '<p class="text-danger">Failed to load quarantine.</p>';
+                CSM.loadError(document.getElementById('quarantine-table'), loadQuarantine, { title: 'Failed to load the mail quarantine', error: err });
             });
     }
 
@@ -876,10 +867,9 @@
                 _forwarders = (data && data.forwarders) || [];
                 renderForwarders();
             })
-            .catch(function() {
+            .catch(function(err) {
                 forwardersLoaded = false;
-                var tb = document.getElementById('email-fwd-tbody');
-                if (tb) tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Could not load forwarders. Retry from the refresh button.</td></tr>';
+                CSM.loadError(document.getElementById('email-fwd-tbody'), loadForwarders, { title: 'Failed to load forwarders', error: err });
             });
     }
 
@@ -890,10 +880,9 @@
         heldLoaded = true;
         CSM.get('/api/v1/email/held')
             .then(renderHeld)
-            .catch(function() {
+            .catch(function(err) {
                 heldLoaded = false;
-                var tb = document.getElementById('email-held-tbody');
-                if (tb) tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Could not load held forwards.</td></tr>';
+                CSM.loadError(document.getElementById('email-held-tbody'), loadHeld, { title: 'Failed to load held forwards', error: err });
             });
     }
 
@@ -1055,11 +1044,11 @@
         deliverabilityLoaded = true;
         CSM.get('/api/v1/email/deferrals')
             .then(function(data) { renderDeliverability(data || {}); })
-            .catch(function() {
+            .catch(function(err) {
                 deliverabilityLoaded = false;
-                var msg = 'Could not load deferral activity. Retry from the refresh button.';
-                setRowMessage('email-deliv-providers-body', 3, msg);
-                setRowMessage('email-deliv-ips-body', 3, msg);
+                ['email-deliv-providers-body', 'email-deliv-ips-body'].forEach(function(id) {
+                    CSM.loadError(document.getElementById(id), loadDeliverability, { title: 'Failed to load deferral activity', error: err });
+                });
             });
     }
 
@@ -1131,8 +1120,8 @@
                 renderOutboundAbuse(resp);
                 CSM.truncationNote(body, resp && resp.truncated, 'relay abuse findings');
             })
-            .catch(function() {
-                body.innerHTML = '<div class="csm-empty"><div class="csm-empty__reason">Failed to load outbound mail abuse.</div></div>';
+            .catch(function(err) {
+                CSM.loadError(body, loadOutboundAbuse, { title: 'Failed to load outbound mail abuse', error: err });
             });
     }
 
@@ -1209,10 +1198,9 @@
         queueCompositionLoaded = true;
         CSM.get('/api/v1/email/queue-composition')
             .then(function(data) { renderQueueComposition(data || {}); })
-            .catch(function() {
+            .catch(function(err) {
                 queueCompositionLoaded = false;
-                var el = document.getElementById('queue-composition');
-                if (el) el.innerHTML = '<div class="text-muted small">Could not load queue composition. Retry from the refresh button.</div>';
+                CSM.loadError(document.getElementById('queue-composition'), loadQueueComposition, { title: 'Failed to load queue composition', error: err });
             });
     }
 

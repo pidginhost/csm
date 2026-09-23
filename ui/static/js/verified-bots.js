@@ -125,6 +125,7 @@
         var snapshot = JSON.stringify(collect());
         document.getElementById('vbots-save').disabled = true;
         CSM.get('/api/v1/verified-bots', options).then(function (data) {
+            CSM.clearLoadError(loadingEl);
             if (JSON.stringify(collect()) !== snapshot) {
                 CSM.toast('Kept edits made while the verified bots were loading. Refresh again to reload.', 'warning');
                 return;
@@ -135,8 +136,8 @@
             (data.bots || []).forEach(addRow);
             updateVisibility();
             saved = JSON.stringify(collect());
-        }).catch(function () {
-            loadingEl.querySelector('.csm-empty__reason').textContent = 'Failed to load verified bots.';
+        }).catch(function (err) {
+            CSM.loadError(loadingEl, function () { load(); }, { title: 'Failed to load verified bots', error: err });
         }).then(function () {
             loading = false;
             document.getElementById('vbots-save').disabled = false;

@@ -24,25 +24,13 @@ function loadFindings(options) {
             if (seq !== _findingsLoadSeq) return;
             var loading = document.getElementById('findings-loading');
             if (loading) loading.classList.add('d-none');
-            var card = document.getElementById('findings-card');
-            if (!card) return;
-            // Show error with retry - insert into card rather than replacing it
-            var errDiv = document.getElementById('findings-error');
-            if (!errDiv) {
-                errDiv = document.createElement('div');
-                errDiv.id = 'findings-error';
-                errDiv.className = 'card-body text-center py-4';
-                card.appendChild(errDiv);
-            }
-            errDiv.innerHTML = '<div class="text-danger"><i class="ti ti-alert-triangle"></i> Failed to load findings: ' +
-                CSM.esc(err.message || 'unknown error') + '</div>' +
-                '<button class="btn btn-sm btn-primary mt-2" id="findings-retry">Retry</button>';
-            document.getElementById('findings-retry').addEventListener('click', function() {
-                errDiv.remove();
-                var newLoading = document.getElementById('findings-loading');
-                if (newLoading) newLoading.classList.remove('d-none');
+            // The error goes above the table, so rows from an earlier load
+            // stay readable.
+            CSM.loadError(document.getElementById('findings-error'), function() {
+                var retryLoading = document.getElementById('findings-loading');
+                if (retryLoading) retryLoading.classList.remove('d-none');
                 loadFindings();
-            });
+            }, { title: 'Failed to load findings', error: err });
         });
 }
 
@@ -87,8 +75,7 @@ function renderFindings(data) {
     // listeners/controls), clear a prior error or a stale "new findings" banner,
     // and rebuild the filter option lists from scratch rather than appending.
     if (findingsTable) { findingsTable.destroy(); findingsTable = null; }
-    var prevError = document.getElementById('findings-error');
-    if (prevError) prevError.remove();
+    CSM.clearLoadError(document.getElementById('findings-error'));
     var refreshBanner = document.getElementById('refresh-banner');
     if (refreshBanner) refreshBanner.classList.add('d-none');
     // The header select-all persists across renders; the rebuilt rows are all

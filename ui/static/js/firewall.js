@@ -197,6 +197,9 @@ function toggleAuditInspect(btn, ip) {
 function loadStatus() {
     CSM.get('/api/v1/firewall/status', {silent: true})
         .then(function(d) {
+            // The loader fills the cards inside #fw-status, so an error from
+            // an earlier poll is cleared here rather than wiped by a rebuild.
+            CSM.clearLoadError(document.getElementById('fw-status'));
             var allowedTotal = (d.allowed_count || 0) + (d.port_allow_count || 0);
             var countryCount = (d.country_block || []).length;
             var dynDNSCount = (d.dyndns_hosts || []).length;
@@ -260,8 +263,8 @@ function loadStatus() {
             t2 += '<tr><td class="text-muted">Port flood rules</td><td>' + (d.port_flood_rules || 0) + '</td></tr>';
             document.getElementById('fw-config-table2').innerHTML = t2;
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('fw-status'), loadStatus);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('fw-status'), loadStatus, { title: 'Failed to load firewall status', error: err });
         });
 }
 
@@ -297,8 +300,8 @@ function loadSubnets() {
                 btn.addEventListener('click', function() { removeSubnet(this.getAttribute('data-cidr')); });
             });
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('subnet-content'), loadSubnets);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('subnet-content'), loadSubnets, { title: 'Failed to load blocked subnets', error: err });
         });
 }
 
@@ -460,8 +463,8 @@ function loadBlocked() {
             updateBlockedBulkButton();
 
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('blocked-content'), loadBlocked);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('blocked-content'), loadBlocked, { title: 'Failed to load blocked IPs', error: err });
             updateBlockedBulkButton();
         });
 }
@@ -528,8 +531,8 @@ function loadAllowed() {
                 enrichGeoIP(el);
             }
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('allowed-content'), loadAllowed);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('allowed-content'), loadAllowed, { title: 'Failed to load allowed IPs', error: err });
         });
 }
 
@@ -571,8 +574,8 @@ function loadWhitelist() {
                 btn.addEventListener('click', function() { removeWhitelist(this.getAttribute('data-ip')); });
             });
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('whitelist-content'), loadWhitelist);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('whitelist-content'), loadWhitelist, { title: 'Failed to load whitelisted IPs', error: err });
         });
 }
 
@@ -629,8 +632,8 @@ function loadAudit() {
                 });
             });
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('fw-audit-content'), loadAudit);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('fw-audit-content'), loadAudit, { title: 'Failed to load firewall activity', error: err });
         });
 }
 
@@ -872,20 +875,10 @@ function refreshFirewallData() {
 // loadChallenges renders the proof-of-work challenge activity panel: live
 // pending count, how many timeouts escalated to a hard block, cumulative routes
 // per source check (since restart), and the most recent routes.
-function renderChallengeLoadError() {
-    var pending = document.getElementById('fw-chal-pending');
-    var escalated = document.getElementById('fw-chal-escalated');
-    var bc = document.getElementById('fw-chal-bychecks');
-    var rc = document.getElementById('fw-chal-recent');
-    if (pending) pending.textContent = '-';
-    if (escalated) escalated.textContent = '-';
-    if (bc) bc.innerHTML = '<div class="text-danger small">Failed to load challenge activity.</div>';
-    if (rc) rc.innerHTML = '<tr><td colspan="3" class="text-muted small">Retrying on the next refresh.</td></tr>';
-}
-
 function loadChallenges() {
     CSM.get('/api/v1/challenge/stats', { silent: true })
         .then(function(d) {
+            CSM.clearLoadError(document.getElementById('fw-chal-body'));
             document.getElementById('fw-chal-pending').textContent = d.pending || 0;
             document.getElementById('fw-chal-escalated').textContent = d.escalated || 0;
 
@@ -925,11 +918,11 @@ function loadChallenges() {
                 }).join('');
             }
         })
-        .catch(function() {
+        .catch(function(err) {
             // Refreshed on the shared auto-refresh poll, so a toast per failed
-            // poll would spam; show an inline error in the panel body instead
-            // and let the next poll (or manual Refresh) repopulate it.
-            renderChallengeLoadError();
+            // poll would spam; show the error in the panel instead and let
+            // Retry, the next poll or Refresh fill it again.
+            CSM.loadError(document.getElementById('fw-chal-body'), loadChallenges, { title: 'Failed to load challenge activity', error: err });
         });
 }
 

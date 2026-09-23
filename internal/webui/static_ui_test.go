@@ -3635,12 +3635,12 @@ func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
 		}
 	}
 	for _, fragment := range []string{
-		`CSM.loadError(document.getElementById('fw-status'), loadStatus);`,
-		`CSM.loadError(document.getElementById('subnet-content'), loadSubnets);`,
-		`CSM.loadError(document.getElementById('blocked-content'), loadBlocked);`,
-		`CSM.loadError(document.getElementById('allowed-content'), loadAllowed);`,
-		`CSM.loadError(document.getElementById('whitelist-content'), loadWhitelist);`,
-		`CSM.loadError(document.getElementById('fw-audit-content'), loadAudit);`,
+		`CSM.loadError(document.getElementById('fw-status'), loadStatus, {`,
+		`CSM.loadError(document.getElementById('subnet-content'), loadSubnets, {`,
+		`CSM.loadError(document.getElementById('blocked-content'), loadBlocked, {`,
+		`CSM.loadError(document.getElementById('allowed-content'), loadAllowed, {`,
+		`CSM.loadError(document.getElementById('whitelist-content'), loadWhitelist, {`,
+		`CSM.loadError(document.getElementById('fw-audit-content'), loadAudit, {`,
 	} {
 		if !strings.Contains(fwText, fragment) {
 			t.Errorf("firewall.js polled loader missing inline loadError: %q", fragment)
@@ -3988,7 +3988,7 @@ func TestPhase4A11yPatchesPresent(t *testing.T) {
 		{"../../ui/templates/performance.html", `id="perf-findings" aria-busy="true"`},
 		{"../../ui/static/js/performance.js", `setFindingsBusy(true);`},
 		{"../../ui/static/js/performance.js", `findingsEl.setAttribute('aria-busy', busy ? 'true' : 'false');`},
-		{"../../ui/static/js/performance.js", `renderPerformanceError();`},
+		{"../../ui/static/js/performance.js", `renderPerformanceError(err);`},
 		{"../../ui/static/js/toast.js", `toast.setAttribute('role', type === 'error' ? 'alert' : 'status');`},
 		{"../../ui/static/js/toast.js", `toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');`},
 		{"../../ui/static/js/csm-ui.js", `if (e.key === 'Tab' && panelEl) {`},
@@ -5173,12 +5173,13 @@ func TestNoSilentFetchCatchesInWebUISources(t *testing.T) {
 	}
 }
 
-// TestLoadFailuresAreSurfaced pins the concrete item 11 fixes: the hardening
-// report load (one-time, on page open) toasts on failure instead of leaving the
-// "no audit yet" empty-state showing as if nothing had run; the firewall
-// challenge panel (refreshed on the shared auto-refresh poll, so a toast would
-// spam) renders an inline error instead of staying on stale placeholders; and
-// the account page reuses the shared CSM.loading skeleton instead of a
+// TestLoadFailuresAreSurfaced pins the concrete item 11 fixes: a failed
+// hardening report load (one-time, on page open) shows an error in place of
+// the report and hides the "no audit yet" empty-state, which would read as
+// if nothing had run; the firewall challenge panel (refreshed on the shared
+// auto-refresh poll, so a toast would spam) renders an inline error instead
+// of staying on stale placeholders, and a later good poll clears it; and the
+// account page reuses the shared CSM.loading skeleton instead of a
 // hand-rolled page-local skeleton.
 func TestLoadFailuresAreSurfaced(t *testing.T) {
 	hard, err := os.ReadFile("../../ui/static/js/hardening.js")
@@ -5187,9 +5188,9 @@ func TestLoadFailuresAreSurfaced(t *testing.T) {
 	}
 	hardText := string(hard)
 	for _, want := range []string{
-		`var msg = 'Failed to load hardening report';`,
-		`if (err && err.message) msg += ': ' + err.message;`,
-		`CSM.toast(msg, 'error');`,
+		`CSM.get('/api/v1/hardening', { silent: true })`,
+		`document.getElementById('empty-state').classList.add('d-none');`,
+		`CSM.loadError(document.getElementById('categories-container'), loadReport, { title: 'Failed to load hardening report', error: err });`,
 	} {
 		if !strings.Contains(hardText, want) {
 			t.Errorf("hardening.js loadReport missing load-failure fragment %q", want)
@@ -5203,12 +5204,11 @@ func TestLoadFailuresAreSurfaced(t *testing.T) {
 	fwText := string(fw)
 	for _, want := range []string{
 		`CSM.get('/api/v1/challenge/stats', { silent: true })`,
-		`function renderChallengeLoadError()`,
 		`document.getElementById('fw-chal-pending')`,
 		`document.getElementById('fw-chal-escalated')`,
 		`document.getElementById('fw-chal-recent')`,
-		`Failed to load challenge activity.`,
-		`renderChallengeLoadError();`,
+		`CSM.clearLoadError(document.getElementById('fw-chal-body'));`,
+		`CSM.loadError(document.getElementById('fw-chal-body'), loadChallenges, { title: 'Failed to load challenge activity', error: err });`,
 	} {
 		if !strings.Contains(fwText, want) {
 			t.Errorf("firewall.js loadChallenges missing inline-error fragment %q", want)
@@ -5234,9 +5234,9 @@ func TestLoadFailuresAreSurfaced(t *testing.T) {
 // findings and threat pages now re-fetch and re-render in place (the firewall
 // refreshFirewallData pattern), so the action paths must no longer full-reload
 // and the render path must be re-entrant (old table torn down, filter option
-// lists rebuilt rather than appended). The manual Refresh button and the
-// error-retry-by-reload fallbacks legitimately still reload, so the assertions
-// target the action paths and the re-entrancy guards, not every reload.
+// lists rebuilt rather than appended). The manual Refresh button legitimately
+// still reloads, so the assertions target the action paths and the
+// re-entrancy guards, not every reload.
 func TestActionsRefreshInPlaceNotFullReload(t *testing.T) {
 	findings, err := os.ReadFile("../../ui/static/js/findings.js")
 	if err != nil {
@@ -5286,11 +5286,13 @@ func TestActionsRefreshInPlaceNotFullReload(t *testing.T) {
 	if strings.Contains(tText, "\n            location.reload();") {
 		t.Error("threat.js bulk block/whitelist still full-reloads on success; call the in-place loaders")
 	}
-	if !strings.Contains(tText, "CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); });") {
-		t.Error("threat.js stats load-error retry must still reload because CSM.loadError replaces chart DOM")
+	// CSM.loadError keeps the covered DOM, so Retry reloads the failed part
+	// in place instead of the whole page.
+	if !strings.Contains(tText, "CSM.loadError(document.getElementById('chart-types'), loadThreatStats, {") {
+		t.Error("threat.js stats load-error retry must reload the stats in place")
 	}
-	if !strings.Contains(tText, "CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); });") {
-		t.Error("threat.js attackers load-error retry must still reload because CSM.loadError replaces table DOM")
+	if !strings.Contains(tText, "CSM.loadError(document.getElementById('attackers-tbody'), loadTopAttackers, {") {
+		t.Error("threat.js attackers load-error retry must reload the attackers in place")
 	}
 }
 

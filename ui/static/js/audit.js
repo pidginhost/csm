@@ -151,7 +151,7 @@ function loadAudit() {
         };
         // WEB_ROADMAP P2.1: persist audit-search + filters to URL.
         _auditURLUnbind = CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
-    }).catch(function(){ CSM.loadError(document.getElementById('audit-content'), loadAudit); });
+    }).catch(function(err){ CSM.loadError(document.getElementById('audit-content'), loadAudit, { title: 'Failed to load the audit log', error: err }); });
 }
 
 loadAudit();

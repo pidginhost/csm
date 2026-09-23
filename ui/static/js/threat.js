@@ -250,7 +250,7 @@ function loadThreatStats() {
             }
         });
     }
-}).catch(function(err){ if (seq !== _threatStatsLoadSeq) return; console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
+}).catch(function(err){ if (seq !== _threatStatsLoadSeq) return; console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), loadThreatStats, { title: 'Failed to load attack statistics', error: err }); });
 }
 
 // Load top attackers
@@ -361,7 +361,7 @@ function loadTopAttackers() {
         cb.addEventListener('click', function(e) { e.stopPropagation(); });
     });
     resetAttackerSelection();
-}).catch(function(err){ if (seq !== _attackersLoadSeq) return; console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
+}).catch(function(err){ if (seq !== _attackersLoadSeq) return; console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody'), loadTopAttackers, { title: 'Failed to load top attackers', error: err }); });
 }
 
 // Initial load (re-run in place after bulk block/whitelist).

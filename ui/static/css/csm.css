@@ -939,6 +939,10 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
 .csm-empty__title { font-weight: 600; color: var(--csm-text); margin-bottom: 0.25rem; }
 .csm-empty__reason { font-size: 0.92rem; margin-bottom: 0.75rem; }
 
+/* Load error: CSM.loadError marks the content it covers. Tabler's [hidden]
+   rule loses to its own !important display utilities (.d-flex etc.). */
+[data-csm-load-error-hidden] { display: none !important; }
+
 /* Sticky action bar (bulk-selection) -------------------------------------- */
 .csm-sticky-actions {
     position: sticky;

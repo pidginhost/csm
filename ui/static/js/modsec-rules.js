@@ -262,8 +262,8 @@ function loadEscalation(options) {
             renderStats({total: _rules.length, active: countActive()});
             renderEscalation();
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('escalation-list'), loadEscalation);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('escalation-list'), loadEscalation, { title: 'Failed to load the escalation list', error: err });
         }).then(function() {
             _escalationLoading = false;
             updateEscalationControls();

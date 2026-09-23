@@ -99,6 +99,10 @@ rule changes) it asks before discarding them. Hardening's Refresh reloads the
 stored report and does not run a new audit. Pages rendered by the server,
 such as Sessions, reload.
 
+A panel that fails to load says what failed and why, with a Retry button that
+loads only that panel again. The panel's earlier content returns once a later
+load succeeds.
+
 The visible History tab refreshes with its current filters and page size.
 Editors wait for an ongoing save or load before accepting another refresh;
 Verified Bots keeps edits made while a reload is pending. ModSecurity

@@ -66,9 +66,9 @@
                 renderTable(data.findings || [], data.total || 0);
                 renderPager(data.total || 0, (data.findings || []).length);
             })
-            .catch(function() {
+            .catch(function(err) {
                 if (seq !== loadSeq) return;
-                CSM.loadError(document.getElementById('history-content'), loadHistory);
+                CSM.loadError(document.getElementById('history-content'), loadHistory, { title: 'Failed to load history', error: err });
             });
         syncURL();
     }

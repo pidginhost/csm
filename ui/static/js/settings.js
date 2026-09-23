@@ -329,7 +329,11 @@
         } catch (e) {
             if (seq !== sectionLoadSeq) return;
             sectionLoading = false;
-            renderError("Failed to load: " + (e && e.message ? e.message : "request failed"));
+            // The URL already names this section; Retry must not add a
+            // history entry for it again.
+            renderError("Failed to load this settings section", e, function () {
+                loadSection(id, {urlMode: "replace", refresh: opts.refresh});
+            });
             return;
         }
         if (seq !== sectionLoadSeq) return;
@@ -344,13 +348,10 @@
         renderForm(data);
     }
 
-    function renderError(msg) {
+    function renderError(title, err, retry) {
         const panel = byId("settings-panel");
         clearNode(panel);
-        const alert = document.createElement("div");
-        alert.className = "alert alert-danger m-3";
-        alert.textContent = msg;
-        panel.appendChild(alert);
+        CSM.loadError(panel, retry, {title: title, error: err});
     }
 
     // ---- Form rendering --------------------------------------------------
@@ -1396,7 +1397,8 @@
                 }
             });
         }).catch(function (e) {
-            renderError("Failed to load settings metadata: " + (e && e.message ? e.message : "request failed"));
+            // The page is built from this list, so Retry starts it over.
+            renderError("Failed to load settings", e, function () { window.location.reload(); });
         });
     });
 })();
