@@ -19,6 +19,9 @@ type CheckInfo struct {
 	// CorrelationGap documents a known missing producer identity path for an
 	// eligible check. It never changes eligibility.
 	CorrelationGap string
+	// Response is the check's automatic IP response policy. The zero value
+	// neither blocks nor challenges; see response_policy.go.
+	Response ResponsePolicy
 }
 
 // Category labels are the groupings shown in the multi-select UI. Keep the
