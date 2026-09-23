@@ -19,9 +19,9 @@ type Snapshot struct {
 	// host runs detection and alerting but changes no host state.
 	Mode                 string          `json:"mode,omitempty"`
 	StartedAt            time.Time       `json:"started_at"`
-	UptimeSec            int64           `json:"uptime_sec"`
-	LatestScan           time.Time       `json:"latest_scan,omitempty"`
-	BaselineAt           time.Time       `json:"baseline_at,omitempty"`
+	UptimeSec            int64           `json:"uptime_seconds"`
+	LatestScan           time.Time       `json:"latest_scan,omitzero"`
+	BaselineAt           time.Time       `json:"baseline_at,omitzero"`
 	BlocklistSize        int             `json:"blocklist_size"`
 	IncidentsOpen        int             `json:"incidents_open"`
 	BPFEnforcementActive bool            `json:"bpf_enforcement_active"`

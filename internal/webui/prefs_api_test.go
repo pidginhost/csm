@@ -178,7 +178,7 @@ func TestSavedViewsCRUD(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("empty list status=%d", rec.Code)
 	}
-	var list []savedView
+	var list []savedViewResponse
 	decodeItems(t, rec.Body.Bytes(), &list)
 	if len(list) != 0 {
 		t.Fatalf("expected empty, got %v", list)

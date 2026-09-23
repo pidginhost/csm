@@ -24,8 +24,8 @@ type ScanJobRecord struct {
 	Target       string    `json:"target"`
 	State        string    `json:"state"`
 	Created      time.Time `json:"created"`
-	Started      time.Time `json:"started,omitempty"`
-	Finished     time.Time `json:"finished,omitempty"`
+	Started      time.Time `json:"started,omitzero"`
+	Finished     time.Time `json:"finished,omitzero"`
 	FilesScanned int       `json:"files_scanned,omitempty"`
 	FilesEst     int       `json:"files_est,omitempty"`
 	FindingCount int       `json:"finding_count,omitempty"`

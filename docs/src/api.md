@@ -72,6 +72,25 @@ match. They send `limit` and `truncated` without `total`.
 {"items": [{"ip": "203.0.113.9", "reason": "wp_login_bruteforce"}], "total": 1}
 ```
 
+## Times and durations
+
+Every time is an RFC 3339 instant in UTC with sub-second precision, such as
+`2026-09-22T10:04:05.123456Z`. The same applies to the event stream. A time
+that is not set is left out, never sent as `0001-01-01T00:00:00Z`.
+
+The API does not send times it formatted for reading, such as "5m ago",
+"1h2m" or a clock time without a date. Clients format instants in their
+own time zone and count down to an `expires_at` themselves.
+
+Durations are numbers of seconds in keys that end in `_seconds`, such as
+`uptime_seconds`, `elapsed_seconds`, `duration_seconds`,
+`oldest_age_seconds` and `update_interval_seconds`.
+
+Two values keep a text form. `started_at_token` is an opaque token for
+restart polling. The `temporary` reason on `/api/v1/firewall/check` keeps its
+"(expires in ...)" text for existing callers; `expires_at` carries the
+instant.
+
 ## Status & Data
 
 ```
@@ -93,6 +112,7 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  A degraded queue changes `status` and `security_posture`.
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
+                                 `uptime_seconds` is the time since the daemon started.
 GET  /api/v1/challenge/stats     Challenge-routing activity for the UI: `pending`, `escalated`
                                  (timeouts that became hard blocks), `routed_by_check` (per source
                                  check, since restart), and `recent` routes. Read scope.
@@ -121,8 +141,8 @@ GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&se
                                  total counts every match; truncated is true when matches exist past the page
 GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
 GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
-GET  /api/v1/stats/trend         30-day daily severity counts
-GET  /api/v1/stats/timeline      Event timeline
+GET  /api/v1/stats/trend         30-day daily severity counts; each `date` is a calendar day in the server's time zone
+GET  /api/v1/stats/timeline      Hourly severity counts for the last 24 hours; each bucket names its `start` instant
 GET  /api/v1/quarantine          Quarantined files with metadata (incl. htaccess pre_clean backups)
 GET  /api/v1/quarantine-preview  Preview quarantined file content (?id=)
 GET  /api/v1/db-object-backups   db_object_backups bucket (MySQL trigger/event/procedure/function drops)
@@ -955,8 +975,9 @@ POST /api/v1/firewall/unban          Unblock IP + flush cphulk
 POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ```
 
-The audit log reports each `timestamp` as an RFC 3339 instant in UTC. It was
-the server's local wall clock without a zone before.
+The audit log reports each `timestamp` as an RFC 3339 instant in UTC and
+the block or allow lifetime as `duration_seconds`. Blocked addresses,
+subnets and allow rules carry `expires_at`, left out for a permanent entry.
 
 ## ModSecurity
 
@@ -1125,7 +1146,7 @@ Response shape for `GET /api/v1/prefs/views`:
       "name": "Critical SSH",
       "page": "findings",
       "params": { "severity": "critical", "check": "smtp_bruteforce" },
-      "updated": 1779743255
+      "updated": "2026-05-25T21:47:35Z"
     }
   ],
   "total": 1

@@ -128,7 +128,7 @@ type Incident struct {
 	UpdatedAt      time.Time        `json:"updated_at"`
 	// ClosedAt records the latest closure or operator decision on a closed
 	// incident. Reopening clears it.
-	ClosedAt time.Time `json:"closed_at,omitempty"`
+	ClosedAt time.Time `json:"closed_at,omitzero"`
 	// ClosedBy is "operator" for manual decisions on closed incidents and
 	// "auto:<reason>" for daemon closures. Empty for active or legacy rows.
 	ClosedBy string `json:"closed_by,omitempty"`
@@ -151,8 +151,8 @@ type Incident struct {
 // active status, so a later recurrence starts from the bottom of the ladder.
 type AutoBlockState struct {
 	Count     int       `json:"count,omitempty"`
-	ExpiresAt time.Time `json:"expires_at,omitempty"`
-	LastAt    time.Time `json:"last_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	LastAt    time.Time `json:"last_at,omitzero"`
 }
 
 // lapsed reports whether the hand-off may request another block: never

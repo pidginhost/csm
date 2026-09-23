@@ -1329,17 +1329,17 @@ func TestModSecPageUsesPhase8Primitives(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`data-label="Last Seen" data-sort="' + CSM.attr(b.last_seen_iso || '') + '"`,
-		`class="text-nowrap" data-sort="' + CSM.attr(e.time_iso || '') + '"`,
-		`CSM.fmtDate(e.time_iso)`,
+		`data-label="Last Seen" data-sort="' + CSM.attr(sortInstant(b.last_seen)) + '"`,
+		`class="text-nowrap" data-sort="' + CSM.attr(sortInstant(e.time)) + '"`,
+		`CSM.fmtDate(e.time)`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("modsec.js missing local timestamp sort fragment %q", want)
 		}
 	}
 	for _, bad := range []string{
-		`data-timestamp="' + CSM.attr(b.last_seen_iso`,
-		`data-timestamp="' + CSM.attr(e.time_iso`,
+		`data-timestamp="' + CSM.attr(b.last_seen`,
+		`data-timestamp="' + CSM.attr(e.time`,
 	} {
 		if strings.Contains(jsText, bad) {
 			t.Errorf("modsec.js must not mark absolute timestamp cells with initTimeAgo hook %q", bad)

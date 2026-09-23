@@ -33,14 +33,16 @@ func (s *Server) apiRulesStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	result := map[string]interface{}{
-		"yaml_rules":      yamlCount,
-		"yara_rules":      yaraCount,
-		"yara_available":  yara.Available(),
-		"yaml_version":    yamlVersion,
-		"rules_dir":       cfg.Signatures.RulesDir,
-		"auto_update":     cfg.Signatures.UpdateURL != "",
-		"update_url":      cfg.Signatures.UpdateURL,
-		"update_interval": cfg.Signatures.UpdateInterval,
+		"yaml_rules":     yamlCount,
+		"yara_rules":     yaraCount,
+		"yara_available": yara.Available(),
+		"yaml_version":   yamlVersion,
+		"rules_dir":      cfg.Signatures.RulesDir,
+		"auto_update":    cfg.Signatures.UpdateURL != "",
+		"update_url":     cfg.Signatures.UpdateURL,
+	}
+	if secs, ok := durationSeconds(cfg.Signatures.UpdateInterval); ok {
+		result["update_interval_seconds"] = secs
 	}
 	writeJSON(w, result)
 }

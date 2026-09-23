@@ -65,7 +65,8 @@
     // Desktop critical-finding notifications. Polls /api/v1/history and
     // fires browser Notifications for new severity=2 entries; the dashboard
     // no longer renders a live feed but the alert path stays useful.
-    var lastNotifTimestamp = '';
+    // Newest finding time seen, in epoch millis; NaN until the first poll.
+    var lastNotifAt = NaN;
     var notifInternalChecks = { auto_response: 1, auto_block: 1, check_timeout: 1, health: 1 };
 
     function _maybeNotify(f) {
@@ -83,16 +84,17 @@
         CSM.get('/api/v1/history?limit=10&offset=0')
             .then(function(data) {
                 var findings = data.items;
-                var maxTs = lastNotifTimestamp;
+                var maxAt = isNaN(lastNotifAt) ? -Infinity : lastNotifAt;
                 for (var i = findings.length - 1; i >= 0; i--) {
                     var f = findings[i];
-                    var ts = f.timestamp || '';
-                    if (ts > maxTs) maxTs = ts;
-                    if (lastNotifTimestamp !== '' && ts > lastNotifTimestamp && !notifInternalChecks[f.check]) {
+                    var at = CSM.parseTimestamp(f.timestamp);
+                    if (isNaN(at)) continue;
+                    if (at > maxAt) maxAt = at;
+                    if (!isNaN(lastNotifAt) && at > lastNotifAt && !notifInternalChecks[f.check]) {
                         _maybeNotify(f);
                     }
                 }
-                lastNotifTimestamp = maxTs;
+                if (isFinite(maxAt)) lastNotifAt = maxAt;
             })
             .catch(function(err) { console.error('pollFindings:', err); });
     }
@@ -152,7 +154,8 @@
             var openParts = [];
             if (bySev.critical) openParts.push(bySev.critical + ' critical');
             if (bySev.high) openParts.push(bySev.high + ' high');
-            var title = 'Uptime: ' + (status.uptime || health.uptime || '?') +
+            var uptime = status.uptime_seconds != null ? status.uptime_seconds : health.uptime_seconds;
+            var title = 'Uptime: ' + (CSM.formatDuration(uptime) || '?') +
                 '\nRules: ' + (health.rules_loaded || 0) +
                 '\nWatchers: ' + (health.log_watchers || 0) +
                 (status.scan_running ? '\nScan: in progress' : '') +
@@ -178,13 +181,12 @@
                 // against the correct baseline when a fresh critical arrives.
                 var lastCritEl = document.getElementById('stat-last-critical');
                 if (lastCritEl) {
-                    if (data.last_critical_iso) {
-                        lastCritEl.setAttribute('data-time-ago', data.last_critical_iso);
+                    if (data.last_critical) {
+                        lastCritEl.setAttribute('data-time-ago', data.last_critical);
+                        lastCritEl.textContent = CSM.timeAgo(data.last_critical);
                     } else {
                         lastCritEl.removeAttribute('data-time-ago');
-                    }
-                    if (data.last_critical_ago) {
-                        lastCritEl.textContent = data.last_critical_ago;
+                        lastCritEl.textContent = 'None';
                     }
                 }
                 renderAccountsAtRisk(data.accounts_at_risk || []);
@@ -433,9 +435,10 @@
     // refreshes the 24h counts, instead of waiting for the next poll.
     if (CSM.live) CSM.live.onFinding(function(items) {
         items.forEach(function(f) {
-            var ts = f.timestamp || '';
-            if (lastNotifTimestamp !== '' && ts > lastNotifTimestamp && !notifInternalChecks[f.check]) _maybeNotify(f);
-            if (ts > lastNotifTimestamp) lastNotifTimestamp = ts;
+            var at = CSM.parseTimestamp(f.timestamp);
+            if (isNaN(at)) return;
+            if (!isNaN(lastNotifAt) && at > lastNotifAt && !notifInternalChecks[f.check]) _maybeNotify(f);
+            if (isNaN(lastNotifAt) || at > lastNotifAt) lastNotifAt = at;
         });
         refreshStats();
     });
@@ -503,7 +506,8 @@
                 var critData = [], highData = [], warnData = [];
 
                 for (var i = 0; i < hours.length; i++) {
-                    labels.push(hours[i].hour);
+                    // "HH:MM" of the hour's start in the operator's zone.
+                    labels.push(CSM.fmtDate(hours[i].start).slice(11));
                     critData.push(hours[i].critical);
                     highData.push(hours[i].high);
                     warnData.push(hours[i].warning);
@@ -1185,10 +1189,10 @@
     }
 
     function _componentRow(row) {
-        var since = row.changed_ago ? row.changed_ago : '-';
-        var sinceISO = row.changed_at_iso ? ' title="' + CSM.attr(row.changed_at_iso) + '"' : '';
-        var lastEvent = row.last_event_ago ? row.last_event_ago : '-';
-        var lastEventTitle = row.last_event_iso ? row.last_event_iso : '';
+        var since = row.changed_at ? CSM.timeAgo(row.changed_at) : '-';
+        var sinceISO = row.changed_at ? ' title="' + CSM.attr(CSM.fmtDate(row.changed_at)) + '"' : '';
+        var lastEvent = row.last_event_at ? CSM.timeAgo(row.last_event_at) : '-';
+        var lastEventTitle = row.last_event_at ? CSM.fmtDate(row.last_event_at) : '';
         if (lastEventTitle && row.last_event_check) {
             lastEventTitle += ' (' + row.last_event_check + ')';
         }

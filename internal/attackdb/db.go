@@ -200,9 +200,9 @@ type IPRecord struct {
 	AuthSuccessAccounts   map[string]int     `json:"auth_success_accounts,omitempty"`
 	ThreatScore           int                `json:"threat_score"`
 	AutoBlocked           bool               `json:"auto_blocked"`
-	BruteForceWindowStart time.Time          `json:"brute_force_window_start,omitempty"`
+	BruteForceWindowStart time.Time          `json:"brute_force_window_start,omitzero"`
 	BruteForceWindowCount int                `json:"brute_force_window_count,omitempty"`
-	BruteForceSustainedAt time.Time          `json:"brute_force_sustained_at,omitempty"`
+	BruteForceSustainedAt time.Time          `json:"brute_force_sustained_at,omitzero"`
 }
 
 // DB is the in-memory attack database backed by JSON files.

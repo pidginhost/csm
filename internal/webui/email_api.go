@@ -13,6 +13,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
+	"github.com/pidginhost/csm/internal/mailfwd/intel"
 	"github.com/pidginhost/csm/internal/systemdrun"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -21,11 +22,13 @@ type emailStatsResponse struct {
 	QueueSize int `json:"queue_size"`
 	// QueueUnavailable marks queue_size as meaningless because the depth could
 	// not be read. Without it a failed probe looks like an empty queue.
-	QueueUnavailable bool             `json:"queue_unavailable"`
-	QueueWarn        int              `json:"queue_warn"`
-	QueueCrit        int              `json:"queue_crit"`
-	FrozenCount      int              `json:"frozen_count"`
-	OldestAge        string           `json:"oldest_age"`
+	QueueUnavailable bool `json:"queue_unavailable"`
+	QueueWarn        int  `json:"queue_warn"`
+	QueueCrit        int  `json:"queue_crit"`
+	FrozenCount      int  `json:"frozen_count"`
+	// OldestAgeSeconds is the age of the oldest queued message; left out
+	// when the queue is empty or could not be read.
+	OldestAgeSeconds *int             `json:"oldest_age_seconds,omitempty"`
 	SMTPBlock        bool             `json:"smtp_block"`
 	SMTPAllowUsers   []string         `json:"smtp_allow_users"`
 	SMTPPorts        []int            `json:"smtp_ports"`
@@ -56,7 +59,12 @@ func (s *Server) apiEmailStats(w http.ResponseWriter, _ *http.Request) {
 	var queueKnown bool
 	resp.QueueSize, queueKnown = eximQueueSize()
 	resp.QueueUnavailable = !queueKnown
-	resp.FrozenCount, resp.OldestAge = eximQueueDetails()
+	var oldestAge string
+	resp.FrozenCount, oldestAge = eximQueueDetails()
+	if oldestAge != "" {
+		secs := intel.AgeToSeconds(oldestAge)
+		resp.OldestAgeSeconds = &secs
+	}
 
 	// Firewall config
 	fw := cfg.Firewall

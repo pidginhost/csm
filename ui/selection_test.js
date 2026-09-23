@@ -60,7 +60,7 @@ test('Firewall select-all skips blocked IPs a filter hides', async () => {
         { url: 'https://csm.example.test/firewall?view=blocks' });
     await settle();
     page.respond('/api/v1/blocked-ips', 200, items([
-        { ip: '192.0.2.1', reason: 'r', source: 'web_ui', expires_at: '2026-09-30T00:00:00Z', expires_in: '6d' },
+        { ip: '192.0.2.1', reason: 'r', source: 'web_ui', expires_at: '2026-09-30T00:00:00Z' },
         { ip: '192.0.2.2', reason: 'r', source: 'web_ui' }
     ]));
     await settle();

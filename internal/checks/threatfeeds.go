@@ -639,14 +639,17 @@ func (db *ThreatDB) Count() int {
 func (db *ThreatDB) Stats() map[string]interface{} {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	return map[string]interface{}{
+	stats := map[string]interface{}{
 		"permanent_ips": db.PermanentCount,
 		"feed_ips":      db.FeedIPCount,
 		"feed_cidrs":    db.FeedNetCount,
 		"total":         len(db.badIPs) + len(db.badNets),
 		"whitelist":     db.whitelistCountLocked(),
-		"last_update":   db.LastFeedUpdate.Format(time.RFC3339),
 	}
+	if !db.LastFeedUpdate.IsZero() {
+		stats["last_update"] = db.LastFeedUpdate
+	}
+	return stats
 }
 
 func (db *ThreatDB) whitelistCountLocked() int {

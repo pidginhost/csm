@@ -32,9 +32,8 @@ type modsecBlockView struct {
 	DomainList   []string            `json:"domain_list,omitempty"`
 	DomainCount  int                 `json:"domain_count"`
 	Hits         int                 `json:"hits"`
-	LastSeen     string              `json:"last_seen"`
-	FirstSeen    string              `json:"first_seen"`
-	LastSeenISO  string              `json:"last_seen_iso"`
+	LastSeen     time.Time           `json:"last_seen,omitzero"`
+	FirstSeen    time.Time           `json:"first_seen,omitzero"`
 	TopURIs      []string            `json:"top_uris"`
 	SampleEvents []modsecSampleEvent `json:"sample_events"`
 	Escalated    bool                `json:"escalated"`
@@ -44,25 +43,23 @@ type modsecBlockView struct {
 // blocks response so the UI can show recent activity without a second
 // call to /api/v1/modsec/events.
 type modsecSampleEvent struct {
-	Time     string `json:"time"`
-	RuleID   string `json:"rule_id"`
-	Hostname string `json:"hostname"`
-	URI      string `json:"uri"`
-	Severity string `json:"severity"`
+	Time     time.Time `json:"time"`
+	RuleID   string    `json:"rule_id"`
+	Hostname string    `json:"hostname"`
+	URI      string    `json:"uri"`
+	Severity string    `json:"severity"`
 }
 
-// modsecEventView is a single ModSecurity event. Time is a date-less
-// "15:04:05" kept for compact display; TimeISO is the full RFC3339 instant the
-// UI renders in the operator's timezone and sorts on.
+// modsecEventView is a single ModSecurity event. The UI renders Time in the
+// operator's time zone and sorts on it.
 type modsecEventView struct {
-	Time     string `json:"time"`
-	TimeISO  string `json:"time_iso"`
-	IP       string `json:"ip"`
-	Country  string `json:"country"`
-	RuleID   string `json:"rule_id"`
-	Hostname string `json:"hostname"`
-	URI      string `json:"uri"`
-	Severity string `json:"severity"`
+	Time     time.Time `json:"time"`
+	IP       string    `json:"ip"`
+	Country  string    `json:"country"`
+	RuleID   string    `json:"rule_id"`
+	Hostname string    `json:"hostname"`
+	URI      string    `json:"uri"`
+	Severity string    `json:"severity"`
 }
 
 // apiModSecStats returns 24h summary stats for ModSecurity blocks.
@@ -213,7 +210,7 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(agg.samples) < 3 {
 			agg.samples = append(agg.samples, modsecSampleEvent{
-				Time:     f.Timestamp.UTC().Format(time.RFC3339),
+				Time:     f.Timestamp.UTC(),
 				RuleID:   rule,
 				Hostname: domain,
 				URI:      uri,
@@ -255,16 +252,6 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
 			domains = domains[:77] + "..."
 		}
 
-		lastSeen := ""
-		lastSeenISO := ""
-		if !agg.lastSeen.IsZero() {
-			lastSeen = agg.lastSeen.Format("15:04:05")
-			lastSeenISO = agg.lastSeen.UTC().Format(time.RFC3339)
-		}
-		firstSeenISO := ""
-		if !agg.firstSeen.IsZero() {
-			firstSeenISO = agg.firstSeen.UTC().Format(time.RFC3339)
-		}
 		topURIs := topKeysByCount(agg.uriCounts, 5)
 		country, countryName := s.modsecCountryOf(agg.ip)
 
@@ -278,9 +265,8 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
 			DomainList:   domainList,
 			DomainCount:  len(agg.domains),
 			Hits:         agg.hits,
-			LastSeen:     lastSeen,
-			FirstSeen:    firstSeenISO,
-			LastSeenISO:  lastSeenISO,
+			LastSeen:     agg.lastSeen.UTC(),
+			FirstSeen:    agg.firstSeen.UTC(),
 			TopURIs:      topURIs,
 			SampleEvents: agg.samples,
 			Escalated:    agg.escalated,
@@ -294,8 +280,8 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
 		if result[i].Escalated != result[j].Escalated {
 			return result[i].Escalated
 		}
-		if result[i].LastSeenISO != result[j].LastSeenISO {
-			return result[i].LastSeenISO > result[j].LastSeenISO
+		if !result[i].LastSeen.Equal(result[j].LastSeen) {
+			return result[i].LastSeen.After(result[j].LastSeen)
 		}
 		if result[i].IP != result[j].IP {
 			return result[i].IP < result[j].IP
@@ -333,8 +319,7 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 		ip := extractModSecIP(f)
 		country, _ := s.modsecCountryOf(ip)
 		result = append(result, modsecEventView{
-			Time:     f.Timestamp.Format("15:04:05"),
-			TimeISO:  f.Timestamp.UTC().Format(time.RFC3339),
+			Time:     f.Timestamp.UTC(),
 			IP:       ip,
 			Country:  country,
 			RuleID:   extractModSecRule(f),

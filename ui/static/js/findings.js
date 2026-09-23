@@ -716,7 +716,7 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
         clearInterval(timerInterval);
         btn.disabled = false; btn.innerHTML = '<i class="ti ti-radar-2"></i>&nbsp;Scan';
         if (data.error) { status.textContent = data.error; status.className = 'mt-3 small text-danger'; return; }
-        if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'mt-3 small text-success'; return; }
+        if (!data.count) { status.textContent = account + ' is clean (' + CSM.formatDuration(data.elapsed_seconds) + ')'; status.className = 'mt-3 small text-success'; return; }
         // Redirect to filtered view for the scanned account
         window.location.href = '/findings?account=' + encodeURIComponent(account);
     }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent=CSM.errorText(e); status.className='mt-3 small text-danger'; });

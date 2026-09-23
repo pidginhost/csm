@@ -37,11 +37,11 @@ func dropAutoBlockThreatRow(ip string) {
 }
 
 type firewallAllowView struct {
-	IP        string `json:"ip"`
-	Reason    string `json:"reason"`
-	Source    string `json:"source"`
-	ExpiresAt string `json:"expires_at,omitempty"`
-	ExpiresIn string `json:"expires_in"`
+	IP     string `json:"ip"`
+	Reason string `json:"reason"`
+	Source string `json:"source"`
+	// ExpiresAt is left out for a permanent rule.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 type firewallPortAllowView struct {
@@ -58,17 +58,6 @@ var firewallCheckCommandOutput = func(ctx context.Context, name string, args ...
 	// #nosec G204 -- command names are fixed by trusted call sites; HTTP input
 	// is parsed as an IP and passed as an execve argument without shell expansion.
 	return exec.CommandContext(ctx, name, args...).Output()
-}
-
-func formatRemaining(expiresAt time.Time) string {
-	if expiresAt.IsZero() {
-		return "permanent"
-	}
-	remaining := time.Until(expiresAt)
-	if remaining < 0 {
-		remaining = 0
-	}
-	return fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
 }
 
 // apiFirewallStatus returns the firewall engine configuration and state summary.
@@ -147,7 +136,7 @@ func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
 	}
 	now := time.Now()
 
-	var allowed []firewallAllowView
+	allowed := make([]firewallAllowView, 0, len(state.Allowed))
 	for _, entry := range state.Allowed {
 		if !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
 			continue
@@ -156,13 +145,10 @@ func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
 			IP:        entry.IP,
 			Reason:    entry.Reason,
 			Source:    entry.Source,
-			ExpiresIn: formatRemaining(entry.ExpiresAt),
+			ExpiresAt: entry.ExpiresAt.UTC(),
 		}
 		if view.Source == "" {
 			view.Source = firewall.InferProvenance("allow", entry.Reason)
-		}
-		if !entry.ExpiresAt.IsZero() {
-			view.ExpiresAt = entry.ExpiresAt.Format(time.RFC3339)
 		}
 		allowed = append(allowed, view)
 	}
@@ -306,13 +292,14 @@ func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 	entries := firewall.ReadAuditLog(s.cfg.StatePath, 0)
 
 	type auditView struct {
-		Timestamp string `json:"timestamp"`
-		Action    string `json:"action"`
-		IP        string `json:"ip"`
-		Reason    string `json:"reason"`
-		Source    string `json:"source"`
-		Duration  string `json:"duration"`
-		TimeAgo   string `json:"time_ago"`
+		Timestamp time.Time `json:"timestamp"`
+		Action    string    `json:"action"`
+		IP        string    `json:"ip"`
+		Reason    string    `json:"reason"`
+		Source    string    `json:"source"`
+		// DurationSeconds is the block or allow lifetime; left out when
+		// the action had none.
+		DurationSeconds float64 `json:"duration_seconds,omitempty"`
 	}
 
 	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
@@ -337,15 +324,18 @@ func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		result = append(result, auditView{
-			Timestamp: e.Timestamp.UTC().Format(time.RFC3339),
+		view := auditView{
+			Timestamp: e.Timestamp.UTC(),
 			Action:    e.Action,
 			IP:        e.IP,
 			Reason:    e.Reason,
 			Source:    source,
-			Duration:  e.Duration,
-			TimeAgo:   timeAgo(e.Timestamp),
-		})
+		}
+		// The log stores the lifetime as Go duration text such as "24h0m0s".
+		if secs, ok := durationSeconds(e.Duration); ok {
+			view.DurationSeconds = secs
+		}
+		result = append(result, view)
 	}
 	if limit == 0 {
 		writeAll(w, result)
@@ -368,12 +358,12 @@ func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	type subnetView struct {
-		CIDR      string `json:"cidr"`
-		Reason    string `json:"reason"`
-		Source    string `json:"source"`
-		BlockedAt string `json:"blocked_at"`
-		TimeAgo   string `json:"time_ago"`
-		ExpiresIn string `json:"expires_in"`
+		CIDR      string    `json:"cidr"`
+		Reason    string    `json:"reason"`
+		Source    string    `json:"source"`
+		BlockedAt time.Time `json:"blocked_at,omitzero"`
+		// ExpiresAt is left out for a permanent block.
+		ExpiresAt time.Time `json:"expires_at,omitzero"`
 	}
 
 	var result []subnetView
@@ -382,13 +372,12 @@ func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
 			CIDR:      sn.CIDR,
 			Reason:    sn.Reason,
 			Source:    sn.Source,
-			BlockedAt: sn.BlockedAt.Format(time.RFC3339),
-			TimeAgo:   timeAgo(sn.BlockedAt),
+			BlockedAt: sn.BlockedAt.UTC(),
+			ExpiresAt: sn.ExpiresAt.UTC(),
 		}
 		if v.Source == "" {
 			v.Source = firewall.InferProvenance("block_subnet", sn.Reason)
 		}
-		v.ExpiresIn = formatRemaining(sn.ExpiresAt)
 		result = append(result, v)
 	}
 	writeAll(w, result)
@@ -579,8 +568,11 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 			if b.ExpiresAt.IsZero() {
 				result["permanent"] = b.Reason
 			} else if now.Before(b.ExpiresAt) {
+				// temporary keeps its text form for existing callers;
+				// expires_at is the instant.
 				result["temporary"] = fmt.Sprintf("%s (expires in %s)", b.Reason,
 					time.Until(b.ExpiresAt).Truncate(time.Minute))
+				result["expires_at"] = b.ExpiresAt.UTC()
 			}
 		}
 	}

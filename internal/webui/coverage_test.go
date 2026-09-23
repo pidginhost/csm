@@ -861,8 +861,8 @@ func TestAPIStatusJSON(t *testing.T) {
 	if got["rules_loaded"] != float64(42) {
 		t.Errorf("rules_loaded = %v, want 42", got["rules_loaded"])
 	}
-	if _, ok := got["uptime"]; !ok {
-		t.Error("uptime missing from status")
+	if _, ok := got["uptime_seconds"]; !ok {
+		t.Error("uptime_seconds missing from status")
 	}
 	if _, ok := got["started_at"]; !ok {
 		t.Error("started_at missing from status")
@@ -1207,25 +1207,60 @@ func TestAPIUnblockIPNoBlocker(t *testing.T) {
 	}
 }
 
-// --- formatRemaining (firewall_api.go) --------------------------------
+// --- allow rule expiry (firewall_api.go) --------------------------------
+// The server sends the expiry instant and the page counts down from it; a
+// permanent rule has none and an expired one is not listed.
 
-func TestFormatRemainingPermanent(t *testing.T) {
-	if got := formatRemaining(time.Time{}); got != "permanent" {
-		t.Errorf("got %q, want permanent", got)
+func allowedExpiry(t *testing.T, expiresAt time.Time) (map[string]any, bool) {
+	t.Helper()
+	s := newTestServer(t, "tok")
+	state := firewall.FirewallState{Allowed: []firewall.AllowedEntry{{IP: "192.0.2.10", Reason: "office", ExpiresAt: expiresAt}}}
+	raw, _ := json.Marshal(state)
+	if err := os.MkdirAll(filepath.Join(s.cfg.StatePath, "firewall"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.cfg.StatePath, "firewall", "state.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.apiFirewallAllowed(w, httptest.NewRequest("GET", "/api/v1/firewall/allowed", nil))
+	var body struct {
+		Allowed []map[string]any `json:"allowed"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Allowed) == 0 {
+		return nil, false
+	}
+	return body.Allowed[0], true
+}
+
+func TestAllowedExpiryPermanent(t *testing.T) {
+	row, ok := allowedExpiry(t, time.Time{})
+	if !ok {
+		t.Fatal("permanent rule not listed")
+	}
+	if _, has := row["expires_at"]; has {
+		t.Errorf("permanent rule has expires_at: %v", row)
 	}
 }
 
-func TestFormatRemainingExpired(t *testing.T) {
-	if got := formatRemaining(time.Now().Add(-1 * time.Hour)); got != "0h0m" {
-		t.Errorf("got %q, want 0h0m (clamped)", got)
+func TestAllowedExpiryExpired(t *testing.T) {
+	if row, ok := allowedExpiry(t, time.Now().Add(-1*time.Hour)); ok {
+		t.Errorf("expired rule still listed: %v", row)
 	}
 }
 
-func TestFormatRemainingFuture(t *testing.T) {
-	got := formatRemaining(time.Now().Add(2*time.Hour + 30*time.Minute))
-	// Should be "2h30m" or "2h29m" depending on sub-second drift.
-	if got != "2h30m" && got != "2h29m" {
-		t.Errorf("got %q, want ~2h30m", got)
+func TestAllowedExpiryFuture(t *testing.T) {
+	want := time.Now().Add(2*time.Hour + 30*time.Minute)
+	row, ok := allowedExpiry(t, want)
+	if !ok {
+		t.Fatal("temporary rule not listed")
+	}
+	got, err := time.Parse(time.RFC3339Nano, row["expires_at"].(string))
+	if err != nil || !got.Equal(want) {
+		t.Errorf("expires_at = %v, want %s", row["expires_at"], want.UTC())
 	}
 }
 

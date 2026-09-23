@@ -482,3 +482,20 @@ func TestAggregateByDayUnknownSeverityStillCountsTotal(t *testing.T) {
 		t.Error("unknown severity should not increment named fields")
 	}
 }
+
+// Each hourly bucket names the instant it starts at, so a client can label
+// it in any time zone; an hour-of-day label alone has no date or zone.
+func TestAggregateByHourBucketsCarryTheirStart(t *testing.T) {
+	db := openTestDB(t)
+	current := time.Now().Truncate(time.Hour)
+	buckets := db.AggregateByHour()
+	if len(buckets) != 24 {
+		t.Fatalf("expected 24 buckets, got %d", len(buckets))
+	}
+	for i, b := range buckets {
+		want := current.Add(-time.Duration(23-i) * time.Hour)
+		if !b.Start.Equal(want) {
+			t.Fatalf("bucket %d starts at %s, want %s", i, b.Start, want)
+		}
+	}
+}

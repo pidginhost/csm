@@ -1001,8 +1001,8 @@ func TestFormatBlockedViewNotExpired(t *testing.T) {
 	if !ok {
 		t.Fatal("non-expired entry should be ok")
 	}
-	if view.ExpiresIn == "permanent" {
-		t.Error("should not be permanent when ExpiresAt is set")
+	if !view.ExpiresAt.Equal(entry.ExpiresAt) {
+		t.Error("should carry its expiry when ExpiresAt is set")
 	}
 }
 

@@ -2,7 +2,17 @@ package webui
 
 import (
 	"testing"
+	"time"
 )
+
+func mustRFC3339(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts
+}
 
 func TestIPDedup(t *testing.T) {
 	items := []enrichedFinding{
@@ -11,32 +21,32 @@ func TestIPDedup(t *testing.T) {
 			SevClass:  "high",
 			Check:     "ip_reputation",
 			Message:   "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB)",
-			FirstSeen: "2026-04-01T10:00:00Z",
-			LastSeen:  "2026-04-01T10:00:00Z",
+			FirstSeen: mustRFC3339(t, "2026-04-01T10:00:00Z"),
+			LastSeen:  mustRFC3339(t, "2026-04-01T10:00:00Z"),
 		},
 		{
 			Severity:  "CRITICAL",
 			SevClass:  "critical",
 			Check:     "ip_reputation",
 			Message:   "Known malicious IP accessing server: 1.2.3.4 (Spamhaus)",
-			FirstSeen: "2026-04-01T09:00:00Z",
-			LastSeen:  "2026-04-01T11:00:00Z",
+			FirstSeen: mustRFC3339(t, "2026-04-01T09:00:00Z"),
+			LastSeen:  mustRFC3339(t, "2026-04-01T11:00:00Z"),
 		},
 		{
 			Severity:  "HIGH",
 			SevClass:  "high",
 			Check:     "ip_reputation",
 			Message:   "Known malicious IP accessing server: 5.6.7.8 (AbuseIPDB)",
-			FirstSeen: "2026-04-01T10:00:00Z",
-			LastSeen:  "2026-04-01T10:00:00Z",
+			FirstSeen: mustRFC3339(t, "2026-04-01T10:00:00Z"),
+			LastSeen:  mustRFC3339(t, "2026-04-01T10:00:00Z"),
 		},
 		{
 			Severity:  "CRITICAL",
 			SevClass:  "critical",
 			Check:     "brute_force",
 			Message:   "Brute force detected",
-			FirstSeen: "2026-04-01T10:00:00Z",
-			LastSeen:  "2026-04-01T10:00:00Z",
+			FirstSeen: mustRFC3339(t, "2026-04-01T10:00:00Z"),
+			LastSeen:  mustRFC3339(t, "2026-04-01T10:00:00Z"),
 		},
 	}
 
@@ -55,10 +65,10 @@ func TestIPDedup(t *testing.T) {
 			if r.Severity != "CRITICAL" {
 				t.Errorf("expected CRITICAL severity after merge, got %s", r.Severity)
 			}
-			if r.FirstSeen != "2026-04-01T09:00:00Z" {
+			if !r.FirstSeen.Equal(mustRFC3339(t, "2026-04-01T09:00:00Z")) {
 				t.Errorf("expected earliest FirstSeen, got %s", r.FirstSeen)
 			}
-			if r.LastSeen != "2026-04-01T11:00:00Z" {
+			if !r.LastSeen.Equal(mustRFC3339(t, "2026-04-01T11:00:00Z")) {
 				t.Errorf("expected latest LastSeen, got %s", r.LastSeen)
 			}
 		}
@@ -111,5 +121,26 @@ func TestIPDedupSortsMergedSourcesForStableMessage(t *testing.T) {
 				t.Fatalf("message = %q, want %q", result[0].Message, want)
 			}
 		})
+	}
+}
+
+// Merged sightings compare as instants. As RFC 3339 text, 09:00Z sorted
+// before 11:00+03:00 although 11:00+03:00 is 08:00Z, the earlier sighting.
+func TestIPDedupComparesInstantsNotText(t *testing.T) {
+	items := []enrichedFinding{
+		{Severity: "HIGH", Check: "ip_reputation", Message: "Known malicious IP accessing server: 203.0.113.4 (AbuseIPDB)",
+			FirstSeen: mustRFC3339(t, "2026-04-01T09:00:00Z"), LastSeen: mustRFC3339(t, "2026-04-01T09:30:00Z")},
+		{Severity: "HIGH", Check: "ip_reputation", Message: "Known malicious IP accessing server: 203.0.113.4 (Spamhaus)",
+			FirstSeen: mustRFC3339(t, "2026-04-01T11:00:00+03:00"), LastSeen: mustRFC3339(t, "2026-04-01T12:40:00+03:00")},
+	}
+	result := dedupIPReputation(items)
+	if len(result) != 1 {
+		t.Fatalf("entries = %d, want 1", len(result))
+	}
+	if !result[0].FirstSeen.Equal(mustRFC3339(t, "2026-04-01T08:00:00Z")) {
+		t.Errorf("first_seen = %s, want the 08:00Z sighting", result[0].FirstSeen)
+	}
+	if !result[0].LastSeen.Equal(mustRFC3339(t, "2026-04-01T09:40:00Z")) {
+		t.Errorf("last_seen = %s, want the 09:40Z sighting", result[0].LastSeen)
 	}
 }

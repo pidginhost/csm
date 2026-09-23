@@ -13,12 +13,12 @@ import (
 )
 
 type timelineEvent struct {
-	Timestamp string `json:"timestamp"`
-	Type      string `json:"type"`     // "finding", "action", "block"
-	Severity  int    `json:"severity"` // 0=info, 1=high, 2=critical
-	Summary   string `json:"summary"`
-	Details   string `json:"details,omitempty"`
-	Source    string `json:"source"` // "history", "audit", "firewall"
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`     // "finding", "action", "block"
+	Severity  int       `json:"severity"` // 0=info, 1=high, 2=critical
+	Summary   string    `json:"summary"`
+	Details   string    `json:"details,omitempty"`
+	Source    string    `json:"source"` // "history", "audit", "firewall"
 }
 
 const incidentTimelineEventLimit = 200
@@ -104,7 +104,7 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	for _, f := range allHistory {
 		summary := f.Check + ": " + f.Message
 		events = append(events, timelineEvent{
-			Timestamp: f.Timestamp.Format(time.RFC3339),
+			Timestamp: f.Timestamp.UTC(),
 			Type:      "finding",
 			Severity:  int(f.Severity),
 			Summary:   summary,
@@ -152,7 +152,7 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 				}
 				dedup[key] = struct{}{}
 				events = append(events, timelineEvent{
-					Timestamp: ev.Time.Format(time.RFC3339),
+					Timestamp: ev.Time.UTC(),
 					Type:      "finding",
 					Severity:  int(inc.Severity),
 					Summary:   summary,
@@ -180,7 +180,7 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		events = append(events, timelineEvent{
-			Timestamp: a.Timestamp.Format(time.RFC3339),
+			Timestamp: a.Timestamp.UTC(),
 			Type:      "action",
 			Severity:  0,
 			Summary:   a.Action + ": " + a.Target,
@@ -189,9 +189,9 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Sort by timestamp descending (newest first)
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].Timestamp > events[j].Timestamp
+	// Newest first, compared as instants.
+	sort.SliceStable(events, func(i, j int) bool {
+		return events[i].Timestamp.After(events[j].Timestamp)
 	})
 
 	total := len(events)
@@ -228,8 +228,7 @@ func incidentMatchesAccount(inc incident.Incident, account string) bool {
 // below this; the ceiling exists for defense in depth.
 const maxIncidentPageSize = 500
 
-// defaultIncidentPageSize is applied when the client requests a paged
-// shape (any of limit/offset/status set) but does not pass an explicit
+// defaultIncidentPageSize is the page size when the client passes no
 // limit. Tuned to fit comfortably on one screen.
 const defaultIncidentPageSize = 50
 

@@ -384,6 +384,10 @@ CSM.Table.prototype.applySort = function() {
             var tsA = tsElA.getAttribute('data-timestamp');
             var tsB = tsElB.getAttribute('data-timestamp');
             if (tsA && tsB) {
+                // Compare instants: sub-second digits vary in length, so
+                // the text does not sort in time order.
+                var tA = CSM.parseTimestamp(tsA), tB = CSM.parseTimestamp(tsB);
+                if (!isNaN(tA) && !isNaN(tB)) return asc ? tA - tB : tB - tA;
                 return asc ? tsA.localeCompare(tsB) : tsB.localeCompare(tsA);
             }
         }

@@ -23,11 +23,14 @@ function formatReason(reason, fallback) {
     return CSM.esc(reason || fallback || '-');
 }
 
-function formatExpiresBadge(expiresIn) {
-    if (!expiresIn || expiresIn === 'permanent') {
+// formatExpiresBadge shows how long a block has left, counting down from its
+// expiry instant; a block without one is permanent.
+function formatExpiresBadge(expiresAt) {
+    if (!expiresAt) {
         return '<span class="badge bg-red-lt">Permanent</span>';
     }
-    return '<span class="badge bg-azure-lt">' + CSM.esc(expiresIn) + '</span>';
+    return '<span class="badge bg-azure-lt" data-time-ago="' + CSM.attr(expiresAt) + '" title="' + CSM.attr(CSM.fmtDate(expiresAt)) + '">' +
+        CSM.esc(CSM.timeAgo(expiresAt)) + '</span>';
 }
 
 function formatGeo(geo) {
@@ -290,7 +293,7 @@ function loadSubnets() {
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(baseIP) + '"></td>';
                 h += '<td class="small"><div>' + formatReason(subs[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(subs[i].source || 'unknown') + '</div></td>';
                 h += '<td class="small text-muted" data-timestamp="' + CSM.esc(subs[i].blocked_at || '') + '" data-time-ago="' + CSM.esc(subs[i].blocked_at || '') + '">' + CSM.esc(subs[i].time_ago || '-') + '</td>';
-                h += '<td>' + formatExpiresBadge(subs[i].expires_in) + '</td>';
+                h += '<td>' + formatExpiresBadge(subs[i].expires_at) + '</td>';
                 h += '<td><button class="btn btn-sm btn-outline-secondary remove-subnet-btn" data-cidr="' + CSM.esc(subs[i].cidr) + '">Remove</button></td>';
                 h += '</tr>';
             }
@@ -372,7 +375,7 @@ function loadBlocked() {
                     reason: b.reason || '',
                     source: b.source || 'unknown',
                     blocked_at: b.blocked_at || '',
-                    expires: b.expires_in || '',
+                    expires: b.expires_at || '',
                     lifetime: classifyLifetime(b)
                 };
             });
@@ -391,7 +394,7 @@ function loadBlocked() {
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(ips[i].ip) + '"></td>';
                 h += '<td class="small"><div>' + formatReason(ips[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
                 h += '<td class="small text-muted" data-timestamp="' + CSM.esc(ips[i].blocked_at || '') + '">' + blockedAt + '</td>';
-                h += '<td>' + formatExpiresBadge(ips[i].expires_in) + '</td>';
+                h += '<td>' + formatExpiresBadge(ips[i].expires_at) + '</td>';
                 h += '<td class="text-nowrap">';
                 h += '<div class="dropdown d-inline-block me-1">';
                 h += '<button class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown">Respond</button>';
@@ -501,7 +504,7 @@ function loadAllowed() {
                     h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(allowed[i].ip) + '</code></td>';
                     h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(allowed[i].ip) + '"></td>';
                     h += '<td class="small"><div>' + formatReason(allowed[i].reason, 'Allowed via CSM') + '</div><div class="mt-1">' + sourceBadge(allowed[i].source || 'unknown') + '</div></td>';
-                    h += '<td data-timestamp="' + CSM.esc(allowed[i].expires_at || '') + '">' + (allowed[i].expires_at ? '<div>' + expiresText + '</div><div class="text-muted small">' + CSM.esc(allowed[i].expires_in) + '</div>' : formatExpiresBadge('permanent')) + '</td>';
+                    h += '<td data-timestamp="' + CSM.esc(allowed[i].expires_at || '') + '">' + (allowed[i].expires_at ? '<div>' + expiresText + '</div><div class="text-muted small" data-time-ago="' + CSM.attr(allowed[i].expires_at) + '">' + CSM.esc(CSM.timeAgo(allowed[i].expires_at)) + '</div>' : formatExpiresBadge('')) + '</td>';
                     h += '<td><button class="btn btn-sm btn-outline-secondary remove-allow-btn" data-ip="' + CSM.esc(allowed[i].ip) + '">Remove</button></td>';
                     h += '</tr>';
                 }
@@ -606,7 +609,7 @@ function loadAudit() {
                 h += '<td><div><span class="badge bg-secondary-lt">' + humanizeAction(entries[i].action) + '</span></div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
                 h += '<td><code>' + CSM.esc(entries[i].ip || '-') + '</code></td>';
                 h += '<td class="small">' + formatReason(entries[i].reason, '-') + '</td>';
-                h += '<td class="small text-muted">' + CSM.esc(entries[i].duration || '-') + '</td>';
+                h += '<td class="small text-muted">' + CSM.esc(CSM.formatDuration(entries[i].duration_seconds) || '-') + '</td>';
                 h += '<td>' + (inspectIPValue ? '<button class="btn btn-sm btn-outline-secondary audit-inspect-btn" data-ip="' + CSM.esc(inspectIPValue) + '">Inspect</button>' : '') + '</td>';
                 h += '</tr>';
             }
@@ -1125,7 +1128,7 @@ if (auditResetBtn) {
         { key: 'reason', label: 'Reason' },
         { key: 'source', label: 'Source' },
         { key: 'blocked_at', label: 'Blocked At' },
-        { key: 'expires', label: 'Expires' }
+        { key: 'expires', label: 'Expires At' }
     ];
     document.querySelectorAll('[data-export]').forEach(function(el) {
         el.addEventListener('click', function(e) {

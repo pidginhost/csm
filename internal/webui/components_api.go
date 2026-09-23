@@ -25,18 +25,16 @@ type componentsUpstreamProvider interface {
 
 // componentRow is the JSON shape returned per watcher.
 type componentRow struct {
-	Name            string `json:"name"`
-	Label           string `json:"label"`
-	Status          string `json:"status"` // "ok" | "degraded" | "deaf" | "idle" | "unknown"
-	Attached        bool   `json:"attached"`
-	ChangedAtISO    string `json:"changed_at_iso,omitempty"`
-	ChangedAgo      string `json:"changed_ago,omitempty"`
-	LastEventISO    string `json:"last_event_iso,omitempty"`
-	LastEventAgo    string `json:"last_event_ago,omitempty"`
-	LastEventCheck  string `json:"last_event_check,omitempty"`
-	UpstreamFresh   *bool  `json:"upstream_fresh,omitempty"`
-	UpstreamReason  string `json:"upstream_reason,omitempty"`
-	UpstreamSeenISO string `json:"upstream_seen_iso,omitempty"`
+	Name           string    `json:"name"`
+	Label          string    `json:"label"`
+	Status         string    `json:"status"` // "ok" | "degraded" | "deaf" | "idle" | "unknown"
+	Attached       bool      `json:"attached"`
+	ChangedAt      time.Time `json:"changed_at,omitzero"`
+	LastEventAt    time.Time `json:"last_event_at,omitzero"`
+	LastEventCheck string    `json:"last_event_check,omitempty"`
+	UpstreamFresh  *bool     `json:"upstream_fresh,omitempty"`
+	UpstreamReason string    `json:"upstream_reason,omitempty"`
+	UpstreamSeenAt time.Time `json:"upstream_seen_at,omitzero"`
 }
 
 // componentLabels maps the short watcher name to the operator-facing label.
@@ -173,13 +171,11 @@ func (s *Server) apiComponents(w http.ResponseWriter, _ *http.Request) {
 			Label:    componentLabel(name),
 			Attached: attached,
 		}
-		if t, ok := changed[name]; ok && !t.IsZero() {
-			row.ChangedAtISO = t.Format(time.RFC3339)
-			row.ChangedAgo = timeAgo(t)
+		if t, ok := changed[name]; ok {
+			row.ChangedAt = t.UTC()
 		}
 		if ev, ok := lastEvents[name]; ok && !ev.at.IsZero() {
-			row.LastEventISO = ev.at.Format(time.RFC3339)
-			row.LastEventAgo = timeAgo(ev.at)
+			row.LastEventAt = ev.at.UTC()
 			row.LastEventCheck = ev.check
 		}
 		var upstreamFresh *bool
@@ -188,9 +184,7 @@ func (s *Server) apiComponents(w http.ResponseWriter, _ *http.Request) {
 			upstreamFresh = &fresh
 			row.UpstreamFresh = upstreamFresh
 			row.UpstreamReason = up.Reason
-			if !up.LastActivity.IsZero() {
-				row.UpstreamSeenISO = up.LastActivity.Format(time.RFC3339)
-			}
+			row.UpstreamSeenAt = up.LastActivity.UTC()
 		}
 		row.Status = componentStatus(attached, lastEvents[name].at, upstreamFresh)
 		rows = append(rows, row)

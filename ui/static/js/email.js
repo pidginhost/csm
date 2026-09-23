@@ -94,8 +94,8 @@
                 el.appendChild(chip({ icon: 'ti-snowflake', value: String(s.frozen_count), label: 'frozen',
                     cls: 'csm-status-strip__chip--warn', title: 'Frozen messages in the queue' }));
             }
-            if (s.oldest_age) {
-                el.appendChild(chip({ icon: 'ti-clock', value: s.oldest_age, label: 'oldest',
+            if (s.oldest_age_seconds != null) {
+                el.appendChild(chip({ icon: 'ti-clock', value: CSM.formatDuration(s.oldest_age_seconds), label: 'oldest',
                     title: 'Age of the oldest queued message' }));
             }
         }
@@ -215,8 +215,8 @@
         el.appendChild(pwrap);
 
         el.appendChild(row('Frozen', data.frozen_count || 0, (data.frozen_count || 0) > 0 ? 'text-warning fw-bold' : ''));
-        var oldest = data.oldest_age || '';
-        el.appendChild(row('Oldest', oldest || 'none', oldest && oldest.indexOf('d') >= 0 ? 'text-danger fw-bold' : ''));
+        var oldest = CSM.formatDuration(data.oldest_age_seconds);
+        el.appendChild(row('Oldest', oldest || 'none', data.oldest_age_seconds >= 86400 ? 'text-danger fw-bold' : ''));
         el.appendChild(row('Warn threshold', data.queue_warn, ''));
         el.appendChild(row('Crit threshold', data.queue_crit, ''));
     }
@@ -1230,7 +1230,7 @@
         html += metricCol('Real mail', CSM.formatNumber(real), 'text-success');
         html += metricCol('Backscatter', CSM.formatNumber(bounce) + ' (' + bouncePct + '%)', bounce > 0 ? 'text-danger' : 'text-muted');
         html += metricCol('Frozen', CSM.formatNumber(frozen), frozen > 0 ? 'text-warning' : 'text-muted');
-        html += metricCol('Oldest', data.oldest_age || '--', '');
+        html += metricCol('Oldest', CSM.formatDuration(data.oldest_age_seconds) || '--', '');
         html += '</div>';
 
         // Flush is offered only for frozen null-sender messages: undeliverable

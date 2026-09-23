@@ -48,15 +48,15 @@ const CASES = [
       item: { path: '/home/alice/public_html/relay.php', path_label: 'relay.php', severity: 'HIGH', trigger_count: 3, detected_at: AT },
       extra: { limit: 20, truncated: false }, host: 'outbound-abuse-body', text: 'relay.php' },
     { name: 'blocked subnets', page: 'firewall', scripts: ['firewall.js'], route: '/api/v1/firewall/subnets',
-      item: { cidr: '198.51.100.0/24', reason: 'scanner', source: 'web_ui', blocked_at: AT, expires_in: '' }, host: 'subnet-content', text: '198.51.100.0/24' },
+      item: { cidr: '198.51.100.0/24', reason: 'scanner', source: 'web_ui', blocked_at: AT }, host: 'subnet-content', text: '198.51.100.0/24' },
     { name: 'whitelist', page: 'firewall', scripts: ['firewall.js'], route: '/api/v1/threat/whitelist',
       item: { ip: '203.0.113.77', permanent: true }, host: 'whitelist-content', text: '203.0.113.77' },
     { name: 'ModSecurity blocks', page: 'modsec', scripts: ['modsec.js'], route: '/api/v1/modsec/blocks',
       item: { ip: '203.0.113.66', rule_id: '900112', description: 'enumeration', domains: 'site.example.com', domain_count: 1, hits: 3,
-              last_seen: '10:00:00', first_seen: AT, last_seen_iso: AT, top_uris: [], sample_events: [], escalated: false },
+              last_seen: AT, first_seen: AT, top_uris: [], sample_events: [], escalated: false },
       extra: { truncated: false }, host: 'modsec-content', text: '203.0.113.66' },
     { name: 'ModSecurity events', page: 'modsec', scripts: ['modsec.js'], tab: 'modsec-tab-events', route: '/api/v1/modsec/events',
-      item: { time: '10:00:00', time_iso: AT, ip: '203.0.113.67', rule_id: '900112', hostname: 'site.example.com', uri: '/x', severity: 'HIGH' },
+      item: { time: AT, ip: '203.0.113.67', rule_id: '900112', hostname: 'site.example.com', uri: '/x', severity: 'HIGH' },
       extra: { limit: 100, truncated: false }, host: 'modsec-events', text: '203.0.113.67' },
     { name: 'suppression rules', page: 'rules', scripts: ['rules.js'], route: '/api/v1/suppressions',
       item: { id: 's1', check: 'webshell', path_pattern: '/home/*/tmp/*', reason: 'vendor cache', created_at: AT },
@@ -126,7 +126,7 @@ test('dashboard charts plot the items of the trend and timeline', async () => {
     Chart.defaults = new Proxy({}, { get(t, k) { if (typeof k === 'symbol') return t[k]; if (!(k in t)) t[k] = Chart.defaults; return t[k]; } });
     Chart.instances = {};
     const page = loadPage(templateBody('dashboard'), SHARED.concat(['dashboard.js']), { globals: { Chart } });
-    const hour = { hour: '10:00', critical: 1, high: 0, warning: 0, total: 1 };
+    const hour = { start: '2026-09-22T10:00:00Z', critical: 1, high: 0, warning: 0, total: 1 };
     const day = { date: '2026-09-22', critical: 1, high: 0, warning: 0, total: 1 };
     for (let round = 0; round < 6; round++) {
         for (const req of page.pending()) {

@@ -182,6 +182,13 @@
         return 0;
     }
 
+    // sortInstant is a time's sort key: epoch millis, which the table
+    // compares as numbers, so sub-second order survives.
+    function sortInstant(iso) {
+        var ms = CSM.parseTimestamp(iso);
+        return isNaN(ms) ? '' : String(ms);
+    }
+
     function ageLabel(iso, fallback) {
         if (iso && CSM.timeAgo) return CSM.timeAgo(iso);
         return fallback || '';
@@ -227,7 +234,7 @@
                 titleHTML: titleHTML,
                 meta: meta,
                 count: b.hits,
-                age: ageLabel(b.last_seen_iso, b.last_seen),
+                age: ageLabel(b.last_seen),
                 statusHTML: statusBadgeHTML(b),
                 onClick: (function(block) { return function() { openBlockDetail(block); }; })(b),
             });
@@ -308,7 +315,7 @@
         bodyHTML += '<dt class="col-4 text-muted">Hits</dt><dd class="col-8">' + b.hits + '</dd>';
         bodyHTML += '<dt class="col-4 text-muted">Status</dt><dd class="col-8">' + statusBadgeHTML(b) + '</dd>';
         if (b.first_seen) bodyHTML += '<dt class="col-4 text-muted">First seen</dt><dd class="col-8">' + CSM.fmtDate(b.first_seen) + '</dd>';
-        if (b.last_seen_iso) bodyHTML += '<dt class="col-4 text-muted">Last seen</dt><dd class="col-8">' + CSM.fmtDate(b.last_seen_iso) + '</dd>';
+        if (b.last_seen) bodyHTML += '<dt class="col-4 text-muted">Last seen</dt><dd class="col-8">' + CSM.fmtDate(b.last_seen) + '</dd>';
         if (b.domain_count != null) bodyHTML += '<dt class="col-4 text-muted">Domains</dt><dd class="col-8">' + b.domain_count + '</dd>';
         bodyHTML += '</dl>';
 
@@ -403,7 +410,7 @@
             h += '<td data-label="Description">' + CSM.esc(b.description || '') + '</td>';
             h += '<td data-label="Domains">' + CSM.esc(domains) + '</td>';
             h += '<td data-label="Hits"><strong>' + b.hits + '</strong></td>';
-            h += '<td data-label="Last Seen" data-sort="' + CSM.attr(b.last_seen_iso || '') + '">' + CSM.esc(CSM.fmtDate(b.last_seen_iso)) + '</td>';
+            h += '<td data-label="Last Seen" data-sort="' + CSM.attr(sortInstant(b.last_seen)) + '">' + CSM.esc(CSM.fmtDate(b.last_seen)) + '</td>';
             h += '<td data-label="Status">' + statusBadgeHTML(b) + '</td>';
             h += '</tr>';
         }
@@ -503,7 +510,7 @@
             .then(function(data) {
                 _modsecEvents = data.items;
                 populateCountryFilter('events-country-filter', _modsecEvents);
-                _strip.latest = _modsecEvents.length > 0 ? _modsecEvents[0].time : '';
+                _strip.latest = _modsecEvents.length > 0 ? CSM.timeAgo(_modsecEvents[0].time) : '';
                 refreshStatusStrip();
                 renderEvents(_modsecEvents);
             })
@@ -534,7 +541,7 @@
             var e = events[i];
             var sevClass = CSM.severity(e.severity).cls;
             h += '<tr>';
-            h += '<td class="text-nowrap" data-sort="' + CSM.attr(e.time_iso || '') + '">' + CSM.esc(CSM.fmtDate(e.time_iso)) + '</td>';
+            h += '<td class="text-nowrap" data-sort="' + CSM.attr(sortInstant(e.time)) + '">' + CSM.esc(CSM.fmtDate(e.time)) + '</td>';
             h += '<td><code>' + CSM.esc(e.ip) + '</code></td>';
             h += '<td data-label="Location">' + (e.country ? CSM.countryFlag(e.country) + ' ' + CSM.esc(e.country) : '<span class="text-muted">--</span>') + '</td>';
             h += '<td><code>' + CSM.esc(e.rule_id) + '</code></td>';

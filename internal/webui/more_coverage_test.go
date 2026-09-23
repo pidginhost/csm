@@ -94,9 +94,9 @@ func TestAPIPerformanceUsesEntryForKey(t *testing.T) {
 	if len(resp.Findings) == 0 {
 		t.Fatal("expected at least one perf finding")
 	}
-	// FirstSeen should be a parseable RFC3339 timestamp.
-	if _, err := time.Parse(time.RFC3339, resp.Findings[0].FirstSeen); err != nil {
-		t.Errorf("FirstSeen not RFC3339: %v (got %q)", err, resp.Findings[0].FirstSeen)
+	// FirstSeen should be a set instant.
+	if resp.Findings[0].FirstSeen.IsZero() {
+		t.Errorf("FirstSeen not set (got %v)", resp.Findings[0].FirstSeen)
 	}
 }
 

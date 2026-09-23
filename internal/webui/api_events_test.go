@@ -321,3 +321,36 @@ func waitForHandlerDone(t *testing.T, done <-chan struct{}) {
 		t.Fatal("SSE handler did not exit")
 	}
 }
+
+// Stream frames follow the API's time rule: a finding stamped in the host
+// zone goes out in UTC.
+func TestApiEvents_SendsUTCTimes(t *testing.T) {
+	bus := broadcast.NewBus(8)
+	defer bus.Close()
+
+	s := &Server{cfg: &config.Config{}}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "t", Token: "secret", Scope: "read"}}
+	s.SetFindingBus(bus)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := newDeadlineRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		s.requireRead(http.HandlerFunc(s.apiEvents)).ServeHTTP(rec, req)
+		close(done)
+	}()
+	waitForRecorderFlush(t, rec, 1)
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		bus.Publish(alert.Finding{Check: "x", Severity: alert.High, Timestamp: utcTestAt})
+	}()
+
+	waitForRecorderBodyContains(t, rec, `"timestamp":"2026-09-22T10:04:05.123456789Z"`)
+	cancel()
+	waitForHandlerDone(t, done)
+}

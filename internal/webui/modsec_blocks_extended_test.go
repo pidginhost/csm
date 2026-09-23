@@ -70,15 +70,15 @@ func TestModSecBlocksExtendedFieldsPopulated(t *testing.T) {
 	if len(row.DomainList) != 1 || row.DomainList[0] != "example.com" {
 		t.Errorf("DomainList = %v, want [example.com]", row.DomainList)
 	}
-	if row.FirstSeen == "" {
-		t.Error("FirstSeen empty -- phase 8.4 must populate RFC3339 first_seen")
+	if row.FirstSeen.IsZero() {
+		t.Error("FirstSeen empty -- phase 8.4 must populate first_seen")
 	}
-	if row.LastSeenISO == "" {
-		t.Error("LastSeenISO empty -- phase 8.4 must populate RFC3339 last_seen_iso")
+	if row.LastSeen.IsZero() {
+		t.Error("LastSeen empty -- phase 8.4 must populate last_seen")
 	}
-	// FirstSeen should be older than LastSeenISO.
-	if row.FirstSeen >= row.LastSeenISO {
-		t.Errorf("FirstSeen %q should be older than LastSeenISO %q", row.FirstSeen, row.LastSeenISO)
+	// FirstSeen should be older than LastSeen.
+	if !row.FirstSeen.Before(row.LastSeen) {
+		t.Errorf("FirstSeen %s should be older than LastSeen %s", row.FirstSeen, row.LastSeen)
 	}
 	if len(row.TopURIs) == 0 {
 		t.Error("TopURIs empty -- phase 8.4 must rank URIs hit by this IP")
@@ -91,7 +91,7 @@ func TestModSecBlocksExtendedFieldsPopulated(t *testing.T) {
 		t.Errorf("SampleEvents = %d, want 3 (cap)", len(row.SampleEvents))
 	}
 	for _, ev := range row.SampleEvents {
-		if ev.RuleID == "" || ev.Hostname == "" || ev.Time == "" {
+		if ev.RuleID == "" || ev.Hostname == "" || ev.Time.IsZero() {
 			t.Errorf("SampleEvent missing fields: %+v", ev)
 		}
 	}
@@ -206,16 +206,9 @@ func TestModSecEventsExposeISOTimestamp(t *testing.T) {
 		t.Fatalf("events = %d, want 1", len(resp))
 	}
 	// The UI renders timestamps in the operator's timezone and sorts on them, so
-	// each event must carry a full RFC3339 instant, not a date-less "15:04:05".
-	got, err := time.Parse(time.RFC3339, resp[0].TimeISO)
-	if err != nil {
-		t.Fatalf("time_iso %q is not RFC3339: %v", resp[0].TimeISO, err)
-	}
-	if want := ts.UTC().Truncate(time.Second); !got.Equal(want) {
-		t.Fatalf("time_iso = %v, want %v", got, want)
-	}
-	if want := ts.Format("15:04:05"); resp[0].Time != want {
-		t.Fatalf("legacy time = %q, want %q", resp[0].Time, want)
+	// each event must carry a full instant in UTC, not a date-less "15:04:05".
+	if got := resp[0].Time; !got.Equal(ts) || got.Location() != time.UTC {
+		t.Fatalf("time = %v, want %v in UTC", got, ts.UTC())
 	}
 }
 

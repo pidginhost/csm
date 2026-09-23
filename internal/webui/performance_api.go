@@ -40,12 +40,12 @@ type perfMetrics struct {
 	// not read the server's process status or the mysql client failed (no /root/.my.cnf,
 	// no socket auth, mysqld absent). The webui renders "n/a" in that case
 	// so operators can tell "MySQL is idle" from "we couldn't ask".
-	MySQLMemMB *uint64 `json:"mysql_mem_mb"`
-	MySQLConns *int    `json:"mysql_conns"`
-	RedisMemMB uint64  `json:"redis_mem_mb"`
-	RedisMaxMB uint64  `json:"redis_maxmem_mb"`
-	RedisKeys  int64   `json:"redis_keys"`
-	Uptime     string  `json:"uptime"`
+	MySQLMemMB    *uint64 `json:"mysql_mem_mb"`
+	MySQLConns    *int    `json:"mysql_conns"`
+	RedisMemMB    uint64  `json:"redis_mem_mb"`
+	RedisMaxMB    uint64  `json:"redis_maxmem_mb"`
+	RedisKeys     int64   `json:"redis_keys"`
+	UptimeSeconds int64   `json:"uptime_seconds"`
 }
 
 type userProcs struct {
@@ -54,14 +54,14 @@ type userProcs struct {
 }
 
 type perfFindingView struct {
-	Severity  int    `json:"severity"`
-	SevClass  string `json:"sev_class"`
-	Check     string `json:"check"`
-	Message   string `json:"message"`
-	Details   string `json:"details,omitempty"`
-	Key       string `json:"key"`
-	FirstSeen string `json:"first_seen"`
-	LastSeen  string `json:"last_seen"`
+	Severity  int       `json:"severity"`
+	SevClass  string    `json:"sev_class"`
+	Check     string    `json:"check"`
+	Message   string    `json:"message"`
+	Details   string    `json:"details,omitempty"`
+	Key       string    `json:"key"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
 }
 
 // --- Cached values ---
@@ -371,10 +371,7 @@ func sampleMetrics() *perfMetrics {
 			fields := strings.Fields(string(data))
 			if len(fields) >= 1 {
 				secs, _ := strconv.ParseFloat(fields[0], 64)
-				d := time.Duration(secs) * time.Second
-				days := int(d.Hours()) / 24
-				hours := int(d.Hours()) % 24
-				m.Uptime = fmt.Sprintf("%dd %dh", days, hours)
+				m.UptimeSeconds = int64(secs)
 			}
 		}
 	}
@@ -459,8 +456,8 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 			Message:   f.Message,
 			Details:   f.Details,
 			Key:       key,
-			FirstSeen: firstSeen.Format(time.RFC3339),
-			LastSeen:  lastSeen.Format(time.RFC3339),
+			FirstSeen: firstSeen.UTC(),
+			LastSeen:  lastSeen.UTC(),
 		})
 	}
 

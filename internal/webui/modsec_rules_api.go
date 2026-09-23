@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/store"
@@ -86,15 +87,15 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 
 	// Build response - filter out counter rules
 	type ruleView struct {
-		ID          int    `json:"id"`
-		Description string `json:"description"`
-		Action      string `json:"action"`
-		StatusCode  int    `json:"status_code"`
-		Phase       int    `json:"phase"`
-		Enabled     bool   `json:"enabled"`
-		Escalate    bool   `json:"escalate"`
-		Hits24h     int    `json:"hits_24h"`
-		LastHit     string `json:"last_hit,omitempty"`
+		ID          int       `json:"id"`
+		Description string    `json:"description"`
+		Action      string    `json:"action"`
+		StatusCode  int       `json:"status_code"`
+		Phase       int       `json:"phase"`
+		Enabled     bool      `json:"enabled"`
+		Escalate    bool      `json:"escalate"`
+		Hits24h     int       `json:"hits_24h"`
+		LastHit     time.Time `json:"last_hit,omitzero"`
 	}
 
 	var rules []ruleView
@@ -113,9 +114,7 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 		}
 		if h, ok := hits[r.ID]; ok {
 			rv.Hits24h = h.Hits
-			if !h.LastHit.IsZero() {
-				rv.LastHit = h.LastHit.Format("2006-01-02T15:04:05Z07:00")
-			}
+			rv.LastHit = h.LastHit.UTC()
 		}
 		rules = append(rules, rv)
 	}

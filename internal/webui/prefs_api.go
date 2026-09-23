@@ -210,6 +210,15 @@ type savedView struct {
 	Updated int64             `json:"updated"`
 }
 
+// savedViewResponse is a saved view as the API sends it. The store keeps
+// updated as Unix seconds; the API sends it as an instant like every time.
+type savedViewResponse struct {
+	Name    string            `json:"name"`
+	Page    string            `json:"page"`
+	Params  map[string]string `json:"params"`
+	Updated time.Time         `json:"updated,omitzero"`
+}
+
 const maxSavedViewsPerOperator = 200
 
 // apiPrefsViews handles list (GET), upsert (PUT), and delete (DELETE) of
@@ -269,12 +278,16 @@ func (s *Server) handleListSavedViews(w http.ResponseWriter, r *http.Request) {
 	}
 	page := strings.TrimSpace(r.URL.Query().Get("page"))
 	views := s.loadSavedViews(opkey)
-	out := make([]savedView, 0, len(views))
+	out := make([]savedViewResponse, 0, len(views))
 	for _, v := range views {
 		if page != "" && v.Page != page {
 			continue
 		}
-		out = append(out, v)
+		view := savedViewResponse{Name: v.Name, Page: v.Page, Params: v.Params}
+		if v.Updated > 0 {
+			view.Updated = time.Unix(v.Updated, 0).UTC()
+		}
+		out = append(out, view)
 	}
 	writeAll(w, out)
 }

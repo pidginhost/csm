@@ -54,7 +54,7 @@ func TestAPIRulesStatusDecodesShape(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	wantKeys := []string{"yaml_rules", "yara_rules", "yara_available", "yaml_version", "rules_dir", "auto_update", "update_url", "update_interval"}
+	wantKeys := []string{"yaml_rules", "yara_rules", "yara_available", "yaml_version", "rules_dir", "auto_update", "update_url", "update_interval_seconds"}
 	for _, k := range wantKeys {
 		if _, ok := got[k]; !ok {
 			t.Errorf("missing key %q", k)
@@ -62,6 +62,9 @@ func TestAPIRulesStatusDecodesShape(t *testing.T) {
 	}
 	if got["auto_update"] != true {
 		t.Errorf("auto_update = %v, want true", got["auto_update"])
+	}
+	if got["update_interval_seconds"] != float64(24*3600) {
+		t.Errorf("update_interval_seconds = %v, want 86400", got["update_interval_seconds"])
 	}
 }
 
@@ -207,11 +210,11 @@ func TestAPIPerformanceWithStoredSnapshot(t *testing.T) {
 	s := newTestServer(t, "tok")
 	// Seed a fresh sample so the handler serves it
 	m := &perfMetrics{
-		LoadAvg:    [3]float64{0.5, 0.7, 0.9},
-		CPUCores:   4,
-		MemTotalMB: 8192,
-		MemUsedMB:  2048,
-		Uptime:     "1d 2h",
+		LoadAvg:       [3]float64{0.5, 0.7, 0.9},
+		CPUCores:      4,
+		MemTotalMB:    8192,
+		MemUsedMB:     2048,
+		UptimeSeconds: 86400 + 2*3600,
 	}
 	s.storePerfSample(m, time.Now())
 
@@ -230,8 +233,8 @@ func TestAPIPerformanceWithStoredSnapshot(t *testing.T) {
 	if resp.Metrics.CPUCores != 4 {
 		t.Errorf("CPUCores = %d, want 4", resp.Metrics.CPUCores)
 	}
-	if resp.Metrics.Uptime != "1d 2h" {
-		t.Errorf("Uptime = %q", resp.Metrics.Uptime)
+	if resp.Metrics.UptimeSeconds != 86400+2*3600 {
+		t.Errorf("UptimeSeconds = %d", resp.Metrics.UptimeSeconds)
 	}
 }
 

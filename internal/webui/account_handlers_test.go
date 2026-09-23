@@ -826,10 +826,10 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 	if f.Details != "Path: /home/alice/public_html\nRule: test" {
 		t.Errorf("details = %q, want stored finding details", f.Details)
 	}
-	if f.FirstSeen == "" {
+	if f.FirstSeen.IsZero() {
 		t.Error("first_seen should not be empty")
 	}
-	if f.LastSeen == "" {
+	if f.LastSeen.IsZero() {
 		t.Error("last_seen should not be empty")
 	}
 	if !f.HasFix {

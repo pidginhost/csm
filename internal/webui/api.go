@@ -46,40 +46,33 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	if provider == nil {
 		// No daemon-side provider installed (test harness). Fall back to
 		// the legacy minimal payload so existing UI code keeps working.
-		lastScan := ""
-		if s.store != nil {
-			lastScan = s.store.LatestScanTime().Format(time.RFC3339)
-		}
-		writeJSON(w, map[string]interface{}{
+		resp := map[string]interface{}{
 			"hostname":         s.cfg.Hostname,
-			"uptime":           time.Since(s.startTime).String(),
-			"started_at":       s.startTime.Format(time.RFC3339),
+			"uptime_seconds":   int64(time.Since(s.startTime).Seconds()),
+			"started_at":       s.startTime.UTC(),
 			"started_at_token": daemonStartToken(s.startTime),
 			"rules_loaded":     s.signatureCount(),
 			"scan_running":     scanning,
-			"last_scan_time":   lastScan,
 			"status":           "down",
-		})
+		}
+		if s.store != nil {
+			if last := s.store.LatestScanTime(); !last.IsZero() {
+				resp["last_scan_time"] = last.UTC()
+			}
+		}
+		writeJSON(w, resp)
 		return
 	}
 
 	snap := health.Build(provider, s.version, health.Capabilities())
 	resp := map[string]interface{}{
-		"hostname":         snap.Hostname,
-		"version":          snap.Version,
-		"uptime":           time.Duration(snap.UptimeSec * int64(time.Second)).String(),
-		"uptime_sec":       snap.UptimeSec,
-		"started_at":       snap.StartedAt.Format(time.RFC3339),
-		"started_at_token": daemonStartToken(snap.StartedAt),
-		"rules_loaded":     s.signatureCount(),
-		"scan_running":     scanning,
-		// last_scan_time is the legacy key kept for older clients
-		// (cphulk dashboard, status_check.go). latest_scan mirrors the
-		// health.Snapshot JSON tag and is the canonical name for new
-		// clients. Drop last_scan_time once the legacy consumers move.
-		"last_scan_time":         snap.LatestScan.Format(time.RFC3339),
-		"latest_scan":            formatRFC3339OrEmpty(snap.LatestScan),
-		"baseline_at":            formatRFC3339OrEmpty(snap.BaselineAt),
+		"hostname":               snap.Hostname,
+		"version":                snap.Version,
+		"uptime_seconds":         snap.UptimeSec,
+		"started_at":             snap.StartedAt.UTC(),
+		"started_at_token":       daemonStartToken(snap.StartedAt),
+		"rules_loaded":           s.signatureCount(),
+		"scan_running":           scanning,
 		"blocklist_size":         snap.BlocklistSize,
 		"incidents_open":         snap.IncidentsOpen,
 		"bpf_enforcement_active": snap.BPFEnforcementActive,
@@ -95,6 +88,16 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"automation":             snap.Automation,
 		"mode":                   snap.Mode,
 		"status":                 snap.OverallStatus(),
+	}
+	// latest_scan mirrors the health.Snapshot JSON tag and is the canonical
+	// name; last_scan_time is the legacy key kept for older clients (the
+	// cPHulk dashboard). A time that is not set is left out.
+	if !snap.LatestScan.IsZero() {
+		resp["latest_scan"] = snap.LatestScan.UTC()
+		resp["last_scan_time"] = snap.LatestScan.UTC()
+	}
+	if !snap.BaselineAt.IsZero() {
+		resp["baseline_at"] = snap.BaselineAt.UTC()
 	}
 
 	// security_posture is the threat-aware badge signal, distinct from
@@ -169,13 +172,6 @@ func securityPosture(opProblems, openCritical, openHigh int) string {
 	return "healthy"
 }
 
-func formatRFC3339OrEmpty(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return t.Format(time.RFC3339)
-}
-
 // apiCapabilities returns the static feature-flag list for this build.
 func (s *Server) apiCapabilities(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]interface{}{
@@ -189,14 +185,14 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 	latest := s.store.LatestFindings()
 
 	type entryView struct {
-		Severity  int    `json:"severity"`
-		Check     string `json:"check"`
-		Message   string `json:"message"`
-		Details   string `json:"details,omitempty"`
-		Time      string `json:"time"`
-		FirstSeen string `json:"first_seen"`
-		LastSeen  string `json:"last_seen"`
-		HasFix    bool   `json:"has_fix"`
+		Severity  int       `json:"severity"`
+		Check     string    `json:"check"`
+		Message   string    `json:"message"`
+		Details   string    `json:"details,omitempty"`
+		Time      time.Time `json:"time"`
+		FirstSeen time.Time `json:"first_seen"`
+		LastSeen  time.Time `json:"last_seen"`
+		HasFix    bool      `json:"has_fix"`
 	}
 
 	suppressions := s.store.LoadSuppressions()
@@ -220,9 +216,9 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 			Check:     f.Check,
 			Message:   f.Message,
 			Details:   f.Details,
-			Time:      f.Timestamp.Format(time.RFC3339),
-			FirstSeen: firstSeen.Format(time.RFC3339),
-			LastSeen:  lastSeen.Format(time.RFC3339),
+			Time:      f.Timestamp.UTC(),
+			FirstSeen: firstSeen.UTC(),
+			LastSeen:  lastSeen.UTC(),
 			HasFix:    checks.HasFix(f.Check),
 		})
 	}
@@ -231,20 +227,20 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 
 // enrichedFinding is the JSON response type for the enriched findings endpoint.
 type enrichedFinding struct {
-	Key           string `json:"key"`
-	Severity      string `json:"severity"`
-	SevClass      string `json:"sev_class"`
-	Check         string `json:"check"`
-	Message       string `json:"message"`
-	Details       string `json:"details,omitempty"`
-	FilePath      string `json:"file_path,omitempty"`
-	Account       string `json:"account,omitempty"`
-	FirstSeen     string `json:"first_seen"`
-	LastSeen      string `json:"last_seen"`
-	HasFix        bool   `json:"has_fix"`
-	HasVerify     bool   `json:"has_verify"`
-	FixDesc       string `json:"fix_desc,omitempty"`
-	ContentSHA256 string `json:"content_sha256,omitempty"`
+	Key           string    `json:"key"`
+	Severity      string    `json:"severity"`
+	SevClass      string    `json:"sev_class"`
+	Check         string    `json:"check"`
+	Message       string    `json:"message"`
+	Details       string    `json:"details,omitempty"`
+	FilePath      string    `json:"file_path,omitempty"`
+	Account       string    `json:"account,omitempty"`
+	FirstSeen     time.Time `json:"first_seen"`
+	LastSeen      time.Time `json:"last_seen"`
+	HasFix        bool      `json:"has_fix"`
+	HasVerify     bool      `json:"has_verify"`
+	FixDesc       string    `json:"fix_desc,omitempty"`
+	ContentSHA256 string    `json:"content_sha256,omitempty"`
 	// BlockIP is the attacker address an operator may block from this
 	// finding; empty for checks that do not report one.
 	BlockIP string `json:"block_ip,omitempty"`
@@ -274,10 +270,10 @@ func dedupIPReputation(items []enrichedFinding) []enrichedFinding {
 		ip, source := m[1], m[2]
 		if g, ok := ipGroups[ip]; ok {
 			g.sources = append(g.sources, source)
-			if item.FirstSeen < g.entry.FirstSeen {
+			if item.FirstSeen.Before(g.entry.FirstSeen) {
 				g.entry.FirstSeen = item.FirstSeen
 			}
-			if item.LastSeen > g.entry.LastSeen {
+			if item.LastSeen.After(g.entry.LastSeen) {
 				g.entry.LastSeen = item.LastSeen
 			}
 			if severityRank(item.Severity) > severityRank(g.entry.Severity) {
@@ -329,8 +325,8 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 			Details:       f.Details,
 			FilePath:      f.FilePath,
 			Account:       extractAccountFromFinding(f),
-			FirstSeen:     firstSeen.Format(time.RFC3339),
-			LastSeen:      lastSeen.Format(time.RFC3339),
+			FirstSeen:     firstSeen.UTC(),
+			LastSeen:      lastSeen.UTC(),
 			HasFix:        checks.HasFix(f.Check),
 			HasVerify:     checks.CanVerify(f.Check),
 			FixDesc:       checks.FixDescription(f.Check, f.Message, f.FilePath),
@@ -398,15 +394,11 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 // within a severity, so a limited list keeps the ones that matter.
 func sortEnrichedBySeverity(items []enrichedFinding) {
 	rank := map[string]int{"CRITICAL": 3, "HIGH": 2}
-	lastSeen := func(f enrichedFinding) time.Time {
-		t, _ := time.Parse(time.RFC3339, f.LastSeen)
-		return t
-	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if ri, rj := rank[items[i].Severity], rank[items[j].Severity]; ri != rj {
 			return ri > rj
 		}
-		return lastSeen(items[i]).After(lastSeen(items[j]))
+		return items[i].LastSeen.After(items[j].LastSeen)
 	})
 }
 
@@ -671,11 +663,10 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 		Kind            string    `json:"kind"`
 		OriginalPath    string    `json:"original_path"`
 		Size            int64     `json:"size"`
-		QuarantineAt    string    `json:"quarantined_at"`
+		QuarantineAt    time.Time `json:"quarantined_at,omitzero"`
 		Reason          string    `json:"reason"`
 		LiveState       string    `json:"live_state"`
 		OriginalModTime time.Time `json:"original_mtime,omitzero"`
-		quarantinedAt   time.Time
 	}
 
 	var entries []quarantineEntry
@@ -706,29 +697,24 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 			kind = "pre_clean"
 		}
 
-		var timestamp string
-		if !meta.QuarantineAt.IsZero() {
-			timestamp = meta.QuarantineAt.UTC().Format(time.RFC3339Nano)
-		}
 		entries = append(entries, quarantineEntry{
 			ID:              quarantineEntryID(metaFile),
 			Kind:            kind,
 			OriginalPath:    meta.OriginalPath,
 			Size:            meta.Size,
-			QuarantineAt:    timestamp,
+			QuarantineAt:    meta.QuarantineAt.UTC(),
 			Reason:          meta.Reason,
 			LiveState:       liveState,
-			OriginalModTime: meta.OriginalModTime,
-			quarantinedAt:   meta.QuarantineAt,
+			OriginalModTime: meta.OriginalModTime.UTC(),
 		})
 	}
 
 	// Sort newest first
 	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].quarantinedAt.Equal(entries[j].quarantinedAt) {
+		if entries[i].QuarantineAt.Equal(entries[j].QuarantineAt) {
 			return entries[i].ID < entries[j].ID
 		}
-		return entries[i].quarantinedAt.After(entries[j].quarantinedAt)
+		return entries[i].QuarantineAt.After(entries[j].QuarantineAt)
 	})
 
 	writeAll(w, entries)
@@ -739,11 +725,6 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 // when history changes.
 func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 	sum := s.statsSummary24h()
-	lastCriticalAgo, lastCriticalISO := "None", ""
-	if !sum.lastCritical.IsZero() {
-		lastCriticalAgo = timeAgo(sum.lastCritical)
-		lastCriticalISO = sum.lastCritical.Format(time.RFC3339)
-	}
 	result := map[string]interface{}{
 		"last_24h": map[string]interface{}{
 			"critical": sum.critical,
@@ -751,10 +732,8 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 			"warning":  sum.warning,
 			"total":    sum.critical + sum.high + sum.warning,
 		},
-		"by_check":          sum.byCheck,
-		"last_critical_ago": lastCriticalAgo,
-		"last_critical_iso": lastCriticalISO,
-		"accounts_at_risk":  sum.atRisk,
+		"by_check":         sum.byCheck,
+		"accounts_at_risk": sum.atRisk,
 		"auto_response": map[string]int{
 			"blocked":     sum.autoBlocked,
 			"quarantined": sum.autoQuarantined,
@@ -762,6 +741,9 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		},
 		"top_accounts": sum.topAccounts,
 		"brute_force":  sum.bruteForce,
+	}
+	if !sum.lastCritical.IsZero() {
+		result["last_critical"] = sum.lastCritical.UTC()
 	}
 	writeJSON(w, result)
 }
@@ -823,7 +805,6 @@ func (s *Server) apiStatsTimeline(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 	health := map[string]interface{}{
 		"daemon_mode":    true,
-		"uptime":         time.Since(s.startTime).String(),
 		"uptime_seconds": int(time.Since(s.startTime).Seconds()),
 		"rules_loaded":   s.signatureCount(),
 		"fanotify":       s.fanotifyRunning(),
@@ -1366,12 +1347,12 @@ type blockedEntry struct {
 }
 
 type blockedView struct {
-	IP        string `json:"ip"`
-	Reason    string `json:"reason"`
-	Source    string `json:"source"`
-	BlockedAt string `json:"blocked_at"`
-	ExpiresAt string `json:"expires_at"`
-	ExpiresIn string `json:"expires_in"`
+	IP        string    `json:"ip"`
+	Reason    string    `json:"reason"`
+	Source    string    `json:"source"`
+	BlockedAt time.Time `json:"blocked_at,omitzero"`
+	// ExpiresAt is left out for a permanent block.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 func formatBlockedView(b blockedEntry) (blockedView, bool) {
@@ -1382,17 +1363,11 @@ func formatBlockedView(b blockedEntry) (blockedView, bool) {
 		IP:        b.IP,
 		Reason:    b.Reason,
 		Source:    b.Source,
-		BlockedAt: b.BlockedAt.Format(time.RFC3339),
+		BlockedAt: b.BlockedAt.UTC(),
+		ExpiresAt: b.ExpiresAt.UTC(),
 	}
 	if view.Source == "" {
 		view.Source = firewall.InferProvenance("block", b.Reason)
-	}
-	if !b.ExpiresAt.IsZero() {
-		remaining := time.Until(b.ExpiresAt)
-		view.ExpiresAt = b.ExpiresAt.Format(time.RFC3339)
-		view.ExpiresIn = fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
-	} else {
-		view.ExpiresIn = "permanent"
 	}
 	return view, true
 }
@@ -1692,9 +1667,9 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 	s.auditLog(r, "scan_account", req.Account, fmt.Sprintf("%d findings in %s", len(findings), elapsed))
 
 	writeOK(w, map[string]interface{}{
-		"account": req.Account,
-		"count":   len(findings),
-		"elapsed": elapsed.String(),
+		"account":         req.Account,
+		"count":           len(findings),
+		"elapsed_seconds": elapsed.Seconds(),
 	})
 }
 
@@ -1785,7 +1760,7 @@ func (s *Server) apiExport(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	bundle := map[string]interface{}{
-		"exported_at":  time.Now().Format(time.RFC3339),
+		"exported_at":  time.Now().UTC(),
 		"hostname":     s.cfg.Hostname,
 		"suppressions": suppressions,
 		"whitelist":    whitelist,
@@ -1927,10 +1902,10 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get state entry for this finding (first/last seen)
-	var firstSeen, lastSeen string
+	var firstSeen, lastSeen time.Time
 	if entry, ok := s.store.EntryForKey(key); ok {
-		firstSeen = entry.FirstSeen.Format(time.RFC3339)
-		lastSeen = entry.LastSeen.Format(time.RFC3339)
+		firstSeen = entry.FirstSeen.UTC()
+		lastSeen = entry.LastSeen.UTC()
 	}
 
 	// Search audit log for related actions
@@ -1939,10 +1914,10 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 	// Search history for related findings (same check type, last 50)
 	allHistory, _ := s.store.ReadHistory(2000, 0)
 	type histEntry struct {
-		Severity  int    `json:"severity"`
-		Check     string `json:"check"`
-		Message   string `json:"message"`
-		Timestamp string `json:"timestamp"`
+		Severity  int       `json:"severity"`
+		Check     string    `json:"check"`
+		Message   string    `json:"message"`
+		Timestamp time.Time `json:"timestamp"`
 	}
 	var related []histEntry
 	for _, f := range allHistory {
@@ -1954,19 +1929,22 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 				Severity:  int(f.Severity),
 				Check:     f.Check,
 				Message:   f.Message,
-				Timestamp: f.Timestamp.Format(time.RFC3339),
+				Timestamp: f.Timestamp.UTC(),
 			})
 		}
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"check":      check,
-		"message":    message,
-		"first_seen": firstSeen,
-		"last_seen":  lastSeen,
-		"actions":    actions,
-		"related":    related,
-	})
+	detail := map[string]interface{}{
+		"check":   check,
+		"message": message,
+		"actions": actions,
+		"related": related,
+	}
+	if !firstSeen.IsZero() {
+		detail["first_seen"] = firstSeen
+		detail["last_seen"] = lastSeen
+	}
+	writeJSON(w, detail)
 }
 
 // extractAccountFromFinding returns the cPanel account a finding belongs to:
@@ -2020,9 +1998,23 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 
 // writeJSONStatus sends data as JSON with the given status code.
 func writeJSONStatus(w http.ResponseWriter, code int, data interface{}) {
+	body, err := utcTimes(data)
+	if err != nil {
+		code, body = http.StatusInternalServerError, map[string]string{"error": err.Error()}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// durationSeconds reads Go duration text such as "24h" as seconds. ok is
+// false when the text is empty or not a duration.
+func durationSeconds(text string) (float64, bool) {
+	d, err := time.ParseDuration(text)
+	if err != nil {
+		return 0, false
+	}
+	return d.Seconds(), true
 }
 
 // writeItems answers a collection: {"items": [...]} plus extra, which holds

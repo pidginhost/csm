@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
@@ -23,17 +24,17 @@ import (
 // to the restore endpoint as-is so the lookup is a single bbolt
 // Get, not a multi-field reconstruction.
 type dbObjectBackupEntry struct {
-	Key        string `json:"key"`
-	Account    string `json:"account"`
-	Schema     string `json:"schema"`
-	Kind       string `json:"kind"`
-	Name       string `json:"name"`
-	DroppedAt  string `json:"dropped_at"` // RFC 3339
-	DroppedBy  string `json:"dropped_by"`
-	FindingID  string `json:"finding_id,omitempty"`
-	BodyBytes  int    `json:"body_bytes"` // length of CreateSQL; surfaced for size hint
-	RestoredAt string `json:"restored_at,omitempty"`
-	Restored   bool   `json:"restored"`
+	Key        string    `json:"key"`
+	Account    string    `json:"account"`
+	Schema     string    `json:"schema"`
+	Kind       string    `json:"kind"`
+	Name       string    `json:"name"`
+	DroppedAt  time.Time `json:"dropped_at"`
+	DroppedBy  string    `json:"dropped_by"`
+	FindingID  string    `json:"finding_id,omitempty"`
+	BodyBytes  int       `json:"body_bytes"` // length of CreateSQL; surfaced for size hint
+	RestoredAt time.Time `json:"restored_at,omitzero"`
+	Restored   bool      `json:"restored"`
 }
 
 const dbObjectBackupPreviewBytes = 8 * 1024
@@ -63,14 +64,14 @@ func (s *Server) apiDBObjectBackups(w http.ResponseWriter, _ *http.Request) {
 			Schema:    r.Schema,
 			Kind:      r.Kind,
 			Name:      r.Name,
-			DroppedAt: r.DroppedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			DroppedAt: r.DroppedAt.UTC(),
 			DroppedBy: r.DroppedBy,
 			FindingID: r.FindingID,
 			BodyBytes: len(r.CreateSQL),
 		}
 		if !r.RestoredAt.IsZero() {
 			entry.Restored = true
-			entry.RestoredAt = r.RestoredAt.UTC().Format("2006-01-02T15:04:05Z")
+			entry.RestoredAt = r.RestoredAt.UTC()
 		}
 		out = append(out, entry)
 	}
@@ -176,8 +177,8 @@ func (s *Server) apiDBObjectBackupRestore(w http.ResponseWriter, r *http.Request
 // descending. Local helper rather than relying on sort.Slice so
 // the comparator is unambiguous in code review.
 func sortDBObjectBackupsNewestFirst(entries []dbObjectBackupEntry) {
-	// Stable, so backups dropped in the same second keep their store order.
+	// Stable, so backups dropped at the same instant keep their store order.
 	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].DroppedAt > entries[j].DroppedAt
+		return entries[i].DroppedAt.After(entries[j].DroppedAt)
 	})
 }

@@ -107,6 +107,28 @@ CSM.formatNumber = function(n) {
     }
 };
 
+// Format a duration in seconds as its two largest units: "45s", "2m 5s",
+// "1h 30m", "1d 1h". The API sends every duration in seconds. Anything that
+// is not a duration gives ''.
+CSM.formatDuration = function(seconds) {
+    if (seconds === null || seconds === undefined || seconds === '') return '';
+    var total = Math.floor(Number(seconds));
+    if (!isFinite(total) || total < 0) return '';
+    if (total === 0) return '0s';
+    var units = [['d', 86400], ['h', 3600], ['m', 60], ['s', 1]];
+    for (var i = 0; i < units.length; i++) {
+        var n = Math.floor(total / units[i][1]);
+        if (n === 0) continue;
+        var out = n + units[i][0];
+        if (i + 1 < units.length) {
+            var rest = Math.floor((total % units[i][1]) / units[i + 1][1]);
+            if (rest > 0) out += ' ' + rest + units[i + 1][0];
+        }
+        return out;
+    }
+    return '';
+};
+
 // Format ISO timestamp to "YYYY-MM-DD HH:MM" using the operator timezone.
 // Pass { tz: true } as opts to append timezone abbreviation.
 CSM.fmtDate = function(ts, opts) {

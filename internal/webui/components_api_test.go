@@ -154,8 +154,8 @@ func TestAPIComponents_RealtimeChecksAttributeToWatcher(t *testing.T) {
 			if rows[0].LastEventCheck != tc.check {
 				t.Errorf("expected last_event_check %q, got %q", tc.check, rows[0].LastEventCheck)
 			}
-			if rows[0].LastEventISO == "" {
-				t.Errorf("expected last_event_iso populated, got empty")
+			if rows[0].LastEventAt.IsZero() {
+				t.Errorf("expected last_event_at populated, got none")
 			}
 		})
 	}
@@ -196,7 +196,7 @@ func TestAPIComponents_NonUniqueCheckFindingsDoNotAttributeToWatcher(t *testing.
 			if len(rows) != 1 {
 				t.Fatalf("expected 1 row, got %d", len(rows))
 			}
-			if rows[0].LastEventISO != "" {
+			if !rows[0].LastEventAt.IsZero() {
 				t.Errorf("non-unique finding leaked into last_event: %+v", rows[0])
 			}
 			if rows[0].Status != "idle" {
@@ -220,7 +220,7 @@ func TestAPIComponents_StaleLatestFindingDoesNotAttributeToWatcher(t *testing.T)
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if rows[0].LastEventISO != "" {
+	if !rows[0].LastEventAt.IsZero() {
 		t.Errorf("stale latest finding leaked into last_event: %+v", rows[0])
 	}
 	if rows[0].Status != "idle" {
@@ -266,7 +266,7 @@ func TestAPIComponents_LastEventSurvivesHistoryRetention(t *testing.T) {
 	if len(rows) != 1 || rows[0].LastEventCheck != "webshell_realtime" {
 		t.Fatalf("rows = %+v, want fanotify's last event", rows)
 	}
-	if got, err := time.Parse(time.RFC3339, rows[0].LastEventISO); err != nil || !got.Equal(at) {
-		t.Fatalf("last event = %q, want %s", rows[0].LastEventISO, at)
+	if got := rows[0].LastEventAt; !got.Equal(at) {
+		t.Fatalf("last event = %s, want %s", got, at)
 	}
 }

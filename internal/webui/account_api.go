@@ -126,10 +126,10 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 	// Recent history for this account (last 100 matching entries)
 	allHistory, _ := s.store.ReadHistory(2000, 0)
 	type histEntry struct {
-		Severity  int    `json:"severity"`
-		Check     string `json:"check"`
-		Message   string `json:"message"`
-		Timestamp string `json:"timestamp"`
+		Severity  int       `json:"severity"`
+		Check     string    `json:"check"`
+		Message   string    `json:"message"`
+		Timestamp time.Time `json:"timestamp"`
 	}
 	var history []histEntry
 	for _, f := range allHistory {
@@ -139,7 +139,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		if accountFindingMatches(f, name, homePrefixes) {
 			history = append(history, histEntry{
 				Severity: int(f.Severity), Check: f.Check, Message: f.Message,
-				Timestamp: f.Timestamp.Format(time.RFC3339),
+				Timestamp: f.Timestamp.UTC(),
 			})
 		}
 	}

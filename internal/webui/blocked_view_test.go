@@ -18,8 +18,8 @@ func TestFormatBlockedViewPermanent(t *testing.T) {
 	if view.IP != "203.0.113.5" {
 		t.Errorf("IP = %q", view.IP)
 	}
-	if view.ExpiresIn != "permanent" {
-		t.Errorf("ExpiresIn = %q, want permanent", view.ExpiresIn)
+	if !view.ExpiresAt.IsZero() {
+		t.Errorf("ExpiresAt = %v, want none for a permanent block", view.ExpiresAt)
 	}
 }
 
@@ -34,11 +34,8 @@ func TestFormatBlockedViewTemporary(t *testing.T) {
 	if !ok {
 		t.Fatal("future expiry should return ok=true")
 	}
-	if view.ExpiresIn == "permanent" {
-		t.Error("temporary block should not be permanent")
-	}
-	if view.ExpiresAt == "" {
-		t.Error("ExpiresAt should be set for temporary blocks")
+	if !view.ExpiresAt.Equal(b.ExpiresAt) || view.ExpiresAt.Location() != time.UTC {
+		t.Errorf("ExpiresAt = %v, want %v in UTC", view.ExpiresAt, b.ExpiresAt)
 	}
 }
 

@@ -13,8 +13,8 @@ type relayAbuseResponse struct {
 	Entries   []relayAbuseEntry `json:"items"`
 	Total     int               `json:"total"`
 	Limit     int               `json:"limit"`
-	From      string            `json:"from"`
-	To        string            `json:"to"`
+	From      time.Time         `json:"from"`
+	To        time.Time         `json:"to"`
 	Truncated bool              `json:"truncated"`
 }
 
@@ -91,8 +91,8 @@ func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbu
 	resp := relayAbuseResponse{
 		Entries: []relayAbuseEntry{},
 		Limit:   limit,
-		From:    from.UTC().Format(time.RFC3339),
-		To:      to.UTC().Format(time.RFC3339),
+		From:    from.UTC(),
+		To:      to.UTC(),
 	}
 	if s.store == nil {
 		return resp

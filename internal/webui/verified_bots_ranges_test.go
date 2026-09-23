@@ -41,10 +41,10 @@ func TestVerifiedBots_GetIncludesBotRangesSummary(t *testing.T) {
 
 	var resp struct {
 		BotRanges struct {
-			AutoUpdate     bool           `json:"auto_update"`
-			UpdateInterval string         `json:"update_interval"`
-			LastRefresh    string         `json:"last_refresh"`
-			Prefixes       map[string]int `json:"prefixes"`
+			AutoUpdate            bool           `json:"auto_update"`
+			UpdateIntervalSeconds float64        `json:"update_interval_seconds"`
+			LastRefresh           string         `json:"last_refresh"`
+			Prefixes              map[string]int `json:"prefixes"`
 		} `json:"bot_ranges"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -53,8 +53,8 @@ func TestVerifiedBots_GetIncludesBotRangesSummary(t *testing.T) {
 	if !resp.BotRanges.AutoUpdate {
 		t.Error("bot_ranges.auto_update should be true")
 	}
-	if resp.BotRanges.UpdateInterval != "12h" {
-		t.Errorf("bot_ranges.update_interval = %q, want 12h", resp.BotRanges.UpdateInterval)
+	if resp.BotRanges.UpdateIntervalSeconds != 12*3600 {
+		t.Errorf("bot_ranges.update_interval_seconds = %v, want 12h", resp.BotRanges.UpdateIntervalSeconds)
 	}
 	if _, err := time.Parse(time.RFC3339, resp.BotRanges.LastRefresh); err != nil {
 		t.Errorf("bot_ranges.last_refresh = %q, want RFC3339 timestamp: %v", resp.BotRanges.LastRefresh, err)

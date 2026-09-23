@@ -94,10 +94,10 @@ func TestAPIDBObjectBackupsListsAllRecordsNewestFirst(t *testing.T) {
 	if got[0].BodyBytes != len("CREATE EVENT ev_new ...") {
 		t.Errorf("BodyBytes for ev_new = %d", got[0].BodyBytes)
 	}
-	if !got[0].Restored || got[0].RestoredAt == "" {
+	if !got[0].Restored || got[0].RestoredAt.IsZero() {
 		t.Errorf("restored state missing from ev_new: %+v", got[0])
 	}
-	if got[1].Restored || got[1].RestoredAt != "" {
+	if got[1].Restored || !got[1].RestoredAt.IsZero() {
 		t.Errorf("unexpected restored state on trg_old: %+v", got[1])
 	}
 	// Each entry must carry a key for the restore round-trip.
@@ -195,9 +195,9 @@ func TestAPIDBObjectBackupRestoreUnknownKeyReturns404(t *testing.T) {
 
 func TestSortDBObjectBackupsNewestFirst(t *testing.T) {
 	in := []dbObjectBackupEntry{
-		{Name: "a", DroppedAt: "2026-04-01T10:00:00Z"},
-		{Name: "c", DroppedAt: "2026-04-30T10:00:00Z"},
-		{Name: "b", DroppedAt: "2026-04-15T10:00:00Z"},
+		{Name: "a", DroppedAt: mustRFC3339(t, "2026-04-01T10:00:00Z")},
+		{Name: "c", DroppedAt: mustRFC3339(t, "2026-04-30T10:00:00Z")},
+		{Name: "b", DroppedAt: mustRFC3339(t, "2026-04-15T10:00:00Z")},
 	}
 	sortDBObjectBackupsNewestFirst(in)
 	got := []string{in[0].Name, in[1].Name, in[2].Name}
@@ -210,9 +210,9 @@ func TestSortDBObjectBackupsNewestFirst(t *testing.T) {
 
 	// Backups dropped in the same second keep their store order.
 	same := []dbObjectBackupEntry{
-		{Name: "first", DroppedAt: "2026-04-01T10:00:00Z"},
-		{Name: "newer", DroppedAt: "2026-04-02T10:00:00Z"},
-		{Name: "second", DroppedAt: "2026-04-01T10:00:00Z"},
+		{Name: "first", DroppedAt: mustRFC3339(t, "2026-04-01T10:00:00Z")},
+		{Name: "newer", DroppedAt: mustRFC3339(t, "2026-04-02T10:00:00Z")},
+		{Name: "second", DroppedAt: mustRFC3339(t, "2026-04-01T10:00:00Z")},
 	}
 	sortDBObjectBackupsNewestFirst(same)
 	got = []string{same[0].Name, same[1].Name, same[2].Name}

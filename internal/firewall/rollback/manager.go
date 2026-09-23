@@ -39,8 +39,8 @@ type Restarter func(ctx context.Context) error
 // derived hint computed at call time.
 type Status struct {
 	Pending          bool      `json:"pending"`
-	AppliedAt        time.Time `json:"applied_at,omitempty"`
-	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+	AppliedAt        time.Time `json:"applied_at,omitzero"`
+	ExpiresAt        time.Time `json:"expires_at,omitzero"`
 	SecondsRemaining int64     `json:"seconds_remaining,omitempty"`
 	AppliedBy        string    `json:"applied_by,omitempty"`
 	PrevHash         string    `json:"prev_hash,omitempty"`

@@ -30,8 +30,8 @@ type emailGroup struct {
 	Title          string          `json:"title"`
 	Subject        string          `json:"subject"`
 	Count          int             `json:"count"`
-	FirstSeen      string          `json:"first_seen"`
-	LastSeen       string          `json:"last_seen"`
+	FirstSeen      time.Time       `json:"first_seen"`
+	LastSeen       time.Time       `json:"last_seen"`
 	Summary        string          `json:"summary"`
 	SampleFindings []alert.Finding `json:"sample_findings"`
 	IPs            []string        `json:"ips,omitempty"`
@@ -44,8 +44,8 @@ type emailGroupsResponse struct {
 	Groups    []emailGroup `json:"items"`
 	Total     int          `json:"total"`
 	Limit     int          `json:"limit"`
-	From      string       `json:"from"`
-	To        string       `json:"to"`
+	From      time.Time    `json:"from"`
+	To        time.Time    `json:"to"`
 	Scanned   int          `json:"scanned"`
 	Truncated bool         `json:"truncated"`
 }
@@ -223,8 +223,8 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 					Severity:  int(f.Severity),
 					Title:     emailGroupTitle(kind, f),
 					Subject:   emailGroupSubject(kind, f),
-					FirstSeen: ts.UTC().Format(time.RFC3339),
-					LastSeen:  ts.UTC().Format(time.RFC3339),
+					FirstSeen: ts.UTC(),
+					LastSeen:  ts.UTC(),
 				},
 				ipCounts:  make(map[string]int),
 				domainSet: make(map[string]struct{}),
@@ -237,12 +237,11 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 		if int(f.Severity) > agg.group.Severity {
 			agg.group.Severity = int(f.Severity)
 		}
-		ftsStr := ts.UTC().Format(time.RFC3339)
-		if ftsStr < agg.group.FirstSeen {
-			agg.group.FirstSeen = ftsStr
+		if ts.Before(agg.group.FirstSeen) {
+			agg.group.FirstSeen = ts.UTC()
 		}
-		if ftsStr > agg.group.LastSeen {
-			agg.group.LastSeen = ftsStr
+		if ts.After(agg.group.LastSeen) {
+			agg.group.LastSeen = ts.UTC()
 		}
 		if f.SourceIP != "" {
 			agg.ipCounts[f.SourceIP]++
@@ -297,7 +296,7 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 		if out[i].Count != out[j].Count {
 			return out[i].Count > out[j].Count
 		}
-		return out[i].LastSeen > out[j].LastSeen
+		return out[i].LastSeen.After(out[j].LastSeen)
 	})
 	return out
 }
@@ -463,8 +462,8 @@ func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string,
 		Groups:    groups,
 		Total:     total,
 		Limit:     limit,
-		From:      from.UTC().Format(time.RFC3339),
-		To:        to.UTC().Format(time.RFC3339),
+		From:      from.UTC(),
+		To:        to.UTC(),
 		Scanned:   scanned,
 		Truncated: truncated,
 	}

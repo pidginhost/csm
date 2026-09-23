@@ -85,6 +85,7 @@ func TestApiStatus_FullSnapshot(t *testing.T) {
 	checkedAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	s.SetHealthProvider(statusFakeProvider{
 		started:              started,
+		latestScan:           checkedAt,
 		bpfEnforcementActive: true,
 		update: health.UpdateInfo{
 			LatestVersion: "3.0.1",
@@ -139,8 +140,9 @@ func TestApiStatus_FullSnapshot(t *testing.T) {
 	if update["latest_version"] != "3.0.1" || update["available"] != true {
 		t.Fatalf("unexpected update payload: %#v", update)
 	}
-	// Backward-compat: all six legacy fields still present.
-	for _, k := range []string{"hostname", "uptime", "started_at", "rules_loaded", "scan_running", "last_scan_time"} {
+	// Backward-compat: the legacy fields are still present; uptime is now
+	// uptime_seconds.
+	for _, k := range []string{"hostname", "uptime_seconds", "started_at", "rules_loaded", "scan_running", "last_scan_time"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("backward-compat: legacy field %q missing", k)
 		}

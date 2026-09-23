@@ -107,7 +107,7 @@
     function renderRanges(br) {
         br = br || {};
         document.getElementById('vbots-ranges-auto').textContent = br.auto_update ? 'On' : 'Off';
-        document.getElementById('vbots-ranges-interval').textContent = br.update_interval || '24h';
+        document.getElementById('vbots-ranges-interval').textContent = CSM.formatDuration(br.update_interval_seconds) || '24h';
         document.getElementById('vbots-ranges-refresh').textContent = br.last_refresh ? CSM.fmtDate(br.last_refresh) : 'never';
         var prefixes = br.prefixes || {};
         var names = Object.keys(prefixes).sort();

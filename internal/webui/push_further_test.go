@@ -25,7 +25,7 @@ import (
 // Seeds perf_ findings and verifies they are returned and sorted by severity.
 func TestAPIPerformanceReturnsPerfFindings(t *testing.T) {
 	s := newTestServer(t, "tok")
-	m := &perfMetrics{CPUCores: 2, Uptime: "5d 1h"}
+	m := &perfMetrics{CPUCores: 2, UptimeSeconds: 5*86400 + 3600}
 	s.storePerfSample(m, time.Now())
 
 	now := time.Now()
