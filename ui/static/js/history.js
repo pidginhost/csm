@@ -98,9 +98,17 @@
 
         var thead = document.createElement('thead');
         var headRow = document.createElement('tr');
-        ['Severity', 'Check', 'Message', 'Time', ''].forEach(function(label) {
+        ['Severity', 'Check', 'Message', 'Time', 'Details'].forEach(function(label, i) {
             var th = document.createElement('th');
-            th.textContent = label;
+            if (i === 4) {
+                // The details column shows only buttons; its name is for screen readers.
+                var hidden = document.createElement('span');
+                hidden.className = 'visually-hidden';
+                hidden.textContent = label;
+                th.appendChild(hidden);
+            } else {
+                th.textContent = label;
+            }
             headRow.appendChild(th);
         });
         thead.appendChild(headRow);
@@ -156,6 +164,7 @@
                 btn.className = 'btn btn-ghost-secondary btn-sm expand-btn';
                 btn.title = 'Expand details';
                 btn.setAttribute('aria-label', 'Expand details');
+                btn.setAttribute('aria-expanded', 'false');
                 var icon = document.createElement('i');
                 icon.className = 'ti ti-chevron-down';
                 btn.appendChild(icon);
@@ -325,6 +334,8 @@
                         // `.details-row.show` class the stylesheet already defines.
                         var showing = next.classList.toggle('show');
                         expandBtn.classList.toggle('expanded', showing);
+                        expandBtn.setAttribute('aria-expanded', showing ? 'true' : 'false');
+                        expandBtn.setAttribute('aria-label', showing ? 'Collapse details' : 'Expand details');
                     }
                 }
             }

@@ -39,6 +39,8 @@
         function updateNotifIcon() {
             var icon = notifBtn.querySelector('i');
             var isActive = Notification.permission === 'granted' && notifPref === 'on';
+            notifBtn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            notifBtn.setAttribute('aria-label', isActive ? 'Disable desktop alerts' : 'Enable desktop alerts');
             if (Notification.permission === 'denied') {
                 notifBtn.classList.add('d-none');
             } else if (isActive) {

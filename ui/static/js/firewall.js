@@ -1240,7 +1240,8 @@ if (auditResetBtn) {
         for (var j = 0; j < buttons.length; j++) {
             var match = buttons[j].getAttribute('data-fw-nav') === name;
             buttons[j].classList.toggle('active', match);
-            buttons[j].setAttribute('aria-pressed', match ? 'true' : 'false');
+            buttons[j].setAttribute('aria-selected', match ? 'true' : 'false');
+            buttons[j].setAttribute('tabindex', match ? '0' : '-1');
         }
     }
 
@@ -1268,6 +1269,22 @@ if (auditResetBtn) {
             var name = this.getAttribute('data-fw-nav');
             setView(name, true);
         });
+    });
+
+    // Arrow keys, Home and End move between the tabs, as in any tab list.
+    nav.addEventListener('keydown', function(e) {
+        var tabs = Array.prototype.slice.call(nav.querySelectorAll('[data-fw-nav]'));
+        var at = tabs.indexOf(e.target);
+        if (at < 0) return;
+        var next = -1;
+        if (e.key === 'ArrowRight') next = (at + 1) % tabs.length;
+        else if (e.key === 'ArrowLeft') next = (at - 1 + tabs.length) % tabs.length;
+        else if (e.key === 'Home') next = 0;
+        else if (e.key === 'End') next = tabs.length - 1;
+        if (next < 0) return;
+        e.preventDefault();
+        setView(tabs[next].getAttribute('data-fw-nav'), true);
+        tabs[next].focus();
     });
 
     _fwSetView = setView;

@@ -54,3 +54,50 @@ func TestSectionHeadingsFollowThePageTitle(t *testing.T) {
 		t.Error("hardening score is marked up as a heading")
 	}
 }
+
+// Charts are canvases; each carries a text description.
+func TestChartsHaveTextDescriptions(t *testing.T) {
+	text := readTemplateText(t, "dashboard")
+	for _, id := range []string{"timeline-chart", "attack-types-chart", "trend-chart"} {
+		re := regexp.MustCompile(`<canvas id="` + id + `"([^>]*)>`)
+		m := re.FindStringSubmatch(text)
+		if m == nil || !strings.Contains(m[1], `role="img"`) || !strings.Contains(m[1], `aria-label="`) {
+			t.Errorf("%s has no text description: %v", id, m)
+		}
+	}
+}
+
+// Column headers are never empty; an actions column is named for screen
+// readers even when it shows no visible label.
+func TestTableHeadersAreNamed(t *testing.T) {
+	files, err := filepath.Glob("../../ui/templates/*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), "<th></th>") {
+			t.Errorf("%s has an empty column header", filepath.Base(file))
+		}
+	}
+	if strings.Contains(readUIScript(t, "history.js"), "'Time', ''") {
+		t.Error("history.js renders an empty column header")
+	}
+}
+
+// The notifications button says what pressing it will do and whether alerts
+// are on.
+func TestNotificationButtonReportsItsState(t *testing.T) {
+	src := readUIScript(t, "dashboard.js")
+	for _, want := range []string{
+		"notifBtn.setAttribute('aria-pressed', isActive ? 'true' : 'false');",
+		"notifBtn.setAttribute('aria-label', isActive ? 'Disable desktop alerts' : 'Enable desktop alerts');",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("dashboard.js missing %q", want)
+		}
+	}
+}

@@ -18,28 +18,28 @@
 
     <!-- Subview navigation. Phases 5+ use ?view=<name> for deep links. -->
     <div class="btn-group mb-3 flex-wrap" role="tablist" aria-label="Firewall subviews" id="fw-subview-nav">
-        <button type="button" class="btn btn-ghost-secondary active" data-fw-nav="overview" aria-pressed="true" title="Status cards and coverage chips">
+        <button type="button" class="btn btn-ghost-secondary active" data-fw-nav="overview" role="tab" id="fw-tab-overview" aria-controls="fw-view-overview" aria-selected="true" tabindex="0" title="Status cards and coverage chips">
             <i class="ti ti-layout-dashboard"></i>&nbsp;Overview
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="blocks" aria-pressed="false" title="Blocked IPs and subnets">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="blocks" role="tab" id="fw-tab-blocks" aria-controls="fw-view-blocks" aria-selected="false" tabindex="-1" title="Blocked IPs and subnets">
             <i class="ti ti-shield-off"></i>&nbsp;Blocks
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="allow" aria-pressed="false" title="Allow rules, whitelisted IPs, port exceptions">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="allow" role="tab" id="fw-tab-allow" aria-controls="fw-view-allow" aria-selected="false" tabindex="-1" title="Allow rules, whitelisted IPs, port exceptions">
             <i class="ti ti-shield-up"></i>&nbsp;Allow Rules
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="config" aria-pressed="false" title="Read-only firewall configuration summary">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="config" role="tab" id="fw-tab-config" aria-controls="fw-view-config" aria-selected="false" tabindex="-1" title="Read-only firewall configuration summary">
             <i class="ti ti-settings"></i>&nbsp;Configuration
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="audit" aria-pressed="false" title="Recent firewall actions">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="audit" role="tab" id="fw-tab-audit" aria-controls="fw-view-audit" aria-selected="false" tabindex="-1" title="Recent firewall actions">
             <i class="ti ti-history"></i>&nbsp;Audit
         </button>
-        <button type="button" class="btn btn-ghost-secondary text-danger" data-fw-nav="danger" aria-pressed="false" title="Destructive actions">
+        <button type="button" class="btn btn-ghost-secondary text-danger" data-fw-nav="danger" role="tab" id="fw-tab-danger" aria-controls="fw-view-danger" aria-selected="false" tabindex="-1" title="Destructive actions">
             <i class="ti ti-alert-triangle"></i>&nbsp;Danger
         </button>
     </div>
 
     <!-- Overview --------------------------------------------------------- -->
-    <section data-fw-view="overview">
+    <section data-fw-view="overview" id="fw-view-overview" role="tabpanel" aria-labelledby="fw-tab-overview">
         <div class="card mb-3">
             <div class="card-header">
                 <h2 class="card-title"><i class="ti ti-search"></i>&nbsp;Inspect IP</h2>
@@ -151,7 +151,7 @@
     </section>
 
     <!-- Blocks ----------------------------------------------------------- -->
-    <section data-fw-view="blocks" hidden>
+    <section data-fw-view="blocks" id="fw-view-blocks" role="tabpanel" aria-labelledby="fw-tab-blocks" hidden>
         <div class="card mb-3">
             <div class="card-header">
                 <h2 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Block Address</h2>
@@ -256,7 +256,7 @@
     </section>
 
     <!-- Allow Rules ------------------------------------------------------ -->
-    <section data-fw-view="allow" hidden>
+    <section data-fw-view="allow" id="fw-view-allow" role="tabpanel" aria-labelledby="fw-tab-allow" hidden>
         <div class="card mb-3">
             <div class="card-header">
                 <h2 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Allow or Whitelist an IP</h2>
@@ -324,7 +324,7 @@
     </section>
 
     <!-- Configuration ---------------------------------------------------- -->
-    <section data-fw-view="config" hidden>
+    <section data-fw-view="config" id="fw-view-config" role="tabpanel" aria-labelledby="fw-tab-config" hidden>
         <div class="card mb-3">
             <div class="card-header">
                 <h2 class="card-title"><i class="ti ti-settings"></i>&nbsp;Configuration</h2>
@@ -346,7 +346,7 @@
     </section>
 
     <!-- Audit ----------------------------------------------------------- -->
-    <section data-fw-view="audit" hidden>
+    <section data-fw-view="audit" id="fw-view-audit" role="tabpanel" aria-labelledby="fw-tab-audit" hidden>
         <div class="card mb-3">
             <div class="card-header">
                 <h2 class="card-title"><i class="ti ti-history"></i>&nbsp;Recent Firewall Activity</h2>
@@ -395,7 +395,7 @@
     </section>
 
     <!-- Danger zone ------------------------------------------------------ -->
-    <section data-fw-view="danger" hidden>
+    <section data-fw-view="danger" id="fw-view-danger" role="tabpanel" aria-labelledby="fw-tab-danger" hidden>
         <div class="csm-danger-zone mb-3">
             <div class="csm-danger-zone__title"><i class="ti ti-alert-triangle"></i>&nbsp;Destructive actions</div>
             <p class="text-muted small mb-3">These operations affect many entries at once. Read the warning before clicking.</p>

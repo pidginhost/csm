@@ -305,16 +305,26 @@ CSM.apiUrl = function(path) {
 // it, and any other answer proves the daemon is up and clears it.
 CSM.connection = (function() {
     var failures = 0;
+    // dismissed hides the banner for the rest of this outage; the next
+    // outage, after the server answered again, shows it again.
+    var dismissed = false;
     function banner() { return document.getElementById('csm-connection-lost'); }
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest || !e.target.closest('[data-csm-dismiss-connection]')) return;
+        dismissed = true;
+        var b = banner();
+        if (b) b.classList.add('d-none');
+    });
     return {
         up: function() {
             failures = 0;
+            dismissed = false;
             var b = banner();
             if (b) b.classList.add('d-none');
         },
         down: function() {
             failures++;
-            if (failures < 3) return;
+            if (failures < 3 || dismissed) return;
             var b = banner();
             if (b) b.classList.remove('d-none');
         },
