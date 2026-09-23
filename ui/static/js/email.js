@@ -401,6 +401,7 @@
         CSM.get('/api/v1/email/groups?' + qs)
             .then(function(data) {
                 renderActionGroups(data.groups || []);
+                CSM.truncationNote(document.getElementById('email-action-groups'), data.truncated, 'email findings');
             })
             .catch(function() {
                 var el = document.getElementById('email-action-groups');
@@ -545,6 +546,7 @@
                     });
                     el.appendChild(item);
                 }
+                CSM.truncationNote(el, data.truncated, 'auth-failure findings');
             })
             .catch(function() {
                 var el = document.getElementById('email-auth-groups');
@@ -1183,6 +1185,7 @@
             .then(function(resp) {
                 outboundAbuseLoaded = true;
                 renderOutboundAbuse(resp);
+                CSM.truncationNote(body, resp && resp.truncated, 'relay abuse findings');
             })
             .catch(function() {
                 body.innerHTML = '<div class="csm-empty"><div class="csm-empty__reason">Failed to load outbound mail abuse.</div></div>';

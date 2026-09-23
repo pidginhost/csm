@@ -89,20 +89,15 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Bound the scan, not the match count: read newest-first history since
-	// from, cap the rows inspected (same scan budget as /email/groups), then
-	// filter. truncated means the inspected cap was hit, so older matches may
-	// exist beyond the window we looked at.
-	history := s.store.ReadHistorySince(from)
-	if len(history) > emailGroupsScanCap {
-		history = history[:emailGroupsScanCap]
+	// Filter while walking newest-first history and cap the matches, so
+	// unrelated findings and findings newer than the range never hide a
+	// match. truncated means more matches exist than the budget returns.
+	rows := s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
+		return f.Check == "email_php_relay_abuse" && !f.Timestamp.After(to)
+	})
+	if len(rows) > emailGroupsScanCap {
+		rows = rows[:emailGroupsScanCap]
 		resp.Truncated = true
-	}
-	var rows []alert.Finding
-	for _, f := range history {
-		if f.Check == "email_php_relay_abuse" && !f.Timestamp.Before(from) && !f.Timestamp.After(to) {
-			rows = append(rows, f)
-		}
 	}
 	resp.Matched = len(rows)
 

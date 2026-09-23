@@ -416,19 +416,27 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 		from, to = to, from
 	}
 
+	kindFilter := q.Get("kind")
 	var findings []alert.Finding
 	if s.store != nil {
-		findings = s.store.ReadHistorySince(from)
+		// Filter while walking history so unrelated findings, or findings
+		// newer than the requested range, never use up the scan budget.
+		findings = s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
+			if f.Timestamp.After(to) {
+				return false
+			}
+			kind := emailKindForCheck(f.Check)
+			return kind != "" && (kindFilter == "" || kind == kindFilter)
+		})
 	}
-	scanned := len(findings)
 	truncated := false
-	if scanned > emailGroupsScanCap {
+	if len(findings) > emailGroupsScanCap {
 		findings = findings[:emailGroupsScanCap]
-		scanned = emailGroupsScanCap
 		truncated = true
 	}
+	scanned := len(findings)
 
-	groups := buildEmailGroups(findings, from, to, q.Get("kind"))
+	groups := buildEmailGroups(findings, from, to, kindFilter)
 	if len(groups) > limit {
 		groups = groups[:limit]
 	}
