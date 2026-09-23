@@ -65,23 +65,8 @@
 
     // ---------- Status strip ----------
 
-    function chip(opts) {
-        var span = document.createElement('span');
-        span.className = 'csm-status-strip__chip' + (opts.cls ? ' ' + opts.cls : '');
-        if (opts.title) span.title = opts.title;
-        var icon = document.createElement('i');
-        icon.className = 'ti ' + (opts.icon || 'ti-circle');
-        span.appendChild(icon);
-        var val = document.createElement('span');
-        val.className = 'csm-status-strip__chip-value';
-        val.textContent = opts.value;
-        span.appendChild(val);
-        var lbl = document.createElement('span');
-        lbl.className = 'csm-status-strip__chip-label';
-        lbl.textContent = opts.label;
-        span.appendChild(lbl);
-        return span;
-    }
+    // Shared builders; see csm-ui.js.
+    var chip = CSM.statusChip;
 
     var _strip = { stats: null, latest: '' };
 
@@ -129,29 +114,7 @@
 
     // ---------- Active WAF pressure (csm-summary-list) + side summaries ----------
 
-    function buildEmpty(icon, title, reason) {
-        var wrap = document.createElement('div');
-        wrap.className = 'csm-empty';
-        var i = document.createElement('div');
-        i.className = 'csm-empty__icon';
-        var ie = document.createElement('i');
-        ie.className = 'ti ti-' + icon;
-        i.appendChild(ie);
-        wrap.appendChild(i);
-        if (title) {
-            var t = document.createElement('div');
-            t.className = 'csm-empty__title';
-            t.textContent = title;
-            wrap.appendChild(t);
-        }
-        if (reason) {
-            var r = document.createElement('div');
-            r.className = 'csm-empty__reason';
-            r.textContent = reason;
-            wrap.appendChild(r);
-        }
-        return wrap;
-    }
+    var buildEmpty = CSM.emptyStateNode;
 
     function statusFor(block) {
         return block.escalated ? 'escalated' : 'waf';
