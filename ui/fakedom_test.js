@@ -81,6 +81,19 @@ test('form properties behave like a browser', () => {
     assert.equal(t.hasAttribute('disabled'), true);
 });
 
+test('select.remove(index) removes an option and remove() removes the select', () => {
+    const { document } = createWindow('<select id="s"><option>A</option><option>B</option></select>');
+    const select = document.getElementById('s');
+    select.remove(1);
+    assert.equal(select.options.length, 1);
+    assert.equal(select.options[0].textContent, 'A');
+    assert.equal(document.getElementById('s'), select);
+    select.remove(4);
+    assert.equal(select.options.length, 1);
+    select.remove();
+    assert.equal(document.getElementById('s'), null);
+});
+
 test('a failing assertion on nodes stays small', () => {
     const { document } = createWindow('<div id="a" class="x y"><span>one</span></div><p>two</p>');
     const util = require('node:util');

@@ -270,6 +270,14 @@ class Element extends Node {
         this._props.selected = !!v;
     }
     get options() { return this.querySelectorAll('option'); }
+    remove(index) {
+        if (this.tagName === 'SELECT' && arguments.length) {
+            const option = this.options[index];
+            if (option) option.remove();
+            return;
+        }
+        super.remove();
+    }
     get selectedIndex() {
         const opts = this.options;
         const i = opts.findIndex(o => o.selected);

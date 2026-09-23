@@ -121,6 +121,10 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 a day in the server's time zone, and `to` includes the whole day. An RFC 3339
 `to` is exclusive. The web UI sends RFC 3339 times so a day follows the
 operator's time zone preference. A value in neither form is rejected with 400.
+An empty or whitespace-only bound is treated as absent. Calendar days start at
+their first valid local time, including when midnight is skipped or repeated;
+a skipped calendar date covers an empty range. Fractional seconds are preserved
+when filtering RFC 3339 bounds.
 
 ### WordPress verification coverage
 

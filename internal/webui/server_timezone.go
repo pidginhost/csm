@@ -8,7 +8,7 @@ import (
 
 // Sources of the host's time zone name. Tests replace them.
 var (
-	timeZoneEnv       = func() string { return os.Getenv("TZ") }
+	timeZoneEnv       = func() (string, bool) { return os.LookupEnv("TZ") }
 	readTimeZoneFile  = func() ([]byte, error) { return os.ReadFile("/etc/timezone") }
 	readLocaltimeLink = func() (string, error) { return os.Readlink("/etc/localtime") }
 )
@@ -27,19 +27,28 @@ func serverTimeZoneName() string {
 		}
 		return name
 	}
-	if name := valid(strings.TrimPrefix(timeZoneEnv(), ":")); name != "" {
-		return name
-	}
-	if b, err := readTimeZoneFile(); err == nil {
-		if name := valid(string(b)); name != "" {
-			return name
+	if env, set := timeZoneEnv(); set {
+		// An explicit TZ controls Go's Local even when it is empty or
+		// unreadable; host files must not replace that choice.
+		env = strings.TrimPrefix(env, ":")
+		if env == "" {
+			return "UTC"
 		}
+		if i := strings.Index(env, "zoneinfo/"); i >= 0 {
+			env = env[i+len("zoneinfo/"):]
+		}
+		return valid(env)
 	}
 	if target, err := readLocaltimeLink(); err == nil {
 		if i := strings.Index(target, "zoneinfo/"); i >= 0 {
 			if name := valid(target[i+len("zoneinfo/"):]); name != "" {
 				return name
 			}
+		}
+	}
+	if b, err := readTimeZoneFile(); err == nil {
+		if name := valid(string(b)); name != "" {
+			return name
 		}
 	}
 	return ""

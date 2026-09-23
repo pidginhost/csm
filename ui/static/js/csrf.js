@@ -448,7 +448,7 @@ CSM.refresh = (function() {
             }
         }
 
-        function schedule() {
+        function schedule(wait) {
             clearTimer();
             if (stopped || document.hidden || !enabled) return;
             timerId = setTimeout(function() {
@@ -457,7 +457,7 @@ CSM.refresh = (function() {
                 lastRun = Date.now();
                 invokeTimer(fn);
                 schedule();
-            }, delay);
+            }, wait == null ? delay : wait);
         }
 
         function runNow() {
@@ -475,7 +475,7 @@ CSM.refresh = (function() {
         function resume() {
             if (stopped || document.hidden || !enabled) return;
             if (Date.now() - lastRun >= delay) runNow();
-            else schedule();
+            else schedule(delay - (Date.now() - lastRun));
         }
 
         var timer = {

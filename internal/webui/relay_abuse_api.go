@@ -93,7 +93,7 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 
 	// Filter while walking newest-first history and cap the matches, so
 	// unrelated findings and findings newer than the range never hide a
-	// match. truncated means more matches exist than the budget returns.
+	// match. Truncation covers both this budget and the result limit below.
 	rows := s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
 		return f.Check == "email_php_relay_abuse" && f.Timestamp.Before(to)
 	})
@@ -117,6 +117,7 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if len(rows) > limit {
+		resp.Truncated = true
 		rows = rows[:limit]
 	}
 	for _, f := range rows {

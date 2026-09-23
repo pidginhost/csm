@@ -13,6 +13,8 @@ test('a truncated result says so under the list', () => {
     assert.ok(note, 'no note for a truncated result');
     assert.match(note.textContent, /email findings/);
     assert.match(note.textContent, /narrow the date range/i);
+    // Groups can be ordered by severity, so omitted groups can be newer.
+    assert.doesNotMatch(note.textContent, /newest|older/i);
 });
 
 test('a complete result has no note', () => {

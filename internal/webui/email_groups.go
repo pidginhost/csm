@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// emailGroupsScanCap is the hard upper bound on findings inspected per
+// emailGroupsScanCap is the hard upper bound on matching findings retained per
 // /api/v1/email/groups call. Bounded reads keep the workbench cheap on
 // hosts that store thousands of mail-related findings per day.
 const emailGroupsScanCap = 5000
@@ -446,6 +446,7 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 
 	groups := buildEmailGroups(findings, from, to, kindFilter)
 	if len(groups) > limit {
+		truncated = true
 		groups = groups[:limit]
 	}
 

@@ -134,7 +134,7 @@
         btn.type = 'button';
         btn.className = 'btn btn-sm btn-outline-secondary';
         btn.setAttribute('data-perf-action', perfActionKey(action));
-        btn.disabled = !!_perfPending[perfActionKey(action)];
+        btn.disabled = _perfBulkRunning || !!_perfPending[perfActionKey(action)];
         var icon = document.createElement('i');
         icon.className = 'ti ' + action.icon + ' me-1';
         btn.appendChild(icon);
@@ -147,14 +147,14 @@
 
     function runPerfAction(action) {
         var key = perfActionKey(action);
-        if (_perfPending[key]) return;
+        if (_perfBulkRunning || _perfPending[key]) return;
         CSM.confirm(action.confirm).then(function() {
-            if (_perfPending[key]) return;
+            if (_perfBulkRunning || _perfPending[key]) return;
             _perfPending[key] = true;
             setPerfActionButtons(key, true);
             function release() {
                 delete _perfPending[key];
-                setPerfActionButtons(key, false);
+                setPerfActionButtons(key, _perfBulkRunning);
             }
             CSM.post(action.endpoint, { path: action.path, key: action.key || '' }).then(function(data) {
                 release();
@@ -196,7 +196,7 @@
         var keys = Object.keys(groups).sort();
         // Rebuilding would close a menu the operator has open, so only
         // rebuild when what it offers changed, and never mid-run.
-        var signature = keys.map(function(k) { return k + ':' + groups[k].items.length; }).join(',');
+        var signature = JSON.stringify(keys.map(function(k) { return [k, groups[k].items]; }));
         if (_perfBulkRunning || signature === _perfBulkSignature) return;
         _perfBulkSignature = signature;
         holder.textContent = '';
@@ -237,12 +237,14 @@
     }
 
     function runBulkPerfAction(group, originLink) {
-        if (_perfBulkRunning) return;
+        function hasPendingFix() { return Object.keys(_perfPending).length > 0; }
+        if (_perfBulkRunning || hasPendingFix()) return;
         var n = group.items.length;
         var msg = 'Apply "' + group.label + '" to ' + n + ' finding' + (n === 1 ? '' : 's') + '?';
         CSM.confirm(msg).then(function() {
-            if (_perfBulkRunning) return;
+            if (_perfBulkRunning || hasPendingFix()) return;
             _perfBulkRunning = true;
+            document.querySelectorAll('[data-perf-action]').forEach(function(btn) { btn.disabled = true; });
             originLink.classList.add('disabled');
             var ok = 0, failed = 0, errs = [];
             function next(i) {
@@ -256,6 +258,7 @@
                     }
                     originLink.classList.remove('disabled');
                     _perfBulkRunning = false;
+                    document.querySelectorAll('[data-perf-action]').forEach(function(btn) { btn.disabled = false; });
                     _perfBulkSignature = null;
                     update();
                     return;

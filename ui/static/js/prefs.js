@@ -163,9 +163,9 @@ CSM.prefs = (function() {
             allowNonOK: false
         }).then(function(r) { return r.json(); }).then(function(blob) {
             replaceState(blob);
-            writeCache();
+            var cached = writeCache();
             applyAll();
-            if (state.timezone !== renderedZone) window.location.reload();
+            if (cached && state.timezone !== renderedZone) window.location.reload();
             return state;
         });
     }
@@ -232,10 +232,19 @@ CSM.prefs = (function() {
         var check = new Date(Date.UTC(y, mo, d));
         if (check.getUTCFullYear() !== y || check.getUTCMonth() !== mo || check.getUTCDate() !== d) return null;
         var wall = Date.UTC(y, mo, d + (endExclusive ? 1 : 0));
-        // Midnight can fall on the other side of a clock change from the
-        // first guess; the second pass uses the offset in force at midnight.
-        var guess = wall - zoneOffsetMinutes(wall) * 60000;
-        return wall - zoneOffsetMinutes(guess) * 60000;
+        // Look on both sides of midnight: it can occur twice, or be skipped
+        // entirely. Pick the first occurrence; in a gap find the clock jump
+        // itself so no part of the preceding day enters the range.
+        var before = wall - zoneOffsetMinutes(wall - 36 * 3600000) * 60000;
+        var after = wall - zoneOffsetMinutes(wall + 36 * 3600000) * 60000;
+        var lo = Math.min(before, after), hi = Math.max(before, after);
+        if (lo + zoneOffsetMinutes(lo) * 60000 >= wall) return lo;
+        while (hi - lo > 1) {
+            var mid = lo + Math.floor((hi - lo) / 2);
+            if (mid + zoneOffsetMinutes(mid) * 60000 >= wall) hi = mid;
+            else lo = mid;
+        }
+        return hi;
     }
 
     // dayRange turns an inclusive pair of days into the instants the API

@@ -17,7 +17,7 @@ func withTimeZoneSources(t *testing.T, env, zoneFile, localtimeLink string) {
 	t.Helper()
 	oldEnv, oldRead, oldLink := timeZoneEnv, readTimeZoneFile, readLocaltimeLink
 	t.Cleanup(func() { timeZoneEnv, readTimeZoneFile, readLocaltimeLink = oldEnv, oldRead, oldLink })
-	timeZoneEnv = func() string { return env }
+	timeZoneEnv = func() (string, bool) { return env, env != "" }
 	readTimeZoneFile = func() ([]byte, error) {
 		if zoneFile == "" {
 			return nil, os.ErrNotExist
@@ -40,7 +40,10 @@ func TestServerTimeZoneName(t *testing.T) {
 	}{
 		{"TZ variable", "Europe/Bucharest", "", "", "Europe/Bucharest"},
 		{"TZ with colon", ":America/Chicago", "", "", "America/Chicago"},
+		{"TZ absolute file", ":/usr/share/zoneinfo/Asia/Tokyo", "Europe/Paris", "", "Asia/Tokyo"},
+		{"unknown explicit TZ", "Not/AZone", "Europe/Paris", "", ""},
 		{"etc timezone", "", "Asia/Tokyo", "", "Asia/Tokyo"},
+		{"localtime wins over stale name", "", "Europe/Paris", "/usr/share/zoneinfo/Asia/Tokyo", "Asia/Tokyo"},
 		{"localtime link", "", "", "/usr/share/zoneinfo/America/New_York", "America/New_York"},
 		{"relative link", "", "", "../usr/share/zoneinfo/Europe/Paris", "Europe/Paris"},
 		{"invalid names are ignored", "Not/AZone", "also bad", "/usr/share/zoneinfo/Nope/Nope", ""},
@@ -82,5 +85,13 @@ func TestLayoutTellsTheBrowserTheServerTimeZone(t *testing.T) {
 	}
 	if !strings.Contains(body, `data-csm-server-offset="`) {
 		t.Fatal("layout does not carry the server UTC offset fallback")
+	}
+}
+
+func TestExplicitEmptyServerTimeZoneIsUTC(t *testing.T) {
+	withTimeZoneSources(t, "", "Europe/Paris", "/usr/share/zoneinfo/Asia/Tokyo")
+	timeZoneEnv = func() (string, bool) { return "", true }
+	if got := serverTimeZoneName(); got != "UTC" {
+		t.Fatalf("explicit empty TZ = %q, want UTC", got)
 	}
 }

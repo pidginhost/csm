@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 )
 
@@ -29,6 +30,11 @@ func (s *Server) accountPathPrefixes(name string) []string {
 	out := make([]string, 0, len(roots))
 	for _, root := range roots {
 		out = append(out, filepath.Join(root, name)+"/")
+		// Findings and quarantine metadata can carry the resolved path even
+		// after the file has been moved away. Resolve the root, not the file.
+		if resolved, err := filepath.EvalSymlinks(root); err == nil && resolved != filepath.Clean(root) {
+			out = append(out, filepath.Join(resolved, name)+"/")
+		}
 	}
 	return out
 }
@@ -49,6 +55,15 @@ func containsAny(s string, subs []string) bool {
 		}
 	}
 	return false
+}
+
+func accountFindingMatches(f alert.Finding, name string, prefixes []string) bool {
+	for _, owner := range []string{f.TenantID, f.CPUser} {
+		if owner = strings.TrimSpace(owner); owner != "" {
+			return owner == name
+		}
+	}
+	return containsAny(f.Message, prefixes) || containsAny(f.Details, prefixes) || pathHasAnyPrefix(f.FilePath, prefixes)
 }
 
 func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +88,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
 		}
-		if containsAny(f.Message, homePrefixes) || containsAny(f.Details, homePrefixes) || containsAny(f.FilePath, homePrefixes) {
+		if accountFindingMatches(f, name, homePrefixes) {
 			accountFindings = append(accountFindings, findingView{
 				Severity: int(f.Severity),
 				Check:    f.Check,
@@ -121,7 +136,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		if len(history) >= 100 {
 			break
 		}
-		if containsAny(f.Message, homePrefixes) || containsAny(f.Details, homePrefixes) || containsAny(f.FilePath, homePrefixes) {
+		if accountFindingMatches(f, name, homePrefixes) {
 			history = append(history, histEntry{
 				Severity: int(f.Severity), Check: f.Check, Message: f.Message,
 				Timestamp: f.Timestamp.Format(time.RFC3339),

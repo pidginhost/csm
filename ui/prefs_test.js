@@ -89,3 +89,20 @@ test('a corrupt cache is ignored', () => {
     const page = loadPage('', ['csrf.js', 'prefs.js'], { storage: { [CACHE]: '{not json' } });
     assert.equal(page.window.CSM.prefs.get().timezone, 'local');
 });
+
+test('saving a zone only reloads if the cache can be read back', async () => {
+    for (const failWrite of [true, false]) {
+        const page = loadPage('', ['csrf.js', 'prefs.js']);
+        page.respond('/api/v1/prefs/user', 200, { timezone: 'local' });
+        await settle();
+        page.window.localStorage.setItem = () => {
+            if (failWrite) throw new Error('QuotaExceededError');
+        };
+        const saved = page.window.CSM.prefs.save({ timezone: 'UTC' });
+        page.respond('/api/v1/prefs/user', 200, { timezone: 'UTC' });
+        await saved;
+        assert.equal(page.window.location.reloads, 0);
+        assert.equal(page.window.CSM.prefs.user.timezone, 'UTC');
+        assert.equal(page.window.CSM.prefs.user, page.window.CSM.prefs.get());
+    }
+});

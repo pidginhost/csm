@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Web UI date filters now handle midnight clock changes and server time-zone overrides correctly, and preference saves reload only when the browser can retain them. Account views follow recorded owners and linked roots, limited email lists report omissions, refresh timers keep their deadlines, and performance fixes use current targets without overlapping.
 - Importing a settings bundle now skips suppression rules whose check is not a check name or whose path pattern is not a valid glob, as the suppression form does.
 - Suppression rules now refuse a check field that holds a pattern or free text, and warn when the check name matches no known check, since such a rule hides nothing.
 - A hardening audit that runs longer than three minutes now returns its report instead of failing after saving it.

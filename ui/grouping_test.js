@@ -61,6 +61,16 @@ function setGroupBy(page, mode) {
     sel.dispatchEvent(new page.window.Event('change'));
 }
 
+async function dismissAndRefresh(page, data) {
+    page.window.CSM.confirm = () => Promise.resolve();
+    page.document.querySelector('.dismiss-btn').click();
+    await settle();
+    page.respond('/api/v1/dismiss', 200, {});
+    await settle();
+    page.respond('/api/v1/findings/enriched', 200, data);
+    await settle();
+}
+
 test('grouping survives a search that the table applies after its debounce', async () => {
     const page = await findingsPage();
     setGroupBy(page, 'check');
@@ -96,4 +106,26 @@ test('turning grouping off removes the headers', async () => {
     assert.ok(page.document.querySelectorAll('.csm-group-header').length > 0);
     setGroupBy(page, 'none');
     assert.equal(page.document.querySelectorAll('.csm-group-header').length, 0);
+});
+
+test('an empty refresh retires the previous findings table', async () => {
+    const page = await findingsPage();
+    await dismissAndRefresh(page, { findings: [], check_types: [], accounts: [], total: 0 });
+    const search = page.document.getElementById('findings-search');
+    search.value = 'shell';
+    search.dispatchEvent(new page.window.Event('input'));
+    await wait(400);
+    assert.equal(page.document.querySelectorAll('#findings-tbody .finding-row').length, 0);
+    assert.equal(page.window.CSM._tableInstances.filter(t => t.opts.tableId === 'findings-table').length, 0);
+});
+
+test('grouped refresh keeps all rows and restores the chosen page size', async () => {
+    const page = await findingsPage();
+    setGroupBy(page, 'check');
+    const findings = Array.from({ length: 30 }, (_, i) => finding('webshell', 'shell ' + i, 'alice'));
+    await dismissAndRefresh(page, { findings, check_types: ['webshell'], accounts: ['alice'], total: 30 });
+    assert.equal(layout(page).filter(r => r[0] === 'row').length, 30);
+    assertGrouped(page);
+    setGroupBy(page, 'none');
+    assert.equal(layout(page).filter(r => r[0] === 'row').length, 25);
 });

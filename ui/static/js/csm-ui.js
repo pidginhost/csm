@@ -566,14 +566,14 @@ CSM.filePreview = function(title, subhead, text) {
     CSM.detailPanel.open({ title: title || 'File preview', bodyNode: body });
 };
 
-// truncationNote tells the operator a list shows only the newest matches the
+// truncationNote tells the operator a list shows only some of the matches the
 // server returned within its budget, instead of letting a capped list read as
 // the complete answer.
 CSM.truncationNote = function(container, truncated, what) {
     if (!container || !truncated) return;
     var note = document.createElement('div');
     note.className = 'csm-truncation-note text-muted small px-3 py-2';
-    note.textContent = 'Showing only the newest ' + what + ' in this range; narrow the date range to see older ones.';
+    note.textContent = 'Showing only some ' + what + ' in this range; narrow the date range to see more.';
     container.appendChild(note);
 };
 

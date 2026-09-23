@@ -47,11 +47,19 @@ scope. The header links to session management.
 Audit attribution is captured when the action is authorized and remains available
 if the browser session expires or is revoked while the action runs.
 
+Account views use the recorded finding owner when available, with account paths
+as a fallback. They also recognize resolved paths under linked account roots,
+including files already moved into quarantine.
+
 ## Dates and time zones
 
 Every page shows dates in the time zone chosen under Preferences: the browser's,
 the server's, or a named zone. Date filters pick whole days in that zone.
-Changing the zone reloads the page so dates already on screen follow it.
+Changing the zone reloads the page so dates already on screen follow it, provided
+the browser can save and read back the preference. If browser storage is
+unavailable, new renders use the preference without forcing a reload.
+Days with a midnight clock change start at the first valid time of that day;
+a repeated midnight uses its first occurrence.
 
 ## Bulk file actions
 

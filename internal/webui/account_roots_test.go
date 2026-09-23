@@ -122,3 +122,61 @@ func TestAPIAccountsListsTheScanAccounts(t *testing.T) {
 		t.Fatalf("status = %d, want 500 when the inventory cannot be read", w.Code)
 	}
 }
+
+func TestAccountDetailResolvesRootAliasesAndRecordedOwners(t *testing.T) {
+	s := newTestServer(t, "tok")
+	realRoot := t.TempDir()
+	linkRoot := filepath.Join(t.TempDir(), "homes")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	s.accountRoots = func() []string { return []string{linkRoot + "/"} }
+	old := quarantineDir
+	quarantineDir = t.TempDir()
+	t.Cleanup(func() { quarantineDir = old })
+	path := filepath.Join(realRoot, "alice", "httpdocs", "missing.php")
+	findings := []alert.Finding{
+		{Check: "webshell", Message: "canonical path", FilePath: path, Timestamp: time.Now()},
+		{Check: "email_php_relay_abuse", Message: "mail owner", CPUser: "alice", Timestamp: time.Now()},
+		{Check: "wp_core_unverified", Message: "recorded owner", TenantID: "alice", Timestamp: time.Now()},
+		{Check: "webshell", Message: "another tenant " + filepath.Join(linkRoot, "alice", "a.php"), TenantID: "bob", Timestamp: time.Now()},
+		{Check: "webshell", Message: "neighbor", FilePath: filepath.Join(realRoot, "alice2", "x.php"), Timestamp: time.Now()},
+	}
+	s.store.SetLatestFindings(findings)
+	s.store.AppendHistory(findings)
+	meta, err := json.Marshal(map[string]any{"original_path": path, "reason": "webshell", "quarantined_at": time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantineDir, "sample.meta"), meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.apiAccountDetail(w, httptest.NewRequest(http.MethodGet, "/?name=alice", nil))
+	var data struct {
+		Findings    []struct{ Message string } `json:"findings"`
+		History     []struct{ Message string } `json:"history"`
+		Quarantined []struct {
+			OriginalPath string `json:"original_path"`
+		} `json:"quarantined"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Findings) != 3 || len(data.History) != 3 || len(data.Quarantined) != 1 {
+		t.Fatalf("got %+v; want three owned findings and one quarantined file", data)
+	}
+	for _, f := range data.Findings {
+		if strings.HasPrefix(f.Message, "another tenant") || f.Message == "neighbor" {
+			t.Errorf("included unrelated finding: %s", f.Message)
+		}
+	}
+	for _, f := range data.History {
+		if strings.HasPrefix(f.Message, "another tenant") || f.Message == "neighbor" {
+			t.Errorf("included unrelated history: %s", f.Message)
+		}
+	}
+	if data.Quarantined[0].OriginalPath != path {
+		t.Errorf("quarantine = %+v", data.Quarantined)
+	}
+}

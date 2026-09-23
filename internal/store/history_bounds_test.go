@@ -69,3 +69,39 @@ func TestReadHistoryFilteredByInstants(t *testing.T) {
 		t.Fatalf("results = %+v (matched %d), want last and first", results, matched)
 	}
 }
+
+func TestParseHistoryBoundMidnightTransitions(t *testing.T) {
+	for _, tc := range []struct{ zone, day, from, to string }{
+		{"America/Santiago", "2026-09-06", "2026-09-06T04:00:00Z", "2026-09-07T03:00:00Z"},
+		{"America/Havana", "2026-11-01", "2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z"},
+		{"America/Sao_Paulo", "2018-11-04", "2018-11-04T03:00:00Z", "2018-11-05T02:00:00Z"},
+		{"Pacific/Apia", "2011-12-30", "2011-12-30T10:00:00Z", "2011-12-30T10:00:00Z"},
+		{"Europe/Bucharest", "2026-03-29", "2026-03-28T22:00:00Z", "2026-03-29T21:00:00Z"},
+	} {
+		t.Run(tc.zone, func(t *testing.T) {
+			loc, err := time.LoadLocation(tc.zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, end := range []bool{false, true} {
+				got, err := parseHistoryBoundIn(tc.day, end, loc)
+				want := tc.from
+				if end {
+					want = tc.to
+				}
+				if err != nil || got.UTC().Format(time.RFC3339) != want {
+					t.Errorf("end=%v: got %s, %v; want %s", end, got.UTC(), err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestReadHistoryFilteredWhitespaceBounds(t *testing.T) {
+	db := openTestDB(t)
+	writeFindings(t, db, []alert.Finding{{Timestamp: time.Now(), Check: "webshell"}})
+	got, total := db.ReadHistoryFiltered(10, 0, " ", " \t", -1, "")
+	if total != 1 || len(got) != 1 {
+		t.Fatalf("got %v, total %d; want one finding", got, total)
+	}
+}

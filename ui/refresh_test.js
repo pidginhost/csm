@@ -59,6 +59,25 @@ test('returning to a tab does not refresh while auto-refresh is paused', async (
     assert.equal(runs, 0);
 });
 
+test('a short tab switch keeps the original refresh deadline', () => {
+    let now = 1000;
+    const timers = new Map();
+    let nextID = 0;
+    class ClockDate extends Date { static now() { return now; } }
+    const page = loadPage('', ['csrf.js'], { globals: {
+        Date: ClockDate,
+        setTimeout(fn, delay) { const id = ++nextID; timers.set(id, { fn, delay }); return id; },
+        clearTimeout(id) { timers.delete(id); }
+    } });
+    const handle = page.window.CSM.refresh.interval(() => {}, 10000);
+    now += 9000;
+    setHidden(page, true);
+    now += 500;
+    setHidden(page, false);
+    assert.deepEqual([...timers.values()].map(t => t.delay), [500]);
+    handle.stop();
+});
+
 for (const [name, template, scripts, want, globals] of [
     ['Email', 'email', ['email.js'], 3, {}],
     ['Performance', 'performance', ['performance.js'], 1, {}],

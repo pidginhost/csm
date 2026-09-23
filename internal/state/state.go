@@ -706,8 +706,8 @@ func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 }
 
 // ReadHistoryFiltered reads matching history entries newest-first.
-// Date strings that are not YYYY-MM-DD are ignored before they reach the
-// lexicographic bbolt key filter.
+// Bounds accept server-local calendar days or RFC 3339 instants. Invalid
+// bounds are ignored before they reach the lexicographic bbolt key filter.
 func (s *Store) ReadHistoryFiltered(limit, offset int, from, to string, severity int, search string) ([]alert.Finding, int) {
 	return s.ReadHistoryFilteredWithChecks(limit, offset, from, to, severity, search, nil)
 }

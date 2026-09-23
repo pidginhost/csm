@@ -125,7 +125,7 @@ func (db *DB) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 
 // ReadHistoryFiltered reads findings with optional filtering.
 // Parameters:
-//   - from, to: date strings "YYYY-MM-DD" for time-range filtering (empty to skip)
+//   - from, to: calendar dates or RFC 3339 instants (empty to skip)
 //   - severity: filter by severity level (-1 for no filter)
 //   - search: case-insensitive substring match on check/message/details (empty to skip)
 func (db *DB) ReadHistoryFiltered(limit, offset int, from, to string, severity int, search string) ([]alert.Finding, int) {
@@ -149,15 +149,30 @@ func parseHistoryBoundIn(s string, end bool, loc *time.Location) (time.Time, err
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t, nil
 	}
-	day, err := time.ParseInLocation("2006-01-02", s, loc)
+	// Parse the calendar in UTC so a missing local midnight cannot normalize
+	// the date into the preceding day before we choose the exclusive end.
+	day, err := time.Parse("2006-01-02", s)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("date %q is neither YYYY-MM-DD nor RFC 3339", s)
 	}
 	if end {
-		// AddDate keeps calendar-day semantics across DST changes.
 		day = day.AddDate(0, 0, 1)
 	}
-	return day, nil
+	// Walk the surrounding zone intervals to find the earliest instant of
+	// the day. A repeated midnight uses its first occurrence; a skipped
+	// midnight (or date) starts at the transition into the next valid time.
+	for at := day.Add(-48 * time.Hour).In(loc); ; {
+		_, offset := at.Zone()
+		candidate := day.Add(-time.Duration(offset) * time.Second).In(loc)
+		if candidate.Before(at) {
+			candidate = at
+		}
+		_, zoneEnd := at.ZoneBounds()
+		if zoneEnd.IsZero() || candidate.Before(zoneEnd) {
+			return candidate, nil
+		}
+		at = zoneEnd
+	}
 }
 
 // ReadHistoryFilteredWithChecks reads findings with optional filters, including
@@ -172,6 +187,7 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 	var results []alert.Finding
 	matched := 0
 	searchLower := strings.ToLower(search)
+	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
 
 	var fromPrefix, toPrefix string
 	if from != "" {

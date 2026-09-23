@@ -12,7 +12,16 @@ import (
 // Handlers pass the canonical form on, so audit entries, incident and threat
 // bookkeeping and the response agree with the firewall state.
 func TestFirewallHandlersUseTheCanonicalAddress(t *testing.T) {
-	const typed, canonical = "2001:DB8:0::10", "2001:db8::10"
+	for _, tc := range []struct{ typed, canonical string }{
+		{"2001:DB8:0::10", "2001:db8::10"},
+		{" ::ffff:192.0.2.10 ", "192.0.2.10"},
+	} {
+		t.Run(tc.typed, func(t *testing.T) { testFirewallCanonicalAddress(t, tc.typed, tc.canonical) })
+	}
+}
+
+func testFirewallCanonicalAddress(t *testing.T, typed, canonical string) {
+	t.Helper()
 	cases := []struct {
 		action string
 		call   func(*Server, http.ResponseWriter, *http.Request)
@@ -57,5 +66,23 @@ func TestFirewallHandlersUseTheCanonicalAddress(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFirewallRejectsScopedAddresses(t *testing.T) {
+	s := newTestServerWithFirewall(t, "tok")
+	fb := newFullBlocker()
+	s.SetIPBlocker(fb)
+	for _, call := range []func(*Server, http.ResponseWriter, *http.Request){
+		(*Server).apiBlockIP, (*Server).apiFirewallAllowIP, (*Server).apiFirewallRemoveAllow, (*Server).apiFirewallFlushCphulk,
+	} {
+		w := httptest.NewRecorder()
+		call(s, w, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"ip":"2001:db8::10%eth0"}`)))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("status %d, want 400", w.Code)
+		}
+	}
+	if len(fb.blocked) != 0 || len(fb.allowed) != 0 {
+		t.Fatal("scoped address changed firewall state")
 	}
 }

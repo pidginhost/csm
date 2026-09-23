@@ -66,3 +66,35 @@ test('the bulk menu follows a change in what can be fixed', async () => {
     await answerPerformance(page, []);
     assert.equal(page.document.querySelector('#perf-bulk-actions .dropdown-menu'), null);
 });
+
+test('bulk fixes follow new targets even when their count stays the same', async () => {
+    const page = perfPage();
+    await answerPerformance(page, [logFinding]);
+    refresh(page);
+    const next = { ...logFinding, message: 'Bloated error_log: /home/b/public_html/error_log', key: 'k2' };
+    await answerPerformance(page, [next]);
+    page.document.querySelector('#perf-bulk-actions .dropdown-item').click();
+    await settle();
+    const requests = page.pending('/api/v1/perf/fix-error-log');
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].body, { path: '/home/b/public_html/error_log', key: 'k2' });
+});
+
+test('bulk and individual fixes cannot submit the same target concurrently', async () => {
+    for (const bulkFirst of [true, false]) {
+        const page = perfPage();
+        await answerPerformance(page, [logFinding]);
+        const bulk = () => page.document.querySelector('#perf-bulk-actions .dropdown-item').click();
+        const single = () => fixButtons(page)[0].click();
+        (bulkFirst ? bulk : single)();
+        await settle();
+        refresh(page);
+        await answerPerformance(page, [logFinding]);
+        (bulkFirst ? single : bulk)();
+        await settle();
+        assert.equal(page.pending('/api/v1/perf/fix-error-log').length, 1, 'bulkFirst=' + bulkFirst);
+        page.respond('/api/v1/perf/fix-error-log', 500, { error: 'failed' });
+        await settle();
+        assert.equal(fixButtons(page)[0].disabled, false, 'failure must release the target');
+    }
+});

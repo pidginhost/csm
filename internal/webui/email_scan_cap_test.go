@@ -88,3 +88,36 @@ func TestRelayAbuseFindsMatchesBehindUnrelatedFindings(t *testing.T) {
 		t.Fatalf("matched=%d truncated=%v, want the relay finding behind the noise", resp.Matched, resp.Truncated)
 	}
 }
+
+func TestEmailListsReportTheirResultLimit(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now().Add(-time.Hour)
+	s.store.AppendHistory([]alert.Finding{
+		{Check: "email_compromised_account", Message: "Compromised: alice@example.com", Timestamp: now},
+		{Check: "email_compromised_account", Message: "Compromised: bob@example.com", Timestamp: now.Add(time.Minute)},
+		{Check: "email_php_relay_abuse", Message: "first relay", Timestamp: now},
+		{Check: "email_php_relay_abuse", Message: "second relay", Timestamp: now.Add(time.Minute)},
+	})
+	t.Run("groups", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		s.apiEmailGroups(w, httptest.NewRequest(http.MethodGet, "/?kind=compromised_account&limit=1", nil))
+		var resp emailGroupsResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Groups) != 1 || !resp.Truncated {
+			t.Fatalf("got %+v; want one group with truncation", resp)
+		}
+	})
+	t.Run("relay", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		s.apiEmailRelayAbuse(w, httptest.NewRequest(http.MethodGet, "/?limit=1", nil))
+		var resp relayAbuseResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Entries) != 1 || resp.Matched != 2 || !resp.Truncated {
+			t.Fatalf("got %+v; want one of two entries with truncation", resp)
+		}
+	})
+}

@@ -49,6 +49,23 @@ test('a malformed or impossible day is no boundary', () => {
     }
 });
 
+test('midnight transitions include exactly the selected calendar day', () => {
+    const cases = [
+        ['America/Santiago', '2026-09-06', '2026-09-06T04:00:00.000Z', '2026-09-07T03:00:00.000Z'],
+        ['America/Havana', '2026-11-01', '2026-11-01T04:00:00.000Z', '2026-11-02T05:00:00.000Z'],
+        ['America/Sao_Paulo', '2018-11-04', '2018-11-04T03:00:00.000Z', '2018-11-05T02:00:00.000Z'],
+        ['Pacific/Apia', '2011-12-30', '2011-12-30T10:00:00.000Z', '2011-12-30T10:00:00.000Z'],
+        ['Europe/Bucharest', '2026-03-29', '2026-03-28T22:00:00.000Z', '2026-03-29T21:00:00.000Z']
+    ];
+    for (const [tz, day, from, to] of cases) {
+        const prefs = prefsPage(zone(tz)).window.CSM.prefs;
+        assert.equal(prefs.dayRange(day, day).from, from, tz + ' start');
+        assert.equal(prefs.dayRange(day, day).to, to, tz + ' end');
+        assert.equal(prefs.dayBoundary(day, false), Date.parse(from));
+        assert.equal(prefs.dayBoundary(day, true), Date.parse(to));
+    }
+});
+
 test('today is the current day in the operator zone', () => {
     // Between them these zones disagree with any browser zone at any hour.
     for (const tz of ['Pacific/Kiritimati', 'Etc/GMT+12']) {
