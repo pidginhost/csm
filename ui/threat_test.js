@@ -14,7 +14,8 @@ function stubElement(id) {
         checked: false,
         listeners: {},
         options: { length: 0 },
-        classList: { add() {}, remove() {}, contains() { return false; } },
+        dataset: {},
+        classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
         addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
         getAttribute() { return ''; },
         setAttribute() {},
@@ -27,8 +28,21 @@ function stubElement(id) {
     };
 }
 
-function threatPage(overrides = {}, selectedCount = 1) {
+// A row checkbox the table hides for paging or filtering has no offsetParent.
+function rowCheckbox(ip, visible) {
+    return {
+        checked: true, offsetParent: visible ? {} : null, dataset: {}, listeners: {},
+        getAttribute(name) { return name === 'data-ip' ? ip : ''; },
+        addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+    };
+}
+
+function threatPage(overrides = {}, selectedCount = 1, hiddenSelected = 0) {
     const elements = {};
+    const checkboxes = [
+        ...Array.from({ length: selectedCount }, (_, i) => rowCheckbox('192.0.2.' + (i + 1), true)),
+        ...Array.from({ length: hiddenSelected }, (_, i) => rowCheckbox('198.51.100.' + (i + 1), false))
+    ];
     function byId(id) {
         if (!elements[id]) elements[id] = stubElement(id);
         return elements[id];
@@ -46,14 +60,11 @@ function threatPage(overrides = {}, selectedCount = 1) {
             documentElement: { classList: { contains() { return false; } } },
             getElementById: byId,
             querySelectorAll(selector) {
-                if (selector === '.bulk-ip-cb:checked') {
-                    return Array.from({ length: selectedCount }, (_, i) => ({
-                        getAttribute() { return '192.0.2.' + (i + 1); }
-                    }));
-                }
+                if (selector === '.bulk-ip-cb') return checkboxes;
+                if (selector === '.bulk-ip-cb:checked') return checkboxes.filter(cb => cb.checked);
                 return [];
             },
-            querySelector() { return null; },
+            querySelector(selector) { return selector.charAt(0) === '#' ? byId(selector.slice(1)) : null; },
             createElement() { return stubElement('created'); }
         },
         CSM: {
@@ -80,9 +91,13 @@ function threatPage(overrides = {}, selectedCount = 1) {
     const shared = fs.readFileSync(path.join(__dirname, 'static/js/csrf.js'), 'utf8');
     vm.runInContext(shared.slice(shared.indexOf('CSM.QUARANTINE_BULK_MAX'),
         shared.indexOf('// Wrapper for DELETE')), context);
+    const ui = fs.readFileSync(path.join(__dirname, 'static/js/csm-ui.js'), 'utf8');
+    vm.runInContext(ui.slice(ui.indexOf('CSM.bulk = function'), ui.indexOf('// Shared focus trap.')), context);
     const source = fs.readFileSync(path.join(__dirname, 'static/js/threat.js'), 'utf8');
     vm.runInContext(source, context);
-    return { context, elements, byId };
+    // Loading the page resets the selection; the operator selects afterwards.
+    checkboxes.forEach(cb => { cb.checked = true; });
+    return { context, elements, byId, checkboxes };
 }
 
 test('lookup explains a permanent threat entry on an unblocked IP', () => {
@@ -190,3 +205,33 @@ for (const action of ['block', 'block_permanent', 'whitelist']) {
         });
     }
 }
+
+test('bulk block acts only on selected rows the operator can see', async () => {
+    const requests = [];
+    const { context } = threatPage({
+        post(url, body) { requests.push(body); return Promise.resolve({ count: 2 }); }
+    }, 2, 3);
+    await context.bulkBlock(true);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(Array.from(requests[0].ips), ['192.0.2.1', '192.0.2.2']);
+});
+
+test('bulk whitelist acts only on selected rows the operator can see', async () => {
+    const requests = [];
+    const { byId } = threatPage({
+        post(url, body) { requests.push(body); return Promise.resolve({ count: 1 }); }
+    }, 1, 4);
+    byId('bulk-whitelist-btn').listeners.click[0]();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests.length, 1);
+    assert.deepEqual(Array.from(requests[0].ips), ['192.0.2.1']);
+});
+
+test('select-all never checks rows hidden by paging or filters', () => {
+    const { byId, checkboxes } = threatPage({}, 2, 3);
+    checkboxes.forEach(cb => { cb.checked = false; });
+    const selectAll = byId('select-all-attackers');
+    selectAll.checked = true;
+    (selectAll.listeners.change || []).forEach(fn => fn.call(selectAll));
+    assert.deepEqual(checkboxes.map(cb => cb.checked), [true, true, false, false, false]);
+});

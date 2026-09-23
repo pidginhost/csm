@@ -205,7 +205,7 @@ test('Cleanup prevents a row restore from racing a batched delete', async () => 
     const elements = new Map();
     function element(id) {
         if (!elements.has(id)) elements.set(id, {
-            disabled: false, innerHTML: '', listeners: {},
+            disabled: false, innerHTML: '', listeners: {}, dataset: {},
             classList: { toggle() {} },
             getAttribute() { return 'id'; },
             addEventListener(type, fn) { this.listeners[type] = fn; }
@@ -213,12 +213,20 @@ test('Cleanup prevents a row restore from racing a batched delete', async () => 
         return elements.get(id);
     }
     const requests = [], reload = deferred();
+    const checkbox = {
+        checked: true, offsetParent: {}, dataset: {},
+        getAttribute() { return 'id'; }, addEventListener() {}
+    };
+    function query(selector) {
+        if (selector === '.cleanup-file-restore') return [element('row')];
+        if (selector === '.cleanup-file-cb' || selector === '.cleanup-file-cb:checked') return [checkbox];
+        return [];
+    }
     const context = vm.createContext({
         document: {
             getElementById: element,
-            querySelectorAll(selector) {
-                return [element(selector === '.cleanup-file-restore' ? 'row' : 'checkbox')];
-            }
+            querySelector(selector) { return selector.charAt(0) === '#' ? element(selector.slice(1)) : null; },
+            querySelectorAll: query
         },
         CSM: {
             confirm() { return Promise.resolve(); }, toast() {},
@@ -231,9 +239,12 @@ test('Cleanup prevents a row restore from racing a batched delete', async () => 
         }
     });
     batchHelper(context.CSM);
-    // Expose the row handler without bootstrapping unrelated backup tables.
+    const ui = script('csm-ui.js');
+    vm.runInContext(ui.slice(ui.indexOf('CSM.bulk = function'), ui.indexOf('// Shared focus trap.')), context);
+    // Expose the row handlers without bootstrapping unrelated backup tables.
     vm.runInContext(script('cleanup-history.js').replace('    loadFileBackups();\n    loadDBBackups();',
-        '    globalThis.restoreFileBackup = restoreFileBackup;'), context);
+        '    globalThis.restoreFileBackup = restoreFileBackup;\n    globalThis.bindFileBackupActions = bindFileBackupActions;'), context);
+    context.bindFileBackupActions({ querySelectorAll: query });
     element('cleanup-files-delete-btn').listeners.click();
     await tick();
     assert.equal(requests.length, 1);
@@ -247,4 +258,62 @@ test('Cleanup prevents a row restore from racing a batched delete', async () => 
     reload.resolve([]);
     await tick();
     assert.equal(element('row').disabled, false);
+});
+
+test('Cleanup select-all and bulk delete never reach rows hidden by paging or filters', async () => {
+    const elements = new Map();
+    function element(id) {
+        if (!elements.has(id)) elements.set(id, {
+            id, checked: false, indeterminate: false, disabled: false, innerHTML: '', textContent: '',
+            dataset: {}, listeners: {},
+            classList: { toggle() {}, add() {}, remove() {} },
+            getAttribute() { return ''; },
+            addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+        });
+        return elements.get(id);
+    }
+    function box(id, visible) {
+        return {
+            checked: false, offsetParent: visible ? {} : null, dataset: {}, listeners: {},
+            getAttribute(name) { return name === 'data-id' ? id : ''; },
+            addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+        };
+    }
+    const boxes = [box('a', true), box('b', true), box('c', false), box('d', false)];
+    function query(selector) {
+        if (selector === '.cleanup-file-cb') return boxes;
+        if (selector === '.cleanup-file-cb:checked') return boxes.filter(cb => cb.checked);
+        return [];
+    }
+    const requests = [];
+    const context = vm.createContext({
+        document: {
+            getElementById: element,
+            querySelector(selector) { return selector.charAt(0) === '#' ? element(selector.slice(1)) : null; },
+            querySelectorAll: query
+        },
+        CSM: {
+            confirm() { return Promise.resolve(); }, toast() {},
+            get() { return new Promise(() => {}); },
+            post(url, body) { requests.push(body); return Promise.resolve({ count: body.ids.length }); }
+        }
+    });
+    batchHelper(context.CSM);
+    const ui = script('csm-ui.js');
+    vm.runInContext(ui.slice(ui.indexOf('CSM.bulk = function'), ui.indexOf('// Shared focus trap.')), context);
+    vm.runInContext(script('cleanup-history.js').replace('    loadFileBackups();\n    loadDBBackups();',
+        '    globalThis.bindFileBackupActions = bindFileBackupActions;'), context);
+    context.bindFileBackupActions({ querySelectorAll: query });
+
+    const selectAll = element('cleanup-files-select-all');
+    selectAll.checked = true;
+    (selectAll.listeners.change || []).forEach(fn => fn.call(selectAll));
+    assert.deepEqual(boxes.map(cb => cb.checked), [true, true, false, false]);
+
+    // A row an earlier filter hid while it was checked is not acted on either.
+    boxes[2].checked = true;
+    (element('cleanup-files-delete-btn').listeners.click || []).forEach(fn => fn());
+    await tick();
+    assert.equal(requests.length, 1);
+    assert.deepEqual(Array.from(requests[0].ids), ['a', 'b']);
 });

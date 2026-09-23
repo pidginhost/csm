@@ -46,6 +46,10 @@ scope. The header links to session management.
 
 ## Bulk file actions
 
+Select-all and every bulk action reach only the rows the table currently
+shows. Rows on other pages or hidden by a search or filter are never selected
+or acted on; set the page size to All to act on every row.
+
 Quarantine and Cleanup delete large file selections in sequential batches.
 If a request fails, later batches are not sent; the page reports the confirmed
 deletion count and refreshes the list. File restore and delete controls stay

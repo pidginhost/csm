@@ -4,6 +4,10 @@
 
     var formatSize = CSM.formatSize;
     var fileMutationBusy = false;
+    // Selection goes through CSM.bulk so select-all and the bulk actions only
+    // reach rows the table currently shows, never rows on other pages or
+    // hidden by the search box.
+    var fileBulk = null;
 
     // Thin alias preserved so the rest of the file reads naturally; routes
     // through the shared CSM.get so timeouts and error toasts stay uniform.
@@ -84,16 +88,7 @@
     }
 
     function bindFileBackupActions(el) {
-        var selectAll = document.getElementById('cleanup-files-select-all');
-        if (selectAll) {
-            selectAll.addEventListener('change', function() {
-                el.querySelectorAll('.cleanup-file-cb').forEach(function(cb) { cb.checked = selectAll.checked; });
-                updateFileBulkButtons();
-            });
-        }
-        el.querySelectorAll('.cleanup-file-cb').forEach(function(cb) {
-            cb.addEventListener('change', updateFileBulkButtons);
-        });
+        updateFileBulkButtons();
         el.querySelectorAll('.cleanup-file-view').forEach(function(btn) {
             btn.addEventListener('click', function() {
                 viewFileBackup(this.getAttribute('data-id'), this.getAttribute('data-path'));
@@ -108,17 +103,29 @@
     }
 
     function updateFileBulkButtons() {
-        var checked = document.querySelectorAll('.cleanup-file-cb:checked');
-        var restoreBtn = document.getElementById('cleanup-files-restore-btn');
-        var deleteBtn = document.getElementById('cleanup-files-delete-btn');
-        if (restoreBtn) {
-            restoreBtn.classList.toggle('d-none', checked.length === 0);
-            restoreBtn.innerHTML = '<i class="ti ti-restore"></i>&nbsp;Restore ' + checked.length;
+        if (fileBulk) { fileBulk.refresh(); return; }
+        fileBulk = CSM.bulk({
+            rowCheckboxSelector: '.cleanup-file-cb',
+            selectAllSelector: '#cleanup-files-select-all',
+            valueAttr: 'data-id',
+            onChange: syncFileMutationButtons,
+            buttons: [
+                { el: document.getElementById('cleanup-files-restore-btn'), labelTemplate: 'Restore {n} file(s)' },
+                { el: document.getElementById('cleanup-files-delete-btn'), labelTemplate: 'Delete {n} file(s)' }
+            ]
+        });
+    }
+
+    // A selection change repaints the bulk buttons; keep them locked until
+    // every request and the reload that follows have settled.
+    function syncFileMutationButtons() {
+        if (fileMutationBusy) {
+            ['cleanup-files-restore-btn', 'cleanup-files-delete-btn'].forEach(function(id) {
+                var btn = document.getElementById(id);
+                if (btn) btn.disabled = true;
+            });
         }
-        if (deleteBtn) {
-            deleteBtn.classList.toggle('d-none', checked.length === 0);
-            deleteBtn.innerHTML = '<i class="ti ti-trash"></i>&nbsp;Delete ' + checked.length;
-        }
+        syncFileRestoreButtons();
     }
 
     function viewFileBackup(id, path) {
@@ -144,11 +151,7 @@
     }
 
     function selectedFileIDs() {
-        var ids = [];
-        document.querySelectorAll('.cleanup-file-cb:checked').forEach(function(cb) {
-            ids.push(cb.getAttribute('data-id'));
-        });
-        return ids;
+        return fileBulk ? fileBulk.selectedValues() : [];
     }
 
     function syncFileRestoreButtons() {

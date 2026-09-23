@@ -10,6 +10,7 @@ var _threatAttackerData = [];
 // a re-render can tear down the previous instance, and the date-filter and URL
 // bindings are wired once to avoid stacking listeners across re-renders.
 var _attackersTable = null;
+var _attackerBulk = null;
 var _attackerURLUnbind = null;
 var _attackerDateListenersBound = false;
 var _attackersLoadSeq = 0;
@@ -106,10 +107,7 @@ function _bindAttackerDateFilters(fromEl, toEl) {
 }
 
 function resetAttackerSelection() {
-    document.querySelectorAll('.bulk-ip-cb').forEach(function(cb) { cb.checked = false; });
-    var selectAll = document.getElementById('select-all-attackers');
-    if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
-    updateBulkButtons();
+    attackerBulk().clear();
 }
 
 function resetThreatHourlyChart(message) {
@@ -337,7 +335,9 @@ function loadTopAttackers() {
             { id: 'attackers-country', attr: 'data-country' },
             { id: 'attackers-verdict', attr: 'data-verdict' }
         ],
-        rowFilter: _attackerInRange
+        rowFilter: _attackerInRange,
+        // Paging and filtering hide rows; recount what bulk actions will reach.
+        onRender: updateBulkButtons
     });
     _bindAttackerDateFilters(fromEl, toEl);
     // WEB_ROADMAP P2.1 / P3.5: persist all filter state to URL.
@@ -368,11 +368,9 @@ function loadTopAttackers() {
             whitelistIP(this.getAttribute('data-ip'));
         });
     });
-    // Bulk selection: show/hide buttons on checkbox change
-    updateBulkButtons();
+    // Bulk selection: a checkbox click must not also trigger the row lookup.
     document.querySelectorAll('.bulk-ip-cb').forEach(function(cb){
         cb.addEventListener('click', function(e) { e.stopPropagation(); });
-        cb.addEventListener('change', updateBulkButtons);
     });
     resetAttackerSelection();
 }).catch(function(err){ if (seq !== _attackersLoadSeq) return; console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
@@ -569,41 +567,32 @@ function whitelistIP(ip) {
 }
 
 // --- Bulk operations ---
+// CSM.bulk limits select-all and every bulk action to rows the table shows,
+// so a permanent block or whitelist never reaches rows on other pages or
+// hidden by a filter.
+function attackerBulk() {
+    if (!_attackerBulk) {
+        _attackerBulk = CSM.bulk({
+            rowCheckboxSelector: '.bulk-ip-cb',
+            selectAllEl: document.getElementById('select-all-attackers'),
+            valueAttr: 'data-ip',
+            buttons: [
+                { el: document.getElementById('bulk-block-btn'), labelTemplate: 'Block 24h ({n})' },
+                { el: document.getElementById('bulk-block-perm-btn'), labelTemplate: 'Block Permanently ({n})' },
+                { el: document.getElementById('bulk-whitelist-btn'), labelTemplate: 'Whitelist Selected ({n})' }
+            ]
+        });
+    }
+    return _attackerBulk;
+}
+
 function getSelectedIPs() {
-    var ips = [];
-    document.querySelectorAll('.bulk-ip-cb:checked').forEach(function(cb) {
-        ips.push(cb.getAttribute('data-ip'));
-    });
-    return ips;
+    return attackerBulk().selectedValues();
 }
 
 function updateBulkButtons() {
-    var count = document.querySelectorAll('.bulk-ip-cb:checked').length;
-    var blockBtn = document.getElementById('bulk-block-btn');
-    var blockPermBtn = document.getElementById('bulk-block-perm-btn');
-    var wlBtn = document.getElementById('bulk-whitelist-btn');
-    if (count > 0) {
-        blockBtn.classList.remove('d-none');
-        blockPermBtn.classList.remove('d-none');
-        wlBtn.classList.remove('d-none');
-        blockBtn.textContent = 'Block 24h (' + count + ')';
-        blockPermBtn.textContent = 'Block Permanently (' + count + ')';
-        wlBtn.textContent = 'Whitelist Selected (' + count + ')';
-    } else {
-        blockBtn.classList.add('d-none');
-        blockPermBtn.classList.add('d-none');
-        wlBtn.classList.add('d-none');
-    }
+    attackerBulk().refresh();
 }
-
-// Select-all checkbox
-document.getElementById('select-all-attackers').addEventListener('change', function() {
-    var checked = this.checked;
-    document.querySelectorAll('.bulk-ip-cb').forEach(function(cb) {
-        cb.checked = checked;
-    });
-    updateBulkButtons();
-});
 
 // Bulk block. The permanent variant is its own button and its own confirm so
 // a 24h block is never turned into a permanent one by a stray click.
