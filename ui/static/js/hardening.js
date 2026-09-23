@@ -5,7 +5,7 @@
     };
     var categoryIcons = {
         ssh: 'ti-terminal-2', php: 'ti-brand-php', webserver: 'ti-world',
-        mail: 'ti-mail', cpanel: 'ti-server', os: 'ti-cpu', firewall: 'ti-firewall'
+        mail: 'ti-mail', cpanel: 'ti-server', os: 'ti-cpu', firewall: 'ti-firewall-check'
     };
     // Status icons use innerHTML but only with hardcoded icon markup (no user data)
     var statusIcons = {

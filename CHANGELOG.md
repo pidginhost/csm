@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Icons that showed blank, on the ModSecurity and Hardening firewall links and a Settings header, now display.
 - Shared Web UI formatting helpers no longer pass an unreadable time or a non-number through as raw text, and a zero value is no longer shown as blank.
 - Email Security findings with details now have an expand button that shows them; the details rows were built but could never be opened.
 - A panel that fails to load now shows what failed, why, and a Retry button on every page. Retry on the Rules stats, firewall status and Threat Intel panels reloads them in place instead of breaking the panel or reloading the page.

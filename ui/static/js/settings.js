@@ -1180,7 +1180,7 @@
         banner.classList.remove("d-none");
         banner.classList.remove("alert-warning");
         banner.classList.add("alert-warning");
-        const iconWrap = iconEl("ti-shield-half-filled", "me-2");
+        const iconWrap = iconEl("ti-shield-half", "me-2");
         banner.appendChild(iconWrap);
         const textNode = document.createElement("strong");
         textNode.textContent = "Firewall changes pending confirmation. ";

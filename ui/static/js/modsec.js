@@ -80,7 +80,7 @@
                 title: 'Total ModSecurity blocks matching the current filters' }));
             el.appendChild(chip({ icon: 'ti-network', value: String(s.unique_ips || 0), label: 'unique IPs' }));
             if ((s.escalated || 0) > 0) {
-                el.appendChild(chip({ icon: 'ti-firewall', value: String(s.escalated), label: 'escalated',
+                el.appendChild(chip({ icon: 'ti-firewall-check', value: String(s.escalated), label: 'escalated',
                     cls: 'csm-status-strip__chip--crit', title: 'Blocks escalated to firewall' }));
             }
             if (s.top_rule && s.top_rule !== '--') {
@@ -338,7 +338,7 @@
 
         var footerHTML = '';
         footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/threat?ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-radar"></i>&nbsp;Threat Intel</a>';
-        footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/firewall?ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-firewall"></i>&nbsp;Firewall</a>';
+        footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/firewall?ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-firewall-check"></i>&nbsp;Firewall</a>';
         footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/modsec/rules?rule=' + encodeURIComponent(b.rule_id || '') + '"><i class="ti ti-settings"></i>&nbsp;Rule</a>';
 
         CSM.detailPanel.open({
