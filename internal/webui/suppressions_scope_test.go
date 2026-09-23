@@ -1,9 +1,11 @@
 package webui
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -66,6 +68,28 @@ func TestSuppressionRejectsMalformedPathPattern(t *testing.T) {
 	}
 	if rules := s.store.LoadSuppressions(); len(rules) != 0 {
 		t.Fatalf("rule saved although the request was refused: %+v", rules)
+	}
+}
+
+// Every add, delete and import rewrites the whole rule set. Two requests at
+// once must not lose each other's rule while both report success.
+func TestConcurrentSuppressionChangesAreAllKept(t *testing.T) {
+	s := newTestServer(t, "tok")
+	const n = 40
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			w := postSuppression(t, s, fmt.Sprintf(`{"check":"webshell","path_pattern":"/home/u%d/*"}`, i))
+			if w.Code != http.StatusOK {
+				t.Errorf("create %d = %d", i, w.Code)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if got := len(s.store.LoadSuppressions()); got != n {
+		t.Fatalf("%d of %d concurrently created rules kept", got, n)
 	}
 }
 

@@ -1797,32 +1797,34 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 
 	// Merge suppressions (dedup by ID)
 	if len(bundle.Suppressions) > 0 {
-		existing := s.store.LoadSuppressions()
-		existingIDs := make(map[string]bool)
-		for _, rule := range existing {
-			existingIDs[rule.ID] = true
-		}
-		for _, rule := range bundle.Suppressions {
-			// Same contract as a rule added through the UI: a check is
-			// required (a rule without one suppresses nothing and only
-			// clutters the list), and every rule needs an ID or it can
-			// never be deleted from the UI.
-			if strings.TrimSpace(rule.Check) == "" {
-				continue
-			}
-			if rule.ID == "" {
-				rule.ID = newSuppressionID()
-			}
-			if rule.CreatedAt.IsZero() {
-				rule.CreatedAt = time.Now()
-			}
-			if !existingIDs[rule.ID] {
+		err := s.store.UpdateSuppressions(func(existing []state.SuppressionRule) ([]state.SuppressionRule, error) {
+			existingIDs := make(map[string]bool)
+			for _, rule := range existing {
 				existingIDs[rule.ID] = true
-				existing = append(existing, rule)
-				imported++
 			}
-		}
-		if err := s.store.SaveSuppressions(existing); err != nil {
+			for _, rule := range bundle.Suppressions {
+				// Same contract as a rule added through the UI: a check is
+				// required (a rule without one suppresses nothing and only
+				// clutters the list), and every rule needs an ID or it can
+				// never be deleted from the UI.
+				if strings.TrimSpace(rule.Check) == "" {
+					continue
+				}
+				if rule.ID == "" {
+					rule.ID = newSuppressionID()
+				}
+				if rule.CreatedAt.IsZero() {
+					rule.CreatedAt = time.Now()
+				}
+				if !existingIDs[rule.ID] {
+					existingIDs[rule.ID] = true
+					existing = append(existing, rule)
+					imported++
+				}
+			}
+			return existing, nil
+		})
+		if err != nil {
 			writeJSONError(w, fmt.Sprintf("failed to save suppressions: %v", err), http.StatusInternalServerError)
 			return
 		}

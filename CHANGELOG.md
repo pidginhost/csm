@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Suppression rules added, removed or imported at the same moment are all kept. Each change rewrote the whole rule set, so simultaneous changes silently dropped each other while every one reported success.
 - A quarantined file that bulk delete cannot remove now stays listed and the page says so. Its metadata used to be removed anyway, which hid the file from the list so it could neither be deleted again nor restored.
 - A quarantine restore that fails partway, for example because the account is over quota, no longer leaves a partial root-owned copy at the original path. That copy hid the entry from the quarantine list and made every retry fail.
 - Dismissing a finding no longer claims it can be restored. The Findings page now says a dismissal stops alerts while the finding is unchanged and that a later scan can list it again, offers undo for 30 seconds, and dismisses a bulk selection as one action that one undo reverses.

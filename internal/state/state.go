@@ -70,6 +70,10 @@ type Store struct {
 	latestDigest    [sha256.Size]byte // digest of the last persisted latest_findings.json
 	latestDigestSet bool
 	latestScanTime  time.Time
+
+	// suppressMu makes each change to the suppression rules one
+	// read-modify-write, so concurrent edits do not overwrite each other.
+	suppressMu sync.Mutex
 }
 
 type Entry struct {
@@ -1554,8 +1558,21 @@ func (s *Store) LoadSuppressions() []SuppressionRule {
 }
 
 // SaveSuppressions writes suppression rules to disk atomically with fsync.
+// Callers that change the existing rules use UpdateSuppressions instead.
 func (s *Store) SaveSuppressions(rules []SuppressionRule) error {
 	return atomicio.AtomicWriteJSON(filepath.Join(s.path, "suppressions.json"), 0o600, rules)
+}
+
+// UpdateSuppressions applies fn to the stored rules and saves what it returns
+// as one step. An error from fn leaves the stored rules unchanged.
+func (s *Store) UpdateSuppressions(fn func([]SuppressionRule) ([]SuppressionRule, error)) error {
+	s.suppressMu.Lock()
+	defer s.suppressMu.Unlock()
+	rules, err := fn(s.LoadSuppressions())
+	if err != nil {
+		return err
+	}
+	return s.SaveSuppressions(rules)
 }
 
 // IsSuppressed checks if a finding matches any loaded suppression rule.

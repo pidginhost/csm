@@ -49,15 +49,16 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 
 		id := newSuppressionID()
 
-		rules := s.store.LoadSuppressions()
-		rules = append(rules, state.SuppressionRule{
-			ID:          id,
-			Check:       req.Check,
-			PathPattern: req.PathPattern,
-			Reason:      req.Reason,
-			CreatedAt:   time.Now(),
+		err := s.store.UpdateSuppressions(func(rules []state.SuppressionRule) ([]state.SuppressionRule, error) {
+			return append(rules, state.SuppressionRule{
+				ID:          id,
+				Check:       req.Check,
+				PathPattern: req.PathPattern,
+				Reason:      req.Reason,
+				CreatedAt:   time.Now(),
+			}), nil
 		})
-		if err := s.store.SaveSuppressions(rules); err != nil {
+		if err != nil {
 			writeJSONError(w, "failed to save suppression: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -77,14 +78,16 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		rules := s.store.LoadSuppressions()
-		var filtered []state.SuppressionRule
-		for _, rule := range rules {
-			if rule.ID != req.ID {
-				filtered = append(filtered, rule)
+		err := s.store.UpdateSuppressions(func(rules []state.SuppressionRule) ([]state.SuppressionRule, error) {
+			var filtered []state.SuppressionRule
+			for _, rule := range rules {
+				if rule.ID != req.ID {
+					filtered = append(filtered, rule)
+				}
 			}
-		}
-		if err := s.store.SaveSuppressions(filtered); err != nil {
+			return filtered, nil
+		})
+		if err != nil {
 			writeJSONError(w, "failed to save suppressions: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
