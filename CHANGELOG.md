@@ -46,6 +46,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- The incident timeline CSV export now writes cells that start a spreadsheet formula as text, like every other export.
 - Settings validate the effective credentials from configuration drop-ins before changing a service address.
 - Failed quarantine restores preserve files replaced by another writer and remain retryable after storage or destination changes.
 - Audit entries retain the administrator who authorized an action even when a session ends before completion. Large bulk actions no longer hide later audit entries.

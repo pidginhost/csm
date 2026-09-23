@@ -1,0 +1,32 @@
+// Run with: node --test ui/export_test.js
+// Exported text is attacker-chosen (paths, user agents, mailboxes). A cell
+// that starts a formula must reach the spreadsheet as text.
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+
+function capturingURL(blobs) {
+    return class extends URL {
+        static createObjectURL(blob) { blobs.push(blob); return 'blob:csm-test'; }
+        static revokeObjectURL() {}
+    };
+}
+
+test('incident CSV export neutralises formula cells', async () => {
+    const blobs = [];
+    const page = loadPage(templateBody('incident'), SHARED.concat(['incident.js']), {
+        url: 'https://csm.example.test/incident?ip=203.0.113.9',
+        globals: { URL: capturingURL(blobs) }
+    });
+    page.respond('/api/v1/incident?', 200, { events: [{
+        timestamp: '2026-09-23T00:00:00Z', severity: 2, type: 'finding',
+        summary: '=HYPERLINK("http://203.0.113.9/x","open")', details: '@SUM(1+1)'
+    }] });
+    await settle();
+    page.document.getElementById('incident-export').dispatchEvent(new page.window.Event('click'));
+    assert.equal(blobs.length, 1, 'no CSV produced');
+    const csv = await blobs[0].text();
+    const row = csv.split('\n')[1];
+    assert.ok(row.includes('"\'=HYPERLINK(""http://203.0.113.9/x"",""open"")"'), row);
+    assert.ok(row.includes('"\'@SUM(1+1)"'), row);
+});

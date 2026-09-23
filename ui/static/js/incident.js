@@ -697,23 +697,22 @@
         var exportBtn = document.getElementById('incident-export');
         if (exportBtn) {
             exportBtn.addEventListener('click', function() {
-                var lines = ['Timestamp,Severity,Type,Summary,Details'];
-                for (var j = 0; j < events.length; j++) {
-                    var ev = events[j];
-                    lines.push([
-                        '"' + (ev.timestamp || '').replace(/"/g, '""') + '"',
-                        '"' + ((CSM.sevMap[ev.severity] ? CSM.sevMap[ev.severity].label : 'WARNING')).replace(/"/g, '""') + '"',
-                        '"' + (ev.type || '').replace(/"/g, '""') + '"',
-                        '"' + (ev.summary || '').replace(/"/g, '""') + '"',
-                        '"' + (ev.details || '').replace(/"/g, '""') + '"'
-                    ].join(','));
-                }
-                var blob = new Blob([lines.join('\n')], {type: 'text/csv'});
-                var url = URL.createObjectURL(blob);
-                var a = document.createElement('a');
-                a.href = url; a.download = 'csm-incident-' + new Date().toISOString().slice(0,10) + '.csv';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+                var rows = events.map(function(ev) {
+                    return {
+                        timestamp: ev.timestamp || '',
+                        severity: CSM.sevMap[ev.severity] ? CSM.sevMap[ev.severity].label : 'WARNING',
+                        type: ev.type || '',
+                        summary: ev.summary || '',
+                        details: ev.details || ''
+                    };
+                });
+                CSM.exportTable(rows, [
+                    { key: 'timestamp', label: 'Timestamp' },
+                    { key: 'severity', label: 'Severity' },
+                    { key: 'type', label: 'Type' },
+                    { key: 'summary', label: 'Summary' },
+                    { key: 'details', label: 'Details' }
+                ], 'csv', 'csm-incident-' + new Date().toISOString().slice(0, 10));
             });
         }
     }
