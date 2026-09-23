@@ -2,7 +2,6 @@ package webui
 
 import (
 	"encoding/json"
-	"github.com/pidginhost/csm/internal/config"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/incident"
 )
 

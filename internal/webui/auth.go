@@ -199,7 +199,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Failed logins go to the daemon log, not the UI audit trail: they
 		// are unauthenticated, and addresses from a whole network could
 		// otherwise rotate operator history out of the audit file.
-		log.Printf("webui: failed browser login from %s", clientIPKey(r.RemoteAddr))
+		// #nosec G706 -- RemoteAddr is the TCP peer address net/http sets, not request content.
+		log.Printf("webui: failed browser login from %s", safeLogString(clientIPKey(r.RemoteAddr)))
 		s.renderTemplate(w, "login.html", map[string]string{"Error": "Invalid token"})
 		return
 	}

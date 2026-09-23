@@ -63,8 +63,8 @@ func (s *Server) auditLogAs(r *http.Request, actor, via, action, target, details
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
 	if info, statErr := os.Stat(path); statErr == nil && info.Size() > maxUIAuditSize {
-		if err := os.Rename(path, path+".1"); err != nil {
-			log.Printf("webui: audit rotation failed for %s: %v", path, err)
+		if renameErr := os.Rename(path, path+".1"); renameErr != nil {
+			log.Printf("webui: audit rotation failed for %s: %v", path, renameErr)
 		}
 	}
 

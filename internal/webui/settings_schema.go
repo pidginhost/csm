@@ -281,10 +281,12 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "whitelist", Type: "[]string", Label: "Whitelisted IPs", Help: "Never flagged as malicious"},
 			{YAMLPath: "bot_verify_enabled", Type: "bool", Label: "Verify search-engine bots via rDNS", Nullable: true},
 			{YAMLPath: "rspamd.enabled", Type: "bool", Label: "Rspamd threat-intel"},
+			// #nosec G101 -- names of the config fields that hold the credential, not a credential.
 			{YAMLPath: "rspamd.url", Type: "string", Label: "Rspamd controller URL", CredentialField: "rspamd.token", CredentialEnvField: "rspamd.token_env"},
 			{YAMLPath: "rspamd.token", Type: "string", Label: "Rspamd controller password", Secret: true},
 			{YAMLPath: "rspamd.token_env", Type: "string", Label: "Rspamd password env var", FileOnly: true},
 			{YAMLPath: "upstream.enabled", Type: "bool", Label: "Upstream threat-intel cache"},
+			// #nosec G101 -- names of the config fields that hold the credential, not a credential.
 			{YAMLPath: "upstream.url", Type: "string", Label: "Upstream URL", CredentialField: "upstream.token", CredentialEnvField: "upstream.token_env"},
 			{YAMLPath: "upstream.token", Type: "string", Label: "Upstream bearer token", Secret: true},
 			{YAMLPath: "upstream.token_env", Type: "string", Label: "Upstream token env var", FileOnly: true},
