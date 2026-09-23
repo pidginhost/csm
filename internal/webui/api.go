@@ -1558,6 +1558,10 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 const quarantineBulkDeleteMax = 100
 
 // apiQuarantineBulkDelete permanently removes quarantined files and their metadata.
+// removeQuarantineItem deletes one quarantined file or directory. Tests
+// replace it to exercise a deletion the filesystem refuses.
+var removeQuarantineItem = os.RemoveAll
+
 func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1576,24 +1580,37 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 	}
 
 	count := 0
+	deleted := []string{}
+	failed := []string{}
 	for _, id := range req.IDs {
 		entry, err := resolveQuarantineEntry(id)
 		if err != nil || !quarantineEntryDeletable(entry) {
 			continue
 		}
 		if _, statErr := os.Lstat(entry.ItemPath); statErr == nil {
-			if err := os.RemoveAll(entry.ItemPath); err == nil {
-				count++
+			if err := removeQuarantineItem(entry.ItemPath); err != nil {
+				// Keep the sidecar: the list is built from sidecars, so the
+				// archive stays visible and the delete can be retried.
+				log.Printf("webui: failed to delete quarantined %s: %v", safeLogString(entry.ItemPath), err)
+				failed = append(failed, id)
+				continue
 			}
+			count++
 		} else if !os.IsNotExist(statErr) {
+			failed = append(failed, id)
 			continue
 		}
 		if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
 			log.Printf("webui: failed to remove quarantine meta %s: %v", safeLogString(entry.MetaPath), err)
 		}
+		deleted = append(deleted, id)
 	}
-	s.auditLog(r, "quarantine_bulk_delete", fmt.Sprintf("%d files", count), "")
-	writeJSON(w, map[string]interface{}{"ok": true, "count": count})
+	details := "deleted: " + strings.Join(deleted, ", ")
+	if len(failed) > 0 {
+		details += "; failed: " + strings.Join(failed, ", ")
+	}
+	s.auditLog(r, "quarantine_bulk_delete", fmt.Sprintf("%d files", count), details)
+	writeJSON(w, map[string]interface{}{"ok": true, "count": count, "failed": failed})
 }
 
 // apiTestAlert sends a test finding through all configured alert channels.

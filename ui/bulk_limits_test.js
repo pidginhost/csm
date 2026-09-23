@@ -121,6 +121,17 @@ test('quarantine reports the confirmed count when the second batch fails', async
     assert.equal(element('bulk-delete-btn').disabled, false);
 });
 
+test('quarantine reports files the server could not delete', async () => {
+    const { element, requests, toasts, reload } = quarantinePage(3);
+    element('bulk-delete-btn').listeners.click();
+    await tick();
+    requests[0].resolve({ count: 2, failed: ['id-1'] });
+    await tick();
+    reload.resolve();
+    await tick();
+    assert.deepEqual(toasts, [{ message: 'Deleted 2 file(s); 1 could not be deleted and stay listed', kind: 'warning' }]);
+});
+
 for (const failure of [false, true]) {
     test('quarantine excludes overlapping mutations through refresh, failure=' + failure, async () => {
         const { context, element, requests, reload } = quarantinePage();

@@ -996,7 +996,7 @@ POST /api/v1/dismiss                  Dismiss one finding {key} or up to 500 {ke
 POST /api/v1/scan-account             On-demand account scan
 POST /api/v1/verify-finding           Re-check a single finding on demand (admin scope, CSRF)
 POST /api/v1/quarantine-restore       Restore quarantined file
-POST /api/v1/quarantine/bulk-delete   Bulk-delete quarantined files
+POST /api/v1/quarantine/bulk-delete   Bulk-delete quarantined files; returns count and the ids it could not delete
 POST /api/v1/db-object-backup-restore Restore a dropped MySQL object from its db_object_backups record
 POST /api/v1/test-alert               Send test alert through all channels
 POST /api/v1/import                   Import state bundle (suppressions, whitelist)
