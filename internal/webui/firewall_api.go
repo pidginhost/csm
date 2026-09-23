@@ -293,6 +293,7 @@ func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, fmt.Sprintf("Remove failed: %v", err), http.StatusInternalServerError)
 		return
 	}
+	s.auditLog(r, "firewall_remove_allow", req.IP, "removed allow rule")
 	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
 }
 
@@ -432,6 +433,11 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, fmt.Sprintf("Block failed: %v", err), http.StatusInternalServerError)
 		return
 	}
+	lifetime := "permanent"
+	if dur > 0 {
+		lifetime = dur.String()
+	}
+	s.auditLog(r, "firewall_deny_subnet", req.CIDR, lifetime+": "+req.Reason)
 	writeJSON(w, map[string]string{"status": "blocked", "cidr": req.CIDR})
 }
 
@@ -466,6 +472,7 @@ func (s *Server) apiFirewallRemoveSubnet(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, fmt.Sprintf("Remove failed: %v", err), http.StatusInternalServerError)
 		return
 	}
+	s.auditLog(r, "firewall_remove_subnet", req.CIDR, "removed subnet block")
 	writeJSON(w, map[string]string{"status": "removed", "cidr": req.CIDR})
 }
 
@@ -521,6 +528,7 @@ func (s *Server) apiFirewallFlushCphulk(w http.ResponseWriter, r *http.Request) 
 	}
 
 	flushCphulk(req.IP)
+	s.auditLog(r, "cphulk_clear", req.IP, "cleared cPHulk login history")
 	writeJSON(w, map[string]string{"status": "flushed", "ip": req.IP})
 }
 
@@ -710,6 +718,10 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	if subnetRemoved != "" {
 		result["subnet_removed"] = subnetRemoved
 	}
-	s.auditLog(r, "firewall_unban", req.IP, "unblock, clear auto-block state, flush cPHulk")
+	details := "unblock, clear auto-block state, flush cPHulk"
+	if subnetRemoved != "" {
+		details += ", removed subnet " + subnetRemoved
+	}
+	s.auditLog(r, "firewall_unban", req.IP, details)
 	writeJSON(w, result)
 }

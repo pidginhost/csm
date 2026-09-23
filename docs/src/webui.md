@@ -39,7 +39,7 @@ scope. The header links to session management.
 | **Incidents** | `/incident` | Correlated incident list with detail panel plus forensic timeline search by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |
 | **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
-| **Audit** | `/audit` | System-wide action log with search, action and date filters, URL state, and export |
+| **Audit** | `/audit` | Every operator action in the Web UI and API, including logins, logouts and session revocations, with the credential that acted, search, action and date filters, URL state, and export. Failed logins go to the daemon log instead |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
 | **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer. Commands, file paths, sockets and environment variable names are shown read-only and change only in `csm.yaml`; changing the rspamd or upstream address requires entering its credential again |
 | **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session |

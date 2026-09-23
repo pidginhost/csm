@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/attackdb"
@@ -719,7 +720,9 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 		if permanent {
 			auditDetail = "permanent block"
 		}
+		auditDetail += ": "
 	}
+	auditDetail += strings.Join(succeeded, ", ")
 	s.auditLog(r, "threat_bulk_"+req.Action, fmt.Sprintf("%d IPs", count), auditDetail)
 
 	var undoToken string

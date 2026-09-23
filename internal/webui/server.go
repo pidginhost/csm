@@ -129,12 +129,16 @@ type Server struct {
 	apiRequests      map[string][]time.Time // per-IP API rate limiting
 	scanMu           sync.Mutex
 	scanRunning      bool       // only one scan at a time
+	auditMu          sync.Mutex // serializes UI audit rotation and appends
 	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
 	sigCountMu       sync.RWMutex
 	settingsSaveHook func()
 	// verifyFinding is per server so handler tests can inject a verdict without
 	// replacing process-wide behavior while another server is handling a request.
 	verifyFinding func(checks.VerifyInput) checks.VerifyResult
+	// applyFix is per server for the same reason: handler tests observe a
+	// fix outcome without touching the host.
+	applyFix func(ctx context.Context, check, message, details string, filePath ...string) checks.RemediationResult
 
 	provider health.Provider // set by Daemon when it starts the WebUI
 
@@ -185,6 +189,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		queueFlusher:     selectQueueFlusher(),
 		forwardHeld:      selectForwardHeld(),
 		verifyFinding:    checks.VerifyFindingInput,
+		applyFix:         checks.ApplyFix,
 	}
 
 	lifetime, idle, err := cfg.BrowserSessionDurations()

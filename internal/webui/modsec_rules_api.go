@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/store"
@@ -192,6 +193,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 		if len(clientOutput) > 500 {
 			clientOutput = clientOutput[:500] + "... (truncated)"
 		}
+		s.auditLog(r, "modsec_rules_apply_failed", "overrides", "web server reload failed; previous overrides restored")
 		writeJSON(w, map[string]interface{}{
 			"ok":            false,
 			"error":         "Web server reload failed, changes rolled back",
@@ -201,6 +203,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.auditLog(r, "modsec_rules_apply", "overrides", fmt.Sprintf("disabled rules: %v", req.Disabled))
 	writeJSON(w, map[string]interface{}{
 		"ok":             true,
 		"disabled_count": len(req.Disabled),
@@ -248,6 +251,10 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	s.auditLog(r, "modsec_rules_apply", "custom rules", "rules file written and reloaded")
+	setting := "escalation off"
+	if req.Escalate {
+		setting = "escalation on"
+	}
+	s.auditLog(r, "modsec_rule_escalation", strconv.Itoa(req.RuleID), setting)
 	writeJSON(w, map[string]interface{}{"ok": true})
 }

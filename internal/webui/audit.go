@@ -23,16 +23,31 @@ type UIAuditEntry struct {
 	Target    string    `json:"target"`              // IP, finding key, file path
 	Details   string    `json:"details,omitempty"`   // extra context
 	SourceIP  string    `json:"source_ip,omitempty"` // admin's IP
+	// Actor is the name of the credential that acted, and Via says whether
+	// it came as an API token or a browser login.
+	Actor string `json:"actor,omitempty"`
+	Via   string `json:"via,omitempty"`
 }
 
-// auditLog records a UI action to the audit log.
+// auditLog records a UI action to the audit log, attributed to the
+// credential behind r.
 func (s *Server) auditLog(r *http.Request, action, target, details string) {
+	actor, via := s.requestActor(r)
+	s.auditLogAs(r, actor, via, action, target, details)
+}
+
+// auditLogAs records a UI action for an actor resolved by the caller. Login
+// has no session yet, and logout or revocation ends the session that made
+// the request, so those handlers name the actor themselves.
+func (s *Server) auditLogAs(r *http.Request, actor, via, action, target, details string) {
 	entry := UIAuditEntry{
 		Timestamp: time.Now(),
 		Action:    action,
 		Target:    target,
 		Details:   details,
 		SourceIP:  extractClientIP(r),
+		Actor:     actor,
+		Via:       via,
 	}
 
 	path := filepath.Join(s.cfg.StatePath, uiAuditFile)
@@ -42,20 +57,54 @@ func (s *Server) auditLog(r *http.Request, action, target, details string) {
 	}
 	data = append(data, '\n')
 
-	// Rotate if too large
+	// Rotation and append are one step: two writers that both saw an
+	// oversized log would otherwise rotate twice and rename the fresh file
+	// over the archived history.
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
 	if info, statErr := os.Stat(path); statErr == nil && info.Size() > maxUIAuditSize {
-		_ = os.Rename(path, path+".1")
+		if err := os.Rename(path, path+".1"); err != nil {
+			log.Printf("webui: audit rotation failed for %s: %v", path, err)
+		}
 	}
 
 	// #nosec G304 -- filepath.Join under operator-configured StatePath.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
+		log.Printf("webui: audit open failed for %s: %v", path, err)
 		return
 	}
-	defer func() { _ = f.Close() }()
 	if _, err := f.Write(data); err != nil {
-		log.Printf("webui: failed to write audit log: %v", err)
+		_ = f.Close()
+		log.Printf("webui: audit write failed for %s: %v", path, err)
+		return
 	}
+	if err := f.Close(); err != nil {
+		log.Printf("webui: audit close failed for %s: %v", path, err)
+	}
+}
+
+// requestActor names the credential behind r: the API token's name for
+// bearer requests, or the login name of the browser session. It never
+// refreshes a session's activity.
+func (s *Server) requestActor(r *http.Request) (actor, via string) {
+	if r == nil {
+		return "", ""
+	}
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		supplied := strings.TrimPrefix(auth, "Bearer ")
+		for _, tok := range s.cfg.WebUI.Tokens {
+			if webUITokenMatches(supplied, tok) {
+				return tok.Name, "api"
+			}
+		}
+	}
+	if c, err := r.Cookie("csm_auth"); err == nil && s.sessions != nil {
+		if rec, err := s.sessions.Access(c.Value, s.sessionNow(), false); err == nil {
+			return rec.Name, "browser"
+		}
+	}
+	return "", ""
 }
 
 func extractClientIP(r *http.Request) string {

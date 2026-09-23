@@ -41,6 +41,7 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 	_ = rc.SetWriteDeadline(time.Now().Add(3 * time.Minute))
 
 	report := checks.RunHardeningAudit(s.liveCfg())
+	s.auditLog(r, "hardening_run", "server", "hardening audit run")
 
 	if db := store.Global(); db != nil {
 		if err := db.SaveHardeningReport(report); err != nil {

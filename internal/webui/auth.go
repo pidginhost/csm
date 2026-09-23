@@ -3,6 +3,7 @@ package webui
 import (
 	"crypto/subtle"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -195,6 +196,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if loginName == "" {
+		// Failed logins go to the daemon log, not the UI audit trail: they
+		// are unauthenticated, and addresses from a whole network could
+		// otherwise rotate operator history out of the audit file.
+		log.Printf("webui: failed browser login from %s", clientIPKey(r.RemoteAddr))
 		s.renderTemplate(w, "login.html", map[string]string{"Error": "Invalid token"})
 		return
 	}
@@ -237,6 +242,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(record.Expires.Sub(record.Created).Seconds()),
 		Expires:  record.Expires,
 	})
+	s.auditLogAs(r, loginName, "browser", "login", loginName, "browser session started")
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
@@ -258,6 +264,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Cannot revoke browser session", http.StatusServiceUnavailable)
 				return
 			}
+			s.auditLogAs(r, rec.Name, "browser", "logout", rec.Name, "browser session ended")
 		}
 	}
 	clearBrowserCookie(w)

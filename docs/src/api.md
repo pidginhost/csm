@@ -102,7 +102,7 @@ GET  /api/v1/db-object-backup-preview Preview captured CREATE SQL (?key=)
 GET  /api/v1/blocked-ips         Blocked IPs with reason and expiry
 GET  /api/v1/accounts            cPanel account list
 GET  /api/v1/account             Per-account findings, quarantine, history (?name=)
-GET  /api/v1/audit               UI audit log
+GET  /api/v1/audit               UI audit log; each entry names the credential that acted (actor) and whether it came as an API token or a browser login (via)
 GET  /api/v1/export              Export state (suppressions, whitelist)
 GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
 GET  /api/v1/performance         Performance metrics snapshot (admin scope)

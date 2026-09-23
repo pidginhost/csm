@@ -957,7 +957,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	result := checks.ApplyFix(r.Context(), req.Check, message, details, filePath)
+	result := s.applyFix(r.Context(), req.Check, message, details, filePath)
 
 	// If fix succeeded, dismiss from both alert state and latest findings.
 	if result.Success {
@@ -1111,10 +1111,11 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 			results = append(results, checks.RemediationResult{Error: err.Error()})
 			continue
 		}
-		result := checks.ApplyFix(r.Context(), req.Check, message, details, filePath)
+		result := s.applyFix(r.Context(), req.Check, message, details, filePath)
 		if result.Success {
 			s.store.DismissFinding(dismissKey)
 			s.store.DismissLatestFinding(dismissKey)
+			s.auditLog(r, "fix", req.Check, result.Action)
 		}
 		results = append(results, result)
 	}
@@ -1672,6 +1673,7 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	findings := checks.RunAccountScan(s.liveCfg(), s.store, req.Account)
 	elapsed := time.Since(start).Round(time.Millisecond)
+	s.auditLog(r, "scan_account", req.Account, fmt.Sprintf("%d findings in %s", len(findings), elapsed))
 
 	result := map[string]interface{}{
 		"account": req.Account,

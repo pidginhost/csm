@@ -349,6 +349,7 @@ func (s *Server) apiIncidentStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.auditLog(r, "incident_status", id, strings.TrimSpace(body.Status+" "+body.Details))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }

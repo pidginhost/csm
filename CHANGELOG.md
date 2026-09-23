@@ -28,6 +28,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- The UI audit log now names the credential behind each action and records actions it used to miss: email quarantine release and delete, database object restores, ModSecurity rule changes, subnet blocks, allow-rule removals, cPHulk clears, bulk fixes, incident status changes, scans, logins, logouts and session revocations. An audit entry that cannot be written is now reported in the daemon log, and log rotation no longer loses history under concurrent writes.
 - The Settings page can no longer set the ModSecurity reload command, the rules and overrides file paths, the WP-Cron PHP binary, the clamd socket, the mail log and country database paths, or any environment variable name. A web UI session could use them to run commands or write files as root; they are now shown read-only and change only in csm.yaml.
 - A suppression rule that hides every finding of a check now has to be chosen explicitly. Leaving the path empty on the Findings or Rules page, or in an API request, used to create such a rule silently and stop all remediation for that check; a malformed path pattern, which never matched, is now refused as well.
 - Changing the rspamd or upstream threat-intel address in Settings now requires entering its credential again, so a web UI session cannot send the stored credential to an address it chose.

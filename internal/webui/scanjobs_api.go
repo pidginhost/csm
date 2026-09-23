@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -164,6 +165,7 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, msg, status)
 			return
 		}
+		s.auditLog(r, "scan_job_enqueue", body.Target, fmt.Sprintf("job %s, account scan, quarantine=%v", id, body.Quarantine))
 		writeJSON(w, map[string]any{"job_id": id, "state": "queued"})
 
 	case "all":
@@ -181,6 +183,7 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, msg, status)
 			return
 		}
+		s.auditLog(r, "scan_job_enqueue", "all", fmt.Sprintf("job %s, full scan", id))
 		writeJSON(w, map[string]any{"job_id": id, "state": "queued"})
 
 	default:
@@ -219,6 +222,7 @@ func (s *Server) apiScanJobsCancel(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "cancel failed: "+msg, status)
 		return
 	}
+	s.auditLog(r, "scan_job_cancel", id, "cancel requested")
 	writeJSON(w, map[string]any{"job_id": id, "state": "canceling"})
 }
 

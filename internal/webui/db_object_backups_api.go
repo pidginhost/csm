@@ -147,6 +147,7 @@ func (s *Server) apiDBObjectBackupRestore(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, result.Message, http.StatusBadRequest)
 		return
 	}
+	s.auditLog(r, "db_object_restore", req.Key, result.Message)
 	writeJSON(w, map[string]any{
 		"success": true,
 		"message": result.Message,

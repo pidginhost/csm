@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"github.com/pidginhost/csm/internal/config"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -254,5 +255,5 @@ func TestIncidentAPIListActiveStatusReturnsOpenAndContained(t *testing.T) {
 
 func newTestServerWithIncidentCorrelator(t *testing.T, c *incident.Correlator) *Server {
 	t.Helper()
-	return &Server{incidentCorrelator: c}
+	return &Server{incidentCorrelator: c, cfg: &config.Config{StatePath: t.TempDir()}}
 }

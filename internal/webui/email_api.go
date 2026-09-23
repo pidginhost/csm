@@ -168,6 +168,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Failed to release message: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.auditLog(r, "email_quarantine_release", msgID, "released to the mail queue")
 		writeJSON(w, map[string]string{"status": "released", "message_id": msgID})
 
 	case http.MethodDelete:
@@ -179,6 +180,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.auditLog(r, "email_quarantine_delete", msgID, "deleted permanently")
 		writeJSON(w, map[string]string{"status": "deleted", "message_id": msgID})
 
 	default:

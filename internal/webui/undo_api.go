@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
@@ -264,12 +265,16 @@ func (s *Server) apiUndoRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	targets := strings.Join(entry.Targets, ", ")
 	resp, runErr := s.runUndoEntry(r, entry)
 	if runErr != nil {
+		// The entry is consumed and the inverse may have run part way, so the
+		// attempt is recorded even though it failed.
+		s.auditLog(r, "undo_"+entry.Action+"_failed", targets, entry.Summary+": "+runErr.Error())
 		writeJSONError(w, runErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.auditLog(r, "undo_"+entry.Action, fmt.Sprintf("%d items", resp.Count), entry.Summary)
+	s.auditLog(r, "undo_"+entry.Action, fmt.Sprintf("%d items", resp.Count), entry.Summary+": "+targets)
 	writeJSON(w, resp)
 }
 

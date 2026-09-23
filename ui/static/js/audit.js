@@ -83,6 +83,14 @@ function auditLocalDateMillis(value, endExclusive) {
     return d.getTime();
 }
 
+// auditActorLabel names who acted: the credential name, and whether it came
+// as a browser login or an API token. Entries written before the audit
+// recorded an actor have neither.
+function auditActorLabel(e) {
+    if (!e.actor) return '';
+    return e.via ? e.actor + ' (' + e.via + ')' : e.actor;
+}
+
 function loadAudit() {
     CSM.get('/api/v1/audit').then(function(entries){
         var el = document.getElementById('audit-content');
@@ -98,7 +106,7 @@ function loadAudit() {
             el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-clipboard-check"></i> No audit entries yet.</div>';
             return;
         }
-        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="audit-table"><thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Details</th><th>Admin IP</th></tr></thead><tbody>';
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="audit-table"><thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Details</th><th>By</th><th>Admin IP</th></tr></thead><tbody>';
         for (var i = 0; i < entries.length; i++) {
             var e = entries[i];
             var badgeClass = actionBadges[e.action] || 'bg-secondary';
@@ -113,6 +121,7 @@ function loadAudit() {
             html += '<td><span class="badge ' + badgeClass + '">' + CSM.esc(e.action) + '</span></td>';
             html += '<td><code>' + CSM.esc(e.target) + '</code></td>';
             html += '<td class="small">' + CSM.esc(e.details || '') + '</td>';
+            html += '<td class="small text-nowrap">' + CSM.esc(auditActorLabel(e)) + '</td>';
             html += '<td class="font-monospace small">' + CSM.esc(e.source_ip || '') + '</td>';
             html += '</tr>';
         }
@@ -172,6 +181,7 @@ var _auditExportCols = [
     {key: 'action',   label: 'Action'},
     {key: 'target',   label: 'Target'},
     {key: 'details',  label: 'Details'},
+    {key: 'actor',    label: 'By'},
     {key: 'admin_ip', label: 'Admin IP'}
 ];
 
@@ -181,7 +191,7 @@ function _auditExportRows() {
     rows.forEach(function(r) {
         if (r.style.display === 'none') return;
         var cells = r.querySelectorAll('td');
-        if (cells.length < 5) return;
+        if (cells.length < 6) return;
         // Export the absolute ISO timestamp the cell carries, not the
         // rendered "3h ago" relative string.
         var tsSpan = cells[0].querySelector('[data-timestamp]');
@@ -191,7 +201,8 @@ function _auditExportRows() {
             action:   cells[1].textContent.trim(),
             target:   cells[2].textContent.trim(),
             details:  cells[3].textContent.trim(),
-            admin_ip: cells[4].textContent.trim()
+            actor:    cells[4].textContent.trim(),
+            admin_ip: cells[5].textContent.trim()
         });
     });
     return out;
