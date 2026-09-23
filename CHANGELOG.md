@@ -11,7 +11,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
-- Privileged-operation risk tiers retain their meaning when the JSON inventory is decoded and re-encoded.
 - The deep scan no longer sends every file it reads to the PHP analysis worker. Files that cannot hold a remote-code flow are ruled out in the daemon, so images and plain text no longer queue behind real analyses, start the worker, or count as unexamined while it is unavailable.
 - Deciding whether a written file sits under an account or document root, which the real-time monitor does for every watched write, is much cheaper.
 - A rules download or package upgrade that leaves the rules unchanged no longer queues a full rescan of every file on the host. On hosts with a rules download URL set, the unchanged download rewrote the installed rules daily and after each restart, each time queuing a full rescan and a warning finding.
