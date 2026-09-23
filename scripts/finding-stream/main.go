@@ -333,15 +333,9 @@ func readInputs(o options) (*inputs, error) {
 	in := &inputs{}
 	for i, path := range o.findings {
 		file, err := readStream(path, kindFindings, i+1, func(_ int, data []byte) (time.Time, error) {
-			var e alert.AuditEvent
-			if err := decodeStrict(data, &e); err != nil {
+			e, err := decodeFindingLine(data)
+			if err != nil {
 				return time.Time{}, err
-			}
-			if e.V != alert.AuditSchemaVersion {
-				return time.Time{}, errRecordVersion
-			}
-			if e.Timestamp.IsZero() {
-				return time.Time{}, errRecordTime
 			}
 			in.findings = append(in.findings, e)
 			return e.Timestamp, nil
@@ -393,6 +387,22 @@ func readInputs(o options) (*inputs, error) {
 		}
 	}
 	return in, nil
+}
+
+// decodeFindingLine decodes one audit log row: the known schema, the
+// supported version and a timestamp.
+func decodeFindingLine(data []byte) (alert.AuditEvent, error) {
+	var e alert.AuditEvent
+	if err := decodeStrict(data, &e); err != nil {
+		return alert.AuditEvent{}, err
+	}
+	if e.V != alert.AuditSchemaVersion {
+		return alert.AuditEvent{}, errRecordVersion
+	}
+	if e.Timestamp.IsZero() {
+		return alert.AuditEvent{}, errRecordTime
+	}
+	return e, nil
 }
 
 func (in *inputs) readInventory(path string) error {
