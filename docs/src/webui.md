@@ -68,6 +68,14 @@ unavailable, new renders use the preference without forcing a reload.
 Days with a midnight clock change start at the first valid time of that day;
 a repeated midnight uses its first occurrence.
 
+## Refresh
+
+The header shows when the page's data was last loaded ("Updated N ago"). It
+moves when the page loads its data, on each automatic refresh and on the
+Refresh button; an action or a detail lookup does not change it. The pause
+button appears only on pages that refresh on a timer, and pauses that
+refreshing in this browser.
+
 ## Notifications
 
 Success and information notices fade after five seconds. An error stays

@@ -374,12 +374,18 @@ CSM.request = function(url, options) {
         headers['X-CSM-Active'] = '1';
     }
     var timeoutMs = (options.timeoutMs == null) ? 30000 : options.timeoutMs;
+    // Only a data load moves "Updated N ago": a GET sent while the page
+    // loads, by a refresh tick or handler, or marked refresh (pollers). An
+    // action or a detail lookup does not make the page fresher.
+    var dataLoad = String(options.method || 'GET').toUpperCase() === 'GET' &&
+        (options.refresh === true || !CSM.refresh || CSM.refresh.inDataLoad);
     var allowNonOK = !!options.allowNonOK;
     var silent = !!options.silent;
     var controller = new AbortController();
     var timeoutId = (timeoutMs > 0) ? setTimeout(function() { controller.abort(); }, timeoutMs) : null;
     var opts = Object.assign({}, options, { headers: headers, signal: controller.signal, credentials: 'same-origin' });
     delete opts.timeoutMs;
+    delete opts.refresh;
     delete opts.allowNonOK;
     delete opts.silent;
     return fetch(resolvedUrl, opts).then(function(r) {
@@ -397,7 +403,7 @@ CSM.request = function(url, options) {
             throw expired;
         }
         if (allowNonOK) {
-            if (r.ok && CSM.refresh) CSM.refresh.bump();
+            if (r.ok && dataLoad && CSM.refresh) CSM.refresh.bump();
             return r;
         }
         if (!r.ok) {
@@ -407,7 +413,7 @@ CSM.request = function(url, options) {
                 throw httpErr;
             });
         }
-        if (CSM.refresh) CSM.refresh.bump();
+        if (dataLoad && CSM.refresh) CSM.refresh.bump();
         return r;
     }, function(err) {
         // fetch itself rejected: the request never got an answer.
@@ -452,6 +458,24 @@ CSM.refresh = (function() {
     var enabled = raw !== 'off';
     var hasPersistedChoice = (raw === 'on' || raw === 'off');
     var lastFetchAt = 0;
+    // depth > 0 while a refresh tick or handler runs; requests it sends
+    // are data loads. So is everything sent before the page finished loading.
+    var depth = 0;
+    var pageLoaded = false;
+    window.addEventListener('load', function() { pageLoaded = true; });
+    // autoCount is the timers and pollers that refresh on their own; the
+    // pause control is shown only while there is one.
+    var autoCount = 0;
+
+    function track(fn) {
+        depth++;
+        try { return fn(); } finally { depth--; }
+    }
+
+    function changeAuto(delta) {
+        autoCount = Math.max(0, autoCount + delta);
+        window.dispatchEvent(new CustomEvent('csm:refresh-auto', { detail: { active: autoCount > 0 } }));
+    }
 
     function addTimer(timer) {
         timers.push(timer);
@@ -475,7 +499,7 @@ CSM.refresh = (function() {
 
     function invokeTimer(fn) {
         try {
-            fn();
+            track(fn);
         } catch (e) {
             setTimeout(function() { throw e; }, 0);
         }
@@ -488,6 +512,7 @@ CSM.refresh = (function() {
         // Creation counts as a run: the page loads its data when it starts.
         var lastRun = Date.now();
         subscribers++;
+        changeAuto(1);
 
         function clearTimer() {
             if (timerId) {
@@ -535,6 +560,7 @@ CSM.refresh = (function() {
                 if (stopped) return;
                 stopped = true;
                 subscribers = Math.max(0, subscribers - 1);
+                changeAuto(-1);
                 clearTimer();
                 removeTimer(timer);
             }
@@ -548,6 +574,8 @@ CSM.refresh = (function() {
         get enabled() { return enabled; },
         get lastFetchAt() { return lastFetchAt; },
         get hasPersistedChoice() { return hasPersistedChoice; },
+        get inDataLoad() { return depth > 0 || !pageLoaded; },
+        get hasAuto() { return autoCount > 0; },
         setEnabled: function(next, opts) {
             enabled = !!next;
             opts = opts || {};
@@ -574,7 +602,7 @@ CSM.refresh = (function() {
         onRefresh: function(fn) {
             if (typeof fn !== 'function') return function() {};
             subscribers++;
-            var wrapped = function() { try { fn(); } catch (e) { /* swallow */ } };
+            var wrapped = function() { try { track(fn); } catch (e) { /* swallow */ } };
             window.addEventListener('csm:refresh-now', wrapped);
             var unsubscribed = false;
             return function() {
@@ -584,8 +612,8 @@ CSM.refresh = (function() {
                 window.removeEventListener('csm:refresh-now', wrapped);
             };
         },
-        _bumpSubscriber: function() { subscribers++; },
-        _dropSubscriber: function() { subscribers = Math.max(0, subscribers - 1); },
+        _bumpSubscriber: function() { subscribers++; changeAuto(1); },
+        _dropSubscriber: function() { subscribers = Math.max(0, subscribers - 1); changeAuto(-1); },
         interval: function(fn, interval) {
             return createInterval(fn, interval);
         }
@@ -847,7 +875,7 @@ CSM.sse = (function() {
             state = 'running';
             var promise;
             try {
-                promise = CSM.request(url, { silent: true })
+                promise = CSM.request(url, { silent: true, refresh: true })
                     .then(function(r) { return r.json(); });
             } catch (e) {
                 fail(e);

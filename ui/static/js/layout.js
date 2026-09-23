@@ -187,7 +187,13 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
 
     pill.classList.remove('d-none');
     nowBtn.classList.remove('d-none');
-    toggleBtn.classList.remove('d-none');
+
+    // Pause does something only on a page that refreshes on a timer.
+    function paintAuto() {
+        toggleBtn.classList.toggle('d-none', !CSM.refresh.hasAuto);
+    }
+    paintAuto();
+    window.addEventListener('csm:refresh-auto', paintAuto);
 
     function ageLabel(ms) {
         if (!ms) return 'Never updated';

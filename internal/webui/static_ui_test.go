@@ -2221,7 +2221,8 @@ func TestCSMPollUsesCSMRequest(t *testing.T) {
 	}
 	text := string(src)
 	pollBody := csmPollBody(t, text)
-	if !strings.Contains(pollBody, "CSM.request(url, { silent: true })") {
+	// refresh marks the poll as a data load for "Updated N ago".
+	if !strings.Contains(pollBody, "CSM.request(url, { silent: true, refresh: true })") {
 		t.Fatal("CSM.poll must route through CSM.request(silent:true)")
 	}
 	if strings.Contains(pollBody, "fetch((typeof CSM.apiUrl") || strings.Contains(pollBody, "fetch(CSM.apiUrl") {
@@ -2784,7 +2785,8 @@ func TestAutoRefreshPillWired(t *testing.T) {
 		`interval: function(fn, interval) {`,
 		`setEnabled: function(next, opts) {`,
 		`window.dispatchEvent(new CustomEvent('csm:refresh-toggle'`,
-		`if (CSM.refresh) CSM.refresh.bump();`,
+		// Only data loads bump; ui/refreshpill_test.js drives which requests count.
+		`if (dataLoad && CSM.refresh) CSM.refresh.bump();`,
 		`if (!force && CSM.refresh && !CSM.refresh.enabled) { state = 'idle'; return; }`,
 		`function onPause() {`,
 		`function onResume() {`,
@@ -4171,8 +4173,8 @@ func TestRefreshManualHasFallback(t *testing.T) {
 		`if (subscribers === 0) {`,
 		`window.location.reload();`,
 		`onRefresh: function(fn)`,
-		`_bumpSubscriber: function() { subscribers++; }`,
-		`_dropSubscriber: function() { subscribers = Math.max(0, subscribers - 1); }`,
+		`_bumpSubscriber: function() { subscribers++; changeAuto(1); }`,
+		`_dropSubscriber: function() { subscribers = Math.max(0, subscribers - 1); changeAuto(-1); }`,
 		`CSM.refresh._bumpSubscriber()`,
 	} {
 		if !strings.Contains(jsText, fragment) {
