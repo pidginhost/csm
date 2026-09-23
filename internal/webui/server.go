@@ -549,11 +549,34 @@ func (s *Server) Start() error {
 	if err := EnsureTLSCert(certPath, keyPath, s.cfg.Hostname); err != nil {
 		return fmt.Errorf("TLS cert setup: %w", err)
 	}
+	certs, err := newCertReloader(certPath, keyPath)
+	if err != nil {
+		return fmt.Errorf("TLS cert load: %w", err)
+	}
+	s.httpSrv.TLSConfig.GetCertificate = certs.GetCertificate
 
 	obs.Go("webui-prune-logins", s.pruneLoginAttempts)
+	obs.Go("webui-cert-renewal", func() { s.renewCertLoop(certPath, keyPath) })
 
 	fmt.Fprintf(os.Stderr, "WebUI listening on https://%s\n", s.cfg.WebUI.Listen)
-	return s.httpSrv.ListenAndServeTLS(certPath, keyPath)
+	return s.httpSrv.ListenAndServeTLS("", "")
+}
+
+// renewCertLoop checks the generated certificate daily and renews it before
+// it expires; the listener picks up the new files on the next handshake.
+func (s *Server) renewCertLoop(certPath, keyPath string) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.pruneDone:
+			return
+		case <-ticker.C:
+			if err := EnsureTLSCert(certPath, keyPath, s.cfg.Hostname); err != nil {
+				fmt.Fprintf(os.Stderr, "webui: TLS certificate renewal: %v\n", err)
+			}
+		}
+	}
 }
 
 // Shutdown gracefully stops the server. Safe to call more than once;

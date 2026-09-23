@@ -91,7 +91,7 @@ the request would exceed the API body-size limit, which includes finding details
 - **Authentication** - API bearer tokens in the header; opaque server-side browser sessions in HttpOnly/Secure/SameSite=Strict cookies
 - **CSRF** - HMAC-derived token bound to the browser session on cookie-authenticated POST, PUT, PATCH, and DELETE requests; a form sends it in the body, never the query string
 - **Headers** - X-Frame-Options DENY, Content-Security-Policy (scripts, styles and forms from the Web UI only; no plugins, `<base>` or framing), HSTS, nosniff, and the legacy XSS auditor turned off
-- **TLS** - Auto-generated self-signed certificate
+- **TLS** - Auto-generated self-signed certificate, renewed automatically within 30 days of expiry and picked up without a restart; a certificate you install is never replaced, and replacing its files takes effect on the next connection
 - **Rate limiting** - 5 login attempts/min, 600 API and `/metrics` requests/min per IPv4 address or IPv6 /64
 - **Token length** - tokens shorter than 32 characters are reported as warnings at startup and by `csm validate` and `csm doctor`; they keep working
 - **Bearer auth** skips CSRF (for API-to-API calls)
