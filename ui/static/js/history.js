@@ -28,13 +28,28 @@
         history.replaceState(null, '', '/findings' + (qs ? '?' + qs : ''));
     }
 
-    function loadHistory() {
-        var url = '/api/v1/history?limit=' + perPage + '&offset=' + (page * perPage);
+    // filterQuery is the history filters as API query parameters, shared by
+    // the page request and the CSV export.
+    function filterQuery() {
+        var q = '';
         var range = CSM.prefs.dayRange(fromDate, toDate);
-        if (range.from) url += '&from=' + encodeURIComponent(range.from);
-        if (range.to) url += '&to=' + encodeURIComponent(range.to);
-        if (sevFilter !== 'all') url += '&severity=' + sevFilter;
-        if (searchTerm) url += '&search=' + encodeURIComponent(searchTerm);
+        if (range.from) q += '&from=' + encodeURIComponent(range.from);
+        if (range.to) q += '&to=' + encodeURIComponent(range.to);
+        if (sevFilter !== 'all') q += '&severity=' + encodeURIComponent(sevFilter);
+        if (searchTerm) q += '&search=' + encodeURIComponent(searchTerm);
+        return q;
+    }
+
+    function syncCSVLink() {
+        var link = document.getElementById('history-csv');
+        if (!link) return;
+        var q = filterQuery();
+        link.setAttribute('href', '/api/v1/history/csv' + (q ? '?' + q.slice(1) : ''));
+    }
+
+    function loadHistory() {
+        var url = '/api/v1/history?limit=' + perPage + '&offset=' + (page * perPage) + filterQuery();
+        syncCSVLink();
 
         CSM.get(url)
             .then(function(data) {

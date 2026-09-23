@@ -12,6 +12,25 @@ function capturingURL(blobs) {
     };
 }
 
+// The History CSV link exports what the tab shows: its date range in the
+// operator zone, severity and search.
+test('history CSV export carries the history filters', async () => {
+    const page = loadPage(templateBody('findings'), SHARED.concat(['history.js']), {
+        storage: { 'csm-prefs': JSON.stringify({ timezone: 'Pacific/Chatham' }) },
+        url: 'https://csm.example.test/findings?tab=history&from=2026-09-23&to=2026-09-23&severity=2&hsearch=shell',
+        globals: { bootstrap: undefined }
+    });
+    await settle();
+    const link = page.document.getElementById('history-csv');
+    assert.ok(link, 'CSV link missing');
+    const url = new URL(link.getAttribute('href'), 'https://csm.example.test/');
+    assert.equal(url.pathname, '/api/v1/history/csv');
+    assert.equal(url.searchParams.get('from'), '2026-09-22T11:15:00.000Z');
+    assert.equal(url.searchParams.get('to'), '2026-09-23T11:15:00.000Z');
+    assert.equal(url.searchParams.get('severity'), '2');
+    assert.equal(url.searchParams.get('search'), 'shell');
+});
+
 test('incident CSV export neutralises formula cells', async () => {
     const blobs = [];
     const page = loadPage(templateBody('incident'), SHARED.concat(['incident.js']), {

@@ -385,54 +385,11 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := queryInt(r, "offset", 0)
 
-	fromStr := r.URL.Query().Get("from")
-	toStr := r.URL.Query().Get("to")
-	sevStr := r.URL.Query().Get("severity")
-	if _, _, ok := historyRangeQuery(w, r.URL.Query(), time.Time{}, time.Time{}); !ok {
+	q, ok := parseHistoryQuery(w, r)
+	if !ok {
 		return
 	}
-
-	searchStr := r.URL.Query().Get("search")
-
-	checksStr := r.URL.Query().Get("checks")
-	var checksFilter map[string]bool
-	if checksStr != "" {
-		checksFilter = make(map[string]bool)
-		for _, c := range strings.Split(checksStr, ",") {
-			c = strings.TrimSpace(c)
-			if c != "" {
-				checksFilter[c] = true
-			}
-		}
-	}
-
-	// If no filters, use simple paginated read
-	if fromStr == "" && toStr == "" && sevStr == "" && searchStr == "" && checksStr == "" {
-		findings, total := s.store.ReadHistory(limit, offset)
-		writeJSON(w, map[string]interface{}{
-			"findings":  withAccountIP(findings),
-			"total":     total,
-			"limit":     limit,
-			"offset":    offset,
-			"truncated": historyPageTruncated(total, offset, len(findings)),
-		})
-		return
-	}
-
-	sevFilter := -1
-	if sevStr != "" {
-		sevFilter = queryInt(r, "severity", -1)
-	}
-
-	findings, total := s.store.ReadHistoryFilteredWithChecks(
-		limit,
-		offset,
-		fromStr,
-		toStr,
-		sevFilter,
-		searchStr,
-		checksFilter,
-	)
+	findings, total := s.readHistoryPage(q, limit, offset)
 	writeJSON(w, map[string]interface{}{
 		"findings":  withAccountIP(findings),
 		"total":     total,
@@ -440,6 +397,46 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 		"offset":    offset,
 		"truncated": historyPageTruncated(total, offset, len(findings)),
 	})
+}
+
+// historyQuery is the filter set /api/v1/history and its CSV export share.
+type historyQuery struct {
+	from, to, search string
+	severity         int // -1 for any
+	checks           map[string]bool
+}
+
+func (q historyQuery) filtered() bool {
+	return q.from != "" || q.to != "" || q.severity >= 0 || q.search != "" || q.checks != nil
+}
+
+// parseHistoryQuery reads the history filters. An unreadable date is a 400,
+// written here, and ok is false.
+func parseHistoryQuery(w http.ResponseWriter, r *http.Request) (historyQuery, bool) {
+	v := r.URL.Query()
+	if _, _, ok := historyRangeQuery(w, v, time.Time{}, time.Time{}); !ok {
+		return historyQuery{}, false
+	}
+	q := historyQuery{from: v.Get("from"), to: v.Get("to"), search: v.Get("search"), severity: -1}
+	if v.Get("severity") != "" {
+		q.severity = queryInt(r, "severity", -1)
+	}
+	if checksStr := v.Get("checks"); checksStr != "" {
+		q.checks = make(map[string]bool)
+		for _, c := range strings.Split(checksStr, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				q.checks[c] = true
+			}
+		}
+	}
+	return q, true
+}
+
+func (s *Server) readHistoryPage(q historyQuery, limit, offset int) ([]alert.Finding, int) {
+	if !q.filtered() {
+		return s.store.ReadHistory(limit, offset)
+	}
+	return s.store.ReadHistoryFilteredWithChecks(limit, offset, q.from, q.to, q.severity, q.search, q.checks)
 }
 
 // historyPageTruncated reports whether matches exist past the returned page.
@@ -884,9 +881,18 @@ func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, health)
 }
 
-// apiHistoryCSV exports history as CSV download.
-func (s *Server) apiHistoryCSV(w http.ResponseWriter, _ *http.Request) {
-	findings, _ := s.store.ReadHistory(5000, 0)
+// historyCSVMax bounds one CSV export; the history filters narrow it to reach
+// older entries.
+const historyCSVMax = 5000
+
+// apiHistoryCSV exports the newest history entries matching the History
+// filters as a CSV download.
+func (s *Server) apiHistoryCSV(w http.ResponseWriter, r *http.Request) {
+	q, ok := parseHistoryQuery(w, r)
+	if !ok {
+		return
+	}
+	findings, _ := s.readHistoryPage(q, historyCSVMax, 0)
 
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=csm-history.csv")

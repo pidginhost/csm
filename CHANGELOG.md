@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- The History CSV export now applies the date range, severity and search shown on the History tab, so narrowing the filters reaches entries older than the newest 5,000. The button no longer claims to export the full history.
 - The history API now reports truncated as true when more matching findings exist past the returned page. It was always false.
 - Findings, dashboard account counts and the findings API now attribute a finding to the account its check recorded before guessing from paths in the message, so mail relay findings count against the sending account.
 - The Account page and the scan account list now find accounts under every account root of the platform, including Plesk vhosts, and the Account page lists quarantined files from the configured quarantine directory.

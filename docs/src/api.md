@@ -92,7 +92,7 @@ GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix inf
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
 GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=).
                                  total counts every match; truncated is true when matches exist past the page
-GET  /api/v1/history/csv         CSV export (up to 5,000 entries)
+GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
 GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
 GET  /api/v1/stats/trend         30-day daily severity counts
 GET  /api/v1/stats/timeline      Event timeline
