@@ -26,11 +26,6 @@
     let popstateConfirmOpen = false;
     let busyDisabledControls = null;
 
-    function csrfToken() {
-        const meta = document.querySelector('meta[name="csrf-token"]');
-        return meta ? meta.content : "";
-    }
-
     function byId(id) { return document.getElementById(id); }
     function clearNode(el) { while (el && el.firstChild) el.removeChild(el.firstChild); }
     function hasURLState() { return typeof CSM !== "undefined" && CSM.urlState; }
@@ -47,10 +42,6 @@
         b.appendChild(iconEl("ti-" + iconName, "me-1"));
         b.appendChild(document.createTextNode(text));
         return b;
-    }
-
-    function toast(msg, type) {
-        if (window.CSM && CSM.toast) { CSM.toast(msg, type || "info"); }
     }
 
     // Lock the whole section form while a save/apply round-trip is in
@@ -942,7 +933,7 @@
         const changes = computeChanges();
         clearValidationErrors();
         if (Object.keys(changes).length === 0) {
-            toast("No changes to save.", "info");
+            CSM.toast("No changes to save.", "info");
             return;
         }
         saving = true;
@@ -955,30 +946,30 @@
                     headers: {
                         "Content-Type": "application/json",
                         "If-Match": currentETag,
-                        "X-CSRF-Token": csrfToken()
+                        "X-CSRF-Token": CSM.csrfToken
                     },
                     body: JSON.stringify({changes: changes}),
                     allowNonOK: true,
                     silent: true
                 });
             } catch (e) {
-                toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
+                CSM.toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
                 return;
             }
             if (resp.status === 412) {
-                toast("Config changed externally; reloading…", "warning");
+                CSM.toast("Config changed externally; reloading…", "warning");
                 loadSection(currentSection, {urlMode: "replace"});
                 return;
             }
             if (resp.status === 422) {
                 const data = await resp.json().catch(function () { return {}; });
                 showValidationErrors(data.errors || []);
-                toast("Validation errors. Review the highlighted fields.", "error");
+                CSM.toast("Validation errors. Review the highlighted fields.", "error");
                 return;
             }
             if (!resp.ok) {
                 const data = await resp.json().catch(function () { return {}; });
-                toast(data.error || ("Save failed: " + resp.status), "error");
+                CSM.toast(data.error || ("Save failed: " + resp.status), "error");
                 return;
             }
             const data = await resp.json();
@@ -989,9 +980,9 @@
             if (data.pending_restart) {
                 const pendingSections = pendingSectionNames(data.pending_sections).length ? data.pending_sections : currentSectionSummary();
                 showRestartBanner(pendingSections);
-                toast("Saved on disk. Restart required.", "warning");
+                CSM.toast("Saved on disk. Restart required.", "warning");
             } else {
-                toast("Saved. Applied live.", "success");
+                CSM.toast("Saved. Applied live.", "success");
             }
             loadSection(currentSection, {urlMode: "replace"});
         } finally {
@@ -1036,7 +1027,7 @@
         try {
             const resp = await CSM.request("/api/v1/settings/restart", {
                 method: "POST",
-                headers: {"X-CSRF-Token": csrfToken()},
+                headers: {"X-CSRF-Token": CSM.csrfToken},
                 allowNonOK: true,
                 silent: true
             });
@@ -1119,7 +1110,7 @@
         try {
             const changes = computeChanges();
             if (Object.keys(changes).length === 0) {
-                toast("No changes to apply.", "info");
+                CSM.toast("No changes to apply.", "info");
                 return;
             }
             let minutesStr;
@@ -1130,7 +1121,7 @@
             }
             const minutes = parseInt(minutesStr, 10);
             if (isNaN(minutes) || minutes < 1 || minutes > 30) {
-                toast("Timeout must be 1-30 minutes.", "error");
+                CSM.toast("Timeout must be 1-30 minutes.", "error");
                 return;
             }
             const confirmMsg = "Apply firewall changes with a " + minutes + "-minute rollback timer?\n\n"
@@ -1149,25 +1140,25 @@
                     headers: {
                         "Content-Type": "application/json",
                         "If-Match": currentETag,
-                        "X-CSRF-Token": csrfToken()
+                        "X-CSRF-Token": CSM.csrfToken
                     },
                     body: JSON.stringify({changes: changes, timeout_min: minutes}),
                     allowNonOK: true,
                     silent: true
                 });
             } catch (e) {
-                toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
+                CSM.toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
                 return;
             }
-            if (resp.status === 412) { toast("Config changed externally; reloading…", "warning"); loadSection(currentSection); return; }
+            if (resp.status === 412) { CSM.toast("Config changed externally; reloading…", "warning"); loadSection(currentSection); return; }
             if (resp.status === 422) {
                 const data = await resp.json().catch(function () { return {}; });
                 showValidationErrors(data.errors || []);
-                toast("Validation errors. Review the highlighted fields.", "error");
+                CSM.toast("Validation errors. Review the highlighted fields.", "error");
                 return;
             }
-            if (resp.status === 409) { toast("A rollback is already pending. Confirm or revert it first.", "warning"); return; }
-            if (!resp.ok) { toast("Tentative apply failed: " + resp.status, "error"); return; }
+            if (resp.status === 409) { CSM.toast("A rollback is already pending. Confirm or revert it first.", "warning"); return; }
+            if (!resp.ok) { CSM.toast("Tentative apply failed: " + resp.status, "error"); return; }
             const data = await resp.json();
             currentETag = data.new_etag;
             dirty = false;
@@ -1251,7 +1242,7 @@
                 if (resp.ok) {
                     const data = await resp.json();
                     if (!data.pending) {
-                        toast("Firewall rollback expired; previous config restored.", "warning");
+                        CSM.toast("Firewall rollback expired; previous config restored.", "warning");
                         window.location.reload();
                         return;
                     }
@@ -1265,7 +1256,7 @@
     async function confirmRollback() {
         const resp = await CSM.request("/api/v1/settings/firewall/confirm", {
             method: "POST",
-            headers: {"X-CSRF-Token": csrfToken()},
+            headers: {"X-CSRF-Token": CSM.csrfToken},
             allowNonOK: true,
             silent: true
         });
@@ -1276,10 +1267,10 @@
             const banner = byId("settings-banner");
             clearNode(banner);
             banner.classList.add("d-none");
-            toast("Firewall changes confirmed.", "success");
+            CSM.toast("Firewall changes confirmed.", "success");
             loadSection(currentSection);
         } else {
-            toast("Confirm failed: " + resp.status, "error");
+            CSM.toast("Confirm failed: " + resp.status, "error");
         }
     }
 
@@ -1294,7 +1285,7 @@
             }
             const resp = await CSM.request("/api/v1/settings/firewall/revert", {
                 method: "POST",
-                headers: {"X-CSRF-Token": csrfToken()},
+                headers: {"X-CSRF-Token": CSM.csrfToken},
                 allowNonOK: true,
                 silent: true
             });
@@ -1305,7 +1296,7 @@
                 await pollHealth();
                 window.location.reload();
             } else {
-                toast("Revert failed: " + resp.status, "error");
+                CSM.toast("Revert failed: " + resp.status, "error");
             }
         } finally {
             revertRollbackRunning = false;
