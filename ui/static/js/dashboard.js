@@ -1211,7 +1211,7 @@
                     summary: fi.message || '',
                     ageISO: fi.last_seen || fi.first_seen || '',
                     action: 'Review',
-                    href: '/findings'
+                    href: '/findings?key=' + encodeURIComponent(fi.key || '')
                 });
             }
 

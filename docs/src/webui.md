@@ -31,9 +31,9 @@ scope. The header links to session management.
 
 | Page | URL | Purpose |
 |------|-----|---------|
-| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts |
-| **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, a permanent Block for findings that report an attacker address, sticky bulk operations (fix, dismiss, suppress), modal account scan |
-| **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
+| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts. A queued finding opens its own detail, and each 24h severity count opens the History tab for the last 24 hours at that severity |
+| **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, a permanent Block for findings that report an attacker address, sticky bulk operations (fix, dismiss, suppress), modal account scan. The open finding is kept in the URL as `?key=<finding key>`, so the link reopens it |
+| **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export; `window=24h` (1 to 720 hours) shows a rolling window instead of calendar days |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
 | **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
 | **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), the whitelist and allow rules (Allow Rules tab), search, audit log; the lookup links to Threat Intel for the same address; destructive actions live under the Danger tab |

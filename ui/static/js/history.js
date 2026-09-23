@@ -9,6 +9,9 @@
     var toDate = '';
     var searchTerm = '';
     var sevFilter = 'all';
+    // windowHours shows a rolling window (?window=24h) instead of calendar
+    // days; the dashboard's 24h counts link here with it.
+    var windowHours = 0;
     var historyLoaded = false;
 
     var sevLabels = {}; for (var sk in CSM.sevMap) sevLabels[sk] = CSM.sevMap[sk].label;
@@ -21,6 +24,7 @@
         // Set history-specific params
         if (fromDate) params.set('from', fromDate); else params.delete('from');
         if (toDate) params.set('to', toDate); else params.delete('to');
+        if (windowHours) params.set('window', windowHours + 'h'); else params.delete('window');
         if (sevFilter !== 'all') params.set('severity', sevFilter); else params.delete('severity');
         if (searchTerm) params.set('hsearch', searchTerm); else params.delete('hsearch');
         if (page > 0) params.set('hpage', String(page)); else params.delete('hpage');
@@ -32,9 +36,13 @@
     // the page request and the CSV export.
     function filterQuery() {
         var q = '';
-        var range = CSM.prefs.dayRange(fromDate, toDate);
-        if (range.from) q += '&from=' + encodeURIComponent(range.from);
-        if (range.to) q += '&to=' + encodeURIComponent(range.to);
+        if (windowHours) {
+            q += '&from=' + encodeURIComponent(new Date(Date.now() - windowHours * 3600000).toISOString());
+        } else {
+            var range = CSM.prefs.dayRange(fromDate, toDate);
+            if (range.from) q += '&from=' + encodeURIComponent(range.from);
+            if (range.to) q += '&to=' + encodeURIComponent(range.to);
+        }
         if (sevFilter !== 'all') q += '&severity=' + encodeURIComponent(sevFilter);
         if (searchTerm) q += '&search=' + encodeURIComponent(searchTerm);
         return q;
@@ -216,11 +224,20 @@
         pager.appendChild(btnGroup);
     }
 
+    function setWindow(hours) {
+        windowHours = hours;
+        var badge = document.getElementById('history-window');
+        if (!badge) return;
+        badge.textContent = hours ? 'Last ' + hours + ' hours' : '';
+        badge.classList.toggle('d-none', !hours);
+    }
+
     // Date filter
     var filterBtn = document.getElementById('date-filter-btn');
     var clearBtn = document.getElementById('date-clear-btn');
     if (filterBtn) {
         filterBtn.addEventListener('click', function() {
+            setWindow(0);
             fromDate = document.getElementById('date-from').value;
             toDate = document.getElementById('date-to').value;
             page = 0;
@@ -230,6 +247,7 @@
     }
     if (clearBtn) {
         clearBtn.addEventListener('click', function() {
+            setWindow(0);
             fromDate = ''; toDate = '';
             document.getElementById('date-from').value = '';
             document.getElementById('date-to').value = '';
@@ -268,7 +286,9 @@
     if (params.get('severity')) { sevFilter = params.get('severity'); document.getElementById('sev-filter').value = sevFilter; }
     if (params.get('hsearch')) { searchTerm = params.get('hsearch'); document.getElementById('history-search').value = searchTerm; }
     if (params.get('hpage')) { page = parseInt(params.get('hpage'), 10) || 0; }
-    if (fromDate || toDate) { if (clearBtn) clearBtn.classList.remove('d-none'); }
+    var windowParam = /^(\d{1,3})h$/.exec(params.get('window') || '');
+    if (windowParam && !fromDate && !toDate && +windowParam[1] >= 1 && +windowParam[1] <= 720) setWindow(+windowParam[1]);
+    if (fromDate || toDate || windowHours) { if (clearBtn) clearBtn.classList.remove('d-none'); }
 
     // Event delegation for history table expand buttons
     var historyContainer = document.getElementById('history-content');

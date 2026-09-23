@@ -425,6 +425,14 @@ CSM.detailPanel = (function() {
     var panelEl  = null;
     var dismissBound = false;
     var api = null;
+    // onClose of the content on show; runs once when the panel closes.
+    var currentOnClose = null;
+
+    function fireClose() {
+        var fn = currentOnClose;
+        currentOnClose = null;
+        if (fn) fn();
+    }
 
     function isOpen() {
         return panelEl && panelEl.classList.contains('show');
@@ -518,6 +526,7 @@ CSM.detailPanel = (function() {
         // can lean on it to drop the global listeners even when the close
         // happens through Bootstrap's own backdrop or ESC path.
         panelEl.addEventListener('hidden.bs.offcanvas', unbindDismissShortcuts);
+        panelEl.addEventListener('hidden.bs.offcanvas', fireClose);
         return panelEl;
     }
 
@@ -525,6 +534,7 @@ CSM.detailPanel = (function() {
         open: function(opts) {
             var el = ensureMount();
             opts = opts || {};
+            currentOnClose = typeof opts.onClose === 'function' ? opts.onClose : null;
             var titleEl = el.querySelector('.csm-detail-panel__title');
             var bodyEl  = el.querySelector('.csm-detail-panel__body');
             var footEl  = el.querySelector('.csm-detail-panel__footer');
@@ -558,6 +568,7 @@ CSM.detailPanel = (function() {
         },
         close: function() {
             unbindDismissShortcuts();
+            fireClose();
             if (instance) {
                 instance.hide();
             } else if (panelEl) {

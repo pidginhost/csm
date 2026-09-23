@@ -54,6 +54,33 @@ function loadFindings() {
         });
 }
 
+// openLinkedFinding opens the finding named by ?key= once, after the first
+// render. The table holds rows on every page, so a finding past the first
+// page opens too.
+var _linkedKeyHandled = false;
+function openLinkedFinding() {
+    if (_linkedKeyHandled) return;
+    _linkedKeyHandled = true;
+    var key = CSM.urlState.get('key');
+    if (!key || !findingsTable) {
+        if (key) linkedFindingGone();
+        return;
+    }
+    var rows = findingsTable.allRows || [];
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].row.getAttribute('data-key') === key) {
+            toggleFindingDetail(rows[i].row);
+            return;
+        }
+    }
+    linkedFindingGone();
+}
+
+function linkedFindingGone() {
+    CSM.urlState.set({ key: '' });
+    CSM.toast('That finding is no longer active. The History tab keeps past findings.', 'info');
+}
+
 function renderFindings(data) {
     var findings = data.findings || [];
     var checkTypes = data.check_types || [];
@@ -123,6 +150,7 @@ function renderFindings(data) {
         document.getElementById('findings-empty').classList.remove('d-none');
         document.getElementById('findings-table-wrap').classList.add('d-none');
         updateSelection();
+        openLinkedFinding();
         return;
     }
     // Non-empty: a prior render may have shown the empty state.
@@ -197,6 +225,7 @@ function renderFindings(data) {
 
     // Restore filter state from URL params (after table init)
     restoreURLParams();
+    openLinkedFinding();
 }
 
 // --- Build action buttons for a row ---
@@ -929,13 +958,17 @@ function toggleFindingDetail(row) {
     var message = row.dataset.message;
     var hasFix = row.getAttribute('data-hasFix') === 'true';
     var key = row.getAttribute('data-key') || (check + ':' + message);
+    // The open finding is part of the URL, so the view can be shared or reloaded.
+    CSM.urlState.set({ key: key });
+    function onClose() { CSM.urlState.set({ key: '' }); }
     var filepath = row.getAttribute('data-filepath') || '';
     var account = row.getAttribute('data-account') || '';
     var blockIP = row.getAttribute('data-block-ip') || '';
 
     CSM.detailPanel.open({
         title: check,
-        bodyHTML: '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>'
+        bodyHTML: '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>',
+        onClose: onClose
     });
 
     CSM.get('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message))
@@ -977,7 +1010,7 @@ function toggleFindingDetail(row) {
             footer += '<button type="button" class="btn btn-ghost-secondary btn-sm" data-csm-finding-dismiss>Dismiss</button>';
             footer += '<button type="button" class="btn btn-ghost-secondary btn-sm" data-csm-finding-suppress>Suppress</button>';
 
-            CSM.detailPanel.open({ title: check, bodyHTML: html, footerHTML: footer });
+            CSM.detailPanel.open({ title: check, bodyHTML: html, footerHTML: footer, onClose: onClose });
 
             var panel = CSM.detailPanel.element();
             if (!panel) return;
@@ -1011,7 +1044,8 @@ function toggleFindingDetail(row) {
                     icon: 'alert-circle',
                     title: 'Failed to load details',
                     reason: 'Try again from the row buttons.'
-                })
+                }),
+                onClose: onClose
             });
         });
 }

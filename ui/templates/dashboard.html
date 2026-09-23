@@ -68,7 +68,7 @@
                     </div>
                     <div class="row g-2 csm-posture-stats mb-3">
                         <div class="col-12 col-sm-4 col-lg-12 col-xxl-4">
-                            <a href="/findings?tab=history&severity=2" class="csm-posture-stat stat-card" title="Critical findings in the last 24 hours">
+                            <a href="/findings?tab=history&severity=2&window=24h" class="csm-posture-stat stat-card" title="Critical findings in the last 24 hours">
                                 <div class="subheader">Critical (24h)</div>
                                 <div class="csm-posture-stat__metric">
                                     <div class="h2 mb-0 text-critical me-2" id="stat-critical">{{.Critical}}</div>
@@ -77,7 +77,7 @@
                             </a>
                         </div>
                         <div class="col-12 col-sm-4 col-lg-12 col-xxl-4">
-                            <a href="/findings?tab=history&severity=1" class="csm-posture-stat stat-card" title="High findings in the last 24 hours">
+                            <a href="/findings?tab=history&severity=1&window=24h" class="csm-posture-stat stat-card" title="High findings in the last 24 hours">
                                 <div class="subheader">High (24h)</div>
                                 <div class="csm-posture-stat__metric">
                                     <div class="h2 mb-0 text-high me-2" id="stat-high">{{.High}}</div>
@@ -86,7 +86,7 @@
                             </a>
                         </div>
                         <div class="col-12 col-sm-4 col-lg-12 col-xxl-4">
-                            <a href="/findings?tab=history&severity=0" class="csm-posture-stat stat-card" title="Warning findings in the last 24 hours">
+                            <a href="/findings?tab=history&severity=0&window=24h" class="csm-posture-stat stat-card" title="Warning findings in the last 24 hours">
                                 <div class="subheader">Warning (24h)</div>
                                 <div class="csm-posture-stat__metric">
                                     <div class="h2 mb-0 text-warning me-2" id="stat-warning">{{.Warning}}</div>
