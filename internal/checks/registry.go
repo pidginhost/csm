@@ -63,8 +63,11 @@ var checkCategoryOrder = []string{
 // TestCheckRegistryCoversProductionCode.
 var checkRegistry = []CheckInfo{
 	// --- Authentication & Login ------------------------------------------
+	// The admin-panel detector's tight path set makes false positives unlikely;
+	// a challenge would only delay containment of repeated attacks.
 	{Name: "admin_panel_bruteforce", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "api_auth_failure", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockWithCpanelLogins}},
+	// API clients have no browser to answer the challenge.
 	{Name: "api_auth_failure_realtime", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockWithCpanelLogins, NeverChallenge: true}},
 	{Name: "api_tokens", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
 	{Name: "bulk_password_change", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAccountAggregate},
@@ -75,10 +78,12 @@ var checkRegistry = []CheckInfo{
 	{Name: "cpanel_multi_ip_login", Category: CategoryAuth, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{Block: BlockWithCpanelLogins}},
 	{Name: "cpanel_password_purge", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
 	{Name: "cpanel_password_purge_realtime", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
+	// FTP authentication cannot be gated by an HTTP challenge.
 	{Name: "ftp_auth_failure_realtime", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockWithCpanelLogins, NeverChallenge: true}},
 	{Name: "ftp_bruteforce", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways}},
 	{Name: "ftp_login", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
 	{Name: "ftp_login_after_bruteforce", Category: CategoryAuth, Correlation: CorrelationSecurityEvent},
+	// PAM breadth and brute-force signals come from non-browser clients.
 	{Name: "credential_stuffing", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "pam_bruteforce", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "pam_login", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
@@ -89,6 +94,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "ssh_login_unknown_ip", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational, Response: ResponsePolicy{Block: BlockAlways}},
 	{Name: "sshd_config_change", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "uid0_account", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope, Response: ResponsePolicy{NeverChallenge: true}},
+	// Pre-auth attacks on a public webmail login page can meet the gate on
+	// their next request, unlike successful post-auth webmail audit events.
 	{Name: "webmail_bruteforce", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockWithCpanelLogins, ChallengeFirst: true}},
 	{Name: "webmail_login_realtime", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
 	{Name: "whm_account_action", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
@@ -99,20 +106,31 @@ var checkRegistry = []CheckInfo{
 
 	// --- Brute Force -----------------------------------------------------
 	{Name: "http_request_flood", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways}},
+	// URL enumeration is browser-visible; http_scanner_action can still opt
+	// this check out of the challenge in favor of a direct block.
 	{Name: "http_scanner_profile", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true}},
+	// A claimed crawler may still pass reverse-DNS verification next cycle.
+	// Challenge it without timeout escalation while that verdict is pending;
+	// with challenge routing disabled, the existing block policy still applies.
 	{Name: "http_claimed_bot_unverified", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true}},
 	{Name: "http_ua_spoof", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways}},
 	{Name: "http_distributed_flood", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "http_asn_crawl", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
+	// Mail protocols cannot answer an HTTP challenge. Compromise severity
+	// decides blocking; a subnet summary does not authorize a single-IP block.
 	{Name: "mail_account_compromised", Category: CategoryBruteForce, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{Block: BlockAlways, CriticalOnly: true, NeverChallenge: true}},
 	{Name: "mail_account_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "mail_bruteforce", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "mail_bruteforce_suspected", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "mail_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "smtp_account_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
+	// SMTP authentication, connection probes and subnet sprays have no browser
+	// at the other end, so a challenge cannot stop their traffic.
 	{Name: "smtp_bruteforce", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "smtp_probe_abuse", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "smtp_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true}},
+	// These WordPress probes reach public HTTP endpoints before authentication;
+	// the next request from the same source can be sent to the browser gate.
 	{Name: "wp_login_bruteforce", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true}},
 	{Name: "wp_user_enumeration", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{ChallengeFirst: true}},
 	{Name: "xmlrpc_abuse", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true}},
@@ -341,6 +359,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "firewall_ipv6_unmanaged", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "bad_asn_outbound", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent},
 	{Name: "infra_ips_unresolvable", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	// Reputation on the HTTP path gives a browser one verifier before blocking.
+	// Critical sightings come from browserless vectors and bypass the gate.
 	{Name: "ip_reputation", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true}},
 	{Name: "reputation_quota_exhausted", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "threat_feed_stale", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
@@ -374,6 +394,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "modsec_csm_block_escalation", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "modsec_low_confidence_burst", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "modsec_warning_realtime", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
+	// The WAF already denied repeated attacks; keep containment direct.
 	{Name: "waf_attack_blocked", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "modsec_disabled_vhost", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
 	// Retired in favour of modsec_disabled_vhost. Kept registered so the
@@ -399,6 +420,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "fanotify_kernel_overflow", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "fanotify_overflow", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "integrity", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
+	// Aggregate suspicion gets a browser verifier before a hard block.
 	{Name: "local_threat_score", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true}},
 	{Name: "mail_auth_backend_degraded", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "mail_log_source_unavailable", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
