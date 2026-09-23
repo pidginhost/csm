@@ -84,7 +84,7 @@ func postSettingsChange(t *testing.T, s *Server, section, changes string) *httpt
 	}
 	req := settingsAuthedReq("POST", "/api/v1/settings/"+section, "tok", `{"changes":`+changes+`}`)
 	req.Header.Set("If-Match", getW.Header().Get("ETag"))
-	req.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, req)
 	w := httptest.NewRecorder()
 	s.apiSettingsPost(w, req)
 	return w
@@ -267,7 +267,7 @@ func TestFirewallTentativeApplyRejectsFileOnlyField(t *testing.T) {
 	req := settingsAuthedReq("POST", "/api/v1/settings/firewall/tentative-apply", "tok",
 		`{"changes":{"country_db_path":"/etc/shadow"},"timeout_min":2}`)
 	req.Header.Set("If-Match", getW.Header().Get("ETag"))
-	req.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, req)
 	w := httptest.NewRecorder()
 	s.apiFirewallTentativeApply(w, req)
 

@@ -104,7 +104,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Session store unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	s.renderTemplate(w, "sessions.html", map[string]any{"Sessions": views})
+	s.renderTemplate(w, r, "sessions.html", map[string]any{"Sessions": views})
 }
 
 func (s *Server) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {

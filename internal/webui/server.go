@@ -965,7 +965,7 @@ func (s *Server) templateFuncs() template.FuncMap {
 		"formatTime":      formatTime,
 		"isoTime":         isoTime,
 		"asset":           s.assetURL,
-		"csrfToken":       s.csrfToken,
+		"csrfToken":       func() string { return "" }, // per request, see renderTemplate
 		"csmConfig":       func() template.JS { return jsonForScript(s.csmConfig()) },
 		"json":            jsonForScript,
 		"multiply":        func(a, b int) int { return a * b },
@@ -1045,18 +1045,27 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 // --- CSRF protection ---
 
-// csrfToken generates a deterministic CSRF token from an active admin secret.
-// This is safe because the credential is secret and the CSRF token is derived
-// via HMAC - knowing the CSRF token doesn't reveal the credential.
-func (s *Server) csrfToken() string {
+// csrfTokenForSession derives the CSRF token of one browser session from an
+// active admin secret and the session's cookie secret. Each session gets its
+// own token and a new login a new one; knowing a token reveals neither
+// secret. Without both secrets there is no token.
+func (s *Server) csrfTokenForSession(sessionSecret string) string {
 	secret := s.csrfSecret()
-	if secret == "" {
+	if secret == "" || sessionSecret == "" {
 		return ""
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
-	// Include start time so token rotates on each daemon restart
-	fmt.Fprintf(mac, "csm-csrf-v1:%d", s.startTime.Unix())
+	fmt.Fprintf(mac, "csm-csrf-v2:%s", sessionSecret)
 	return hex.EncodeToString(mac.Sum(nil))[:32]
+}
+
+// csrfTokenFor is the CSRF token of the browser session r carries.
+func (s *Server) csrfTokenFor(r *http.Request) string {
+	c, err := r.Cookie("csm_auth")
+	if err != nil {
+		return ""
+	}
+	return s.csrfTokenForSession(c.Value)
 }
 
 func (s *Server) csrfSecret() string {
@@ -1088,9 +1097,9 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 		return true
 	}
 
-	expected := s.csrfToken()
-	// A request without an active admin secret cannot prove it came from a
-	// browser session, so the mutating path stays closed.
+	expected := s.csrfTokenFor(r)
+	// A request without an admin secret or a browser session cannot prove
+	// it came from a page of that session, so the mutating path stays closed.
 	if expected == "" {
 		return false
 	}
@@ -1100,8 +1109,9 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 		return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
 	}
 
-	// Check form field (traditional form posts)
-	if token := r.FormValue("csrf_token"); token != "" {
+	// Check form field (traditional form posts). Only the body counts: a
+	// token in the query string would end up in URLs, logs and Referer.
+	if token := r.PostFormValue("csrf_token"); token != "" {
 		return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
 	}
 

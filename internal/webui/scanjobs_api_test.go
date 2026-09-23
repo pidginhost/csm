@@ -103,7 +103,7 @@ func cookiePost(t *testing.T, s *Server, adminTok, path string, withCSRF bool, b
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(testBrowserCookie(t, s, adminTok))
 	if withCSRF {
-		req.Header.Set("X-CSRF-Token", s.csrfToken())
+		setSessionCSRF(s, req)
 	}
 	s.httpSrv.Handler.ServeHTTP(w, req)
 	return w

@@ -18,8 +18,8 @@ func (s *Server) SetVerifiedBotsReloader(fn func() error) {
 	s.verifiedBotsReloader = fn
 }
 
-func (s *Server) handleVerifiedBots(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "verified-bots.html", map[string]string{
+func (s *Server) handleVerifiedBots(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "verified-bots.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

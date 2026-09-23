@@ -12,7 +12,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" https://server:9443/api/v1/status
 curl -b "csm_auth=SESSION_COOKIE_FROM_LOGIN" https://server:9443/api/v1/status
 ```
 
-Cookie-authenticated state-changing requests require the `X-CSRF-Token` header (obtained from the authenticated page meta tag). Admin-scope Bearer requests are CSRF-exempt because the `Authorization` header is the write credential.
+Cookie-authenticated state-changing requests require the `X-CSRF-Token` header (obtained from the authenticated page meta tag). The token belongs to the browser session that loaded the page; another session's token is refused, and a form field is read from the request body only. Admin-scope Bearer requests are CSRF-exempt because the `Authorization` header is the write credential.
 
 ### Browser session management
 

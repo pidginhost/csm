@@ -12,8 +12,8 @@ import (
 	"github.com/pidginhost/csm/internal/yara"
 )
 
-func (s *Server) handleRules(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "rules.html", map[string]string{
+func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "rules.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

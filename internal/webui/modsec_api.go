@@ -11,8 +11,8 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-func (s *Server) handleModSec(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "modsec.html", map[string]string{
+func (s *Server) handleModSec(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "modsec.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

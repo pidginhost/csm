@@ -3,6 +3,7 @@ package webui
 import (
 	"bytes"
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"time"
@@ -10,13 +11,23 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 )
 
-func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interface{}) {
-	tmpl := s.templates[name]
-	if tmpl == nil {
+func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name string, data interface{}) {
+	base := s.templates[name]
+	if base == nil {
 		fmt.Fprintf(os.Stderr, "[webui] template %s missing\n", name)
 		http.Error(w, "template not found", http.StatusInternalServerError)
 		return
 	}
+	// The CSRF token belongs to the browser session loading the page, so
+	// each render binds it on a clone of the parsed template.
+	tmpl, err := base.Clone()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[webui] template %s clone error: %v\n", name, err)
+		http.Error(w, "template render error", http.StatusInternalServerError)
+		return
+	}
+	token := s.csrfTokenFor(r)
+	tmpl.Funcs(template.FuncMap{"csrfToken": func() string { return token }})
 	// Render into a buffer first so an execution error can still surface as a
 	// 500 — html/template streams directly to its writer, and once any byte
 	// has been flushed the status header is locked in.
@@ -73,7 +84,7 @@ type quarantineEntry struct {
 	Reason       string
 }
 
-func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	sum := s.statsSummary24h()
 
 	recent := make([]historyEntry, 0, len(sum.recent))
@@ -113,12 +124,12 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		LastCriticalISO: lastCriticalISO,
 		RecentFindings:  recent,
 	}
-	s.renderTemplate(w, "dashboard.html", data)
+	s.renderTemplate(w, r, "dashboard.html", data)
 }
 
-func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 	// Findings page is now JS-driven - enriched API provides data
-	s.renderTemplate(w, "findings.html", map[string]string{
+	s.renderTemplate(w, r, "findings.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
@@ -134,32 +145,32 @@ func (s *Server) handleHistoryRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
-func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "quarantine.html", quarantineData{
+func (s *Server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "quarantine.html", quarantineData{
 		Hostname: s.cfg.Hostname,
 	})
 }
 
-func (s *Server) handleCleanupHistory(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "cleanup-history.html", map[string]string{
+func (s *Server) handleCleanupHistory(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "cleanup-history.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
 
-func (s *Server) handleFirewall(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "firewall.html", map[string]string{
+func (s *Server) handleFirewall(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "firewall.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
 
-func (s *Server) handleEmail(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "email.html", map[string]string{
+func (s *Server) handleEmail(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "email.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
 
-func (s *Server) handleSettings(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "settings.html", map[string]string{
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "settings.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

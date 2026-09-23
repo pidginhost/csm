@@ -54,6 +54,6 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleHardening renders the hardening audit page.
-func (s *Server) handleHardening(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "hardening.html", nil)
+func (s *Server) handleHardening(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "hardening.html", nil)
 }

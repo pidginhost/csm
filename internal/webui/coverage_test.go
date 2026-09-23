@@ -603,10 +603,10 @@ func TestRequireAuthPassesAuthenticated(t *testing.T) {
 
 func TestCSRFTokenStable(t *testing.T) {
 	s := newTestServer(t, "t")
-	t1 := s.csrfToken()
-	t2 := s.csrfToken()
+	t1 := s.csrfTokenForSession("session")
+	t2 := s.csrfTokenForSession("session")
 	if t1 != t2 {
-		t.Error("csrfToken should be stable within a process")
+		t.Error("csrfToken should be stable for one session")
 	}
 	if len(t1) != 32 {
 		t.Errorf("length = %d, want 32", len(t1))
@@ -633,7 +633,8 @@ func TestValidateCSRFBearerBypass(t *testing.T) {
 func TestValidateCSRFHeaderTokenMatch(t *testing.T) {
 	s := newTestServer(t, "t")
 	req := httptest.NewRequest("POST", "/api/x", nil)
-	req.Header.Set("X-CSRF-Token", s.csrfToken())
+	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "session"})
+	setSessionCSRF(s, req)
 	if !s.validateCSRF(req) {
 		t.Error("matching header token should pass CSRF")
 	}

@@ -117,7 +117,7 @@ func TestBrowserSessionManagementRequiresAdminAndCSRF(t *testing.T) {
 			req.AddCookie(c)
 		}
 		if csrf {
-			req.Header.Set("X-CSRF-Token", s.csrfToken())
+			setSessionCSRF(s, req)
 		}
 		w := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(w, req)
@@ -186,7 +186,7 @@ func TestBrowserSessionLogoutRevokesAndRejectsGET(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	req.AddCookie(cookie)
-	req.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, req)
 	w := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(w, req)
 	if w.Code != http.StatusFound {

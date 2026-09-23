@@ -14,8 +14,8 @@ import (
 	"github.com/pidginhost/csm/internal/threat"
 )
 
-func (s *Server) handleThreat(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "threat.html", map[string]string{
+func (s *Server) handleThreat(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "threat.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

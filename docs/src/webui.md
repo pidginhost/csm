@@ -89,7 +89,7 @@ the request would exceed the API body-size limit, which includes finding details
 ## Security
 
 - **Authentication** - API bearer tokens in the header; opaque server-side browser sessions in HttpOnly/Secure/SameSite=Strict cookies
-- **CSRF** - HMAC-derived token on cookie-authenticated POST, PUT, PATCH, and DELETE requests
+- **CSRF** - HMAC-derived token bound to the browser session on cookie-authenticated POST, PUT, PATCH, and DELETE requests; a form sends it in the body, never the query string
 - **Headers** - X-Frame-Options DENY, Content-Security-Policy, HSTS, nosniff
 - **TLS** - Auto-generated self-signed certificate
 - **Rate limiting** - 5 login attempts/min, 600 API and `/metrics` requests/min per IPv4 address or IPv6 /64

@@ -266,15 +266,16 @@ func TestValidateCSRFFailsClosedWithoutSecret(t *testing.T) {
 
 func TestCSRFTokenEmptyWithoutSecret(t *testing.T) {
 	s := newTestServer(t, "")
-	if got := s.csrfToken(); got != "" {
+	if got := s.csrfTokenForSession("session"); got != "" {
 		t.Fatalf("csrfToken without admin secret = %q, want empty", got)
 	}
 }
 
 func TestValidateCSRFViaFormField(t *testing.T) {
 	s := newTestServer(t, "tok")
-	form := "csrf_token=" + s.csrfToken()
+	form := "csrf_token=" + s.csrfTokenForSession("session")
 	req := httptest.NewRequest("POST", "/api/x", strings.NewReader(form))
+	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "session"})
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if !s.validateCSRF(req) {
 		t.Error("matching form csrf_token should pass CSRF")
@@ -284,7 +285,8 @@ func TestValidateCSRFViaFormField(t *testing.T) {
 func TestValidateCSRFOnDeleteWithHeader(t *testing.T) {
 	s := newTestServer(t, "tok")
 	req := httptest.NewRequest("DELETE", "/api/x", nil)
-	req.Header.Set("X-CSRF-Token", s.csrfToken())
+	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "session"})
+	setSessionCSRF(s, req)
 	if !s.validateCSRF(req) {
 		t.Error("DELETE with valid CSRF header should pass")
 	}

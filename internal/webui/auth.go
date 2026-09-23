@@ -186,7 +186,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		s.renderTemplate(w, "login.html", nil)
+		s.renderTemplate(w, r, "login.html", nil)
 		return
 	}
 
@@ -239,7 +239,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// otherwise rotate operator history out of the audit file.
 		// #nosec G706 -- RemoteAddr is the TCP peer address net/http sets, not request content.
 		log.Printf("webui: failed browser login from %s", safeLogString(clientIPKey(r.RemoteAddr)))
-		s.renderTemplate(w, "login.html", map[string]string{"Error": "Invalid token"})
+		s.renderTemplate(w, r, "login.html", map[string]string{"Error": "Invalid token"})
 		return
 	}
 

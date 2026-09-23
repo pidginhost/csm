@@ -594,6 +594,6 @@ func (s *Server) dismissPerfFinding(key string) {
 }
 
 // handlePerformance renders the performance dashboard page.
-func (s *Server) handlePerformance(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "performance.html", nil)
+func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "performance.html", nil)
 }

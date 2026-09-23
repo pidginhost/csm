@@ -16,7 +16,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/findings", http.StatusFound)
 		return
 	}
-	s.renderTemplate(w, "account.html", map[string]string{
+	s.renderTemplate(w, r, "account.html", map[string]string{
 		"Hostname":    s.cfg.Hostname,
 		"AccountName": name,
 		"HomeDir":     checks.AccountHomeDirIn(s.accountRoots(), name),

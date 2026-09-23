@@ -48,7 +48,7 @@ func TestAPIFirewallTentativeApplyAndConfirm(t *testing.T) {
 	postBody := `{"changes":{"enabled":true,"tcp_in":[80,443],"conn_limit":500},"timeout_min":2}`
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall/tentative-apply", "tok", postBody)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiFirewallTentativeApply(postW, postReq)
 	if postW.Code != 200 {
@@ -95,7 +95,7 @@ func TestAPIFirewallTentativeApplyAndConfirm(t *testing.T) {
 
 	// Confirm.
 	confirmReq := settingsAuthedReq("POST", "/api/v1/settings/firewall/confirm", "tok", "")
-	confirmReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, confirmReq)
 	confirmW := httptest.NewRecorder()
 	s.apiFirewallRollbackConfirm(confirmW, confirmReq)
 	if confirmW.Code != 200 {
@@ -123,7 +123,7 @@ func TestAPIFirewallTentativeApplyRefusesWhenAlreadyPending(t *testing.T) {
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall/tentative-apply", "tok",
 		`{"changes":{"conn_limit":500}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiFirewallTentativeApply(postW, postReq)
 	if postW.Code != 409 {
@@ -275,7 +275,7 @@ func TestAPIFirewallRollbackConfirmWithNoneReturns409(t *testing.T) {
 	installRollbackManager(t, s.cfg.StatePath, cfgPath)
 
 	req := settingsAuthedReq("POST", "/api/v1/settings/firewall/confirm", "tok", "")
-	req.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, req)
 	w := httptest.NewRecorder()
 	s.apiFirewallRollbackConfirm(w, req)
 	if w.Code != 409 {

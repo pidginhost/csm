@@ -30,8 +30,8 @@ func validateModSecDisabledRules(allRules []modsec.Rule, disabled []int) error {
 	return nil
 }
 
-func (s *Server) handleModSecRules(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "modsec-rules.html", map[string]string{
+func (s *Server) handleModSecRules(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "modsec-rules.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

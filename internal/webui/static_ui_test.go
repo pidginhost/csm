@@ -2392,7 +2392,8 @@ func TestCSRFValidatorSkipsAdminBearerAndChecksConstantTime(t *testing.T) {
 		`!s.isAdminBearerAuth(r) && !s.validateCSRF(r)`,
 		`subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1`,
 		`if token := r.Header.Get("X-CSRF-Token"); token != "" {`,
-		`if token := r.FormValue("csrf_token"); token != "" {`,
+		// Form tokens come from the body only; TestCSRFFormTokenMustComeFromTheBody.
+		`if token := r.PostFormValue("csrf_token"); token != "" {`,
 		`http.Error(w, "Invalid CSRF token", http.StatusForbidden)`,
 	} {
 		if !strings.Contains(text, fragment) {

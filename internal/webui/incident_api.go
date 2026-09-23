@@ -32,8 +32,8 @@ const incidentTimelineEventLimit = 200
 // 1000-incident ceiling) but bounds worst-case wall time and memory.
 const incidentSnapshotScanCap = 1000
 
-func (s *Server) handleIncident(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "incident.html", map[string]string{
+func (s *Server) handleIncident(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "incident.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

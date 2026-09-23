@@ -469,7 +469,7 @@ func TestRenderTemplateMissingTemplate(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
 	w := httptest.NewRecorder()
 	delete(s.templates, "dashboard.html")
-	s.renderTemplate(w, "never-existed.html", nil)
+	s.renderTemplate(w, httptest.NewRequest(http.MethodGet, "/", nil), "never-existed.html", nil)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}

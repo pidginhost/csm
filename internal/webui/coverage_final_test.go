@@ -785,7 +785,7 @@ func TestRenderTemplateMissingTemplateFinalCoverage(t *testing.T) {
 	s.templates = map[string]*template.Template{}
 
 	w := httptest.NewRecorder()
-	s.renderTemplate(w, "missing.html", nil)
+	s.renderTemplate(w, httptest.NewRequest(http.MethodGet, "/", nil), "missing.html", nil)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
@@ -803,7 +803,7 @@ func TestRenderTemplateExecuteErrorFinalCoverage(t *testing.T) {
 	// Empty struct data: html/template evaluates the field selector and
 	// returns an exec error ("can't evaluate field MissingField"). Passing
 	// nil here would silently render an empty body without erroring.
-	s.renderTemplate(w, "bad.html", struct{}{})
+	s.renderTemplate(w, httptest.NewRequest(http.MethodGet, "/", nil), "bad.html", struct{}{})
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}

@@ -213,8 +213,8 @@ func (s *Server) searchAuditEntries(search string, limit int) []UIAuditEntry {
 	return matched
 }
 
-func (s *Server) handleAudit(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "audit.html", map[string]string{
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "audit.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
