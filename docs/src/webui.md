@@ -92,7 +92,8 @@ the request would exceed the API body-size limit, which includes finding details
 - **CSRF** - HMAC-derived token on cookie-authenticated POST, PUT, PATCH, and DELETE requests
 - **Headers** - X-Frame-Options DENY, Content-Security-Policy, HSTS, nosniff
 - **TLS** - Auto-generated self-signed certificate
-- **Rate limiting** - 5 login attempts/min, 600 API requests/min per IP
+- **Rate limiting** - 5 login attempts/min, 600 API and `/metrics` requests/min per IPv4 address or IPv6 /64
+- **Token length** - tokens shorter than 32 characters are reported as warnings at startup and by `csm validate` and `csm doctor`; they keep working
 - **Bearer auth** skips CSRF (for API-to-API calls)
 
 ## Browser sessions

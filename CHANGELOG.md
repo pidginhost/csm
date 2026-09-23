@@ -61,6 +61,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Startup, csm validate and csm doctor now warn about Web UI and metrics tokens shorter than 32 characters, since they can be guessed; such tokens keep working.
 - A flood of requests from many new addresses no longer makes each request scan the whole rate-limit table; a full table is trimmed once for many new addresses.
 - Login and API rate limits now count an IPv6 client by its /64 prefix, so rotating addresses inside one prefix no longer multiplies the allowed attempts.
 - The /metrics endpoint is now rate limited per client address like the API, so its token cannot be guessed at unlimited speed.

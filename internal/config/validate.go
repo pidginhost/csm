@@ -131,6 +131,7 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 
 	// --- WebUI ---
+	results = append(results, shortTokenWarnings(cfg)...)
 	for _, origin := range cfg.WebUI.AllowedOrigins {
 		if err := validateBrowserOrigin(origin); err != nil {
 			results = append(results, ValidationResult{"error", "webui.allowed_origins", fmt.Sprintf("%q: %v", origin, err)})
@@ -656,6 +657,31 @@ func Validate(cfg *Config) []ValidationResult {
 	results = append(results, validateWarnings(cfg)...)
 
 	return results
+}
+
+// minWebUITokenLength is the shortest Web UI or metrics token that is not
+// reported as guessable. The installer generates 64 hex characters.
+const minWebUITokenLength = 32
+
+// shortTokenWarnings reports tokens shorter than minWebUITokenLength. They
+// are warnings, never errors: startup, `csm validate` and `csm doctor` print
+// them, and an existing short token keeps working. Results name the token,
+// never its value.
+func shortTokenWarnings(cfg *Config) []ValidationResult {
+	advice := fmt.Sprintf("shorter than %d characters and guessable; replace it with a random value (the installer generates 64 hex characters)", minWebUITokenLength)
+	var out []ValidationResult
+	for _, tok := range cfg.WebUI.Tokens {
+		if tok.Token != "" && len(tok.Token) < minWebUITokenLength {
+			out = append(out, ValidationResult{"warn", "webui.tokens", fmt.Sprintf("token %q is %s", tok.Name, advice)})
+		}
+	}
+	if len(cfg.WebUI.Tokens) == 0 && cfg.WebUI.AuthToken != "" && len(cfg.WebUI.AuthToken) < minWebUITokenLength {
+		out = append(out, ValidationResult{"warn", "webui.auth_token", "auth_token is " + advice})
+	}
+	if cfg.WebUI.MetricsToken != "" && len(cfg.WebUI.MetricsToken) < minWebUITokenLength {
+		out = append(out, ValidationResult{"warn", "webui.metrics_token", "metrics_token is " + advice})
+	}
+	return out
 }
 
 func webUITokenCounts(cfg *Config) (tokens, admins int) {
