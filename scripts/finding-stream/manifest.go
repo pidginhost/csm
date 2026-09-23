@@ -34,6 +34,7 @@ type runManifest struct {
 	Tool            toolRevision      `json:"tool"`
 	SaltFingerprint string            `json:"salt_fingerprint"`
 	AddressMap      string            `json:"address_map"`
+	Addresses       addressCounts     `json:"addresses"`
 	Inputs          []streamFile      `json:"inputs"`
 	Outputs         []streamFile      `json:"outputs"`
 	InputManifest   *inventoryDigest  `json:"input_manifest,omitempty"`

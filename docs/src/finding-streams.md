@@ -37,7 +37,11 @@ What the tool replaces, in every structured field and in free text:
   field named them. Only pseudonyms actually emitted by this run are exempt;
   a raw name beginning with `host-` or `acct-` is still scrubbed.
 - IPv4 addresses map into 198.18.0.0/15 and IPv6 addresses into
-  2001:db8::/32, both reserved and never routed, one address per raw value.
+  2001:db8::/32, both reserved and never routed; a raw value always maps to
+  the same pseudonym. The IPv4 range holds 131,072 addresses, so distinct
+  addresses can share a pseudonym. A manifest counts distinct addresses and
+  distinct pseudonyms per family, and a replay cannot tell merged addresses
+  apart.
   Loopback addresses, system users such as `root` or `nobody`, and bare
   numeric uids are kept: they identify nobody and carry meaning.
   Equivalent IPv6 spellings share one pseudonym across all streams; IPv4

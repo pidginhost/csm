@@ -639,7 +639,7 @@ func (r *anonymizeRun) stage(o options, in *inputs, out *transformed, cov map[st
 	join, results := joinRecords(in.findings, in.actions, in.audits)
 	m := runManifest{
 		FormatVersion: manifestFormatVersion, Tool: tool, SaltFingerprint: saltFingerprint(salt),
-		AddressMap: "salted_not_topology_preserving", Inputs: in.files, Outputs: files, InputManifest: in.inventoryID,
+		AddressMap: "salted_not_topology_preserving", Addresses: a.AddressCounts(), Inputs: in.files, Outputs: files, InputManifest: in.inventoryID,
 		Join: join, DroppedFields: a.Dropped(), ActionResults: results, Coverage: cov,
 	}
 	s, err := stageOutput(r.ops, o.manifest, func(w io.Writer) error {

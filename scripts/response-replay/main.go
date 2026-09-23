@@ -355,10 +355,11 @@ type inputInfo struct {
 }
 
 type manifestInfo struct {
-	SHA256        string                    `json:"sha256"`
-	Coverage      map[string]string         `json:"coverage"`
-	ActionResults map[string]int            `json:"action_results"`
-	Join          responsereplay.BundleJoin `json:"join"`
+	SHA256        string                         `json:"sha256"`
+	Coverage      map[string]string              `json:"coverage"`
+	ActionResults map[string]int                 `json:"action_results"`
+	Join          responsereplay.BundleJoin      `json:"join"`
+	Addresses     responsereplay.BundleAddresses `json:"addresses"`
 }
 
 type coverageInfo struct {
@@ -442,7 +443,7 @@ var (
 	gaps = []string{
 		"infra_and_allowlist_protection", "verdict_callback", "subnet_spray_asn_crawl_netblock", "permanent_escalation",
 		"durable_retry_and_engine_failure", "manual_unblocks", "action_outcomes_unreviewed", "source_attribution",
-		"address_map_not_topology_preserving",
+		"address_map_not_topology_preserving", "address_pseudonym_collisions",
 	}
 	reportVocabulary = func() map[string]bool {
 		v := map[string]bool{reconstructionAssumption: true}
@@ -495,7 +496,7 @@ func (r *replayRun) execute(args []string, stdout io.Writer) error {
 		if out.SHA256 != rec.SHA256 || out.Records != rec.Rows {
 			return errManifestMismatch
 		}
-		rep.Manifest = &manifestInfo{SHA256: digest, Coverage: m.Coverage, ActionResults: m.ActionResults, Join: m.Join}
+		rep.Manifest = &manifestInfo{SHA256: digest, Coverage: m.Coverage, ActionResults: m.ActionResults, Join: m.Join, Addresses: m.Addresses}
 	}
 	if err = replay(&rep, rec, policy, loc, o); err != nil {
 		return err

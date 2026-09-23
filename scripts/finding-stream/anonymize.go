@@ -35,6 +35,10 @@ type Anonymizer struct {
 	rawIDLengths map[int]struct{}    // distinct lengths, not one text scan per id
 	rawIDText    map[string]struct{} // learned raw ids with other bytes
 	dropped      map[string]int      // discarded nonempty values per input field
+	// Raw address -> pseudonym, per family. The raw side never leaves the
+	// process; only the counts do.
+	ipv4Seen map[string]string
+	ipv6Seen map[string]string
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
@@ -52,6 +56,8 @@ func NewAnonymizer(salt []byte) *Anonymizer {
 		rawIDLengths: make(map[int]struct{}),
 		rawIDText:    make(map[string]struct{}),
 		dropped:      make(map[string]int),
+		ipv4Seen:     make(map[string]string),
+		ipv6Seen:     make(map[string]string),
 	}
 }
 
@@ -149,7 +155,9 @@ func (a *Anonymizer) IPv4(raw string) string {
 	mac.Write([]byte("ipv4\x00" + raw))
 	sum := mac.Sum(nil)
 	n := binary.BigEndian.Uint32(sum[:4]) & 0x1ffff // 17 bits: 198.18.0.0/15
-	return a.remember(fmt.Sprintf("198.%d.%d.%d", 18+(n>>16), (n>>8)&0xff, n&0xff))
+	out := a.remember(fmt.Sprintf("198.%d.%d.%d", 18+(n>>16), (n>>8)&0xff, n&0xff))
+	a.ipv4Seen[raw] = out
+	return out
 }
 
 // IPv6 maps an address into 2001:db8::/32 (RFC 3849 documentation prefix).
@@ -164,9 +172,11 @@ func (a *Anonymizer) IPv6(raw string) string {
 	mac := hmac.New(sha256.New, a.salt)
 	mac.Write([]byte("ipv6\x00" + strings.ToLower(raw)))
 	sum := mac.Sum(nil)
-	return a.remember(fmt.Sprintf("2001:db8:%x:%x::%x:%x",
+	out := a.remember(fmt.Sprintf("2001:db8:%x:%x::%x:%x",
 		binary.BigEndian.Uint16(sum[0:2]), binary.BigEndian.Uint16(sum[2:4]),
 		binary.BigEndian.Uint16(sum[4:6]), binary.BigEndian.Uint16(sum[6:8])))
+	a.ipv6Seen[strings.ToLower(raw)] = out
+	return out
 }
 
 // Learn collects the identities the events carry in structured fields and
@@ -851,6 +861,31 @@ func eventText(e alert.AuditEvent) string {
 		parts = append(parts, p.Cmdline...)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// addressCounts says how many distinct addresses each family mapped and how
+// many distinct pseudonyms they became. Fewer pseudonyms than addresses means
+// some addresses were merged; the IPv4 map has only a 17-bit range.
+type addressCounts struct {
+	IPv4Addresses  int `json:"ipv4_addresses"`
+	IPv4Pseudonyms int `json:"ipv4_pseudonyms"`
+	IPv6Addresses  int `json:"ipv6_addresses"`
+	IPv6Pseudonyms int `json:"ipv6_pseudonyms"`
+}
+
+// AddressCounts reports the address mapping's collisions so far.
+func (a *Anonymizer) AddressCounts() addressCounts {
+	distinct := func(m map[string]string) int {
+		seen := map[string]bool{}
+		for _, v := range m {
+			seen[v] = true
+		}
+		return len(seen)
+	}
+	return addressCounts{
+		IPv4Addresses: len(a.ipv4Seen), IPv4Pseudonyms: distinct(a.ipv4Seen),
+		IPv6Addresses: len(a.ipv6Seen), IPv6Pseudonyms: distinct(a.ipv6Seen),
+	}
 }
 
 // Counts reports how many replacements of each kind Text performed.

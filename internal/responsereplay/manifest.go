@@ -17,6 +17,7 @@ type BundleManifest struct {
 	Tool            BundleTool        `json:"tool"`
 	SaltFingerprint string            `json:"salt_fingerprint"`
 	AddressMap      string            `json:"address_map"`
+	Addresses       BundleAddresses   `json:"addresses"`
 	Inputs          []BundleFile      `json:"inputs"`
 	Outputs         []BundleFile      `json:"outputs"`
 	InputManifest   *BundleInventory  `json:"input_manifest,omitempty"`
@@ -40,6 +41,16 @@ type BundleFile struct {
 	Records int        `json:"records"`
 	MinTS   *time.Time `json:"min_ts,omitempty"`
 	MaxTS   *time.Time `json:"max_ts,omitempty"`
+}
+
+// BundleAddresses counts distinct addresses and the distinct pseudonyms
+// they became, per family. Fewer pseudonyms than addresses means distinct
+// addresses were merged, which replay cannot undo.
+type BundleAddresses struct {
+	IPv4Addresses  int `json:"ipv4_addresses"`
+	IPv4Pseudonyms int `json:"ipv4_pseudonyms"`
+	IPv6Addresses  int `json:"ipv6_addresses"`
+	IPv6Pseudonyms int `json:"ipv6_pseudonyms"`
 }
 
 type BundleInventory struct {
@@ -134,6 +145,11 @@ func validBundle(m BundleManifest) bool {
 		if count < 0 {
 			return false
 		}
+	}
+	ad := m.Addresses
+	if ad.IPv4Addresses < 0 || ad.IPv4Pseudonyms < 0 || ad.IPv6Addresses < 0 || ad.IPv6Pseudonyms < 0 ||
+		ad.IPv4Pseudonyms > ad.IPv4Addresses || ad.IPv6Pseudonyms > ad.IPv6Addresses {
+		return false
 	}
 	j := m.Join
 	for _, count := range []int{j.FindingRows, j.UniqueFindingIDs, j.DuplicateFindingRows, j.FindingRowsWithoutID, j.FindingRowsUnstamped,

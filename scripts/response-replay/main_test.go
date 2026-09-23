@@ -390,7 +390,8 @@ func bundleFor(t *testing.T, findings string, records int) string {
 		DroppedFields: map[string]int{}, ActionResults: map[string]int{"applied": 4},
 		Coverage: map[string]string{"findings": "present", "actions": "present", "firewall_audit": "not_supplied",
 			"ledger": "unavailable", "review": "unavailable", "firewall_id_join": "not_applicable"},
-		Join: responsereplay.BundleJoin{FindingRows: records, ActionRows: 4, ActionRowsMatched: 3},
+		Join:      responsereplay.BundleJoin{FindingRows: records, ActionRows: 4, ActionRowsMatched: 3},
+		Addresses: responsereplay.BundleAddresses{IPv4Addresses: 9, IPv4Pseudonyms: 8, IPv6Addresses: 2, IPv6Pseudonyms: 2},
 	}
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -416,6 +417,9 @@ func TestReplayCarriesTheJoinedManifest(t *testing.T) {
 	if m["action_results"].(map[string]any)["applied"] != 4.0 || sub(report, "manifest", "join")["action_rows_matched"] != 3.0 ||
 		sub(report, "manifest", "coverage")["actions"] != "present" || sub(report, "coverage")["legacy_manifest_unavailable"] != false {
 		t.Fatalf("manifest not carried: %v", m)
+	}
+	if a := sub(report, "manifest", "addresses"); a["ipv4_addresses"] != 9.0 || a["ipv4_pseudonyms"] != 8.0 || a["ipv6_addresses"] != 2.0 {
+		t.Fatalf("address counts not carried: %v", a)
 	}
 	// Recorded outcomes are carried apart; they are not replay demand.
 	if sub(report, "hypothetical")["scan_blocked"] != 3.0 {
@@ -820,5 +824,24 @@ func TestReplayStatesItsDemandSource(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("assumptions = %v", report["assumptions"])
+	}
+}
+
+// Pseudonyms can merge distinct addresses; every report says so, and a
+// manifest's counts say how much.
+func TestReplayDisclosesAddressMerging(t *testing.T) {
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
+	out := filepath.Join(dir, "report.json")
+	if err := testRun().execute(fixtureArgs(findings, out), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	report, _ := readReport(t, out)
+	found := false
+	for _, g := range report["gaps"].([]any) {
+		found = found || g == "address_pseudonym_collisions"
+	}
+	if !found {
+		t.Fatalf("gaps = %v", report["gaps"])
 	}
 }

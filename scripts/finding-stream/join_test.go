@@ -369,7 +369,8 @@ func TestRunJoinsRecordedOutcomes(t *testing.T) {
 }
 
 var manifestKeys = map[string][]string{
-	"":               {"format_version", "tool", "salt_fingerprint", "address_map", "inputs", "outputs", "input_manifest", "join", "dropped_fields", "action_results", "coverage"},
+	"":               {"format_version", "tool", "salt_fingerprint", "address_map", "addresses", "inputs", "outputs", "input_manifest", "join", "dropped_fields", "action_results", "coverage"},
+	"addresses":      {"ipv4_addresses", "ipv4_pseudonyms", "ipv6_addresses", "ipv6_pseudonyms"},
 	"tool":           {"revision", "dirty", "go_version", "module_version"},
 	"inputs":         {"kind", "ordinal", "sha256", "records", "min_ts", "max_ts"},
 	"outputs":        {"kind", "ordinal", "sha256", "records", "min_ts", "max_ts"},
@@ -391,7 +392,7 @@ func assertManifestKeys(t *testing.T, m map[string]any) {
 		switch v := v.(type) {
 		case map[string]any:
 			switch k {
-			case "tool", "input_manifest":
+			case "tool", "input_manifest", "addresses":
 				check(k, v)
 			case "join":
 				for jk := range v {
