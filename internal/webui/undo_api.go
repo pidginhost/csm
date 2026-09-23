@@ -476,7 +476,7 @@ func (s *Server) undoBulkWhitelist(payload undoPayloadIPs) int {
 		// The bulk whitelist added a firewall allow rule; leaving it lets a
 		// mis-whitelisted attacker bypass every future block indefinitely.
 		if s.blocker != nil {
-			if remover, ok := s.blocker.(interface{ RemoveAllowIP(string) error }); ok {
+			if remover, ok := s.blocker.(allowRemover); ok {
 				_ = remover.RemoveAllowIP(ip)
 			}
 		}

@@ -43,13 +43,6 @@ type IPBlocker interface {
 	UnblockIP(ip string) error
 }
 
-// forceBlocker is an optional extension of IPBlocker for operator-initiated
-// blocks that must bypass the auto_response.dry_run gate. The firewall engine
-// implements this; test stubs need not.
-type forceBlocker interface {
-	BlockIPForce(ip string, reason string, timeout time.Duration) error
-}
-
 // blockIPForOperator calls BlockIPForce when the blocker supports it (engine
 // on live systems), otherwise falls back to BlockIP (test stubs). This ensures
 // operator-initiated blocks from the Web UI are never silenced by dry_run.

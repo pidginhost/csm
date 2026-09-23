@@ -235,9 +235,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if dur > 0 {
-		allower, ok := s.blocker.(interface {
-			TempAllowIP(string, string, time.Duration) error
-		})
+		allower, ok := s.blocker.(ipTempAllower)
 		if !ok || allower == nil {
 			writeJSONError(w, "Firewall allow rules are not available", http.StatusServiceUnavailable)
 			return
@@ -251,9 +249,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allower, ok := s.blocker.(interface {
-		AllowIP(string, string) error
-	})
+	allower, ok := s.blocker.(ipAllower)
 	if !ok || allower == nil {
 		writeJSONError(w, "Firewall allow rules are not available", http.StatusServiceUnavailable)
 		return
@@ -288,9 +284,7 @@ func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) 
 	// Audit, incident and threat records key on the canonical spelling.
 	req.IP = parsedIP.String()
 
-	allower, ok := s.blocker.(interface {
-		RemoveAllowIP(string) error
-	})
+	allower, ok := s.blocker.(allowRemover)
 	if !ok || allower == nil {
 		writeJSONError(w, "Firewall allow rules are not available", http.StatusServiceUnavailable)
 		return
@@ -432,9 +426,7 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sb, ok := s.blocker.(interface {
-		BlockSubnet(string, string, time.Duration) error
-	})
+	sb, ok := s.blocker.(subnetBlocker)
 	if !ok || sb == nil {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
 		return
@@ -471,9 +463,7 @@ func (s *Server) apiFirewallRemoveSubnet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	sb, ok := s.blocker.(interface {
-		UnblockSubnet(string) error
-	})
+	sb, ok := s.blocker.(subnetUnblocker)
 	if !ok || sb == nil {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
 		return
@@ -497,7 +487,7 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fb, ok := s.blocker.(interface{ FlushBlocked() error })
+	fb, ok := s.blocker.(blockFlusher)
 	if !ok || fb == nil {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
 		return
@@ -716,7 +706,7 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	// skip this step rather than fail the whole unban.
 	state, stateErr := firewall.LoadState(s.cfg.StatePath)
 	subnetRemoved := ""
-	if sb, ok := s.blocker.(interface{ UnblockSubnet(string) error }); ok && stateErr == nil && state != nil {
+	if sb, ok := s.blocker.(subnetUnblocker); ok && stateErr == nil && state != nil {
 		for _, sn := range state.BlockedNet {
 			_, network, err := net.ParseCIDR(sn.CIDR)
 			if err == nil && network.Contains(parsedIP) {

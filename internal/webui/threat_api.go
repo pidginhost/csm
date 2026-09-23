@@ -188,9 +188,7 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 				actions = append(actions, "unblocked from firewall")
 			}
 			// Also add to firewall allow list so it doesn't get re-blocked
-			if allower, ok := s.blocker.(interface {
-				AllowIP(string, string) error
-			}); ok {
+			if allower, ok := s.blocker.(ipAllower); ok {
 				if err := allower.AllowIP(req.IP, "CSM whitelist: customer IP"); err == nil {
 					actions = append(actions, "added to firewall allow list")
 				}
@@ -292,9 +290,7 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 
 	// Also remove from firewall allow list
 	if s.blocker != nil {
-		if remover, ok := s.blocker.(interface {
-			RemoveAllowIP(string) error
-		}); ok {
+		if remover, ok := s.blocker.(allowRemover); ok {
 			_ = remover.RemoveAllowIP(req.IP)
 		}
 	}
@@ -531,9 +527,7 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 				actions = append(actions, "unblocked from firewall")
 			}
 			// Temp allow in firewall too
-			if allower, ok := s.blocker.(interface {
-				TempAllowIP(string, string, time.Duration) error
-			}); ok {
+			if allower, ok := s.blocker.(ipTempAllower); ok {
 				if err := allower.TempAllowIP(req.IP, "CSM temp whitelist", ttl); err == nil {
 					actions = append(actions, fmt.Sprintf("temp allowed in firewall for %dh", req.Hours))
 				}
@@ -687,9 +681,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 				// Mirror apiThreatWhitelistIP flow
 				if s.blocker != nil {
 					_ = s.blocker.UnblockIP(ipStr)
-					if allower, ok := s.blocker.(interface {
-						AllowIP(string, string) error
-					}); ok {
+					if allower, ok := s.blocker.(ipAllower); ok {
 						_ = allower.AllowIP(ipStr, "CSM bulk whitelist")
 					}
 					if warning := coveringSubnetWarning(s.blocker, ipStr); warning != "" {
