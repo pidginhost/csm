@@ -211,17 +211,19 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	}
 
 	funcMap := template.FuncMap{
-		"severityClass": severityClass,
-		"severityLabel": severityLabel,
-		"timeAgo":       timeAgo,
-		"formatTime":    formatTime,
-		"csrfToken":     s.csrfToken,
-		"csmConfig":     func() template.JS { return jsonForScript(s.csmConfig()) },
-		"json":          jsonForScript,
-		"multiply":      func(a, b int) int { return a * b },
-		"add":           func(a, b int) int { return a + b },
-		"subtract":      func(a, b int) int { return a - b },
-		"divisibleBy":   func(a, b int) bool { return b != 0 && a%b == 0 },
+		"severityClass":   severityClass,
+		"severityLabel":   severityLabel,
+		"timeAgo":         timeAgo,
+		"formatTime":      formatTime,
+		"csrfToken":       s.csrfToken,
+		"csmConfig":       func() template.JS { return jsonForScript(s.csmConfig()) },
+		"json":            jsonForScript,
+		"multiply":        func(a, b int) int { return a * b },
+		"add":             func(a, b int) int { return a + b },
+		"subtract":        func(a, b int) int { return a - b },
+		"divisibleBy":     func(a, b int) bool { return b != 0 && a%b == 0 },
+		"serverTimeZone":  serverTimeZoneName,
+		"serverUTCOffset": serverUTCOffsetMinutes,
 	}
 
 	// Try to load templates from disk

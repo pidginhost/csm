@@ -201,8 +201,9 @@ CSM.fmtDate = function(ts, opts) {
             var pref = CSM.prefs && CSM.prefs.get ? CSM.prefs.get().timezone : 'local';
             var fmtOpts = { timeZoneName: 'short' };
             if (pref === 'server') {
-                var server = document.documentElement.getAttribute('data-csm-server-tz') || 'UTC';
-                fmtOpts.timeZone = server;
+                var zone = CSM.prefs.serverZone();
+                if (!zone.name) return result + ' ' + CSM.prefs.offsetLabel(zone.offsetMinutes);
+                fmtOpts.timeZone = zone.name;
             } else if (pref && pref !== 'local') {
                 fmtOpts.timeZone = pref;
             }

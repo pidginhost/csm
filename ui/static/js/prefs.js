@@ -135,9 +135,24 @@ CSM.prefs = (function() {
         };
     }
 
+    // serverZone describes the server's zone from the layout: its IANA name
+    // when the daemon knows it, else its current UTC offset in minutes.
+    function serverZone() {
+        var html = document.documentElement;
+        var name = html.getAttribute('data-csm-server-tz') || '';
+        var offset = parseInt(html.getAttribute('data-csm-server-offset') || '0', 10);
+        return { name: name, offsetMinutes: isFinite(offset) ? offset : 0 };
+    }
+
+    function offsetLabel(minutes) {
+        var sign = minutes < 0 ? '-' : '+';
+        var abs = Math.abs(minutes);
+        return 'UTC' + sign + String(Math.floor(abs / 60)).padStart(2, '0') + ':' + String(abs % 60).padStart(2, '0');
+    }
+
     // Format a Date according to the operator's timezone preference. Returns
-    // a YYYY-MM-DD HH:MM:SS string in the chosen zone. "server" defers to
-    // the layout's data-csm-server-tz hint; "local" uses the browser tz.
+    // a YYYY-MM-DD HH:MM:SS string in the chosen zone. "server" uses the
+    // server's zone, "local" the browser's.
     function formatDateTime(d) {
         if (!(d instanceof Date)) return '';
         var tz = state.timezone || 'local';
@@ -145,8 +160,14 @@ CSM.prefs = (function() {
                      hour: '2-digit', minute: '2-digit', second: '2-digit',
                      hour12: false, hourCycle: 'h23' };
         if (tz === 'server') {
-            var server = document.documentElement.getAttribute('data-csm-server-tz') || 'UTC';
-            opts.timeZone = server;
+            var zone = serverZone();
+            if (zone.name) {
+                opts.timeZone = zone.name;
+            } else {
+                // No zone name: shift by the offset and format as UTC.
+                d = new Date(d.getTime() + zone.offsetMinutes * 60000);
+                opts.timeZone = 'UTC';
+            }
         } else if (tz !== 'local') {
             opts.timeZone = tz;
         }
@@ -169,6 +190,8 @@ CSM.prefs = (function() {
         get: get,
         onChange: onChange,
         formatDateTime: formatDateTime,
+        serverZone: serverZone,
+        offsetLabel: offsetLabel,
         defaults: function() { return cloneDefaults(); }
     };
 })();
