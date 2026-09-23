@@ -182,13 +182,13 @@ func TestCompositedStatusTextHasReadableContrast(t *testing.T) {
 		return ""
 	}
 	mix := func(fg, bg string, alpha float64) string {
-		a, err := strconv.ParseUint(strings.TrimPrefix(fg, "#"), 16, 32)
-		if err != nil {
-			t.Fatalf("invalid foreground %q: %v", fg, err)
+		a, fgErr := strconv.ParseUint(strings.TrimPrefix(fg, "#"), 16, 32)
+		if fgErr != nil {
+			t.Fatalf("invalid foreground %q: %v", fg, fgErr)
 		}
-		b, err := strconv.ParseUint(strings.TrimPrefix(bg, "#"), 16, 32)
-		if err != nil {
-			t.Fatalf("invalid background %q: %v", bg, err)
+		b, bgErr := strconv.ParseUint(strings.TrimPrefix(bg, "#"), 16, 32)
+		if bgErr != nil {
+			t.Fatalf("invalid background %q: %v", bg, bgErr)
 		}
 		var rgb uint64
 		for _, shift := range []uint{16, 8, 0} {
