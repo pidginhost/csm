@@ -3548,9 +3548,9 @@ func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
 	// of its own restarted a second set of timers and reloaded even while
 	// auto-refresh was paused.
 	for _, page := range []string{"dashboard.js", "email.js", "performance.js"} {
-		src, err := os.ReadFile("../../ui/static/js/" + page)
-		if err != nil {
-			t.Fatal(err)
+		src, readErr := os.ReadFile("../../ui/static/js/" + page)
+		if readErr != nil {
+			t.Fatal(readErr)
 		}
 		if strings.Contains(string(src), "'visibilitychange'") {
 			t.Errorf("%s registers its own visibilitychange handler", page)
