@@ -1199,10 +1199,13 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Audit, incident and threat records key on the canonical spelling.
+	req.IP = parsedIP.String()
 	if req.Reason == "" {
 		req.Reason = "Blocked via CSM Web UI"
 	}

@@ -218,10 +218,13 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Audit, incident and threat records key on the canonical spelling.
+	req.IP = parsedIP.String()
 	if req.Reason == "" {
 		req.Reason = "Allowed via CSM Web UI"
 	}
@@ -277,10 +280,13 @@ func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, fmt.Sprintf("invalid IP address: %s", req.IP), http.StatusBadRequest)
 		return
 	}
+	// Audit, incident and threat records key on the canonical spelling.
+	req.IP = parsedIP.String()
 
 	allower, ok := s.blocker.(interface {
 		RemoveAllowIP(string) error
@@ -527,10 +533,13 @@ func (s *Server) apiFirewallFlushCphulk(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Audit, incident and threat records key on the canonical spelling.
+	req.IP = parsedIP.String()
 
 	flushCphulk(req.IP)
 	s.auditLog(r, "cphulk_clear", req.IP, "cleared cPHulk login history")
@@ -688,10 +697,13 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSON(w, map[string]interface{}{"success": false, "error_msg": err.Error()})
 		return
 	}
+	// Audit, incident and threat records key on the canonical spelling.
+	req.IP = parsedIP.String()
 
 	// 1. Unblock from CSM firewall (individual IP)
 	if s.blocker != nil {
@@ -703,7 +715,6 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	// only costs us the subnet sweep; the IP unblock above already ran, so
 	// skip this step rather than fail the whole unban.
 	state, stateErr := firewall.LoadState(s.cfg.StatePath)
-	parsedIP := net.ParseIP(req.IP)
 	subnetRemoved := ""
 	if sb, ok := s.blocker.(interface{ UnblockSubnet(string) error }); ok && stateErr == nil && state != nil {
 		for _, sn := range state.BlockedNet {
