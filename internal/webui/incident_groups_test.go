@@ -71,6 +71,28 @@ func TestAPIIncidentGroupsBucketsByIP(t *testing.T) {
 	}
 }
 
+// The status is accepted in any case; it must also filter in any case, not
+// pass validation and then match nothing.
+func TestAPIIncidentGroupsStatusIsCaseInsensitive(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	seedSprayIncidents(t, c, "192.0.2.1", 2)
+	srv := newTestServerWithIncidentCorrelator(t, c)
+	for _, status := range []string{"open", "Open", "%20OPEN%20"} {
+		w := httptest.NewRecorder()
+		srv.apiIncidentGroups(w, httptest.NewRequest(http.MethodGet, "/api/v1/incidents/groups?status="+status, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%s: code %d, body %s", status, w.Code, w.Body.String())
+		}
+		var resp incident.GroupsResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Groups) != 1 || resp.Groups[0].IncidentCount != 2 {
+			t.Errorf("status=%s: groups = %+v, want the open group", status, resp.Groups)
+		}
+	}
+}
+
 func TestAPIIncidentGroupsRejectsUnknownStatus(t *testing.T) {
 	c := incident.NewCorrelator(incident.CorrelatorConfig{})
 	srv := newTestServerWithIncidentCorrelator(t, c)

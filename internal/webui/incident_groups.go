@@ -42,7 +42,8 @@ func (s *Server) apiIncidentGroups(w http.ResponseWriter, r *http.Request) {
 		MaxGroups: limit,
 	}
 
-	switch strings.ToLower(strings.TrimSpace(q.Get("status"))) {
+	status := strings.ToLower(strings.TrimSpace(q.Get("status")))
+	switch status {
 	case "", "active":
 		// Default surface: open + contained, the UI's primary tab.
 		filter.StatusSet = []incident.Status{incident.StatusOpen, incident.StatusContained}
@@ -52,7 +53,7 @@ func (s *Server) apiIncidentGroups(w http.ResponseWriter, r *http.Request) {
 		string(incident.StatusContained),
 		string(incident.StatusResolved),
 		string(incident.StatusDismissed):
-		filter.StatusSet = []incident.Status{incident.Status(q.Get("status"))}
+		filter.StatusSet = []incident.Status{incident.Status(status)}
 	default:
 		writeJSONError(w, "unknown status: "+strconv.Quote(q.Get("status")), http.StatusBadRequest)
 		return
