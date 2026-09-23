@@ -635,16 +635,6 @@ function bulkAction(action) {
                 refreshFindings();
             }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
-
-    } else if (action === 'quarantine') {
-        var quarItems = bulkFixPayload(items);
-        if (!quarItems) return;
-        CSM.confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/').then(function() {
-            CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
-                CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
-                refreshFindings();
-            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }
 }
 

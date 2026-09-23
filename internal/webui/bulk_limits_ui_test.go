@@ -90,7 +90,6 @@ func TestFindingsBulkActionsCheckBodyLimit(t *testing.T) {
 	for _, fragment := range []string{
 		"new Blob([JSON.stringify(payload)]).size > CSM.FIX_BULK_BODY_MAX",
 		"var fixItems = bulkFixPayload(fixable);\n        if (!fixItems) return;\n        CSM.confirm(",
-		"var quarItems = bulkFixPayload(items);\n        if (!quarItems) return;\n        CSM.confirm(",
 	} {
 		if !strings.Contains(src, fragment) {
 			t.Errorf("findings.js missing request-size check %q", fragment)

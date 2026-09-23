@@ -85,8 +85,8 @@ disabled until the operation and refresh finish.
 
 Threat Intel bulk block and whitelist actions accept up to 100 selected IPs
 and retain one undo action. Larger selections must be narrowed before sending.
-Findings bulk fix and quarantine actions also ask for a smaller selection when
-the request would exceed the API body-size limit, which includes finding details.
+Findings bulk fix also asks for a smaller selection when the request would
+exceed the API body-size limit, which includes finding details.
 
 ## Security
 

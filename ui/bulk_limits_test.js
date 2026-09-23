@@ -165,7 +165,36 @@ for (const failure of [false, true]) {
     });
 }
 
-for (const action of ['fix', 'quarantine']) {
+function findingsBulk(CSM, row) {
+    const context = vm.createContext({ CSM, Blob,
+        getSelectedRows() { return [{ getAttribute(name) { return row[name] || ''; } }]; },
+        refreshFindings() {}
+    });
+    const source = script('findings.js');
+    vm.runInContext(source.slice(source.indexOf('// --- Bulk actions ---'),
+        source.indexOf('// --- Scan account ---')), context);
+    return context;
+}
+
+// Findings had a bulk "quarantine" path with no button that sent every
+// selected finding to the fix endpoint under a quarantine label. It is gone:
+// nothing reaches the fix endpoint except the Fix action.
+test('Findings has no bulk quarantine path to the fix endpoint', async () => {
+    const requests = [], confirmations = [];
+    const CSM = {
+        confirm(message) { confirmations.push(message); return Promise.resolve(); },
+        post(url, body) { requests.push({ url, body }); return Promise.resolve({}); },
+        toast() {}
+    };
+    batchHelper(CSM);
+    const context = findingsBulk(CSM, { 'data-check': 'webshell', 'data-message': 'File found', 'data-hasFix': 'false' });
+    context.bulkAction('quarantine');
+    await tick();
+    assert.equal(requests.length, 0);
+    assert.equal(confirmations.length, 0);
+});
+
+for (const action of ['fix']) {
     for (const oversized of [false, true]) {
         test('Findings ' + action + ' checks the UTF-8 request size, oversized=' + oversized, async () => {
             const requests = [], confirmations = [], toasts = [];
