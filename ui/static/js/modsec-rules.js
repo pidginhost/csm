@@ -117,13 +117,13 @@ function renderTable() {
             '" data-status="' + statusAttr +
             '" data-action="' + CSM.attr(r.action || '') +
             '" data-escalate="' + escalateAttr + '">';
-        html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input enable-toggle" data-id="' + r.id + '"' + (r.enabled ? ' checked' : '') + '></label></td>';
+        html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input enable-toggle" data-id="' + r.id + '" aria-label="Enable rule ' + r.id + '"' + (r.enabled ? ' checked' : '') + '></label></td>';
         html += '<td><code>' + r.id + '</code></td>';
         html += '<td>' + CSM.esc(r.description) + '</td>';
         html += '<td>' + actionBadge + '</td>';
         html += '<td>' + r.phase + '</td>';
         html += '<td>' + (r.hits_24h || 0) + '</td>';
-        html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input escalate-toggle" data-id="' + r.id + '"' + (r.escalate ? ' checked' : '') + '></label></td>';
+        html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input escalate-toggle" data-id="' + r.id + '" aria-label="Escalate rule ' + r.id + ' to a firewall block"' + (r.escalate ? ' checked' : '') + '></label></td>';
         html += '<td class="text-muted small" data-timestamp="' + lastHitTS + '" data-time-ago="' + lastHitTS + '">' + lastHit + '</td>';
         html += '</tr>';
     }

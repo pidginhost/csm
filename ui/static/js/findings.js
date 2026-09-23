@@ -171,7 +171,7 @@ function renderFindings(data) {
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
             ' data-hasVerify="' + (f.has_verify ? 'true' : 'false') + '"' +
             ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '">' +
-            '<td><input type="checkbox" class="form-check-input row-checkbox"></td>' +
+            '<td><input type="checkbox" class="form-check-input row-checkbox" aria-label="Select finding ' + CSM.attr(f.check + ': ' + f.message) + '"></td>' +
             '<td data-sort="' + severityRank(f.severity) + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
             '<td><code>' + CSM.esc(f.check) + '</code></td>' +
             '<td class="text-secondary csm-break-all">' + CSM.esc(f.message) + '</td>' +

@@ -116,7 +116,7 @@ function loadSuppressions() {
             html += '<td class="font-monospace small">' + CSM.esc(s.path_pattern || '(all)') + '</td>';
             html += '<td class="text-muted">' + CSM.esc(s.reason || '') + '</td>';
             html += '<td class="text-nowrap small">' + CSM.esc(created) + '</td>';
-            html += '<td><button class="btn btn-ghost-danger btn-sm delete-suppression-btn" data-id="' + CSM.esc(s.id) + '"><i class="ti ti-trash"></i></button></td>';
+            html += '<td><button class="btn btn-ghost-danger btn-sm delete-suppression-btn" data-id="' + CSM.esc(s.id) + '" aria-label="Delete the ' + CSM.attr(s.check) + ' suppression rule" title="Delete rule"><i class="ti ti-trash" aria-hidden="true"></i></button></td>';
             html += '</tr>';
         }
         html += '</tbody></table></div>';

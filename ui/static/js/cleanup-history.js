@@ -61,14 +61,14 @@
                 return;
             }
             var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="cleanup-files-table"><thead><tr>' +
-                '<th><input type="checkbox" class="form-check-input" id="cleanup-files-select-all"></th>' +
+                '<th><input type="checkbox" class="form-check-input" id="cleanup-files-select-all" aria-label="Select all visible file backups"></th>' +
                 '<th>Type</th><th>Original Path</th><th>Size</th><th>Archived</th><th>State</th><th>Reason</th><th>Actions</th></tr></thead><tbody>';
             for (var i = 0; i < files.length; i++) {
                 var f = files[i];
                 var size = Number(f.size || 0);
                 if (!isFinite(size)) size = 0;
                 html += '<tr>' +
-                    '<td><input type="checkbox" class="form-check-input cleanup-file-cb" data-id="' + CSM.esc(f.id) + '"></td>' +
+                    '<td><input type="checkbox" class="form-check-input cleanup-file-cb" data-id="' + CSM.esc(f.id) + '" aria-label="Select ' + CSM.esc(f.original_path || f.id) + '"></td>' +
                     '<td><span class="badge bg-azure-lt">' + CSM.esc(kindLabel(f.kind)) + '</span></td>' +
                     '<td><code>' + CSM.esc(f.original_path) + '</code></td>' +
                     '<td data-sort="' + size + '">' + formatSize(f.size) + '</td>' +

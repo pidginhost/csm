@@ -285,7 +285,7 @@ function loadTopAttackers() {
                         r.in_threat_db?'<span class="badge bg-warning text-dark">Threat DB</span>':
                         '<span class="text-muted">\u2014</span>';
         html+='<tr class="ip-row feed-item" data-ip="'+CSM.esc(r.ip)+'" data-country="'+CSM.attr((r.country||'').toUpperCase())+'" data-verdict="'+CSM.attr((r.verdict||'').toLowerCase())+'" data-last-seen="'+CSM.attr(r.last_seen||'')+'">';
-        html+='<td><input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'"></td>';
+        html+='<td><input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'" aria-label="Select '+CSM.attr(r.ip)+'"></td>';
         html+='<td><code class="font-monospace csm-copy" title="Click to copy">'+CSM.esc(r.ip)+'</code></td>';
         html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+CSM.esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+CSM.esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
@@ -297,10 +297,10 @@ function loadTopAttackers() {
         html+='<td>'+statusBadge+'</td>';
         html+='<td class="text-nowrap">';
         if(!r.currently_blocked){
-            html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h"><i class="ti ti-shield-lock"></i></button>';
+            html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h" aria-label="Block '+CSM.attr(r.ip)+' for 24 hours"><i class="ti ti-shield-lock"></i></button>';
         }
-        html+='<button class="btn btn-ghost-danger btn-sm quick-block-perm-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block permanently"><i class="ti ti-lock"></i></button>';
-        html+='<button class="btn btn-ghost-warning btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist"><i class="ti ti-shield-check"></i></button>';
+        html+='<button class="btn btn-ghost-danger btn-sm quick-block-perm-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block permanently" aria-label="Block '+CSM.attr(r.ip)+' permanently"><i class="ti ti-lock"></i></button>';
+        html+='<button class="btn btn-ghost-warning btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist" aria-label="Whitelist '+CSM.attr(r.ip)+'"><i class="ti ti-shield-check"></i></button>';
         html+='</td>';
         html+='</tr>';
     }

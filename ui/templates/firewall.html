@@ -190,7 +190,7 @@
                 <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
                 <div class="card-actions d-flex gap-2 flex-wrap">
                     <button type="button" id="blocked-bulk-unblock-btn" class="btn btn-outline-danger btn-sm d-none">Unblock selected</button>
-                    <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked IPs">
+                    <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked IPs" aria-label="Search blocked IPs">
                     <div class="dropdown">
                         <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
                             <i class="ti ti-download"></i>&nbsp;Export
@@ -248,7 +248,7 @@
             <div class="card-header">
                 <h3 class="card-title"><i class="ti ti-network"></i>&nbsp;Blocked Subnets</h3>
                 <div class="card-actions">
-                    <input type="text" id="subnet-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked subnets">
+                    <input type="text" id="subnet-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked subnets" aria-label="Search blocked subnets">
                 </div>
             </div>
             <div id="subnet-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
@@ -303,7 +303,7 @@
             <div class="card-header">
                 <h3 class="card-title"><i class="ti ti-shield-up"></i>&nbsp;Allow Rules &amp; Port Exceptions</h3>
                 <div class="card-actions">
-                    <input type="text" id="allowed-search" class="form-control form-control-sm csm-input-md" placeholder="Search allow rules">
+                    <input type="text" id="allowed-search" class="form-control form-control-sm csm-input-md" placeholder="Search allow rules" aria-label="Search allow rules">
                 </div>
             </div>
             <div id="allowed-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
@@ -313,7 +313,7 @@
             <div class="card-header">
                 <h3 class="card-title"><i class="ti ti-user-shield"></i>&nbsp;Whitelisted IPs</h3>
                 <div class="card-actions">
-                    <input type="text" id="whitelist-search" class="form-control form-control-sm csm-input-md" placeholder="Search whitelist">
+                    <input type="text" id="whitelist-search" class="form-control form-control-sm csm-input-md" placeholder="Search whitelist" aria-label="Search whitelist">
                 </div>
             </div>
             <div class="card-body pb-0">
