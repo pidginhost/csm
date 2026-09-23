@@ -440,6 +440,35 @@ func TestSidebarNavCoversEveryVisiblePage(t *testing.T) {
 	}
 }
 
+// Pages that change how CSM detects and responds sit together under
+// Configuration; Response keeps the pages an operator acts from.
+func TestSidebarGroupsPagesByTask(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+	groups := map[string][]string{}
+	for _, part := range strings.Split(text, `data-csm-nav-group="`)[1:] {
+		name := part[:strings.Index(part, `"`)]
+		for _, m := range regexp.MustCompile(`data-csm-route="([a-z-]+)"`).FindAllStringSubmatch(part, -1) {
+			groups[name] = append(groups[name], m[1])
+		}
+	}
+	want := map[string][]string{
+		"overview":      {"dashboard"},
+		"triage":        {"incident", "findings"},
+		"response":      {"firewall", "quarantine", "cleanup-history", "email", "modsec", "threat"},
+		"operations":    {"performance", "hardening", "audit"},
+		"configuration": {"rules", "modsec-rules", "verified-bots", "settings"},
+	}
+	for name, routes := range want {
+		if strings.Join(groups[name], ",") != strings.Join(routes, ",") {
+			t.Errorf("sidebar group %s = %v, want %v", name, groups[name], routes)
+		}
+	}
+}
+
 func TestSidebarNavScopeAndStateHooksPresent(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
 	if err != nil {
@@ -1246,14 +1275,17 @@ func TestModSecPageUsesPhase8Primitives(t *testing.T) {
 		`id="modsec-top-domains"`,
 		`id="modsec-tab-blocked"`,
 		`id="modsec-tab-events"`,
-		`id="modsec-tab-rules"`,
+		`<a href="/modsec/rules" class="btn btn-ghost-secondary btn-sm"><i class="ti ti-settings"></i>&nbsp;Manage Rules</a>`,
 		`class="csm-toolbar"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("modsec.html missing phase-8 hook %q", want)
 		}
 	}
+	// The rule manager is reached from the header link; a tab holding only
+	// that link again was removed.
 	for _, banned := range []string{
+		`id="modsec-tab-rules"`,
 		`id="stat-total"`,
 		`id="stat-ips"`,
 		`id="stat-escalated"`,

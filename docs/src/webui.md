@@ -14,9 +14,9 @@ groups only reorder visibility:
 
 - **Overview** - Dashboard
 - **Triage** - Incidents, Findings (Active and History tabs)
-- **Response** - Firewall, Quarantine, Cleanup, Email, ModSecurity, Verified Bots, Threat Intel
-- **Operations** - Performance, Hardening, Rules, ModSec Rules, Audit
-- **Configuration** - Settings
+- **Response** - Firewall, Quarantine, Cleanup, Email, ModSecurity, Threat Intel
+- **Operations** - Performance, Hardening, Audit
+- **Configuration** - Rules, ModSec Rules, Verified Bots, Settings
 
 Sidebar group expand/collapse state is saved in the browser. On
 viewports under 992px the sidebar collapses into a top-bar drawer
@@ -35,7 +35,7 @@ scope. The header links to session management.
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
 | **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
 | **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), the whitelist and allow rules (Allow Rules tab), search, audit log; the lookup links to Threat Intel for the same address; destructive actions live under the Danger tab |
-| **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, and Blocked IPs / Events / Rules tabs. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
+| **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, Blocked IPs / Events tabs, and a Manage Rules link to ModSec Rules. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
 | **ModSec Rules** | `/modsec/rules` | Enable or disable CSM rules (applied with one reload) and firewall escalation exclusions; the exclusion list works even when rule management is not configured |
 | **Email** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
