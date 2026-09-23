@@ -1025,7 +1025,9 @@ POST /api/v1/settings/firewall/confirm          Confirm tentative firewall chang
 POST /api/v1/settings/firewall/revert           Revert tentative firewall changes now
 ```
 
-Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Invalid field values return 422 and do not touch disk. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
+Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Invalid field values return 422 and do not touch disk.
+
+Fields marked `file_only` in the schema are shown but refused on write with a 422: anything that names a command, an executable, a file path, a socket or an environment variable the daemon acts on as root can only be changed in `csm.yaml`. Changing `reputation.upstream.url` or `reputation.rspamd.url` also returns 422 unless the same request enters the credential for that address again, and is refused outright when the credential comes from an environment variable, so a stored credential is never sent to an address the caller picked. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
 
 ## Operator preferences
 

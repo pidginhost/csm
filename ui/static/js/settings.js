@@ -598,6 +598,10 @@
             }
         }
         wrapper.appendChild(inp);
+        if (field.file_only) {
+            inp.readOnly = true;
+            appendHint(wrapper, "Set in csm.yaml. The web UI cannot change this setting.");
+        }
         if (field.secret) {
             const secretBtn = btnWithIcon("Set new value", "key", "btn btn-outline-secondary btn-sm mt-2 settings-secret-set");
             secretBtn.addEventListener("click", function () {
@@ -914,6 +918,7 @@
         const out = {};
         if (!currentSchema) return out;
         currentSchema.fields.forEach(function (field) {
+            if (field.file_only) return;
             const nv = readFieldValue(field);
             const ov = lookupValue(initialValues, field.yaml_path);
             if (field.secret && nv === "") return;

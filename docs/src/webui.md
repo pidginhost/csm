@@ -41,7 +41,7 @@ scope. The header links to session management.
 | **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
 | **Audit** | `/audit` | System-wide action log with search, action and date filters, URL state, and export |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
-| **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer |
+| **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer. Commands, file paths, sockets and environment variable names are shown read-only and change only in `csm.yaml`; changing the rspamd or upstream address requires entering its credential again |
 | **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session |
 
 ## Bulk file actions

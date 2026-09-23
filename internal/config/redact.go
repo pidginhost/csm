@@ -4,6 +4,10 @@ import "slices"
 
 const redactedValue = "***REDACTED***"
 
+// RedactedValue is the placeholder Redact writes over a secret. A settings
+// save that sends it back means "keep the stored secret".
+const RedactedValue = redactedValue
+
 var sensitiveScalarPaths = map[string]struct{}{
 	"alerts.webhook.hmac_secret":                 {},
 	"auto_response.verdict_callback.hmac_secret": {},

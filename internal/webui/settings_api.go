@@ -337,6 +337,15 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		writeValidationErrors(w, errs)
 		return
 	}
+	rebindErrs, err := credentialRebindErrors(section, effectiveDisk, body.Changes)
+	if err != nil {
+		writeJSONError(w, "read current settings: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(rebindErrs) > 0 {
+		writeValidationErrors(w, rebindErrs)
+		return
+	}
 	// Validate the merged result before the edited YAML goes back through
 	// Load. This looks like a duplicate of the check further down, but Load
 	// rejects some combinations itself and returns a plain error, which loses
@@ -488,6 +497,79 @@ func writeValidationErrors(w http.ResponseWriter, errs []fieldError) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": errs})
 }
 
+const fileOnlyFieldMessage = "Change this in csm.yaml. The web UI cannot set commands, file paths, sockets or environment variable names."
+
+// credentialRebindErrors refuses a URL change that would send the stored
+// credential of that URL to a new address unless the same save enters the
+// credential again. A credential read from an environment variable cannot be
+// re-entered here, so its address can only change in csm.yaml.
+func credentialRebindErrors(section SettingsSection, current *config.Config, changes map[string]json.RawMessage) ([]fieldError, error) {
+	var errs []fieldError
+	var values map[string]interface{}
+	for _, field := range section.Fields {
+		if field.CredentialField == "" {
+			continue
+		}
+		raw, ok := changes[field.YAMLPath]
+		if !ok {
+			continue
+		}
+		var next string
+		if err := json.Unmarshal(raw, &next); err != nil {
+			continue
+		}
+		if values == nil {
+			v, err := extractSectionEffectiveValues(current, section)
+			if err != nil {
+				return nil, err
+			}
+			values = v
+		}
+		if next == settingsStringAt(values, field.YAMLPath) {
+			continue
+		}
+		if env := settingsStringAt(values, field.CredentialEnvField); env != "" {
+			errs = append(errs, fieldError{Field: field.YAMLPath, Message: "The credential for this address is read from environment variable " + env + ". Change the address in csm.yaml."})
+			continue
+		}
+		if settingsStringAt(values, field.CredentialField) == "" {
+			continue
+		}
+		if enteredSecret(changes[field.CredentialField]) == "" {
+			errs = append(errs, fieldError{Field: field.YAMLPath, Message: "Enter the credential again when changing this address. The stored one would otherwise be sent to the new address."})
+		}
+	}
+	return errs, nil
+}
+
+// settingsStringAt returns the string at a dotted path inside a section's
+// effective values, or "" when the path is absent or not a string.
+func settingsStringAt(values map[string]interface{}, dotted string) string {
+	var cur interface{} = values
+	for _, part := range strings.Split(dotted, ".") {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		cur = m[part]
+	}
+	s, _ := cur.(string)
+	return s
+}
+
+// enteredSecret returns a secret the request actually supplies: absent, empty
+// and the redaction placeholder all mean "keep the stored value".
+func enteredSecret(raw json.RawMessage) string {
+	if raw == nil {
+		return ""
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil || v == config.RedactedValue {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
 func buildChangeSet(section SettingsSection, clone *config.Config, changes map[string]json.RawMessage) ([]config.YAMLChange, []fieldError) {
 	var out []config.YAMLChange
 	var errs []fieldError
@@ -498,9 +580,13 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 			errs = append(errs, fieldError{Field: key, Message: "unknown field"})
 			continue
 		}
+		if field.FileOnly {
+			errs = append(errs, fieldError{Field: key, Message: fileOnlyFieldMessage})
+			continue
+		}
 		if field.Secret {
 			var sv string
-			if err := json.Unmarshal(raw, &sv); err == nil && sv == "***REDACTED***" {
+			if err := json.Unmarshal(raw, &sv); err == nil && sv == config.RedactedValue {
 				continue
 			}
 		}
