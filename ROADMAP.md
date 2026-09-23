@@ -354,6 +354,11 @@ Remaining: no complete action risk table, no shared limits or failure pause
 across the other response families, and no complete rollback and detection-time
 identity proof for every action. The reputation escalation loop also needs its
 own feedback-lifecycle guard; an hourly cap alone does not bound its lifetime.
+The IP block limit is one fixed host-wide hourly count that was never derived
+from measured demand. It holds back correct blocks as much as wrong ones, and
+blocks over it wait in a retry queue with no ordering or priority. The
+file-response failure pause is host-wide, so it does not yet follow the scoping
+rules below.
 
 **Decision:** classify every automated action into a tier, in one table with a
 completeness test:
@@ -366,20 +371,62 @@ completeness test:
 | 3 | quarantine or block | file quarantine, nftables block, virtual patch |
 | 4 | destructive or process-affecting | process kill, service restart, config rewrite |
 
-Each tier gets a confidence floor, a per-action circuit breaker (count per
-hour and per account, extending the file-response limits to other actions),
+Each tier gets a confidence floor, a per-action circuit breaker that follows
+the rules below (extending the file-response limits to other actions),
 mandatory identity revalidation immediately before tiers 3 and 4
 (inode and device for files, pidfd for processes, rule handle for firewall
-entries), and enough recorded metadata to reverse the action. A response
-mechanism that fails N times in a window disables itself and raises a finding
-saying so.
+entries), and enough recorded metadata to reverse the action.
+
+Every limit and breaker is also an attack surface: an attacker who can exhaust
+or trip one switches off the response to their own activity. Removing limits
+does not fix that, because an attacker who can trigger detections could then
+turn unbounded responses against the hosted sites. The limits therefore follow
+these rules:
+
+- A breaker pauses automatic action only. Detection, findings and alerts
+  continue at their own severity.
+- Budgets and failure pauses are scoped to what one actor can reach: an
+  account, a check, a source. A host-wide pause needs failures from
+  independent scopes, which shows the mechanism itself is broken.
+- A refusal caused by a changed or missing target never counts as a mechanism
+  failure. File responses already follow this.
+- Exhausting a budget on attacker-supplied targets, such as source addresses,
+  moves the response to a cheaper or wider tier (challenge, rate limit,
+  subnet block) instead of stopping or deferring it.
+- High-confidence findings keep reserved capacity that low-confidence findings
+  cannot use up.
+- A pause that leaves a Critical finding without its automatic action raises a
+  Critical alert and is reported by status and `csm doctor`.
+
+For firewall blocks the limit targets what makes a block wrong, not how many
+blocks there are:
+
+- One never-block set at the block chokepoint: infrastructure addresses, the
+  server's own addresses, the firewall allow list, verified crawlers, the
+  address of an active operator session, and a check that the blocked address
+  is the connecting peer or was reported by a trusted proxy.
+- A per-check breaker driven by evidence that its blocks were wrong: the
+  address had authenticated successfully, is a verified crawler, or was
+  unblocked by an operator. It moves that check to challenge or rate limit and
+  leaves other checks blocking.
+- Short first block lifetimes with the existing escalation ladder, so a wrong
+  block expires on its own.
+- Volume handled by aggregation (subnet and ASN blocks) and by sized firewall
+  sets. A fixed ceiling, if one stays, is a runaway guard far above measured
+  demand, and reaching it is Critical.
 
 **Acceptance:** the tier table is complete or the build fails; every reversible
 tier 2 to 4 action has an automated rollback test (firewall, quarantine,
 configuration), and irreversible actions declare their recovery limits; a
 deliberately broken detector in a test cannot exceed its circuit breaker; PID reuse, symlink swap, bind-mount ambiguity under CageFS
 and a file replaced between detection and action are each covered by a test
-that proves the action is refused.
+that proves the action is refused. Each breaker has an adversarial test: a
+decoy flood or induced failures, followed by the real payload, still yield the
+finding and a Critical alert, and other accounts keep automatic response. A
+synthetic block campaign larger than any fixed limit is blocked or aggregated
+with no address lost. Thresholds come from recorded finding streams, and those
+recordings include the firewall action log so operator unblocks can be
+measured.
 
 The "enough recorded metadata to reverse the action" half has a start:
 `internal/actionlog` records the operation, the finding that caused it, the
@@ -387,7 +434,8 @@ exact argv, the file digest before and after, and the command that reverses it.
 It covers six operations, not the whole tier 3 and 4 set -- see
 [action log coverage](#action-log-covers-six-of-twenty-seven-host-changes).
 
-**Size:** 1 week for the table, caps and revalidation; rollback tests on top.
+**Size:** 1 week for the table, breakers and revalidation; rollback and
+adversarial tests on top.
 
 ## Action log covers six of twenty-seven host changes
 
