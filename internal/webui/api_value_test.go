@@ -200,3 +200,22 @@ func BenchmarkHistoryPageUTCAndEncode(b *testing.B) {
 		_ = json.NewEncoder(io.Discard).Encode(out)
 	}
 }
+
+type hiddenTimes struct {
+	When time.Time `json:"when"`
+}
+
+type embedsHidden struct {
+	hiddenTimes
+	Name string `json:"name"`
+}
+
+// encoding/json promotes the fields of an unexported embedded struct, but
+// reflection cannot set them, so its times would go out in the host zone.
+// apiValue refuses such a type instead of sending them unconverted.
+func TestAPIValueRefusesUnreachableEmbeddedTimes(t *testing.T) {
+	_, err := apiValue(embedsHidden{hiddenTimes: hiddenTimes{When: utcTestAt}, Name: "x"})
+	if !errors.Is(err, errUnreachableField) {
+		t.Fatalf("err = %v, want errUnreachableField", err)
+	}
+}

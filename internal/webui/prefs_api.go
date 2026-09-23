@@ -196,10 +196,15 @@ func (s *Server) handlePutUserPrefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The stored preferences, with the action's ok flag next to them.
-	writeJSON(w, struct {
-		OK bool `json:"ok"`
-		userPrefsBlob
-	}{true, clean})
+	stored := map[string]interface{}{
+		"density":      clean.Density,
+		"timezone":     clean.Timezone,
+		"auto_refresh": clean.AutoRefresh,
+	}
+	if len(clean.TableColumns) > 0 {
+		stored["table_columns"] = clean.TableColumns
+	}
+	writeOK(w, stored)
 }
 
 // savedView represents one user-named filter combination for a page.

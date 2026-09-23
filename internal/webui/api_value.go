@@ -2,6 +2,7 @@ package webui
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -32,6 +33,11 @@ var timeType = reflect.TypeFor[time.Time]()
 var errResponseTooDeep = errors.New("response nests too deep to encode")
 
 const maxResponseDepth = 64
+
+// errUnreachableField refuses a response type that embeds an unexported
+// struct holding times or lists. encoding/json promotes its fields, but
+// reflection cannot set them, so they would go out unconverted.
+var errUnreachableField = errors.New("response type embeds an unexported struct apiValue cannot reach")
 
 // normalizeCache records, per type, whether apiValue may change a value of
 // it: it can reach a time.Time, a list or a map.
@@ -82,7 +88,7 @@ func needsNormalizingIn(t reflect.Type, seen map[reflect.Type]bool) bool {
 	case reflect.Struct:
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)
-			if f.IsExported() && needsNormalizingIn(f.Type, seen) {
+			if (f.IsExported() || f.Anonymous) && needsNormalizingIn(f.Type, seen) {
 				return true
 			}
 		}
@@ -189,7 +195,13 @@ func normalizeInPlace(v reflect.Value, depth int) error {
 	case reflect.Struct:
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)
-			if !f.IsExported() || !needsNormalizing(f.Type) {
+			if !needsNormalizing(f.Type) {
+				continue
+			}
+			if !f.IsExported() {
+				if f.Anonymous {
+					return fmt.Errorf("%w: %s in %s", errUnreachableField, f.Type, t)
+				}
 				continue
 			}
 			if err := normalizeInPlace(v.Field(i), depth+1); err != nil {
