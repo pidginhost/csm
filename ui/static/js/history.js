@@ -28,6 +28,7 @@
         if (sevFilter !== 'all') params.set('severity', sevFilter); else params.delete('severity');
         if (searchTerm) params.set('hsearch', searchTerm); else params.delete('hsearch');
         if (page > 0) params.set('hpage', String(page)); else params.delete('hpage');
+        if (perPage !== 50) params.set('hperpage', String(perPage)); else params.delete('hperpage');
         var qs = params.toString();
         history.replaceState(null, '', '/findings' + (qs ? '?' + qs : ''));
     }
@@ -286,6 +287,19 @@
     if (params.get('severity')) { sevFilter = params.get('severity'); document.getElementById('sev-filter').value = sevFilter; }
     if (params.get('hsearch')) { searchTerm = params.get('hsearch'); document.getElementById('history-search').value = searchTerm; }
     if (params.get('hpage')) { page = parseInt(params.get('hpage'), 10) || 0; }
+    var perPageEl = document.getElementById('history-per-page');
+    var perPageParam = params.get('hperpage');
+    if (perPageEl && perPageParam && Array.prototype.some.call(perPageEl.options, function(o) { return o.value === perPageParam; })) {
+        perPage = parseInt(perPageParam, 10);
+        perPageEl.value = perPageParam;
+    }
+    if (perPageEl) {
+        perPageEl.addEventListener('change', function() {
+            perPage = parseInt(this.value, 10) || 50;
+            page = 0;
+            loadHistory();
+        });
+    }
     var windowParam = /^(\d{1,3})h$/.exec(params.get('window') || '');
     if (windowParam && !fromDate && !toDate && +windowParam[1] >= 1 && +windowParam[1] <= 720) setWindow(+windowParam[1]);
     if (fromDate || toDate || windowHours) { if (clearBtn) clearBtn.classList.remove('d-none'); }

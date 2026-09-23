@@ -1,9 +1,11 @@
-{{define "title"}}Browser sessions{{end}}
+{{define "title"}}Browser Sessions{{end}}
 {{define "page"}}sessions{{end}}
 {{define "content"}}
 <div class="csm-page-header mb-3">
-  <h1 class="csm-page-header__title">Browser sessions</h1>
-  <p class="text-muted">Review administrator logins and revoke access from other browsers. Logging out does not rotate API credentials. Sessions end when the daemon restarts.</p>
+  <div class="csm-page-header__main">
+    <h1 class="csm-page-header__title"><i class="ti ti-devices"></i>&nbsp;Browser Sessions</h1>
+    <div class="csm-page-header__subtitle">Review administrator logins and revoke access from other browsers. Logging out does not rotate API credentials. Sessions end when the daemon restarts.</div>
+  </div>
 </div>
 <div class="card">
   <div class="table-responsive">

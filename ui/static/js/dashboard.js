@@ -427,11 +427,11 @@
                 var scanner = byCheck['http_scanner_profile'] || 0;
                 var total = Object.keys(byCheck).reduce(function(s, k) { return s + (byCheck[k] || 0); }, 0);
                 function stat(label, val, cls) {
-                    return '<div class="col-6 col-md-3">' +
+                    return '<div class="col-6 col-md-auto me-md-4">' +
                         '<div class="h1 m-0 ' + cls + '">' + (val || 0) + '</div>' +
                         '<div class="subheader">' + label + '</div></div>';
                 }
-                el.innerHTML = '<div class="row g-3 text-center">' +
+                el.innerHTML = '<div class="row g-3">' +
                     stat('Pending now', d.pending, '') +
                     stat('Escalated to block', d.escalated, (d.escalated ? 'text-danger' : '')) +
                     stat('Scanner routed', scanner, '') +

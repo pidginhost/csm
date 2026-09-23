@@ -410,7 +410,7 @@ function loadBlocked() {
                 h += '<a class="dropdown-item fw-cphulk-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-door-exit me-2"></i>Flush cPHulk only</a>';
                 h += '</div></div>';
                 h += '<button class="btn btn-sm btn-outline-secondary fw-unblock-btn me-1" data-ip="' + CSM.esc(ips[i].ip) + '">Unblock</button>';
-                h += '<button class="btn btn-sm btn-outline-success fw-whitelist-btn" data-ip="' + CSM.esc(ips[i].ip) + '">Whitelist</button>';
+                h += '<button class="btn btn-sm btn-outline-warning fw-whitelist-btn" data-ip="' + CSM.esc(ips[i].ip) + '">Whitelist</button>';
                 h += '</td>';
                 h += '</tr>';
             }
@@ -718,9 +718,9 @@ function renderIPDetails(ip, targetEl) {
             details += '<button class="btn btn-outline-danger btn-sm lookup-unban-btn" data-ip="' + CSM.esc(ip) + '">Unban everywhere</button>';
         }
         details += '<button class="btn btn-outline-secondary btn-sm lookup-clear-btn" data-ip="' + CSM.esc(ip) + '">Clear only</button>';
-        details += '<button class="btn btn-outline-success btn-sm lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
+        details += '<button class="btn btn-outline-warning btn-sm lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
         details += '<button class="btn btn-outline-primary btn-sm lookup-cphulk-btn" data-ip="' + CSM.esc(ip) + '">Flush cPHulk only</button>';
-        details += '<button class="btn btn-success btn-sm lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
+        details += '<button class="btn btn-outline-warning btn-sm lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
         details += '<a class="btn btn-ghost-secondary btn-sm" href="/threat?ip=' + encodeURIComponent(ip) + '" title="Reputation, attack history and score for this IP"><i class="ti ti-spy"></i>&nbsp;Threat Intel</a>';
         details += '</div>';
         targetEl.innerHTML = details;

@@ -300,7 +300,7 @@ function loadTopAttackers() {
             html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h"><i class="ti ti-shield-lock"></i></button>';
         }
         html+='<button class="btn btn-ghost-danger btn-sm quick-block-perm-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block permanently"><i class="ti ti-lock"></i></button>';
-        html+='<button class="btn btn-ghost-success btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist"><i class="ti ti-shield-check"></i></button>';
+        html+='<button class="btn btn-ghost-warning btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist"><i class="ti ti-shield-check"></i></button>';
         html+='</td>';
         html+='</tr>';
     }
@@ -430,7 +430,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         }
         html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Unblock IP and remove from all threat databases"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
         html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Temporarily allow this IP for a set number of hours"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
-        html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Permanently allow this IP - never block or flag it again"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
+        html+='<button class="btn btn-outline-warning btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Permanently allow this IP - never block or flag it again"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
         html+='<a class="btn btn-ghost-secondary btn-sm" href="/firewall?ip='+encodeURIComponent(intel.ip)+'" title="Firewall state and actions for this IP"><i class="ti ti-firewall-check"></i>&nbsp;Firewall</a>';
         html+='</div>';
         html+='</div></div></div>';

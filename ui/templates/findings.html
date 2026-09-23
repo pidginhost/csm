@@ -128,6 +128,12 @@
                         <button type="button" class="btn btn-primary btn-sm" id="date-filter-btn" title="Apply date range filter" aria-label="Apply date filter"><i class="ti ti-filter"></i></button>
                         <button type="button" class="btn btn-ghost-secondary btn-sm d-none" id="date-clear-btn" title="Clear date filter" aria-label="Clear date filter"><i class="ti ti-x"></i></button>
                     </div>
+                    <select id="history-per-page" class="form-select form-select-sm csm-auto-width" aria-label="Rows per page">
+                        <option value="25">25 / page</option>
+                        <option value="50" selected>50 / page</option>
+                        <option value="100">100 / page</option>
+                        <option value="200">200 / page</option>
+                    </select>
                     <a href="/api/v1/history/csv" id="history-csv" class="btn btn-ghost-secondary btn-sm" title="Download the newest 5,000 entries matching these filters as CSV"><i class="ti ti-download"></i>&nbsp;CSV</a>
                 </div>
                 <div id="history-content">

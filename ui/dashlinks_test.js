@@ -74,6 +74,33 @@ test('History shows the last 24 hours for window=24h', async () => {
     assert.equal(new URLSearchParams(page.window.location.search).get('window'), null);
 });
 
+function historyLimit(req) {
+    return new URLSearchParams(req.url.split('?')[1]).get('limit');
+}
+
+// History showed a fixed 50 rows per page.
+test('History page size is chosen and kept in the URL', async () => {
+    const page = findingsPage('/findings?tab=history');
+    page.document.querySelector('[href="#tab-history"]').dispatchEvent(new page.window.Event('shown.bs.tab'));
+    await settle();
+    assert.equal(historyLimit(page.respond('/api/v1/history', 200, { findings: [], total: 0 })), '50');
+    await settle();
+    const size = page.document.getElementById('history-per-page');
+    assert.ok(size, 'no page size control');
+    size.value = '200';
+    size.dispatchEvent(new page.window.Event('change'));
+    await settle();
+    assert.equal(historyLimit(page.respond('/api/v1/history', 200, { findings: [], total: 0 })), '200');
+    await settle();
+    assert.equal(new URLSearchParams(page.window.location.search).get('hperpage'), '200');
+
+    const again = findingsPage('/findings?tab=history&hperpage=100');
+    again.document.querySelector('[href="#tab-history"]').dispatchEvent(new again.window.Event('shown.bs.tab'));
+    await settle();
+    assert.equal(historyLimit(again.pending('/api/v1/history')[0]), '100');
+    assert.equal(again.document.getElementById('history-per-page').value, '100');
+});
+
 test('dashboard links open the matching finding and the 24h history', () => {
     const tmpl = templateBody('dashboard');
     for (const sev of ['2', '1', '0']) {

@@ -30,7 +30,7 @@
             <div class="card-header">
                 <h3 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Correlated Incidents</h3>
                 <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
-                    <select id="incident-status-filter" class="form-select form-select-sm" aria-label="Status filter">
+                    <select id="incident-status-filter" class="form-select form-select-sm csm-auto-width" aria-label="Status filter">
                         <option value="active">Open + contained</option>
                         <option value="all">All statuses</option>
                         <option value="open">Open</option>
@@ -38,7 +38,7 @@
                         <option value="resolved">Resolved</option>
                         <option value="dismissed">Dismissed</option>
                     </select>
-                    <select id="incident-page-size" class="form-select form-select-sm" aria-label="Page size">
+                    <select id="incident-page-size" class="form-select form-select-sm csm-auto-width" aria-label="Page size">
                         <option value="25">25 / page</option>
                         <option value="50" selected>50 / page</option>
                         <option value="100">100 / page</option>
@@ -78,13 +78,15 @@
             <div class="card-header">
                 <h3 class="card-title"><i class="ti ti-stack-2"></i>&nbsp;Grouped Incidents</h3>
                 <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
-                    <select id="grouped-status-filter" class="form-select form-select-sm" aria-label="Status filter">
+                    <select id="grouped-status-filter" class="form-select form-select-sm csm-auto-width" aria-label="Status filter">
                         <option value="active">Open + contained</option>
                         <option value="all">All statuses</option>
                         <option value="open">Open</option>
+                        <option value="contained">Contained</option>
                         <option value="resolved">Resolved</option>
+                        <option value="dismissed">Dismissed</option>
                     </select>
-                    <select id="grouped-kind-filter" class="form-select form-select-sm" aria-label="Kind filter">
+                    <select id="grouped-kind-filter" class="form-select form-select-sm csm-auto-width" aria-label="Kind filter">
                         <option value="">All kinds</option>
                         <option value="mailbox_takeover">Mailbox takeover</option>
                         <option value="mailbox_bruteforce">Mailbox brute force</option>
@@ -95,7 +97,7 @@
                         <option value="host_integrity_risk">Host integrity</option>
                         <option value="host_takeover">Host takeover</option>
                     </select>
-                    <select id="grouped-page-size" class="form-select form-select-sm" aria-label="Page size">
+                    <select id="grouped-page-size" class="form-select form-select-sm csm-auto-width" aria-label="Page size">
                         <option value="25">25 / page</option>
                         <option value="50" selected>50 / page</option>
                         <option value="100">100 / page</option>
