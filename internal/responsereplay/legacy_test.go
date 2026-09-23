@@ -392,7 +392,7 @@ func TestLegacyStateCopiesAreIsolated(t *testing.T) {
 	initial.Entries[0].IP = "changed"
 	snap := l.Snapshot()
 	snap.Pending[0].IP = "changed again"
-	snap.Entries = nil
+	snap.Entries[0].IP = "changed again"
 	if s := l.Snapshot(); s.Pending[0].IP != "203.0.113.1" || len(s.Entries) != 1 || s.Entries[0].IP != "198.51.100.1" {
 		t.Fatalf("state shared with a caller: %+v", s)
 	}
