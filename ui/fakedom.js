@@ -270,6 +270,8 @@ class Element extends Node {
         this._props.selected = !!v;
     }
     get options() { return this.querySelectorAll('option'); }
+    // A table row's own cells, as HTMLTableRowElement.cells.
+    get cells() { return this.children.filter(n => n.tagName === 'TD' || n.tagName === 'TH'); }
     remove(index) {
         if (this.tagName === 'SELECT' && arguments.length) {
             const option = this.options[index];

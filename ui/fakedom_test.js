@@ -16,6 +16,12 @@ test('innerHTML round-trips the markup pages generate', () => {
     assert.match(document.getElementById('t').outerHTML, /web&lt;shell&gt;/);
 });
 
+test('a table row lists its own cells', () => {
+    const { document } = createWindow('<table><tbody><tr id="r"><th>H</th><td>A<table><tr><td>inner</td></tr></table></td></tr></tbody></table>');
+    const cells = document.getElementById('r').cells;
+    assert.deepEqual(cells.map(c => c.tagName), ['TH', 'TD']);
+});
+
 test('selectors cover the forms the pages use', () => {
     const { document } = createWindow('<div id="a" class="x y"><p class="x"><span data-ts="1">s</span></p></div>' +
         '<input type="checkbox" class="cb" checked><input type="checkbox" class="cb">');
