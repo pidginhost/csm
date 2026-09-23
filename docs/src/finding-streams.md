@@ -295,6 +295,8 @@ go build -o /tmp/response-replay ./scripts/response-replay
 - A report is written only to a new path: it never replaces an existing
   file, and it cannot alias its recording or manifest through symbolic
   links, parent-directory traversal or hard links. It is staged beside the
-  resolved destination and published as a private file.
+  resolved destination and published as a private file, refusing the run
+  if another writer creates the destination in the meantime. A temporary
+  file cleanup failure is reported with whether the report was published.
 - Like a manifest, a report needs a build of a known commit without local
   changes.

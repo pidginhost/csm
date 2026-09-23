@@ -743,6 +743,65 @@ func TestReplayRefusesToReplaceAnExistingFile(t *testing.T) {
 	}
 }
 
+// Another writer can claim the destination after the preflight check. The
+// publication itself must refuse replacement, including links to inputs.
+func TestReplayRefusesOutputCreatedDuringReplay(t *testing.T) {
+	for _, kind := range []string{"file", "symlink", "hardlink"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
+			before, err := os.ReadFile(findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(dir, "report.json")
+			r := testRun()
+			createTemp := r.createTemp
+			var claimed os.FileInfo
+			r.createTemp = func(dir, pattern string) (reportFile, error) {
+				switch kind {
+				case "file":
+					err = os.WriteFile(out, []byte("irreplaceable"), 0o600)
+				case "symlink":
+					err = os.Symlink(findings, out)
+				case "hardlink":
+					err = os.Link(findings, out)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				claimed, err = os.Lstat(out)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return createTemp(dir, pattern)
+			}
+			var stdout bytes.Buffer
+			if err = r.execute(fixtureArgs(findings, out), &stdout); !errors.Is(err, errOutputExists) || stdout.Len() != 0 {
+				t.Errorf("got %v; summary %q", err, stdout.String())
+			}
+			after, err := os.Lstat(out)
+			if err != nil || claimed == nil || !os.SameFile(claimed, after) {
+				t.Fatalf("destination was replaced: %v", err)
+			}
+			want := before
+			if kind == "file" {
+				want = []byte("irreplaceable")
+			}
+			if raw, readErr := os.ReadFile(out); readErr != nil || !bytes.Equal(raw, want) {
+				t.Fatalf("destination contents changed: %v", readErr)
+			}
+			if raw, readErr := os.ReadFile(findings); readErr != nil || !bytes.Equal(raw, before) {
+				t.Fatalf("recording contents changed: %v", readErr)
+			}
+			staged, err := filepath.Glob(filepath.Join(dir, ".response-replay-*"))
+			if err != nil || len(staged) != 0 {
+				t.Fatalf("refused publication left staging files: %v, %v", staged, err)
+			}
+		})
+	}
+}
+
 type failingReportFile struct {
 	*os.File
 	fail string
@@ -775,7 +834,7 @@ func (f *failingReportFile) Close() error {
 func TestReplayWriteFailuresLeaveNothing(t *testing.T) {
 	dir := t.TempDir()
 	findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
-	for _, step := range []string{"create", "write", "sync", "close", "rename"} {
+	for _, step := range []string{"create", "write", "sync", "close", "link"} {
 		t.Run(step, func(t *testing.T) {
 			outDir := t.TempDir()
 			out := filepath.Join(outDir, "report.json")
@@ -790,11 +849,11 @@ func TestReplayWriteFailuresLeaveNothing(t *testing.T) {
 				}
 				return &failingReportFile{File: f, fail: step}, nil
 			}
-			r.rename = func(oldpath, newpath string) error {
-				if step == "rename" {
+			r.link = func(oldpath, newpath string) error {
+				if step == "link" {
 					return errReportInjected
 				}
-				return os.Rename(oldpath, newpath)
+				return os.Link(oldpath, newpath)
 			}
 			var stdout bytes.Buffer
 			if err := r.execute(fixtureArgs(findings, out), &stdout); !errors.Is(err, errWrite) || stdout.Len() != 0 {
@@ -803,6 +862,43 @@ func TestReplayWriteFailuresLeaveNothing(t *testing.T) {
 			entries, err := os.ReadDir(outDir)
 			if err != nil || len(entries) != 0 {
 				t.Fatalf("a failed write left %v", entries)
+			}
+		})
+	}
+}
+
+func TestReplayReportsTemporaryCleanupFailures(t *testing.T) {
+	for _, published := range []bool{false, true} {
+		t.Run(fmt.Sprintf("published=%t", published), func(t *testing.T) {
+			dir := t.TempDir()
+			findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
+			out := filepath.Join(dir, "report.json")
+			r := testRun()
+			r.remove = func(string) error { return errReportInjected }
+			want := errPublishedCleanup
+			if !published {
+				r.link = func(string, string) error { return errReportInjected }
+				want = errWriteCleanup
+			}
+			var stdout bytes.Buffer
+			err := r.execute(fixtureArgs(findings, out), &stdout)
+			if !errors.Is(err, want) || stdout.Len() != 0 {
+				t.Fatalf("got %v; summary %q", err, stdout.String())
+			}
+			if strings.Contains(err.Error(), dir) || strings.Contains(err.Error(), errReportInjected.Error()) {
+				t.Fatalf("error exposes filesystem details: %v", err)
+			}
+			if published {
+				report, _ := readReport(t, out)
+				if got := sub(report, "hypothetical")["scan_blocked"]; got != 3.0 {
+					t.Fatalf("published report is incomplete: scan_blocked = %v", got)
+				}
+			} else if _, statErr := os.Lstat(out); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("unpublished report exists: %v", statErr)
+			}
+			staged, err := filepath.Glob(filepath.Join(dir, ".response-replay-*"))
+			if err != nil || len(staged) != 1 {
+				t.Fatalf("expected one leftover temporary file: %v, %v", staged, err)
 			}
 		})
 	}

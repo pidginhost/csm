@@ -56,6 +56,8 @@ const (
 	errUnsafeOutput     cliError = "the report path exists and is not a regular file"
 	errOutputExists     cliError = "the report path already exists; choose a new one"
 	errWrite            cliError = "writing the report failed"
+	errWriteCleanup     cliError = "the report was not published; removing its temporary file failed"
+	errPublishedCleanup cliError = "the report was published; removing its temporary file failed"
 	errSeverity         cliError = "a finding has an unknown severity"
 	errManifestMismatch cliError = "the manifest does not describe this recording"
 )
@@ -111,14 +113,16 @@ type reportFile interface {
 type replayRun struct {
 	revision   func() toolRevision
 	createTemp func(dir, pattern string) (reportFile, error)
-	rename     func(oldpath, newpath string) error
+	link       func(oldpath, newpath string) error
+	remove     func(path string) error
 }
 
 func newRun() *replayRun {
 	return &replayRun{
 		revision:   readBuildRevision,
 		createTemp: func(dir, pattern string) (reportFile, error) { return os.CreateTemp(dir, pattern) },
-		rename:     os.Rename,
+		link:       os.Link,
+		remove:     os.Remove,
 	}
 }
 
@@ -613,7 +617,7 @@ func replay(rep *report, rec responsereplay.Recording, policy policyInfo, loc *t
 
 // checkOutput runs before anything is read or written: the report must not
 // be the recording or the manifest, by path, through a symlinked directory
-// or as a hard link, and an existing report path must be a regular file.
+// or as a hard link, and the report path must not already exist.
 func checkOutput(o *options) error {
 	if info, err := os.Lstat(o.out); err == nil && !info.Mode().IsRegular() {
 		return errUnsafeOutput
@@ -711,7 +715,7 @@ func resolve(p string) (resolved, error) {
 }
 
 // writeReport publishes the report whole or not at all, owner-only.
-func (r *replayRun) writeReport(path string, rep report) error {
+func (r *replayRun) writeReport(path string, rep report) (err error) {
 	raw, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
 		return errWrite
@@ -724,14 +728,28 @@ func (r *replayRun) writeReport(path string, rep report) error {
 	if err != nil {
 		return errWrite
 	}
+	published := false
+	defer func() {
+		if cleanupErr := r.remove(f.Name()); cleanupErr != nil {
+			if published {
+				err = errors.Join(err, errPublishedCleanup)
+			} else {
+				err = errors.Join(err, errWriteCleanup)
+			}
+		}
+	}()
 	_, writeErr := f.Write(append(raw, '\n'))
 	if err := errors.Join(writeErr, f.Sync(), f.Close()); err != nil {
-		_ = os.Remove(f.Name())
 		return errWrite
 	}
-	if err := r.rename(f.Name(), path); err != nil {
-		_ = os.Remove(f.Name())
+	// A hard link publishes the complete file atomically and refuses every
+	// existing destination, including one created after checkOutput ran.
+	if err := r.link(f.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errOutputExists
+		}
 		return errWrite
 	}
+	published = true
 	return nil
 }
