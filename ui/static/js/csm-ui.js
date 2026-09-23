@@ -93,6 +93,42 @@ document.addEventListener('submit', function(e) {
     }).then(function() { form.submit(); }, function() { /* cancelled */ });
 });
 
+// chartTheme gives the chart colours for the current theme; applyChartTheme
+// repaints every chart, tooltips included, when the theme changes.
+CSM.chartTheme = function() {
+    var dark = document.documentElement.classList.contains('theme-dark');
+    var textColor = dark ? '#94a3b8' : '#64748b';
+    return {
+        dark: dark,
+        grid: dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
+        text: textColor,
+        tooltip: {
+            backgroundColor: dark ? '#1e293b' : '#ffffff',
+            titleColor: dark ? '#c8d3e0' : '#1a2234',
+            bodyColor: dark ? '#c8d3e0' : '#1a2234',
+            borderColor: dark ? '#2d3a4e' : '#e6e8eb'
+        }
+    };
+};
+
+CSM.applyChartTheme = function() {
+    if (typeof Chart === 'undefined') return;
+    var theme = CSM.chartTheme();
+    Chart.defaults.color = theme.text;
+    Chart.defaults.borderColor = theme.grid;
+    Object.keys(Chart.instances || {}).forEach(function(id) {
+        var chart = Chart.instances[id];
+        var scales = chart.options.scales || {};
+        Object.keys(scales).forEach(function(axis) {
+            if (scales[axis].grid) scales[axis].grid.color = theme.grid;
+            if (scales[axis].ticks) scales[axis].ticks.color = theme.text;
+        });
+        var tooltip = chart.options.plugins && chart.options.plugins.tooltip;
+        if (tooltip) Object.assign(tooltip, theme.tooltip);
+        chart.update('none');
+    });
+};
+
 // accountURL returns the Account page URL for a hosting account name, or ''
 // when the value is not one (a placeholder, a mailbox, a path). The rule is
 // the server's account name check.

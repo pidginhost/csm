@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- The light theme now covers the login page, the command palette, the undo banner and chart tooltips, and the chosen theme still applies when the browser blocks site storage.
 - Status text, badges, toasts and chart labels in the Web UI now meet the WCAG AA contrast ratio in the light theme; orange, yellow and green were hard to read on white.
 - Screen readers no longer read whole lists and the refresh clock aloud every time a Web UI page refreshes; only short status messages such as errors and connection changes are announced.
 - Row checkboxes, rule switches, icon-only buttons and search fields in the Web UI now have names that screen readers announce, instead of relying on placeholders or icons.

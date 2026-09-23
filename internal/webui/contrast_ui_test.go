@@ -145,7 +145,7 @@ func TestBadgeAndToastColoursHaveReadableContrast(t *testing.T) {
 
 // Chart axis labels are readable on the card they sit on.
 func TestChartAxisTextHasReadableContrast(t *testing.T) {
-	for _, file := range []string{"dashboard.js", "threat.js"} {
+	for _, file := range []string{"csm-ui.js", "dashboard.js", "threat.js"} {
 		src := readUIScript(t, file)
 		for _, m := range regexp.MustCompile(`[tT]extColor = (?:isDark|dark) \? '(#[0-9a-f]{6})' : '(#[0-9a-f]{6})'`).FindAllStringSubmatch(src, -1) {
 			if r := contrast(t, m[1], "#1e293b"); r < 4.5 {

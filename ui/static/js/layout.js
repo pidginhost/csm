@@ -130,7 +130,7 @@ function toggleTheme() {
     var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
     var next = current === 'dark' ? 'light' : 'dark';
     applyTheme(next);
-    localStorage.setItem('csm-theme', next);
+    try { localStorage.setItem('csm-theme', next); } catch (e) { /* not remembered */ }
 }
 applyTheme(__theme);
 var _themeBtn = document.getElementById('theme-toggle');

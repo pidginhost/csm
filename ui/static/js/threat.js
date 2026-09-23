@@ -219,11 +219,7 @@ function loadThreatStats() {
                 maintainAspectRatio:false,
                 plugins:{
                     legend:{display:false},
-                    tooltip:{
-                        backgroundColor:isDark?'#1e293b':'#fff',
-                        titleColor:isDark?'#c8d3e0':'#1a2234',
-                        bodyColor:isDark?'#c8d3e0':'#1a2234',
-                        borderColor:isDark?'#2d3a4e':'#e6e8eb',
+                    tooltip:Object.assign({}, CSM.chartTheme().tooltip, {
                         borderWidth:1,
                         callbacks:{
                             title:function(items){
@@ -232,7 +228,7 @@ function loadThreatStats() {
                             },
                             label:function(ctx){return ctx.parsed.y+' events';}
                         }
-                    }
+                    })
                 },
                 scales:{
                     x:{
@@ -622,24 +618,7 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
     });
 })();
 
-// --- Theme reactivity: update chart colors when dark/light mode toggles ---
-function updateChartTheme() {
-    var isDark = document.documentElement.classList.contains('theme-dark');
-    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
-    var textColor = isDark ? '#94a3b8' : '#64748b';
-    Chart.defaults.color = textColor;
-    Chart.defaults.borderColor = gridColor;
-    Object.values(Chart.instances).forEach(function(chart) {
-        if (chart.options.scales) {
-            Object.keys(chart.options.scales).forEach(function(axis) {
-                if (chart.options.scales[axis].grid) chart.options.scales[axis].grid.color = gridColor;
-                if (chart.options.scales[axis].ticks) chart.options.scales[axis].ticks.color = textColor;
-            });
-        }
-        chart.update('none');
-    });
-}
-
+// --- Theme reactivity: repaint charts, tooltips included, on a theme change ---
 new MutationObserver(function(mutations) {
-    mutations.forEach(function(m) { if (m.attributeName === 'class') updateChartTheme(); });
+    mutations.forEach(function(m) { if (m.attributeName === 'class') CSM.applyChartTheme(); });
 }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });

@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -83,5 +84,34 @@ func TestPageHeadersShareOneStructure(t *testing.T) {
 		if !strings.Contains(text, `<div class="csm-page-header__main">`) || !strings.Contains(text, `class="csm-page-header__subtitle"`) {
 			t.Errorf("%s.html page header does not use the shared structure", name)
 		}
+	}
+}
+
+// Surfaces with their own colours follow the chosen theme instead of
+// assuming the dark one.
+func TestLightThemeSurfacesFollowTheTheme(t *testing.T) {
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := func(selector string) string {
+		text := string(css)
+		_, rest, ok := strings.Cut(text, selector+" {")
+		if !ok {
+			t.Fatalf("no %s rule", selector)
+		}
+		body, _, _ := strings.Cut(rest, "}")
+		return body
+	}
+	if sel := block(".csm-palette__row.is-selected"); strings.Contains(sel, "#fff") {
+		t.Error("selected palette row forces white text, unreadable in the light theme")
+	}
+	undo := block(".csm-undo-banner")
+	if !strings.Contains(undo, "var(--csm-bg-card)") || !strings.Contains(undo, "var(--csm-text)") {
+		t.Error("undo banner does not use the theme colours")
+	}
+	login := readTemplateText(t, "login")
+	if !strings.Contains(login, `{{asset "js/theme-init.js"}}`) || strings.Contains(login, `class="theme-dark`) {
+		t.Error("login page does not follow the chosen theme")
 	}
 }

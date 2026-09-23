@@ -22,7 +22,7 @@
     // --- Chart.js global defaults for dark/light theme ---
     var isDark = document.documentElement.classList.contains('theme-dark');
     var gridColor = isDark ? 'rgba(45,58,78,0.6)' : 'rgba(230,232,235,0.8)';
-    var textColor = isDark ? '#94a3b8' : '#64748b';
+    var textColor = CSM.chartTheme().text;
 
     Chart.defaults.color = textColor;
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -479,18 +479,13 @@
     }
 
     function buildTooltipStyle() {
-        var isDark = document.documentElement.classList.contains('theme-dark');
-        return {
-            backgroundColor: isDark ? '#1e293b' : '#fff',
-            titleColor: isDark ? '#c8d3e0' : '#1a2234',
-            bodyColor: isDark ? '#c8d3e0' : '#1a2234',
-            borderColor: isDark ? '#2d3a4e' : '#e6e8eb',
+        return Object.assign({}, CSM.chartTheme().tooltip, {
             borderWidth: 1,
             cornerRadius: 6,
             padding: 10,
             displayColors: true,
             boxPadding: 4
-        };
+        });
     }
 
     function buildGridColor() {
@@ -1037,25 +1032,8 @@
     window.addEventListener('beforeunload', _cleanupCharts);
 
     // --- Theme reactivity: update chart colors when dark/light mode toggles ---
-    function updateChartTheme() {
-        var dark = document.documentElement.classList.contains('theme-dark');
-        var newGridColor = dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
-        var newTextColor = dark ? '#94a3b8' : '#64748b';
-        Chart.defaults.color = newTextColor;
-        Chart.defaults.borderColor = newGridColor;
-        Object.values(Chart.instances).forEach(function(chart) {
-            if (chart.options.scales) {
-                Object.keys(chart.options.scales).forEach(function(axis) {
-                    if (chart.options.scales[axis].grid) chart.options.scales[axis].grid.color = newGridColor;
-                    if (chart.options.scales[axis].ticks) chart.options.scales[axis].ticks.color = newTextColor;
-                });
-            }
-            chart.update('none');
-        });
-    }
-
     new MutationObserver(function(mutations) {
-        mutations.forEach(function(m) { if (m.attributeName === 'class') updateChartTheme(); });
+        mutations.forEach(function(m) { if (m.attributeName === 'class') CSM.applyChartTheme(); });
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 
 
