@@ -88,7 +88,9 @@ GET  /api/v1/events              Server-Sent Events stream of findings as they d
                                  write or flush closes the stream and frees its subscriber slot.
 GET  /api/v1/health              Daemon health (fanotify, watchers, engines)
 GET  /api/v1/findings            Current active findings
-GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info
+GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info, and a list version.
+                                 ?limit=N returns the N most severe, newest first; counts cover all.
+                                 ?fields=version returns only {version, total}, for change polling
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
 GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=).
                                  total counts every match; truncated is true when matches exist past the page

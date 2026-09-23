@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -296,7 +298,7 @@ func dedupIPReputation(items []enrichedFinding) []enrichedFinding {
 }
 
 // apiFindingsEnriched returns findings with IP dedup, account extraction, and severity counts.
-func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 	latest := s.store.LatestFindings()
 	suppressions := s.store.LoadSuppressions()
 
@@ -333,6 +335,11 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	items = dedupIPReputation(items)
+	version := enrichedFindingsVersion(items)
+	if r.URL.Query().Get("fields") == "version" {
+		writeJSON(w, map[string]interface{}{"version": version, "total": len(items)})
+		return
+	}
 
 	var critCount, highCount, warnCount int
 	for _, item := range items {
@@ -365,6 +372,12 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 	}
 	sort.Strings(accounts)
 
+	total := len(items)
+	if limit := queryInt(r, "limit", 0); limit > 0 && limit < len(items) {
+		sortEnrichedBySeverity(items)
+		items = items[:limit]
+	}
+
 	writeJSON(w, map[string]interface{}{
 		"findings":       items,
 		"check_types":    checkTypes,
@@ -372,8 +385,47 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 		"critical_count": critCount,
 		"high_count":     highCount,
 		"warning_count":  warnCount,
-		"total":          len(items),
+		"total":          total,
+		"version":        version,
 	})
+}
+
+// sortEnrichedBySeverity orders findings most severe first, newest first
+// within a severity, so a limited list keeps the ones that matter.
+func sortEnrichedBySeverity(items []enrichedFinding) {
+	rank := map[string]int{"CRITICAL": 3, "HIGH": 2}
+	lastSeen := func(f enrichedFinding) time.Time {
+		t, _ := time.Parse(time.RFC3339, f.LastSeen)
+		return t
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if ri, rj := rank[items[i].Severity], rank[items[j].Severity]; ri != rj {
+			return ri > rj
+		}
+		return lastSeen(items[i]).After(lastSeen(items[j]))
+	})
+}
+
+// enrichedFindingsVersion changes when the listed findings or their
+// severities do. A client that polls only to learn whether the list changed
+// asks for ?fields=version and compares. ip_reputation rows are identified by
+// their message, which carries the merged sources.
+func enrichedFindingsVersion(items []enrichedFinding) string {
+	ids := make([]string, 0, len(items))
+	for _, f := range items {
+		id := f.Key
+		if f.Check == "ip_reputation" {
+			id = f.Check + ":" + f.Message
+		}
+		ids = append(ids, id+"|"+f.Severity)
+	}
+	sort.Strings(ids)
+	h := sha256.New()
+	for _, id := range ids {
+		h.Write([]byte(id))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // apiHistory returns paginated finding history.

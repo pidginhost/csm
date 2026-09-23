@@ -718,16 +718,13 @@ func TestFindingsAutoRefreshPollsEnrichedEndpoint(t *testing.T) {
 	if strings.Contains(text, "CSM.poll('/api/v1/findings',") {
 		t.Fatal("findings.js auto-refresh polls the raw /api/v1/findings; it must poll the deduped /api/v1/findings/enriched so the count/keys match the rendered table")
 	}
+	// The comparison identity (ip_reputation rows by message) now lives in
+	// the server's list version; TestEnrichedFindingsVersionTracksIPReputation
+	// covers it. The page polls that version of the enriched list.
 	for _, want := range []string{
-		"function findingRefreshKey(f) {",
-		"if (check === 'ip_reputation') return check + ':' + message + ':' + severity;",
-		"return (f.key || (check + ':' + message)) + ':' + severity;",
-		"currentKeys[findingRefreshKey(f)] = true;",
-		"_findingsPoller = CSM.poll('/api/v1/findings/enriched', 15000, function(err, data) {",
-		"if (!data || !data.findings) return;",
-		"var poll = data.findings;",
-		"var changed = poll.length !== currentCount;",
-		"var key = findingRefreshKey(poll[j]);",
+		"_findingsPoller = CSM.poll('/api/v1/findings/enriched?fields=version', 15000, function(err, data) {",
+		"if (data.version !== version) {",
+		"initAutoRefresh(data.version);",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("findings.js auto-refresh missing enriched-comparison fragment %q", want)

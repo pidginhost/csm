@@ -116,7 +116,7 @@ function renderFindings(data) {
     }
 
     // Start auto-refresh polling regardless of whether we have findings
-    initAutoRefresh(findings);
+    initAutoRefresh(data.version);
 
     if (findings.length === 0) {
         if (tbody) tbody.innerHTML = '';
@@ -959,43 +959,19 @@ if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault();
 // --- Auto-refresh: poll for new findings every 15 seconds ---
 var _findingsPoller = null;
 
-function findingRefreshKey(f) {
-    if (!f) return '';
-    var check = f.check || '';
-    var message = f.message || '';
-    var severity = f.severity || '';
-    if (check === 'ip_reputation') return check + ':' + message + ':' + severity;
-    return (f.key || (check + ':' + message)) + ':' + severity;
-}
-
-function initAutoRefresh(initialFindings) {
-    var currentKeys = {};
-    for (var i = 0; i < initialFindings.length; i++) {
-        var f = initialFindings[i];
-        currentKeys[findingRefreshKey(f)] = true;
-    }
-    var currentCount = initialFindings.length;
-
+function initAutoRefresh(version) {
     // Stop any previous poller
     if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }
 
-    // Poll the same enriched endpoint that renders the table and seeds
-    // currentKeys/currentCount. The raw /api/v1/findings has no IP dedup and
-    // keeps the per-finding message, so its count and keys never line up with
-    // the deduped table -- comparing the two fired the banner on every poll
-    // whenever any ip_reputation finding existed.
-    _findingsPoller = CSM.poll('/api/v1/findings/enriched', 15000, function(err, data) {
+    // Poll the enriched endpoint that renders the table, for the version of
+    // its list only: the server derives it from the same deduped rows, so it
+    // moves exactly when the table would change, without sending the list.
+    // The raw /api/v1/findings has no IP dedup and fired the banner on every
+    // poll whenever any ip_reputation finding existed.
+    _findingsPoller = CSM.poll('/api/v1/findings/enriched?fields=version', 15000, function(err, data) {
         if (err) { console.error('findings auto-refresh:', err); return; }
-        if (!data || !data.findings) return;
-        var poll = data.findings;
-        var changed = poll.length !== currentCount;
-        if (!changed) {
-            for (var j = 0; j < poll.length; j++) {
-                var key = findingRefreshKey(poll[j]);
-                if (!currentKeys[key]) { changed = true; break; }
-            }
-        }
-        if (changed) {
+        if (!data || !data.version) return;
+        if (data.version !== version) {
             var banner = document.getElementById('refresh-banner');
             if (banner) banner.classList.remove('d-none');
         }
