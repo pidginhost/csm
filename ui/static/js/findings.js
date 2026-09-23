@@ -1095,10 +1095,20 @@ if (csvBtn) csvBtn.addEventListener('click', function(e) { e.preventDefault(); C
 var jsonBtn = document.getElementById('export-json');
 if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault(); CSM.exportTable(getExportData(), _findingsExportCols, 'json', 'csm-findings'); });
 
-// --- Auto-refresh: poll for new findings every 15 seconds ---
+// --- Auto-refresh: offer the new list when it changes ---
+// Live updates check at once when a finding arrives; the poll runs every 15
+// seconds without them and every minute as a safety net with them.
 var _findingsPoller = null;
+var _findingsVersion = null;
+
+function showNewFindings(data) {
+    if (!data || !data.version || !_findingsVersion || data.version === _findingsVersion) return;
+    var banner = document.getElementById('refresh-banner');
+    if (banner) banner.classList.remove('d-none');
+}
 
 function initAutoRefresh(version) {
+    _findingsVersion = version;
     // Stop any previous poller
     if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }
 
@@ -1109,13 +1119,15 @@ function initAutoRefresh(version) {
     // poll whenever any ip_reputation finding existed.
     _findingsPoller = CSM.poll('/api/v1/findings/enriched?fields=version', 15000, function(err, data) {
         if (err) { console.error('findings auto-refresh:', err); return; }
-        if (!data || !data.version) return;
-        if (data.version !== version) {
-            var banner = document.getElementById('refresh-banner');
-            if (banner) banner.classList.remove('d-none');
-        }
-    });
+        showNewFindings(data);
+    }, { whileLive: 60000 });
 }
+
+if (CSM.live) CSM.live.onFinding(function() {
+    CSM.get('/api/v1/findings/enriched?fields=version', { silent: true })
+        .then(showNewFindings)
+        .catch(function(err) { console.error('findings live check:', err); });
+});
 
 window.addEventListener('beforeunload', function() {
     if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }

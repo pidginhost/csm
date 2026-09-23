@@ -518,10 +518,17 @@ CSM.refresh = (function() {
         }
     }
 
-    function createInterval(fn, interval) {
+    // opts.whileLive is a slower interval used while the event stream is
+    // connected: live updates then keep the page current, and the timer is
+    // only a safety net.
+    function createInterval(fn, interval, opts) {
         var timerId = null;
         var stopped = false;
         var delay = Math.max(0, Number(interval) || 0);
+        var liveDelay = opts && Number(opts.whileLive) > 0 ? Number(opts.whileLive) : 0;
+        function currentDelay() {
+            return (liveDelay && CSM.sse && CSM.sse.state === 'connected') ? liveDelay : delay;
+        }
         // Creation counts as a run: the page loads its data when it starts.
         var lastRun = Date.now();
         subscribers++;
@@ -543,7 +550,7 @@ CSM.refresh = (function() {
                 lastRun = Date.now();
                 invokeTimer(fn);
                 schedule();
-            }, wait == null ? delay : wait);
+            }, wait == null ? currentDelay() : wait);
         }
 
         function runNow() {
@@ -560,8 +567,9 @@ CSM.refresh = (function() {
         // second set of timers and reload while auto-refresh was paused.
         function resume() {
             if (stopped || document.hidden || !enabled) return;
-            if (Date.now() - lastRun >= delay) runNow();
-            else schedule(delay - (Date.now() - lastRun));
+            var due = currentDelay();
+            if (Date.now() - lastRun >= due) runNow();
+            else schedule(due - (Date.now() - lastRun));
         }
 
         var timer = {
@@ -589,6 +597,9 @@ CSM.refresh = (function() {
         get hasPersistedChoice() { return hasPersistedChoice; },
         get inDataLoad() { return depth > 0 || !pageLoaded; },
         get hasAuto() { return autoCount > 0; },
+        // track runs fn as a data load, for work started outside a refresh
+        // tick, such as a live update.
+        track: track,
         setEnabled: function(next, opts) {
             enabled = !!next;
             opts = opts || {};
@@ -627,10 +638,16 @@ CSM.refresh = (function() {
         },
         _bumpSubscriber: function() { subscribers++; changeAuto(1); },
         _dropSubscriber: function() { subscribers = Math.max(0, subscribers - 1); changeAuto(-1); },
-        interval: function(fn, interval) {
-            return createInterval(fn, interval);
+        interval: function(fn, interval, opts) {
+            return createInterval(fn, interval, opts);
         }
     };
+
+    // The event stream connecting or dropping changes which interval a
+    // timer uses; reschedule from its last run.
+    window.addEventListener('csm:sse-state', function() {
+        eachTimer(function(timer) { timer.resume(); });
+    });
 
     window.addEventListener('csm:refresh-toggle', function(ev) {
         if (ev.detail && ev.detail.enabled) {
@@ -763,6 +780,41 @@ CSM.sse = (function() {
     };
 })();
 
+// Live updates. The event stream carries each finding as it is dispatched;
+// onFinding hands a page the findings of a burst in one batch, a moment after
+// the burst ends, so a flood of findings reloads a page once. While
+// auto-refresh is paused the page is left alone, as its timers are. The
+// page's reload counts as a data load for "Updated N ago".
+CSM.live = {
+    get connected() { return !!(CSM.sse && CSM.sse.state === 'connected'); },
+    onFinding: function(fn, opts) {
+        var wait = opts && opts.wait != null ? opts.wait : 1500;
+        var batch = [];
+        var timer = null;
+        function flush() {
+            timer = null;
+            var items = batch;
+            batch = [];
+            if (CSM.refresh && !CSM.refresh.enabled) return;
+            if (CSM.refresh && CSM.refresh.track) CSM.refresh.track(function() { fn(items); });
+            else fn(items);
+        }
+        function onMessage(ev) {
+            var f;
+            try { f = JSON.parse(ev.detail && ev.detail.raw); } catch (e) { return; }
+            if (!f || typeof f !== 'object') return;
+            batch.push(f);
+            if (!timer) timer = setTimeout(flush, wait);
+        }
+        window.addEventListener('csm:sse-message', onMessage);
+        return function() {
+            window.removeEventListener('csm:sse-message', onMessage);
+            if (timer) { clearTimeout(timer); timer = null; }
+            batch = [];
+        };
+    }
+};
+
 // Polling utility with visibility-pause and exponential backoff. Routes
 // the fetch through CSM.request so the 30s timeout and AbortController
 // apply uniformly; silent:true keeps the auto-toast off so the callback
@@ -825,6 +877,11 @@ CSM.sse = (function() {
         }
     });
 
+    window.addEventListener('csm:sse-state', function() {
+        var snapshot = pollers.slice();
+        for (var i = 0; i < snapshot.length; i++) snapshot[i].onLiveChange();
+    });
+
     // Manual refresh forces a one-shot fetch even while auto-refresh is
     // paused, then returns the poller to the normal enabled/paused state.
     window.addEventListener('csm:refresh-now', function() {
@@ -834,14 +891,18 @@ CSM.sse = (function() {
         }
     });
 
-    CSM.poll = function(url, interval, callback) {
-        var baseInterval = interval;
-        var currentInterval = interval;
+    // opts.whileLive, as for CSM.refresh.interval, is the slower interval
+    // used while the event stream is connected.
+    CSM.poll = function(url, interval, callback, opts) {
+        function baseInterval() {
+            return (opts && Number(opts.whileLive) > 0 && CSM.sse && CSM.sse.state === 'connected') ? Number(opts.whileLive) : interval;
+        }
+        var currentInterval = baseInterval();
         var maxInterval = 300000; // 5 minutes
         var timerId = null;
         var timerSeq = 0;
         var state = 'scheduled';
-        var poller = { onVisibility: onVisibility, onPause: onPause, onResume: onResume, onRefreshNow: onRefreshNow };
+        var poller = { onVisibility: onVisibility, onPause: onPause, onResume: onResume, onRefreshNow: onRefreshNow, onLiveChange: onLiveChange };
 
         function clearTimer() {
             if (timerId) {
@@ -897,7 +958,7 @@ CSM.sse = (function() {
             }
             promise.then(function(data) {
                 if (state === 'stopped') return;
-                currentInterval = baseInterval;
+                currentInterval = baseInterval();
                 emit(null, data);
             }).catch(function(err) {
                 fail(err);
@@ -929,14 +990,20 @@ CSM.sse = (function() {
         function onResume() {
             if (state === 'stopped' || document.hidden) return;
             if (state !== 'idle' && state !== 'scheduled') return;
-            currentInterval = baseInterval;
+            currentInterval = baseInterval();
             scheduleNext(100);
+        }
+
+        function onLiveChange() {
+            if (state !== 'scheduled') return;
+            currentInterval = baseInterval();
+            scheduleNext(currentInterval);
         }
 
         function onRefreshNow() {
             if (state === 'stopped' || document.hidden) return;
             if (state === 'running') return;
-            currentInterval = baseInterval;
+            currentInterval = baseInterval();
             scheduleNext(0, true);
         }
 

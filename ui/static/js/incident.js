@@ -858,6 +858,14 @@
         loadIncidents();
     }
 
+    // A new finding can open or grow an incident. Reload the list, but not
+    // under a selection the operator is building for a bulk change.
+    if (CSM.live) CSM.live.onFinding(function() {
+        if (_incidentBulkInFlight || incidentBulk().selectedCount() > 0) return;
+        if (activeTab === 'grouped') loadGroups();
+        else if (activeTab === 'incidents') loadIncidents();
+    });
+
     if (CSM.refresh) CSM.refresh.onRefresh(function() {
         if (activeTab === 'grouped') loadGroups();
         else if (activeTab === 'timeline') {

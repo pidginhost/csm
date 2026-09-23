@@ -71,6 +71,20 @@ unavailable, new renders use the preference without forcing a reload.
 Days with a midnight clock change start at the first valid time of that day;
 a repeated midnight uses its first occurrence.
 
+## Live updates
+
+The Web UI keeps an event stream open (`/api/v1/events`) and shows a Live
+indicator while it is connected. When findings arrive, a couple of seconds
+after the burst ends:
+
+- Findings shows the "new findings" banner at once instead of on its next check
+- Dashboard sends desktop notifications and refreshes the 24h counts and the triage queue
+- Incidents reloads the current list, unless incidents are selected for a bulk change
+
+While the stream is connected, the checks those pages run on a timer slow down
+to once a minute as a safety net; when it drops they return to their normal
+pace. Pausing auto-refresh also pauses live updates.
+
 ## Refresh
 
 The header shows when the page's data was last loaded ("Updated N ago"). It

@@ -752,7 +752,7 @@ func TestFindingsAutoRefreshPollsEnrichedEndpoint(t *testing.T) {
 	// covers it. The page polls that version of the enriched list.
 	for _, want := range []string{
 		"_findingsPoller = CSM.poll('/api/v1/findings/enriched?fields=version', 15000, function(err, data) {",
-		"if (data.version !== version) {",
+		"if (!data || !data.version || !_findingsVersion || data.version === _findingsVersion) return;",
 		"initAutoRefresh(data.version);",
 	} {
 		if !strings.Contains(text, want) {
@@ -2196,7 +2196,7 @@ func TestOptionalJSONErrorCallersStaySilent(t *testing.T) {
 
 func csmPollBody(t *testing.T, text string) string {
 	t.Helper()
-	pollStart := strings.Index(text, "CSM.poll = function(url, interval, callback) {")
+	pollStart := strings.Index(text, "CSM.poll = function(url, interval, callback, opts) {")
 	if pollStart == -1 {
 		t.Fatal("csrf.js missing CSM.poll definition")
 	}
@@ -2257,7 +2257,7 @@ func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
 	for _, fragment := range []string{
 		`var state = 'scheduled';`,
 		`var timerSeq = 0;`,
-		`var poller = { onVisibility: onVisibility, onPause: onPause, onResume: onResume, onRefreshNow: onRefreshNow };`,
+		`var poller = { onVisibility: onVisibility, onPause: onPause, onResume: onResume, onRefreshNow: onRefreshNow, onLiveChange: onLiveChange };`,
 		`function clearTimer() {`,
 		`function scheduleNext(delayMs, force) {`,
 		`if (state === 'stopped' || document.hidden) {`,
@@ -2779,10 +2779,10 @@ func TestAutoRefreshPillWired(t *testing.T) {
 		`CSM.refresh = (function() {`,
 		`var STORAGE_KEY = 'csm-autorefresh';`,
 		`enabled = raw !== 'off';`,
-		`function createInterval(fn, interval) {`,
+		`function createInterval(fn, interval, opts) {`,
 		`bump: function() {`,
 		`manual: function() {`,
-		`interval: function(fn, interval) {`,
+		`interval: function(fn, interval, opts) {`,
 		`setEnabled: function(next, opts) {`,
 		`window.dispatchEvent(new CustomEvent('csm:refresh-toggle'`,
 		// Only data loads bump; ui/refreshpill_test.js drives which requests count.

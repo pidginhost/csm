@@ -418,7 +418,8 @@
             try { pollFindings(); } catch(e) { console.error('fastPoll:', e); }
         }
         fastPoll();
-        _trackInterval(CSM.refresh.interval(fastPoll, 10000));
+        // Live updates notify as findings arrive; the poll is a safety net then.
+        _trackInterval(CSM.refresh.interval(fastPoll, 10000, { whileLive: 60000 }));
 
         // Slow cadence (60s): stats + health pill + challenge summary
         function loadChallengeSummary() {
@@ -452,6 +453,17 @@
         }, 60000));
     }
     _startPolling();
+
+    // A finding dispatched while the page is open notifies at once and
+    // refreshes the 24h counts, instead of waiting for the next poll.
+    if (CSM.live) CSM.live.onFinding(function(items) {
+        items.forEach(function(f) {
+            var ts = f.timestamp || '';
+            if (lastNotifTimestamp !== '' && ts > lastNotifTimestamp && !notifInternalChecks[f.check]) _maybeNotify(f);
+            if (ts > lastNotifTimestamp) lastNotifTimestamp = ts;
+        });
+        refreshStats();
+    });
 })();
 
 // ============================================================================
@@ -1342,4 +1354,7 @@
     try { loadComponents(); } catch (e) {}
 
     _startChartPolling();
+
+    // New findings can join the triage queue; reload it when they arrive.
+    if (CSM.live) CSM.live.onFinding(function() { loadPriorityQueue(); });
 })();
