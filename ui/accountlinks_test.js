@@ -86,6 +86,24 @@ test('Threat Intel links the accounts an address targeted', async () => {
     assert.ok(result.textContent.includes('x<y'), 'a value that is not an account name was dropped');
 });
 
+test('Threat Intel labels attack types from the server list', async () => {
+    const page = loadPage(templateBody('threat'), SHARED.concat(['threat.js']), {
+        url: 'https://csm.example.test/threat?ip=203.0.113.9',
+        config: { attackTypes: { brute_force: 'Brute Force', auth_success: 'Authenticated Activity' } },
+        globals: { Chart: function () { return { destroy() {}, update() {} }; } }
+    });
+    await settle();
+    page.respond('/api/v1/threat/ip?ip=203.0.113.9', 200, {
+        ip: '203.0.113.9', verdict: 'malicious', unified_score: 90, local_score: 90, abuse_score: -1,
+        attack_record: { event_count: 3, attack_counts: { brute_force: 2, auth_success: 1 } }
+    });
+    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, []);
+    await settle();
+    const text = page.document.getElementById('tr-lookup-result').textContent;
+    assert.match(text, /Brute Force: 2/);
+    assert.match(text, /Authenticated Activity: 1/);
+});
+
 function palette(page) {
     page.window.CSM.palette.show();
     return page.document.getElementById('csm-palette');

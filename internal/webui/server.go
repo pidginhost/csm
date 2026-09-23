@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/broadcast"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -830,21 +831,15 @@ func (s *Server) csmConfig() map[string]interface{} {
 		"fanotify":     s.fanotifyRunning(),
 		"hostname":     s.cfg.Hostname,
 		"authScope":    "admin",
+		// Attack types (brute_force, waf_block, ...) group findings in the
+		// attack database; their labels come from there.
+		"attackTypes": attackdb.AttackTypeLabels(),
 		// #nosec G101 -- Not credentials. This is a lookup from
-		// finding-type ID (waf_block, credential_leak, etc.) to the
-		// human-readable label rendered in the UI.
+		// finding check name (webshell, email_credential_leak, etc.) to
+		// the human-readable label rendered in the UI.
 		"checkNames": map[string]string{
-			"waf_block":                      "WAF Block",
-			"brute_force":                    "Brute Force",
 			"webshell":                       "Web Shell",
-			"phishing":                       "Phishing",
-			"spam":                           "Spam",
 			"cpanel_login":                   "cPanel Login",
-			"file_upload":                    "File Upload",
-			"auth_success":                   "Authenticated Activity",
-			"recon":                          "Reconnaissance",
-			"c2":                             "C2 Communication",
-			"other":                          "Other",
 			"perf_load":                      "Load",
 			"perf_php_processes":             "PHP Processes",
 			"perf_memory":                    "Memory",

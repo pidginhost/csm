@@ -88,9 +88,34 @@ func TestAPIGeoIPBatchGetIsRejected(t *testing.T) {
 	}
 }
 
+// auth_success is an attack type; its label comes with the attack types.
 func TestAuthSuccessHasFriendlyLabel(t *testing.T) {
-	names := newTestServer(t, "tok").csmConfig()["checkNames"].(map[string]string)
+	names := newTestServer(t, "tok").csmConfig()["attackTypes"].(map[string]string)
 	if got := names["auth_success"]; got != "Authenticated Activity" {
 		t.Fatalf("auth_success label = %q", got)
+	}
+}
+
+// Attack types and check names are separate vocabularies: the Web UI gets
+// the attack-type labels from attackdb, and checkNames holds only checks.
+func TestCSMConfigSeparatesAttackTypesFromChecks(t *testing.T) {
+	cfg := newTestServer(t, "tok").csmConfig()
+	types, ok := cfg["attackTypes"].(map[string]string)
+	if !ok {
+		t.Fatal("csmConfig has no attackTypes map")
+	}
+	if types["brute_force"] != "Brute Force" || types["reputation"] != "Known Malicious IP" {
+		t.Errorf("attackTypes = %v", types)
+	}
+	names := cfg["checkNames"].(map[string]string)
+	for _, onlyType := range []string{"waf_block", "brute_force", "phishing", "spam", "file_upload", "auth_success", "recon", "c2", "other"} {
+		if _, found := names[onlyType]; found {
+			t.Errorf("checkNames still labels the attack type %s", onlyType)
+		}
+	}
+	for _, check := range []string{"webshell", "cpanel_login"} {
+		if names[check] == "" {
+			t.Errorf("check %s lost its label", check)
+		}
 	}
 }

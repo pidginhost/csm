@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Threat Intel now names every attack type in its lookup badges, such as Reconnaissance and Known Malicious IP, using the same labels as the dashboard chart.
 - An unrecognised severity now shows as Unknown on every Web UI page instead of being labelled Warning on some of them.
 - The Web UI live-updates indicator now keeps saying Reconnecting while it retries after a dropped connection, instead of switching back to Connecting on each attempt.
 - Web UI keyboard focus now survives refreshes and dialog transitions, and finding shortcuts follow the focused row without acting behind dialogs. Warning text, dashboard indicators and command palette hints are readable in both themes, and the skip link keeps a visible focus indicator.

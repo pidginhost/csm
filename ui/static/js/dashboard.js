@@ -661,20 +661,8 @@
         other:        '#6b7a8d'
     };
 
-    var attackLabelsMap = {
-        brute_force:  'Brute Force',
-        waf_block:    'WAF Block',
-        webshell:     'Webshell',
-        phishing:     'Phishing',
-        c2:           'C2 / Callback',
-        recon:        'Recon / Scan',
-        spam:         'Spam',
-        cpanel_login: 'cPanel Login',
-        file_upload:  'File Upload',
-        auth_success: 'Authenticated Activity',
-        reputation:   'Known Malicious IP',
-        other:        'Other'
-    };
+    // Attack type labels come from the server with the page config.
+    var attackLabelsMap = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.attackTypes) || {};
 
     var attackChart = null;
     function loadAttackTypes() {

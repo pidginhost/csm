@@ -5572,7 +5572,9 @@ func TestAuthenticatedActivityHasThreatBadgesAndChartLabel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`auth_success:\s*'Authenticated Activity'`).Match(dashboard) {
-		t.Fatal("dashboard chart has no authenticated activity label")
+	// The label itself comes from attackdb through the page config;
+	// TestAuthSuccessHasFriendlyLabel checks it.
+	if !strings.Contains(string(dashboard), "var attackLabelsMap = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.attackTypes) || {};") {
+		t.Fatal("dashboard chart does not take attack type labels from the server")
 	}
 }

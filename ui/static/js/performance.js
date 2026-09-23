@@ -5,19 +5,9 @@
     var _perfLastFindings = [];
     var _perfUpdateSeq = 0;
 
-    var _fallbackNames = {
-        'perf_load': 'Load',
-        'perf_php_processes': 'PHP Processes',
-        'perf_memory': 'Memory',
-        'perf_php_handler': 'PHP Handler',
-        'perf_mysql_config': 'MySQL Config',
-        'perf_redis_config': 'Redis Config',
-        'perf_error_logs': 'Error Logs',
-        'perf_wp_config': 'WP Config',
-        'perf_wp_transients': 'WP Transients',
-        'perf_wp_cron': 'WP Cron'
-    };
-    var CHECK_NAMES = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || _fallbackNames;
+
+    // Check labels come from the server with the page config.
+    var CHECK_NAMES = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || {};
 
     function sevClass(sev) {
         if (sev >= 2) return 'danger';
