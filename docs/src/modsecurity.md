@@ -95,10 +95,10 @@ engine before deployment.
 **ModSecurity** (`/modsec`) - WAF status overview, event log, active block list, filterable by time range, minimum severity, and source country
 
 **ModSec Rules** (`/modsec/rules`) - per-rule management:
-- View loaded rules with descriptions
-- Enable/disable individual rules
-- Override rule severity or action
-- Deploy custom rules
+- View the CSM rules with descriptions and hits in the last 24 hours
+- Enable or disable individual rules; changes are staged and applied with one reload
+- Turn firewall escalation off for a rule: the rule still denies the request, but CSM does not block the IP in the firewall
+- Escalation exclusions are listed and edited here even when rule management (`modsec.rules_file`, `modsec.overrides_file`, `modsec.reload_command`) is not configured, since the daemon applies them either way
 
 ## API Endpoints
 
@@ -107,6 +107,7 @@ GET  /api/v1/modsec/stats            WAF statistics
 GET  /api/v1/modsec/blocks           Blocked request log
 GET  /api/v1/modsec/events           WAF event details
 GET  /api/v1/modsec/rules            Loaded rules list
-POST /api/v1/modsec/rules/apply      Apply custom rules
-POST /api/v1/modsec/rules/escalation Change rule severity/action
+POST /api/v1/modsec/rules/apply      Apply the set of disabled rules and reload
+GET  /api/v1/modsec/rules/escalation Rule IDs excluded from firewall escalation
+POST /api/v1/modsec/rules/escalation Exclude one rule from escalation or turn it back on
 ```

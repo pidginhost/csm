@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 
 	"github.com/pidginhost/csm/internal/modsec"
@@ -215,8 +216,20 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET  /api/v1/modsec/rules/escalation - rule IDs excluded from escalation
 // POST /api/v1/modsec/rules/escalation - toggle escalation for a single rule
 func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		ids := []int{}
+		if db := store.Global(); db != nil {
+			for id := range db.GetModSecNoEscalateRules() {
+				ids = append(ids, id)
+			}
+		}
+		sort.Ints(ids)
+		writeJSON(w, map[string]interface{}{"rules": ids})
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return

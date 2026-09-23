@@ -941,9 +941,12 @@ GET  /api/v1/modsec/stats              WAF statistics (read scope). Accepts ?win
 GET  /api/v1/modsec/blocks             Blocked requests log, aggregated per IP, with resolved source country (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
 GET  /api/v1/modsec/events             WAF event details with resolved source country (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
 GET  /api/v1/modsec/rules              Loaded rules list
-POST /api/v1/modsec/rules/apply        Apply custom rules
-POST /api/v1/modsec/rules/escalation   Change rule severity/action
+POST /api/v1/modsec/rules/apply        Apply the set of disabled rules and reload
+GET  /api/v1/modsec/rules/escalation   Rule IDs excluded from firewall escalation, sorted
+POST /api/v1/modsec/rules/escalation   Exclude one rule from escalation or turn it back on
 ```
+
+`POST /api/v1/modsec/rules/escalation` takes `{"rule_id": 900112, "escalate": false}`. The rule ID must be a CSM rule (900000-900999). `escalate: false` adds the exclusion and `escalate: true` removes it; other excluded rules are left as they are.
 
 A failed rules reload reports `rolled_back: true` only when restoring the previous
 overrides succeeds. A rollback failure is reported in the response and audit log;

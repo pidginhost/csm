@@ -92,6 +92,26 @@
 
 </div>
 
+<!-- Escalation exclusions: the daemon applies them with or without rule management configured. -->
+<div class="card mt-3" id="escalation-card">
+    <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Escalation Exclusions</h3>
+    </div>
+    <div class="card-body">
+        <p class="text-muted small mb-3">CSM custom rules (900000-900999) escalate to a firewall block after repeated denies. An excluded rule still denies the request (403), but CSM does not block the IP in the firewall.</p>
+        <form id="escalation-form" class="row g-2 align-items-end mb-3">
+            <div class="col-auto">
+                <label class="form-label" for="escalation-rule-id">Rule ID</label>
+                <input type="number" class="form-control" id="escalation-rule-id" placeholder="e.g. 900112" min="900000" max="900999" required>
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary" id="escalation-add-btn"><i class="ti ti-plus"></i>&nbsp;Exclude from escalation</button>
+            </div>
+        </form>
+        <div id="escalation-list"></div>
+    </div>
+</div>
+
 <!-- Sticky Apply Bar -->
 <div id="apply-bar" class="csm-apply-bar d-none">
     <span><strong id="pending-count">0</strong> changes pending</span>

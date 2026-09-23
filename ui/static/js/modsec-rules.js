@@ -4,6 +4,7 @@
 'use strict';
 
 var _rules = [];
+var _noEscalate = [];      // rule IDs excluded from escalation, sorted
 var _originalEnabled = {}; // ruleID → original enabled state
 var _pendingChanges = {};  // ruleID → new enabled state (only if changed)
 var _rulesTable = null;    // CSM.Table instance
@@ -51,6 +52,7 @@ function loadRules() {
             document.getElementById('modsec-rules-content').classList.remove('d-none');
             renderStats(data);
             renderTable();
+            renderEscalation();
         })
         .catch(function(err) {
             document.getElementById('modsec-rules-loading').innerHTML =
@@ -155,31 +157,118 @@ function renderTable() {
 
             var action = escalate ? 'Enable' : 'Disable';
             CSM.confirm(action + ' escalation for rule ' + id + '?').then(function() {
-                CSM.post('/api/v1/modsec/rules/escalation', {rule_id: id, escalate: escalate})
-                    .then(function(data) {
-                        // CSM.post rejects non-OK responses, so a server-side
-                        // failure lands in .catch; normalise a 200 ok:false
-                        // body the same way so one path handles every failure.
-                        if (!data.ok) throw new Error(data.error || 'unknown');
-                        CSM.toast('Escalation updated for rule ' + id, 'success');
-                        // Update local state
-                        for (var i = 0; i < _rules.length; i++) {
-                            if (_rules[i].id === id) _rules[i].escalate = escalate;
-                        }
-                        setRowAttr(id, 'data-escalate', escalate ? 'yes' : 'no');
-                        refreshRulesTable();
-                        renderStats({total: _rules.length, active: countActive()});
-                    })
-                    .catch(function(e) {
-                        CSM.toast('Failed to update escalation for rule ' + id + ': ' + (e && e.message ? e.message : 'unknown'), 'error');
-                        self.checked = !escalate; // revert toggle
-                    });
+                setEscalation(id, escalate).catch(function(e) {
+                    escalationFailed(id, e);
+                    self.checked = !escalate; // revert toggle
+                });
             }).catch(function() {
                 self.checked = !escalate; // revert toggle on cancel
             });
         });
     });
 }
+
+// setEscalation turns firewall escalation on or off for one rule and brings
+// the rule table and the exclusion list up to date.
+function setEscalation(id, escalate) {
+    return CSM.post('/api/v1/modsec/rules/escalation', {rule_id: id, escalate: escalate})
+        .then(function(data) {
+            // CSM.post rejects non-OK responses, so a server-side failure
+            // lands in the caller's catch; treat a 200 ok:false body the same.
+            if (!data || !data.ok) throw new Error((data && data.error) || 'unknown');
+            applyEscalation(id, escalate);
+            CSM.toast('Escalation updated for rule ' + id, 'success');
+        });
+}
+
+function escalationFailed(id, e) {
+    CSM.toast('Failed to update escalation for rule ' + id + ': ' + (e && e.message ? e.message : 'unknown'), 'error');
+}
+
+function applyEscalation(id, escalate) {
+    _noEscalate = _noEscalate.filter(function(r) { return r !== id; });
+    if (!escalate) {
+        _noEscalate.push(id);
+        _noEscalate.sort(function(a, b) { return a - b; });
+    }
+    for (var i = 0; i < _rules.length; i++) {
+        if (_rules[i].id === id) _rules[i].escalate = escalate;
+    }
+    var toggle = document.querySelector('.escalate-toggle[data-id="' + id + '"]');
+    if (toggle) toggle.checked = escalate;
+    if (setRowAttr(id, 'data-escalate', escalate ? 'yes' : 'no')) {
+        refreshRulesTable();
+        renderStats({total: _rules.length, active: countActive()});
+    }
+    renderEscalation();
+}
+
+function loadEscalation() {
+    CSM.get('/api/v1/modsec/rules/escalation')
+        .then(function(data) {
+            _noEscalate = ((data && data.rules) || []).slice().sort(function(a, b) { return a - b; });
+            renderEscalation();
+        })
+        .catch(function() {
+            CSM.loadError(document.getElementById('escalation-list'), loadEscalation);
+        });
+}
+
+function renderEscalation() {
+    var container = document.getElementById('escalation-list');
+    if (!container) return;
+    if (_noEscalate.length === 0) {
+        container.innerHTML = '<div class="text-muted small">No rules excluded: every CSM rule escalates to a firewall block.</div>';
+        return;
+    }
+    var described = {};
+    for (var i = 0; i < _rules.length; i++) described[_rules[i].id] = _rules[i].description || '';
+    var html = '<table class="table table-sm table-vcenter mb-0"><thead><tr><th>Rule ID</th><th>Description</th><th class="w-1"><span class="visually-hidden">Actions</span></th></tr></thead><tbody>';
+    for (var j = 0; j < _noEscalate.length; j++) {
+        var id = _noEscalate[j];
+        html += '<tr data-escalation-id="' + id + '"><td><code>' + id + '</code></td>' +
+            '<td class="small">' + (Object.prototype.hasOwnProperty.call(described, id) ? CSM.esc(described[id]) : '<span class="text-muted">-</span>') + '</td>' +
+            '<td><button type="button" class="btn btn-ghost-danger btn-sm" data-escalation-remove="' + id + '" aria-label="Stop excluding rule ' + id + '" title="Stop excluding rule ' + id + '"><i class="ti ti-trash"></i></button></td></tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+    container.querySelectorAll('[data-escalation-remove]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            if (btn.disabled) return;
+            var ruleID = parseInt(btn.getAttribute('data-escalation-remove'), 10);
+            btn.disabled = true;
+            CSM.confirm('Stop excluding rule ' + ruleID + '?\n\nMatching requests will again escalate to a firewall block.').then(function() {
+                return setEscalation(ruleID, true).catch(function(e) { escalationFailed(ruleID, e); });
+            }).catch(function() { /* cancelled */ }).then(function() {
+                btn.disabled = false;
+            });
+        });
+    });
+}
+
+document.getElementById('escalation-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var input = document.getElementById('escalation-rule-id');
+    var button = document.getElementById('escalation-add-btn');
+    var id = parseInt(input.value, 10);
+    if (isNaN(id) || id < 900000 || id > 900999) {
+        CSM.toast('Rule ID must be between 900000 and 900999', 'warning');
+        return;
+    }
+    if (_noEscalate.indexOf(id) >= 0) {
+        CSM.toast('Rule ' + id + ' is already excluded', 'warning');
+        return;
+    }
+    if (button.disabled) return;
+    button.disabled = true;
+    setEscalation(id, false).then(function() {
+        if (input.value === String(id)) input.value = '';
+    }).catch(function(err) {
+        escalationFailed(id, err);
+    }).then(function() {
+        button.disabled = false;
+    });
+});
 
 function countActive() {
     var active = 0;
@@ -315,6 +404,7 @@ document.querySelectorAll('[data-export]').forEach(function(el) {
     });
 });
 
+loadEscalation();
 loadRules();
 
 })();

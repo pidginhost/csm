@@ -5390,21 +5390,21 @@ func TestDestructiveActionsConfirmAndOfferUndo(t *testing.T) {
 		t.Error("email.js outbound-abuse Block 24h must latch the button before opening confirm to prevent duplicate submits")
 	}
 
-	rules, err := os.ReadFile("../../ui/static/js/rules.js")
+	// Escalation exclusions moved to the ModSec Rules page; ui/escalation_test.js
+	// drives cancel, double-click and failure through the page.
+	modsecRules, err := os.ReadFile("../../ui/static/js/modsec-rules.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rulesText := string(rules)
-	if !strings.Contains(rulesText, "CSM.confirm('Stop excluding rule ' + id + '?") {
-		t.Error("rules.js ModSec exclusion removal must confirm before re-arming firewall escalation for the rule")
+	modsecRulesText := string(modsecRules)
+	if !strings.Contains(modsecRulesText, "CSM.confirm('Stop excluding rule ' + ruleID + '?") {
+		t.Error("modsec-rules.js exclusion removal must confirm before re-arming firewall escalation for the rule")
 	}
-	if !strings.Contains(rulesText, "if (btn.disabled) return;\n            var id = parseInt") ||
-		!strings.Contains(rulesText, "btn.disabled = true;\n            CSM.confirm") ||
-		!strings.Contains(rulesText, "var previousRules = _modsecRules.slice();") ||
-		!strings.Contains(rulesText, "return saveModSecEscalation().then(function(ok)") ||
-		!strings.Contains(rulesText, "if (!ok) _modsecRules = previousRules;") ||
-		!strings.Contains(rulesText, "if (document.body.contains(btn)) btn.disabled = false;") {
-		t.Error("rules.js ModSec exclusion removal must latch during confirm/save and restore on cancel or failure")
+	if !strings.Contains(modsecRulesText, "if (btn.disabled) return;\n            var ruleID = parseInt") ||
+		!strings.Contains(modsecRulesText, "btn.disabled = true;\n            CSM.confirm") ||
+		!strings.Contains(modsecRulesText, "return setEscalation(ruleID, true).catch(") ||
+		!strings.Contains(modsecRulesText, "btn.disabled = false;") {
+		t.Error("modsec-rules.js exclusion removal must latch during confirm/save and restore on cancel or failure")
 	}
 
 	threat, err := os.ReadFile("../../ui/static/js/threat.js")

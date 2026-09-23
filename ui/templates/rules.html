@@ -5,6 +5,11 @@
         <div class="csm-page-header__main">
             <h1 class="csm-page-header__title"><i class="ti ti-file-code"></i>&nbsp;Rules</h1>
         </div>
+        <div class="csm-page-header__actions">
+            <a href="/modsec/rules" class="btn btn-ghost-secondary btn-sm" title="ModSecurity rules and firewall escalation exclusions">
+                <i class="ti ti-list-check"></i>&nbsp;ModSec Rules
+            </a>
+        </div>
     </div>
 
     <!-- Stats Cards -->
@@ -69,26 +74,6 @@
                     <tr><td colspan="3" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
                 </tbody>
             </table>
-        </div>
-    </div>
-
-    <!-- ModSecurity Escalation Settings -->
-    <div class="card mt-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;ModSecurity Escalation</h3>
-        </div>
-        <div class="card-body">
-            <p class="text-muted small mb-3">CSM custom ModSecurity rules (900000-900999) can escalate to nftables firewall blocks after repeated denies. Add rule IDs here to disable escalation - the ModSecurity deny (403) still applies, but CSM won't block the IP at the firewall level.</p>
-            <form id="modsec-escalation-form" class="row g-2 align-items-end mb-3">
-                <div class="col-auto">
-                    <label class="form-label" for="modsec-rule-id">Rule ID</label>
-                    <input type="number" class="form-control" id="modsec-rule-id" placeholder="e.g. 900112" min="900000" max="900999" required>
-                </div>
-                <div class="col-auto">
-                    <button type="submit" class="btn btn-primary"><i class="ti ti-plus"></i>&nbsp;Exclude from Escalation</button>
-                </div>
-            </form>
-            <div id="modsec-escalation-list"></div>
         </div>
     </div>
 
