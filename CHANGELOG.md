@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- The Account page and the scan account list now find accounts under every account root of the platform, including Plesk vhosts, and the Account page lists quarantined files from the configured quarantine directory.
 - The incident groups API now filters by a status given in any letter case. Before, a status such as Open was accepted but matched no incidents.
 - The dashboard now shows a scan in progress for every scan the daemon runs, including scheduled scans, command-line checks and scan jobs, not only scans started from the web UI.
 - The health API and dashboard now count log watchers that start after the web UI, such as one waiting for a log file to appear, instead of the count at startup.

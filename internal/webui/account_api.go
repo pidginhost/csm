@@ -18,8 +18,37 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "account.html", map[string]string{
 		"Hostname":    s.cfg.Hostname,
 		"AccountName": name,
-		"HomeDir":     filepath.Join("/home", name),
+		"HomeDir":     checks.AccountHomeDirIn(s.accountRoots(), name),
 	})
+}
+
+// accountPathPrefixes returns "<root>/<name>/" for every account root, the
+// prefixes a path inside the account's home starts with.
+func (s *Server) accountPathPrefixes(name string) []string {
+	roots := s.accountRoots()
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		out = append(out, filepath.Join(root, name)+"/")
+	}
+	return out
+}
+
+func pathHasAnyPrefix(path string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAny(s string, subs []string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +58,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	homePrefix := "/home/" + name + "/"
+	homePrefixes := s.accountPathPrefixes(name)
 
 	// Current findings for this account
 	type findingView struct {
@@ -44,7 +73,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
 		}
-		if strings.Contains(f.Message, homePrefix) || strings.Contains(f.Details, homePrefix) || strings.Contains(f.FilePath, homePrefix) {
+		if containsAny(f.Message, homePrefixes) || containsAny(f.Details, homePrefixes) || containsAny(f.FilePath, homePrefixes) {
 			accountFindings = append(accountFindings, findingView{
 				Severity: int(f.Severity),
 				Check:    f.Check,
@@ -62,8 +91,8 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		Reason       string `json:"reason"`
 	}
 	var quarantined []qEntry
-	rootMetas := listMetaFiles("/opt/csm/quarantine")
-	preCleanMetas := listMetaFiles(filepath.Join("/opt/csm/quarantine", "pre_clean"))
+	rootMetas := listMetaFiles(quarantineDir)
+	preCleanMetas := listMetaFiles(filepath.Join(quarantineDir, "pre_clean"))
 	metas := rootMetas
 	metas = append(metas, preCleanMetas...)
 	for _, metaPath := range metas {
@@ -71,7 +100,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		if strings.HasPrefix(meta.OriginalPath, homePrefix) {
+		if pathHasAnyPrefix(meta.OriginalPath, homePrefixes) {
 			id := strings.TrimSuffix(filepath.Base(metaPath), ".meta")
 			quarantined = append(quarantined, qEntry{
 				ID: id, OriginalPath: meta.OriginalPath, Size: meta.Size, Reason: meta.Reason,
@@ -92,7 +121,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		if len(history) >= 100 {
 			break
 		}
-		if strings.Contains(f.Message, homePrefix) || strings.Contains(f.Details, homePrefix) {
+		if containsAny(f.Message, homePrefixes) || containsAny(f.Details, homePrefixes) || containsAny(f.FilePath, homePrefixes) {
 			history = append(history, histEntry{
 				Severity: int(f.Severity), Check: f.Check, Message: f.Message,
 				Timestamp: f.Timestamp.Format(time.RFC3339),

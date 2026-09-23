@@ -56,11 +56,21 @@ func readAccountHomes() ([]accountHome, error) {
 	return homes, firstErr
 }
 
+// AccountHomeRoots returns the directories hosting accounts live under on
+// this platform: /home, or /var/www/vhosts on Plesk.
+func AccountHomeRoots() []string {
+	return accountHomeRoots()
+}
+
 // accountHomeDir resolves an account's home directory: the first root that
 // holds it, or the first root when it exists nowhere (callers that need
 // existence check it themselves).
 func accountHomeDir(account string) string {
-	roots := accountHomeRoots()
+	return AccountHomeDirIn(accountHomeRoots(), account)
+}
+
+// AccountHomeDirIn is accountHomeDir over the given roots.
+func AccountHomeDirIn(roots []string, account string) string {
 	for _, root := range roots {
 		candidate := filepath.Join(root, account)
 		if _, err := osFS.Stat(candidate); err == nil {

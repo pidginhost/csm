@@ -1143,33 +1143,16 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 
 // apiFixPreview returns what a fix would do without applying it.
 // GET /api/v1/fix-preview?check=...&message=...
-// apiAccounts returns a list of cPanel account usernames for the scan dropdown.
+// apiAccounts returns the account names for the scan dropdown: the accounts a
+// server-wide scan covers.
 //
 //nolint:unused // registered via mux.Handle in server.go
 func (s *Server) apiAccounts(w http.ResponseWriter, _ *http.Request) {
-	entries, err := os.ReadDir("/home")
+	accounts, err := s.scanAccounts(s.liveCfg())
 	if err != nil {
-		writeJSON(w, []string{})
+		writeJSONError(w, "Could not list accounts", http.StatusInternalServerError)
 		return
 	}
-
-	var accounts []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		// Skip system/hidden directories
-		if strings.HasPrefix(name, ".") || name == "virtfs" || name == "cPanelInstall" ||
-			name == "cpanelsolr" || name == "lost+found" {
-			continue
-		}
-		// Must have public_html to be a real cPanel account
-		if _, err := os.Stat(filepath.Join("/home", name, "public_html")); err == nil {
-			accounts = append(accounts, name)
-		}
-	}
-
 	writeJSON(w, accounts)
 }
 

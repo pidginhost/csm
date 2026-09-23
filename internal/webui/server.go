@@ -142,6 +142,10 @@ type Server struct {
 	// scanInProgress reports scans the UI did not start; per server so
 	// handler tests can hold one without running checks.
 	scanInProgress func() bool
+	// accountRoots and scanAccounts are the platform's account inventory;
+	// per server so handler tests can supply their own tree.
+	accountRoots func() []string
+	scanAccounts func(*config.Config) ([]string, error)
 
 	provider health.Provider // set by Daemon when it starts the WebUI
 
@@ -194,6 +198,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		verifyFinding:    checks.VerifyFindingInput,
 		applyFix:         checks.ApplyFix,
 		scanInProgress:   checks.ScanInProgress,
+		accountRoots:     checks.AccountHomeRoots,
+		scanAccounts:     checks.EnumerateScanAccounts,
 	}
 
 	lifetime, idle, err := cfg.BrowserSessionDurations()
