@@ -19,7 +19,7 @@ func TestNonScanBlockReasonsMatchReplayPrefixes(t *testing.T) {
 	produced := []string{
 		challengeTimeoutReasonPrefix + "wp brute",
 		centralIntelBlockReason,
-		credentialSprayReasonPrefix + "9 distinct mailboxes",
+		sprayBlockReasonPrefix + "9 distinct mailboxes",
 		incidentReasonPrefix + "brute_force HIGH",
 	}
 	used := map[string]bool{}

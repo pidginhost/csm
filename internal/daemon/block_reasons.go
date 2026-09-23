@@ -7,6 +7,6 @@ package daemon
 const (
 	challengeTimeoutReasonPrefix = "challenge timeout: "
 	centralIntelBlockReason      = "central-intel (locally corroborated)"
-	credentialSprayReasonPrefix  = "CSM credential_spray: "
+	sprayBlockReasonPrefix       = "CSM credential_spray: "
 	incidentReasonPrefix         = "CSM incident: "
 )
