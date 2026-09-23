@@ -2047,7 +2047,8 @@ func TestCSMRequestExposesAllowNonOKAndSilent(t *testing.T) {
 		`delete opts.silent;`,
 		`CSM.get = function(url, options) {`,
 		`var opts = Object.assign({}, options || {});`,
-		`opts.headers = Object.assign({ Accept: 'application/json' }, opts.headers || {});`,
+		`opts.headers = csmCopyHeaders(opts.headers);`,
+		`opts.headers.Accept = 'application/json';`,
 		`return CSM.fetch(url, opts);`,
 	} {
 		if !strings.Contains(text, fragment) {

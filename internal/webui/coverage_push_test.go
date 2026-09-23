@@ -267,7 +267,7 @@ func TestValidateCSRFFailsClosedWithoutSecret(t *testing.T) {
 func TestCSRFTokenEmptyWithoutSecret(t *testing.T) {
 	s := newTestServer(t, "")
 	if got := s.csrfTokenForSession("session"); got != "" {
-		t.Fatalf("csrfToken without admin secret = %q, want empty", got)
+		t.Fatal("CSRF token must be empty without an admin secret")
 	}
 }
 

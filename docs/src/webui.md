@@ -91,7 +91,7 @@ the request would exceed the API body-size limit, which includes finding details
 - **Authentication** - API bearer tokens in the header; opaque server-side browser sessions in HttpOnly/Secure/SameSite=Strict cookies
 - **CSRF** - HMAC-derived token bound to the browser session on cookie-authenticated POST, PUT, PATCH, and DELETE requests; a form sends it in the body, never the query string
 - **Headers** - X-Frame-Options DENY, Content-Security-Policy (scripts, styles and forms from the Web UI only; no plugins, `<base>` or framing), HSTS, nosniff, and the legacy XSS auditor turned off
-- **TLS** - Auto-generated self-signed certificate, renewed automatically within 30 days of expiry and picked up without a restart; a certificate you install is never replaced, and replacing its files takes effect on the next connection
+- **TLS** - Auto-generated self-signed certificate, renewed automatically within 30 days of expiry and picked up without a restart; a certificate you install is never replaced, and replacing its files takes effect on the next connection. Renewal keeps the existing private key, so a failed certificate write leaves the working pair intact; explicitly configured certificate and key files must already exist
 - **Rate limiting** - 5 login attempts/min, 600 API and `/metrics` requests/min per IPv4 address or IPv6 /64
 - **Token length** - tokens shorter than 32 characters are reported as warnings at startup and by `csm validate` and `csm doctor`; they keep working
 - **Bearer auth** skips CSRF (for API-to-API calls)
@@ -121,8 +121,11 @@ Both durations require a restart. Lifetime must be between one second and
 30 days; idle timeout must be at least one second and no longer than lifetime. Zero does
 not disable expiry. Idle time means time without operator activity: page loads
 and API requests made within a minute of keyboard, pointer or scroll input.
-Background polling by an open page does not count, so a dashboard left open
-still logs out after the idle timeout. Activity is committed at bounded intervals, so
+Background polling by an open page does not count, including metrics scrapes,
+HTML page fetches and event-stream connections. Browser navigation to a page
+counts as a page load; fetching that page on a timer does not. The activity
+marker is recalculated when each API request is sent, so a dashboard left
+open still logs out after the idle timeout. Activity is committed at bounded intervals, so
 idle expiry can occur slightly early, never late. Passive event-stream
 heartbeats do not extend the session; streams check revocation and expiry
 before each event and heartbeat.

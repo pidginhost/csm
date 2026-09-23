@@ -334,20 +334,42 @@ CSM.ACTIVE_WINDOW_MS = 60000;
     document.addEventListener(type, function() { csmLastInput = Date.now(); }, { capture: true, passive: true });
 });
 
+function csmCopyHeaders(headers) {
+    var copy = {};
+    if (Array.isArray(headers)) {
+        var values = new Map();
+        headers.forEach(function(pair) {
+            var name = String(pair[0]).toLowerCase();
+            var value = String(pair[1]);
+            values.set(name, values.has(name) ? values.get(name) + ', ' + value : value);
+        });
+        copy = Object.fromEntries(values);
+    } else if (headers && typeof headers.forEach === 'function') {
+        headers.forEach(function(value, name) { copy[name] = value; });
+    } else {
+        copy = Object.assign({}, headers);
+    }
+    return copy;
+}
+
 CSM.request = function(url, options) {
     var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
     options = options || {};
+    var headers = csmCopyHeaders(options.headers);
+    // Options may be reused after the input window closes. Never retain
+    // an activity marker from a previous dispatch or mutate the caller.
+    Object.keys(headers).forEach(function(name) {
+        if (name.toLowerCase() === 'x-csm-active') delete headers[name];
+    });
     if (csmLastInput && Date.now() - csmLastInput < CSM.ACTIVE_WINDOW_MS) {
-        options = Object.assign({}, options, {
-            headers: Object.assign({}, options.headers, { 'X-CSM-Active': '1' })
-        });
+        headers['X-CSM-Active'] = '1';
     }
     var timeoutMs = (options.timeoutMs == null) ? 30000 : options.timeoutMs;
     var allowNonOK = !!options.allowNonOK;
     var silent = !!options.silent;
     var controller = new AbortController();
     var timeoutId = (timeoutMs > 0) ? setTimeout(function() { controller.abort(); }, timeoutMs) : null;
-    var opts = Object.assign({}, options, { signal: controller.signal, credentials: 'same-origin' });
+    var opts = Object.assign({}, options, { headers: headers, signal: controller.signal, credentials: 'same-origin' });
     delete opts.timeoutMs;
     delete opts.allowNonOK;
     delete opts.silent;
@@ -397,7 +419,10 @@ CSM.fetch = function(url, options) {
 
 CSM.get = function(url, options) {
     var opts = Object.assign({}, options || {});
-    opts.headers = Object.assign({ Accept: 'application/json' }, opts.headers || {});
+    opts.headers = csmCopyHeaders(opts.headers);
+    if (!Object.keys(opts.headers).some(function(name) { return name.toLowerCase() === 'accept'; })) {
+        opts.headers.Accept = 'application/json';
+    }
     return CSM.fetch(url, opts);
 };
 

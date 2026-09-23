@@ -24,6 +24,9 @@ import (
 // tests can generate one close to expiry.
 var selfSignedValidity = 365 * 24 * time.Hour
 
+// Inject write failures without relying on permissions that root bypasses.
+var writeTLSFile = writeFileReplace
+
 // renewBefore is how close to expiry a generated certificate is replaced.
 const renewBefore = 30 * 24 * time.Hour
 
@@ -36,8 +39,8 @@ const selfSignedOrganization = "CSM Security Monitor"
 // operator installed, is left alone. Includes localhost and the server
 // hostname in the certificate SANs.
 func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
-	if fileExists(certPath) && fileExists(keyPath) && !ownCertExpiring(certPath) {
-		return nil
+	if fileExists(certPath) {
+		return renewTLSCert(certPath, keyPath)
 	}
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -77,36 +80,71 @@ func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling key: %w", err)
 	}
-	// Replace each file by rename, key first. A server reading the pair in
-	// between sees a new key with the old certificate, which does not load,
-	// and keeps serving what it had.
-	if err := writeFileReplace(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})); err != nil {
+	// This path creates the initial pair. Renewal retains its key so a
+	// failed certificate replacement cannot break the pair on disk.
+	if err := writeTLSFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})); err != nil {
 		return fmt.Errorf("writing key: %w", err)
 	}
-	if err := writeFileReplace(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})); err != nil {
+	if err := writeTLSFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})); err != nil {
 		return fmt.Errorf("writing cert: %w", err)
 	}
 	return nil
 }
 
-// ownCertExpiring reports whether certPath holds a certificate EnsureTLSCert
-// generated (self-signed, selfSignedOrganization) that expires within
-// renewBefore. Anything unreadable or foreign is not ours to replace.
-func ownCertExpiring(certPath string) bool {
-	// #nosec G304 -- certPath is derived from config-owned statePath.
-	data, err := os.ReadFile(certPath)
+// renewTLSCert never generates missing files: an operator may temporarily
+// remove either file while replacing their certificate.
+func renewTLSCert(certPath, keyPath string) error {
+	// Read and validate the same certificate that will be renewed, even
+	// when an operator replaces the files during this check.
+	// #nosec G304 -- paths are operator-configured TLS files.
+	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
-		return false
+		return err
 	}
-	block, _ := pem.Decode(data)
+	block, _ := pem.Decode(certPEM)
 	if block == nil {
-		return false
+		return nil
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil || !bytes.Equal(cert.RawIssuer, cert.RawSubject) {
+	if err != nil {
+		return fmt.Errorf("parsing certificate for renewal: %w", err)
+	}
+	if !ownCertExpiring(cert) {
+		return nil
+	}
+	// #nosec G304 -- paths are operator-configured TLS files.
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return err
+	}
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return fmt.Errorf("loading certificate for renewal: %w", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return err
+	}
+	cert.SerialNumber = serial
+	cert.NotBefore = time.Now()
+	cert.NotAfter = cert.NotBefore.Add(selfSignedValidity)
+	der, err := x509.CreateCertificate(rand.Reader, cert, cert, cert.PublicKey, pair.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("renewing certificate: %w", err)
+	}
+	return writeTLSFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// ownCertExpiring recognizes CSM's self-signed certificates near expiry.
+// A matching issuer name alone does not prove a self-signature.
+func ownCertExpiring(cert *x509.Certificate) bool {
+	if !bytes.Equal(cert.RawIssuer, cert.RawSubject) {
 		return false
 	}
 	if len(cert.Subject.Organization) != 1 || cert.Subject.Organization[0] != selfSignedOrganization {
+		return false
+	}
+	if err := cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
 		return false
 	}
 	return time.Until(cert.NotAfter) < renewBefore

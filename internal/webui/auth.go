@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -41,7 +42,21 @@ func (s *Server) cookieTokenWithScope(r *http.Request, want string) (string, boo
 // polls and the event stream do not, so a page left open still reaches the
 // idle timeout.
 func sessionActivity(r *http.Request) bool {
-	return !strings.HasPrefix(r.URL.Path, "/api/") || r.Header.Get("X-CSM-Active") == "1"
+	if r.URL.Path == "/metrics" || r.URL.Path == "/api/v1/events" {
+		return false
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		return r.Header.Get("X-CSM-Active") == "1"
+	}
+	if r.Method != http.MethodGet {
+		return false
+	}
+	// Fetches can poll HTML pages too. Only navigation counts as a page
+	// load; older browsers identify it by Accept instead of Fetch Metadata.
+	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
+		return mode == "navigate"
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 func (s *Server) cookieSessionToken(r *http.Request, want string, touch bool) (string, bool) {
@@ -168,14 +183,15 @@ func clientIPKey(remoteAddr string) string {
 // rotate addresses inside it.
 func rateLimitKey(remoteAddr string) string {
 	host := clientIPKey(remoteAddr)
-	ip := net.ParseIP(host)
-	if ip == nil {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
 		return host
 	}
-	if v4 := ip.To4(); v4 != nil {
-		return v4.String()
+	ip = ip.WithZone("").Unmap()
+	if ip.Is4() {
+		return ip.String()
 	}
-	return (&net.IPNet{IP: ip.Mask(net.CIDRMask(64, 128)), Mask: net.CIDRMask(64, 128)}).String()
+	return netip.PrefixFrom(ip, 64).Masked().String()
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

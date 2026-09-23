@@ -16,6 +16,9 @@ func TestRateLimitKeyGroupsIPv6By64(t *testing.T) {
 		"[2001:db8:1:2:bbbb:cccc:dddd:2]:1": "2001:db8:1:2::/64",
 		"[::ffff:203.0.113.9]:443":          "203.0.113.9",
 		"not-an-address":                    "not-an-address",
+		"[2001:db8:1:2::1%en0]:443":         "2001:db8:1:2::/64",
+		"2001:db8:1:2::2%en0":               "2001:db8:1:2::/64",
+		"[::ffff:203.0.113.9%en0]:443":      "203.0.113.9",
 	}
 	for in, want := range cases {
 		if got := rateLimitKey(in); got != want {

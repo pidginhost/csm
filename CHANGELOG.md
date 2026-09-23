@@ -61,6 +61,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Web UI activity tracking and request checks now keep idle sessions from lingering while preserving normal operator actions. Certificate renewal preserves working keys and operator-managed files, and IPv6 rate limits handle scoped addresses consistently.
 - The self-signed Web UI certificate is now renewed automatically before it expires and served without a restart; a certificate installed by the operator is never replaced, and replacing its files takes effect without a restart.
 - The Web UI's Content-Security-Policy now also forbids plugins, <base> tags, framing and form posts to other sites, and the legacy browser XSS auditor, which could be abused to disable page scripts, is turned off.
 - CSRF tokens are now bound to the browser session instead of shared by every browser until the daemon restarts, and a form token is accepted only from the request body, not the query string.

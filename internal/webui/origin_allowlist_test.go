@@ -92,3 +92,20 @@ func TestLoopbackOriginsMustMatchTheRequestHost(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalLoopbackOriginStillRequiresMatchingHost(t *testing.T) {
+	s := newTestServer(t, randomBrowserCredential())
+	s.cfg.Hostname = "localhost"
+	s.cfg.WebUI.Listen = ":9443"
+	if code := originProbeHost(t, s, "https://localhost:9443", "localhost:18443"); code != http.StatusForbidden {
+		t.Fatalf("canonical loopback origin bypassed Host check: %d", code)
+	}
+	for _, tc := range []struct{ origin, host string }{
+		{"https://localhost", "LOCALHOST:443"},
+		{"https://localhost:18443", "LOCALHOST:18443"},
+	} {
+		if code := originProbeHost(t, s, tc.origin, tc.host); code != http.StatusOK {
+			t.Fatalf("same-origin tunnel rejected: %d", code)
+		}
+	}
+}

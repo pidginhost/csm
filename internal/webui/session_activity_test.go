@@ -11,6 +11,9 @@ import (
 func sessionGet(s *Server, cookie *http.Cookie, path string, active bool) int {
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.AddCookie(cookie)
+	if !strings.HasPrefix(path, "/api/") {
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+	}
 	if active {
 		req.Header.Set("X-CSM-Active", "1")
 	}
@@ -23,6 +26,76 @@ func sessionGet(s *Server, cookie *http.Cookie, path string, active bool) int {
 		s.requireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(w, req)
 	}
 	return w.Code
+}
+
+func TestSessionActivityAcrossAuthPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, mode, accept, auth string
+		active, touch                  bool
+	}{
+		{name: "metrics poll", path: "/metrics", auth: "metrics"},
+		{name: "marked metrics poll", path: "/metrics", auth: "metrics", active: true},
+		{name: "sessions poll", path: "/sessions", mode: "cors", accept: "text/html", auth: "admin"},
+		{name: "sessions navigation", path: "/sessions", mode: "navigate", auth: "admin", touch: true},
+		{name: "legacy navigation", path: "/dashboard", accept: "text/html", auth: "admin", touch: true},
+		{name: "login poll", path: "/login", mode: "same-origin", auth: "login"},
+		{name: "login navigation", path: "/login", mode: "navigate", auth: "login", touch: true},
+		{name: "read API poll", path: "/api/v1/status", auth: "read"},
+		{name: "read API input", path: "/api/v1/status", auth: "read", active: true, touch: true},
+		{name: "admin API poll", path: "/api/v1/sessions", auth: "admin"},
+		{name: "admin API input", path: "/api/v1/sessions", auth: "admin", active: true, touch: true},
+		{name: "event stream", path: "/api/v1/events", auth: "read", active: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			credential := randomBrowserCredential()
+			s := newTestServerWithTemplates(t, credential)
+			_, idle, err := s.cfg.BrowserSessionDurations()
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			now := start
+			s.sessionNow = func() time.Time { return now }
+			cookie := loginBrowser(t, s, credential, nil)
+			now = start.Add(idle / 2)
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.AddCookie(cookie)
+			req.Header.Set("Sec-Fetch-Mode", tc.mode)
+			req.Header.Set("Accept", tc.accept)
+			if tc.active {
+				req.Header.Set("X-CSM-Active", "1")
+			}
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+			var handler http.Handler
+			switch tc.auth {
+			case "metrics":
+				handler = http.HandlerFunc(s.handleMetrics)
+			case "login":
+				handler = http.HandlerFunc(s.handleLogin)
+			case "read":
+				handler = s.requireRead(inner)
+			default:
+				handler = s.requireAuth(inner)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			want := http.StatusOK
+			if tc.auth == "login" {
+				want = http.StatusFound
+			}
+			if w.Code != want {
+				t.Fatalf("request status = %d, want %d", w.Code, want)
+			}
+			now = start.Add(idle + time.Second)
+			want = http.StatusUnauthorized
+			if tc.touch {
+				want = http.StatusOK
+			}
+			if code := sessionGet(s, cookie, "/api/v1/status", false); code != want {
+				t.Fatalf("session status after idle deadline = %d, want %d", code, want)
+			}
+		})
+	}
 }
 
 // Pages poll the API on timers. Those requests must not keep a browser

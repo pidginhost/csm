@@ -541,13 +541,14 @@ func (s *Server) Start() error {
 	certPath := s.cfg.WebUI.TLSCert
 	keyPath := s.cfg.WebUI.TLSKey
 
-	if certPath == "" {
+	if certPath == "" && keyPath == "" {
 		certPath = filepath.Join(s.cfg.StatePath, "webui.crt")
 		keyPath = filepath.Join(s.cfg.StatePath, "webui.key")
-	}
-
-	if err := EnsureTLSCert(certPath, keyPath, s.cfg.Hostname); err != nil {
-		return fmt.Errorf("TLS cert setup: %w", err)
+		if err := EnsureTLSCert(certPath, keyPath, s.cfg.Hostname); err != nil {
+			return fmt.Errorf("TLS cert setup: %w", err)
+		}
+	} else if err := renewTLSCert(certPath, keyPath); err != nil {
+		return fmt.Errorf("TLS cert renewal: %w", err)
 	}
 	certs, err := newCertReloader(certPath, keyPath)
 	if err != nil {
@@ -555,6 +556,8 @@ func (s *Server) Start() error {
 	}
 	s.httpSrv.TLSConfig.GetCertificate = certs.GetCertificate
 
+	// A listener failure ends these workers just as Shutdown does.
+	defer s.shutdownOnce.Do(func() { close(s.pruneDone) })
 	obs.Go("webui-prune-logins", s.pruneLoginAttempts)
 	obs.Go("webui-cert-renewal", func() { s.renewCertLoop(certPath, keyPath) })
 
@@ -572,7 +575,7 @@ func (s *Server) renewCertLoop(certPath, keyPath string) {
 		case <-s.pruneDone:
 			return
 		case <-ticker.C:
-			if err := EnsureTLSCert(certPath, keyPath, s.cfg.Hostname); err != nil {
+			if err := renewTLSCert(certPath, keyPath); err != nil {
 				fmt.Fprintf(os.Stderr, "webui: TLS certificate renewal: %v\n", err)
 			}
 		}
@@ -636,27 +639,21 @@ func webUIListenPort(listen string) string {
 	return ""
 }
 
-// originAllowed reports whether a browser Origin may call the API: the
-// canonical https://<hostname>:<port>, any https loopback origin (an SSH
-// tunnel is always local, and no cross-site page can carry a loopback
-// origin), or an operator-listed webui.allowed_origins entry. The request's
-// Host header is never consulted, so a forged Host cannot vouch for a
-// forged Origin.
 // originAllowed reports whether a browser Origin may make credentialed
 // requests. A loopback origin (an SSH tunnel on any local port) is trusted
 // only when it is the origin the request was sent to: host is the request's
 // Host. Another local service in the same browser shares the Web UI's
 // cookies, since cookies ignore the port, and must not be trusted.
 func (s *Server) originAllowed(origin, host string) bool {
-	if sameOrigin(origin, s.canonicalAllowedOrigin()) {
-		return true
-	}
 	u, err := url.Parse(origin)
 	if err != nil || !originHeaderURL(u) || !strings.EqualFold(u.Scheme, "https") {
 		return false
 	}
 	if isLoopbackOriginHost(u.Hostname()) {
 		return host != "" && sameOrigin(origin, "https://"+host)
+	}
+	if sameOrigin(origin, s.canonicalAllowedOrigin()) {
+		return true
 	}
 	for _, listed := range s.liveCfg().WebUI.AllowedOrigins {
 		if sameOrigin(origin, listed) {
@@ -1016,10 +1013,8 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 
 		// CORS/origin validation: reject cross-origin API requests.
-		// The allowed origin is derived from configuration, not from
-		// the request's Host header. Reading r.Host would let a proxy
-		// attacker forge a Host that matches their forged Origin and
-		// trivially pass the equality check.
+		// Non-loopback origins must be configured; loopback origins must
+		// match Host so another local service cannot borrow UI cookies.
 		// Browser logout and session revocation change server state like API
 		// writes. Login stays reachable: it already requires the credential.
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/sessions") {
