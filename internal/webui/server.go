@@ -983,10 +983,12 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		// Turn the legacy XSS auditor off: where browsers still honour it,
+		// "1; mode=block" can be abused to suppress page scripts.
+		w.Header().Set("X-XSS-Protection", "0")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		w.Header().Set("Cache-Control", "no-store")
 
