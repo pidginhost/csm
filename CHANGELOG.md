@@ -30,7 +30,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
-- The roadmap clarifies planned response safeguards, bounded resource use and operator visibility when automatic action cannot safely proceed. Existing response controls remain unchanged.
+- The roadmap now requires automatic-response limits that an attacker cannot exhaust or trip to switch off protection, sized from measured demand, with every withheld response kept visible to the operator. Existing response controls remain unchanged.
 
 ## [3.43.0] - 2026-09-22
 
