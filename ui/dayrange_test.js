@@ -66,6 +66,24 @@ test('midnight transitions include exactly the selected calendar day', () => {
     }
 });
 
+// Table date filters ask for the same two boundaries once per row. Building
+// an Intl formatter is the expensive part, so it happens once per zone.
+test('day boundaries do not rebuild a formatter per row', () => {
+    const page = prefsPage(zone('Europe/Bucharest'));
+    page.run(`
+        var RealDTF = Intl.DateTimeFormat;
+        window.__built = 0;
+        Intl.DateTimeFormat = function(locale, opts) { window.__built++; return new RealDTF(locale, opts); };
+    `);
+    for (let i = 0; i < 500; i++) {
+        page.window.CSM.prefs.dayBoundary('2026-10-25', false);
+        page.window.CSM.prefs.dayBoundary('2026-10-25', true);
+    }
+    const built = page.window.__built;
+    assert.ok(built <= 2, 'built ' + built + ' formatters for 1000 lookups');
+    assert.equal(new Date(page.window.CSM.prefs.dayBoundary('2026-10-25', true)).toISOString(), '2026-10-25T22:00:00.000Z');
+});
+
 test('today is the current day in the operator zone', () => {
     // Between them these zones disagree with any browser zone at any hour.
     for (const tz of ['Pacific/Kiritimati', 'Etc/GMT+12']) {

@@ -196,23 +196,38 @@ CSM.prefs = (function() {
         return 'UTC' + sign + String(Math.floor(abs / 60)).padStart(2, '0') + ':' + String(abs % 60).padStart(2, '0');
     }
 
-    // zoneOffsetMinutes is how far the operator's zone is ahead of UTC at the
-    // instant ms.
-    function zoneOffsetMinutes(ms) {
+    // zoneKey names the zone dates are shown in: an IANA name, 'local', or
+    // the server's fixed offset when its zone has no name.
+    function zoneKey() {
         var tz = state.timezone || 'local';
-        if (tz === 'server') {
-            var zone = serverZone();
-            if (!zone.name) return zone.offsetMinutes;
-            tz = zone.name;
-        }
-        if (tz === 'local') return -new Date(ms).getTimezoneOffset();
-        try {
-            var parts = {};
-            new Intl.DateTimeFormat('en-US', {
+        if (tz !== 'server') return tz;
+        var zone = serverZone();
+        return zone.name || ('offset:' + zone.offsetMinutes);
+    }
+
+    // Building an Intl formatter costs far more than using one, and table
+    // date filters ask for boundaries once per row, so keep one per zone.
+    var zoneFormatters = {};
+    function zoneFormatter(tz) {
+        if (!zoneFormatters[tz]) {
+            zoneFormatters[tz] = new Intl.DateTimeFormat('en-US', {
                 timeZone: tz, hourCycle: 'h23',
                 year: 'numeric', month: '2-digit', day: '2-digit',
                 hour: '2-digit', minute: '2-digit', second: '2-digit'
-            }).formatToParts(new Date(ms)).forEach(function(part) {
+            });
+        }
+        return zoneFormatters[tz];
+    }
+
+    // zoneOffsetMinutes is how far the operator's zone is ahead of UTC at the
+    // instant ms.
+    function zoneOffsetMinutes(ms) {
+        var key = zoneKey();
+        if (key === 'local') return -new Date(ms).getTimezoneOffset();
+        if (key.indexOf('offset:') === 0) return +key.slice(7);
+        try {
+            var parts = {};
+            zoneFormatter(key).formatToParts(new Date(ms)).forEach(function(part) {
                 parts[part.type] = part.value;
             });
             var wall = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
@@ -222,10 +237,26 @@ CSM.prefs = (function() {
         }
     }
 
+    // Boundaries are remembered per zone and day: a table filter asks for the
+    // same two once per row.
+    var boundaries = {};
+    var boundaryCount = 0;
+
     // dayBoundary returns the instant (ms) a calendar day YYYY-MM-DD starts in
     // the operator's zone or, with endExclusive, the instant the next day
     // starts. A malformed or impossible day returns null.
     function dayBoundary(value, endExclusive) {
+        var memoKey = zoneKey() + '|' + value + '|' + (endExclusive ? 1 : 0);
+        if (Object.prototype.hasOwnProperty.call(boundaries, memoKey)) return boundaries[memoKey];
+        if (boundaryCount >= 256) {
+            boundaries = {};
+            boundaryCount = 0;
+        }
+        boundaryCount++;
+        return (boundaries[memoKey] = computeDayBoundary(value, endExclusive));
+    }
+
+    function computeDayBoundary(value, endExclusive) {
         var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
         if (!m) return null;
         var y = +m[1], mo = +m[2] - 1, d = +m[3];
