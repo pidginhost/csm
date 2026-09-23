@@ -149,3 +149,26 @@ probe, which can update its own cache. It is not a guarantee of zero host writes
 
 Regenerate the table with `go run ./cmd/csm privileges --markdown`. A gate in
 `internal/ci` fails when the page and the inventory disagree.
+
+## Risk tiers and recovery coverage
+
+`csm privileges --json` reports each operation's risk tier as a number from 0
+to 4. A row with no tier would report -1; the build refuses such an inventory.
+The tier is the operation's maximum live effect on a wrong target. It is not the
+severity of the finding that triggered the operation.
+
+Seven operations carry a safety contract in the JSON inventory: the authority
+they need, how the target is revalidated before the change, how the change is
+reversed, and the limit that bounds it. The contracts describe current
+behaviour, including what it does not cover. Every other operation that changes
+the host states the recovery this inventory does not yet cover:
+
+| Operations | Recovery gap |
+| --- | --- |
+| `detect.bpf_probe`, `detect.outbound_connections`, `detect.process_exec`, `detect.sensitive_file_writes`, `detect.af_alg_sockets`, `respond.bpf_deny_egress` | This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks. |
+| `detect.kernel_livepatch_probe`, `detect.mail_queue_probe` | This inventory does not specify recovery of incidental external cache or log writes by probe commands. |
+| `respond.mail_delivery_gate`, `respond.hold_outgoing_mail`, `respond.freeze_mail`, `respond.quarantine_mail` | Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here. |
+| `respond.af_alg_enforce`, `respond.af_alg_marker`, `respond.forward_guard`, `respond.fix_wp_cron`, `integrate.auditd_rules`, `integrate.modsec_section`, `integrate.panel_plugin`, `integrate.php_shield`, `integrate.waf_vendor_rules`, `operate.harden_host`, `operate.install_service`, `operate.rehash`, `operate.restore_backup` | This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects. |
+| `respond.af_alg_kill`, `respond.kill_process`, `respond.restart_mail_auth` | Process termination and restart cannot restore lost process state; a full recovery contract is outside this slice. |
+| `respond.database_cleanup`, `respond.virtual_patch`, `respond.enforce_permissions`, `operate.manual_remediation`, `operate.truncate_error_log` | Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory. |
+| `operate.export_archives` | Export can replace an existing operator-selected archive; removing the new archive does not restore overwritten bytes. |

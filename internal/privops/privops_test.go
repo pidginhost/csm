@@ -1,8 +1,11 @@
 package privops
 
 import (
+	"encoding/json"
+	"os"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -346,6 +349,324 @@ func TestMarkdownReportsAuditCoverage(t *testing.T) {
 			if strings.Contains(line, "`"+op.ID+"`") && !strings.Contains(line, "| yes |") {
 				t.Errorf("row for %q does not report its action record", op.ID)
 			}
+		}
+	}
+}
+
+func TestEveryOperationHasARiskTier(t *testing.T) {
+	for _, op := range Operations() {
+		if op.Risk.Number() < 0 || op.Risk > RiskDestructive {
+			t.Errorf("%s has no risk tier (Risk=%d)", op.ID, op.Risk)
+		}
+	}
+}
+
+// Tier 0 means nothing outside CSM's own trees changes. A host change in tier
+// 0, or a tier above 0 that changes nothing, is a misclassification.
+func TestRiskTierZeroIsExactlyNoHostChange(t *testing.T) {
+	for _, op := range Operations() {
+		if (op.Risk == RiskObserve) == op.ChangesHost() {
+			t.Errorf("%s: Risk tier %d but ChangesHost()=%v", op.ID, op.Risk.Number(), op.ChangesHost())
+		}
+	}
+}
+
+// The firewall and file slice of the auto-response safety model owns these
+// operations and states their contract. Adding a contract elsewhere means the
+// operation's slice has specified its authority, identity revalidation,
+// recovery and limit; update this list in the same change.
+func TestSafetyContractsArePinnedAndComplete(t *testing.T) {
+	var got []string
+	for _, op := range Operations() {
+		if op.Contract == nil {
+			continue
+		}
+		got = append(got, op.ID)
+		c := op.Contract
+		for field, v := range map[string]string{"Authority": c.Authority, "Identity": c.Identity, "Recovery": c.Recovery, "Limit": c.Limit} {
+			if strings.TrimSpace(v) == "" {
+				t.Errorf("%s contract has an empty %s", op.ID, field)
+			}
+		}
+		if op.Risk.Number() < 2 {
+			t.Errorf("%s has a contract but tier %d; contracts describe host changes", op.ID, op.Risk.Number())
+		}
+	}
+	want := []string{
+		"integrate.challenge_port_gate",
+		"integrate.challenge_snippet",
+		"integrate.firewall_ruleset",
+		"operate.manual_firewall",
+		"respond.block_ip",
+		"respond.clean_file",
+		"respond.quarantine_file",
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("operations with a safety contract = %v, want %v", got, want)
+	}
+}
+
+func TestRiskTierNumbers(t *testing.T) {
+	for tier, want := range map[RiskTier]int{RiskUnclassified: -1, RiskObserve: 0, RiskPreview: 1, RiskReversible: 2, RiskContain: 3, RiskDestructive: 4, RiskTier(255): -1} {
+		if got := tier.Number(); got != want {
+			t.Errorf("RiskTier(%d).Number() = %d, want %d", tier, got, want)
+		}
+	}
+}
+
+// reviewedRiskTiers is the independent oracle for the inventory's tiers. A
+// ChangesHost check alone would accept swapping tier 2 and tier 4.
+var reviewedRiskTiers = map[string]RiskTier{
+	"detect.account_databases":      RiskObserve,
+	"detect.af_alg_sockets":         RiskContain,
+	"detect.audit_rules":            RiskObserve,
+	"detect.bpf_probe":              RiskReversible,
+	"detect.filesystem_events":      RiskObserve,
+	"detect.kernel_livepatch_probe": RiskReversible,
+	"detect.kernel_oom":             RiskObserve,
+	"detect.mail_queue_probe":       RiskReversible,
+	"detect.outbound_connections":   RiskReversible,
+	"detect.pam_events":             RiskObserve,
+	"detect.process_exec":           RiskReversible,
+	"detect.read_service_logs":      RiskObserve,
+	"detect.scan_account_files":     RiskObserve,
+	"detect.sensitive_file_writes":  RiskReversible,
+	"integrate.auditd_rules":        RiskDestructive,
+	"integrate.challenge_port_gate": RiskReversible,
+	"integrate.challenge_snippet":   RiskDestructive,
+	"integrate.firewall_ruleset":    RiskDestructive,
+	"integrate.modsec_section":      RiskDestructive,
+	"integrate.panel_plugin":        RiskDestructive,
+	"integrate.php_shield":          RiskDestructive,
+	"integrate.waf_vendor_rules":    RiskDestructive,
+	"operate.export_archives":       RiskDestructive,
+	"operate.harden_host":           RiskDestructive,
+	"operate.install_service":       RiskDestructive,
+	"operate.manual_firewall":       RiskContain,
+	"operate.manual_remediation":    RiskDestructive,
+	"operate.rehash":                RiskDestructive,
+	"operate.restore_backup":        RiskDestructive,
+	"operate.truncate_error_log":    RiskDestructive,
+	"respond.af_alg_enforce":        RiskDestructive,
+	"respond.af_alg_kill":           RiskDestructive,
+	"respond.af_alg_marker":         RiskDestructive,
+	"respond.block_ip":              RiskContain,
+	"respond.bpf_deny_egress":       RiskContain,
+	"respond.clean_file":            RiskDestructive,
+	"respond.database_cleanup":      RiskDestructive,
+	"respond.enforce_permissions":   RiskContain,
+	"respond.fix_wp_cron":           RiskDestructive,
+	"respond.forward_guard":         RiskDestructive,
+	"respond.forward_guard_lookup":  RiskObserve,
+	"respond.freeze_mail":           RiskReversible,
+	"respond.hold_outgoing_mail":    RiskReversible,
+	"respond.kill_process":          RiskDestructive,
+	"respond.mail_delivery_gate":    RiskReversible,
+	"respond.quarantine_file":       RiskContain,
+	"respond.quarantine_mail":       RiskContain,
+	"respond.restart_mail_auth":     RiskDestructive,
+	"respond.virtual_patch":         RiskContain,
+	"state.control_socket":          RiskObserve,
+	"state.mail_relay_policies":     RiskObserve,
+	"state.php_shield_events":       RiskObserve,
+	"state.sign_config":             RiskObserve,
+	"state.update_forge":            RiskObserve,
+	"state.update_signatures":       RiskObserve,
+	"state.write_deploy_script":     RiskObserve,
+	"state.write_logs":              RiskObserve,
+	"state.write_store":             RiskObserve,
+}
+
+func TestRiskTiersMatchReviewedInventory(t *testing.T) {
+	seen := map[string]bool{}
+	for _, op := range Operations() {
+		if seen[op.ID] {
+			t.Errorf("duplicate operation %s", op.ID)
+		}
+		seen[op.ID] = true
+		want, ok := reviewedRiskTiers[op.ID]
+		if !ok {
+			t.Errorf("%s is missing from the reviewed tier table", op.ID)
+			continue
+		}
+		if op.Risk != want {
+			t.Errorf("%s: Risk tier %d, reviewed %d", op.ID, op.Risk.Number(), want.Number())
+		}
+	}
+	for id := range reviewedRiskTiers {
+		if !seen[id] {
+			t.Errorf("reviewed tier table lists %s, which is not an operation", id)
+		}
+	}
+	for id, want := range map[string]RiskTier{"operate.export_archives": RiskDestructive, "respond.virtual_patch": RiskContain} {
+		if reviewedRiskTiers[id] != want {
+			t.Errorf("%s must stay tier %d", id, want.Number())
+		}
+	}
+}
+
+// reviewedRecoveryGaps pins the host-changing operations whose recovery this
+// inventory does not yet cover, with the exact gap each one states.
+var reviewedRecoveryGaps = map[string]string{
+	"detect.af_alg_sockets":         "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+	"detect.bpf_probe":              "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+	"detect.kernel_livepatch_probe": "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
+	"detect.mail_queue_probe":       "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
+	"detect.outbound_connections":   "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+	"detect.process_exec":           "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+	"detect.sensitive_file_writes":  "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+	"integrate.auditd_rules":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"integrate.modsec_section":      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"integrate.panel_plugin":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"integrate.php_shield":          "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"integrate.waf_vendor_rules":    "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"operate.export_archives":       "Export can replace an existing operator-selected archive; removing the new archive does not restore overwritten bytes.",
+	"operate.harden_host":           "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"operate.install_service":       "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"operate.manual_remediation":    "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
+	"operate.rehash":                "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"operate.restore_backup":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"operate.truncate_error_log":    "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
+	"respond.af_alg_enforce":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"respond.af_alg_kill":           "Process termination and restart cannot restore lost process state; a full recovery contract is outside this slice.",
+	"respond.af_alg_marker":         "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"respond.bpf_deny_egress":       "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+	"respond.database_cleanup":      "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
+	"respond.enforce_permissions":   "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
+	"respond.fix_wp_cron":           "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"respond.forward_guard":         "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"respond.freeze_mail":           "Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here.",
+	"respond.hold_outgoing_mail":    "Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here.",
+	"respond.kill_process":          "Process termination and restart cannot restore lost process state; a full recovery contract is outside this slice.",
+	"respond.mail_delivery_gate":    "Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here.",
+	"respond.quarantine_mail":       "Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here.",
+	"respond.restart_mail_auth":     "Process termination and restart cannot restore lost process state; a full recovery contract is outside this slice.",
+	"respond.virtual_patch":         "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
+}
+
+func TestHostChangesDeclareRecoveryCoverage(t *testing.T) {
+	got := map[string]string{}
+	for _, op := range Operations() {
+		hasContract := op.Contract != nil
+		hasGap := strings.TrimSpace(op.RecoveryGap) != ""
+		switch {
+		case !op.ChangesHost() && hasGap:
+			t.Errorf("%s changes nothing on the host but declares a recovery gap", op.ID)
+		case op.ChangesHost() && hasContract == hasGap:
+			t.Errorf("%s changes the host and must declare exactly one of a contract or a recovery gap (contract=%v gap=%v)", op.ID, hasContract, hasGap)
+		}
+		if hasGap {
+			if _, dup := got[op.ID]; dup {
+				t.Errorf("duplicate recovery gap for %s", op.ID)
+			}
+			got[op.ID] = op.RecoveryGap
+		}
+	}
+	if !reflect.DeepEqual(got, reviewedRecoveryGaps) {
+		for id, gap := range reviewedRecoveryGaps {
+			if got[id] != gap {
+				t.Errorf("%s recovery gap = %q, reviewed %q", id, got[id], gap)
+			}
+		}
+		for id := range got {
+			if _, ok := reviewedRecoveryGaps[id]; !ok {
+				t.Errorf("%s declares a recovery gap that is not in the reviewed list", id)
+			}
+		}
+	}
+	data, err := os.ReadFile("../../docs/src/capability-matrix.md")
+	if err != nil {
+		t.Fatalf("read capability matrix doc: %v", err)
+	}
+	doc := string(data)
+	if end := strings.Index(doc, "<!-- END GENERATED MATRIX -->"); end >= 0 {
+		doc = doc[end:]
+	} else {
+		t.Fatal("capability matrix doc has no generated block end marker")
+	}
+	var rows []string
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(line, "|") {
+			rows = append(rows, line)
+		}
+	}
+	for id, gap := range reviewedRecoveryGaps {
+		found := false
+		for _, row := range rows {
+			if strings.Contains(row, "`"+id+"`") && strings.Contains(row, gap) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("capability matrix doc has no recovery-gap row naming %s with its gap text", id)
+		}
+	}
+}
+
+func TestOperationsJSONReportsRiskTier(t *testing.T) {
+	ops := Operations()
+	raw, err := json.Marshal(ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct {
+		ID          string
+		Risk        *int
+		Contract    *SafetyContract
+		RecoveryGap string
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != len(ops) {
+		t.Fatalf("JSON rows = %d, want %d", len(rows), len(ops))
+	}
+	for i, row := range rows {
+		op := ops[i]
+		if row.ID != op.ID {
+			t.Fatalf("JSON row %d is %q, want %q", i, row.ID, op.ID)
+		}
+		if row.Risk == nil {
+			t.Errorf("%s JSON has no risk", op.ID)
+		} else if *row.Risk != op.Risk.Number() {
+			t.Errorf("%s JSON risk = %d, want %d", op.ID, *row.Risk, op.Risk.Number())
+		}
+		if !reflect.DeepEqual(row.Contract, op.Contract) || row.RecoveryGap != op.RecoveryGap {
+			t.Errorf("%s JSON contract or gap differs from the inventory", op.ID)
+		}
+	}
+	for tier, want := range map[RiskTier]string{RiskUnclassified: "-1", RiskObserve: "0", RiskPreview: "1", RiskReversible: "2", RiskContain: "3", RiskDestructive: "4", RiskTier(255): "-1"} {
+		got, err := json.Marshal(tier)
+		if err != nil || string(got) != want {
+			t.Errorf("json(RiskTier(%d)) = %s, %v; want %s", tier, got, err, want)
+		}
+	}
+}
+
+func TestOperationsCopiesSafetyContracts(t *testing.T) {
+	var first *SafetyContract
+	for _, op := range Operations() {
+		if op.ID == "respond.block_ip" {
+			first = op.Contract
+		}
+	}
+	if first == nil {
+		t.Fatal("respond.block_ip has no contract")
+	}
+	saved := *first
+	t.Cleanup(func() { *first = saved })
+	first.Authority, first.Identity, first.Recovery, first.Limit = "x", "x", "x", "x"
+	for _, op := range Operations() {
+		if op.ID != "respond.block_ip" {
+			continue
+		}
+		if op.Contract == first {
+			t.Fatal("Operations returns the shared contract pointer")
+		}
+		if *op.Contract != saved {
+			t.Errorf("a caller changed the shared contract: %+v", *op.Contract)
 		}
 	}
 }

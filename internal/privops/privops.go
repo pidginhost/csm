@@ -66,6 +66,59 @@ const (
 	Operator Trigger = "operator"
 )
 
+// RiskTier is an operation's action-risk tier: what can go wrong if it runs
+// on a wrong target. The zero value is unclassified and fails
+// TestEveryOperationHasARiskTier.
+type RiskTier uint8
+
+const (
+	RiskUnclassified RiskTier = iota
+	// RiskObserve (tier 0) changes nothing outside CSM's own trees.
+	RiskObserve
+	// RiskPreview (tier 1) records a recommendation or dry-run decision only.
+	// No inventory row currently represents previews separately; rows carry
+	// their maximum live effect, even when an execution can be a dry run.
+	RiskPreview
+	// RiskReversible (tier 2) makes a low-risk host change such as attaching
+	// a probe, opening a challenge gate or holding mail. The tier alone
+	// does not promise automatic rollback or reversal of incidental writes.
+	RiskReversible
+	// RiskContain (tier 3) quarantines, blocks or denies one target.
+	RiskContain
+	// RiskDestructive (tier 4) signals processes, restarts or reloads services,
+	// or rewrites content or configuration, including an existing archive.
+	RiskDestructive
+)
+
+// Number is the tier as the safety model numbers it, 0 to 4, or -1 when the
+// operation is unclassified or invalid.
+func (r RiskTier) Number() int {
+	if r < RiskObserve || r > RiskDestructive {
+		return -1
+	}
+	return int(r) - 1
+}
+
+// MarshalJSON uses the same public tier number as the text and Markdown
+// views. The internal zero value is an unclassified sentinel, not tier 0.
+func (r RiskTier) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprint(r.Number())), nil
+}
+
+// SafetyContract describes current authority, identity, recovery and limits.
+// It is inventory metadata, not an enforcement mechanism or a claim that
+// the full action lifecycle is implemented. Remaining gaps stay explicit.
+type SafetyContract struct {
+	// Authority is the evidence and opt-ins required before it may run.
+	Authority string
+	// Identity is how the target is revalidated immediately before the change.
+	Identity string
+	// Recovery is how the change is reversed, or what it cannot undo.
+	Recovery string
+	// Limit names current bounds and where they do not apply.
+	Limit string
+}
+
 // csmOwnedPrefixes are the trees CSM creates and manages for itself. Writing
 // inside them is not a host change: an operator who removes CSM removes them.
 var csmOwnedPrefixes = []string{
@@ -110,6 +163,14 @@ type Op struct {
 	// log. False is not a claim that the operation is silent, only that it is
 	// not yet on that stream; the daemon log still carries it.
 	Audited bool
+	// Risk is the operation's action-risk tier.
+	Risk RiskTier
+	// Contract is the operation's safety contract; nil until its slice of the
+	// safety model specifies it.
+	Contract *SafetyContract
+	// RecoveryGap names recovery work not covered by this inventory's
+	// contracts. Required for host-changing operations without a contract.
+	RecoveryGap string
 	// WithoutPrivilege says what an operator loses by withholding the
 	// privilege, so the matrix reads as a decision, not a demand.
 	WithoutPrivilege string
@@ -144,6 +205,10 @@ func Operations() []Op {
 	for i := range ops {
 		ops[i].Privileges = slices.Clone(ops[i].Privileges)
 		ops[i].Writes = slices.Clone(ops[i].Writes)
+		if ops[i].Contract != nil {
+			c := *ops[i].Contract
+			ops[i].Contract = &c
+		}
 	}
 	sort.Slice(ops, func(i, j int) bool {
 		if ops[i].Subsystem != ops[j].Subsystem {
