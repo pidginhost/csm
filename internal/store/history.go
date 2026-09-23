@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/alert"
 	bolt "go.etcd.io/bbolt"
@@ -201,6 +203,10 @@ func parseHistoryBoundIn(s string, end bool, loc *time.Location) (time.Time, err
 	}
 }
 
+// decodeHistoryEntry decodes one stored finding; a var so tests can count
+// decodes.
+var decodeHistoryEntry = func(v []byte, f *alert.Finding) error { return json.Unmarshal(v, f) }
+
 // ReadHistoryFilteredWithChecks reads findings with optional filters, including
 // an exact check-name set when checks is non-nil.
 func (db *DB) ReadHistoryFilteredWithChecks(
@@ -214,6 +220,7 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 	matched := 0
 	searchLower := strings.ToLower(search)
 	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+	mayMatch := historyPrefilter(severity, searchLower, checks)
 
 	var fromPrefix, toPrefix string
 	if from != "" {
@@ -266,8 +273,11 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 				break
 			}
 
+			if !mayMatch(v) {
+				continue
+			}
 			var f alert.Finding
-			if err := json.Unmarshal(v, &f); err != nil {
+			if err := decodeHistoryEntry(v, &f); err != nil {
 				continue
 			}
 
@@ -302,6 +312,66 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 
 // containsLower checks if s contains substr using case-insensitive matching.
 // substr must already be lowercase.
+// historyPrefilter returns a test on a stored entry's JSON that is false only
+// when the entry cannot pass the severity, check or search filter, so the
+// walk that counts matches decodes only plausible entries. Each part applies
+// only when the text it looks for is stored verbatim: JSON escapes quotes,
+// backslashes, control characters, <, > and &, so a search for those is
+// left to the decoded check.
+func historyPrefilter(severity int, searchLower string, checks map[string]bool) func([]byte) bool {
+	var sevNeedles [][]byte
+	if severity >= 0 {
+		sevNeedles = [][]byte{
+			[]byte(fmt.Sprintf(`"severity":%d,`, severity)),
+			[]byte(fmt.Sprintf(`"severity":%d}`, severity)),
+		}
+	}
+	var checkNeedles [][]byte
+	for name := range checks {
+		if !storedVerbatim(name) {
+			checkNeedles = nil
+			break
+		}
+		checkNeedles = append(checkNeedles, []byte(`"check":"`+name+`"`))
+	}
+	var searchNeedle []byte
+	if searchLower != "" && storedVerbatim(searchLower) {
+		searchNeedle = []byte(searchLower)
+	}
+	return func(v []byte) bool {
+		if sevNeedles != nil && !bytes.Contains(v, sevNeedles[0]) && !bytes.Contains(v, sevNeedles[1]) {
+			return false
+		}
+		if checks != nil && checkNeedles != nil && !containsAnyBytes(v, checkNeedles) {
+			return false
+		}
+		if searchNeedle != nil && !bytes.Contains(bytes.ToLower(v), searchNeedle) {
+			return false
+		}
+		return true
+	}
+}
+
+// storedVerbatim reports whether encoding/json writes s unchanged inside a
+// JSON string.
+func storedVerbatim(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == '"' || r == '\\' || r == '<' || r == '>' || r == '&' || r == '\u2028' || r == '\u2029' || r == utf8.RuneError {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAnyBytes(v []byte, needles [][]byte) bool {
+	for _, n := range needles {
+		if bytes.Contains(v, n) {
+			return true
+		}
+	}
+	return false
+}
+
 func containsLower(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), substr)
 }
