@@ -292,7 +292,7 @@ func (l *Legacy) Step(batch Batch) (BatchOutcome, error) {
 // temporary entry when the limit is full, as the engine does.
 func (l *Legacy) insert(out *BatchOutcome, ip string, now time.Time, ttl time.Duration) {
 	if l.cfg.DenyTempLimit > 0 && l.temporaryCount() >= l.cfg.DenyTempLimit {
-		if victim, ok := evictionVictim(l.state.Entries, ip); ok {
+		if victim, ok := EvictionVictim(l.state.Entries, ip); ok {
 			i := slices.IndexFunc(l.state.Entries, func(e TempEntry) bool { return e.IP == victim })
 			out.Evicted++
 			out.EvictedIPs = append(out.EvictedIPs, victim)
@@ -314,10 +314,11 @@ func (l *Legacy) temporaryCount() int {
 	return n
 }
 
-// evictionVictim is the engine's rule: the first entry with the earliest
-// expiry, skipping permanent entries and the address being blocked. It does
-// not skip expired entries; the caller prunes those first.
-func evictionVictim(entries []TempEntry, exclude string) (string, bool) {
+// EvictionVictim is the engine's rule for a full temporary limit: the first
+// entry with the earliest expiry, skipping permanent entries and the address
+// being blocked. Expired entries are not skipped; admission prunes them
+// first. The firewall package's tests hold this to the engine's own helper.
+func EvictionVictim(entries []TempEntry, exclude string) (string, bool) {
 	var best TempEntry
 	found := false
 	for _, e := range entries {
