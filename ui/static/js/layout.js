@@ -9,21 +9,6 @@
     var pathname = window.location.pathname;
     var items = document.querySelectorAll('#csm-nav [data-csm-route]');
 
-    function navScope() {
-        if (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.authScope) {
-            return CSM_CONFIG.authScope;
-        }
-        return 'admin';
-    }
-
-    function hideReadScopeAdminItems() {
-        if (navScope() !== 'read') return;
-        var adminOnly = document.querySelectorAll('#csm-nav [data-csm-admin-only]');
-        for (var i = 0; i < adminOnly.length; i++) {
-            adminOnly[i].hidden = true;
-        }
-    }
-
     function activateCurrentItem() {
         var activeGroup = null;
         var matched = false;
@@ -114,7 +99,6 @@
         writeGroupState(state);
     }
 
-    hideReadScopeAdminItems();
     var activeGroup = activateCurrentItem();
     initNavGroups(activeGroup);
 })();

@@ -3,7 +3,6 @@
     'use strict';
 
     var _intervals = [];
-    var _pollers = [];
 
     function _trackInterval(handle) { _intervals.push(handle); return handle; }
     function _stopIntervals() {
@@ -11,13 +10,7 @@
         _intervals = [];
     }
 
-    function _cleanup() {
-        _stopIntervals();
-        for (var j = 0; j < _pollers.length; j++) _pollers[j].stop();
-        _pollers = [];
-    }
-
-    window.addEventListener('beforeunload', _cleanup);
+    window.addEventListener('beforeunload', _stopIntervals);
 
     // --- Chart.js global defaults for dark/light theme ---
     var isDark = document.documentElement.classList.contains('theme-dark');

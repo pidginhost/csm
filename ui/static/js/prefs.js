@@ -6,7 +6,7 @@
 // imperative API for the preferences modal and other features that need to
 // read or write the operator's prefs.
 //
-// All UI consumers should access state through CSM.prefs.user, never via
+// All UI consumers should access state through CSM.prefs.get(), never via
 // localStorage directly, so that one operator's preferences travel with their
 // token across browsers and devices. The server copy is the source of truth;
 // this browser keeps the last one it saw so the first render already uses it.
@@ -52,8 +52,8 @@ CSM.prefs = (function() {
         return target;
     }
 
-    // replaceState swaps in src while keeping the one object CSM.prefs.user
-    // exposes.
+    // replaceState swaps in src while keeping the one object CSM.prefs.get()
+    // returns.
     function replaceState(src) {
         var next = merge(cloneDefaults(), src);
         Object.keys(state).forEach(function(k) { delete state[k]; });
@@ -329,7 +329,6 @@ CSM.prefs = (function() {
     }
 
     return {
-        user: state,
         load: load,
         save: save,
         get: get,

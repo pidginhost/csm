@@ -51,6 +51,7 @@ test('saving a new time zone re-renders the page; other changes apply live', asy
     const page = loadPage('', ['csrf.js', 'prefs.js']);
     page.respond('/api/v1/prefs/user', 200, { timezone: 'local' });
     await settle();
+    const held = page.window.CSM.prefs.get();
 
     const density = page.window.CSM.prefs.save({ density: 'compact' });
     page.respond('/api/v1/prefs/user', 200, { timezone: 'local', density: 'compact' });
@@ -61,7 +62,8 @@ test('saving a new time zone re-renders the page; other changes apply live', asy
     page.respond('/api/v1/prefs/user', 200, { timezone: 'Europe/Bucharest' });
     await zone;
     assert.equal(page.window.location.reloads, 1);
-    assert.equal(page.window.CSM.prefs.user, page.window.CSM.prefs.get(), 'CSM.prefs.user tracks saves');
+    assert.equal(held, page.window.CSM.prefs.get(), 'a held copy of the preferences misses saves');
+    assert.equal(held.timezone, 'Europe/Bucharest');
     assert.equal(JSON.parse(page.window.localStorage.getItem(CACHE)).timezone, 'Europe/Bucharest');
 });
 
@@ -95,6 +97,7 @@ test('saving a zone only reloads if the cache can be read back', async () => {
         const page = loadPage('', ['csrf.js', 'prefs.js']);
         page.respond('/api/v1/prefs/user', 200, { timezone: 'local' });
         await settle();
+        const held = page.window.CSM.prefs.get();
         page.window.localStorage.setItem = () => {
             if (failWrite) throw new Error('QuotaExceededError');
         };
@@ -102,7 +105,7 @@ test('saving a zone only reloads if the cache can be read back', async () => {
         page.respond('/api/v1/prefs/user', 200, { timezone: 'UTC' });
         await saved;
         assert.equal(page.window.location.reloads, 0);
-        assert.equal(page.window.CSM.prefs.user.timezone, 'UTC');
-        assert.equal(page.window.CSM.prefs.user, page.window.CSM.prefs.get());
+        assert.equal(page.window.CSM.prefs.get().timezone, 'UTC');
+        assert.equal(held, page.window.CSM.prefs.get());
     }
 });

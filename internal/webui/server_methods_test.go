@@ -40,8 +40,10 @@ func TestCsmConfigJSON(t *testing.T) {
 	if data["firewall"] != true {
 		t.Errorf("firewall = %v", data["firewall"])
 	}
-	if data["authScope"] != "admin" {
-		t.Errorf("authScope = %v", data["authScope"])
+	// Only admin credentials open a page (TestHTMLPagesRequireAdminScope),
+	// so the page is not told a scope to hide read-only nav items by.
+	if _, ok := data["authScope"]; ok {
+		t.Errorf("authScope = %v; no page renders for another scope", data["authScope"])
 	}
 }
 

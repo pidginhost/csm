@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Shared Web UI formatting helpers no longer pass an unreadable time or a non-number through as raw text, and a zero value is no longer shown as blank.
 - Email Security findings with details now have an expand button that shows them; the details rows were built but could never be opened.
 - A panel that fails to load now shows what failed, why, and a Retry button on every page. Retry on the Rules stats, firewall status and Threat Intel panels reloads them in place instead of breaking the panel or reloading the page.
 - Threat Intel now names every attack type in its lookup badges, such as Reconnaissance and Known Malicious IP, using the same labels as the dashboard chart.
@@ -101,6 +102,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- Removed unused Web UI code, including a read-only sidebar variant that no page could show, since every page needs an admin credential.
 - Quarantine is now the one list of file backups: it shows pre-clean backups with their type and the live state of the original path, and filters by type. Cleanup History keeps the database object backups and links to it.
 - The History tab now pages with the same first, previous, next and last controls and summary as the Incidents lists.
 - The Findings select-all box now shows a partial state when only some visible findings are selected, as the other bulk tables do.

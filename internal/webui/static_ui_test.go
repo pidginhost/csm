@@ -41,8 +41,7 @@ func TestSharedFormattingHelpersHandleMissingValues(t *testing.T) {
 		`bytes = Number(bytes);`,
 		`if (!isFinite(bytes)) return '';`,
 		`if (n == null || (typeof n === 'string' && n.trim() === '')) return '';`,
-		`if (v == null || (typeof v === 'string' && v.trim() === '')) return '';`,
-		`d = Math.min(20, Math.floor(d));`,
+		`if (!isFinite(v)) return '';`,
 		`parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');`,
 		`CSM.prefs && typeof CSM.prefs.formatDateTime === 'function'`,
 	} {
@@ -469,21 +468,15 @@ func TestSidebarGroupsPagesByTask(t *testing.T) {
 	}
 }
 
-func TestSidebarNavScopeAndStateHooksPresent(t *testing.T) {
+// Only admin credentials open a page (TestHTMLPagesRequireAdminScope), so
+// the sidebar has no read-only variant to hide items for.
+func TestSidebarStateHooksPresent(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(tmpl)
-	for _, want := range []string{
-		`data-csm-route="modsec-rules" data-csm-admin-only`,
-		`data-csm-route="verified-bots" data-csm-admin-only`,
-		`data-csm-nav-group="configuration" data-csm-admin-only`,
-		`data-csm-route="settings" data-csm-admin-only`,
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("layout.html missing admin-only nav hook %s", want)
-		}
+	if strings.Contains(string(tmpl), "data-csm-admin-only") {
+		t.Error("layout.html marks nav items for a read-only sidebar no page renders")
 	}
 
 	js, err := os.ReadFile("../../ui/static/js/layout.js")
@@ -494,13 +487,14 @@ func TestSidebarNavScopeAndStateHooksPresent(t *testing.T) {
 	for _, want := range []string{
 		"csm-nav-groups",
 		"localStorage.setItem(NAV_GROUP_STATE_KEY",
-		"data-csm-admin-only",
-		"CSM_CONFIG.authScope",
 		"href + '/'",
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("layout.js missing sidebar behavior hook %s", want)
 		}
+	}
+	if strings.Contains(jsText, "authScope") || strings.Contains(jsText, "data-csm-admin-only") {
+		t.Error("layout.js still hides nav items for a read-only scope no page renders")
 	}
 
 	modsecRules, err := os.ReadFile("../../ui/templates/modsec-rules.html")
@@ -1957,7 +1951,7 @@ func TestCountryFlagRejectsMalformedInput(t *testing.T) {
 // TestNoRawObjectInterpolationInDOMWrites pins WEB_ROADMAP P1.1: each line
 // that writes raw HTML to a DOM node must wrap interpolated object fields
 // in CSM.esc / CSM.attr / CSM.fmtDate / CSM.timeAgo / CSM.formatSize /
-// CSM.formatNumber / CSM.formatPercent / CSM.countryFlag, or use a
+// CSM.formatNumber / CSM.countryFlag, or use a
 // pre-built helper (statusBadgeHTML, formatExpiresBadge, ...) that does
 // its own escaping. Numeric primitives (count / size / length suffixes)
 // are allowed because the API contracts type them as numbers.
@@ -1972,7 +1966,7 @@ func TestNoRawObjectInterpolationInDOMWrites(t *testing.T) {
 	risky := regexp.MustCompile(`\+\s*([a-zA-Z_]\w*\.[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\+`)
 	allowedWrappers := []string{
 		"CSM.esc(", "CSM.attr(", "CSM.fmtDate(", "CSM.timeAgo(",
-		"CSM.formatSize(", "CSM.formatNumber(", "CSM.formatPercent(",
+		"CSM.formatSize(", "CSM.formatNumber(",
 		"CSM.countryFlag(", "encodeURIComponent(", "String(",
 		"parseInt(", "parseFloat(", "Number(",
 	}

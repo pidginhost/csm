@@ -42,9 +42,9 @@ test('memoized boundaries follow zone changes within the same page', () => {
     const prefs = page.window.CSM.prefs;
     const day = '2026-09-23';
     assert.equal(new Date(prefs.dayBoundary(day, false)).toISOString(), '2026-09-22T21:00:00.000Z');
-    prefs.user.timezone = 'Pacific/Chatham';
+    prefs.get().timezone = 'Pacific/Chatham';
     assert.equal(new Date(prefs.dayBoundary(day, false)).toISOString(), DAY_START);
-    prefs.user.timezone = 'server';
+    prefs.get().timezone = 'server';
     page.document.documentElement.setAttribute('data-csm-server-offset', '180');
     assert.equal(new Date(prefs.dayBoundary(day, false)).toISOString(), '2026-09-22T21:00:00.000Z');
     page.document.documentElement.setAttribute('data-csm-server-offset', '120');

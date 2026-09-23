@@ -70,7 +70,7 @@ CSM.delete = function(url, body) {
 // Shared HTML-escape helper used across all pages. Safe for both text nodes
 // inserted through innerHTML and quoted HTML attribute values.
 CSM.esc = function(s) {
-    return String(s || '')
+    return (s === null || s === undefined ? '' : String(s))
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
@@ -92,7 +92,8 @@ CSM.parseTimestamp = function(raw) {
 };
 
 // Relative timestamps: converts ISO or "YYYY-MM-DD HH:MM:SS" to "2m ago",
-// "1h ago", or "in 3h" for a time still ahead (an expiry).
+// "1h ago", or "in 3h" for a time still ahead (an expiry). A value that is
+// not a time gives '', never the raw value: pages put the result in markup.
 function csmRelativeSpan(sec) {
     if (sec < 3600) return Math.floor(sec / 60) + 'm';
     if (sec < 86400) return Math.floor(sec / 3600) + 'h';
@@ -103,7 +104,7 @@ function csmRelativeSpan(sec) {
 CSM.timeAgo = function(dateStr) {
     if (!dateStr) return '';
     var ts = CSM.parseTimestamp(dateStr);
-    if (isNaN(ts)) return dateStr;
+    if (isNaN(ts)) return '';
     var diff = Math.floor((Date.now() - ts) / 1000);
     if (diff < 0) return -diff < 60 ? 'in under 1m' : 'in ' + csmRelativeSpan(-diff);
     if (diff < 60) return 'just now';
@@ -153,11 +154,12 @@ CSM.formatSize = function(bytes) {
     return (bytes / 1048576).toFixed(1) + ' MB';
 };
 
-// Format number with locale thousands separator. Missing values stay blank.
+// Format number with locale thousands separator. Missing values and values
+// that are not numbers stay blank.
 CSM.formatNumber = function(n) {
     if (n == null || (typeof n === 'string' && n.trim() === '')) return '';
     var v = Number(n);
-    if (!isFinite(v)) return String(n);
+    if (!isFinite(v)) return '';
     try {
         return v.toLocaleString();
     } catch (e) {
@@ -165,18 +167,6 @@ CSM.formatNumber = function(n) {
         parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
         return parts.join('.');
     }
-};
-
-// Format ratio (0..1 or 0..100) as a percentage. round = decimals to keep.
-CSM.formatPercent = function(v, round) {
-    if (v == null || (typeof v === 'string' && v.trim() === '')) return '';
-    var n = Number(v);
-    if (!isFinite(n)) return '';
-    if (n <= 1 && n >= -1) n = n * 100;
-    var d = (round == null) ? 0 : Number(round);
-    if (!isFinite(d) || d < 0) d = 0;
-    d = Math.min(20, Math.floor(d));
-    return n.toFixed(d) + '%';
 };
 
 // Format ISO timestamp to "YYYY-MM-DD HH:MM" using the operator timezone.

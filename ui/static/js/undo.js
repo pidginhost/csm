@@ -147,7 +147,6 @@ CSM.undo = (function() {
             if (CSM && CSM.toast) {
                 CSM.toast.success((label || 'Action') + ' undone (' + (resp.count || 0) + ' items)');
             }
-            window.dispatchEvent(new CustomEvent('csm:undo-applied', { detail: resp }));
             // Reload so the page reflects the inverse state without
             // every per-page caller needing to register a refresh handler.
             setTimeout(function() { window.location.reload(); }, 600);

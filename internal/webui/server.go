@@ -830,7 +830,6 @@ func (s *Server) csmConfig() map[string]interface{} {
 		"challenge":    cfg.Challenge.Difficulty > 0,
 		"fanotify":     s.fanotifyRunning(),
 		"hostname":     s.cfg.Hostname,
-		"authScope":    "admin",
 		// Attack types (brute_force, waf_block, ...) group findings in the
 		// attack database; their labels come from there.
 		"attackTypes": attackdb.AttackTypeLabels(),
