@@ -450,7 +450,7 @@ func TestSidebarGroupsPagesByTask(t *testing.T) {
 	text := string(tmpl)
 	groups := map[string][]string{}
 	for _, part := range strings.Split(text, `data-csm-nav-group="`)[1:] {
-		name := part[:strings.Index(part, `"`)]
+		name, _, _ := strings.Cut(part, `"`)
 		for _, m := range regexp.MustCompile(`data-csm-route="([a-z-]+)"`).FindAllStringSubmatch(part, -1) {
 			groups[name] = append(groups[name], m[1])
 		}
