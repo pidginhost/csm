@@ -280,4 +280,8 @@
     });
 
     loadTab('findings');
+    if (CSM.refresh) CSM.refresh.onRefresh(function() {
+        cachedData = null;
+        loadTab(currentTab);
+    });
 })();

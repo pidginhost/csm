@@ -3,6 +3,8 @@
 // optimistic locking (If-Match etag). All requests go through CSM.request.
 (function () {
     var etag = '';
+    // saved is the list as last loaded or saved; a different form is unsaved work.
+    var saved = '[]';
     var listEl = document.getElementById('vbots-list');
     var loadingEl = document.getElementById('vbots-loading');
     var emptyEl = document.getElementById('vbots-empty');
@@ -122,6 +124,7 @@
             listEl.innerHTML = '';
             (data.bots || []).forEach(addRow);
             updateVisibility();
+            saved = JSON.stringify(collect());
         }).catch(function () {
             loadingEl.querySelector('.csm-empty__reason').textContent = 'Failed to load verified bots.';
         });
@@ -145,6 +148,7 @@
         }).then(function (res) {
             if (res.status === 200) {
                 etag = res.body.new_etag || etag;
+                saved = JSON.stringify(bots);
                 CSM.toast('Saved ' + (res.body.count || 0) + ' verified bot(s)', 'success');
             } else if (res.status === 422) {
                 showErrors(res.body.errors);
@@ -171,4 +175,9 @@
     });
 
     load();
+    if (CSM.refresh) CSM.refresh.onRefresh(function () {
+        var ask = JSON.stringify(collect()) === saved ? Promise.resolve() :
+            CSM.confirm('Discard unsaved verified bot changes and reload?', { danger: true, okLabel: 'Discard' });
+        ask.then(load, function () { /* kept */ });
+    });
 })();

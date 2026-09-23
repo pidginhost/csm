@@ -247,3 +247,8 @@ loadStatus();
 loadFiles();
 loadSuppressions();
 loadCheckTypes();
+if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    loadStatus();
+    loadFiles();
+    loadSuppressions();
+});

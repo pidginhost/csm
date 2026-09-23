@@ -222,4 +222,6 @@
     });
 
     loadReport();
+    // Refresh re-reads the stored report; it does not run a new audit.
+    if (CSM.refresh) CSM.refresh.onRefresh(loadReport);
 })();

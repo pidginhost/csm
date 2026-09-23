@@ -317,4 +317,9 @@
 
     loadFileBackups();
     loadDBBackups();
+    // A restore or delete in flight reloads the list itself when it ends.
+    if (CSM.refresh) CSM.refresh.onRefresh(function() {
+        if (!fileMutationBusy) loadFileBackups();
+        loadDBBackups();
+    });
 })();

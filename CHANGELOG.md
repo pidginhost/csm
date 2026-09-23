@@ -86,6 +86,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- The Refresh button now reloads each page's data in place instead of reloading the whole page on some of them, and asks before discarding unsaved Settings, Verified Bots or staged ModSec rule changes.
 - The Web UI header now says when the page's data was last loaded instead of when any request last succeeded, and shows the auto-refresh pause button only on pages that refresh on a timer.
 - Web UI error notices now stay until closed instead of fading after five seconds, the same error is not stacked, and failure messages no longer read Error: Error:.
 - Dashboard triage entries now open the finding they list, and the 24h severity counts open the History tab for exactly the last 24 hours; an open finding is kept in the page URL so the link reopens it.

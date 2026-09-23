@@ -76,6 +76,12 @@ Refresh button; an action or a detail lookup does not change it. The pause
 button appears only on pages that refresh on a timer, and pauses that
 refreshing in this browser.
 
+Refresh reloads the page's data in place, keeping filters, scroll and open
+panels. On a page with unsaved edits (Settings, Verified Bots, staged ModSec
+rule changes) it asks before discarding them. Hardening's Refresh reloads the
+stored report and does not run a new audit. Pages rendered by the server,
+such as Sessions, reload.
+
 ## Notifications
 
 Success and information notices fade after five seconds. An error stays

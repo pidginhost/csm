@@ -1353,6 +1353,13 @@
                 : (isKnown(hash) ? hash : first);
             loadSection(target, {urlMode: "replace"});
             checkPendingRollbackOnLoad();
+            // Refresh reloads the open section; unsaved edits get the same
+            // discard question as leaving the section.
+            if (CSM.refresh) CSM.refresh.onRefresh(function () {
+                confirmLeaveIfDirty().then(function () {
+                    loadSection(currentSection, {urlMode: "none"});
+                }, function () { /* kept */ });
+            });
             // Back/forward changes the visible section without a full page
             // reload, but dirty fields still get the same discard prompt as
             // sidebar navigation.

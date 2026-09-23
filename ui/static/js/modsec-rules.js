@@ -407,4 +407,18 @@ document.querySelectorAll('[data-export]').forEach(function(el) {
 loadEscalation();
 loadRules();
 
+// Refresh reloads the rules, which drops staged toggles; ask first.
+if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    var staged = Object.keys(_pendingChanges).length;
+    var ask = staged === 0 ? Promise.resolve() :
+        CSM.confirm('Discard ' + staged + ' staged rule change' + (staged !== 1 ? 's' : '') + ' and reload?', { danger: true, okLabel: 'Discard' });
+    ask.then(function() {
+        resetPendingToggleState();
+        _pendingChanges = {};
+        updateApplyBar();
+        loadEscalation();
+        loadRules();
+    }, function() { /* kept */ });
+});
+
 })();

@@ -371,6 +371,10 @@ function loadTopAttackers() {
 // Initial load (re-run in place after bulk block/whitelist).
 loadThreatStats();
 loadTopAttackers();
+if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    loadThreatStats();
+    loadTopAttackers();
+});
 
 // IP Lookup
 document.getElementById('tr-lookup-form').addEventListener('submit',function(e){

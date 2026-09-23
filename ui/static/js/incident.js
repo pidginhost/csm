@@ -22,7 +22,10 @@
         return active ? active.getAttribute('data-hours') : '72';
     }
 
+    var activeTab = 'incidents';
+
     function switchTab(name) {
+        activeTab = name;
         var tabs = [
             { tab: 'incidents-tab', panel: 'incidents-panel', name: 'incidents' },
             { tab: 'grouped-tab',   panel: 'grouped-panel',   name: 'grouped' },
@@ -849,6 +852,13 @@
         selectedID = pendingIncidentID;
         loadIncidents();
     }
+
+    if (CSM.refresh) CSM.refresh.onRefresh(function() {
+        if (activeTab === 'grouped') loadGroups();
+        else if (activeTab === 'timeline') {
+            if (document.getElementById('incident-query').value.trim()) loadTimeline();
+        } else loadIncidents();
+    });
 
     window.addEventListener('hashchange', function() {
         var id = incidentIDFromHash();
