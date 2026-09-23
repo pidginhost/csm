@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 	_ "time/tzdata" // the hour zone must not depend on the replay host's zone files
@@ -107,7 +108,7 @@ type options struct {
 	findings, out, manifest, hourZone, blockExpiry, scannerAction string
 	maxPerHour, denyTempLimit                                     int
 	seed                                                          int64
-	challengeEnabled, blockCpanelLogins                           bool
+	challengeEnabled, blockCpanelLogins, reconstructReputation    bool
 	set                                                           map[string]bool
 }
 
@@ -126,6 +127,7 @@ func parseOptions(args []string) (options, error) {
 	fs.Int64Var(&o.seed, "seed", 0, "seed of the reproducible drain order")
 	fs.BoolVar(&o.challengeEnabled, "challenge-enabled", true, "whether challenge routing is on")
 	fs.BoolVar(&o.blockCpanelLogins, "block-cpanel-logins", false, "whether cPanel login checks may block")
+	fs.BoolVar(&o.reconstructReputation, "reconstruct-reputation-source", false, "recover ip_reputation addresses from their message")
 	// A flag error names the flag or value it rejected.
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return options{}, errUsage
@@ -157,6 +159,10 @@ type policyInfo struct {
 	ChallengeEnabled          bool   `json:"challenge_enabled"`
 	HTTPScannerAction         string `json:"http_scanner_action"`
 	BlockCpanelLogins         bool   `json:"block_cpanel_logins"`
+	// The audit log does not record a finding's structured source address.
+	// When set, ip_reputation addresses are recovered from the producer's
+	// message form; the report counts and states it.
+	ReconstructReputationSource bool `json:"reconstruct_reputation_source"`
 }
 
 func resolvePolicy(o options) (policyInfo, *time.Location, error) {
@@ -164,6 +170,7 @@ func resolvePolicy(o options) (policyInfo, *time.Location, error) {
 		MaxBlocksPerHour: o.maxPerHour, DenyTempIPLimit: o.denyTempLimit, PendingBound: pendingBound,
 		PendingMaxAgeNS: int64(pendingMaxAge), HourZone: o.hourZone, ChallengeEnabled: o.challengeEnabled,
 		HTTPScannerAction: o.scannerAction, BlockCpanelLogins: o.blockCpanelLogins,
+		ReconstructReputationSource: o.reconstructReputation,
 	}
 	// The live path treats a cap of zero or less as the default, never as
 	// "block nothing".
@@ -203,8 +210,10 @@ func toAlert(f responsereplay.Finding) alert.Finding {
 }
 
 // newClassifier builds the model's decisions from the live registry
-// wrappers, under the report's routing settings.
-func newClassifier(o options) responsereplay.Classifier {
+// wrappers, under the report's routing settings. The counter records how
+// many addresses came from reconstruction.
+func newClassifier(o options) (responsereplay.Classifier, *int) {
+	reconstructed := new(int)
 	cfg := &config.Config{}
 	cfg.Challenge.Enabled = o.challengeEnabled
 	cfg.AutoResponse.HTTPScannerAction = o.scannerAction
@@ -212,12 +221,21 @@ func newClassifier(o options) responsereplay.Classifier {
 	return responsereplay.Classifier{
 		Blockable:      func(f responsereplay.Finding) bool { return checks.BlockableFinding(toAlert(f), o.blockCpanelLogins) },
 		ChallengeFirst: func(f responsereplay.Finding) bool { return checks.ChallengeRoutesFinding(cfg, toAlert(f)) },
-		SourceIP:       func(f responsereplay.Finding) string { return checks.ExtractIPFromFinding(toAlert(f)) },
+		SourceIP: func(f responsereplay.Finding) string {
+			if ip := checks.ExtractIPFromFinding(toAlert(f)); ip != "" || !o.reconstructReputation {
+				return ip
+			}
+			ip := checks.ReputationMessageSourceIP(toAlert(f))
+			if ip != "" {
+				*reconstructed++
+			}
+			return ip
+		},
 		ExemptBlock: func(f responsereplay.Finding) (responsereplay.ObservedBlock, bool) {
 			obs, kind := classifyObservation(f)
 			return obs, kind == observationNonScan
 		},
-	}
+	}, reconstructed
 }
 
 // autoBlockMessage is the live AUTO-BLOCK finding for one address.
@@ -320,25 +338,28 @@ type ratio struct {
 }
 
 type hypotheticalInfo struct {
-	ScanBlocked       int   `json:"scan_blocked"`
-	ExemptBlocked     int   `json:"exempt_blocked"`
-	Evicted           int   `json:"evicted"`
-	AgedOut           int   `json:"aged_out"`
-	Overflowed        int   `json:"overflowed"`
-	FinalPending      int   `json:"final_pending"`
-	NeverServed       int   `json:"never_served"`
-	NewCandidates     int   `json:"new_candidates"`
-	FirstQueued       int   `json:"first_queued"`
-	DelayedShare      ratio `json:"delayed_share"`
-	Eligible          int   `json:"eligible"`
-	MissingIP         int   `json:"missing_ip"`
-	ChallengeSkipped  int   `json:"challenge_skipped"`
-	AlreadyBlocked    int   `json:"already_blocked"`
-	InvalidPending    int   `json:"invalid_pending"`
-	IneligiblePending int   `json:"ineligible_pending"`
-	PendingSatisfied  int   `json:"pending_satisfied"`
-	PendingHighWater  int   `json:"pending_high_water"`
-	LiveHighWater     int   `json:"live_high_water"`
+	ScanBlocked int `json:"scan_blocked"`
+	// SourceIPReconstructed counts eligible rows whose address came from
+	// reconstruction rather than the live extraction.
+	SourceIPReconstructed int   `json:"source_ip_reconstructed"`
+	ExemptBlocked         int   `json:"exempt_blocked"`
+	Evicted               int   `json:"evicted"`
+	AgedOut               int   `json:"aged_out"`
+	Overflowed            int   `json:"overflowed"`
+	FinalPending          int   `json:"final_pending"`
+	NeverServed           int   `json:"never_served"`
+	NewCandidates         int   `json:"new_candidates"`
+	FirstQueued           int   `json:"first_queued"`
+	DelayedShare          ratio `json:"delayed_share"`
+	Eligible              int   `json:"eligible"`
+	MissingIP             int   `json:"missing_ip"`
+	ChallengeSkipped      int   `json:"challenge_skipped"`
+	AlreadyBlocked        int   `json:"already_blocked"`
+	InvalidPending        int   `json:"invalid_pending"`
+	IneligiblePending     int   `json:"ineligible_pending"`
+	PendingSatisfied      int   `json:"pending_satisfied"`
+	PendingHighWater      int   `json:"pending_high_water"`
+	LiveHighWater         int   `json:"live_high_water"`
 }
 
 // distributionInfo: queue delay is first queueing to the eventual block;
@@ -350,6 +371,8 @@ type distributionInfo struct {
 	HourlyScanBlocks    responsereplay.Distribution `json:"hourly_scan_blocks"`
 	HourlyAllBlocks     responsereplay.Distribution `json:"hourly_all_blocks"`
 }
+
+const reconstructionAssumption = "reputation_source_reconstructed_from_message"
 
 var (
 	assumptions = []string{
@@ -363,7 +386,7 @@ var (
 		"address_map_not_topology_preserving",
 	}
 	reportVocabulary = func() map[string]bool {
-		v := map[string]bool{}
+		v := map[string]bool{reconstructionAssumption: true}
 		for _, s := range append(append([]string{}, assumptions...), gaps...) {
 			v[s] = true
 		}
@@ -432,10 +455,11 @@ func (r *replayRun) execute(args []string, stdout io.Writer) error {
 }
 
 func replay(rep *report, rec responsereplay.Recording, policy policyInfo, loc *time.Location, o options) error {
+	classes, reconstructed := newClassifier(o)
 	model, err := responsereplay.NewLegacy(responsereplay.LegacyConfig{
 		MaxPerHour: policy.MaxBlocksPerHour, DenyTempLimit: policy.DenyTempIPLimit, BlockTTL: time.Duration(policy.BlockExpiryNS),
 		PendingBound: policy.PendingBound, PendingMaxAge: time.Duration(policy.PendingMaxAgeNS), HourLocation: loc, Seed: o.seed,
-	}, newClassifier(o), responsereplay.LegacyState{})
+	}, classes, responsereplay.LegacyState{})
 	if err != nil {
 		return err
 	}
@@ -497,6 +521,10 @@ func replay(rep *report, rec responsereplay.Recording, policy policyInfo, loc *t
 	// Pending at the end is censored by the end of the recording, not lost.
 	h.NeverServed = h.AgedOut + h.Overflowed + h.FinalPending
 	h.DelayedShare = ratio{Numerator: h.FirstQueued, Denominator: h.NewCandidates}
+	h.SourceIPReconstructed = *reconstructed
+	if o.reconstructReputation {
+		rep.Assumptions = append(slices.Clone(rep.Assumptions), reconstructionAssumption)
+	}
 	rep.Distributions.QueueDelayNS = responsereplay.Distribute(delays)
 	rep.Distributions.EvictionResidenceNS = responsereplay.Distribute(residences)
 	if len(batches) > 0 {

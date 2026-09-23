@@ -187,8 +187,9 @@ func TestReplayReportsTheHandCalculatedFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	classes, _ := newClassifier(o)
 	model, err := responsereplay.NewLegacy(responsereplay.LegacyConfig{MaxPerHour: 2, DenyTempLimit: 1, BlockTTL: time.Hour,
-		PendingBound: 1000, PendingMaxAge: 2 * time.Hour, HourLocation: time.UTC, Seed: 1}, newClassifier(o), responsereplay.LegacyState{})
+		PendingBound: 1000, PendingMaxAge: 2 * time.Hour, HourLocation: time.UTC, Seed: 1}, classes, responsereplay.LegacyState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,5 +644,46 @@ func TestReplayCensorsPendingAtEnd(t *testing.T) {
 	hyp := sub(report, "hypothetical")
 	if hyp["scan_blocked"] != 1.0 || hyp["final_pending"] != 1.0 || hyp["aged_out"] != 0.0 || hyp["overflowed"] != 0.0 || hyp["never_served"] != 1.0 {
 		t.Fatalf("hypothetical = %v", hyp)
+	}
+}
+
+// ip_reputation findings name their address only in the structured source,
+// which recordings lose. By default the replay reports them as missing an
+// address; the reconstruction option recovers it from the producer's own
+// message form and says so in the report.
+func TestReplayReconstructsReputationSourcesOnlyWhenAsked(t *testing.T) {
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "stream.jsonl.gz",
+		event(fixtureT0, "ip_reputation", alert.Critical, "Known malicious IP accessing server: 203.0.113.9 (source: feed)", "Detected via: SMTP"),
+		event(fixtureT0, "ip_reputation", alert.Critical, "Known malicious IP accessing server: 2001:db8::9 (AbuseIPDB score: 90/100)", "Detected via: SMTP"),
+	)
+	for _, tc := range []struct {
+		extra                    []string
+		scan, missing, recovered float64
+		reconstructed            bool
+	}{
+		{nil, 0, 2, 0, false},
+		{[]string{"--reconstruct-reputation-source"}, 2, 0, 2, true},
+	} {
+		out := filepath.Join(t.TempDir(), "report.json")
+		if err := testRun().execute(fixtureArgs(findings, out, tc.extra...), &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		report, _ := readReport(t, out)
+		hyp := sub(report, "hypothetical")
+		if hyp["scan_blocked"] != tc.scan || hyp["missing_ip"] != tc.missing || hyp["source_ip_reconstructed"] != tc.recovered {
+			t.Errorf("%v: hypothetical %v", tc.extra, hyp)
+		}
+		if sub(report, "policy")["reconstruct_reputation_source"] != tc.reconstructed {
+			t.Errorf("%v: policy %v", tc.extra, sub(report, "policy"))
+		}
+		stated := false
+		for _, a := range report["assumptions"].([]any) {
+			stated = stated || a == "reputation_source_reconstructed_from_message"
+		}
+		if stated != tc.reconstructed {
+			t.Errorf("%v: reconstruction assumption stated = %v", tc.extra, stated)
+		}
+		assertReportVocabulary(t, report)
 	}
 }

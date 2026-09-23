@@ -257,6 +257,12 @@ go build -o /tmp/response-replay ./scripts/response-replay
   not the hourly budget. Only a single IP address is accepted as the block
   target; malformed targets are counted as unclassified rows. A permanent
   block is counted, not modelled.
+- The audit log does not record a finding's structured source address, so
+  a reputation finding, which names its address only there and in its
+  message, has no address in a replay by default and is counted as missing
+  one. `--reconstruct-reputation-source` recovers the address from that
+  message's fixed form; the report then counts the recovered rows and lists
+  the reconstruction among its assumptions.
 - Batches are inferred from equal timestamps. Recordings hold no empty scans,
   so queued work drains only when another finding arrives. Rows without a
   timestamp are counted and left out.

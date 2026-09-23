@@ -197,7 +197,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 				findings = append(findings, alert.Finding{
 					Severity:  reputationSightingSeverity(source),
 					Check:     "ip_reputation",
-					Message:   fmt.Sprintf("Known malicious IP accessing server: %s (source: %s)", ip, dbSource),
+					Message:   fmt.Sprintf(reputationMessagePrefix+"%s (source: %s)", ip, dbSource),
 					Details:   fmt.Sprintf("Detected via: %s\nMatched in local threat intelligence database", source),
 					Timestamp: time.Now(),
 					SourceIP:  ip,
@@ -497,11 +497,15 @@ func reputationSightingSeverity(detectedVia string) alert.Severity {
 	}
 }
 
+// reputationMessagePrefix opens every ip_reputation message; the address
+// follows it up to " (". ReputationMessageSourceIP depends on that form.
+const reputationMessagePrefix = "Known malicious IP accessing server: "
+
 func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provider string, score int, category string) {
 	*findings = append(*findings, alert.Finding{
 		Severity:  reputationSightingSeverity(detectedVia),
 		Check:     "ip_reputation",
-		Message:   fmt.Sprintf("Known malicious IP accessing server: %s (%s score: %d/100)", ip, provider, score),
+		Message:   fmt.Sprintf(reputationMessagePrefix+"%s (%s score: %d/100)", ip, provider, score),
 		Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", detectedVia, category),
 		Timestamp: time.Now(),
 		SourceIP:  ip,
