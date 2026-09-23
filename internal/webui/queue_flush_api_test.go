@@ -59,7 +59,7 @@ func TestApiEmailFlushBackscatterSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), `"removed": 3`) {
+	if !strings.Contains(w.Body.String(), `"removed":3`) {
 		t.Errorf("body missing removed count: %s", w.Body.String())
 	}
 

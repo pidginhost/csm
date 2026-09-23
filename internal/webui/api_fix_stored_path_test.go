@@ -55,7 +55,7 @@ func TestAPIBulkFixRefusesPathDifferingFromStoredFinding(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with a per-item error", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "does not match") || !strings.Contains(w.Body.String(), `"succeeded": 0`) {
+	if !strings.Contains(w.Body.String(), "does not match") || !strings.Contains(w.Body.String(), `"succeeded":0`) {
 		t.Fatalf("body = %q, want the item refused for path mismatch", w.Body.String())
 	}
 	if got := len(s.store.LatestFindings()); got != 1 {

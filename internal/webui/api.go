@@ -1935,11 +1935,11 @@ func writeJSONError(w http.ResponseWriter, message string, code int) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+// writeJSON sends compact JSON: indentation added about a third to large
+// lists such as findings and history, and nothing reads it but code.
 func writeJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func queryInt(r *http.Request, key string, defaultVal int) int {

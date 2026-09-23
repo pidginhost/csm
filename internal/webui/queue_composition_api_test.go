@@ -57,7 +57,7 @@ func TestApiEmailQueueCompositionSerialization(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{`"total": 4`, `"bounce": 3`, `"frozen": 1`, `"oldest_age": "4d"`, `victim@yahoo.com`} {
+	for _, want := range []string{`"total":4`, `"bounce":3`, `"frozen":1`, `"oldest_age":"4d"`, `victim@yahoo.com`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response missing %q\nbody: %s", want, body)
 		}

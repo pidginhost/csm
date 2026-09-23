@@ -82,7 +82,7 @@ func TestStatsAndDashboardShareOneSummary(t *testing.T) {
 	s.store.AppendHistory([]alert.Finding{{Check: "webshell", Severity: alert.Critical, Message: "two", Timestamp: now}})
 	w := httptest.NewRecorder()
 	s.apiStats(w, httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil))
-	if s.statsMemo.computes != 2 || !strings.Contains(w.Body.String(), `"critical": 2`) {
+	if s.statsMemo.computes != 2 || !strings.Contains(w.Body.String(), `"critical":2`) {
 		t.Fatalf("computes=%d body=%s", s.statsMemo.computes, w.Body.String())
 	}
 }

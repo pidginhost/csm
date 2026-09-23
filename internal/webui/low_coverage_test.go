@@ -834,7 +834,7 @@ func TestAPIFirewallCheckInvalidIP(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), `"success": false`) {
+	if !strings.Contains(w.Body.String(), `"success":false`) {
 		t.Error("expected success=false for invalid IP")
 	}
 }
@@ -928,7 +928,7 @@ func TestAPIFirewallUnbanMissingIP(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), `"success": false`) {
+	if !strings.Contains(w.Body.String(), `"success":false`) {
 		t.Error("expected success=false for missing IP")
 	}
 }
@@ -943,7 +943,7 @@ func TestAPIFirewallUnbanInvalidIP(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), `"success": false`) {
+	if !strings.Contains(w.Body.String(), `"success":false`) {
 		t.Error("expected success=false for invalid IP")
 	}
 }
@@ -963,7 +963,7 @@ func TestAPIFirewallUnbanSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"success": true`) {
+	if !strings.Contains(w.Body.String(), `"success":true`) {
 		t.Error("expected success=true")
 	}
 }
