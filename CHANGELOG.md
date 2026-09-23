@@ -74,6 +74,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- The audit page and incident timelines now read the UI audit log from the end and stop once they have the entries they show, instead of parsing the whole log each time.
 - The quarantine list no longer hashes every quarantined file and its live copy on each request; a pair is compared again only when either file changes.
 - Filtering, sorting and searching long tables no longer slows down with the number of rows squared.
 - The dashboard now receives only the findings it shows, most severe first, and the Findings page checks for changes with a short version string every 15 seconds instead of downloading the full list.

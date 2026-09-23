@@ -1,9 +1,10 @@
 package webui
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -119,7 +120,9 @@ func extractClientIP(r *http.Request) string {
 	return clientIPKey(r.RemoteAddr)
 }
 
-// readUIAuditLog returns the last N audit entries.
+// readUIAuditLog returns the last N audit entries, newest first (all when
+// limit is 0). It reads the log from the end, so asking for the newest few
+// does not parse up to maxUIAuditSize of older entries.
 func readUIAuditLog(statePath string, limit int) []UIAuditEntry {
 	path := filepath.Join(statePath, uiAuditFile)
 	// #nosec G304 -- filepath.Join under operator-configured statePath.
@@ -128,28 +131,61 @@ func readUIAuditLog(statePath string, limit int) []UIAuditEntry {
 		return nil
 	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	return tailAuditEntries(f, info.Size(), limit)
+}
 
-	var all []UIAuditEntry
-	scanner := bufio.NewScanner(f)
-	// Bulk undo targets can exceed the old per-line limit. One such entry
-	// must not stop the reader before every subsequent operator action.
-	scanner.Buffer(make([]byte, 256*1024), maxUIAuditSize)
-	for scanner.Scan() {
-		var entry UIAuditEntry
-		if json.Unmarshal(scanner.Bytes(), &entry) == nil {
-			all = append(all, entry)
+// tailAuditEntries parses the audit lines in r[0:size] newest first and stops
+// once limit entries are found (0 means all). Lines that are blank or not an
+// entry are skipped; one line may be as long as the log (bulk undo targets).
+func tailAuditEntries(r io.ReaderAt, size int64, limit int) []UIAuditEntry {
+	var out []UIAuditEntry
+	done := func(line []byte) bool {
+		line = bytes.TrimRight(line, "\r")
+		if len(line) == 0 {
+			return false
 		}
+		var entry UIAuditEntry
+		if json.Unmarshal(line, &entry) == nil {
+			out = append(out, entry)
+		}
+		return limit > 0 && len(out) >= limit
 	}
 
-	// Return newest first
-	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
-		all[i], all[j] = all[j], all[i]
+	// head holds the bytes before the earliest newline seen so far: the
+	// unfinished start of a line. Chunks grow with it, so a long line is
+	// read in a logarithmic number of steps.
+	var head []byte
+	end := size
+	for end > 0 {
+		n := int64(64 * 1024)
+		if int64(len(head)) > n {
+			n = int64(len(head))
+		}
+		start := max(end-n, 0)
+		data := make([]byte, end-start, end-start+int64(len(head)))
+		if _, err := r.ReadAt(data, start); err != nil && err != io.EOF {
+			return out
+		}
+		data = append(data, head...)
+		for {
+			i := bytes.LastIndexByte(data, '\n')
+			if i < 0 {
+				break
+			}
+			if done(data[i+1:]) {
+				return out
+			}
+			data = data[:i]
+		}
+		head = data
+		end = start
 	}
-
-	if limit > 0 && len(all) > limit {
-		all = all[:limit]
-	}
-	return all
+	done(head)
+	return out
 }
 
 // searchAuditEntries returns audit entries whose target or details contain the search string.
