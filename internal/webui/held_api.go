@@ -92,7 +92,7 @@ func (s *Server) apiEmailHeldAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.auditLog(r, "email_held_release", id, "re-injected held forward copy to its external recipient")
-		writeJSON(w, map[string]string{"status": "released", "id": id})
+		writeOK(w, map[string]interface{}{"id": id})
 
 	case http.MethodDelete:
 		if action != "" {
@@ -104,7 +104,7 @@ func (s *Server) apiEmailHeldAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.auditLog(r, "email_held_delete", id, "deleted held forward copy")
-		writeJSON(w, map[string]string{"status": "deleted", "id": id})
+		writeOK(w, map[string]interface{}{"id": id})
 
 	default:
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)

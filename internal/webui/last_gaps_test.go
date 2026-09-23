@@ -220,7 +220,7 @@ func TestAPIThreatStats_NoAttackDBReturnsErrorJSON(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiThreatStats(w, httptest.NewRequest("GET", "/", nil))
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data map[string]string

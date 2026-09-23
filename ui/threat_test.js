@@ -118,9 +118,11 @@ test('bulk timed block shows refused permanent blocks', async () => {
     selectAll(page);
     page.document.getElementById('bulk-block-btn').click();
     await settle();
-    page.respond('/api/v1/threat/bulk-action', 200, { count: 0, warnings: ['192.0.2.20: permanently blocked; unblock first'] });
+    // Nothing changed: the server answers 422 with each address's reason.
+    const reason = '192.0.2.20: permanently blocked; unblock first';
+    page.respond('/api/v1/threat/bulk-action', 422, { error: 'No address was changed: ' + reason, count: 0, warnings: [reason] });
     await settle();
-    assert.ok(log.toasts.some(t => t.kind === 'warning' && /permanently blocked/.test(t.message)));
+    assert.ok(log.toasts.some(t => t.kind === 'error' && /permanently blocked/.test(t.message)), JSON.stringify(log.toasts));
     assert.ok(!log.toasts.some(t => t.kind === 'success'), 'all-refused action must not show success');
 });
 

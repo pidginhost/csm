@@ -146,15 +146,12 @@
             }
             CSM.post(action.endpoint, { path: action.path, key: action.key || '' }).then(function(data) {
                 release();
-                if (data && data.success) {
-                    CSM.toast(data.description || 'Fix applied', 'success');
-                    update();
-                } else {
-                    CSM.toast((data && data.error) || 'Fix failed', 'error');
-                }
+                CSM.toast((data && data.description) || 'Fix applied', 'success');
+                update();
             }).catch(function(err) {
+                // A fix that did not apply is an error status with the reason.
                 release();
-                CSM.toast('Fix failed: ' + (err && err.message ? err.message : 'request failed'), 'error');
+                CSM.toast('Fix failed: ' + CSM.errorText(err), 'error');
             });
         }, function() { /* cancelled */ });
     }
@@ -252,13 +249,12 @@
                     return;
                 }
                 var it = group.items[i];
-                CSM.post(group.endpoint, { path: it.path, key: it.key }).then(function(data) {
-                    if (data && data.success) ok++;
-                    else { failed++; if (data && data.error) errs.push(data.error); }
+                CSM.post(group.endpoint, { path: it.path, key: it.key }).then(function() {
+                    ok++;
                     next(i + 1);
                 }).catch(function(e) {
                     failed++;
-                    errs.push(String(e));
+                    errs.push(CSM.errorText(e));
                     next(i + 1);
                 });
             }

@@ -822,12 +822,16 @@ func TestFlushCphulkIPsRevalidatesAndBatches(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CSM_TEST_MARKER", marker)
 
-	flushCphulkIPs([]string{"203.0.113.5;touch /tmp/pwned"})
+	if err := flushCphulkIPs([]string{"203.0.113.5;touch /tmp/pwned"}); err != nil {
+		t.Fatalf("no valid address must mean no call, got %v", err)
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("invalid IP executed whmapi1, stat err = %v", err)
 	}
 
-	flushCphulkIPs([]string{" 203.0.113.5 ", "invalid", "2001:0db8:0:0:0:0:0:5"})
+	if err := flushCphulkIPs([]string{" 203.0.113.5 ", "invalid", "2001:0db8:0:0:0:0:0:5"}); err != nil {
+		t.Fatal(err)
+	}
 	got, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)

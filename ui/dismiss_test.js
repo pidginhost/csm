@@ -24,7 +24,7 @@ function findingsPage(selected = []) {
             post(url, body) {
                 requests.push({ url, body });
                 const count = body.keys ? body.keys.length : 1;
-                return Promise.resolve({ status: 'dismissed', count, undo_token: 'undo-1' });
+                return Promise.resolve({ ok: true, count, undo_token: 'undo-1' });
             },
             toast(message, kind) { toasts.push({ message, kind }); },
             undo: { offer(entry) { offers.push(entry); } }

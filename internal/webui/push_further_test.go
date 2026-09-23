@@ -655,8 +655,8 @@ func TestAPIThreatClearIPNoBlocker(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "cleared" {
-		t.Errorf("status = %v, want cleared", resp["status"])
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 }
 

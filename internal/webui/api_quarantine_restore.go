@@ -108,8 +108,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.auditLog(r, "restore", restorePath, "virtual-patch restore")
-		writeJSON(w, map[string]string{
-			"status":  "restored",
+		writeOK(w, map[string]interface{}{
 			"path":    restorePath,
 			"warning": "Virtual-patch reverted. Re-scan recommended.",
 		})
@@ -255,8 +254,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditLog(r, "restore", restorePath, "quarantine restore")
-	writeJSON(w, map[string]string{
-		"status":  "restored",
+	writeOK(w, map[string]interface{}{
 		"path":    restorePath,
 		"warning": "File restored to original location. Re-scan recommended.",
 	})

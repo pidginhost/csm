@@ -663,12 +663,9 @@ function renderIPDetails(ip, targetEl) {
         CSM.get('/api/v1/firewall/check?ip=' + encodeURIComponent(ip)),
         CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip), { allowNonOK: true, silent: true }).catch(function() { return {}; })
     ]).then(function(results) {
+        // A failed check rejects and lands in the catch below.
         var data = results[0] || {};
         var geo = results[1] || {};
-        if (!data.success) {
-            targetEl.innerHTML = '<div class="text-danger">' + CSM.esc(data.error_msg || 'Lookup failed') + '</div>';
-            return;
-        }
 
         var state = [];
         if (data.permanent) state.push('<span class="badge bg-red-lt">Blocked</span>');
@@ -756,12 +753,6 @@ function unblockIP(ip) {
 function unbanEverywhere(ip) {
     CSM.confirm('Unban ' + ip + ' from CSM and cPHulk?').then(function() {
         CSM.post('/api/v1/firewall/unban', { ip: ip }).then(function(data) {
-            // The unban endpoint reports validation failures as HTTP 200
-            // with success:false, which CSM.post resolves normally.
-            if (data && data.success === false) {
-                CSM.toast('Error: ' + (data.error_msg || 'Unban failed'), 'error');
-                return;
-            }
             var msg = 'Removed lockouts for ' + ip;
             if (data.subnet_removed) msg += ' (also removed subnet ' + data.subnet_removed + ')';
             CSM.toast(msg, 'success');

@@ -74,6 +74,7 @@ func TestThreatBulkWhitelistUsesCanonicalIP(t *testing.T) {
 // same way, so each reports the same trailing steps, cPHulk included.
 func TestThreatReleaseActionsReportTheSameSteps(t *testing.T) {
 	s := newTestServer(t, "tok")
+	fakeWhmapi1(t, 0)
 	for _, tc := range []struct {
 		name    string
 		handler func(http.ResponseWriter, *http.Request)

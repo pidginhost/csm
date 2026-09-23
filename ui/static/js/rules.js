@@ -88,14 +88,10 @@ document.getElementById('btn-test-alert').addEventListener('click', function() {
     var btn = this;
     btn.disabled = true;
     btn.innerHTML = '<i class="ti ti-loader"></i>&nbsp;Sending...';
-    CSM.post('/api/v1/test-alert', {}).then(function(data) {
+    CSM.post('/api/v1/test-alert', {}).then(function() {
         btn.disabled = false;
         btn.innerHTML = '<i class="ti ti-bell-ringing"></i>&nbsp;Send Test Alert';
-        if (data.status === 'sent') {
-            CSM.toast('Test alert sent successfully', 'success');
-        } else {
-            CSM.toast('Failed: ' + (data.error || 'unknown error'), 'error');
-        }
+        CSM.toast('Test alert sent successfully', 'success');
     }).catch(function(e) {
         btn.disabled = false;
         btn.innerHTML = '<i class="ti ti-bell-ringing"></i>&nbsp;Send Test Alert';
@@ -131,13 +127,9 @@ function loadSuppressions() {
             btn.addEventListener('click', function() {
                 var id = this.getAttribute('data-id');
                 CSM.confirm('Remove this suppression rule?').then(function() {
-                    CSM.delete('/api/v1/suppressions', {id: id}).then(function(data) {
-                        if (data.status === 'deleted') {
-                            CSM.toast('Suppression rule removed', 'success');
-                            loadSuppressions();
-                        } else {
-                            CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
-                        }
+                    CSM.delete('/api/v1/suppressions', {id: id}).then(function() {
+                        CSM.toast('Suppression rule removed', 'success');
+                        loadSuppressions();
                     }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
                 }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
             });
@@ -182,7 +174,10 @@ if (importFile) {
             try {
                 var data = JSON.parse(e.target.result);
                 CSM.post('/api/v1/import', data).then(function(result) {
-                    CSM.toast('Import complete: ' + (result.summary || 'done'), 'success');
+                    var msg = 'Import complete: ' + (result.imported || 0) + ' imported';
+                    if (result.skipped) msg += ', ' + result.skipped + ' skipped';
+                    CSM.toast(msg, result.skipped ? 'warning' : 'success');
+                    if (result.warning) CSM.toast(result.warning, 'warning');
                     loadSuppressions();
                 }).catch(function(err) {
                     CSM.toast('Import failed: ' + CSM.errorText(err), 'error');

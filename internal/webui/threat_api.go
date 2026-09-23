@@ -24,7 +24,7 @@ func (s *Server) handleThreat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiThreatStats(w http.ResponseWriter, r *http.Request) {
 	adb := attackdb.Global()
 	if adb == nil {
-		writeJSON(w, map[string]string{"error": "attack database not initialized"})
+		writeJSONError(w, "attack database not initialized", http.StatusServiceUnavailable)
 		return
 	}
 	writeJSON(w, adb.Stats())
@@ -194,14 +194,13 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]interface{}{
-		"status":  "whitelisted",
 		"ip":      req.IP,
 		"actions": actions,
 	}
 	if warning != "" {
 		resp["warning"] = warning
 	}
-	writeJSON(w, resp)
+	writeOK(w, resp)
 }
 
 // GET /api/v1/threat/whitelist - list all whitelisted IPs
@@ -257,7 +256,7 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
+	writeOK(w, map[string]interface{}{"ip": req.IP})
 }
 
 // manualBlockTTL is the lifetime of the Web UI "Block (24h)" action. The
@@ -362,8 +361,7 @@ func (s *Server) operatorBlockIP(w http.ResponseWriter, r *http.Request, permane
 	} else {
 		s.auditLog(r, "block_ip", req.IP, "manual block 24h")
 	}
-	writeJSON(w, map[string]interface{}{
-		"status":    "blocked",
+	writeOK(w, map[string]interface{}{
 		"ip":        req.IP,
 		"permanent": permanent,
 		"actions":   actions,
@@ -440,8 +438,9 @@ func (s *Server) releaseIP(ip string, rel ipRelease) ([]string, error) {
 	if err == nil {
 		actions = append(actions, "removed from subnet block history")
 	}
-	flushCphulk(ip)
-	actions = append(actions, "flushed cPanel login history")
+	if flushCphulk(ip) == nil {
+		actions = append(actions, "flushed cPanel login history")
+	}
 	return actions, err
 }
 
@@ -478,8 +477,7 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+historyErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]interface{}{
-		"status":  "cleared",
+	writeOK(w, map[string]interface{}{
 		"ip":      req.IP,
 		"actions": actions,
 	})
@@ -527,8 +525,7 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+historyErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]interface{}{
-		"status":  "temp_whitelisted",
+	writeOK(w, map[string]interface{}{
 		"ip":      req.IP,
 		"hours":   req.Hours,
 		"actions": actions,
@@ -684,13 +681,28 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			undoPayloadIPs{IPs: succeeded, RestoreThreats: removedThreats, BlockSnapshot: blockAction, RestoreBlocks: priorBlocks, ExpectedBlocks: expectedBlocks})
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"ok":         true,
-		"count":      count,
-		"permanent":  permanent,
-		"undo_token": undoToken,
-		"warnings":   warnings,
-	})
+	if warnings == nil {
+		warnings = []string{}
+	}
+	fields := map[string]interface{}{
+		"count":     count,
+		"permanent": permanent,
+		"warnings":  warnings,
+	}
+	if count == 0 {
+		// Nothing changed: an error, with the reasons each address gave.
+		msg := "No address was changed"
+		if len(warnings) > 0 {
+			msg += ": " + strings.Join(warnings, "; ")
+		}
+		fields["error"] = msg
+		writeJSONStatus(w, http.StatusUnprocessableEntity, fields)
+		return
+	}
+	if undoToken != "" {
+		fields["undo_token"] = undoToken
+	}
+	writeOK(w, fields)
 }
 
 // writeJSON is defined in api.go

@@ -114,7 +114,7 @@
         CSM.get('/api/v1/firewall/check?ip=' + encodeURIComponent(ip))
             .then(function(r) {
                 var target = document.getElementById(targetID);
-                if (!r || r.success === false) {
+                if (!r) {
                     setFirewallStatus(target, requestedIP, 'lookup failed', 'muted');
                     return;
                 }

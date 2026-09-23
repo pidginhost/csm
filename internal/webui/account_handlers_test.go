@@ -489,7 +489,8 @@ func TestAPIBulkFixWithUnfixableCheck(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiBulkFix(w, req)
-	if w.Code != http.StatusOK {
+	// No item applied: an error status that still lists each item.
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
@@ -545,14 +546,14 @@ func TestAPIImportWithSuppressionsAndDedup(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var data struct {
-		Status   string `json:"status"`
-		Imported int    `json:"imported"`
+		OK       bool `json:"ok"`
+		Imported int  `json:"imported"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Status != "imported" {
-		t.Errorf("status = %q, want imported", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 	if data.Imported != 1 {
 		t.Errorf("imported = %d, want 1", data.Imported)

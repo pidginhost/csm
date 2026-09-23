@@ -65,7 +65,7 @@ test('incident block waits for themed confirmation and sends permanent duration'
     let confirm, request;
     const page = incidentPage({
         confirm(message) { assert.match(message, /192\.0\.2\.10.*permanently/); return new Promise(resolve => { confirm = resolve; }); },
-        post(url, body) { request = { url, body }; return Promise.resolve({ status: 'blocked' }); }
+        post(url, body) { request = { url, body }; return Promise.resolve({ ok: true, ip: body.ip }); }
     });
     const button = { disabled: false };
     const done = page.blockIncidentIP('inc_test', '192.0.2.10', button);

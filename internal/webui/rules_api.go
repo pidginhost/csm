@@ -130,15 +130,16 @@ func (s *Server) apiRulesReload(w http.ResponseWriter, r *http.Request) {
 		errors = append(errors, fmt.Sprintf("YARA reload: %v", yaraErr))
 	}
 
+	s.auditLog(r, "rules_reload", "signatures", fmt.Sprintf("errors: %d", len(errors)))
 	result := map[string]interface{}{
-		"ok":         len(errors) == 0,
 		"yaml_rules": yamlCount,
 		"yara_rules": yaraCount,
 	}
 	if len(errors) > 0 {
+		result["error"] = strings.Join(errors, "; ")
 		result["errors"] = errors
+		writeJSONStatus(w, http.StatusInternalServerError, result)
+		return
 	}
-	s.auditLog(r, "rules_reload", "signatures", fmt.Sprintf("errors: %d", len(errors)))
-
-	writeJSON(w, result)
+	writeOK(w, result)
 }

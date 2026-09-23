@@ -178,7 +178,7 @@ func TestAPIDBObjectBackupRestoreRejectsGET(t *testing.T) {
 	}
 }
 
-func TestAPIDBObjectBackupRestoreUnknownKeyReturns400(t *testing.T) {
+func TestAPIDBObjectBackupRestoreUnknownKeyReturns404(t *testing.T) {
 	withTempStoreForWebui(t)
 	srv := &Server{}
 
@@ -187,8 +187,8 @@ func TestAPIDBObjectBackupRestoreUnknownKeyReturns400(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/db-object-backup-restore", body)
 	srv.apiDBObjectBackupRestore(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 for missing key", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for an unknown key", rr.Code)
 	}
 	if !strings.Contains(rr.Body.String(), "not found") {
 		t.Errorf("body should mention not found, got %q", rr.Body.String())

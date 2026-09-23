@@ -193,14 +193,14 @@ func TestFirewallUnbanEverywhereSurfacesBackendFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := firewallJSFunction(t, string(js), "function unbanEverywhere(")
-	failureCheck := strings.Index(fn, "if (data && data.success === false)")
-	errorToast := strings.Index(fn, "CSM.toast('Error: ' + (data.error_msg || 'Unban failed'), 'error');")
-	failureReturn := strings.Index(fn, "return;")
+	// A failed unban is an error status: CSM.post rejects, so the success
+	// toast in then() never runs and the catch shows the server's message.
 	successToast := strings.Index(fn, "CSM.toast(msg, 'success');")
-	if failureCheck < 0 || errorToast < failureCheck {
-		t.Fatal("unbanEverywhere must surface the backend error_msg when success is false")
+	errorToast := strings.Index(fn, ".catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });")
+	if successToast < 0 || errorToast < successToast {
+		t.Fatal("unbanEverywhere must surface a failed unban from the error status")
 	}
-	if failureReturn < errorToast || successToast < failureReturn {
-		t.Fatal("unbanEverywhere must stop before reporting a failed unban as successful")
+	if strings.Contains(fn, "success === false") {
+		t.Error("unbanEverywhere still reads a success flag the server no longer sends on failure")
 	}
 }

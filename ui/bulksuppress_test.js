@@ -51,7 +51,7 @@ test('bulk suppress creates one rule per selected file', async () => {
     assert.match(page.confirmed, /1 .*without a file/);
     const bodies = [];
     for (let i = 0; i < 2; i++) {
-        const req = page.respond('/api/v1/suppressions', 200, { status: 'created', id: 'r' + i });
+        const req = page.respond('/api/v1/suppressions', 200, { ok: true, id: 'r' + i });
         assert.equal(req.method, 'POST');
         bodies.push(req.body);
         await settle();
@@ -86,7 +86,7 @@ test('bulk suppress stops at the first failure and says how many were saved', as
     selectAll(page);
     clickSuppress(page);
     await settle();
-    page.respond('/api/v1/suppressions', 200, { status: 'created', id: 'r0' });
+    page.respond('/api/v1/suppressions', 200, { ok: true, id: 'r0' });
     await settle();
     page.respond('/api/v1/suppressions', 400, { error: 'invalid path_pattern' });
     await settle();
@@ -119,7 +119,7 @@ test('the same file selected twice gets one rule', async () => {
     selectAll(page);
     clickSuppress(page);
     await settle();
-    page.respond('/api/v1/suppressions', 200, { status: 'created', id: 'r0' });
+    page.respond('/api/v1/suppressions', 200, { ok: true, id: 'r0' });
     await settle();
     assert.equal(page.pending('/api/v1/suppressions').length, 0);
 });

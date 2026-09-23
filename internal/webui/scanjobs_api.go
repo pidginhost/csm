@@ -172,7 +172,8 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.auditLog(r, "scan_job_enqueue", body.Target, fmt.Sprintf("job %s, account scan, quarantine=%v", id, body.Quarantine))
-		writeJSON(w, map[string]any{"job_id": id, "state": "queued"})
+		// The scan runs after the response: 202 with the job to poll.
+		writeOKStatus(w, http.StatusAccepted, map[string]interface{}{"job_id": id, "state": "queued"})
 
 	case "all":
 		if body.Quarantine {
@@ -190,7 +191,8 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.auditLog(r, "scan_job_enqueue", "all", fmt.Sprintf("job %s, full scan", id))
-		writeJSON(w, map[string]any{"job_id": id, "state": "queued"})
+		// The scan runs after the response: 202 with the job to poll.
+		writeOKStatus(w, http.StatusAccepted, map[string]interface{}{"job_id": id, "state": "queued"})
 
 	default:
 		writeJSONError(w, "unsupported scope: must be \"account\" or \"all\"", http.StatusBadRequest)
@@ -229,5 +231,6 @@ func (s *Server) apiScanJobsCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditLog(r, "scan_job_cancel", id, "cancel requested")
-	writeJSON(w, map[string]any{"job_id": id, "state": "canceling"})
+	// The job stops after the response: 202 with its state.
+	writeOKStatus(w, http.StatusAccepted, map[string]interface{}{"job_id": id, "state": "canceling"})
 }

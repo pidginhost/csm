@@ -500,12 +500,12 @@ func (s *Server) apiPerfFixErrorLog(w http.ResponseWriter, r *http.Request) {
 	}
 	res := checks.FixErrorLogBloatInRoots(req.Path, s.perfFixAllowedRoots())
 	if !res.Success {
-		writeJSON(w, res)
+		writeRemediation(w, res)
 		return
 	}
 	s.dismissPerfFinding(req.Key)
 	s.auditLog(r, "perf_fix_error_log", req.Path, res.Description)
-	writeJSON(w, res)
+	writeRemediation(w, res)
 }
 
 // apiPerfFixDisplayErrors disables display_errors in an account-owned
@@ -532,12 +532,12 @@ func (s *Server) apiPerfFixDisplayErrors(w http.ResponseWriter, r *http.Request)
 	}
 	res := checks.FixDisplayErrorsOnInRoots(req.Path, s.perfFixAllowedRoots())
 	if !res.Success {
-		writeJSON(w, res)
+		writeRemediation(w, res)
 		return
 	}
 	s.dismissPerfFinding(req.Key)
 	s.auditLog(r, "perf_fix_display_errors", req.Path, res.Description)
-	writeJSON(w, res)
+	writeRemediation(w, res)
 }
 
 // apiPerfFixWPCron disables WP-Cron in an account-owned wp-config.php
@@ -568,12 +568,12 @@ func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
 	}
 	res := checks.FixDisableWPCronInRoots(req.Path, checks.ResolveWPCronRoots(cfg), options)
 	if !res.Success {
-		writeJSON(w, res)
+		writeRemediation(w, res)
 		return
 	}
 	s.dismissPerfFinding(req.Key)
 	s.auditLog(r, "perf_fix_wp_cron", req.Path, res.Description)
-	writeJSON(w, res)
+	writeRemediation(w, res)
 }
 
 func (s *Server) perfFixAllowedRoots() []string {

@@ -50,7 +50,11 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, report)
+	// The fresh report, with the action's ok flag next to its fields.
+	writeJSON(w, struct {
+		OK bool `json:"ok"`
+		*store.AuditReport
+	}{true, report})
 }
 
 // handleHardening renders the hardening audit page.

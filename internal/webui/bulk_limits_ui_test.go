@@ -109,12 +109,14 @@ func TestBulkFixRequestBodyBoundary(t *testing.T) {
 			w := httptest.NewRecorder()
 			s := &Server{}
 			s.apiBulkFix(w, httptest.NewRequest(http.MethodPost, "/api/v1/fix-bulk", strings.NewReader(body)))
-			want := http.StatusOK
+			// Up to the limit the body is read: the unsupported check makes
+			// the batch a 422 with per-item results. Past it, 400.
 			if size > bulkFixBodyMax {
-				want = http.StatusBadRequest
-			}
-			if w.Code != want {
-				t.Fatalf("body of %d bytes: status = %d, want %d", size, w.Code, want)
+				if w.Code != http.StatusBadRequest {
+					t.Fatalf("body of %d bytes: status = %d, want 400", size, w.Code)
+				}
+			} else if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "no fix for unsupported-test-check") {
+				t.Fatalf("body of %d bytes: status = %d, body %.200s; want the batch read and refused per item", size, w.Code, w.Body.String())
 			}
 		})
 	}

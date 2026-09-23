@@ -491,7 +491,7 @@ func TestScanJobsEnqueue_AdminCookieMissingCSRF_403(t *testing.T) {
 	}
 }
 
-// Test 3: POST enqueue with admin bearer + valid body → 200, job_id returned,
+// Test 3: POST enqueue with admin bearer + valid body → 202, job_id returned,
 // fake controller receives correct scope/target/opts/quarantine.
 func TestScanJobsEnqueue_AdminBearer_Success(t *testing.T) {
 	s, _, _, fc := newTestServerWithFakeScanJobs(t)
@@ -502,8 +502,8 @@ func TestScanJobsEnqueue_AdminBearer_Success(t *testing.T) {
 		"respect_ignores": true,
 		"quarantine":      false,
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
 		JobID string `json:"job_id"`
@@ -598,8 +598,8 @@ func TestScanJobsCancel_AdminBearer_Success(t *testing.T) {
 	s, _, _, fc := newTestServerWithFakeScanJobs(t)
 
 	w := adminPost(s, "/api/v1/scan-jobs/sj-test-001/cancel", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
 		JobID string `json:"job_id"`

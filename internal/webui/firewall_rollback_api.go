@@ -137,13 +137,19 @@ func (s *Server) apiFirewallTentativeApply(w http.ResponseWriter, r *http.Reques
 	// it needs to drive the countdown banner.
 	s.scheduleDaemonRestart(250 * time.Millisecond)
 
-	writeJSON(w, map[string]interface{}{
-		"status":           "tentative-apply issued",
+	if warnings == nil {
+		warnings = []fieldError{}
+	}
+	applied := changedFieldList(body.Changes, section)
+	// The daemon restarts to apply a firewall change, so every applied field
+	// waits for it; the shape matches the settings save response.
+	writeOK(w, map[string]interface{}{
 		"warnings":         warnings,
 		"rollback":         st,
 		"new_etag":         clone.Integrity.ConfigHash,
-		"applied":          changedFieldList(body.Changes, section),
-		"requires_restart": true,
+		"applied":          applied,
+		"requires_restart": applied,
+		"pending_restart":  true,
 	})
 }
 
@@ -208,7 +214,7 @@ func (s *Server) apiFirewallRollbackConfirm(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.auditLog(r, "settings-rollback-confirm", "firewall", "")
-	writeJSON(w, map[string]string{"status": "confirmed"})
+	writeOK(w, nil)
 }
 
 // apiFirewallRollbackRevert handles POST .../revert. Restores the
@@ -232,7 +238,8 @@ func (s *Server) apiFirewallRollbackRevert(w http.ResponseWriter, r *http.Reques
 	}
 	s.scheduleRollbackRevert(mgr, st, 30*time.Second)
 	s.auditLog(r, "settings-rollback-revert", "firewall", "")
-	writeJSON(w, map[string]string{"status": "revert issued"})
+	// The revert and restart run after the response.
+	writeOKStatus(w, http.StatusAccepted, nil)
 }
 
 // scheduleDaemonRestart fires restartDaemon after delay in a supervised

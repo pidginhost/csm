@@ -66,6 +66,10 @@ func (s *Server) apiSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		actor, via := s.requestActor(r)
+		if id != "" && !s.sessionExists(id) {
+			writeJSONError(w, "Session not found", http.StatusNotFound)
+			return
+		}
 		var err error
 		if id == "" {
 			err = s.sessions.RevokeAll()
@@ -80,10 +84,25 @@ func (s *Server) apiSessions(w http.ResponseWriter, r *http.Request) {
 		if id == "" {
 			clearBrowserCookie(w)
 		}
-		writeJSON(w, map[string]bool{"ok": true})
+		writeOK(w, nil)
 	default:
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// sessionExists reports whether id names an active browser session, so
+// revoking an unknown one answers 404 instead of a success that did nothing.
+func (s *Server) sessionExists(id string) bool {
+	records, err := s.sessions.List(s.sessionNow())
+	if err != nil {
+		return false
+	}
+	for _, rec := range records {
+		if rec.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func validSessionID(id string) bool {

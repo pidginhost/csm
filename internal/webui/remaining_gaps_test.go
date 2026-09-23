@@ -393,16 +393,16 @@ func TestAPIModSecRulesApplyReloadFailsRollsBack(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiModSecRulesApply(w, req)
-	// Even on reload failure, handler writes 200 with ok=false + rolled_back:true
-	if w.Code != http.StatusOK {
+	// A reload failure is a 500 that says the change was rolled back.
+	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	if resp["ok"] != false {
-		t.Errorf("ok = %v, want false", resp["ok"])
+	if e, _ := resp["error"].(string); e == "" {
+		t.Errorf("error = %v, want the reload failure", resp["error"])
 	}
 	if resp["rolled_back"] != true {
 		t.Errorf("rolled_back = %v, want true", resp["rolled_back"])

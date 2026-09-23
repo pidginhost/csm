@@ -44,12 +44,14 @@ func TestSuppressionWarnsAboutUnknownCheckNames(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("check %q: status %d: %s", tc.check, w.Code, w.Body.String())
 		}
-		var resp map[string]string
+		var resp struct {
+			Warning string `json:"warning"`
+		}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatal(err)
 		}
-		if got := resp["warning"] != ""; got != tc.warn {
-			t.Errorf("check %q: warning = %q, want warning %v", tc.check, resp["warning"], tc.warn)
+		if got := resp.Warning != ""; got != tc.warn {
+			t.Errorf("check %q: warning = %q, want warning %v", tc.check, resp.Warning, tc.warn)
 		}
 	}
 }

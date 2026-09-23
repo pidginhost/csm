@@ -143,16 +143,32 @@ func (s *Server) apiDBObjectBackupRestore(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Tell a missing store or backup apart from a restore that failed.
+	sdb := store.Global()
+	if sdb == nil {
+		writeJSONError(w, "bbolt store not available", http.StatusServiceUnavailable)
+		return
+	}
+	if _, found, err := sdb.GetDBObjectBackupByKey(req.Key); err != nil {
+		writeJSONError(w, "looking up backup: "+err.Error(), http.StatusInternalServerError)
+		return
+	} else if !found {
+		writeJSONError(w, "backup not found (may have been pruned)", http.StatusNotFound)
+		return
+	}
 	result := checks.RestoreDBObjectBackup(req.Key)
 	if !result.Success {
-		writeJSONError(w, result.Message, http.StatusBadRequest)
+		writeJSONError(w, result.Message, http.StatusInternalServerError)
 		return
 	}
 	s.auditLog(r, "db_object_restore", req.Key, result.Message)
-	writeJSON(w, map[string]any{
-		"success": true,
+	details := result.Details
+	if details == nil {
+		details = []string{}
+	}
+	writeOK(w, map[string]interface{}{
 		"message": result.Message,
-		"details": result.Details,
+		"details": details,
 	})
 }
 

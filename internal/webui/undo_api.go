@@ -211,7 +211,7 @@ type undoRunRequest struct {
 }
 
 type undoRunResponse struct {
-	Status  string `json:"status"`
+	OK      bool   `json:"ok"`
 	Action  string `json:"action"`
 	Inverse string `json:"inverse"`
 	Count   int    `json:"count"`
@@ -286,7 +286,7 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		}
 	}
 	resp := undoRunResponse{
-		Status:  "ok",
+		OK:      true,
 		Action:  entry.Action,
 		Inverse: entry.Inverse,
 	}
@@ -441,7 +441,7 @@ func (s *Server) undoBulkBlock(payload undoPayloadIPs) (int, error) {
 			tdb.RemovePermanent(ip)
 		}
 		restoreUndoThreatRows(threatRowsForIP(payload.RestoreThreats, ip))
-		flushCphulk(ip)
+		_ = flushCphulk(ip) // best effort
 		count++
 	}
 	return count, nil

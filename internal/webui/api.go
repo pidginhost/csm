@@ -936,7 +936,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		s.auditLog(r, "fix", req.Check, result.Action)
 	}
 
-	writeJSON(w, result)
+	writeRemediation(w, result)
 }
 
 // apiVerifyFinding re-checks whether a finding's condition still holds against
@@ -959,7 +959,7 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 
 	in, key, stored, found := s.verifyFindingInput(req)
 	in.Context = r.Context()
-	response := verifyFindingResponse{VerifyResult: s.verifyFinding(in)}
+	response := verifyFindingResponse{OK: true, VerifyResult: s.verifyFinding(in)}
 	switch {
 	case response.Checked && response.Resolved:
 		if key == "" {
@@ -991,6 +991,7 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 // true for an already-demoted finding or after a concurrent scan replaced the
 // snapshot, neither of which means this request changed the stored severity.
 type verifyFindingResponse struct {
+	OK bool `json:"ok"`
 	checks.VerifyResult
 	SeverityChange string `json:"severity_change,omitempty"`
 }
@@ -1068,17 +1069,15 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var results []checks.RemediationResult
+	results := make([]bulkFixItem, 0, len(reqs))
 	for _, req := range reqs {
 		if !checks.HasFix(req.Check) {
-			results = append(results, checks.RemediationResult{
-				Error: fmt.Sprintf("no fix for %s", req.Check),
-			})
+			results = append(results, bulkFixItem{Check: req.Check, Error: fmt.Sprintf("no fix for %s", req.Check)})
 			continue
 		}
 		message, details, filePath, dismissKey, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
 		if err != nil {
-			results = append(results, checks.RemediationResult{Error: err.Error()})
+			results = append(results, bulkFixItem{Check: req.Check, Error: err.Error()})
 			continue
 		}
 		result := s.applyFix(r.Context(), req.Check, message, details, filePath)
@@ -1087,22 +1086,47 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 			s.store.DismissLatestFinding(dismissKey)
 			s.auditLog(r, "fix", req.Check, result.Action)
 		}
-		results = append(results, result)
+		results = append(results, bulkFixItem{
+			Check: req.Check, OK: result.Success, Action: result.Action,
+			Description: result.Description, Error: result.Error, Reverted: result.Reverted,
+		})
 	}
 
 	succeeded := 0
-	for _, r := range results {
-		if r.Success {
+	for _, item := range results {
+		if item.OK {
 			succeeded++
 		}
 	}
-
-	writeJSON(w, map[string]interface{}{
+	fields := map[string]interface{}{
 		"results":   results,
 		"total":     len(results),
 		"succeeded": succeeded,
 		"failed":    len(results) - succeeded,
-	})
+	}
+	if succeeded == 0 && len(results) > 0 {
+		fields["error"] = "No fix applied"
+		writeJSONStatus(w, http.StatusUnprocessableEntity, fields)
+		return
+	}
+	writeOK(w, fields)
+}
+
+// bulkFixItem is one fix of a bulk request: which check, whether it applied,
+// and what it did or why it did not.
+type bulkFixItem struct {
+	Check       string `json:"check"`
+	OK          bool   `json:"ok"`
+	Action      string `json:"action,omitempty"`
+	Description string `json:"description,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Reverted    bool   `json:"reverted,omitempty"`
+}
+
+// bulkItemFailure names one item of a batch that did not apply and why.
+type bulkItemFailure struct {
+	Item  string `json:"item"`
+	Error string `json:"error"`
 }
 
 // apiAccounts returns the account names for the scan dropdown: the accounts a
@@ -1186,13 +1210,13 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 				safeLogString(incidentID), err)
 		}
 	}
-	resp := map[string]string{"status": "blocked", "ip": req.IP}
+	resp := map[string]interface{}{"ip": req.IP}
 	// The input chain accepts Cloudflare edges on 80/443 before the blocked
 	// drop, so a block of a covered IP does not stop its web traffic.
 	if cc, ok := s.blocker.(cloudflareChecker); ok && cc.CloudflareCovers(req.IP) {
 		resp["warning"] = firewall.CloudflareCoverageWarning
 	}
-	writeJSON(w, resp)
+	writeOK(w, resp)
 }
 
 // apiUnblockIP removes an IP from the firewall + cphulk.
@@ -1231,11 +1255,12 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	}
 	dropAutoBlockThreatRow(req.IP)
 
-	// Also flush from cphulk (cPanel brute force detector)
-	flushCphulk(req.IP)
+	// Also flush from cphulk (cPanel brute force detector); best effort,
+	// the unblock is what was asked.
+	_ = flushCphulk(req.IP)
 
 	s.auditLog(r, "unblock_ip", req.IP, "manual unblock via UI")
-	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
+	writeOK(w, map[string]interface{}{"ip": req.IP})
 }
 
 // apiUnblockBulk unblocks multiple IPs at once.
@@ -1271,10 +1296,12 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 
 	succeeded := 0
 	unblocked := make([]string, 0, len(req.IPs))
+	failed := []bulkItemFailure{}
 	removedThreats := make([]undoThreatRow, 0, len(req.IPs))
 	for _, ip := range req.IPs {
 		parsed, err := parseAndValidateIP(ip)
 		if err != nil {
+			failed = append(failed, bulkItemFailure{Item: ip, Error: err.Error()})
 			continue
 		}
 		ip = parsed.String()
@@ -1285,6 +1312,7 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 
 		before, err := s.unblockIPForUndo(ip)
 		if err != nil {
+			failed = append(failed, bulkItemFailure{Item: ip, Error: err.Error()})
 			continue
 		}
 		if before != nil {
@@ -1298,7 +1326,7 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 		unblocked = append(unblocked, ip)
 		succeeded++
 	}
-	flushCphulkIPs(unblocked)
+	_ = flushCphulkIPs(unblocked) // best effort: the unblocks are what was asked
 
 	var undoToken string
 	if succeeded > 0 {
@@ -1312,12 +1340,20 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 			})
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"status":     "completed",
-		"total":      len(req.IPs),
-		"succeeded":  succeeded,
-		"undo_token": undoToken,
-	})
+	fields := map[string]interface{}{
+		"total":     len(req.IPs),
+		"succeeded": succeeded,
+		"failed":    failed,
+	}
+	if succeeded == 0 {
+		fields["error"] = "No address was unblocked"
+		writeJSONStatus(w, http.StatusUnprocessableEntity, fields)
+		return
+	}
+	if undoToken != "" {
+		fields["undo_token"] = undoToken
+	}
+	writeOK(w, fields)
 }
 
 // blockedEntry is a raw blocked IP record from firewall state.
@@ -1367,7 +1403,14 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 
 	fwFile := filepath.Join(s.cfg.StatePath, "firewall", "state.json")
 	_, fwStatErr := os.Stat(fwFile) // #nosec G304 -- filepath.Join under operator-configured StatePath.
-	if fwState, err := firewall.LoadState(s.cfg.StatePath); err == nil && fwState != nil {
+	fwState, fwErr := firewall.LoadState(s.cfg.StatePath)
+	if fwErr != nil && fwStatErr == nil {
+		// The engine state exists but cannot be read: an empty list would
+		// tell the operator nothing is blocked.
+		writeJSONError(w, "Firewall state unavailable", http.StatusInternalServerError)
+		return
+	}
+	if fwErr == nil && fwState != nil {
 		for _, entry := range fwState.Blocked {
 			b := blockedEntry{
 				IP:        entry.IP,
@@ -1392,8 +1435,12 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	stateFile := filepath.Join(s.cfg.StatePath, "blocked_ips.json")
 	// #nosec G304 -- filepath.Join under operator-configured StatePath.
 	data, err := os.ReadFile(stateFile)
+	if os.IsNotExist(err) {
+		writeJSON(w, result)
+		return
+	}
 	if err != nil {
-		writeJSON(w, []interface{}{})
+		writeJSONError(w, "Firewall state unavailable", http.StatusInternalServerError)
 		return
 	}
 
@@ -1401,7 +1448,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 		IPs []blockedEntry `json:"ips"`
 	}
 	if err := json.Unmarshal(data, &blockState); err != nil {
-		writeJSON(w, []interface{}{})
+		writeJSONError(w, "Firewall state unavailable", http.StatusInternalServerError)
 		return
 	}
 
@@ -1466,7 +1513,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 		undos = append(undos, s.store.DismissFindingWithUndo(key))
 		s.auditLog(r, "dismiss", key, "")
 	}
-	resp := map[string]interface{}{"status": "dismissed", "count": len(keys)}
+	resp := map[string]interface{}{"count": len(keys)}
 	summary := fmt.Sprintf("Dismissed %d findings", len(keys))
 	if len(keys) == 1 {
 		resp["key"] = keys[0]
@@ -1477,7 +1524,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 		undoPayloadIPs{Dismissals: undos}); token != "" {
 		resp["undo_token"] = token
 	}
-	writeJSON(w, resp)
+	writeOK(w, resp)
 }
 
 // apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.
@@ -1547,6 +1594,7 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 	for _, id := range req.IDs {
 		entry, err := resolveQuarantineEntry(id)
 		if err != nil || !quarantineEntryDeletable(entry) {
+			failed = append(failed, id)
 			continue
 		}
 		if _, statErr := os.Lstat(entry.ItemPath); statErr == nil {
@@ -1572,7 +1620,13 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 		details += "; failed: " + strings.Join(failed, ", ")
 	}
 	s.auditLog(r, "quarantine_bulk_delete", fmt.Sprintf("%d files", count), details)
-	writeJSON(w, map[string]interface{}{"ok": true, "count": count, "failed": failed})
+	if len(deleted) == 0 {
+		writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]interface{}{
+			"error": "No file was deleted", "count": 0, "failed": failed,
+		})
+		return
+	}
+	writeOK(w, map[string]interface{}{"count": count, "failed": failed})
 }
 
 // apiTestAlert sends a test finding through all configured alert channels.
@@ -1590,11 +1644,12 @@ func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
 	}}
 	err := alert.Dispatch(s.liveCfg(), testFinding)
 	if err != nil {
-		writeJSON(w, map[string]interface{}{"status": "error", "error": err.Error()})
+		// The request was fine; the alert channel behind the daemon failed.
+		writeJSONError(w, "Alert delivery failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	s.auditLog(r, "test_alert", "notification", "sent test alert")
-	writeJSON(w, map[string]interface{}{"status": "sent"})
+	writeOK(w, nil)
 }
 
 // apiScanAccount runs an on-demand scan for a single cPanel account.
@@ -1636,12 +1691,11 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 	elapsed := time.Since(start).Round(time.Millisecond)
 	s.auditLog(r, "scan_account", req.Account, fmt.Sprintf("%d findings in %s", len(findings), elapsed))
 
-	result := map[string]interface{}{
+	writeOK(w, map[string]interface{}{
 		"account": req.Account,
 		"count":   len(findings),
 		"elapsed": elapsed.String(),
-	}
-	writeJSON(w, result)
+	})
 }
 
 // parseModeString converts a permission string like "-rw-r--r--" to os.FileMode.
@@ -1679,13 +1733,15 @@ func parseModeString(s string) os.FileMode {
 // re-validates as defense-in-depth so a future caller that forgets cannot
 // expose a shell-execution surface even if exec.Command itself does not
 // invoke a shell.
-func flushCphulk(ip string) {
-	flushCphulkIPs([]string{ip})
+func flushCphulk(ip string) error {
+	return flushCphulkIPs([]string{ip})
 }
 
 // flushCphulkIPs uses the WHM API's indexed array arguments so a bulk
 // firewall action starts one whmapi1 process instead of one per address.
-func flushCphulkIPs(ips []string) {
+// It returns whmapi1's failure, including whmapi1 not being installed, so
+// a caller reports the flush only when it ran.
+func flushCphulkIPs(ips []string) error {
 	args := []string{"flush_cphulk_login_history_for_ips"}
 	valid := 0
 	for _, ip := range ips {
@@ -1701,11 +1757,14 @@ func flushCphulkIPs(ips []string) {
 		valid++
 	}
 	if valid == 0 {
-		return
+		return nil
 	}
 	// #nosec G204 -- whmapi1 is fixed and every argument value is parsed as
 	// an IP above. exec.Command passes arguments directly without a shell.
-	_, _ = exec.Command("whmapi1", args...).Output()
+	if _, err := exec.Command("whmapi1", args...).Output(); err != nil {
+		return fmt.Errorf("whmapi1: %w", err)
+	}
+	return nil
 }
 
 // apiExport returns a JSON bundle of exportable state.
@@ -1743,18 +1802,21 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The bundle is what /api/v1/export writes; the decoder refuses unknown
+	// fields, so every field the export carries is named here.
 	var bundle struct {
+		ExportedAt   string                  `json:"exported_at"`
+		Hostname     string                  `json:"hostname"`
 		Suppressions []state.SuppressionRule `json:"suppressions"`
-		Whitelist    []struct {
-			IP string `json:"ip"`
-		} `json:"whitelist"`
+		Whitelist    []checks.WhitelistIP    `json:"whitelist"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 512*1024, &bundle); err != nil {
 		writeJSONError(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
 
-	imported := 0
+	imported, skipped := 0, 0
+	warning := ""
 
 	// Merge suppressions (dedup by ID)
 	if len(bundle.Suppressions) > 0 {
@@ -1769,10 +1831,12 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 				// suppresses nothing and only clutters the list), and every
 				// rule needs an ID or it can never be deleted from the UI.
 				if !suppressionCheckName.MatchString(rule.Check) {
+					skipped++
 					continue
 				}
 				if rule.PathPattern != "" {
 					if _, err := filepath.Match(rule.PathPattern, ""); err != nil {
+						skipped++
 						continue
 					}
 				}
@@ -1798,37 +1862,50 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 
 	// Merge whitelist IPs
 	if len(bundle.Whitelist) > 0 {
-		if tdb := checks.GetThreatDB(); tdb != nil {
-			existingWL := tdb.WhitelistedIPs()
+		tdb := checks.GetThreatDB()
+		if tdb == nil {
+			skipped += len(bundle.Whitelist)
+			warning = "The threat database is not available; whitelist entries were not imported."
+		} else {
 			existingSet := make(map[string]bool)
-			for _, w := range existingWL {
+			for _, w := range tdb.WhitelistedIPs() {
 				existingSet[w.IP] = true
 			}
+			now := time.Now()
 			for _, entry := range bundle.Whitelist {
 				// Validate imported IPs like every interactive route does: an
 				// unvalidated bundle could otherwise poison the threat DB /
 				// firewall allow-list with malformed or attacker-chosen entries
 				// (whitelisting bypasses blocking). Use the canonical form.
 				ip, err := parseAndValidateIP(entry.IP)
-				if err != nil {
+				// Entries from the configuration file are managed there, and an
+				// expired temporary entry has nothing left to import.
+				if err != nil || entry.Configured || (entry.ExpiresAt != nil && !entry.ExpiresAt.After(now)) {
+					skipped++
 					continue
 				}
 				canonical := ip.String()
-				if !existingSet[canonical] {
-					tdb.AddWhitelist(canonical)
-					existingSet[canonical] = true
-					imported++
+				if existingSet[canonical] {
+					continue
 				}
+				// A temporary entry stays temporary, with its remaining time.
+				if entry.ExpiresAt != nil {
+					tdb.TempWhitelist(canonical, entry.ExpiresAt.Sub(now))
+				} else {
+					tdb.AddWhitelist(canonical)
+				}
+				existingSet[canonical] = true
+				imported++
 			}
 		}
 	}
 
-	s.auditLog(r, "import", "state", fmt.Sprintf("imported %d items", imported))
-	writeJSON(w, map[string]interface{}{
-		"status":   "imported",
-		"imported": imported,
-		"summary":  fmt.Sprintf("%d items imported", imported),
-	})
+	s.auditLog(r, "import", "state", fmt.Sprintf("imported %d items, skipped %d", imported, skipped))
+	resp := map[string]interface{}{"imported": imported, "skipped": skipped}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	writeOK(w, resp)
 }
 
 // apiFindingDetail returns detail about a specific finding including related actions.
@@ -1946,6 +2023,49 @@ func writeJSONStatus(w http.ResponseWriter, code int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+// writeOK answers a successful action: "ok": true plus the action's fields.
+func writeOK(w http.ResponseWriter, fields map[string]interface{}) {
+	writeOKStatus(w, http.StatusOK, fields)
+}
+
+// writeOKStatus is writeOK with another 2xx status, such as 202 for work
+// that continues after the response.
+func writeOKStatus(w http.ResponseWriter, code int, fields map[string]interface{}) {
+	body := make(map[string]interface{}, len(fields)+1)
+	for k, v := range fields {
+		body[k] = v
+	}
+	body["ok"] = true
+	writeJSONStatus(w, code, body)
+}
+
+// writeRemediation answers one fix. A fix that did not apply is an error:
+// 422 when the target was not eligible and left unchanged, 500 when applying
+// it failed.
+func writeRemediation(w http.ResponseWriter, res checks.RemediationResult) {
+	if !res.Success {
+		msg := res.Error
+		if msg == "" {
+			msg = "The fix did not apply"
+		}
+		code := http.StatusInternalServerError
+		if res.Refused {
+			code = http.StatusUnprocessableEntity
+		}
+		body := map[string]interface{}{"error": msg}
+		if res.Action != "" {
+			body["action"] = res.Action
+		}
+		writeJSONStatus(w, code, body)
+		return
+	}
+	fields := map[string]interface{}{"action": res.Action, "description": res.Description}
+	if res.Reverted {
+		fields["reverted"] = true
+	}
+	writeOK(w, fields)
 }
 
 // writeRequestError answers a failure from middleware that guards both API

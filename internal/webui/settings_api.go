@@ -426,18 +426,28 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		config.SetActive(&livePatched)
 	}
 
-	var applied []string
+	applied := []string{}
 	for _, c := range diff {
 		applied = append(applied, c.Field)
 	}
 
 	s.auditLog(r, "settings-save", sectionID, auditDetailsFor(section, body.Changes))
 
-	writeJSON(w, map[string]interface{}{
+	if restartFields == nil {
+		restartFields = []string{}
+	}
+	if warnings == nil {
+		warnings = []fieldError{}
+	}
+	pending := pendingRestartSections(config.Active(), effectiveClone)
+	if pending == nil {
+		pending = []pendingSettingsSection{}
+	}
+	writeOK(w, map[string]interface{}{
 		"applied":          applied,
 		"requires_restart": restartFields,
 		"pending_restart":  len(restartFields) > 0,
-		"pending_sections": pendingRestartSections(config.Active(), effectiveClone),
+		"pending_sections": pending,
 		"warnings":         warnings,
 		"new_etag":         newETag,
 	})
@@ -972,8 +982,7 @@ func (s *Server) apiSettingsRestart(w http.ResponseWriter, r *http.Request) {
 
 	s.auditLog(r, "settings-restart", "daemon", "")
 
-	writeJSONStatus(w, http.StatusAccepted, map[string]string{
-		"status":           "restart issued",
+	writeOKStatus(w, http.StatusAccepted, map[string]interface{}{
 		"started_at_token": s.daemonStartToken(),
 	})
 	if flusher, ok := w.(http.Flusher); ok {

@@ -36,7 +36,7 @@ test('a finding with an attacker address offers Block', async () => {
     await settle();
     assert.match(asked, /203\.0\.113\.5/);
     assert.match(asked, /permanently/);
-    const req = page.respond('/api/v1/block-ip', 200, { status: 'blocked' });
+    const req = page.respond('/api/v1/block-ip', 200, { ok: true, ip: '203.0.113.9' });
     assert.equal(req.body.ip, '203.0.113.5');
     assert.equal(req.body.duration, '0');
     assert.match(req.body.reason, /wp_login_bruteforce/);

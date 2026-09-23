@@ -16,9 +16,7 @@ func TestAPIThreatStatsNoAttackDB(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiThreatStats(w, httptest.NewRequest("GET", "/", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
+	assertJSONError(t, "no attack database", w, http.StatusServiceUnavailable)
 }
 
 func TestAPIThreatUnwhitelistRejectsConfiguredEntry(t *testing.T) {

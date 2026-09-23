@@ -169,7 +169,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			return
 		}
 		s.auditLog(r, "email_quarantine_release", msgID, "released to the mail queue")
-		writeJSON(w, map[string]string{"status": "released", "message_id": msgID})
+		writeOK(w, map[string]interface{}{"message_id": msgID})
 
 	case http.MethodDelete:
 		if action != "" {
@@ -181,7 +181,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			return
 		}
 		s.auditLog(r, "email_quarantine_delete", msgID, "deleted permanently")
-		writeJSON(w, map[string]string{"status": "deleted", "message_id": msgID})
+		writeOK(w, map[string]interface{}{"message_id": msgID})
 
 	default:
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)

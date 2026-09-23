@@ -423,18 +423,17 @@ function fixOne(btn) {
             message: row.getAttribute('data-message'),
             details: row.getAttribute('data-details') || '',
             file_path: row.getAttribute('data-filepath') || ''
-        }).then(function(data) {
-            if (data.success) {
-                row.style.opacity = '0.3';
-                btn.innerHTML = '<i class="ti ti-check"></i>';
-                btn.className = 'btn btn-success btn-sm me-1';
-                setTimeout(refreshFindings, 1000);
-            } else {
-                CSM.toast('Fix failed: ' + (data.error || 'unknown'), 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<i class="ti ti-tool"></i>';
-            }
-        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
+        }).then(function() {
+            row.style.opacity = '0.3';
+            btn.innerHTML = '<i class="ti ti-check"></i>';
+            btn.className = 'btn btn-success btn-sm me-1';
+            setTimeout(refreshFindings, 1000);
+        }).catch(function(e) {
+            // A fix that did not apply is an error status with the reason.
+            CSM.toast('Fix failed: ' + CSM.errorText(e), 'error');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ti ti-tool"></i>';
+        });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 

@@ -157,18 +157,21 @@ func TestAPIQuarantineBulkDeleteWithInvalidID(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ids":[""]}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiQuarantineBulkDelete(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		OK    bool `json:"ok"`
-		Count int  `json:"count"`
+		Count  int      `json:"count"`
+		Failed []string `json:"failed"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
 	if data.Count != 0 {
 		t.Errorf("count = %d, want 0 (all invalid)", data.Count)
+	}
+	if len(data.Failed) != 1 {
+		t.Errorf("failed = %v, want the invalid id listed", data.Failed)
 	}
 }
 
@@ -178,18 +181,19 @@ func TestAPIQuarantineBulkDeleteMultipleNonexistent(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ids":["aaa","bbb","ccc"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiQuarantineBulkDelete(w, req)
-	if w.Code != http.StatusOK {
+	// None of the ids resolves: nothing was deleted, and each id is listed.
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		OK    bool `json:"ok"`
-		Count int  `json:"count"`
+		Count  int      `json:"count"`
+		Failed []string `json:"failed"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if !data.OK {
-		t.Error("ok should be true")
+	if len(data.Failed) != 3 {
+		t.Errorf("failed = %v, want the three ids", data.Failed)
 	}
 	// No files existed so count stays 0
 	if data.Count != 0 {
@@ -230,8 +234,8 @@ func TestAPIImportEmptySuppressions(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var data struct {
-		Imported int    `json:"imported"`
-		Status   string `json:"status"`
+		Imported int  `json:"imported"`
+		OK       bool `json:"ok"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -239,8 +243,8 @@ func TestAPIImportEmptySuppressions(t *testing.T) {
 	if data.Imported != 0 {
 		t.Errorf("imported = %d, want 0", data.Imported)
 	}
-	if data.Status != "imported" {
-		t.Errorf("status = %q, want imported", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 }
 
@@ -262,8 +266,8 @@ func TestAPIImportMultipleSuppressions(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var data struct {
-		Imported int    `json:"imported"`
-		Summary  string `json:"summary"`
+		Imported int `json:"imported"`
+		Skipped  int `json:"skipped"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -271,8 +275,8 @@ func TestAPIImportMultipleSuppressions(t *testing.T) {
 	if data.Imported != 3 {
 		t.Errorf("imported = %d, want 3", data.Imported)
 	}
-	if !strings.Contains(data.Summary, "3 items") {
-		t.Errorf("summary = %q, want '3 items'", data.Summary)
+	if data.Skipped != 0 {
+		t.Errorf("skipped = %d, want 0", data.Skipped)
 	}
 }
 
@@ -305,7 +309,8 @@ func TestAPIBulkFixMultipleMixed(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiBulkFix(w, req)
-	if w.Code != http.StatusOK {
+	// None of the three applied: 422 with each item's outcome.
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
@@ -313,8 +318,8 @@ func TestAPIBulkFixMultipleMixed(t *testing.T) {
 		Succeeded int `json:"succeeded"`
 		Failed    int `json:"failed"`
 		Results   []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
@@ -595,9 +600,12 @@ func TestAPIUnblockBulkWithInvalidIPs(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Status    string `json:"status"`
-		Total     int    `json:"total"`
-		Succeeded int    `json:"succeeded"`
+		OK        bool `json:"ok"`
+		Total     int  `json:"total"`
+		Succeeded int  `json:"succeeded"`
+		Failed    []struct {
+			Item string `json:"item"`
+		} `json:"failed"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -605,8 +613,11 @@ func TestAPIUnblockBulkWithInvalidIPs(t *testing.T) {
 	if data.Total != 3 {
 		t.Errorf("total = %d, want 3", data.Total)
 	}
-	if data.Status != "completed" {
-		t.Errorf("status = %q, want completed", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
+	}
+	if len(data.Failed) != 2 {
+		t.Errorf("failed = %v, want the two unusable addresses", data.Failed)
 	}
 }
 
@@ -716,14 +727,14 @@ func TestAPIDismissSuccess(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Status string `json:"status"`
-		Key    string `json:"key"`
+		OK  bool   `json:"ok"`
+		Key string `json:"key"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Status != "dismissed" {
-		t.Errorf("status = %q, want dismissed", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 	if data.Key != "webshell:test" {
 		t.Errorf("key = %q, want webshell:test", data.Key)
@@ -1042,14 +1053,14 @@ func TestAPIUnblockIPSuccess(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var data struct {
-		Status string `json:"status"`
-		IP     string `json:"ip"`
+		OK bool   `json:"ok"`
+		IP string `json:"ip"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Status != "unblocked" {
-		t.Errorf("status = %q, want unblocked", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 }
 
@@ -1064,15 +1075,15 @@ func TestAPIUnblockBulkSuccessWithFakeBlocker(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Status    string `json:"status"`
-		Total     int    `json:"total"`
-		Succeeded int    `json:"succeeded"`
+		OK        bool `json:"ok"`
+		Total     int  `json:"total"`
+		Succeeded int  `json:"succeeded"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Status != "completed" {
-		t.Errorf("status = %q, want completed", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 	if data.Total != 2 {
 		t.Errorf("total = %d, want 2", data.Total)

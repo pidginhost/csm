@@ -53,7 +53,7 @@ test('a Firewall lookup links to the Threat Intel view of the address', async ()
     const page = loadPage(templateBody('firewall'), SHARED.concat(['firewall.js']),
         { url: 'https://csm.example.test/firewall?ip=203.0.113.9' });
     await settle();
-    page.respond('/api/v1/firewall/check?ip=203.0.113.9', 200, { success: true });
+    page.respond('/api/v1/firewall/check?ip=203.0.113.9', 200, { success: true, ip: '203.0.113.9', permanent: null, temporary: null, cphulk: false });
     page.respond('/api/v1/geoip?ip=203.0.113.9', 200, {});
     await settle();
     const result = page.document.getElementById('lookup-result');

@@ -15,7 +15,7 @@ test('a suppression for an unknown check shows the server warning', async () => 
     page.document.getElementById('suppression-form').dispatchEvent(new page.window.Event('submit'));
     await settle();
     const warning = 'No known check is named webshel; the rule matches nothing until a finding with that check appears.';
-    page.respond('/api/v1/suppressions', 200, { status: 'created', id: 'x', warning });
+    page.respond('/api/v1/suppressions', 200, { ok: true, id: 'x', warning });
     await settle();
     assert.ok(toasts.some(t => t.kind === 'warning' && t.message.includes(warning)), JSON.stringify(toasts));
 });

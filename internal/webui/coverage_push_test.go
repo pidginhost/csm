@@ -785,8 +785,8 @@ func TestAPIThreatWhitelistIPSuccessWithBlocker(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "whitelisted" {
-		t.Errorf("status = %v", resp["status"])
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 }
 
@@ -1205,8 +1205,8 @@ func TestAPITestAlertDispatchSuccess(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "sent" {
-		t.Errorf("status = %v", resp["status"])
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 }
 

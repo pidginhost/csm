@@ -44,6 +44,7 @@ func jsonPost(path, body string) *http.Request {
 
 func TestFirewallChangesAreAudited(t *testing.T) {
 	s := newTestServer(t, "tok")
+	fakeWhmapi1(t, 0)
 	s.blocker = newFullBlocker()
 
 	s.apiFirewallDenySubnet(httptest.NewRecorder(), jsonPost("/api/v1/firewall/deny-subnet", `{"cidr":"198.51.100.0/24","reason":"scanner","duration":"24h"}`))

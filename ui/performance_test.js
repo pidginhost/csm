@@ -41,7 +41,7 @@ test('a fix in progress stays locked across the periodic re-render', async () =>
     await settle();
     assert.equal(page.pending('/api/v1/perf/fix-error-log').length, 1, 'a second fix was sent for the same finding');
 
-    page.respond('/api/v1/perf/fix-error-log', 200, { success: false, error: 'permission denied' });
+    page.respond('/api/v1/perf/fix-error-log', 500, { error: 'permission denied' });
     await settle();
     assert.equal(fixButtons(page)[0].disabled, false, 'a failed fix must allow a retry');
 });

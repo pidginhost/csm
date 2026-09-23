@@ -1172,11 +1172,14 @@ func TestSettingsRestartEndpointSchedulesRestart(t *testing.T) {
 	if postW.Code != 202 {
 		t.Errorf("code = %d, want 202", postW.Code)
 	}
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["started_at_token"] == "" {
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
+	}
+	if tok, _ := body["started_at_token"].(string); tok == "" {
 		t.Fatal("restart response missing started_at_token")
 	}
 	select {
@@ -1207,11 +1210,14 @@ func TestSettingsRestartAcknowledgesEvenWhenRestartErrors(t *testing.T) {
 	if postW.Code != 202 {
 		t.Fatalf("code = %d, want 202 (restart is async; a self-termination error must not become a 500)", postW.Code)
 	}
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["started_at_token"] == "" {
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
+	}
+	if tok, _ := body["started_at_token"].(string); tok == "" {
 		t.Fatal("restart response missing started_at_token")
 	}
 	select {
@@ -1237,9 +1243,12 @@ func TestSettingsRestartResponseUsesStatusStartToken(t *testing.T) {
 	postW := httptest.NewRecorder()
 	s.apiSettingsRestart(postW, postReq)
 
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
+	}
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
 	}
 	if got, want := body["started_at_token"], daemonStartToken(started); got != want {
 		t.Fatalf("started_at_token = %q, want status token %q", got, want)

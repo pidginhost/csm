@@ -132,7 +132,7 @@ func (s *Server) undoSnapshotBlocks(payload undoPayloadIPs, clearEvidence bool) 
 		}
 		restoreUndoThreatRows(threatRowsForIP(payload.RestoreThreats, ip))
 		if clearEvidence && !hadPrior {
-			flushCphulk(ip)
+			_ = flushCphulk(ip) // best effort
 		}
 		count++
 	}

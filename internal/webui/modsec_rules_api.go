@@ -200,8 +200,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 			clientOutput = clientOutput[:500] + "... (truncated)"
 		}
 		s.auditLog(r, "modsec_rules_apply_failed", "overrides", outcome)
-		writeJSON(w, map[string]interface{}{
-			"ok":            false,
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]interface{}{
 			"error":         outcome,
 			"reload_output": clientOutput,
 			"rolled_back":   rollbackErr == nil,
@@ -210,8 +209,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditLog(r, "modsec_rules_apply", "overrides", fmt.Sprintf("disabled rules: %v", req.Disabled))
-	writeJSON(w, map[string]interface{}{
-		"ok":             true,
+	writeOK(w, map[string]interface{}{
 		"disabled_count": len(req.Disabled),
 	})
 }
@@ -270,5 +268,5 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 		setting = "escalation on"
 	}
 	s.auditLog(r, "modsec_rule_escalation", strconv.Itoa(req.RuleID), setting)
-	writeJSON(w, map[string]interface{}{"ok": true})
+	writeOK(w, map[string]interface{}{"rule_id": req.RuleID, "escalate": req.Escalate})
 }

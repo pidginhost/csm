@@ -30,7 +30,7 @@ function dialog(overrides = {}) {
         document: { getElementById: el },
         bootstrap: { Modal: { getOrCreateInstance() { return { show() { shown++; }, hide() { hidden++; } }; } } },
         CSM: {
-            post(url, body) { requests.push({ url, body }); return Promise.resolve({ status: 'created', id: 'x' }); },
+            post(url, body) { requests.push({ url, body }); return Promise.resolve({ ok: true, id: 'x' }); },
             toast(message, kind) { toasts.push({ message, kind }); },
             ...overrides
         },
@@ -137,7 +137,7 @@ function rulesForm(fields) {
     const context = vm.createContext({
         document: { getElementById: el },
         CSM: {
-            post(url, body) { requests.push({ url, body }); return Promise.resolve({ status: 'created', id: 'x' }); },
+            post(url, body) { requests.push({ url, body }); return Promise.resolve({ ok: true, id: 'x' }); },
             toast(message, kind) { toasts.push({ message, kind }); }
         },
         loadSuppressions() {}

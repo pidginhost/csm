@@ -245,7 +245,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.auditLog(r, "firewall_allow", req.IP, fmt.Sprintf("temporary allow %s: %s", dur, req.Reason))
-		writeJSON(w, map[string]string{"status": "temp_allowed", "ip": req.IP})
+		writeOK(w, map[string]interface{}{"ip": req.IP, "temporary": true})
 		return
 	}
 
@@ -259,7 +259,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditLog(r, "firewall_allow", req.IP, "permanent allow: "+req.Reason)
-	writeJSON(w, map[string]string{"status": "allowed", "ip": req.IP})
+	writeOK(w, map[string]interface{}{"ip": req.IP, "temporary": false})
 }
 
 // apiFirewallRemoveAllow removes a firewall allow rule.
@@ -294,7 +294,7 @@ func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.auditLog(r, "firewall_remove_allow", req.IP, "removed allow rule")
-	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
+	writeOK(w, map[string]interface{}{"ip": req.IP})
 }
 
 // apiFirewallAudit returns recent firewall audit log entries.
@@ -441,7 +441,7 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 		lifetime = dur.String()
 	}
 	s.auditLog(r, "firewall_deny_subnet", req.CIDR, lifetime+": "+req.Reason)
-	writeJSON(w, map[string]string{"status": "blocked", "cidr": req.CIDR})
+	writeOK(w, map[string]interface{}{"cidr": req.CIDR})
 }
 
 // apiFirewallRemoveSubnet removes a subnet block.
@@ -474,7 +474,7 @@ func (s *Server) apiFirewallRemoveSubnet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.auditLog(r, "firewall_remove_subnet", req.CIDR, "removed subnet block")
-	writeJSON(w, map[string]string{"status": "removed", "cidr": req.CIDR})
+	writeOK(w, map[string]interface{}{"cidr": req.CIDR})
 }
 
 // apiFirewallFlush clears all blocked IPs.
@@ -506,7 +506,7 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditLog(r, "firewall_flush", "blocked set", fmt.Sprintf("flushed: %v", result.Flushed))
-	writeJSON(w, map[string]string{"status": "flushed"})
+	writeOK(w, nil)
 }
 
 // apiFirewallFlushCphulk clears cPHulk login history for one IP without touching firewall state.
@@ -531,20 +531,28 @@ func (s *Server) apiFirewallFlushCphulk(w http.ResponseWriter, r *http.Request) 
 	// Audit, incident and threat records key on the canonical spelling.
 	req.IP = parsedIP.String()
 
-	flushCphulk(req.IP)
+	if err := flushCphulk(req.IP); err != nil {
+		writeJSONError(w, "Could not clear cPHulk login history: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	s.auditLog(r, "cphulk_clear", req.IP, "cleared cPHulk login history")
-	writeJSON(w, map[string]string{"status": "flushed", "ip": req.IP})
+	writeOK(w, map[string]interface{}{"ip": req.IP})
 }
 
 // apiFirewallCheck checks if an IP is blocked in CSM or cphulk.
 // GET /api/v1/firewall/check?ip=1.2.3.4
-// Response matches cpanel-service format for phclient compatibility:
+// phclient calls this route and reads success, permanent, temporary and
+// cphulk (the cpanel-service shape it replaced), so the body keeps
+// "success": true next to the fields; it is a deprecated alias:
 //
 //	{"success": true, "ip": "1.2.3.4", "permanent": "reason or null", "temporary": "reason or null", "cphulk": true/false}
+//
+// Failures are error statuses like every other route; phclient treats any
+// non-2xx as a failed call.
 func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 	ip := r.URL.Query().Get("ip")
 	if ip == "" || net.ParseIP(ip) == nil {
-		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
+		writeJSONError(w, "The ip is not valid or it was not set.", http.StatusBadRequest)
 		return
 	}
 
@@ -561,7 +569,7 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// A corrupt state file means we cannot tell whether the IP is
 		// blocked; report failure rather than a misleading "not blocked".
-		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "firewall state unavailable"})
+		writeJSONError(w, "Firewall state unavailable", http.StatusInternalServerError)
 		return
 	}
 	now := time.Now()
@@ -684,12 +692,12 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 		IP string `json:"ip"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
-		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
+		writeJSONError(w, "The ip is not valid or it was not set.", http.StatusBadRequest)
 		return
 	}
 	parsedIP, err := parseAndValidateIP(req.IP)
 	if err != nil {
-		writeJSON(w, map[string]interface{}{"success": false, "error_msg": err.Error()})
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	// Audit, incident and threat records key on the canonical spelling.
@@ -710,17 +718,19 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 		for _, sn := range state.BlockedNet {
 			_, network, err := net.ParseCIDR(sn.CIDR)
 			if err == nil && network.Contains(parsedIP) {
-				_ = sb.UnblockSubnet(sn.CIDR)
-				subnetRemoved = sn.CIDR
+				if sb.UnblockSubnet(sn.CIDR) == nil {
+					subnetRemoved = sn.CIDR
+				}
 				break
 			}
 		}
 	}
 
 	// 3. Flush from cphulk
-	flushCphulk(req.IP)
+	_ = flushCphulk(req.IP) // best effort: the unblock is what was asked
 
-	result := map[string]interface{}{"success": true, "ip": req.IP}
+	// "success" is the deprecated alias phclient reads; see apiFirewallCheck.
+	result := map[string]interface{}{"ok": true, "success": true, "ip": req.IP}
 	if subnetRemoved != "" {
 		result["subnet_removed"] = subnetRemoved
 	}

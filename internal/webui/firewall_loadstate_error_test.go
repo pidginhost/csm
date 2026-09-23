@@ -62,16 +62,8 @@ func TestAPIFirewallCheckCorruptStateReportsError(t *testing.T) {
 	writeCorruptFirewallState(t, s.cfg.StatePath)
 	w := httptest.NewRecorder()
 	s.apiFirewallCheck(w, httptest.NewRequest("GET", "/?ip=203.0.113.5", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	var body map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
-	}
-	if body["success"] != false {
-		t.Fatalf("success = %v, want false; body=%v", body["success"], body)
-	}
+	// Unreadable state is a failure, not "not blocked".
+	assertJSONError(t, "corrupt state", w, http.StatusInternalServerError)
 }
 
 func TestAPIFirewallUnbanCorruptStateStillUnbans(t *testing.T) {
@@ -93,8 +85,8 @@ func TestAPIFirewallUnbanCorruptStateStillUnbans(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
 	}
-	if body["success"] != true {
-		t.Fatalf("success = %v, want true; body=%v", body["success"], body)
+	if body["success"] != true || body["ok"] != true {
+		t.Fatalf("success/ok = %v/%v, want true; body=%v", body["success"], body["ok"], body)
 	}
 	if _, still := blocker.blocked["203.0.113.7"]; still {
 		t.Fatal("IP still blocked after unban with corrupt state")

@@ -43,10 +43,10 @@ func TestBlockIPRecordsTheActionOnTheNamedIncident(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("block returned %d: %s", w.Code, w.Body.String())
 	}
-	var resp map[string]string
+	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "blocked" {
-		t.Fatalf("response = %v, want a blocked status", resp)
+	if resp["ok"] != true {
+		t.Fatalf("response = %v, want ok", resp)
 	}
 
 	inc, ok := c.Get(id)

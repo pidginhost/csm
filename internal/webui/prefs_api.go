@@ -195,7 +195,11 @@ func (s *Server) handlePutUserPrefs(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Store error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, clean)
+	// The stored preferences, with the action's ok flag next to them.
+	writeJSON(w, struct {
+		OK bool `json:"ok"`
+		userPrefsBlob
+	}{true, clean})
 }
 
 // savedView represents one user-named filter combination for a page.
@@ -344,7 +348,7 @@ func (s *Server) handlePutSavedView(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Store error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeOK(w, nil)
 }
 
 func (s *Server) handleDeleteSavedView(w http.ResponseWriter, r *http.Request) {
@@ -379,7 +383,7 @@ func (s *Server) handleDeleteSavedView(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Store error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeOK(w, nil)
 }
 
 func isPrintableLabel(s string) bool {

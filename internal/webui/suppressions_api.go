@@ -95,11 +95,11 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 			scope = "all paths"
 		}
 		s.auditLog(r, "suppress", req.Check, scope)
-		resp := map[string]string{"status": "created", "id": id}
+		resp := map[string]interface{}{"id": id}
 		if !s.knownCheck(req.Check) {
 			resp["warning"] = "No known check is named " + req.Check + "; the rule matches nothing until a finding with that check appears."
 		}
-		writeJSON(w, resp)
+		writeOK(w, resp)
 
 	case http.MethodDelete:
 		var req struct {
@@ -110,11 +110,14 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		found := false
 		err := s.store.UpdateSuppressions(func(rules []state.SuppressionRule) ([]state.SuppressionRule, error) {
 			var filtered []state.SuppressionRule
 			for _, rule := range rules {
 				if rule.ID != req.ID {
 					filtered = append(filtered, rule)
+				} else {
+					found = true
 				}
 			}
 			return filtered, nil
@@ -123,8 +126,12 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to save suppressions: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if !found {
+			writeJSONError(w, "Suppression rule not found", http.StatusNotFound)
+			return
+		}
 		s.auditLog(r, "unsuppress", req.ID, "removed suppression rule")
-		writeJSON(w, map[string]string{"status": "deleted"})
+		writeOK(w, map[string]interface{}{"id": req.ID})
 
 	default:
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)

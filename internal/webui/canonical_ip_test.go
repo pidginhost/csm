@@ -12,6 +12,7 @@ import (
 // Handlers pass the canonical form on, so audit entries, incident and threat
 // bookkeeping and the response agree with the firewall state.
 func TestFirewallHandlersUseTheCanonicalAddress(t *testing.T) {
+	fakeWhmapi1(t, 0)
 	for _, tc := range []struct{ typed, canonical string }{
 		{"2001:DB8:0::10", "2001:db8::10"},
 		{" ::ffff:192.0.2.10 ", "192.0.2.10"},

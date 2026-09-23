@@ -372,8 +372,8 @@ func TestAPIImportMergesSuppressionsAndWhitelistFinalCoverage(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	if resp["status"] != "imported" {
-		t.Errorf("status = %v, want imported", resp["status"])
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 	// At minimum the 2 new suppressions are imported (whitelist path depends on
 	// whether threat DB is initialized globally).
