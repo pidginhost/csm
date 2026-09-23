@@ -139,6 +139,9 @@ type Server struct {
 	// applyFix is per server for the same reason: handler tests observe a
 	// fix outcome without touching the host.
 	applyFix func(ctx context.Context, check, message, details string, filePath ...string) checks.RemediationResult
+	// scanInProgress reports scans the UI did not start; per server so
+	// handler tests can hold one without running checks.
+	scanInProgress func() bool
 
 	provider health.Provider // set by Daemon when it starts the WebUI
 
@@ -190,6 +193,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		forwardHeld:      selectForwardHeld(),
 		verifyFinding:    checks.VerifyFindingInput,
 		applyFix:         checks.ApplyFix,
+		scanInProgress:   checks.ScanInProgress,
 	}
 
 	lifetime, idle, err := cfg.BrowserSessionDurations()

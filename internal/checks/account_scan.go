@@ -184,6 +184,8 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 // slot wait used to ignore the context, so an operator's cancel left every
 // queued check running to its (immediate) end and reporting a timeout.
 func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *state.Store, checks []namedCheck) []alert.Finding {
+	scansInFlight.Add(1)
+	defer scansInFlight.Add(-1)
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup

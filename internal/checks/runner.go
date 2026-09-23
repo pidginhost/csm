@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -958,7 +959,18 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 	return runParallelWithContext(context.Background(), cfg, store, checks, tier, dryRun)
 }
 
+// scansInFlight counts check runs in progress in this process: tier and
+// reduced deep scans from any caller, account scans and scan jobs.
+var scansInFlight atomic.Int64
+
+// ScanInProgress reports whether any check run is in progress.
+func ScanInProgress() bool {
+	return scansInFlight.Load() > 0
+}
+
 func runParallelWithContext(parent context.Context, cfg *config.Config, store *state.Store, checks []namedCheck, tier string, dryRun bool) ([]alert.Finding, []string) {
+	scansInFlight.Add(1)
+	defer scansInFlight.Add(-1)
 	if parent == nil {
 		parent = context.Background()
 	}

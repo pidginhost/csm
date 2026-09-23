@@ -36,6 +36,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	s.scanMu.Lock()
 	scanning := s.scanRunning
 	s.scanMu.Unlock()
+	if s.scanInProgress != nil && s.scanInProgress() {
+		scanning = true
+	}
 
 	if provider == nil {
 		// No daemon-side provider installed (test harness). Fall back to
