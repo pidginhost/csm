@@ -95,16 +95,26 @@ func (s *Server) apiScanJobDetail(w http.ResponseWriter, _ *http.Request, db *st
 	writeJSON(w, map[string]any{"job": rec})
 }
 
+// A full-server scan job can record tens of thousands of findings, so the
+// findings endpoint pages them.
+const (
+	scanJobFindingsDefaultLimit = 500
+	scanJobFindingsMaxLimit     = 5000
+)
+
 // apiScanJobFindings handles GET /api/v1/scan-jobs/{id}/findings.
-// Query params: offset (default 0), limit (default 0 = all).
+// Query params: offset (default 0), limit (default 500, at most 5000).
 func (s *Server) apiScanJobFindings(w http.ResponseWriter, r *http.Request, db *store.DB, id string) {
 	offset := parseQueryInt(r, "offset", 0)
 	if offset < 0 {
 		offset = 0
 	}
-	limit := parseQueryInt(r, "limit", 0)
-	if limit < 0 {
-		limit = 0
+	limit := parseQueryInt(r, "limit", scanJobFindingsDefaultLimit)
+	if limit <= 0 {
+		limit = scanJobFindingsDefaultLimit
+	}
+	if limit > scanJobFindingsMaxLimit {
+		limit = scanJobFindingsMaxLimit
 	}
 
 	findings, total, err := db.ListScanJobFindings(id, offset, limit)
@@ -116,11 +126,12 @@ func (s *Server) apiScanJobFindings(w http.ResponseWriter, r *http.Request, db *
 		findings = []alert.Finding{}
 	}
 	writeJSON(w, map[string]any{
-		"job_id":   id,
-		"findings": findings,
-		"total":    total,
-		"offset":   offset,
-		"limit":    limit,
+		"job_id":    id,
+		"findings":  findings,
+		"total":     total,
+		"offset":    offset,
+		"limit":     limit,
+		"truncated": offset+len(findings) < total,
 	})
 }
 

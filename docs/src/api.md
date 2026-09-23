@@ -997,7 +997,8 @@ POST /api/v1/hardening/run       Run hardening audit and save report (admin scop
 GET  /api/v1/scan-jobs              List full-scan jobs (read scope)
 GET  /api/v1/scan-jobs/{id}         Job status and stored report (read scope)
 GET  /api/v1/scan-jobs/{id}/findings
-                                      Paginated findings for one job (?offset=&limit=) (read scope)
+                                      Paginated findings for one job (?offset=&limit=, limit 500 by
+                                      default and at most 5000; truncated marks more pages) (read scope)
 POST /api/v1/scan-jobs              Enqueue a full-scan job (admin scope, CSRF)
 POST /api/v1/scan-jobs/{id}/cancel  Cancel a queued or running job (admin scope, CSRF)
 ```

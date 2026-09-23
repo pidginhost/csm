@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -303,6 +304,46 @@ func TestScanJobsRouter_Findings_Pagination(t *testing.T) {
 	}
 	if resp.JobID != jobID {
 		t.Errorf("job_id = %q, want %q", resp.JobID, jobID)
+	}
+}
+
+// A full-server scan job can record tens of thousands of findings. Without a
+// limit the endpoint returns one page, not the whole job, and says more exist.
+func TestScanJobsRouter_Findings_DefaultPageIsBounded(t *testing.T) {
+	s, tok := newTestServerWithReadToken(t)
+	const jobID = "job-big"
+	seedJob(t, jobID, "done", time.Now())
+	findings := make([]alert.Finding, scanJobFindingsDefaultLimit+5)
+	for i := range findings {
+		findings[i] = alert.Finding{Check: "webshell", Severity: alert.Warning, Message: "test finding"}
+	}
+	if err := store.Global().AppendScanJobFindings(jobID, 0, findings); err != nil {
+		t.Fatal(err)
+	}
+	get := func(query string) (n, total, limit int, truncated bool) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/scan-jobs/"+jobID+"/findings"+query, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		s.requireRead(http.HandlerFunc(s.apiScanJobsRouter)).ServeHTTP(w, req)
+		var resp struct {
+			Findings  []alert.Finding `json:"findings"`
+			Total     int             `json:"total"`
+			Limit     int             `json:"limit"`
+			Truncated bool            `json:"truncated"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v: %s", err, w.Body.String())
+		}
+		return len(resp.Findings), resp.Total, resp.Limit, resp.Truncated
+	}
+	if n, total, limit, truncated := get(""); n != scanJobFindingsDefaultLimit || total != len(findings) || limit != scanJobFindingsDefaultLimit || !truncated {
+		t.Fatalf("default page: n=%d total=%d limit=%d truncated=%v", n, total, limit, truncated)
+	}
+	if n, _, limit, _ := get("?limit=999999"); limit != scanJobFindingsMaxLimit || n > scanJobFindingsMaxLimit {
+		t.Fatalf("oversized limit: n=%d limit=%d, want at most %d", n, limit, scanJobFindingsMaxLimit)
+	}
+	if n, _, _, truncated := get("?offset=" + strconv.Itoa(scanJobFindingsDefaultLimit)); n != 5 || truncated {
+		t.Fatalf("last page: n=%d truncated=%v", n, truncated)
 	}
 }
 
