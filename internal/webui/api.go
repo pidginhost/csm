@@ -1922,15 +1922,21 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// extractAccountFromFinding extracts a cPanel account name from a finding
-// by checking the message, details, and file path for /home/{user}/ patterns
-// or "Account: " / "user: " in the details field (used by login checks).
+// extractAccountFromFinding returns the cPanel account a finding belongs to:
+// the owner the check recorded (TenantID, or CPUser for mail relay), else a
+// /home/{user}/ path in the message, details or file path, else "Account: "
+// / "user: " in the details field (used by login checks).
 func extractAccountFromFinding(f alert.Finding) string {
+	for _, owner := range []string{f.TenantID, f.CPUser} {
+		if owner = strings.TrimSpace(owner); owner != "" {
+			return owner
+		}
+	}
 	if f.FilePath == "" && (f.Check == "wp_core_unverified" || f.Check == "wp_plugin_inventory_unverified") {
 		// Collapsed coverage warnings carry an account only when every
 		// installation shares it. Their bounded path sample cannot establish
 		// ownership, even when it happens to show just one account.
-		return f.TenantID
+		return ""
 	}
 	for _, s := range []string{f.Message, f.Details, f.FilePath} {
 		if idx := strings.Index(s, "/home/"); idx >= 0 {

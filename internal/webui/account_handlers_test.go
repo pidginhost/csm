@@ -285,6 +285,24 @@ func TestExtractAccountFromDetailsUserPrefixTerminal(t *testing.T) {
 	}
 }
 
+// Checks that know the owning account record it; that beats scraping text,
+// which names whatever path a message mentions.
+func TestExtractAccountPrefersStructuredOwner(t *testing.T) {
+	cases := []struct {
+		f    alert.Finding
+		want string
+	}{
+		{alert.Finding{TenantID: "alice", Message: "Include of /home/bob/public_html/x.php"}, "alice"},
+		{alert.Finding{Check: "email_php_relay_abuse", CPUser: "carol", Message: "Relay via /home/dave/mail.php"}, "carol"},
+		{alert.Finding{Check: "email_php_relay_abuse", CPUser: "carol"}, "carol"},
+	}
+	for _, tc := range cases {
+		if got := extractAccountFromFinding(tc.f); got != tc.want {
+			t.Errorf("extractAccountFromFinding(%+v) = %q, want %q", tc.f, got, tc.want)
+		}
+	}
+}
+
 func TestExtractAccountNoMatchReturnsEmpty(t *testing.T) {
 	f := alert.Finding{
 		Message: "SSH brute force from 1.2.3.4",
