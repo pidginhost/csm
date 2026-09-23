@@ -2,10 +2,12 @@ package privops
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -667,6 +669,43 @@ func TestOperationsCopiesSafetyContracts(t *testing.T) {
 		}
 		if *op.Contract != saved {
 			t.Errorf("a caller changed the shared contract: %+v", *op.Contract)
+		}
+	}
+}
+
+func TestMarkdownReportsRiskTier(t *testing.T) {
+	md := Markdown()
+	header := "| Operation | Needs | Trigger | Risk tier | Writes | Turn it off | Action record | Without the privilege |"
+	if strings.SplitN(md, "\n", 2)[0] != header {
+		t.Fatal("rendered matrix has no correctly placed risk tier column")
+	}
+	rows := 0
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "| `") {
+			rows++
+		}
+	}
+	ops := Operations()
+	if rows != len(ops) {
+		t.Fatalf("rows=%d want %d", rows, len(ops))
+	}
+	for _, op := range ops {
+		count := 0
+		for _, line := range strings.Split(md, "\n") {
+			if !strings.HasPrefix(line, fmt.Sprintf("| `%s`<br>", op.ID)) {
+				continue
+			}
+			count++
+			cells := strings.Split(line, "|")
+			if len(cells) != 10 {
+				t.Fatalf("%s: expected eight cells: %q", op.ID, line)
+			}
+			if strings.TrimSpace(cells[3]) != string(op.Trigger) || strings.TrimSpace(cells[4]) != strconv.Itoa(op.Risk.Number()) {
+				t.Errorf("%s: wrong trigger/tier cells: %q", op.ID, line)
+			}
+		}
+		if count != 1 {
+			t.Errorf("%s: row count=%d want 1", op.ID, count)
 		}
 	}
 }
