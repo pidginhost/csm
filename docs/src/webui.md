@@ -118,8 +118,10 @@ webui:
 
 Both durations require a restart. Lifetime must be between one second and
 30 days; idle timeout must be at least one second and no longer than lifetime. Zero does
-not disable expiry. Idle time means time without authenticated HTTP requests,
-including dashboard polling. Activity is committed at bounded intervals, so
+not disable expiry. Idle time means time without operator activity: page loads
+and API requests made within a minute of keyboard, pointer or scroll input.
+Background polling by an open page does not count, so a dashboard left open
+still logs out after the idle timeout. Activity is committed at bounded intervals, so
 idle expiry can occur slightly early, never late. Passive event-stream
 heartbeats do not extend the session; streams check revocation and expiry
 before each event and heartbeat.

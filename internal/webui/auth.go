@@ -32,7 +32,16 @@ func (s *Server) tokenHasScope(r *http.Request, want string) bool {
 }
 
 func (s *Server) cookieTokenWithScope(r *http.Request, want string) (string, bool) {
-	return s.cookieSessionToken(r, want, true)
+	return s.cookieSessionToken(r, want, sessionActivity(r))
+}
+
+// sessionActivity reports whether a request is the operator's own activity,
+// which extends an idle browser session: a page load, or an API call the UI
+// marks with X-CSM-Active because it followed the operator's input. Timer
+// polls and the event stream do not, so a page left open still reaches the
+// idle timeout.
+func sessionActivity(r *http.Request) bool {
+	return !strings.HasPrefix(r.URL.Path, "/api/") || r.Header.Get("X-CSM-Active") == "1"
 }
 
 func (s *Server) cookieSessionToken(r *http.Request, want string, touch bool) (string, bool) {
@@ -101,7 +110,7 @@ func webUITokenAllows(tok config.WebUIToken, want string) bool {
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tok, ok := s.cookieSessionCredential(r, "admin", true); ok {
+		if tok, ok := s.cookieSessionCredential(r, "admin", sessionActivity(r)); ok {
 			next.ServeHTTP(w, withAuditActor(r, tok.Name, "browser"))
 			return
 		}

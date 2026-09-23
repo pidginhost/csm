@@ -325,9 +325,23 @@ function csmRequestErrorToast(err) {
     CSM.toast(message, 'error');
 }
 
+// Operator activity. A browser session ends after an idle period, so timer
+// polls must not keep it alive: only requests made within a minute of the
+// operator's own input carry X-CSM-Active, which the server counts.
+var csmLastInput = 0;
+CSM.ACTIVE_WINDOW_MS = 60000;
+['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
+    document.addEventListener(type, function() { csmLastInput = Date.now(); }, { capture: true, passive: true });
+});
+
 CSM.request = function(url, options) {
     var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
     options = options || {};
+    if (csmLastInput && Date.now() - csmLastInput < CSM.ACTIVE_WINDOW_MS) {
+        options = Object.assign({}, options, {
+            headers: Object.assign({}, options.headers, { 'X-CSM-Active': '1' })
+        });
+    }
     var timeoutMs = (options.timeoutMs == null) ? 30000 : options.timeoutMs;
     var allowNonOK = !!options.allowNonOK;
     var silent = !!options.silent;
