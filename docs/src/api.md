@@ -54,7 +54,8 @@ The legacy single-token `webui.auth_token:` is migrated automatically to a `lega
 ## Lists
 
 Every GET route that returns a list answers a JSON object, never a bare
-array. The list is under `items`, and an empty list is `[]`, never null.
+array. The list is under `items`. An empty list anywhere in a response is
+`[]` and an empty map `{}`, never null; null means a value is not known.
 
 - `total` is the number of matches the server counted. It is larger than
   the length of `items` when the route pages or cuts the list.

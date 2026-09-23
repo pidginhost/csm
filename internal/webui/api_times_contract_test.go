@@ -107,9 +107,10 @@ func (p zonedProvider) LatestScan() time.Time { return p.at }
 func (p zonedProvider) BaselineAt() time.Time { return p.at }
 
 // Every GET route answers instants in one form: RFC 3339 in UTC with
-// sub-second precision. Data here is recorded in a +03:00 host zone, the way
-// time.Now() stamps it on a server that does not run in UTC.
-func TestResponseTimesAreUTCInstants(t *testing.T) {
+// sub-second precision, and no empty list or map as null. Data here is
+// recorded in a +03:00 host zone, the way time.Now() stamps it on a server
+// that does not run in UTC.
+func TestResponsesUseUTCInstantsAndEmptyLists(t *testing.T) {
 	zone := time.FixedZone("host", 3*3600)
 	at := time.Now().In(zone).Add(-time.Hour).Truncate(time.Millisecond).Add(123 * time.Microsecond)
 
@@ -213,6 +214,11 @@ func TestResponseTimesAreUTCInstants(t *testing.T) {
 			continue
 		}
 		assertTimeContract(t, path, w.Body.Bytes())
+		for _, p := range nullPaths(w.Body.Bytes()) {
+			if !unknownValue[p] {
+				t.Errorf("%s: %s is null; an empty list is [] and an empty map {}", path, p)
+			}
+		}
 	}
 }
 
@@ -236,4 +242,36 @@ func TestTimeContractCatchesOldForms(t *testing.T) {
 	if p := timeContractProblems([]byte(good)); len(p) != 0 {
 		t.Errorf("checker refused a valid body: %v", p)
 	}
+}
+
+// unknownValue lists the values that are null when they are not known: the
+// firewall check block reasons phclient reads, and MySQL figures the host
+// could not read. Every other null is a list or map sent as null.
+var unknownValue = map[string]bool{
+	".permanent": true, ".temporary": true,
+	".metrics.mysql_conns": true, ".metrics.mysql_mem_mb": true,
+}
+
+// nullPaths lists the paths of the null values in a JSON body.
+func nullPaths(body []byte) []string {
+	var v any
+	_ = json.Unmarshal(body, &v)
+	var out []string
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch x := v.(type) {
+		case nil:
+			out = append(out, path)
+		case map[string]any:
+			for k, e := range x {
+				walk(path+"."+k, e)
+			}
+		case []any:
+			for _, e := range x {
+				walk(path+"[]", e)
+			}
+		}
+	}
+	walk("", v)
+	return out
 }

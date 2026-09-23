@@ -131,12 +131,12 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 				if streamStopped() {
 					return nil
 				}
-				utc, err := utcTimes(f)
+				wire, err := apiValue(f)
 				if err != nil {
 					encodingFailed = true
 					return err
 				}
-				body, err := json.Marshal(utc)
+				body, err := json.Marshal(wire)
 				if err != nil {
 					encodingFailed = true
 					return err

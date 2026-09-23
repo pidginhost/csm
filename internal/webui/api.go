@@ -1998,7 +1998,7 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 
 // writeJSONStatus sends data as JSON with the given status code.
 func writeJSONStatus(w http.ResponseWriter, code int, data interface{}) {
-	body, err := utcTimes(data)
+	body, err := apiValue(data)
 	if err != nil {
 		code, body = http.StatusInternalServerError, map[string]string{"error": err.Error()}
 	}

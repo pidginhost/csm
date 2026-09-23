@@ -21,7 +21,7 @@ var utcTestAt = time.Date(2026, 9, 22, 13, 4, 5, 123456789, utcTestZone)
 
 func encodeUTC(t *testing.T, v any) string {
 	t.Helper()
-	out, err := utcTimes(v)
+	out, err := apiValue(v)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,16 +71,43 @@ func TestUTCTimesConvertsEveryReachableTime(t *testing.T) {
 	}
 }
 
-// The copy keeps the JSON shape: nil stays null, empty stays [], a typed nil
-// pointer stays a nil pointer and values stay values.
+// The copy keeps the JSON shape: a typed nil pointer stays a nil pointer,
+// values stay values, and an empty list or map goes out empty, never null.
 func TestUTCTimesKeepsTheShape(t *testing.T) {
 	var nilFindings []alert.Finding
 	var nilProcess *processctx.ProcessContext
 	body := map[string]any{"none": nilFindings, "empty": []alert.Finding{}, "proc": nilProcess, "n": 3, "s": "x"}
 	got := encodeUTC(t, body)
-	want := `{"empty":[],"n":3,"none":null,"proc":null,"s":"x"}`
+	want := `{"empty":[],"n":3,"none":[],"proc":null,"s":"x"}`
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+type listsAndMaps struct {
+	Names   []string          `json:"names"`
+	Counts  map[string]int    `json:"counts"`
+	Nested  []listsAndMaps    `json:"nested"`
+	Hidden  []string          `json:"hidden,omitempty"`
+	Raw     json.RawMessage   `json:"raw"`
+	Bytes   []byte            `json:"bytes"`
+	Unknown *int              `json:"unknown"`
+	ByKey   map[string][]bool `json:"by_key"`
+}
+
+// An empty list is [] and an empty map {}, however deep. Bytes and raw JSON
+// keep their meaning, an omitted list stays omitted, and a nil pointer, which
+// means "unknown", stays null.
+func TestUTCTimesSendsEmptyCollectionsNotNull(t *testing.T) {
+	in := listsAndMaps{Nested: []listsAndMaps{{}}, ByKey: map[string][]bool{"a": nil}}
+	got := encodeUTC(t, map[string]any{"v": in, "list": []int(nil), "map": map[string]string(nil)})
+	want := `{"list":[],"map":{},"v":{"names":[],"counts":{},"nested":[{"names":[],"counts":{},"nested":[],"raw":null,"bytes":null,"unknown":null,"by_key":{}}],` +
+		`"raw":null,"bytes":null,"unknown":null,"by_key":{"a":[]}}}`
+	if got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+	if in.Names != nil || in.Nested[0].Names != nil || in.ByKey["a"] != nil {
+		t.Fatal("the input was modified")
 	}
 }
 
@@ -106,8 +133,8 @@ type loop struct {
 func TestUTCTimesRefusesACycle(t *testing.T) {
 	a := &loop{When: utcTestAt}
 	a.Next = a
-	if _, err := utcTimes(a); !errors.Is(err, errTimesTooDeep) {
-		t.Fatalf("err = %v, want errTimesTooDeep", err)
+	if _, err := apiValue(a); !errors.Is(err, errResponseTooDeep) {
+		t.Fatalf("err = %v, want errResponseTooDeep", err)
 	}
 }
 
@@ -122,9 +149,9 @@ func TestUTCTimesKeepsCustomMarshalers(t *testing.T) {
 }
 
 // Values that cannot hold a time are passed through untouched.
-func TestUTCTimesPassesTimeFreeValuesThrough(t *testing.T) {
+func TestAPIValuePassesPlainValuesThrough(t *testing.T) {
 	in := []string{"a", "b"}
-	out, err := utcTimes(in)
+	out, err := apiValue(in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +196,7 @@ func BenchmarkHistoryPageUTCAndEncode(b *testing.B) {
 	page := historyPage()
 	b.ReportAllocs()
 	for b.Loop() {
-		out, _ := utcTimes(page)
+		out, _ := apiValue(page)
 		_ = json.NewEncoder(io.Discard).Encode(out)
 	}
 }
