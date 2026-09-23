@@ -54,6 +54,7 @@ const (
 	errRevision         cliError = "a report needs a build of a known source revision without local changes"
 	errOutputAlias      cliError = "the report must not replace the recording or the manifest"
 	errUnsafeOutput     cliError = "the report path exists and is not a regular file"
+	errOutputExists     cliError = "the report path already exists; choose a new one"
 	errWrite            cliError = "writing the report failed"
 	errSeverity         cliError = "a finding has an unknown severity"
 	errManifestMismatch cliError = "the manifest does not describe this recording"
@@ -97,12 +98,29 @@ func readBuildRevision() toolRevision {
 	return t
 }
 
-// replayRun holds what a test may replace: the build stamp.
-type replayRun struct {
-	revision func() toolRevision
+// reportFile is the staged report file.
+type reportFile interface {
+	io.Writer
+	Sync() error
+	Close() error
+	Name() string
 }
 
-func newRun() *replayRun { return &replayRun{revision: readBuildRevision} }
+// replayRun holds what a test may replace: the build stamp and the
+// filesystem steps of publishing the report.
+type replayRun struct {
+	revision   func() toolRevision
+	createTemp func(dir, pattern string) (reportFile, error)
+	rename     func(oldpath, newpath string) error
+}
+
+func newRun() *replayRun {
+	return &replayRun{
+		revision:   readBuildRevision,
+		createTemp: func(dir, pattern string) (reportFile, error) { return os.CreateTemp(dir, pattern) },
+		rename:     os.Rename,
+	}
+}
 
 type options struct {
 	findings, out, manifest, hourZone, blockExpiry, scannerAction string
@@ -249,6 +267,20 @@ const (
 	observationOther                                   // a live block from the scan path or an unknown path
 	observationNonScan                                 // a live exempt block the model applies
 	observationNonScanUnmodeled                        // an exempt block without a positive lease
+	observationASNCrawl                                // an ASN-crawl subnet block
+	observationSubnet                                  // a subnet spray block
+	observationNetblock                                // a netblock escalation
+	observationPermblock                               // a permanent promotion
+	observationDryRun                                  // a dry-run notice
+)
+
+// The live forms of the other auto_block rows.
+var (
+	asnCrawlMessage  = regexp.MustCompile(`^AUTO-BLOCK-SUBNET: \S+ blocked \(asn-crawl\)$`)
+	subnetMessage    = regexp.MustCompile(`^AUTO-BLOCK-SUBNET: \S+ blocked$`)
+	netblockMessage  = regexp.MustCompile(`^AUTO-NETBLOCK: \S+ blocked \(\d+ IPs from same subnet\)$`)
+	permblockMessage = regexp.MustCompile(`^AUTO-PERMBLOCK: \S+ promoted to permanent block \(\d+ temp blocks\)$`)
+	dryRunMessage    = regexp.MustCompile(`^AUTO-(BLOCK|BLOCK-SUBNET|NETBLOCK) \[dry-run\]: `)
 )
 
 // classifyObservation recognises a recorded block from a path outside the
@@ -258,8 +290,21 @@ func classifyObservation(f responsereplay.Finding) (responsereplay.ObservedBlock
 	if f.Check != "auto_block" {
 		return responsereplay.ObservedBlock{}, observationNone
 	}
+	critical := f.Severity == alert.Critical.String()
+	switch {
+	case dryRunMessage.MatchString(f.Message) && f.Severity == alert.Warning.String():
+		return responsereplay.ObservedBlock{}, observationDryRun
+	case critical && asnCrawlMessage.MatchString(f.Message):
+		return responsereplay.ObservedBlock{}, observationASNCrawl
+	case critical && subnetMessage.MatchString(f.Message):
+		return responsereplay.ObservedBlock{}, observationSubnet
+	case critical && netblockMessage.MatchString(f.Message):
+		return responsereplay.ObservedBlock{}, observationNetblock
+	case critical && permblockMessage.MatchString(f.Message):
+		return responsereplay.ObservedBlock{}, observationPermblock
+	}
 	m := autoBlockMessage.FindStringSubmatch(f.Message)
-	if f.Severity != alert.Critical.String() || m == nil || net.ParseIP(m[1]) == nil {
+	if !critical || m == nil || net.ParseIP(m[1]) == nil {
 		return responsereplay.ObservedBlock{}, observationUnclassified
 	}
 	reason, ok := strings.CutPrefix(f.Details, "Reason: ")
@@ -325,11 +370,23 @@ type coverageInfo struct {
 // recordedInfo counts what the recording says happened, apart from what the
 // model would do.
 type recordedInfo struct {
-	BlockRows                 int `json:"block_rows"`
-	NonScanBlocks             int `json:"nonscan_blocks"`
-	NonScanUnmodeled          int `json:"nonscan_unmodeled"`
-	OtherBlocks               int `json:"other_blocks"`
+	BlockRows        int `json:"block_rows"`
+	NonScanBlocks    int `json:"nonscan_blocks"`
+	NonScanUnmodeled int `json:"nonscan_unmodeled"`
+	OtherBlocks      int `json:"other_blocks"`
+	// Paths the model leaves out. ASN-crawl subnets spend the hourly budget
+	// the model gives single addresses; subnet spray and netblock subnets do
+	// not, and permanent promotion keeps a block past its lease.
+	ASNCrawlBlockRows         int `json:"asn_crawl_block_rows"`
+	SubnetBlockRows           int `json:"subnet_block_rows"`
+	NetblockRows              int `json:"netblock_rows"`
+	PermblockRows             int `json:"permblock_rows"`
+	DryRunRows                int `json:"dry_run_rows"`
 	UnclassifiedAutoBlockRows int `json:"unclassified_auto_block_rows"`
+	// Demand for those paths: Critical ASN-crawl findings and subnet spray
+	// findings.
+	ASNCrawlDemandRows    int `json:"asn_crawl_demand_rows"`
+	SubnetSprayDemandRows int `json:"subnet_spray_demand_rows"`
 }
 
 type ratio struct {
@@ -341,25 +398,27 @@ type hypotheticalInfo struct {
 	ScanBlocked int `json:"scan_blocked"`
 	// SourceIPReconstructed counts eligible rows whose address came from
 	// reconstruction rather than the live extraction.
-	SourceIPReconstructed int   `json:"source_ip_reconstructed"`
-	ExemptBlocked         int   `json:"exempt_blocked"`
-	Evicted               int   `json:"evicted"`
-	AgedOut               int   `json:"aged_out"`
-	Overflowed            int   `json:"overflowed"`
-	FinalPending          int   `json:"final_pending"`
-	NeverServed           int   `json:"never_served"`
-	NewCandidates         int   `json:"new_candidates"`
-	FirstQueued           int   `json:"first_queued"`
-	DelayedShare          ratio `json:"delayed_share"`
-	Eligible              int   `json:"eligible"`
-	MissingIP             int   `json:"missing_ip"`
-	ChallengeSkipped      int   `json:"challenge_skipped"`
-	AlreadyBlocked        int   `json:"already_blocked"`
-	InvalidPending        int   `json:"invalid_pending"`
-	IneligiblePending     int   `json:"ineligible_pending"`
-	PendingSatisfied      int   `json:"pending_satisfied"`
-	PendingHighWater      int   `json:"pending_high_water"`
-	LiveHighWater         int   `json:"live_high_water"`
+	SourceIPReconstructed int `json:"source_ip_reconstructed"`
+	ExemptBlocked         int `json:"exempt_blocked"`
+	Evicted               int `json:"evicted"`
+	AgedOut               int `json:"aged_out"`
+	Overflowed            int `json:"overflowed"`
+	FinalPending          int `json:"final_pending"`
+	// LostInQueue counts candidates the queue dropped: aged out or
+	// overflowed. FinalPending is apart: censored by the recording's end.
+	LostInQueue       int   `json:"lost_in_queue"`
+	NewCandidates     int   `json:"new_candidates"`
+	FirstQueued       int   `json:"first_queued"`
+	DelayedShare      ratio `json:"delayed_share"`
+	Eligible          int   `json:"eligible"`
+	MissingIP         int   `json:"missing_ip"`
+	ChallengeSkipped  int   `json:"challenge_skipped"`
+	AlreadyBlocked    int   `json:"already_blocked"`
+	InvalidPending    int   `json:"invalid_pending"`
+	IneligiblePending int   `json:"ineligible_pending"`
+	PendingSatisfied  int   `json:"pending_satisfied"`
+	PendingHighWater  int   `json:"pending_high_water"`
+	LiveHighWater     int   `json:"live_high_water"`
 }
 
 // distributionInfo: queue delay is first queueing to the eventual block;
@@ -376,7 +435,7 @@ const reconstructionAssumption = "reputation_source_reconstructed_from_message"
 
 var (
 	assumptions = []string{
-		"empty_initial_state", "batches_inferred_from_equal_timestamps", "no_empty_scans_between_rows",
+		"demand_is_audit_dispatch_record", "empty_initial_state", "batches_inferred_from_equal_timestamps", "no_empty_scans_between_rows",
 		"challenge_list_available", "engine_applies_every_block", "nonscan_blocks_applied_as_recorded_before_scan_stage",
 		"random_drain_order_not_go_map_order",
 	}
@@ -441,7 +500,7 @@ func (r *replayRun) execute(args []string, stdout io.Writer) error {
 	if err = replay(&rep, rec, policy, loc, o); err != nil {
 		return err
 	}
-	if err = writeReport(o.out, rep); err != nil {
+	if err = r.writeReport(o.out, rep); err != nil {
 		return err
 	}
 	h := rep.Hypothetical
@@ -464,7 +523,23 @@ func replay(rep *report, rec responsereplay.Recording, policy policyInfo, loc *t
 		return err
 	}
 	for _, f := range rec.Findings {
+		switch {
+		case f.Check == "http_asn_crawl" && f.Severity == alert.Critical.String():
+			rep.Recorded.ASNCrawlDemandRows++
+		case f.Check == "smtp_subnet_spray" || f.Check == "mail_subnet_spray":
+			rep.Recorded.SubnetSprayDemandRows++
+		}
 		switch _, kind := classifyObservation(f); kind {
+		case observationASNCrawl:
+			rep.Recorded.ASNCrawlBlockRows++
+		case observationSubnet:
+			rep.Recorded.SubnetBlockRows++
+		case observationNetblock:
+			rep.Recorded.NetblockRows++
+		case observationPermblock:
+			rep.Recorded.PermblockRows++
+		case observationDryRun:
+			rep.Recorded.DryRunRows++
 		case observationUnclassified:
 			rep.Recorded.UnclassifiedAutoBlockRows++
 		case observationOther:
@@ -518,8 +593,7 @@ func replay(rep *report, rec responsereplay.Recording, policy policyInfo, loc *t
 			allTimes = append(allTimes, b.At)
 		}
 	}
-	// Pending at the end is censored by the end of the recording, not lost.
-	h.NeverServed = h.AgedOut + h.Overflowed + h.FinalPending
+	h.LostInQueue = h.AgedOut + h.Overflowed
 	h.DelayedShare = ratio{Numerator: h.FirstQueued, Denominator: h.NewCandidates}
 	h.SourceIPReconstructed = *reconstructed
 	if o.reconstructReputation {
@@ -560,6 +634,11 @@ func checkOutput(o *options) error {
 		if out.path == other.path || (out.info != nil && other.info != nil && os.SameFile(out.info, other.info)) {
 			return errOutputAlias
 		}
+	}
+	// A report never replaces anything: a mistyped path could otherwise
+	// destroy another host's recording or the salt.
+	if out.info != nil {
+		return errOutputExists
 	}
 	// Stage and publish beside the exact destination that was checked.
 	o.out = out.path
@@ -631,7 +710,7 @@ func resolve(p string) (resolved, error) {
 }
 
 // writeReport publishes the report whole or not at all, owner-only.
-func writeReport(path string, rep report) error {
+func (r *replayRun) writeReport(path string, rep report) error {
 	raw, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
 		return errWrite
@@ -640,7 +719,7 @@ func writeReport(path string, rep report) error {
 	if err = os.MkdirAll(dir, 0o700); err != nil {
 		return errWrite
 	}
-	f, err := os.CreateTemp(dir, ".response-replay-*")
+	f, err := r.createTemp(dir, ".response-replay-*")
 	if err != nil {
 		return errWrite
 	}
@@ -649,7 +728,7 @@ func writeReport(path string, rep report) error {
 		_ = os.Remove(f.Name())
 		return errWrite
 	}
-	if err := os.Rename(f.Name(), path); err != nil {
+	if err := r.rename(f.Name(), path); err != nil {
 		_ = os.Remove(f.Name())
 		return errWrite
 	}

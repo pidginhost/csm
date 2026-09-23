@@ -117,7 +117,7 @@ func TestReplayReportsTheHandCalculatedFixture(t *testing.T) {
 	hyp := sub(report, "hypothetical")
 	for key, want := range map[string]float64{
 		"scan_blocked": 3, "exempt_blocked": 1, "evicted": 2, "aged_out": 0, "overflowed": 0, "final_pending": 0,
-		"never_served": 0, "new_candidates": 3, "first_queued": 1, "eligible": 3, "missing_ip": 0, "challenge_skipped": 0,
+		"lost_in_queue": 0, "new_candidates": 3, "first_queued": 1, "eligible": 3, "missing_ip": 0, "challenge_skipped": 0,
 		"already_blocked": 0, "invalid_pending": 0, "ineligible_pending": 0, "pending_satisfied": 0,
 		"pending_high_water": 1, "live_high_water": 1,
 	} {
@@ -141,7 +141,9 @@ func TestReplayReportsTheHandCalculatedFixture(t *testing.T) {
 		}
 	}
 	recorded := sub(report, "recorded")
-	for key, want := range map[string]float64{"block_rows": 1, "nonscan_blocks": 1, "nonscan_unmodeled": 0, "other_blocks": 0, "unclassified_auto_block_rows": 0} {
+	for key, want := range map[string]float64{"block_rows": 1, "nonscan_blocks": 1, "nonscan_unmodeled": 0, "other_blocks": 0,
+		"dry_run_rows": 0, "subnet_block_rows": 0, "asn_crawl_block_rows": 0, "netblock_rows": 0, "permblock_rows": 0,
+		"unclassified_auto_block_rows": 0, "asn_crawl_demand_rows": 0, "subnet_spray_demand_rows": 0} {
 		if recorded[key] != want {
 			t.Errorf("recorded %s = %v, want %v", key, recorded[key], want)
 		}
@@ -304,7 +306,8 @@ func TestReplayObservationParsing(t *testing.T) {
 	}
 	report, _ := readReport(t, out)
 	recorded := sub(report, "recorded")
-	for key, want := range map[string]float64{"block_rows": 5, "nonscan_blocks": 1, "nonscan_unmodeled": 2, "other_blocks": 2, "unclassified_auto_block_rows": 2} {
+	for key, want := range map[string]float64{"block_rows": 5, "nonscan_blocks": 1, "nonscan_unmodeled": 2, "other_blocks": 2,
+		"dry_run_rows": 1, "subnet_block_rows": 1, "asn_crawl_block_rows": 0, "netblock_rows": 0, "permblock_rows": 0, "unclassified_auto_block_rows": 0} {
 		if recorded[key] != want {
 			t.Errorf("recorded %s = %v, want %v", key, recorded[key], want)
 		}
@@ -626,9 +629,9 @@ func TestReplayResolvesDefaults(t *testing.T) {
 	}
 }
 
-// Work still queued when the recording ends was never served; it is
-// reported apart from queue losses because the recording, not the queue,
-// ended it.
+// Work still queued when the recording ends is censored, not lost: the
+// recording ended it, not the queue. Losses count only aged-out and
+// overflowed candidates.
 func TestReplayCensorsPendingAtEnd(t *testing.T) {
 	dir := t.TempDir()
 	findings := writeStream(t, dir, "stream.jsonl.gz",
@@ -642,7 +645,7 @@ func TestReplayCensorsPendingAtEnd(t *testing.T) {
 	}
 	report, _ := readReport(t, out)
 	hyp := sub(report, "hypothetical")
-	if hyp["scan_blocked"] != 1.0 || hyp["final_pending"] != 1.0 || hyp["aged_out"] != 0.0 || hyp["overflowed"] != 0.0 || hyp["never_served"] != 1.0 {
+	if hyp["scan_blocked"] != 1.0 || hyp["final_pending"] != 1.0 || hyp["aged_out"] != 0.0 || hyp["overflowed"] != 0.0 || hyp["lost_in_queue"] != 0.0 {
 		t.Fatalf("hypothetical = %v", hyp)
 	}
 }
@@ -685,5 +688,137 @@ func TestReplayReconstructsReputationSourcesOnlyWhenAsked(t *testing.T) {
 			t.Errorf("%v: reconstruction assumption stated = %v", tc.extra, stated)
 		}
 		assertReportVocabulary(t, report)
+	}
+}
+
+// Subnet paths spend the hourly budget (ASN crawl) or block whole networks
+// outside it; the model leaves them out, so the report counts what the
+// recording shows of them.
+func TestReplayCountsSubnetPathRows(t *testing.T) {
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "stream.jsonl.gz",
+		event(fixtureT0, "auto_block", alert.Critical, "AUTO-BLOCK-SUBNET: 203.0.113.0/24 blocked (asn-crawl)", "Reason: crawl"),
+		event(fixtureT0, "auto_block", alert.Critical, "AUTO-BLOCK-SUBNET: 198.51.100.0/24 blocked", "Reason: spray"),
+		event(fixtureT0, "auto_block", alert.Critical, "AUTO-NETBLOCK: 192.0.2.0/24 blocked (5 IPs from same subnet)", ""),
+		event(fixtureT0, "auto_block", alert.Critical, "AUTO-PERMBLOCK: 203.0.113.7 promoted to permanent block (4 temp blocks)", ""),
+		event(fixtureT0, "auto_block", alert.Warning, "AUTO-NETBLOCK [dry-run]: 192.0.2.0/24 would be blocked (5 IPs from same subnet)", ""),
+		event(fixtureT0, "auto_block", alert.Warning, "AUTO-BLOCK-SUBNET [dry-run]: 192.0.2.0/24 would be blocked (asn-crawl)", ""),
+		event(fixtureT0, "auto_block", alert.Warning, "Auto-block rate limit reached (50/hour), 3 IPs queued for next cycle", ""),
+		event(fixtureT0, "http_asn_crawl", alert.Critical, "ASN crawl from AS64496", ""),
+		event(fixtureT0, "http_asn_crawl", alert.High, "ASN crawl from AS64496", ""),
+		event(fixtureT0, "smtp_subnet_spray", alert.Critical, "SMTP spray from 198.51.100.0/24", ""),
+		event(fixtureT0, "mail_subnet_spray", alert.High, "Mail spray from 198.51.100.0/24", ""),
+	)
+	out := filepath.Join(dir, "report.json")
+	if err := testRun().execute(fixtureArgs(findings, out), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	report, _ := readReport(t, out)
+	recorded := sub(report, "recorded")
+	for key, want := range map[string]float64{"asn_crawl_block_rows": 1, "subnet_block_rows": 1, "netblock_rows": 1, "permblock_rows": 1,
+		"dry_run_rows": 2, "unclassified_auto_block_rows": 1, "block_rows": 0, "asn_crawl_demand_rows": 1, "subnet_spray_demand_rows": 2} {
+		if recorded[key] != want {
+			t.Errorf("recorded %s = %v, want %v", key, recorded[key], want)
+		}
+	}
+}
+
+func TestReplayRefusesToReplaceAnExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
+	existing := filepath.Join(dir, "other-host.jsonl.gz")
+	if err := os.WriteFile(existing, []byte("irreplaceable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := testRun().execute(fixtureArgs(findings, existing), &stdout); !errors.Is(err, errOutputExists) || stdout.Len() != 0 {
+		t.Fatalf("got %v", err)
+	}
+	if raw, err := os.ReadFile(existing); err != nil || string(raw) != "irreplaceable" {
+		t.Fatal("an existing file was replaced")
+	}
+}
+
+type failingReportFile struct {
+	*os.File
+	fail string
+}
+
+var errReportInjected = errors.New("injected")
+
+func (f *failingReportFile) Write(p []byte) (int, error) {
+	if f.fail == "write" {
+		return 0, errReportInjected
+	}
+	return f.File.Write(p)
+}
+
+func (f *failingReportFile) Sync() error {
+	if f.fail == "sync" {
+		return errReportInjected
+	}
+	return f.File.Sync()
+}
+
+func (f *failingReportFile) Close() error {
+	err := f.File.Close()
+	if f.fail == "close" {
+		return errReportInjected
+	}
+	return err
+}
+
+func TestReplayWriteFailuresLeaveNothing(t *testing.T) {
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
+	for _, step := range []string{"create", "write", "sync", "close", "rename"} {
+		t.Run(step, func(t *testing.T) {
+			outDir := t.TempDir()
+			out := filepath.Join(outDir, "report.json")
+			r := testRun()
+			r.createTemp = func(dir, pattern string) (reportFile, error) {
+				if step == "create" {
+					return nil, errReportInjected
+				}
+				f, err := os.CreateTemp(dir, pattern)
+				if err != nil {
+					return nil, err
+				}
+				return &failingReportFile{File: f, fail: step}, nil
+			}
+			r.rename = func(oldpath, newpath string) error {
+				if step == "rename" {
+					return errReportInjected
+				}
+				return os.Rename(oldpath, newpath)
+			}
+			var stdout bytes.Buffer
+			if err := r.execute(fixtureArgs(findings, out), &stdout); !errors.Is(err, errWrite) || stdout.Len() != 0 {
+				t.Fatalf("got %v", err)
+			}
+			entries, err := os.ReadDir(outDir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("a failed write left %v", entries)
+			}
+		})
+	}
+}
+
+// The report's demand is what the audit log recorded, not every finding the
+// admission path was called with; the report must say so.
+func TestReplayStatesItsDemandSource(t *testing.T) {
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
+	out := filepath.Join(dir, "report.json")
+	if err := testRun().execute(fixtureArgs(findings, out), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	report, _ := readReport(t, out)
+	found := false
+	for _, a := range report["assumptions"].([]any) {
+		found = found || a == "demand_is_audit_dispatch_record"
+	}
+	if !found {
+		t.Fatalf("assumptions = %v", report["assumptions"])
 	}
 }

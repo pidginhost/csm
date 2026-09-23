@@ -268,11 +268,19 @@ go build -o /tmp/response-replay ./scripts/response-replay
   timestamp are counted and left out.
 - The report lists the effective policy with every default it applied, the
   counts, queue delay and eviction residence distributions, blocks per
-  elapsed hour, what was still queued when the recording ended, and the
-  assumptions and mechanisms the model leaves out: infrastructure and
-  allowlist protection, verdict callbacks, subnet blocks, permanent
-  escalation, retries and failures, and manual unblocks. It carries no
-  address, id, name or text from the recording.
+  elapsed hour, and the assumptions and mechanisms the model leaves out:
+  infrastructure and allowlist protection, verdict callbacks, subnet blocks,
+  permanent escalation, retries and failures, and manual unblocks. It
+  carries no address, id, name or text from the recording.
+- Candidates the queue dropped (aged out or overflowed) are reported apart
+  from work still queued when the recording ended, which the end of the
+  recording cut off rather than the queue.
+- The demand is the audit log's record of dispatched findings, not every
+  finding the admission path was called with.
+- The report counts the recorded subnet, ASN-crawl, netblock, permanent and
+  dry-run block rows the model leaves out, and the findings that feed the
+  subnet paths. ASN-crawl subnets spend the same hourly budget the model
+  gives single addresses, so free scan slots in a replay are an upper bound.
 - Hourly distributions include empty elapsed hours across the full recorded
   time span, without allocating a sample for each empty hour. The first
   stamped row establishes the replay clock, including dates before year one.
@@ -280,8 +288,9 @@ go build -o /tmp/response-replay ./scripts/response-replay
   recording and carries its coverage and recorded outcomes beside the
   replay. Without one, the report says the recording has no statement of
   what was collected with it. Negative outcome and join counts are refused.
-- A report cannot replace its recording or manifest, including through
-  symbolic links, parent-directory traversal or hard links. It is staged
-  beside the resolved destination and published as a private file.
+- A report is written only to a new path: it never replaces an existing
+  file, and it cannot alias its recording or manifest through symbolic
+  links, parent-directory traversal or hard links. It is staged beside the
+  resolved destination and published as a private file.
 - Like a manifest, a report needs a build of a known commit without local
   changes.
