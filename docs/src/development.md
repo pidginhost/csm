@@ -204,7 +204,8 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 - **Errors:** Return up the call stack. Wrap with `fmt.Errorf("context: %w", err)`
 - **Store:** `store.Global()` singleton bbolt DB. Always nil-check.
 - **State:** `state.Store` handles finding dedup, alert throttling, baseline tracking, latest findings persistence. Passed to subsystems at init
-- **Web UI:** Vanilla JS, no framework, no build step. Tabler CSS framework. Use `CSM.get()` / `CSM.post()` / `CSM.delete()` for API calls. Escape string-built markup with `CSM.esc()`; prefer DOM APIs for attacker-controlled values.
+- **Web UI:** Vanilla JS, no framework, no build step, and syntax up to ES2019 (a test rejects later syntax). Tabler CSS framework. Each script keeps its helpers in a function scope and adds only to the `CSM` namespace; the shared runtime is `csm-core.js`, `csm-format.js`, `csm-page.js` and `csm-live.js`. Use `CSM.get()` / `CSM.post()` / `CSM.delete()` for API calls. Escape string-built markup with `CSM.esc()`; prefer DOM APIs for attacker-controlled values. Run the script tests with `node --test ui/`.
+- **API responses:** answer through `writeJSONError`, `writeOK`, `writeItems` / `writeAll` / `writeCapped` and `writeJSON`, so every route follows the contract in [API Reference](api.md): JSON errors, `ok` on actions, lists under `items`, UTC instants, durations in seconds and severity labels.
 - **Logging:** New code should use `internal/log` (wraps `log/slog`). Legacy `fmt.Fprintf(os.Stderr, "[%s] ...", ts())` call sites remain valid until migrated.
 
 ### Attack event storage

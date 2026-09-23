@@ -1,6 +1,7 @@
 # Web UI
 
-HTTPS dashboard with polling-based live updates (10s feed, 60s stats). Dark/light theme toggle.
+HTTPS dashboard that updates live from the finding event stream (see
+[Live updates](#live-updates)). Dark/light theme toggle.
 
 Static assets use content-versioned URLs. Only a URL matching the served file
 receives immutable caching; older or unversioned URLs must revalidate. Replacing
@@ -34,7 +35,7 @@ scope. The header links to session management.
 
 | Page | URL | Purpose |
 |------|-----|---------|
-| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts. A queued finding opens its own detail, and each 24h severity count opens the History tab for the last 24 hours at that severity |
+| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, accounts at risk, auto-response summary, brute-force summary, timeline charts. A queued finding opens its own detail, and each 24h severity count opens the History tab for the last 24 hours at that severity |
 | **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, a permanent Block for findings that report an attacker address, sticky bulk operations (fix, dismiss, suppress), modal account scan. The open finding is kept in the URL as `?key=<finding key>`, so the link reopens it |
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings, newest first, with date range and severity filters, 25 to 200 rows per page (`hperpage`), CSV export; `window=24h` (1 to 720 hours) shows a rolling window instead of calendar days |
 | **Quarantine** | `/quarantine` | Every file backup: quarantined files and cleaners' pre-clean backups, with type, live state of the original path, content preview, restore and delete; filters by account, detector, type and date |
@@ -48,7 +49,7 @@ scope. The header links to session management.
 | **Server Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
 | **Incidents** | `/incident` | Correlated incident list and grouped view, both filterable by every status, with detail panel and bulk status changes (contained, resolved, dismissed) for the selected incidents on the page, plus forensic timeline search by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |
-| **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
+| **Account** | `/account` | Per-account analysis: findings, quarantine and history. An on-demand account scan runs from the Findings page |
 | **Audit Log** | `/audit` | Every operator action in the Web UI and API, including logins, logouts and session revocations, with the credential that acted, search, action and date filters, URL state, and export. Failed logins go to the daemon log instead |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
 | **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer. Commands, file paths, sockets and environment variable names are shown read-only and change only in `csm.yaml`; changing the rspamd or upstream address requires entering its credential again |
