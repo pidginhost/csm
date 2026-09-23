@@ -139,6 +139,7 @@ function renderFindings(data) {
             ' data-details="' + CSM.esc(f.details || '') + '"' +
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
             ' data-account="' + CSM.esc(f.account || '') + '"' +
+            ' data-block-ip="' + CSM.esc(f.block_ip || '') + '"' +
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
             ' data-hasVerify="' + (f.has_verify ? 'true' : 'false') + '"' +
             ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '">' +
@@ -900,6 +901,28 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
     });
 })();
 
+// blockFindingIP blocks a finding's attacker address permanently, as Block on
+// an incident does: an operator reaching for it has already decided.
+function blockFindingIP(check, ip, btn) {
+    if (!ip || btn.disabled) return;
+    btn.disabled = true;
+    CSM.confirm('Block ' + ip + ' permanently?\n\nThe firewall block does not expire; remove it on the Firewall page.').then(function() {
+        return CSM.post('/api/v1/block-ip', {
+            ip: ip,
+            reason: 'Blocked from finding ' + check,
+            duration: '0' // the API reads 0 as permanent
+        }).then(function(r) {
+            if (r && r.warning) CSM.toast(r.warning, 'warning');
+            else CSM.toast('Blocked ' + ip, 'success');
+        }).catch(function(err) {
+            btn.disabled = false;
+            CSM.toast('Block failed: ' + (err && err.message ? err.message : 'request failed'), 'error');
+        });
+    }, function() {
+        btn.disabled = false;
+    });
+}
+
 // --- Open finding detail in shared CSM.detailPanel (replaces inline row expansion) ---
 function toggleFindingDetail(row) {
     var check = row.dataset.check;
@@ -908,6 +931,7 @@ function toggleFindingDetail(row) {
     var key = row.getAttribute('data-key') || (check + ':' + message);
     var filepath = row.getAttribute('data-filepath') || '';
     var account = row.getAttribute('data-account') || '';
+    var blockIP = row.getAttribute('data-block-ip') || '';
 
     CSM.detailPanel.open({
         title: check,
@@ -948,6 +972,7 @@ function toggleFindingDetail(row) {
             html += '</div>';
 
             var footer = '';
+            if (blockIP) footer += '<button type="button" class="btn btn-danger btn-sm" data-csm-finding-block title="Block this address in the firewall"><i class="ti ti-ban"></i>&nbsp;Block ' + CSM.esc(blockIP) + '</button>';
             if (hasFix) footer += '<button type="button" class="btn btn-warning btn-sm" data-csm-finding-fix>Fix</button>';
             footer += '<button type="button" class="btn btn-ghost-secondary btn-sm" data-csm-finding-dismiss>Dismiss</button>';
             footer += '<button type="button" class="btn btn-ghost-secondary btn-sm" data-csm-finding-suppress>Suppress</button>';
@@ -956,6 +981,10 @@ function toggleFindingDetail(row) {
 
             var panel = CSM.detailPanel.element();
             if (!panel) return;
+            var blockBtn = panel.querySelector('[data-csm-finding-block]');
+            if (blockBtn) blockBtn.addEventListener('click', function() {
+                blockFindingIP(check, blockIP, blockBtn);
+            });
             var fixBtn = panel.querySelector('[data-csm-finding-fix]');
             if (fixBtn) fixBtn.addEventListener('click', function() {
                 var rowFix = row.querySelector('.fix-btn');

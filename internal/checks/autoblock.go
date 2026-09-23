@@ -914,6 +914,18 @@ func ExtractIPFromFinding(f alert.Finding) string {
 	return extractIPFromFinding(f)
 }
 
+// ManualBlockIP returns the address an operator may block from a finding: the
+// one auto-block would act on, for any check that reports an attacker,
+// including the login-failure checks that block only when configured. It is
+// empty for every other check, whose messages can quote a victim or customer
+// address from a log line.
+func ManualBlockIP(f alert.Finding) string {
+	if !blockableCheck(f.Check, true) {
+		return ""
+	}
+	return extractIPFromFinding(f)
+}
+
 func extractIPFromFinding(f alert.Finding) string {
 	if strings.TrimSpace(f.SourceIP) != "" {
 		return normalizeBlockIP(f.SourceIP)

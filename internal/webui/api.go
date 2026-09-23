@@ -244,6 +244,9 @@ type enrichedFinding struct {
 	HasVerify     bool   `json:"has_verify"`
 	FixDesc       string `json:"fix_desc,omitempty"`
 	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// BlockIP is the attacker address an operator may block from this
+	// finding; empty for checks that do not report one.
+	BlockIP string `json:"block_ip,omitempty"`
 }
 
 // dedupIPReputation groups ip_reputation findings by IP, merging sources and
@@ -331,6 +334,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 			HasVerify:     checks.CanVerify(f.Check),
 			FixDesc:       checks.FixDescription(f.Check, f.Message, f.FilePath),
 			ContentSHA256: f.ContentSHA256,
+			BlockIP:       checks.ManualBlockIP(f),
 		})
 	}
 

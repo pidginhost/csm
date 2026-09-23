@@ -91,7 +91,9 @@ GET  /api/v1/findings            Current active findings
 GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info, and a list version.
                                  ?limit=N orders by severity, then newest, even when all rows fit;
                                  returns at most N rows, while counts cover all.
-                                 ?fields=version returns only {version, total}, for change polling
+                                 ?fields=version returns only {version, total}, for change polling.
+                                 block_ip is set only for checks that report an attacker address,
+                                 the same evidence auto-block acts on
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
 GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=).
                                  total counts every match; truncated is true when matches exist past the page

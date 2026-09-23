@@ -32,7 +32,7 @@ scope. The header links to session management.
 | Page | URL | Purpose |
 |------|-----|---------|
 | **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts |
-| **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, sticky bulk operations, modal account scan |
+| **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, a permanent Block for findings that report an attacker address, sticky bulk operations (fix, dismiss, suppress), modal account scan |
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
 | **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |

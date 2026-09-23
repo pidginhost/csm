@@ -840,6 +840,34 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 	}
 }
 
+// block_ip offers Block in the finding detail only for attacker evidence.
+func TestAPIFindingsEnrichedBlockIP(t *testing.T) {
+	s := newTestServer(t, "tok")
+	now := time.Now()
+	s.store.SetLatestFindings([]alert.Finding{
+		{Severity: alert.High, Check: "wp_login_bruteforce", Message: "WordPress brute force from 203.0.113.5", Timestamp: now},
+		{Severity: alert.High, Check: "webshell", Message: "shell uploaded from 203.0.113.6", FilePath: "/home/alice/public_html/s.php", Timestamp: now},
+	})
+	w := httptest.NewRecorder()
+	s.apiFindingsEnriched(w, httptest.NewRequest("GET", "/", nil))
+	var data struct {
+		Findings []enrichedFinding `json:"findings"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	got := map[string]string{}
+	for _, f := range data.Findings {
+		got[f.Check] = f.BlockIP
+	}
+	if got["wp_login_bruteforce"] != "203.0.113.5" {
+		t.Errorf("brute force block_ip = %q", got["wp_login_bruteforce"])
+	}
+	if got["webshell"] != "" {
+		t.Errorf("webshell block_ip = %q, want none", got["webshell"])
+	}
+}
+
 // --- apiFindingsEnriched: has_verify gates the Re-check button ---------
 
 func TestAPIFindingsEnrichedHasVerify(t *testing.T) {
