@@ -152,6 +152,12 @@ th[style*="cursor"] { user-select: none; }
    element (findings filter header, settings footer, bulk-action bar) so they
    stop sticking. Wide tables scroll inside .table-responsive, not the page. */
 html, body, .page { overflow-x: clip; }
+/* Tabler reserves the scrollbar with scrollbar-gutter and, where that is not
+   supported, forces a vertical scrollbar on <html> instead. Keep <html> free
+   of scroll overflow there too; those browsers keep the old layout shift. */
+@supports not (scrollbar-gutter: stable) {
+    html { overflow-y: visible; }
+}
 
 /* --- dashboard.html: live-feed highlight animation ----------------------- */
 @keyframes csm-feed-highlight {

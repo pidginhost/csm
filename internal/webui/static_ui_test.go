@@ -631,7 +631,7 @@ func TestBundledTablerExportsBootstrapComponents(t *testing.T) {
 	}
 	text := string(src)
 	for _, fragment := range []string{
-		`Tabler v1.4.0`,
+		`Tabler v1.5.1`,
 		`t.Modal=`,
 		`t.Offcanvas=`,
 		`t.Tab=`,
