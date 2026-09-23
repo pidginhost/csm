@@ -61,6 +61,7 @@ type Daemon struct {
 	store      *state.Store
 	lock       *state.LockFile
 	binaryPath string
+	binaryHash binaryHashCache
 
 	logWatchers      []*LogWatcher
 	logWatchersMu    sync.Mutex

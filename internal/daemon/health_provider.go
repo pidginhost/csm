@@ -13,7 +13,6 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/health"
-	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
@@ -200,17 +199,13 @@ func (d *Daemon) ConfigHash() string {
 	return cfg.Integrity.ConfigHash
 }
 
-// BinaryHash implements health.Provider.
-// Computes the hash on first call via the known binary path; returns empty on error.
+// BinaryHash implements health.Provider. The binary is read again only
+// when the file changes; returns empty on error.
 func (d *Daemon) BinaryHash() string {
 	if d.binaryPath == "" {
 		return ""
 	}
-	h, err := integrity.HashFile(d.binaryPath)
-	if err != nil {
-		return ""
-	}
-	return h
+	return d.binaryHash.get(d.binaryPath)
 }
 
 // CorrelationAttribution implements health.Provider. Nil until the first
