@@ -228,3 +228,44 @@ counts unstamped stored rows.
 The tool needs no host access and reads nothing but the recording. It uses
 cPanel account roots supplied directly to correlation, without platform
 discovery on the replay machine.
+
+## Replaying scan admission
+
+`scripts/response-replay` replays a recording through a model of how
+automatic scan blocks are admitted today: the hourly block limit, the retry
+queue and its age limit, and eviction at the temporary deny limit. It reports
+what the model would have done with the recorded findings, not what the host
+did, and not whether any block was right.
+
+```bash
+go build -o /tmp/response-replay ./scripts/response-replay
+/tmp/response-replay --findings host-a/findings.jsonl.gz --out replay/host-a.json \
+    --max-blocks-per-hour 200 --deny-temp-ip-limit 500 --seed 1 --hour-zone UTC \
+    --manifest host-a/manifest.json
+```
+
+- The live path tries queued candidates in Go map order. The model tries them
+  in a reproducible random order chosen by `--seed`, so compare several seeds
+  rather than reading one run as the order the host used.
+- `--hour-zone` is the zone the host's clock runs in: the hourly limit resets
+  when that zone's hour changes. `Local` is refused because it would depend
+  on the machine running the replay.
+- A recorded block from a challenge timeout, central intel, a credential
+  spray or an incident is applied as recorded: it takes a firewall slot but
+  not the hourly budget. A permanent one is counted, not modelled.
+- Batches are inferred from equal timestamps. Recordings hold no empty scans,
+  so queued work drains only when another finding arrives. Rows without a
+  timestamp are counted and left out.
+- The report lists the effective policy with every default it applied, the
+  counts, queue delay and eviction residence distributions, blocks per
+  elapsed hour, what was still queued when the recording ended, and the
+  assumptions and mechanisms the model leaves out: infrastructure and
+  allowlist protection, verdict callbacks, subnet blocks, permanent
+  escalation, retries and failures, and manual unblocks. It carries no
+  address, id, name or text from the recording.
+- With `--manifest`, the report checks that the manifest describes this exact
+  recording and carries its coverage and recorded outcomes beside the
+  replay. Without one, the report says the recording has no statement of
+  what was collected with it.
+- Like a manifest, a report needs a build of a known commit without local
+  changes.

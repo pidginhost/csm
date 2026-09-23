@@ -275,6 +275,9 @@ var timeType = reflect.TypeFor[time.Time]()
 var longTextFields = map[string]bool{"message": true, "details": true, "file_path": true, "exe": true, "cmdline": true}
 
 func checkObject(dec *json.Decoder, t reflect.Type, depth map[reflect.Type]int) error {
+	if t.Kind() == reflect.Map && t.Key().Kind() == reflect.String {
+		return checkMap(dec, t)
+	}
 	if t.Kind() != reflect.Struct || t == timeType {
 		return errType
 	}
@@ -300,6 +303,33 @@ func checkObject(dec *json.Decoder, t reflect.Type, depth map[reflect.Type]int) 
 		}
 		seen[key] = true
 		if err := checkValue(dec, field, key, depth); err != nil {
+			return err
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return errSyntax
+	}
+	return nil
+}
+
+// checkMap reads a keyed counter object such as a manifest's coverage:
+// keys are bounded and unique, values are scalars of the element type.
+func checkMap(dec *json.Decoder, t reflect.Type) error {
+	seen := map[string]bool{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return errSyntax
+		}
+		key, _ := tok.(string)
+		if len(key) > maxScalarBytes {
+			return errTooLong
+		}
+		if seen[key] {
+			return errDuplicateKey
+		}
+		seen[key] = true
+		if err := checkValue(dec, t.Elem(), key, map[reflect.Type]int{}); err != nil {
 			return err
 		}
 	}

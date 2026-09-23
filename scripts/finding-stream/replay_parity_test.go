@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -77,5 +80,66 @@ func TestReplayReaderAgreesWithRecordingDecoder(t *testing.T) {
 	rec, replayErr := responsereplay.ReadFindings(path)
 	if _, err := decodeFindingLine([]byte(zero)); !errors.Is(err, errRecordTime) || replayErr != nil || rec.Unstamped != 1 || len(rec.Findings) != 0 {
 		t.Fatalf("zero timestamp: recording %v, replay %+v %v", err, rec, replayErr)
+	}
+}
+
+// The replay tool reads the manifest this tool writes with its own strict
+// schema. Every field must read back, unchanged.
+func TestReplayReadsTheBundleManifest(t *testing.T) {
+	for _, withInventory := range []bool{false, true} {
+		f := newJoinFixture(t)
+		args := f.args()
+		if withInventory {
+			inventory := filepath.Join(f.dir, "in", "inventory.json")
+			writeInput(t, inventory, encodeLines(t, inputManifest{V: 1, Streams: []inputManifestEntry{
+				{Kind: "findings", Availability: "present", SHA256: fileDigest(t, f.findings), Records: 2},
+				{Kind: "actions", Availability: "present", SHA256: fileDigest(t, f.actions), Records: 3},
+				{Kind: "firewall_audit", Availability: "present", SHA256: fileDigest(t, f.firewall), Records: 2},
+				{Kind: "ledger", Availability: "not_recorded"},
+			}}))
+			args = f.args("--input-manifest", inventory)
+		}
+		if err := testRun().execute(args, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		m, digest, err := responsereplay.ReadBundleManifest(f.manifest)
+		if err != nil {
+			t.Fatalf("replay refused the manifest: %v", err)
+		}
+		if out, ok := m.FindingsOutput(); !ok || out.SHA256 != fileDigest(t, f.out) || digest != fileDigest(t, f.manifest) {
+			t.Fatalf("findings output %+v, manifest digest %s", out, digest)
+		}
+		written, _ := readManifest(t, f.manifest)
+		reread, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back map[string]any
+		if err := json.Unmarshal(reread, &back); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(written, back) {
+			t.Fatalf("manifest changed through the replay schema:\nwritten %v\nread    %v", written, back)
+		}
+	}
+}
+
+// The replay tool recognises non-scan blocks by the reasons ApplyBlock
+// records; this tool must classify each of them as that path.
+func TestReasonKindsCoverReplayNonScanPrefixes(t *testing.T) {
+	want := map[string]bool{"challenge_timeout": true, "central_intel": true, "credential_spray": true, "incident": true}
+	got := map[string]bool{}
+	for _, prefix := range responsereplay.NonScanReasonPrefixes {
+		kind := reasonKind(prefix + "x")
+		if prefix == "central-intel (locally corroborated)" {
+			kind = reasonKind(prefix)
+		}
+		if !want[kind] {
+			t.Errorf("reason %q classifies as %q", prefix, kind)
+		}
+		got[kind] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("non-scan kinds covered: %v", got)
 	}
 }

@@ -39,6 +39,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - The privileged-operation JSON inventory now includes action risk and current safety and recovery coverage.
 - The capability matrix and `csm privileges` now show a risk tier for every privileged operation, from read-only detection to destructive responses.
 - The finding-stream tool can anonymize the action and firewall audit logs alongside a recording and write a manifest of digests, join counts and missing streams. Rows it cannot classify refuse the run, and a failed run leaves earlier output in place.
+- A replay tool runs a recorded finding stream through a model of the current automatic block limit, retry queue and temporary deny limit, and reports aggregate outcomes with the assumptions they rest on.
 
 ## [3.43.0] - 2026-09-22
 
