@@ -43,7 +43,7 @@ scope. The header links to session management.
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
 | **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN (`?ip=<address>` runs it on load), 24 hour and permanent block and whitelist actions (single and bulk), top attackers, attack type charts, trends; the lookup links to Firewall for the same address, and the whitelist itself is kept under Firewall > Allow Rules |
 | **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
-| **Incidents** | `/incident` | Correlated incident list with detail panel plus forensic timeline search by IP or account |
+| **Incidents** | `/incident` | Correlated incident list with detail panel and bulk status changes (contained, resolved, dismissed) for the selected incidents on the page, plus forensic timeline search by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |
 | **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
 | **Audit** | `/audit` | Every operator action in the Web UI and API, including logins, logouts and session revocations, with the credential that acted, search, action and date filters, URL state, and export. Failed logins go to the daemon log instead |

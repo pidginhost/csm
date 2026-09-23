@@ -50,6 +50,14 @@
                 </div>
             </div>
             <div id="incidents-content"></div>
+            <!-- Sticky bulk-action bar: hidden until an incident is selected -->
+            <div class="csm-sticky-actions" id="incidents-bulk-bar" hidden>
+                <span class="csm-sticky-actions__count"><strong id="incidents-selected-count">0</strong> selected</span>
+                <button type="button" class="btn btn-sm btn-ghost-secondary" data-bulk-status="contained"><i class="ti ti-shield-check"></i>&nbsp;Mark contained</button>
+                <button type="button" class="btn btn-sm btn-ghost-secondary" data-bulk-status="resolved"><i class="ti ti-circle-check"></i>&nbsp;Mark resolved</button>
+                <button type="button" class="btn btn-sm btn-ghost-secondary" data-bulk-status="dismissed"><i class="ti ti-circle-x"></i>&nbsp;Mark dismissed</button>
+                <button type="button" class="btn btn-sm btn-ghost-secondary" id="incidents-bulk-cancel">Cancel</button>
+            </div>
             <div id="incidents-pagination" class="card-footer d-none">
                 <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
                     <div class="text-muted small" id="incidents-page-summary"></div>

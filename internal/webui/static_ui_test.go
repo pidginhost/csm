@@ -2652,7 +2652,8 @@ func TestAccountAndIncidentTabsUseCSMTable(t *testing.T) {
 		{"../../ui/static/js/account.js", "account-findings-table", "csm-account-findings"},
 		{"../../ui/static/js/account.js", "account-quarantine-table", "csm-account-quarantine"},
 		{"../../ui/static/js/account.js", "account-history-table", "csm-account-history"},
-		{"../../ui/static/js/incident.js", "incidents-correlated-table", "csm-incidents-correlated"},
+		// v2: the selection column shifted the saved sort column index.
+		{"../../ui/static/js/incident.js", "incidents-correlated-table", "csm-incidents-correlated-v2"},
 	} {
 		src, err := os.ReadFile(tc.path)
 		if err != nil {

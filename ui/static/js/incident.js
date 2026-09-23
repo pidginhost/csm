@@ -416,6 +416,7 @@
         var rows = incidents;
         if (rows.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No incidents match the current filter.</div>';
+            incidentBulk().refresh();
             if (pendingIncidentID) {
                 var pending = pendingIncidentID;
                 pendingIncidentID = '';
@@ -427,12 +428,13 @@
         }
 
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="incidents-correlated-table">';
-        html += '<thead><tr><th>Status</th><th>Severity</th><th>Kind</th><th>Owner</th><th>Findings</th><th>Updated</th></tr></thead><tbody>';
+        html += '<thead><tr><th class="w-1"><input type="checkbox" class="form-check-input" id="incidents-select-all" aria-label="Select all incidents on this page"></th><th>Status</th><th>Severity</th><th>Kind</th><th>Owner</th><th>Findings</th><th>Updated</th></tr></thead><tbody>';
         for (var i = 0; i < rows.length; i++) {
             var inc = rows[i];
             var owner = inc.mailbox || inc.domain || inc.account || keySummary(inc.correlation_key) || 'unknown';
             var active = inc.id === selectedID ? ' class="table-active"' : '';
             html += '<tr data-incident-id="' + CSM.attr(inc.id) + '"' + active + '>';
+            html += '<td><input type="checkbox" class="form-check-input incident-cb" data-incident-id="' + CSM.attr(inc.id) + '" aria-label="Select incident ' + CSM.attr(labelize(inc.kind) + ' ' + owner) + '"></td>';
             html += '<td><span class="badge bg-' + (statusClasses[inc.status] || 'secondary') + '-lt">' + CSM.esc(inc.status) + '</span></td>';
             html += '<td data-sort="' + severityNumber(inc.severity) + '"><span class="badge badge-' + CSM.severityClassFromLabel(inc.severity) + '">' + CSM.esc(inc.severity || 'UNKNOWN') + '</span></td>';
             html += '<td>' + CSM.esc(labelize(inc.kind)) + '</td>';
@@ -448,7 +450,8 @@
             perPage: 0,
             search: false,
             sortable: true,
-            stateKey: 'csm-incidents-correlated',
+            // v2: a checkbox column now comes first, shifting saved sort columns.
+            stateKey: 'csm-incidents-correlated-v2',
             controls: false,
             persistPerPage: false,
             mobileRowCard: true
@@ -457,10 +460,12 @@
 
         var trs = container.querySelectorAll('tr[data-incident-id]');
         trs.forEach(function(tr) {
-            tr.addEventListener('click', function() {
+            tr.addEventListener('click', function(e) {
+                if (e.target.closest('input')) return;
                 openIncident(this.getAttribute('data-incident-id'), true);
             });
         });
+        incidentBulk().refresh();
 
         if (pendingIncidentID) {
             var pending = pendingIncidentID;
@@ -592,6 +597,64 @@
         return '<button class="btn btn-outline-secondary btn-sm" data-status-target="' + CSM.attr(status) + '"' + disabled + ' title="Mark ' + CSM.attr(status) + '" aria-label="Mark ' + CSM.attr(status) + '">' +
             '<i class="ti ti-' + CSM.attr(icon) + '"></i></button>';
     }
+
+    // incidentBulk drives the selection on the correlated list. It resolves
+    // the select-all box by selector because each render replaces the table.
+    var _incidentBulk = null;
+    var _incidentBulkInFlight = false;
+    function incidentBulk() {
+        if (!_incidentBulk) {
+            _incidentBulk = CSM.bulk({
+                rowCheckboxSelector: '.incident-cb',
+                selectAllSelector: '#incidents-select-all',
+                valueAttr: 'data-incident-id',
+                onChange: function(n) {
+                    var bar = document.getElementById('incidents-bulk-bar');
+                    if (bar) bar.hidden = n === 0;
+                    var count = document.getElementById('incidents-selected-count');
+                    if (count) count.textContent = String(n);
+                }
+            });
+        }
+        return _incidentBulk;
+    }
+
+    // bulkSetStatus changes each selected incident in turn and stops at the
+    // first failure, so the report says exactly which part was applied.
+    function bulkSetStatus(status) {
+        if (_incidentBulkInFlight) return;
+        var ids = incidentBulk().selectedValues();
+        if (ids.length === 0) return;
+        CSM.confirm('Mark ' + ids.length + ' incident(s) ' + status + '?').then(function() {
+            _incidentBulkInFlight = true;
+            var done = 0;
+            function next() {
+                if (done >= ids.length) return Promise.resolve();
+                return CSM.post('/api/v1/incidents/' + encodeURIComponent(ids[done]) + '/status', {
+                    status: status,
+                    details: 'web-ui'
+                }).then(function() {
+                    done++;
+                    return next();
+                });
+            }
+            return next().then(function() {
+                CSM.toast('Marked ' + done + ' incident(s) ' + status, 'success');
+            }, function(err) {
+                CSM.toast('Updated ' + done + ' of ' + ids.length + ' incident(s); the rest were not sent: ' + (err && err.message ? err.message : 'request failed'), 'error');
+            }).then(function() {
+                _incidentBulkInFlight = false;
+                incidentBulk().clear();
+                loadIncidents();
+            });
+        }, function() { /* cancelled */ });
+    }
+
+    document.querySelectorAll('#incidents-bulk-bar [data-bulk-status]').forEach(function(btn) {
+        btn.addEventListener('click', function() { bulkSetStatus(this.getAttribute('data-bulk-status')); });
+    });
+    var bulkCancel = document.getElementById('incidents-bulk-cancel');
+    if (bulkCancel) bulkCancel.addEventListener('click', function() { incidentBulk().clear(); });
 
     function setIncidentStatus(id, status) {
         return CSM.post('/api/v1/incidents/' + encodeURIComponent(id) + '/status', {
