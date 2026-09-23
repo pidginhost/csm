@@ -1815,12 +1815,17 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 				existingIDs[rule.ID] = true
 			}
 			for _, rule := range bundle.Suppressions {
-				// Same contract as a rule added through the UI: a check is
-				// required (a rule without one suppresses nothing and only
-				// clutters the list), and every rule needs an ID or it can
-				// never be deleted from the UI.
-				if strings.TrimSpace(rule.Check) == "" {
+				// Same contract as a rule added through the UI: a check name
+				// and a valid glob are required (otherwise the rule
+				// suppresses nothing and only clutters the list), and every
+				// rule needs an ID or it can never be deleted from the UI.
+				if !suppressionCheckName.MatchString(rule.Check) {
 					continue
+				}
+				if rule.PathPattern != "" {
+					if _, err := filepath.Match(rule.PathPattern, ""); err != nil {
+						continue
+					}
 				}
 				if rule.ID == "" {
 					rule.ID = newSuppressionID()

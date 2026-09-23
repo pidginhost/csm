@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Importing a settings bundle now skips suppression rules whose check is not a check name or whose path pattern is not a valid glob, as the suppression form does.
 - Suppression rules now refuse a check field that holds a pattern or free text, and warn when the check name matches no known check, since such a rule hides nothing.
 - A hardening audit that runs longer than three minutes now returns its report instead of failing after saving it.
 - Block, allow, remove-allow, cPHulk clear and unban now record an IPv6 address typed in any spelling under its canonical form, so audit entries and incident records match the firewall state.
