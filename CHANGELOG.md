@@ -61,6 +61,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- A loopback origin such as https://localhost:9443 is now trusted only when it is the origin the request was sent to, so another local web service in the same browser can no longer make authenticated requests to the Web UI.
 - Startup, csm validate and csm doctor now warn about Web UI and metrics tokens shorter than 32 characters, since they can be guessed; such tokens keep working.
 - A flood of requests from many new addresses no longer makes each request scan the whole rate-limit table; a full table is trimmed once for many new addresses.
 - Login and API rate limits now count an IPv6 client by its /64 prefix, so rotating addresses inside one prefix no longer multiplies the allowed attempts.

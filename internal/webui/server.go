@@ -619,7 +619,12 @@ func webUIListenPort(listen string) string {
 // origin), or an operator-listed webui.allowed_origins entry. The request's
 // Host header is never consulted, so a forged Host cannot vouch for a
 // forged Origin.
-func (s *Server) originAllowed(origin string) bool {
+// originAllowed reports whether a browser Origin may make credentialed
+// requests. A loopback origin (an SSH tunnel on any local port) is trusted
+// only when it is the origin the request was sent to: host is the request's
+// Host. Another local service in the same browser shares the Web UI's
+// cookies, since cookies ignore the port, and must not be trusted.
+func (s *Server) originAllowed(origin, host string) bool {
 	if sameOrigin(origin, s.canonicalAllowedOrigin()) {
 		return true
 	}
@@ -628,7 +633,7 @@ func (s *Server) originAllowed(origin string) bool {
 		return false
 	}
 	if isLoopbackOriginHost(u.Hostname()) {
-		return true
+		return host != "" && sameOrigin(origin, "https://"+host)
 	}
 	for _, listed := range s.liveCfg().WebUI.AllowedOrigins {
 		if sameOrigin(origin, listed) {
@@ -995,7 +1000,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/sessions") {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				if !s.originAllowed(origin) {
+				if !s.originAllowed(origin, r.Host) {
 					http.Error(w, "Cross-origin request blocked", http.StatusForbidden)
 					return
 				}
