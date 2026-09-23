@@ -90,26 +90,35 @@ CSM.parseTimestamp = function(raw) {
     return new Date(iso).getTime();
 };
 
-// Relative timestamps: converts ISO or "YYYY-MM-DD HH:MM:SS" to "2m ago", "1h ago", etc.
+// Relative timestamps: converts ISO or "YYYY-MM-DD HH:MM:SS" to "2m ago",
+// "1h ago", or "in 3h" for a time still ahead (an expiry).
+function csmRelativeSpan(sec) {
+    if (sec < 3600) return Math.floor(sec / 60) + 'm';
+    if (sec < 86400) return Math.floor(sec / 3600) + 'h';
+    if (sec < 604800) return Math.floor(sec / 86400) + 'd';
+    return Math.floor(sec / 604800) + 'w';
+}
+
 CSM.timeAgo = function(dateStr) {
     if (!dateStr) return '';
     var ts = CSM.parseTimestamp(dateStr);
     if (isNaN(ts)) return dateStr;
     var diff = Math.floor((Date.now() - ts) / 1000);
+    if (diff < 0) return -diff < 60 ? 'in under 1m' : 'in ' + csmRelativeSpan(-diff);
     if (diff < 60) return 'just now';
-    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-    if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
-    return Math.floor(diff / 604800) + 'w ago';
+    return csmRelativeSpan(diff) + ' ago';
 };
 
-// Find all elements with data-timestamp and set relative time, full timestamp as title
+// Refresh relative times. Only elements that opt in with data-time-ago are
+// rewritten; data-timestamp alone is a sort and filter key, and rewriting
+// every element carrying it destroyed absolute dates and whole table rows.
 CSM.initTimeAgo = function() {
-    var els = document.querySelectorAll('[data-timestamp]');
+    var els = document.querySelectorAll('[data-time-ago]');
     for (var i = 0; i < els.length; i++) {
-        var raw = els[i].getAttribute('data-timestamp');
+        var raw = els[i].getAttribute('data-time-ago');
+        if (!raw) continue;
         els[i].textContent = CSM.timeAgo(raw);
-        els[i].title = raw;
+        els[i].title = (typeof CSM.fmtDate === 'function') ? CSM.fmtDate(raw) : raw;
     }
 };
 

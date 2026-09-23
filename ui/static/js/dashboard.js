@@ -203,14 +203,14 @@
                 setText('stat-critical', s.critical);
                 setText('stat-high', s.high);
                 setText('stat-warning', s.warning);
-                // Keep text and data-timestamp aligned so CSM.initTimeAgo ticks
+                // Keep text and data-time-ago aligned so CSM.initTimeAgo ticks
                 // against the correct baseline when a fresh critical arrives.
                 var lastCritEl = document.getElementById('stat-last-critical');
                 if (lastCritEl) {
                     if (data.last_critical_iso) {
-                        lastCritEl.setAttribute('data-timestamp', data.last_critical_iso);
+                        lastCritEl.setAttribute('data-time-ago', data.last_critical_iso);
                     } else {
-                        lastCritEl.removeAttribute('data-timestamp');
+                        lastCritEl.removeAttribute('data-time-ago');
                     }
                     if (data.last_critical_ago) {
                         lastCritEl.textContent = data.last_critical_ago;
@@ -1102,7 +1102,7 @@
         html += '<div class="csm-queue-item__title">' + kindBadge + CSM.esc(item.title || '') + '</div>';
         if (item.summary) html += '<div class="csm-queue-item__summary">' + CSM.esc(item.summary) + '</div>';
         html += '</span>';
-        if (ageText) html += '<span class="csm-queue-item__age" data-timestamp="' + CSM.attr(ageISO) + '">' + CSM.esc(ageText) + '</span>';
+        if (ageText) html += '<span class="csm-queue-item__age" data-time-ago="' + CSM.attr(ageISO) + '">' + CSM.esc(ageText) + '</span>';
         html += actionHTML;
         html += '</a>';
         return html;

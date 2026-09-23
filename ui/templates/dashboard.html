@@ -57,7 +57,7 @@
                         </span>
                         <span class="csm-status-strip__chip" title="Time since the most recent critical finding">
                             <i class="ti ti-alert-octagon"></i>
-                            <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
+                            <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-time-ago="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
                             <span class="csm-status-strip__chip-label">since last critical</span>
                         </span>
                         <span class="csm-status-strip__chip" title="Loaded YARA / YAML signatures">

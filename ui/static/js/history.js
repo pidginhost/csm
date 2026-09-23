@@ -113,6 +113,7 @@
             var timeSpan = document.createElement('span');
             timeSpan.className = 'text-muted small';
             timeSpan.setAttribute('data-timestamp', f.timestamp || '');
+            timeSpan.setAttribute('data-time-ago', f.timestamp || '');
             timeSpan.textContent = ago;
             tdTime.appendChild(timeSpan);
             tr.appendChild(tdTime);

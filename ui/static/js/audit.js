@@ -110,14 +110,12 @@ function loadAudit() {
         for (var i = 0; i < entries.length; i++) {
             var e = entries[i];
             var badgeClass = actionBadges[e.action] || 'bg-secondary';
-            // The row's date-filter key lives on data-audit-ts, not
-            // data-timestamp: the global initTimeAgo loop rewrites the
-            // textContent of every [data-timestamp] element every 60s, which
-            // on a <tr> would wipe all of its cells. The inner span keeps
-            // data-timestamp for relative display and an explicit title so
+            // The row's date-filter key lives on data-audit-ts. The inner
+            // span carries data-timestamp as the sort key and data-time-ago
+            // for the refreshing relative display, with an explicit title so
             // the absolute time is always available on hover.
             html += '<tr data-action="' + CSM.attr(e.action || '') + '" data-audit-ts="' + CSM.attr(e.timestamp || '') + '">';
-            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.attr(e.timestamp || '') + '" title="' + CSM.attr(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
+            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.attr(e.timestamp || '') + '" data-time-ago="' + CSM.attr(e.timestamp || '') + '" title="' + CSM.attr(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
             html += '<td><span class="badge ' + badgeClass + '">' + CSM.esc(e.action) + '</span></td>';
             html += '<td><code>' + CSM.esc(e.target) + '</code></td>';
             html += '<td class="small">' + CSM.esc(e.details || '') + '</td>';

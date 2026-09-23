@@ -102,7 +102,7 @@ function renderTable() {
         html += '<td>' + r.phase + '</td>';
         html += '<td>' + (r.hits_24h || 0) + '</td>';
         html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input escalate-toggle" data-id="' + r.id + '"' + (r.escalate ? ' checked' : '') + '></label></td>';
-        html += '<td class="text-muted small" data-timestamp="' + lastHitTS + '">' + lastHit + '</td>';
+        html += '<td class="text-muted small" data-timestamp="' + lastHitTS + '" data-time-ago="' + lastHitTS + '">' + lastHit + '</td>';
         html += '</tr>';
     }
 

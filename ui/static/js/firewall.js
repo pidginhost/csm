@@ -283,7 +283,7 @@ function loadSubnets() {
                 h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(subs[i].cidr) + '</code></td>';
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(baseIP) + '"></td>';
                 h += '<td class="small"><div>' + formatReason(subs[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(subs[i].source || 'unknown') + '</div></td>';
-                h += '<td class="small text-muted" data-timestamp="' + CSM.esc(subs[i].blocked_at || '') + '">' + CSM.esc(subs[i].time_ago || '-') + '</td>';
+                h += '<td class="small text-muted" data-timestamp="' + CSM.esc(subs[i].blocked_at || '') + '" data-time-ago="' + CSM.esc(subs[i].blocked_at || '') + '">' + CSM.esc(subs[i].time_ago || '-') + '</td>';
                 h += '<td>' + formatExpiresBadge(subs[i].expires_in) + '</td>';
                 h += '<td><button class="btn btn-sm btn-outline-secondary remove-subnet-btn" data-cidr="' + CSM.esc(subs[i].cidr) + '">Remove</button></td>';
                 h += '</tr>';

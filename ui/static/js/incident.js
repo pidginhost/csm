@@ -438,7 +438,7 @@
             html += '<td>' + CSM.esc(labelize(inc.kind)) + '</td>';
             html += '<td><span class="text-truncate d-inline-block csm-tw-260">' + CSM.esc(owner) + '</span></td>';
             html += '<td>' + ((inc.findings || []).length) + '</td>';
-            html += '<td class="text-muted text-nowrap" data-timestamp="' + CSM.attr(inc.updated_at) + '">' + CSM.esc(CSM.timeAgo(inc.updated_at)) + '</td>';
+            html += '<td class="text-muted text-nowrap" data-timestamp="' + CSM.attr(inc.updated_at) + '" data-time-ago="' + CSM.attr(inc.updated_at) + '">' + CSM.esc(CSM.timeAgo(inc.updated_at)) + '</td>';
             html += '</tr>';
         }
         html += '</tbody></table></div>';
@@ -612,7 +612,7 @@
         if (e.remote_ip) bits.push(e.remote_ip);
         if (e.path) bits.push(e.path);
         return '<div class="d-flex mb-2 align-items-start">' +
-            '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.attr(e.time) + '">' + CSM.esc(CSM.timeAgo(e.time)) + '</div>' +
+            '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.attr(e.time) + '" data-time-ago="' + CSM.attr(e.time) + '">' + CSM.esc(CSM.timeAgo(e.time)) + '</div>' +
             '<div class="me-2"><span class="badge bg-azure-lt">Finding</span></div>' +
             '<div class="csm-break-word"><div class="fw-semibold">' + CSM.esc(e.check || e.kind || 'finding') + '</div>' +
             '<div>' + CSM.esc(e.message || '') + '</div>' +
@@ -622,7 +622,7 @@
 
     function actionHTML(a) {
         return '<div class="d-flex mb-2 align-items-start">' +
-            '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.attr(a.time) + '">' + CSM.esc(CSM.timeAgo(a.time)) + '</div>' +
+            '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.attr(a.time) + '" data-time-ago="' + CSM.attr(a.time) + '">' + CSM.esc(CSM.timeAgo(a.time)) + '</div>' +
             '<div class="me-2"><span class="badge bg-green-lt">Action</span></div>' +
             '<div class="csm-break-word"><div class="fw-semibold">' + CSM.esc(a.action || 'action') + '</div>' +
             '<div>' + CSM.esc(a.result || '') + '</div>' +
@@ -677,7 +677,7 @@
             var ago = CSM.timeAgo(e.timestamp);
 
             html += '<div class="d-flex mb-2 align-items-start">';
-            html += '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.esc(e.timestamp) + '">' + CSM.esc(ago) + '</div>';
+            html += '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.esc(e.timestamp) + '" data-time-ago="' + CSM.esc(e.timestamp) + '">' + CSM.esc(ago) + '</div>';
             html += '<div class="me-2"><span class="badge badge-' + sevClass + '">' + sevLabel + '</span></div>';
             html += '<div class="me-2"><span class="badge bg-azure-lt">' + CSM.esc(typeLabel) + '</span></div>';
             html += '<div class="csm-break-word">' + CSM.esc(e.summary);
