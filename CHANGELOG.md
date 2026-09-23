@@ -86,6 +86,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- Confirmations for actions that delete data, block traffic, turn protection off or end sessions now show a red button named for the action and start on Cancel, and logging out every browser session asks first.
 - The Web UI sidebar now groups Rules, ModSec Rules and Verified Bots with Settings under Configuration, and the ModSecurity page drops its tab that only linked to the rule manager.
 - ModSecurity escalation exclusions are now managed only on the ModSec Rules page, which lists and edits them even when rule management is not configured, and each change affects one rule instead of rewriting the whole list.
 - The whitelist is now managed only on the Firewall page under Allow Rules; Threat Intel keeps its whitelist actions and links there, and the two IP lookups link to each other.

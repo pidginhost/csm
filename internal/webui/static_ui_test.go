@@ -3433,7 +3433,7 @@ func TestSettingsAsyncDialogsDoNotReenter(t *testing.T) {
 	for _, fragment := range []string{
 		`let pendingLeaveConfirm = null;`,
 		`if (pendingLeaveConfirm) return pendingLeaveConfirm;`,
-		`pendingLeaveConfirm = CSM.confirm("You have unsaved changes in this section. Discard them?")`,
+		`pendingLeaveConfirm = CSM.confirm("You have unsaved changes in this section. Discard them?", { danger: true, okLabel: "Discard" })`,
 		`let pendingPopstateSection = null;`,
 		`let popstateConfirmOpen = false;`,
 		`pendingPopstateSection = next || currentSection;`,

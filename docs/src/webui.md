@@ -49,7 +49,7 @@ scope. The header links to session management.
 | **Audit** | `/audit` | Every operator action in the Web UI and API, including logins, logouts and session revocations, with the credential that acted, search, action and date filters, URL state, and export. Failed logins go to the daemon log instead |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
 | **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer. Commands, file paths, sockets and environment variable names are shown read-only and change only in `csm.yaml`; changing the rspamd or upstream address requires entering its credential again |
-| **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session |
+| **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session (confirmed first) |
 
 Audit attribution is captured when the action is authorized and remains available
 if the browser session expires or is revoked while the action runs.
@@ -67,6 +67,13 @@ the browser can save and read back the preference. If browser storage is
 unavailable, new renders use the preference without forcing a reload.
 Days with a midnight clock change start at the first valid time of that day;
 a repeated midnight uses its first occurrence.
+
+## Confirmations
+
+A confirmation for an action that deletes data, blocks traffic, turns
+protection off or ends sessions names the action on a red button, such as
+Delete or Block, and starts with Cancel focused, so pressing Enter does not
+carry it out. Logging out every browser session asks first.
 
 ## Bulk file actions
 

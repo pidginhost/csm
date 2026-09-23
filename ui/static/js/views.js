@@ -187,7 +187,7 @@ CSM.savedViews = (function() {
     }
 
     function confirmDelete(view, host, page) {
-        CSM.confirm('Delete saved view "' + view.name + '"?').then(function() {
+        CSM.confirm('Delete saved view "' + view.name + '"?', { danger: true, okLabel: 'Delete' }).then(function() {
             deleteView(page, view.name).then(function(r) {
                 if (!r || !r.ok) throw new Error('delete failed');
                 if (CSM && CSM.toast) CSM.toast.success('Deleted view: ' + view.name);

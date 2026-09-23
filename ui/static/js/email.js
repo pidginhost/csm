@@ -851,7 +851,7 @@
             if (!_emailQuarBulk) return;
             var ids = _emailQuarBulk.selectedValues();
             if (ids.length === 0) return;
-            CSM.confirm('Permanently delete ' + ids.length + ' quarantined message(s)?').then(function() {
+            CSM.confirm('Permanently delete ' + ids.length + ' quarantined message(s)?', { danger: true, okLabel: 'Delete' }).then(function() {
                 var succeeded = 0, failed = 0;
                 var chain = Promise.resolve();
                 ids.forEach(function(id) {
@@ -879,7 +879,7 @@
     }
 
     function deleteMessage(msgID) {
-        CSM.confirm('Permanently delete this quarantined message?').then(function() {
+        CSM.confirm('Permanently delete this quarantined message?', { danger: true, okLabel: 'Delete' }).then(function() {
             CSM.delete('/api/v1/email/quarantine/' + encodeURIComponent(msgID))
                 .then(function() { loadQuarantine(); loadAVStatus(); })
                 .catch(function(err) { CSM.toast('Delete failed: ' + (err.message || ''), 'error'); });
@@ -975,7 +975,7 @@
     }
 
     function deleteHeld(id) {
-        CSM.confirm('Permanently delete this held forward copy?').then(function() {
+        CSM.confirm('Permanently delete this held forward copy?', { danger: true, okLabel: 'Delete' }).then(function() {
             CSM.delete('/api/v1/email/held/' + encodeURIComponent(id))
                 .then(function() { CSM.toast('Deleted held forward', 'success'); heldLoaded = false; loadHeld(); })
                 .catch(function(err) { CSM.toast('Delete failed: ' + (err.message || ''), 'error'); });
@@ -1227,7 +1227,7 @@
                 var ip = btn.getAttribute('data-ip');
                 var reason = btn.getAttribute('data-reason');
                 btn.disabled = true;
-                CSM.confirm('Block ' + ip + ' in the firewall for 24 hours?\n\n' + reason).then(function() {
+                CSM.confirm('Block ' + ip + ' in the firewall for 24 hours?\n\n' + reason, { danger: true, okLabel: 'Block' }).then(function() {
                     CSM.post('/api/v1/block-ip', { ip: ip, reason: reason, duration: '24h' })
                         .then(function() { btn.textContent = 'Blocked'; })
                         .catch(function() { btn.disabled = false; btn.textContent = 'Block failed'; });
@@ -1310,7 +1310,7 @@
     }
 
     function flushBackscatter() {
-        CSM.confirm('Remove all frozen null-sender bounce messages from the mail queue? This deletes undeliverable backscatter only -- real mail and live retries are not touched.').then(function() {
+        CSM.confirm('Remove all frozen null-sender bounce messages from the mail queue? This deletes undeliverable backscatter only -- real mail and live retries are not touched.', { danger: true, okLabel: 'Remove' }).then(function() {
             CSM.post('/api/v1/email/queue/flush-backscatter', {})
                 .then(function(res) {
                     CSM.toast(queueCount(res && res.removed) +

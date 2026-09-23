@@ -906,7 +906,7 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
 function blockFindingIP(check, ip, btn) {
     if (!ip || btn.disabled) return;
     btn.disabled = true;
-    CSM.confirm('Block ' + ip + ' permanently?\n\nThe firewall block does not expire; remove it on the Firewall page.').then(function() {
+    CSM.confirm('Block ' + ip + ' permanently?\n\nThe firewall block does not expire; remove it on the Firewall page.', { danger: true, okLabel: 'Block' }).then(function() {
         return CSM.post('/api/v1/block-ip', {
             ip: ip,
             reason: 'Blocked from finding ' + check,

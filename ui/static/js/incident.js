@@ -570,7 +570,7 @@
     // attacker walk in the first place.
     function blockIncidentIP(id, ip, btn) {
         if (!ip) return;
-        return CSM.confirm('Block ' + ip + ' permanently?').then(function() {
+        return CSM.confirm('Block ' + ip + ' permanently?', { danger: true, okLabel: 'Block' }).then(function() {
             if (btn) btn.disabled = true;
             return CSM.post('/api/v1/block-ip', {
                 ip: ip,

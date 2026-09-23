@@ -496,7 +496,7 @@
                 modsecBulkBtn.addEventListener('click', function() {
                     var rules = selectedModSecRuleIDs();
                     if (rules.length === 0) return;
-                    CSM.confirm('Disable ' + rules.length + ' ModSecurity rule(s)?\n\nThis writes the override and reloads ModSecurity.').then(function() {
+                    CSM.confirm('Disable ' + rules.length + ' ModSecurity rule(s)?\n\nThis writes the override and reloads ModSecurity.', { danger: true, okLabel: 'Disable' }).then(function() {
                         modsecBulkBtn.disabled = true;
                         CSM.get('/api/v1/modsec/rules', { silent: true })
                             .then(function(data) {

@@ -111,7 +111,13 @@
      * @param  {string} message - The confirmation message (newlines preserved).
      * @return {Promise}        - Resolves on OK, rejects on Cancel.
      */
-    CSM.confirm = function(message) {
+    // opts.danger marks an action that deletes data, blocks traffic, turns
+    // protection off or ends sessions: the confirm button turns red, reads
+    // opts.okLabel (the action's verb) and focus starts on Cancel so a stray
+    // Enter does not carry it out.
+    CSM.confirm = function(message, opts) {
+        opts = opts || {};
+        var danger = !!opts.danger;
         return new Promise(function(resolve, reject) {
             cancelActiveDialog();
             var modal = document.getElementById('csm-confirm-modal');
@@ -124,6 +130,10 @@
                 if (confirm(message)) { resolve(); } else { reject(); }
                 return;
             }
+
+            okBtn.textContent = opts.okLabel || 'OK';
+            okBtn.classList.toggle('btn-danger', danger);
+            okBtn.classList.toggle('btn-primary', !danger);
 
             body.textContent = '';
             // Preserve newlines by splitting into text nodes with <br>
@@ -197,7 +207,7 @@
             noBtn.addEventListener('click', onCancel);
             document.addEventListener('keydown', onKeydown);
             activeDialogCancel = cancelSelf;
-            okBtn.focus();
+            (danger ? noBtn : okBtn).focus();
 
             var _origCleanup = cleanup;
             cleanup = function() {

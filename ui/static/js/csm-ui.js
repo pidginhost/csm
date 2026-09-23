@@ -79,6 +79,20 @@ CSM.makeClickable = function(el) {
 
 // fmtDateTime removed - use CSM.fmtDate(ts) instead (defined in csrf.js)
 
+// A server-rendered form with data-csm-confirm asks before it submits. The
+// page scripts cannot use inline handlers under the CSP, so one listener
+// serves every such form. form.submit() does not fire submit again.
+document.addEventListener('submit', function(e) {
+    var form = e.target;
+    var message = form && form.getAttribute && form.getAttribute('data-csm-confirm');
+    if (!message) return;
+    e.preventDefault();
+    CSM.confirm(message, {
+        danger: form.hasAttribute('data-csm-confirm-danger'),
+        okLabel: form.getAttribute('data-csm-confirm-ok') || ''
+    }).then(function() { form.submit(); }, function() { /* cancelled */ });
+});
+
 // accountURL returns the Account page URL for a hosting account name, or ''
 // when the value is not one (a placeholder, a mailbox, a path). The rule is
 // the server's account name check.

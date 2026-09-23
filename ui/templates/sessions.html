@@ -28,7 +28,7 @@
     </table>
   </div>
   <div class="card-footer">
-    <form method="post" action="/sessions/revoke">
+    <form method="post" action="/sessions/revoke" data-csm-confirm="Log out every browser session, including this one? Everyone signs in again." data-csm-confirm-danger data-csm-confirm-ok="Log out all">
       <input type="hidden" name="csrf_token" value="{{csrfToken}}">
       <input type="hidden" name="id" value="all">
       <button type="submit" class="btn btn-danger">Log out all sessions</button>

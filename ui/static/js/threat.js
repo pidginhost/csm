@@ -472,7 +472,7 @@ function blockIP(ip, permanent) {
         'Block '+ip+' permanently?\n\nThe firewall block never expires and the IP stays in the threat database until you clear it.':
         'Block '+ip+' for 24 hours?\n\nThis will block the IP in the firewall and add it to the threat database for the same 24 hours.';
     var done=permanent?'IP '+ip+' blocked permanently.':'IP '+ip+' blocked for 24h.';
-    return CSM.confirm(question).then(function() {
+    return CSM.confirm(question, { danger: true, okLabel: 'Block' }).then(function() {
         return CSM.post(url,{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast(done+'\n\nActions: '+(data.actions||[]).join(', '),'success');
@@ -504,7 +504,7 @@ function tempWhitelistIP(ip) {
 }
 
 function whitelistIP(ip) {
-    CSM.confirm('Permanently whitelist '+ip+'?\n\nUse this only for static IPs (offices, dedicated servers).\nFor dynamic IPs, use "Temp Whitelist" instead.\n\nThis will:\n- Unblock from firewall\n- Add to permanent allow list\n- Remove from all threat databases\n- Never flag this IP again').then(function() {
+    CSM.confirm('Permanently whitelist '+ip+'?\n\nUse this only for static IPs (offices, dedicated servers).\nFor dynamic IPs, use "Temp Whitelist" instead.\n\nThis will:\n- Unblock from firewall\n- Add to permanent allow list\n- Remove from all threat databases\n- Never flag this IP again', { danger: true, okLabel: 'Whitelist' }).then(function() {
         CSM.post('/api/v1/threat/whitelist-ip',{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' permanently whitelisted.\n\nActions: '+(data.actions||[]).join(', '),'success');
@@ -562,7 +562,7 @@ function bulkBlock(permanent) {
         'Block ' + ips.length + ' IP(s) permanently?\n\nThe firewall blocks never expire and the IPs stay in the threat database until you clear them.' :
         'Block ' + ips.length + ' IP(s) for 24 hours?\n\nThis will block them in the firewall and add them to the threat database for the same 24 hours. Permanent and longer blocks are skipped; unblock them explicitly before changing their lifetime.';
     var label = permanent ? 'Permanently blocked ' : 'Blocked ';
-    return CSM.confirm(question).then(function() {
+    return CSM.confirm(question, { danger: true, okLabel: 'Block' }).then(function() {
         return CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: permanent ? 'block_permanent' : 'block' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             if (data.count > 0) CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
@@ -590,7 +590,7 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
         CSM.toast('Too many IPs selected (' + ips.length + '); the bulk limit is ' + CSM.THREAT_BULK_MAX + '. Narrow the selection and repeat.', 'error');
         return;
     }
-    CSM.confirm('Permanently whitelist ' + ips.length + ' IP(s)?\n\nThis will unblock from firewall, add to allow list, and remove from all threat databases.').then(function() {
+    CSM.confirm('Permanently whitelist ' + ips.length + ' IP(s)?\n\nThis will unblock from firewall, add to allow list, and remove from all threat databases.', { danger: true, okLabel: 'Whitelist' }).then(function() {
         CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'whitelist' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             CSM.toast(data.count + ' IP(s) whitelisted successfully', 'success');

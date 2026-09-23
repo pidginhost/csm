@@ -267,7 +267,7 @@ if (bulkDeleteBtn) {
         if (!_quarBulk || _quarMutationBusy) return;
         var ids = _quarBulk.selectedValues();
         if (ids.length === 0) return;
-        CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?').then(function() {
+        CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?', { danger: true, okLabel: 'Delete' }).then(function() {
             return withQuarantineMutation(function() {
                 var deleted = 0, undeletable = 0;
                 return CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,

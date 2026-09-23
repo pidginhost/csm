@@ -218,7 +218,7 @@
     function confirmLeaveIfDirty() {
         if (!dirty) return Promise.resolve();
         if (pendingLeaveConfirm) return pendingLeaveConfirm;
-        pendingLeaveConfirm = CSM.confirm("You have unsaved changes in this section. Discard them?")
+        pendingLeaveConfirm = CSM.confirm("You have unsaved changes in this section. Discard them?", { danger: true, okLabel: "Discard" })
             .then(function () {
                 pendingLeaveConfirm = null;
             }, function (err) {

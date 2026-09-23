@@ -836,7 +836,7 @@ function whitelistIP(ip, durationHours, onSuccess) {
     var confirmMsg = permanent
         ? 'Whitelist ' + ip + ' permanently?\n\nThis will unblock the IP, add a firewall allow rule, and prevent future auto-blocking.'
         : 'Temporarily whitelist ' + ip + ' for ' + durationHours + ' hours?';
-    CSM.confirm(confirmMsg).then(function() {
+    CSM.confirm(confirmMsg, { danger: permanent, okLabel: permanent ? 'Whitelist' : 'OK' }).then(function() {
         var endpoint = permanent ? '/api/v1/threat/whitelist-ip' : '/api/v1/threat/temp-whitelist-ip';
         var payload = permanent ? { ip: ip } : { ip: ip, hours: parseInt(durationHours, 10) };
         CSM.post(endpoint, payload).then(function() {
@@ -1070,7 +1070,7 @@ document.getElementById('block-form').addEventListener('submit', function(e) {
         ? { cidr: target, reason: reason, duration: duration }
         : { ip: target, reason: reason, duration: duration };
 
-    CSM.confirm('Block ' + confirmLabel + '?').then(function() {
+    CSM.confirm('Block ' + confirmLabel + '?', { danger: true, okLabel: 'Block' }).then(function() {
         CSM.post(endpoint, payload).then(function() {
             document.getElementById('block-target').value = '';
             document.getElementById('block-reason').value = '';

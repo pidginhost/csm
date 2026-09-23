@@ -215,7 +215,7 @@
         if (fileMutationBusy) return;
         var ids = selectedFileIDs();
         if (ids.length === 0) return;
-        CSM.confirm('Permanently delete ' + ids.length + ' file backup(s)?').then(function() {
+        CSM.confirm('Permanently delete ' + ids.length + ' file backup(s)?', { danger: true, okLabel: 'Delete' }).then(function() {
             return withFileBulkButtons('cleanup-files-delete-btn', '<i class="ti ti-trash"></i>&nbsp;Deleting...', function() {
                 var deleted = 0, undeletable = 0;
                 return CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,
