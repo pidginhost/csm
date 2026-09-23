@@ -410,10 +410,11 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	if fromStr == "" && toStr == "" && sevStr == "" && searchStr == "" && checksStr == "" {
 		findings, total := s.store.ReadHistory(limit, offset)
 		writeJSON(w, map[string]interface{}{
-			"findings": withAccountIP(findings),
-			"total":    total,
-			"limit":    limit,
-			"offset":   offset,
+			"findings":  withAccountIP(findings),
+			"total":     total,
+			"limit":     limit,
+			"offset":    offset,
+			"truncated": historyPageTruncated(total, offset, len(findings)),
 		})
 		return
 	}
@@ -437,8 +438,14 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 		"total":     total,
 		"limit":     limit,
 		"offset":    offset,
-		"truncated": false,
+		"truncated": historyPageTruncated(total, offset, len(findings)),
 	})
+}
+
+// historyPageTruncated reports whether matches exist past the returned page.
+// total counts every match, so a client can page on through offset.
+func historyPageTruncated(total, offset, returned int) bool {
+	return total > offset+returned
 }
 
 // historyFinding decorates a stored finding with the normalized account and
