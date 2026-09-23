@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/signatures"
-	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yara"
 )
 
@@ -142,46 +141,4 @@ func (s *Server) apiRulesReload(w http.ResponseWriter, r *http.Request) {
 	s.auditLog(r, "rules_reload", "signatures", fmt.Sprintf("errors: %d", len(errors)))
 
 	writeJSON(w, result)
-}
-
-// GET/POST /api/v1/rules/modsec-escalation - manage rules excluded from auto-block
-func (s *Server) apiModSecEscalation(w http.ResponseWriter, r *http.Request) {
-	db := store.Global()
-
-	if r.Method == http.MethodPost {
-		if db == nil {
-			writeJSONError(w, "Store not available", http.StatusInternalServerError)
-			return
-		}
-		var req struct {
-			Rules []int `json:"rules"`
-		}
-		if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil {
-			writeJSONError(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-		rules := make(map[int]bool)
-		for _, id := range req.Rules {
-			rules[id] = true
-		}
-		if err := db.SetModSecNoEscalateRules(rules); err != nil {
-			writeJSONError(w, fmt.Sprintf("Save failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-		s.auditLog(r, "modsec_escalation", "no-escalate rules", fmt.Sprintf("%d rule id(s)", len(rules)))
-		writeJSON(w, map[string]interface{}{"ok": true, "count": len(rules)})
-		return
-	}
-
-	// GET
-	var ids []int
-	if db != nil {
-		for id := range db.GetModSecNoEscalateRules() {
-			ids = append(ids, id)
-		}
-	}
-	if ids == nil {
-		ids = []int{}
-	}
-	writeJSON(w, map[string]interface{}{"rules": ids})
 }

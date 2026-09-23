@@ -963,7 +963,6 @@ GET    /api/v1/suppressions      Suppression rules
 POST   /api/v1/rules/reload      Reload signature rules from disk
 POST   /api/v1/suppressions      Add a suppression rule
 DELETE /api/v1/suppressions      Delete a suppression rule by id
-POST   /api/v1/rules/modsec-escalation   ModSec escalation override
 ```
 
 `POST /api/v1/suppressions` takes `{"check", "path_pattern", "reason"}`. The path pattern is a glob and must be valid. A rule that covers every path of a check, hiding all its findings and stopping their remediation, needs `"all_paths": true` and no `path_pattern`; an empty pattern without it returns 400. `check` must be a check name, not a pattern: letters, digits, `_`, `.`, `:` and `-`. A name that is neither a known check nor the check of a current finding is saved, and the response carries a `warning` saying the rule matches nothing yet.

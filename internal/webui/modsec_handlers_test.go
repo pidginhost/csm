@@ -143,3 +143,20 @@ func TestAPIModSecRulesEscalationRequiresStore(t *testing.T) {
 		t.Fatalf("unavailable store = %d, want 500; body: %s", w.Code, w.Body.String())
 	}
 }
+
+// The escalation exclusion set has one writer. A second route replaced the
+// whole set with any integers, skipping the CSM rule range check the
+// per-rule route enforces.
+func TestModSecEscalationSetHasOneWriter(t *testing.T) {
+	s := newTestServer(t, "tok")
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(method, "/api/v1/rules/modsec-escalation", strings.NewReader(`{"rules":[1]}`))
+		req.Header.Set("Authorization", "Bearer tok")
+		req.Header.Set("Content-Type", "application/json")
+		s.httpSrv.Handler.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s /api/v1/rules/modsec-escalation = %d, want 404", method, w.Code)
+		}
+	}
+}

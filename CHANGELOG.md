@@ -145,6 +145,10 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - Findings can now suppress a selection at once, creating one rule per selected file; findings that name no file are skipped so a check-wide rule is never created in bulk.
 - The account page is now linked from the finding detail, account groups on Findings, incident detail and the accounts targeted in a Threat Intel lookup, and the command palette opens an account typed by name and lists Sessions.
 
+### Removed
+
+- **Breaking:** `POST /api/v1/rules/modsec-escalation`, which replaced the whole escalation exclusion list without checking rule IDs, is removed. Use `POST /api/v1/modsec/rules/escalation` to change one rule at a time.
+
 
 ## [3.43.0] - 2026-09-22
 

@@ -2395,7 +2395,7 @@ func TestEveryNamedMutatorRouteEnforcesCSRF(t *testing.T) {
 	}
 	allText := text + "\n" + string(settingsSrc)
 	muxLine := regexp.MustCompile(`mux\.Handle\("[^"]+",\s*(.+)\)\s*(?://.*)?$`)
-	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiVerifiedBotsApply|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiPerfFixWPCron|apiEmailQuarantineAction|apiEmailFlushBackscatter|apiIncidentRouter|apiGeoIPBatch)\b`)
+	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecRulesApply|apiModSecRulesEscalation|apiVerifiedBotsApply|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiPerfFixWPCron|apiEmailQuarantineAction|apiEmailFlushBackscatter|apiIncidentRouter|apiGeoIPBatch)\b`)
 	handlerSymbol := regexp.MustCompile(`s\.(api[A-Za-z0-9]+)`)
 	internalCSRF := map[string]string{
 		"apiSettings": "s.requireCSRF(http.HandlerFunc(s.apiSettingsPost)).ServeHTTP(w, r)",
@@ -2493,7 +2493,6 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		{"POST", "/api/v1/threat/temp-whitelist-ip"},
 		{"POST", "/api/v1/threat/bulk-action"},
 		{"POST", "/api/v1/rules/reload"},
-		{"POST", "/api/v1/rules/modsec-escalation"},
 		{"POST", "/api/v1/suppressions"},
 		{"DELETE", "/api/v1/suppressions"},
 		{"POST", "/api/v1/modsec/rules/apply"},
