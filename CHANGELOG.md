@@ -11,7 +11,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
-- Replay reports reject malformed block targets and negative manifest counts, and preserve hourly statistics across long recording spans. Valid early timestamps no longer cause a false clock-order error.
 - The deep scan no longer sends every file it reads to the PHP analysis worker. Files that cannot hold a remote-code flow are ruled out in the daemon, so images and plain text no longer queue behind real analyses, start the worker, or count as unexamined while it is unavailable.
 - Deciding whether a written file sits under an account or document root, which the real-time monitor does for every watched write, is much cheaper.
 - A rules download or package upgrade that leaves the rules unchanged no longer queues a full rescan of every file on the host. On hosts with a rules download URL set, the unchanged download rewrote the installed rules daily and after each restart, each time queuing a full rescan and a warning finding.
@@ -25,8 +24,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
-- Replay report destinations can no longer overwrite recordings or manifests through ambiguous paths, and reports are staged beside the resolved destination.
-- Recording exports reject more ambiguous inputs and destination aliases, detect embedded raw identifiers, and keep address pseudonyms consistent across streams. Publication errors now distinguish restored outputs from completed exports with leftover recovery files.
 - The scheduled PHP content scan no longer skips a file that was edited in place with its size kept and its modification time set back; the change time, which cannot be set that way, is now compared as well. After upgrading, each PHP file is read again the next time the scan visits it.
 - Cron findings containing known persistence patterns now retain their severity during maintenance, including when the payload is encoded.
 - Control-panel provenance now requires a resolved executable even when process details come from the cache. Live cron writes containing persistence tokens retain their original severity during maintenance.
@@ -34,14 +31,14 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 ### Changed
 
 - The roadmap clarifies planned response safeguards, capacity validation and operator visibility when automatic action cannot safely proceed. Existing response controls remain unchanged.
-- Recorded finding streams now carry salted finding ids, and the recording tool's summary and errors no longer repeat check names, paths or input values.
+- Recorded finding streams now carry salted finding ids and count addresses that share a pseudonym, and the recording tool's summary and errors no longer repeat check names, paths or input values. The tool also refuses ambiguous input, output paths that alias its inputs and raw identifiers left in its output, and maps equivalent IPv6 spellings to one pseudonym.
 
 ### Added
 
 - The privileged-operation JSON inventory now includes action risk and current safety and recovery coverage.
 - The capability matrix and `csm privileges` now show a risk tier for every privileged operation, from read-only detection to destructive responses.
 - The finding-stream tool can anonymize the action and firewall audit logs alongside a recording and write a manifest of digests, join counts and missing streams. Rows it cannot classify refuse the run, and a failed run leaves earlier output in place.
-- A replay tool runs a recorded finding stream through a model of the current automatic block limit, retry queue and temporary deny limit, and reports aggregate outcomes with the assumptions they rest on.
+- A replay tool runs a recorded finding stream through a model of the current automatic block limit, retry queue and temporary deny limit, and reports aggregate outcomes with the assumptions they rest on and the block paths it leaves out.
 
 ## [3.43.0] - 2026-09-22
 
