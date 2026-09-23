@@ -376,10 +376,10 @@ var operations = []Op{
 		ID:   "respond.block_ip",
 		Risk: RiskContain,
 		Contract: &SafetyContract{
-			Authority: "scan blocks require an eligible registry check, auto_response.enabled and block_ips, and non-observe mode; other automatic callers retain their own gates; the wired engine dry_run callback suppresses live automatic blocks",
+			Authority: "single-IP scan blocks require a check the registry marks blockable, auto_response.enabled and block_ips, and non-observe mode; the subnet-spray, ASN-crawl and netblock escalation paths block subnets under their own fixed rules without consulting the registry; other automatic callers retain their own gates; the wired engine dry_run callback suppresses live automatic blocks",
 			Identity:  "single-IP targets are canonicalized; infrastructure, local, loopback, unspecified, link-local and operator-allow checks run under the engine lock; verified-range callbacks run outside that lock; subnet paths check protected overlap; the engine does not authenticate registry evidence",
 			Recovery:  "temporary single-IP elements expire in the kernel; temporary subnet expiry requires daemon cleanup because subnet sets have no kernel timeouts; unblock or blocked-IP flush removes IP entries, while subnets require subnet removal; permanent entries do not expire and inverse operations do not reconstruct evicted entries or lost traffic",
-			Limit:     "max_blocks_per_hour covers the scan admission path, not every automatic caller; single-IP deny limits do not provide an all-source or subnet ceiling",
+			Limit:     "max_blocks_per_hour charges single-IP scan blocks and ASN-crawl subnets only; subnet-spray and netblock escalation subnets, and challenge-timeout, incident, spray and central-intel blocks, are not charged; single-IP deny limits do not provide an all-source or subnet ceiling",
 		},
 		Audited:          true,
 		Subsystem:        "response",

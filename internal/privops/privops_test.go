@@ -761,3 +761,26 @@ func TestMarkdownReportsRiskTier(t *testing.T) {
 		}
 	}
 }
+
+// The block_ip contract is public. It must state which automatic block paths
+// the check registry and the hourly budget govern, so an uncharged subnet
+// path cannot hide behind a general claim.
+func TestBlockIPContractStatesRegistryAndBudgetScope(t *testing.T) {
+	var c *SafetyContract
+	for _, op := range Operations() {
+		if op.ID == "respond.block_ip" {
+			c = op.Contract
+		}
+	}
+	if c == nil {
+		t.Fatal("respond.block_ip has no contract")
+	}
+	wantAuthority := "single-IP scan blocks require a check the registry marks blockable, auto_response.enabled and block_ips, and non-observe mode; the subnet-spray, ASN-crawl and netblock escalation paths block subnets under their own fixed rules without consulting the registry; other automatic callers retain their own gates; the wired engine dry_run callback suppresses live automatic blocks"
+	wantLimit := "max_blocks_per_hour charges single-IP scan blocks and ASN-crawl subnets only; subnet-spray and netblock escalation subnets, and challenge-timeout, incident, spray and central-intel blocks, are not charged; single-IP deny limits do not provide an all-source or subnet ceiling"
+	if c.Authority != wantAuthority {
+		t.Errorf("block_ip Authority = %q\nwant %q", c.Authority, wantAuthority)
+	}
+	if c.Limit != wantLimit {
+		t.Errorf("block_ip Limit = %q\nwant %q", c.Limit, wantLimit)
+	}
+}
