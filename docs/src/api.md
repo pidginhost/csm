@@ -24,7 +24,7 @@ the same management operations as these admin-only endpoints:
 | Method | Path | Result |
 | --- | --- | --- |
 | GET | `/api/v1/sessions` | `items` list of sessions with `id`, `name`, `created`, `last_seen`, `expires`, `remote_ip`, `user_agent`, `current` |
-| DELETE | `/api/v1/sessions/<id>` | Revoke that session; unknown IDs are an idempotent success |
+| DELETE | `/api/v1/sessions/<id>` | Revoke that session; an unknown ID answers 404 |
 | DELETE | `/api/v1/sessions` | Revoke all browser sessions, including the caller's |
 
 Revocation returns `{"ok":true}` only after committing to the store. Failure
@@ -50,6 +50,31 @@ webui:
 ```
 
 The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
+
+## Errors
+
+Every failure answers a non-2xx status with a JSON body that has an `error`
+message. That includes CSRF, origin, rate-limit and wrong-method refusals.
+Some failures add detail next to it; a settings save that fails validation
+adds `errors`, a list of fields and messages. An unknown path under `/api/`
+answers 404. No 2xx response reports a failure.
+
+```json
+{"error": "invalid IP address"}
+```
+
+## Actions
+
+A request that changes state answers `"ok": true` with the action's own
+fields, such as `undo_token` or `warning`. Work that continues after the
+answer, such as a daemon restart, a firewall rollback or a scan job, answers
+202. A batch where some items failed answers 200 and lists the failures; a
+batch where nothing changed answers an error status. A read-only route
+answers 405 to any method but GET.
+
+`/api/v1/firewall/check` and `/api/v1/firewall/unban` also send
+`"success": true` for callers written against the older API. It will be
+removed; use the status code and `ok`.
 
 ## Lists
 
@@ -147,6 +172,7 @@ GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix inf
                                  the same evidence auto-block acts on
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
 GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=).
+                                 checks is a comma-separated list of check names to include.
                                  total counts every match; truncated is true when matches exist past the page
 GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
 GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
@@ -1168,7 +1194,7 @@ view collection is stored as one 64 KiB preference blob. `page` and
 underscore, hyphen, or dot, up to 64 bytes. Each view has at most 32
 params, and param string values are capped at 256 bytes. `name` must be
 1-80 bytes with no control characters. `PUT` and `DELETE` return
-`{"status":"ok"}` on success.
+`"ok": true` on success.
 
 ## Bulk-action undo
 
@@ -1198,7 +1224,7 @@ Non-empty response shape for `GET /api/v1/undo/pending`:
 }
 ```
 
-`POST /api/v1/undo/run` returns `{status, action, inverse, count}` on
+`POST /api/v1/undo/run` returns `{ok, action, inverse, count}` on
 success, or `410 Gone` when the entry is missing, already consumed, or
 past its 30-second TTL. Recognised inverse action keys are
 `threat_bulk_unblock`, `threat_bulk_block`, `threat_bulk_unwhitelist`,

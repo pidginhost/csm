@@ -8,7 +8,8 @@
 # Method is derived from the route wrapper: CSRF-protected routes are
 # state-changing methods, the rest are GETs. Response bodies are typed as
 # generic JSON objects in this v1; per-endpoint response schemas can be
-# tightened incrementally without changing route coverage.
+# tightened incrementally without changing route coverage. The shapes every
+# route shares (Error, ActionResult, ItemList) are defined under components.
 openapi: 3.1.0
 info:
   title: CSM HTTP API
@@ -17,7 +18,11 @@ info:
     Continuous Security Monitor daemon API. API clients authenticate with a
     bearer token from webui.tokens. Read-scope tokens authorize the GET
     endpoints marked x-csm-scope=read; management routes require an
-    admin-scope token.
+    admin-scope token. Every failure is a non-2xx status with an Error body.
+    A state change answers an ActionResult, 202 for work that continues after
+    the answer. A list answers an ItemList. Times are RFC 3339 instants in
+    UTC, durations are seconds in keys ending in _seconds, severities are
+    CRITICAL, HIGH or WARNING, and an empty list is [] rather than null.
 servers:
   - url: https://localhost:9443
     description: CSM daemon HTTPS listener (operator-configured host/port)
@@ -32,12 +37,46 @@ components:
   responses:
     Unauthorized:
       description: Missing, invalid, or insufficient-scope token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
       description: CSRF validation failed or cross-origin API request blocked.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
   schemas:
     JSONObject:
       type: object
       description: Endpoint-specific JSON. Per-field schema is a documented follow-up.
+      additionalProperties: true
+    Error:
+      type: object
+      description: Every failure. Some routes add detail next to error.
+      required: [error]
+      properties:
+        error: { type: string }
+      additionalProperties: true
+    ActionResult:
+      type: object
+      description: A state change that happened, with the action's own fields.
+      required: [ok]
+      properties:
+        ok: { type: boolean, const: true }
+      additionalProperties: true
+    ItemList:
+      type: object
+      description: >-
+        A list. total is present when the server counted every match; offset,
+        limit and truncated when the list is paged or capped. Other keys
+        describe the whole list.
+      required: [items]
+      properties:
+        items: { type: array, items: {} }
+        total: { type: integer }
+        offset: { type: integer }
+        limit: { type: integer }
+        truncated: { type: boolean }
       additionalProperties: true
 security:
   - bearerAuth: []
