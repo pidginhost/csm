@@ -39,8 +39,11 @@ func TestIncidentHeaderSelectsSizeToContent(t *testing.T) {
 // The grouped view filters on every status the API accepts.
 func TestGroupedIncidentsFilterOnEveryStatus(t *testing.T) {
 	text := readTemplateText(t, "incident")
-	block := text[strings.Index(text, `id="grouped-status-filter"`):]
-	block = block[:strings.Index(block, "</select>")]
+	_, block, found := strings.Cut(text, `id="grouped-status-filter"`)
+	if !found {
+		t.Fatal("no grouped status filter")
+	}
+	block, _, _ = strings.Cut(block, "</select>")
 	for _, status := range []string{"active", "all", "open", "contained", "resolved", "dismissed"} {
 		if !strings.Contains(block, `value="`+status+`"`) {
 			t.Errorf("grouped status filter lacks %s", status)
