@@ -2036,7 +2036,7 @@ func TestCSMRequestExposesAllowNonOKAndSilent(t *testing.T) {
 		`var allowNonOK = !!options.allowNonOK;`,
 		`var silent = !!options.silent;`,
 		`if (allowNonOK) {`,
-		`if (!silent) {`,
+		`if (!silent && !err.csmSessionExpired) csmRequestErrorToast(err);`,
 		`delete opts.timeoutMs;`,
 		`delete opts.allowNonOK;`,
 		`delete opts.silent;`,
@@ -4902,7 +4902,7 @@ func csmSSEBody(t *testing.T, text string) string {
 		t.Fatal("csrf.js missing CSM.sse definition")
 	}
 	tail := text[start:]
-	end := strings.Index(tail, "\n})();\n\n// Connection-lost banner")
+	end := strings.Index(tail, "\n})();\n")
 	if end == -1 {
 		t.Fatal("csrf.js CSM.sse has no terminator")
 	}

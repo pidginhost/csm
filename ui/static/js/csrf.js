@@ -274,6 +274,44 @@ CSM.apiUrl = function(path) {
 //                        failure (used by background pollers that have
 //                        their own error UI).
 // All other keys are forwarded to fetch() unchanged.
+// Every page request goes through CSM.request, so connection health and
+// session expiry are tracked here. The banner is the single signal for an
+// unreachable daemon: network failures, timeouts and 5xx answers count toward
+// it, and any other answer proves the daemon is up and clears it.
+CSM.connection = (function() {
+    var failures = 0;
+    function banner() { return document.getElementById('csm-connection-lost'); }
+    return {
+        up: function() {
+            failures = 0;
+            var b = banner();
+            if (b) b.classList.add('d-none');
+        },
+        down: function() {
+            failures++;
+            if (failures < 3) return;
+            var b = banner();
+            if (b) b.classList.remove('d-none');
+        },
+        isLost: function() { return failures >= 3; }
+    };
+})();
+
+var csmSessionRedirected = false;
+var csmRecentErrorToasts = {};
+
+// The same error from a poller that keeps failing is shown once per window,
+// and not at all while the banner already says the daemon is unreachable.
+function csmRequestErrorToast(err) {
+    var unreachable = err.name === 'AbortError' || err.csmNetwork || (err.status >= 500);
+    if (unreachable && CSM.connection.isLost()) return;
+    var message = err.name === 'AbortError' ? 'Request timed out' : 'Request failed: ' + err.message;
+    var now = Date.now();
+    if (csmRecentErrorToasts[message] && now - csmRecentErrorToasts[message] < 30000) return;
+    csmRecentErrorToasts[message] = now;
+    CSM.toast(message, 'error');
+}
+
 CSM.request = function(url, options) {
     var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
     options = options || {};
@@ -288,25 +326,39 @@ CSM.request = function(url, options) {
     delete opts.silent;
     return fetch(resolvedUrl, opts).then(function(r) {
         if (timeoutId) clearTimeout(timeoutId);
+        if (r.status >= 500) CSM.connection.down(); else CSM.connection.up();
+        if (r.status === 401) {
+            // The browser session ended (expiry, revocation or restart).
+            // Every open request sees it; the page leaves once.
+            if (!csmSessionRedirected) {
+                csmSessionRedirected = true;
+                window.location.assign('/login');
+            }
+            var expired = new Error('Session expired');
+            expired.csmSessionExpired = true;
+            throw expired;
+        }
         if (allowNonOK) {
             if (r.ok && CSM.refresh) CSM.refresh.bump();
             return r;
         }
         if (!r.ok) {
-            return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
-                .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
+            return r.json().catch(function() { return {}; }).then(function(body) {
+                var httpErr = new Error((body && body.error) || 'HTTP ' + r.status);
+                httpErr.status = r.status;
+                throw httpErr;
+            });
         }
         if (CSM.refresh) CSM.refresh.bump();
         return r;
-    }).catch(function(err) {
+    }, function(err) {
+        // fetch itself rejected: the request never got an answer.
         if (timeoutId) clearTimeout(timeoutId);
-        if (!silent) {
-            if (err.name === 'AbortError') {
-                CSM.toast('Request timed out', 'error');
-            } else {
-                CSM.toast('Request failed: ' + err.message, 'error');
-            }
-        }
+        if (err.name !== 'AbortError') err.csmNetwork = true;
+        CSM.connection.down();
+        throw err;
+    }).catch(function(err) {
+        if (!silent && !err.csmSessionExpired) csmRequestErrorToast(err);
         throw err;
     });
 };
@@ -591,29 +643,6 @@ CSM.sse = (function() {
             closeStream();
             setState(STATES.disconnected);
         }
-    };
-})();
-
-// Connection-lost banner: tracks consecutive fetch failures
-(function() {
-    var failCount = 0;
-    var origFetch = CSM.fetch;
-    CSM.fetch = function(url, opts) {
-        return origFetch(url, opts).then(function(resp) {
-            if (failCount > 0) {
-                failCount = 0;
-                var banner = document.getElementById('csm-connection-lost');
-                if (banner) banner.classList.add('d-none');
-            }
-            return resp;
-        }).catch(function(err) {
-            failCount++;
-            if (failCount >= 3) {
-                var banner = document.getElementById('csm-connection-lost');
-                if (banner) banner.classList.remove('d-none');
-            }
-            throw err;
-        });
     };
 })();
 
