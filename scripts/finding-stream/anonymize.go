@@ -30,6 +30,9 @@ type Anonymizer struct {
 	emails     map[string]struct{}
 	counts     map[string]int
 	pseudonyms map[string]struct{}
+	ids        map[string]idKind   // emitted salted id -> its domain
+	rawIDs     map[string]struct{} // learned raw ids made of id token bytes
+	rawIDText  map[string]struct{} // learned raw ids with other bytes
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
@@ -42,6 +45,9 @@ func NewAnonymizer(salt []byte) *Anonymizer {
 		emails:     make(map[string]struct{}),
 		counts:     make(map[string]int),
 		pseudonyms: make(map[string]struct{}),
+		ids:        make(map[string]idKind),
+		rawIDs:     make(map[string]struct{}),
+		rawIDText:  make(map[string]struct{}),
 	}
 }
 
@@ -64,7 +70,7 @@ var (
 	accountRe         = regexp.MustCompile(`Account: ([A-Za-z0-9._-]+)`)
 	secretRe          = regexp.MustCompile(`(?is)(["']?(?:passw(?:or)?d|secret|token|api[_-]?key)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|\S+)`)
 	domainCandidateRe = regexp.MustCompile(`(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}`)
-	emittedNameRe     = regexp.MustCompile(`(?:acct|host|dom|user)-[0-9a-f]{6}(?:\.example)?`)
+	emittedNameRe     = regexp.MustCompile(`(?:acct|host|dom|user)-[0-9a-f]{6}(?:\.example)?|(?:fid|aid|iid|tid)-[0-9a-f]{32}`)
 	ipv4Re            = regexp.MustCompile(`(?:[0-9]+\.){3}[0-9]+`)
 )
 
@@ -705,6 +711,18 @@ func (a *Anonymizer) leaksIn(text string) []string {
 	for _, raw := range unmaskedIPv6(text) {
 		found["ipv6 "+raw] = struct{}{}
 	}
+	if len(a.rawIDs) > 0 {
+		for _, tok := range idTokens(text) {
+			if _, ok := a.rawIDs[tok]; ok {
+				found["id "+tok] = struct{}{}
+			}
+		}
+	}
+	for id := range a.rawIDText {
+		if strings.Contains(text, id) {
+			found["id "+id] = struct{}{}
+		}
+	}
 	out := make([]string, 0, len(found))
 	for f := range found {
 		out = append(out, f)
@@ -746,6 +764,23 @@ func unmaskedIPv6(text string) []string {
 	}
 	return found
 }
+
+// idTokenBytes are the bytes raw ids are made of: hex digests, base32 text
+// and prefixed forms such as inc_<hex>.
+const idTokenBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+
+// idTokens splits text into maximal runs of id bytes, so a learned raw id is
+// found by one set lookup per token instead of a scan per id.
+func idTokens(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool { return r > 0x7f || !idTokenByte[r] })
+}
+
+var idTokenByte = func() (table [0x80]bool) {
+	for i := range len(idTokenBytes) {
+		table[idTokenBytes[i]] = true
+	}
+	return table
+}()
 
 func isIPByte(c byte) bool {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == ':' || c == '.'
