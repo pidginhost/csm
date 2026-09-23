@@ -40,6 +40,33 @@ test('re-creating a table on the same element retires the previous instance', as
     assert.equal(page.run("CSM._tableInstances.filter(function (t) { return t.table && t.table.id === 't'; }).length"), 1);
 });
 
+// Reordering rows after a filter or sort must not scan the row list once per
+// row; on a few thousand findings that made every keystroke in search slow.
+test('reordering rows does not scan the row list per row', () => {
+    const names = [];
+    for (let i = 0; i < 2000; i++) names.push('row' + i);
+    const page = tablePage(names);
+    page.run("window.__table = new CSM.Table({ tableId: 't', searchId: 's', perPage: 25 })");
+    // Array literals in page code use the page realm's own prototype, not the
+    // Array the harness exposes as a global, so patch the literal's prototype.
+    page.run(`
+        window.__longestScan = 0;
+        var pageArrays = Object.getPrototypeOf([]);
+        var realIndexOf = pageArrays.indexOf;
+        pageArrays.indexOf = function() {
+            if (this.length > window.__longestScan) window.__longestScan = this.length;
+            return realIndexOf.apply(this, arguments);
+        };
+        window.__table._orderRows();
+        pageArrays.indexOf = realIndexOf;
+    `);
+    assert.ok(page.window.__longestScan < 100, 'scanned a list of ' + page.window.__longestScan);
+    const order = page.document.querySelectorAll('#t tbody tr').map(r => r.textContent);
+    assert.equal(order.length, 2000);
+    assert.equal(order[0], 'row0');
+    assert.equal(order[1999], 'row1999');
+});
+
 test('search filters rows and shows the empty state when nothing matches', async () => {
     const page = tablePage(['alpha', 'beta']);
     page.run("new CSM.Table({ tableId: 't', searchId: 's', perPage: 25 })");

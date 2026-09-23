@@ -429,10 +429,12 @@ CSM.Table.prototype._orderRows = function() {
     if (!this.tbody || !this.allRows) return;
     this._removeEmptyState();
     var fragment = document.createDocumentFragment();
-    var seen = [];
+    // A Set, not an array: a membership scan per row made reordering
+    // quadratic in the number of rows.
+    var seen = new Set();
     var appendItem = function(item) {
-        if (!item || seen.indexOf(item) >= 0) return;
-        seen.push(item);
+        if (!item || seen.has(item)) return;
+        seen.add(item);
         fragment.appendChild(item.row);
         if (item.detail) fragment.appendChild(item.detail);
     };
