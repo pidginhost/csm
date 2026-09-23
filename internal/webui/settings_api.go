@@ -337,15 +337,6 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		writeValidationErrors(w, errs)
 		return
 	}
-	rebindErrs, err := credentialRebindErrors(section, effectiveDisk, body.Changes)
-	if err != nil {
-		writeJSONError(w, "read current settings: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if len(rebindErrs) > 0 {
-		writeValidationErrors(w, rebindErrs)
-		return
-	}
 	// Validate the merged result before the edited YAML goes back through
 	// Load. This looks like a duplicate of the check further down, but Load
 	// rejects some combinations itself and returns a plain error, which loses
@@ -372,6 +363,17 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	effectiveClone.ConfigFile = s.cfg.ConfigFile
+	// Drop-ins can replace the entered credential. Validate the actual
+	// destination/credential pair before either disk or live config changes.
+	rebindErrs, err := credentialRebindErrors(section, effectiveDisk, effectiveClone, body.Changes)
+	if err != nil {
+		writeJSONError(w, "read merged settings: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(rebindErrs) > 0 {
+		writeValidationErrors(w, rebindErrs)
+		return
+	}
 
 	validationResults := append(config.Validate(effectiveClone), config.ValidateDeepSection(effectiveClone, section.ID)...)
 	fieldErrors, warnings := splitValidationResults(validationResults)
@@ -503,40 +505,37 @@ const fileOnlyFieldMessage = "Change this in csm.yaml. The web UI cannot set com
 // credential of that URL to a new address unless the same save enters the
 // credential again. A credential read from an environment variable cannot be
 // re-entered here, so its address can only change in csm.yaml.
-func credentialRebindErrors(section SettingsSection, current *config.Config, changes map[string]json.RawMessage) ([]fieldError, error) {
+func credentialRebindErrors(section SettingsSection, current, candidate *config.Config, changes map[string]json.RawMessage) ([]fieldError, error) {
 	var errs []fieldError
-	var values map[string]interface{}
+	var before, after map[string]interface{}
 	for _, field := range section.Fields {
 		if field.CredentialField == "" {
 			continue
 		}
-		raw, ok := changes[field.YAMLPath]
-		if !ok {
-			continue
-		}
-		var next string
-		if err := json.Unmarshal(raw, &next); err != nil {
-			continue
-		}
-		if values == nil {
-			v, err := extractSectionEffectiveValues(current, section)
+		if before == nil {
+			var err error
+			before, err = extractSectionEffectiveValues(current, section)
 			if err != nil {
 				return nil, err
 			}
-			values = v
+			after, err = extractSectionEffectiveValues(candidate, section)
+			if err != nil {
+				return nil, err
+			}
 		}
-		if next == settingsStringAt(values, field.YAMLPath) {
+		if settingsStringAt(before, field.YAMLPath) == settingsStringAt(after, field.YAMLPath) {
 			continue
 		}
-		if env := settingsStringAt(values, field.CredentialEnvField); env != "" {
+		if env := settingsStringAt(after, field.CredentialEnvField); env != "" {
 			errs = append(errs, fieldError{Field: field.YAMLPath, Message: "The credential for this address is read from environment variable " + env + ". Change the address in csm.yaml."})
 			continue
 		}
-		if settingsStringAt(values, field.CredentialField) == "" {
+		secret := settingsStringAt(after, field.CredentialField)
+		if secret == "" {
 			continue
 		}
-		if enteredSecret(changes[field.CredentialField]) == "" {
-			errs = append(errs, fieldError{Field: field.YAMLPath, Message: "Enter the credential again when changing this address. The stored one would otherwise be sent to the new address."})
+		if entered := enteredSecret(changes[field.CredentialField]); entered == "" || entered != secret {
+			errs = append(errs, fieldError{Field: field.YAMLPath, Message: "Enter the effective credential again when changing this address. If a conf.d drop-in overrides it, change the address and credential in the configuration files."})
 		}
 	}
 	return errs, nil
@@ -564,10 +563,10 @@ func enteredSecret(raw json.RawMessage) string {
 		return ""
 	}
 	var v string
-	if err := json.Unmarshal(raw, &v); err != nil || v == config.RedactedValue {
+	if err := json.Unmarshal(raw, &v); err != nil || v == config.RedactedValue || strings.TrimSpace(v) == "" {
 		return ""
 	}
-	return strings.TrimSpace(v)
+	return v
 }
 
 func buildChangeSet(section SettingsSection, clone *config.Config, changes map[string]json.RawMessage) ([]config.YAMLChange, []fieldError) {

@@ -3,6 +3,7 @@ package webui
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -135,5 +136,48 @@ func TestAuditLogRotationKeepsHistoryUnderConcurrentWriters(t *testing.T) {
 	}
 	if lines != writers {
 		t.Fatalf("current log has %d entries, want %d", lines, writers)
+	}
+}
+
+func TestAuditActorMatchesAuthorizationAndSurvivesRevocation(t *testing.T) {
+	for _, revoke := range []bool{false, true} {
+		t.Run(fmt.Sprint(revoke), func(t *testing.T) {
+			s := auditActorServer(t)
+			readToken := newSuppressionID()
+			s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "reader", Token: readToken, Scope: "read"})
+			secret, rec, err := s.sessions.Create("alice", session.Hash(s.cfg.WebUI.Tokens[0].Token), "", "192.0.2.10", "test", time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/dismiss", nil)
+			r.AddCookie(&http.Cookie{Name: "csm_auth", Value: secret})
+			if !revoke {
+				r.Header.Set("Authorization", "Bearer "+readToken)
+			}
+			w := httptest.NewRecorder()
+			s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if revoke {
+					if err := s.sessions.Revoke(rec.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				s.auditLog(r, "dismiss", "webshell:test", "")
+			})).ServeHTTP(w, r)
+			entries := readUIAuditLog(s.cfg.StatePath, 1)
+			if len(entries) != 1 || entries[0].Actor != "alice" || entries[0].Via != "browser" {
+				t.Fatalf("audit must retain the authorizing browser actor: %+v", entries)
+			}
+		})
+	}
+}
+
+func TestAuditLargeDismissDoesNotHideSubsequentActions(t *testing.T) {
+	s := auditActorServer(t)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/dismiss", nil)
+	s.auditLog(r, "dismiss", "webshell:"+strings.Repeat("x", 300*1024), "")
+	s.auditLog(r, "block", "192.0.2.1", "")
+	entries := readUIAuditLog(s.cfg.StatePath, 2)
+	if len(entries) != 2 || entries[0].Action != "block" || entries[1].Action != "dismiss" {
+		t.Fatal("a large dismissal hid audit entries")
 	}
 }

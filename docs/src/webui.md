@@ -44,11 +44,18 @@ scope. The header links to session management.
 | **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer. Commands, file paths, sockets and environment variable names are shown read-only and change only in `csm.yaml`; changing the rspamd or upstream address requires entering its credential again |
 | **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session |
 
+Audit attribution is captured when the action is authorized and remains available
+if the browser session expires or is revoked while the action runs.
+
 ## Bulk file actions
 
 Select-all and every bulk action reach only the rows the table currently
 shows. Rows on other pages or hidden by a search or filter are never selected
 or acted on; set the page size to All to act on every row.
+Cleanup selection counts and buttons are refreshed whenever the visible rows change.
+
+A failed file restore cleans up its own destination copy while retaining the
+quarantined evidence. A replacement created by another writer is preserved.
 
 Quarantine and Cleanup delete large file selections in sequential batches.
 If a request fails, later batches are not sent; the page reports the confirmed
@@ -157,6 +164,10 @@ fixing something by hand instead of waiting for the next scan), **Dismiss**
 (stop alerts for it while it stays unchanged; a later scan that still finds it
 lists it again, and undo is offered for 30 seconds), and **Suppress** (create a
 rule to hide similar findings for good).
+
+Dismissal undo preserves later dismissals, successful re-checks and baseline resets.
+Findings first received in real time stop alerting when dismissed, even before
+the next scheduled scan records them.
 
 Re-check appears only when CSM can test a current condition again. Supported
 targets include file permissions and content, phishing and `.htaccess` files,

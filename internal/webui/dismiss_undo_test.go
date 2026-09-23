@@ -16,7 +16,8 @@ func TestBulkDismissRecordsOneUndoForEveryKey(t *testing.T) {
 	s.store.Update([]alert.Finding{a, b})
 	s.store.SetLatestFindings([]alert.Finding{a, b})
 
-	body, _ := json.Marshal(map[string][]string{"keys": {a.Key(), b.Key()}})
+	// Duplicate keys are one dismissal, so their undo cannot invalidate itself.
+	body, _ := json.Marshal(map[string][]string{"keys": {a.Key(), b.Key(), a.Key()}})
 	rec := httptest.NewRecorder()
 	s.apiDismissFinding(rec, bearerRequest("POST", "/api/v1/dismiss", body))
 	if rec.Code != http.StatusOK {

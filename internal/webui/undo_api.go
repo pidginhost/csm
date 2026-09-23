@@ -346,9 +346,10 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		resp.Count = count
 	case undoInverseFindingUndismiss:
 		for _, d := range payload.Dismissals {
-			s.store.UndoDismiss(d)
+			if s.store.UndoDismiss(d) {
+				resp.Count++
+			}
 		}
-		resp.Count = len(payload.Dismissals)
 	default:
 		return undoRunResponse{}, fmt.Errorf("unknown inverse action %q", entry.Inverse)
 	}

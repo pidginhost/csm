@@ -11,6 +11,9 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Undoing a dismissal preserves later operator decisions and restores alerting for findings first received in real time.
+- Cleanup file selection counts and controls now follow pagination and filtering.
+- Failed ModSecurity rollbacks are reported as failures in both the response and audit history.
 - Suppression rules added, removed or imported at the same moment are all kept. Each change rewrote the whole rule set, so simultaneous changes silently dropped each other while every one reported success.
 - A quarantined file that bulk delete cannot remove now stays listed and the page says so. Its metadata used to be removed anyway, which hid the file from the list so it could neither be deleted again nor restored.
 - A quarantine restore that fails partway, for example because the account is over quota, no longer leaves a partial root-owned copy at the original path. That copy hid the entry from the quarantine list and made every retry fail.
@@ -29,6 +32,9 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Settings validate the effective credentials from configuration drop-ins before changing a service address.
+- Failed quarantine restores preserve files replaced by another writer and remain retryable after storage or destination changes.
+- Audit entries retain the administrator who authorized an action even when a session ends before completion. Large bulk actions no longer hide later audit entries.
 - The UI audit log now names the credential behind each action and records actions it used to miss: email quarantine release and delete, database object restores, ModSecurity rule changes, subnet blocks, allow-rule removals, cPHulk clears, bulk fixes, incident status changes, scans, logins, logouts and session revocations. An audit entry that cannot be written is now reported in the daemon log, and log rotation no longer loses history under concurrent writes.
 - The Settings page can no longer set the ModSecurity reload command, the rules and overrides file paths, the WP-Cron PHP binary, the clamd socket, the mail log and country database paths, or any environment variable name. A web UI session could use them to run commands or write files as root; they are now shown read-only and change only in csm.yaml.
 - A suppression rule that hides every finding of a check now has to be chosen explicitly. Leaving the path empty on the Findings or Rules page, or in an API request, used to create such a rule silently and stop all remediation for that check; a malformed path pattern, which never matched, is now refused as well.

@@ -81,6 +81,19 @@ func TestRestoreOverridesNilContentRemovesFile(t *testing.T) {
 	}
 }
 
+func TestRestoreOverridesReportsRemovalFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "overrides.conf")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "keep"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreOverrides(path, nil); err == nil {
+		t.Fatal("failed removal reported successful rollback")
+	}
+}
+
 func TestRestoreOverridesWritesBytesAtomically(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "overrides.conf")
 	content := []byte(overridesHeader + "SecRuleRemoveById 900777\n")

@@ -313,3 +313,38 @@ func TestSettingsPOSTCredentialURLUnchangedDoesNotNeedToken(t *testing.T) {
 		t.Fatalf("code = %d, want 200, body = %s", w.Code, w.Body.String())
 	}
 }
+
+func TestSettingsPOSTCredentialRebindHonorsDropInToken(t *testing.T) {
+	for _, service := range []string{"upstream", "rspamd"} {
+		t.Run(service, func(t *testing.T) {
+			// Generate fixture credentials; neither belongs in diagnostic output.
+			stored, entered := newSuppressionID(), newSuppressionID()
+			body := fileOnlyTestConfig + "reputation:\n  " + service + ":\n    url: https://intel.example.com\n"
+			s, cfgPath, _ := newSettingsTestServerWithConfDir(t, "tok", body, map[string]string{
+				"credential.yaml": "reputation:\n  " + service + ":\n    token: " + stored + "\n",
+			})
+			before, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changes, err := json.Marshal(map[string]string{service + ".url": "https://collector.example.net", service + ".token": entered})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := postSettingsChange(t, s, "reputation", string(changes))
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("credential overridden by drop-in: got %d, want 422", w.Code)
+			}
+			if settingsFieldErrors(t, w)[service+".url"] == "" {
+				t.Fatal("missing address validation error")
+			}
+			after, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("rejected credential rebind changed disk")
+			}
+		})
+	}
+}

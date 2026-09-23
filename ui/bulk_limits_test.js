@@ -328,3 +328,44 @@ test('Cleanup select-all and bulk delete never reach rows hidden by paging or fi
     assert.equal(requests.length, 1);
     assert.deepEqual(Array.from(requests[0].ids), ['a', 'b']);
 });
+
+test('Cleanup updates selection controls when paging hides selected rows', async () => {
+    const elements = new Map();
+    function element(id) {
+        if (!elements.has(id)) elements.set(id, {
+            id, disabled: false, checked: false, dataset: {}, listeners: {},
+            classList: { toggle() {} },
+            querySelectorAll() { return []; },
+            addEventListener(type, fn) { this.listeners[type] = fn; }
+        });
+        return elements.get(id);
+    }
+    const checkbox = {
+        checked: true, offsetParent: {}, dataset: {},
+        getAttribute() { return 'archive'; }, addEventListener() {}
+    };
+    let render;
+    const context = vm.createContext({
+        document: {
+            getElementById: element,
+            querySelector(selector) { return element(selector.slice(1)); },
+            querySelectorAll(selector) { return selector === '.cleanup-file-cb' ? [checkbox] : []; }
+        },
+        CSM: {
+            esc: String, fmtDate: String, formatSize: String,
+            get() { return Promise.resolve([{ id: 'archive' }]); },
+            Table: function(opts) { render = opts.onRender; },
+            loadError() { assert.fail('cleanup load failed'); }
+        }
+    });
+    const ui = script('csm-ui.js');
+    vm.runInContext(ui.slice(ui.indexOf('CSM.bulk = function'), ui.indexOf('// Shared focus trap.')), context);
+    vm.runInContext(script('cleanup-history.js').replace('    loadFileBackups();\n    loadDBBackups();', '    loadFileBackups();'), context);
+    await tick();
+    assert.equal(element('cleanup-files-delete-btn').disabled, false);
+    assert.equal(element('cleanup-files-select-all').checked, true);
+    checkbox.offsetParent = null;
+    if (render) render();
+    assert.equal(element('cleanup-files-delete-btn').disabled, true);
+    assert.equal(element('cleanup-files-select-all').checked, false);
+});

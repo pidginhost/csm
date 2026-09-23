@@ -36,40 +36,50 @@ func (s *Server) cookieTokenWithScope(r *http.Request, want string) (string, boo
 }
 
 func (s *Server) cookieSessionToken(r *http.Request, want string, touch bool) (string, bool) {
+	tok, ok := s.cookieSessionCredential(r, want, touch)
+	return tok.Token, ok
+}
+
+func (s *Server) cookieSessionCredential(r *http.Request, want string, touch bool) (config.WebUIToken, bool) {
 	c, err := r.Cookie("csm_auth")
 	if err != nil || s.sessions == nil {
-		return "", false
+		return config.WebUIToken{}, false
 	}
 	rec, err := s.sessions.Access(c.Value, s.sessionNow(), touch)
 	if err != nil {
-		return "", false
+		return config.WebUIToken{}, false
 	}
 	for _, tok := range s.cfg.WebUI.Tokens {
 		if tok.Name == rec.Name && session.Hash(tok.Token) == rec.Credential && tok.Scope == "admin" && webUITokenAllows(tok, want) {
-			return tok.Token, true
+			return tok, true
 		}
 	}
 	// A removed, rotated or downgraded login credential cannot leave a
 	// browser session active, even if a caller changes config in place.
 	_ = s.sessions.Revoke(rec.ID)
-	return "", false
+	return config.WebUIToken{}, false
 }
 
 func (s *Server) bearerTokenWithScope(r *http.Request, want string) (string, bool) {
+	tok, ok := s.bearerCredentialWithScope(r, want)
+	return tok.Token, ok
+}
+
+func (s *Server) bearerCredentialWithScope(r *http.Request, want string) (config.WebUIToken, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
-		return "", false
+		return config.WebUIToken{}, false
 	}
 	supplied := strings.TrimPrefix(auth, "Bearer ")
 	if supplied == "" {
-		return "", false
+		return config.WebUIToken{}, false
 	}
 	for _, tok := range s.cfg.WebUI.Tokens {
 		if webUITokenMatches(supplied, tok) && webUITokenAllows(tok, want) {
-			return supplied, true
+			return tok, true
 		}
 	}
-	return "", false
+	return config.WebUIToken{}, false
 }
 
 func webUITokenMatches(supplied string, tok config.WebUIToken) bool {
@@ -91,8 +101,12 @@ func webUITokenAllows(tok config.WebUIToken, want string) bool {
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.tokenHasScope(r, "admin") {
-			next.ServeHTTP(w, r)
+		if tok, ok := s.cookieSessionCredential(r, "admin", true); ok {
+			next.ServeHTTP(w, withAuditActor(r, tok.Name, "browser"))
+			return
+		}
+		if tok, ok := s.bearerCredentialWithScope(r, "admin"); ok {
+			next.ServeHTTP(w, withAuditActor(r, tok.Name, "api"))
 			return
 		}
 		// API calls get 401 JSON; browser requests get redirect to login

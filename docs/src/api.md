@@ -926,6 +926,10 @@ POST /api/v1/modsec/rules/apply        Apply custom rules
 POST /api/v1/modsec/rules/escalation   Change rule severity/action
 ```
 
+A failed rules reload reports `rolled_back: true` only when restoring the previous
+overrides succeeds. A rollback failure is reported in the response and audit log;
+inspect the overrides before trying another reload.
+
 ## Rules & Suppressions
 
 ```
@@ -1030,7 +1034,7 @@ POST /api/v1/settings/firewall/revert           Revert tentative firewall change
 
 Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Invalid field values return 422 and do not touch disk.
 
-Fields marked `file_only` in the schema are shown but refused on write with a 422: anything that names a command, an executable, a file path, a socket or an environment variable the daemon acts on as root can only be changed in `csm.yaml`. Changing `reputation.upstream.url` or `reputation.rspamd.url` also returns 422 unless the same request enters the credential for that address again, and is refused outright when the credential comes from an environment variable, so a stored credential is never sent to an address the caller picked. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
+Fields marked `file_only` in the schema are shown but refused on write with a 422: anything that names a command, an executable, a file path, a socket or an environment variable the daemon acts on as root can only be changed in `csm.yaml`. Changing `reputation.upstream.url` or `reputation.rspamd.url` also returns 422 unless the same request enters the effective credential for that address again, and is refused outright when the credential comes from an environment variable. A credential entered in the request must match the resulting configuration after `conf.d` merging; an overridden replacement cannot authorize sending the stored credential to another address. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
 
 ## Operator preferences
 
@@ -1089,7 +1093,7 @@ params, and param string values are capped at 256 bytes. `name` must be
 
 ## Bulk-action undo
 
-Bulk threat block / whitelist and bulk firewall unblock responses return
+Finding dismissals, bulk threat block / whitelist and bulk firewall unblock responses return
 an `undo_token` when the daemon queues an inverse operation server-side
 for 30 seconds. The UI surfaces a banner with the same TTL; CLI callers
 can act on the token through the endpoints below. Each successful undo
@@ -1119,9 +1123,14 @@ Non-empty response shape for `GET /api/v1/undo/pending`:
 success, or `410 Gone` when the entry is missing, already consumed, or
 past its 30-second TTL. Recognised inverse action keys are
 `threat_bulk_unblock`, `threat_bulk_block`, `threat_bulk_unwhitelist`,
-`threat_bulk_whitelist`, and `firewall_bulk_reblock`. Other bulk actions
+`threat_bulk_whitelist`, `firewall_bulk_reblock`, and `finding_undismiss`. Other bulk actions
 (quarantine delete, generic fix) do not surface an undo token because
 they have no clean inverse.
+
+Dismissals accept at most 500 keys per request and deduplicate repeated keys.
+Undo skips findings changed by a later dismissal, successful re-check or baseline
+reset, and `count` reports only the dismissals it actually reversed. Newer scan
+copies remain in the current findings list.
 
 ## Finding fields
 

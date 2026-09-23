@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -77,11 +78,12 @@ type Store struct {
 }
 
 type Entry struct {
-	Hash       string    `json:"hash"`
-	FirstSeen  time.Time `json:"first_seen"`
-	LastSeen   time.Time `json:"last_seen"`
-	AlertSent  time.Time `json:"alert_sent"`
-	IsBaseline bool      `json:"is_baseline"`
+	Hash        string    `json:"hash"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+	AlertSent   time.Time `json:"alert_sent"`
+	IsBaseline  bool      `json:"is_baseline"`
+	DismissalID string    `json:"dismissal_id,omitempty"`
 }
 
 func Open(path string) (*Store, error) {
@@ -1380,6 +1382,7 @@ func (s *Store) DismissFindingIfLatest(expected alert.Finding) bool {
 		s.mu.Lock()
 		if entry, exists := s.entries[expected.Key()]; exists {
 			entry.IsBaseline = true
+			entry.DismissalID = ""
 			s.dirty = true
 		}
 		s.mu.Unlock()
@@ -1452,6 +1455,7 @@ func (s *Store) DismissFinding(key string) {
 
 	if entry, exists := s.entries[key]; exists {
 		entry.IsBaseline = true
+		entry.DismissalID = ""
 		s.dirty = true
 	}
 }
@@ -1460,29 +1464,25 @@ func (s *Store) DismissFinding(key string) {
 // return the finding to the state it had before the operator dismissed it.
 type DismissUndo struct {
 	Key string `json:"key"`
-	// ClearBaseline is set when the dismissal turned an alerting entry into a
-	// baseline one. An entry that was already baseline stays baseline.
-	ClearBaseline bool `json:"clear_baseline,omitempty"`
-	// Removed holds the findings the dismissal took out of the latest list.
-	Removed []alert.Finding `json:"removed,omitempty"`
+	// Identity and hash prevent an old undo from reversing a later decision
+	// or changing alert state for newer evidence under the same key.
+	DismissalID   string          `json:"dismissal_id"`
+	Hash          string          `json:"hash"`
+	ClearBaseline bool            `json:"clear_baseline,omitempty"`
+	CreatedEntry  bool            `json:"created_entry,omitempty"`
+	Removed       []alert.Finding `json:"removed,omitempty"`
 }
 
-// DismissFindingWithUndo marks the finding baseline and removes it from the
-// latest list, like DismissFinding followed by DismissLatestFinding, and
-// returns what it changed.
+// DismissFindingWithUndo marks a finding as baseline and removes it from the
+// latest list as one operation. Latest-only findings also need alert state:
+// realtime findings can reach the UI before the next scan updates dedup state.
 func (s *Store) DismissFindingWithUndo(key string) DismissUndo {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	u := DismissUndo{Key: key}
-	s.mu.Lock()
-	if entry, exists := s.entries[key]; exists && !entry.IsBaseline {
-		entry.IsBaseline = true
-		s.dirty = true
-		u.ClearBaseline = true
-	}
-	s.mu.Unlock()
-
 	var kept []alert.Finding
 	for _, f := range s.latestFindings {
 		if f.Key() == key {
@@ -1491,36 +1491,55 @@ func (s *Store) DismissFindingWithUndo(key string) DismissUndo {
 		}
 		kept = append(kept, f)
 	}
+	entry := s.entries[key]
+	if entry == nil && len(u.Removed) > 0 {
+		now := time.Now()
+		entry = &Entry{Hash: findingHash(u.Removed[0]), FirstSeen: now, LastSeen: now}
+		s.entries[key] = entry
+		u.CreatedEntry = true
+	}
+	if entry != nil {
+		u.ClearBaseline = !entry.IsBaseline
+		entry.IsBaseline = true
+		entry.DismissalID = rand.Text()
+		u.DismissalID, u.Hash = entry.DismissalID, entry.Hash
+		s.dirty = true
+	}
 	s.latestFindings = kept
 	s.persistLatestLocked()
 	return u
 }
 
-// UndoDismiss reverses DismissFindingWithUndo. A copy of the finding that a
-// scan reported again in the meantime is newer evidence and is kept.
-func (s *Store) UndoDismiss(u DismissUndo) {
+// UndoDismiss reverses only the dismissal that still owns the entry. A copy
+// reported by a scan in the meantime is newer evidence and remains listed.
+func (s *Store) UndoDismiss(u DismissUndo) bool {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if u.ClearBaseline {
-		s.mu.Lock()
-		if entry, exists := s.entries[u.Key]; exists && entry.IsBaseline {
-			entry.IsBaseline = false
-			s.dirty = true
+	entry := s.entries[u.Key]
+	if u.DismissalID == "" || entry == nil || entry.DismissalID != u.DismissalID || entry.Hash != u.Hash {
+		return false
+	}
+	entry.DismissalID = ""
+	if u.CreatedEntry {
+		delete(s.entries, u.Key)
+	} else if u.ClearBaseline {
+		entry.IsBaseline = false
+	}
+	s.dirty = true
+	if len(u.Removed) > 0 {
+		merged := findingsByKey(s.latestFindings)
+		for _, f := range u.Removed {
+			if _, present := merged[f.Key()]; !present {
+				merged[f.Key()] = f
+			}
 		}
-		s.mu.Unlock()
+		s.latestFindings = orderAndCapLatest(merged)
+		s.persistLatestLocked()
 	}
-	if len(u.Removed) == 0 {
-		return
-	}
-	merged := findingsByKey(s.latestFindings)
-	for _, f := range u.Removed {
-		if _, present := merged[f.Key()]; !present {
-			merged[f.Key()] = f
-		}
-	}
-	s.latestFindings = orderAndCapLatest(merged)
-	s.persistLatestLocked()
+	return true
 }
 
 // ParseKey splits a state key "check:message" into its components.

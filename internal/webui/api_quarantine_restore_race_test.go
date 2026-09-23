@@ -213,6 +213,9 @@ func TestQuarantineRestoreAncestorSwapAfterCreate(t *testing.T) {
 			if w.Code != http.StatusConflict {
 				t.Fatalf("replaced parent: status %d, body %s", w.Code, w.Body.String())
 			}
+			if _, statErr := os.Lstat(filepath.Join(parent+".old", "file")); !os.IsNotExist(statErr) {
+				t.Errorf("failed restore left its partial file in the pinned parent: %v", statErr)
+			}
 			got, err := os.ReadFile(outsideFile)
 			if err != nil || string(got) != "survivor" {
 				t.Errorf("outside content changed: %q, %v", got, err)

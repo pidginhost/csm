@@ -1493,12 +1493,19 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, fmt.Sprintf("At most %d findings per request", dismissBulkMax), http.StatusBadRequest)
 		return
 	}
+	uniqueKeys := make([]string, 0, len(keys))
+	seenKeys := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		if key == "" {
 			writeJSONError(w, "Key is required", http.StatusBadRequest)
 			return
 		}
+		if !seenKeys[key] {
+			seenKeys[key] = true
+			uniqueKeys = append(uniqueKeys, key)
+		}
 	}
+	keys = uniqueKeys
 
 	undos := make([]state.DismissUndo, 0, len(keys))
 	for _, key := range keys {

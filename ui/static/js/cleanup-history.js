@@ -8,6 +8,7 @@
     // reach rows the table currently shows, never rows on other pages or
     // hidden by the search box.
     var fileBulk = null;
+    var fileTable = null;
 
     // Thin alias preserved so the rest of the file reads naturally; routes
     // through the shared CSM.get so timeouts and error toasts stay uniform.
@@ -51,6 +52,7 @@
         return getJSON('/api/v1/quarantine').then(function(files) {
             var el = document.getElementById('cleanup-files-content');
             var title = document.getElementById('cleanup-files-title');
+            if (fileTable) { fileTable.destroy(); fileTable = null; }
             removeEl('cleanup-files-table-controls');
             if (title) title.innerHTML = '<i class="ti ti-file-zip"></i>&nbsp;File Backups (' + (files ? files.length : 0) + ')';
             if (!files || files.length === 0) {
@@ -80,7 +82,7 @@
             }
             html += '</tbody></table></div>';
             el.innerHTML = html;
-            new CSM.Table({ tableId: 'cleanup-files-table', perPage: 25, searchId: 'cleanup-files-search', sortable: true, stateKey: 'csm-cleanup-files-table' });
+            fileTable = new CSM.Table({ tableId: 'cleanup-files-table', perPage: 25, searchId: 'cleanup-files-search', sortable: true, stateKey: 'csm-cleanup-files-table', onRender: updateFileBulkButtons });
             bindFileBackupActions(el);
         }).catch(function() {
             CSM.loadError(document.getElementById('cleanup-files-content'), loadFileBackups);

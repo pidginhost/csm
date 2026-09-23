@@ -87,3 +87,81 @@ func TestDismissFindingWithUndoOnUnknownKeyIsInert(t *testing.T) {
 		t.Fatal("undo must not create state for an unknown key")
 	}
 }
+
+func TestUndoDismissPreservesLaterDecisions(t *testing.T) {
+	for _, later := range []string{"dismiss", "dismiss-with-undo", "verified", "baseline"} {
+		t.Run(later, func(t *testing.T) {
+			s := openTestStore(t)
+			f := dismissTestFinding()
+			s.Update([]alert.Finding{f})
+			s.SetLatestFindings([]alert.Finding{f})
+			u := s.DismissFindingWithUndo(f.Key())
+			s.SetLatestFindings([]alert.Finding{f})
+			switch later {
+			case "dismiss":
+				s.DismissFinding(f.Key())
+				s.DismissLatestFinding(f.Key())
+			case "dismiss-with-undo":
+				s.DismissFindingWithUndo(f.Key())
+			case "verified":
+				if !s.DismissFindingIfLatest(f) {
+					t.Fatal("verification did not dismiss finding")
+				}
+			case "baseline":
+				s.SetBaseline([]alert.Finding{f})
+				s.ClearLatestFindings()
+			}
+			s.UndoDismiss(u)
+			if e, _ := s.EntryForKey(f.Key()); !e.IsBaseline {
+				t.Fatal("undo cleared a later baseline decision")
+			}
+			if len(s.LatestFindings()) != 0 {
+				t.Fatal("undo resurrected a finding removed by a later decision")
+			}
+		})
+	}
+}
+
+func TestDismissLatestOnlyFindingStopsAlertsAndUndoRestoresThem(t *testing.T) {
+	s := openTestStore(t)
+	f := dismissTestFinding()
+	s.SetLatestFindings([]alert.Finding{f})
+	u := s.DismissFindingWithUndo(f.Key())
+	if len(s.FilterNew([]alert.Finding{f})) != 0 {
+		t.Fatal("latest-only finding still alerts after dismissal")
+	}
+	s.Update([]alert.Finding{f})
+	s.UndoDismiss(u)
+	if len(s.FilterNew([]alert.Finding{f})) != 1 {
+		t.Fatal("undo did not restore latest-only alert state")
+	}
+}
+
+func TestDismissUndoSurvivesStoreReopen(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := dismissTestFinding()
+	s.Update([]alert.Finding{f})
+	s.SetLatestFindings([]alert.Finding{f})
+	u := s.DismissFindingWithUndo(f.Key())
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if !s.UndoDismiss(u) {
+		t.Fatal("dismiss identity did not survive reopening the store")
+	}
+	if e, _ := s.EntryForKey(f.Key()); e.IsBaseline {
+		t.Fatal("reopened undo kept the dismissed baseline")
+	}
+	if len(s.LatestFindings()) != 1 {
+		t.Fatal("reopened undo lost the finding")
+	}
+}

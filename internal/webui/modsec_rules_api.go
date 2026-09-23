@@ -186,19 +186,24 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	output, reloadErr := modsec.Reload(cfg.ReloadCommand)
 	if reloadErr != nil {
 		// Rollback on failure
-		_ = modsec.RestoreOverrides(cfg.OverridesFile, previousContent)
-		fmt.Fprintf(os.Stderr, "modsec: reload failed (rolled back): %v\noutput: %s\n", reloadErr, output)
+		rollbackErr := modsec.RestoreOverrides(cfg.OverridesFile, previousContent)
+		outcome := "Web server reload failed, changes rolled back"
+		if rollbackErr != nil {
+			outcome = "Web server reload failed; rollback failed, check the overrides before reloading"
+			fmt.Fprintf(os.Stderr, "modsec: rollback failed: %v\n", rollbackErr)
+		}
+		fmt.Fprintf(os.Stderr, "modsec: reload failed: %v\noutput: %s\n", reloadErr, output)
 		// Truncate output for client - may contain sensitive system paths
 		clientOutput := output
 		if len(clientOutput) > 500 {
 			clientOutput = clientOutput[:500] + "... (truncated)"
 		}
-		s.auditLog(r, "modsec_rules_apply_failed", "overrides", "web server reload failed; previous overrides restored")
+		s.auditLog(r, "modsec_rules_apply_failed", "overrides", outcome)
 		writeJSON(w, map[string]interface{}{
 			"ok":            false,
-			"error":         "Web server reload failed, changes rolled back",
+			"error":         outcome,
 			"reload_output": clientOutput,
-			"rolled_back":   true,
+			"rolled_back":   rollbackErr == nil,
 		})
 		return
 	}

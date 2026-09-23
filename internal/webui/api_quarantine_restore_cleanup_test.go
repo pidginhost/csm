@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // A restore that fails after it created the destination must not leave a
@@ -18,12 +19,14 @@ import (
 // evidence, the list would then hide the entry as already restored, and a
 // retry would fail because the destination exists.
 func TestQuarantineRestoreFailureRemovesThePartialDestination(t *testing.T) {
-	oldSync, oldModTime := syncQuarantineRestoredFile, restoreQuarantineModTime
-	t.Cleanup(func() { syncQuarantineRestoredFile, restoreQuarantineModTime = oldSync, oldModTime })
+	oldSync, oldModTime, oldParentSync, oldStat := syncQuarantineRestoredFile, restoreQuarantineModTime, syncQuarantineRestoredParent, statQuarantineCreatedFile
+	t.Cleanup(func() {
+		syncQuarantineRestoredFile, restoreQuarantineModTime, syncQuarantineRestoredParent, statQuarantineCreatedFile = oldSync, oldModTime, oldParentSync, oldStat
+	})
 
-	for _, phase := range []string{"modification-time", "file-sync"} {
+	for _, phase := range []string{"file-stat", "modification-time", "file-sync", "parent-sync"} {
 		t.Run(phase, func(t *testing.T) {
-			syncQuarantineRestoredFile, restoreQuarantineModTime = oldSync, oldModTime
+			syncQuarantineRestoredFile, restoreQuarantineModTime, syncQuarantineRestoredParent, statQuarantineCreatedFile = oldSync, oldModTime, oldParentSync, oldStat
 			root := t.TempDir()
 			qdir := filepath.Join(root, "quarantine")
 			restoreRoot := filepath.Join(root, "account")
@@ -50,10 +53,15 @@ func TestQuarantineRestoreFailureRemovesThePartialDestination(t *testing.T) {
 			if err := os.WriteFile(path+".meta", meta, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if phase == "modification-time" {
+			switch phase {
+			case "file-stat":
+				statQuarantineCreatedFile = func(*os.File) (os.FileInfo, error) { return nil, syscall.EIO }
+			case "modification-time":
 				restoreQuarantineModTime = func(*os.File, time.Time) error { return syscall.EIO }
-			} else {
+			case "file-sync":
 				syncQuarantineRestoredFile = func(*os.File) error { return syscall.EIO }
+			case "parent-sync":
+				syncQuarantineRestoredParent = func(*safepath.Dir) error { return syscall.EIO }
 			}
 
 			s := newRestoreServer(t)
@@ -70,7 +78,7 @@ func TestQuarantineRestoreFailureRemovesThePartialDestination(t *testing.T) {
 			}
 
 			// With the fault gone the same restore succeeds.
-			syncQuarantineRestoredFile, restoreQuarantineModTime = oldSync, oldModTime
+			syncQuarantineRestoredFile, restoreQuarantineModTime, syncQuarantineRestoredParent, statQuarantineCreatedFile = oldSync, oldModTime, oldParentSync, oldStat
 			w = httptest.NewRecorder()
 			s.apiQuarantineRestore(w, newRestoreRequest(t, map[string]string{"id": id}))
 			if w.Code != http.StatusOK {
@@ -86,8 +94,16 @@ func TestQuarantineRestoreFailureRemovesThePartialDestination(t *testing.T) {
 // A file an account owner put at the destination after the restore created
 // its own copy is not the restore's to delete.
 func TestQuarantineRestoreFailureKeepsAReplacedDestination(t *testing.T) {
-	oldSync := syncQuarantineRestoredFile
-	t.Cleanup(func() { syncQuarantineRestoredFile = oldSync })
+	for _, phase := range []string{"before cleanup", "during cleanup"} {
+		t.Run(phase, func(t *testing.T) {
+			testQuarantineRestoreFailureKeepsReplacement(t, phase)
+		})
+	}
+}
+
+func testQuarantineRestoreFailureKeepsReplacement(t *testing.T, phase string) {
+	oldSync, oldHook := syncQuarantineRestoredFile, quarantineRestoreBeforeDiscardForTest
+	t.Cleanup(func() { syncQuarantineRestoredFile, quarantineRestoreBeforeDiscardForTest = oldSync, oldHook })
 	root := t.TempDir()
 	qdir := filepath.Join(root, "quarantine")
 	restoreRoot := filepath.Join(root, "account")
@@ -108,13 +124,20 @@ func TestQuarantineRestoreFailureKeepsAReplacedDestination(t *testing.T) {
 	if err := os.WriteFile(path+".meta", meta, 0600); err != nil {
 		t.Fatal(err)
 	}
-	syncQuarantineRestoredFile = func(*os.File) error {
-		// The owner swaps the name for their own file just before the fault.
+	replace := func() {
 		if err := os.Remove(destination); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(destination, []byte("owner file"), 0600); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if phase == "during cleanup" {
+		quarantineRestoreBeforeDiscardForTest = replace
+	}
+	syncQuarantineRestoredFile = func(*os.File) error {
+		if phase == "before cleanup" {
+			replace()
 		}
 		return syscall.EIO
 	}

@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -84,25 +85,30 @@ func (s *Server) auditLogAs(r *http.Request, actor, via, action, target, details
 	}
 }
 
-// requestActor names the credential behind r: the API token's name for
-// bearer requests, or the login name of the browser session. It never
-// refreshes a session's activity.
+type auditActorKey struct{}
+
+type auditActor struct{ name, via string }
+
+func withAuditActor(r *http.Request, actor, via string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), auditActorKey{}, auditActor{actor, via}))
+}
+
+// requestActor uses the identity captured at authorization so an action
+// finishing after logout or expiry keeps its actor. Direct callers resolve
+// against startup credentials without refreshing session activity.
 func (s *Server) requestActor(r *http.Request) (actor, via string) {
 	if r == nil {
 		return "", ""
 	}
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		supplied := strings.TrimPrefix(auth, "Bearer ")
-		for _, tok := range s.cfg.WebUI.Tokens {
-			if webUITokenMatches(supplied, tok) {
-				return tok.Name, "api"
-			}
-		}
+	if actor, ok := r.Context().Value(auditActorKey{}).(auditActor); ok {
+		return actor.name, actor.via
 	}
-	if c, err := r.Cookie("csm_auth"); err == nil && s.sessions != nil {
-		if rec, err := s.sessions.Access(c.Value, s.sessionNow(), false); err == nil {
-			return rec.Name, "browser"
-		}
+	// Match authorization's cookie-first order, including credential binding.
+	if tok, ok := s.cookieSessionCredential(r, "admin", false); ok {
+		return tok.Name, "browser"
+	}
+	if tok, ok := s.bearerCredentialWithScope(r, "admin"); ok {
+		return tok.Name, "api"
 	}
 	return "", ""
 }
@@ -125,7 +131,9 @@ func readUIAuditLog(statePath string, limit int) []UIAuditEntry {
 
 	var all []UIAuditEntry
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	// Bulk undo targets can exceed the old per-line limit. One such entry
+	// must not stop the reader before every subsequent operator action.
+	scanner.Buffer(make([]byte, 256*1024), maxUIAuditSize)
 	for scanner.Scan() {
 		var entry UIAuditEntry
 		if json.Unmarshal(scanner.Bytes(), &entry) == nil {
