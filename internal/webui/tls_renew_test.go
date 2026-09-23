@@ -270,6 +270,26 @@ func TestCertReloaderRetainsPairDuringOperatorReplacement(t *testing.T) {
 	}
 }
 
+// The generated pair lives in the state directory. A key lost from there was
+// replaced with a fresh pair at startup; leaving the certificate alone would
+// stop the Web UI from starting.
+func TestEnsureTLSCertRegeneratesALostKey(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "webui.crt"), filepath.Join(dir, "webui.key")
+	if err := EnsureTLSCert(certPath, keyPath, "host.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureTLSCert(certPath, keyPath, "host.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
+		t.Fatalf("no usable pair after the key was lost: %v", err)
+	}
+}
+
 func TestTLSRenewalReportsMalformedCertificate(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "webui.crt")

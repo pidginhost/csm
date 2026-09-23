@@ -34,12 +34,12 @@ const renewBefore = 30 * 24 * time.Hour
 const selfSignedOrganization = "CSM Security Monitor"
 
 // EnsureTLSCert generates a self-signed ECDSA P-256 certificate if the cert
-// and key files don't exist, and replaces one it generated earlier when it
+// or key file doesn't exist, and renews one it generated earlier when it
 // expires within renewBefore. Any other certificate, such as one the
 // operator installed, is left alone. Includes localhost and the server
 // hostname in the certificate SANs.
 func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
-	if fileExists(certPath) {
+	if fileExists(certPath) && fileExists(keyPath) {
 		return renewTLSCert(certPath, keyPath)
 	}
 
