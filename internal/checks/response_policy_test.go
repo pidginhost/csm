@@ -83,10 +83,12 @@ func TestRegistryResponsePolicyMatchesGoldenTables(t *testing.T) {
 	}
 }
 
-// Attacker-side checks that deliberately never drive an IP response. Each is
-// a summary of many sources, an advisory, or evidence another layer already
-// acted on. Adding an attacker-side check to the registry means either giving
-// it a Response or adding it here with a reason.
+// Attacker-side checks that deliberately never drive a single-IP scan block
+// or a challenge. Each is a summary of many sources, an advisory, or evidence
+// another layer already acted on; the subnet summaries among them are handled
+// by their own subnet paths, which do not consult the registry. Adding an
+// attacker-side check to the registry means either giving it a Response or
+// adding it here with a reason.
 var nonActionableAttackerSide = map[string]string{
 	"email_auth_failure_realtime": "one raw mailbox failure; thresholded checks block",
 	"email_malware":               "content may come from a compromised local sender",

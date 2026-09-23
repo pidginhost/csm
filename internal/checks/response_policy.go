@@ -13,7 +13,8 @@ import (
 type BlockEligibility uint8
 
 const (
-	// BlockNever is the zero value: the check never drives an automatic block.
+	// BlockNever is the zero value: the check never drives a single-IP scan
+	// block.
 	BlockNever BlockEligibility = iota
 	// BlockAlways: the finding carries a confirmed attacker IP: thresholded
 	// brute force, confirmed compromise, C2/reputation, or escalation. Raw
@@ -45,8 +46,12 @@ const (
 )
 
 // ResponsePolicy is a check's automatic IP response policy, carried by its
-// registry entry. The zero value neither blocks nor challenges, so a check
-// nobody classified can never aim an automatic response at an address.
+// registry entry. It governs single-IP scan admission (AutoBlockIPs) and
+// challenge routing (ChallengeRouteIPs). The zero value neither blocks nor
+// challenges there, so a check nobody classified cannot aim those responses
+// at an address. The subnet-spray, ASN-crawl and netblock escalation paths,
+// and the challenge-timeout, incident and central-intel callers, do not
+// consult this policy yet.
 type ResponsePolicy struct {
 	Block BlockEligibility
 	// CriticalOnly limits blocking to Critical findings of the check. An
