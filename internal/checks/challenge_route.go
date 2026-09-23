@@ -3,7 +3,6 @@ package checks
 import (
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -53,133 +52,8 @@ func GetChallengeIPList() ChallengeIPList {
 	return challengeIPList
 }
 
-// hardBlockChecks are exact check names that must NEVER be routed to challenge.
-var hardBlockChecks = map[string]bool{
-	"signature_match_realtime":    true,
-	"yara_match_realtime":         true,
-	"yara_match_scheduled":        true,
-	"js_keylogger_dataflow":       true,
-	"webshell":                    true,
-	"backdoor_binary":             true,
-	"cross_account_malware":       true,
-	"c2_connection":               true,
-	"backdoor_port":               true,
-	"backdoor_port_outbound":      true,
-	"exfiltration_paste_site":     true,
-	"htaccess_injection":          true,
-	"htaccess_handler_abuse":      true,
-	"db_siteurl_hijack":           true,
-	"db_options_injection":        true,
-	"db_post_injection":           true,
-	"db_rogue_admin":              true,
-	"db_spam_injection":           true,
-	"phishing_page":               true,
-	"phishing_iframe":             true,
-	"phishing_php":                true,
-	"phishing_redirector":         true,
-	"phishing_credential_log":     true,
-	"phishing_kit_archive":        true,
-	"phishing_directory":          true,
-	"php_shield_webshell":         true,
-	"php_shield_block":            true,
-	"php_shield_eval":             true,
-	"suspicious_crontab":          true,
-	"suspicious_process":          true,
-	"fake_kernel_thread":          true,
-	"php_suspicious_execution":    true,
-	"suspicious_file":             true,
-	"password_hijack_confirmed":   true,
-	"symlink_attack":              true,
-	"shadow_change":               true,
-	"root_password_change":        true,
-	"coordinated_attack":          true,
-	"database_dump":               true,
-	"kernel_module":               true,
-	"uid0_account":                true,
-	"suid_binary":                 true,
-	"rpm_integrity":               true,
-	"email_spam_outbreak":         true,
-	"modsec_csm_block_escalation": true,
-	"api_auth_failure_realtime":   true, // cPanel API brute force — challenge is useless, hard-block
-	"ftp_auth_failure_realtime":   true, // FTP brute force — can't challenge non-HTTP
-	"credential_stuffing":         true, // PAM breadth signal — can't challenge non-HTTP
-	"pam_bruteforce":              true, // PAM brute force — can't challenge non-HTTP
-	"smtp_bruteforce":             true, // SMTP brute force — can't challenge non-HTTP
-	"smtp_probe_abuse":            true, // SMTP probe abuse (connect-rate) cannot challenge non-HTTP
-	"smtp_subnet_spray":           true, // SMTP subnet spray — can't challenge non-HTTP
-	"mail_bruteforce":             true, // Mail brute force — can't challenge non-HTTP
-	"mail_subnet_spray":           true, // Mail subnet spray — can't challenge non-HTTP
-	"mail_account_compromised":    true, // Mail protocol cannot be challenged; severity decides blocking.
-	"admin_panel_bruteforce":      true, // Admin panel brute force — tight path set makes FP near-impossible
-	"waf_attack_blocked":          true, // WAF already blocked repeated attacks; keep auto-block path direct
-}
-
-// hardBlockPrefixes match any check name starting with these strings.
-var hardBlockPrefixes = []string{
-	"outgoing_mail_",
-	"spam_",
-	"modsec_",
-	"email_auth_failure", // email brute force - SMTP/IMAP, can't challenge via HTTP
-	"email_compromised",  // confirmed compromised email account
-	"email_credential",   // credential leak
-}
-
-// challengeableChecks lists checks whose findings contain attacker IPs and
-// are appropriate for challenge routing. Closed allowlist. Two rules for
-// inclusion:
-//
-//  1. The IP carrying the finding must be a CLIENT IP making an HTTPS/HTTP
-//     request that a browser could see. Background tasks (DNS recursion,
-//     SSH/FTP from CLI clients, internal auth daemons) have no browser to
-//     present a CAPTCHA to; routing them produces guaranteed
-//     challenge-timeout hard-blocks, not gated access.
-//
-//  2. The finding must indicate an ATTACK signal, not an audit-trail
-//     event. A single successful login is normal customer traffic;
-//     repeated failed logins (brute force) is attack signal.
-//
-// Removed from this list (do not reintroduce without revisiting the two
-// rules above):
-//
-//   - cpanel_login / cpanel_login_realtime: post-auth audit events; the
-//     user is already inside cPanel and never makes a fresh connection
-//     the gate could catch.
-//   - cpanel_file_upload / cpanel_file_upload_realtime: same; post-auth.
-//   - cpanel_multi_ip_login / whm_password_change: multi-vector audit.
-//   - ftp_login / ssh_login_unknown_ip: no browser at the other end of
-//     FTP or SSH.
-//   - webmail_login_realtime: same as cpanel_login_realtime; post-auth.
-//   - dns_connection / user_outbound_connection: recursive resolvers and
-//     egress targets have no client browser.
-//   - api_auth_failure: API clients, not browsers.
-//   - brute_force: legacy bucket; superseded by per-protocol entries.
-var challengeableChecks = map[string]bool{
-	// Pre-auth brute force on browser-facing endpoints. Attacker hits a
-	// public login page repeatedly; the next request from the same IP
-	// gets routed to the challenge.
-	"wp_login_bruteforce": true,
-	"xmlrpc_abuse":        true,
-	"wp_user_enumeration": true,
-	"webmail_bruteforce":  true,
-
-	// URL enumeration over plain HTTP(S): a browser can answer the
-	// challenge. auto_response.http_scanner_action: "block" opts this
-	// check out of routing at runtime (see ChallengeRouteIPs).
-	"http_scanner_profile": true,
-
-	// Claimed-bot UA whose rDNS verification has not resolved. A real crawler
-	// ignores the challenge but verifies next cycle and is skipped; a spoofer
-	// cannot solve it. Falls through to a hard block when challenge is disabled.
-	"http_claimed_bot_unverified": true,
-
-	// Reputation / scoring on the HTTP path. The IP is suspect across
-	// many checks; before hard-blocking, give a browser one verifier.
-	"ip_reputation":      true,
-	"local_threat_score": true,
-}
-
 func isChallengeableCheck(check string) bool {
-	return challengeableChecks[check]
+	return ResponsePolicyFor(check).ChallengeFirst
 }
 
 // Auto-response actions a challengeable check can resolve to.
@@ -236,17 +110,11 @@ func challengeRoutesFinding(cfg *config.Config, f alert.Finding) bool {
 	return challengeRoutesCheck(cfg, f.Check)
 }
 
-// isHardBlockCheck returns true if the check should be hard-blocked (never challenged).
+// isHardBlockCheck reports whether a check must never be routed to the
+// challenge: its registry policy says so, or it is a runtime-built name the
+// prefix contract covers.
 func isHardBlockCheck(check string) bool {
-	if hardBlockChecks[check] {
-		return true
-	}
-	for _, prefix := range hardBlockPrefixes {
-		if strings.HasPrefix(check, prefix) {
-			return true
-		}
-	}
-	return false
+	return ResponsePolicyFor(check).NeverChallenge || neverChallengeDynamicName(check)
 }
 
 const challengeDuration = 30 * time.Minute
@@ -279,7 +147,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	for _, f := range findings {
 		// Challenge timeouts can hard-block too, so gated authentication
 		// checks must honor the same opt-in as direct firewall responses.
-		if cpanelWebmailFailureChecks[f.Check] && !cfg.AutoResponse.BlockCpanelLogins {
+		if ResponsePolicyFor(f.Check).Block == BlockWithCpanelLogins && !cfg.AutoResponse.BlockCpanelLogins {
 			continue
 		}
 		if isHardBlockCheck(f.Check) {
@@ -287,9 +155,10 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		}
 
 		// Only route checks that are known to contain attacker IPs.
-		// This is an allowlist — new IP-bearing checks must be added to
-		// challengeableChecks. Defaulting to skip prevents version numbers,
-		// sizes, and other numeric finding fields from being blocked as IPs.
+		// This is an allowlist: a new IP-bearing check must be given a
+		// ChallengeFirst Response in the check registry. Defaulting to skip
+		// prevents version numbers, sizes, and other numeric finding fields
+		// from being blocked as IPs.
 		if !isChallengeableCheck(f.Check) {
 			continue
 		}

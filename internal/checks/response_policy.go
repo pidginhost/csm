@@ -15,18 +15,32 @@ type BlockEligibility uint8
 const (
 	// BlockNever is the zero value: the check never drives an automatic block.
 	BlockNever BlockEligibility = iota
-	// BlockAlways preserves the existing unconditional check eligibility.
-	// Eligibility alone does not prove attribution or authorize the engine;
-	// callers retain their severity, mode and action gates.
+	// BlockAlways: the finding carries a confirmed attacker IP: thresholded
+	// brute force, confirmed compromise, C2/reputation, or escalation. Raw
+	// mailbox auth failures and account-only mail findings feed incident
+	// grouping and thresholded trackers, but one row is not enough evidence
+	// for a block. Eligibility alone does not prove attribution or authorize
+	// the engine; callers retain their severity, mode and action gates.
 	BlockAlways
-	// BlockWithCpanelLogins: blockable only with
-	// auto_response.block_cpanel_logins. Every such check reports a FAILED or
-	// thresholded authentication attempt.
+	// BlockWithCpanelLogins: blockable only when block_cpanel_logins is
+	// enabled (disabled by default). Every such check reports a FAILED or
+	// thresholded authentication attempt, which is real evidence.
 	//
-	// Ordinary successful-use checks excluded from this policy include
-	// cpanel_login, cpanel_login_realtime, cpanel_file_upload_realtime,
-	// ftp_login and webmail_login_realtime. They describe ordinary feature
-	// use and stay findings to correlate with other evidence.
+	// Checks that report a SUCCESSFUL operation are deliberately never
+	// blockable, and must stay that way. cpanel_login and
+	// cpanel_login_realtime were excluded first: they fire on every direct
+	// form login from a non-infra IP, and blocking on one such Warning turns a
+	// legitimate customer logging in from a new country into a 24h lockout.
+	//
+	// cpanel_file_upload_realtime, ftp_login and webmail_login_realtime were
+	// missed at the time and caused exactly that. A customer was blocked one
+	// second after uploading a file in File Manager, and five addresses were
+	// blocked for logging in to FTP successfully. The handler skips 401 and
+	// 403, so these only fire once the user has authenticated; on shared
+	// hosting every customer is a non-infra IP, so they fire on ordinary use
+	// of core features. They remain findings, which is where their value is --
+	// correlated with other evidence on the same account -- but they never
+	// block on their own.
 	BlockWithCpanelLogins
 )
 
@@ -46,6 +60,22 @@ type ResponsePolicy struct {
 	// audit event. Background tasks (DNS, SSH or FTP clients, internal auth
 	// daemons) have no browser, so routing them only produces
 	// challenge-timeout blocks.
+	//
+	// Removed from this list (do not reintroduce without revisiting the two
+	// rules above):
+	//
+	//   - cpanel_login / cpanel_login_realtime: post-auth audit events; the
+	//     user is already inside cPanel and never makes a fresh connection
+	//     the gate could catch.
+	//   - cpanel_file_upload / cpanel_file_upload_realtime: same; post-auth.
+	//   - cpanel_multi_ip_login / whm_password_change: multi-vector audit.
+	//   - ftp_login / ssh_login_unknown_ip: no browser at the other end of
+	//     FTP or SSH.
+	//   - webmail_login_realtime: same as cpanel_login_realtime; post-auth.
+	//   - dns_connection / user_outbound_connection: recursive resolvers and
+	//     egress targets have no client browser.
+	//   - api_auth_failure: API clients, not browsers.
+	//   - brute_force: legacy bucket; superseded by per-protocol entries.
 	ChallengeFirst bool
 	// NeverChallenge marks a check whose source must never be offered a
 	// challenge: there is no browser at the other end, or the evidence is

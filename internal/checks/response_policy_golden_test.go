@@ -203,7 +203,7 @@ func TestChallengeRouteIPsMatchesGoldenPolicy(t *testing.T) {
 						cfg.AutoResponse.HTTPScannerAction = action
 						f := alert.Finding{Check: name, Severity: sev, SourceIP: "203.0.113.10", Message: "probe"}
 						actions := ChallengeRouteIPs(cfg, []alert.Finding{f})
-						want := enabled && !(goldenCpanelFailure[name] && !cpanel) &&
+						want := enabled && (!goldenCpanelFailure[name] || cpanel) &&
 							!goldenHardBlock(name) && goldenChallengeable[name] &&
 							goldenResponseActionForFinding(cfg, f) == responseChallenge
 						wantCount := 0
