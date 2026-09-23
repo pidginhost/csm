@@ -599,6 +599,7 @@ function createWindow(bodyHTML = '', options = {}) {
             href: url.href, origin: url.origin, protocol: url.protocol, host: url.host, hostname: url.hostname,
             pathname: url.pathname, search: url.search, hash: url.hash,
             reloads: 0, assigned: [],
+            toString() { return this.href; },
             reload() { this.reloads++; },
             assign(u) { this.assigned.push(String(u)); },
             replace(u) { this.assigned.push(String(u)); }
@@ -612,6 +613,8 @@ function createWindow(bodyHTML = '', options = {}) {
         matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }),
         getComputedStyle: el => el.style,
         MutationObserver: class { observe() {} disconnect() {} },
+        IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
+        ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
         _listeners: {},
         addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); },
         removeEventListener(type, fn) { const l = this._listeners[type]; if (l && l.includes(fn)) l.splice(l.indexOf(fn), 1); },

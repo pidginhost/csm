@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Grouped findings stay grouped while searching, filtering or sorting, and a collapsed group stays collapsed. The group headers used to pile up at the top of the table after a search.
 - On the Performance page an open Bulk fix menu no longer closes by itself every few seconds, and a fix that is still running cannot be started a second time.
 - The Firewall and Threat Intel links from a ModSecurity block now open the lookup for that address instead of an unfiltered page.
 - A failed incident status change or incident block now tells the operator why instead of failing silently.

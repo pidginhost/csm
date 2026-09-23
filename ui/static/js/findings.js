@@ -6,6 +6,9 @@
 // --- State ---
 var findingsTable = null;
 var _findingsLoadSeq = 0;
+// Set by the grouping section. Every table render re-appends the filtered
+// rows, so grouping is laid out again after each render, whatever caused it.
+var _layoutFindingGroups = null;
 
 // Numeric severity rank for column sorting (mirrors the webui severityRank).
 // Derived from the already-promoted label so a dedup severity bump sorts right.
@@ -185,7 +188,10 @@ function renderFindings(data) {
             { id: 'account-filter', attr: 'data-account' }
         ],
         stateKey: 'csm-findings-table',
-        onRender: function() { updateSelection(); }
+        onRender: function() {
+            if (_layoutFindingGroups) _layoutFindingGroups();
+            updateSelection();
+        }
     });
 
     // Restore filter state from URL params (after table init)
@@ -743,45 +749,43 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
     }
 
     var _savedPerPage = null;
+    // Collapsed groups are remembered by key so a render caused by a search,
+    // sort or refresh keeps them collapsed.
+    var _collapsedGroups = {};
 
-    function applyGrouping() {
+    function layoutGroups() {
         var mode = groupByEl.value;
         removeGroupHeaders();
-
-        // Show all finding rows (remove group-hidden state)
         document.querySelectorAll('.finding-row').forEach(function(r) {
             r.removeAttribute('data-csm-group');
             r.classList.remove('csm-group-hidden');
         });
 
         if (mode === 'none') {
-            // Restore original perPage and re-render
             if (findingsTable && _savedPerPage !== null) {
                 findingsTable.perPage = _savedPerPage;
                 _savedPerPage = null;
+                findingsTable.applyFilters();
             }
-            if (findingsTable) findingsTable.applyFilters();
             return;
         }
 
-        // When grouping, show all rows (disable pagination)
-        if (findingsTable) {
-            if (_savedPerPage === null) {
-                _savedPerPage = findingsTable.perPage;
-            }
+        // Groups show every matching row, so pagination is off while grouped.
+        // Changing perPage renders again, which lays the groups out.
+        if (findingsTable && findingsTable.perPage !== 0) {
+            if (_savedPerPage === null) _savedPerPage = findingsTable.perPage;
             findingsTable.perPage = 0;
             findingsTable.applyFilters();
+            return;
         }
 
         var tbody = document.getElementById('findings-tbody');
         if (!tbody) return;
 
-        // Get all filtered rows (all visible since pagination is disabled)
         var visibleRows = Array.from(tbody.querySelectorAll('.finding-row')).filter(function(r) {
             return r.style.display !== 'none';
         });
 
-        // Build groups
         var groups = {};
         var groupOrder = [];
         visibleRows.forEach(function(row) {
@@ -793,37 +797,35 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
             groups[key].push(row);
             row.setAttribute('data-csm-group', key);
         });
-
-        // Sort group names
         groupOrder.sort();
 
-        // Get number of columns from thead
         var colCount = 7;
         var theadRow = document.querySelector('#findings-table thead tr');
         if (theadRow) colCount = theadRow.children.length;
 
-        // Insert group headers and reorder rows
         groupOrder.forEach(function(key) {
+            var collapsed = !!_collapsedGroups[mode + '\u0000' + key];
             var headerRow = document.createElement('tr');
-            headerRow.className = 'csm-group-header';
+            headerRow.className = 'csm-group-header' + (collapsed ? ' collapsed' : '');
             headerRow.setAttribute('data-csm-group-key', key);
-            headerRow.setAttribute('aria-expanded', 'true');
+            headerRow.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
             var td = document.createElement('td');
             td.colSpan = colCount;
             td.innerHTML = '<span class="csm-group-arrow">&#9660;</span>' +
                 CSM.esc(key) + ' <span class="text-muted small">(' + groups[key].length + ' finding' + (groups[key].length !== 1 ? 's' : '') + ')</span>';
             headerRow.appendChild(td);
 
-            // Append header and then all group rows in order
             tbody.appendChild(headerRow);
             groups[key].forEach(function(row) {
+                if (collapsed) row.style.display = 'none';
                 tbody.appendChild(row);
             });
 
-            // Click to collapse/expand
             headerRow.addEventListener('click', function() {
                 var isCollapsed = headerRow.classList.toggle('collapsed');
                 headerRow.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+                if (isCollapsed) _collapsedGroups[mode + '\u0000' + key] = true;
+                else delete _collapsedGroups[mode + '\u0000' + key];
                 groups[key].forEach(function(row) {
                     row.style.display = isCollapsed ? 'none' : '';
                 });
@@ -831,42 +833,15 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
         });
     }
 
+    _layoutFindingGroups = layoutGroups;
+
+    // Filters, search, sorting and paging all go through the table, whose
+    // render calls layoutGroups; a mode change just asks for a render.
     groupByEl.addEventListener('change', function() {
         syncGroupModeButtons();
-        applyGrouping();
+        if (findingsTable) findingsTable.applyFilters();
+        else layoutGroups();
         syncFindingsURL();
-    });
-
-    // Re-apply grouping when table filters change
-    var checkFilter = document.getElementById('check-filter');
-    if (checkFilter) {
-        checkFilter.addEventListener('change', function() {
-            setTimeout(applyGrouping, 50);
-        });
-    }
-    var searchEl = document.getElementById('findings-search');
-    if (searchEl) {
-        searchEl.addEventListener('input', function() {
-            if (groupByEl.value !== 'none') {
-                setTimeout(applyGrouping, 50);
-            }
-        });
-    }
-    var accountFilter2 = document.getElementById('account-filter');
-    if (accountFilter2) {
-        accountFilter2.addEventListener('input', function() {
-            if (groupByEl.value !== 'none') {
-                setTimeout(applyGrouping, 50);
-            }
-        });
-    }
-    document.querySelectorAll('#findings-table thead th').forEach(function(th) {
-        if (th.querySelector('input[type="checkbox"]')) return;
-        th.addEventListener('click', function() {
-            if (groupByEl.value !== 'none') {
-                setTimeout(applyGrouping, 50);
-            }
-        });
     });
 })();
 
