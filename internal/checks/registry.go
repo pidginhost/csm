@@ -117,11 +117,13 @@ var checkRegistry = []CheckInfo{
 	{Name: "http_distributed_flood", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "http_asn_crawl", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	// Mail protocols cannot answer an HTTP challenge. Compromise severity
-	// decides blocking; a subnet summary does not authorize a single-IP block.
+	// decides blocking.
 	{Name: "mail_account_compromised", Category: CategoryBruteForce, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{Block: BlockAlways, CriticalOnly: true, NeverChallenge: true}},
 	{Name: "mail_account_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "mail_bruteforce", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true}},
 	{Name: "mail_bruteforce_suspected", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
+	// A subnet summary does not authorize a single-IP block; the subnet-spray
+	// path blocks the subnet itself.
 	{Name: "mail_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "smtp_account_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	// SMTP authentication, connection probes and subnet sprays have no browser

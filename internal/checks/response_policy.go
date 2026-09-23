@@ -66,8 +66,8 @@ type ResponsePolicy struct {
 	// daemons) have no browser, so routing them only produces
 	// challenge-timeout blocks.
 	//
-	// Removed from this list (do not reintroduce without revisiting the two
-	// rules above):
+	// Deliberately not challenge-first (do not change without revisiting the
+	// two rules above):
 	//
 	//   - cpanel_login / cpanel_login_realtime: post-auth audit events; the
 	//     user is already inside cPanel and never makes a fresh connection
@@ -130,7 +130,8 @@ func validateResponsePolicy(entries []CheckInfo) error {
 	return nil
 }
 
-// responseIndex is built once from the registry and never read from disk.
+// responseOnce builds responseTable once from the registry; it is never read
+// from disk.
 var (
 	responseOnce  sync.Once
 	responseTable map[string]ResponsePolicy
