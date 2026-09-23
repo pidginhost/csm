@@ -233,7 +233,9 @@ for the security principles behind opaque identifiers, expiry and revocation.
 
 Finding and incident rows, finding group headers and sortable table headers
 also work from the keyboard: Tab to them and press Enter or Space. A sorted
-header reports its order to screen readers.
+header reports its order to screen readers. Closing the detail panel or a
+dialog returns focus to what opened it, and a dialog opened from the detail
+panel keeps Tab and Escape to itself.
 | `f` | Fix selected finding |
 
 Each finding row offers up to four actions: **Fix** (apply the automated

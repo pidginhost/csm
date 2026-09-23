@@ -130,6 +130,7 @@
         var danger = !!opts.danger;
         return new Promise(function(resolve, reject) {
             cancelActiveDialog();
+            var opener = document.activeElement;
             var modal = document.getElementById('csm-confirm-modal');
             var body  = document.getElementById('csm-confirm-body');
             var okBtn = document.getElementById('csm-confirm-ok');
@@ -198,6 +199,7 @@
                 if (settled) return;
                 settled = true;
                 cleanup();
+                returnFocusTo(opener);
                 fn();
             }
 
@@ -242,6 +244,7 @@
     CSM.prompt = function(message, defaultValue) {
         return new Promise(function(resolve, reject) {
             cancelActiveDialog();
+            var opener = document.activeElement;
             var modal  = document.getElementById('csm-confirm-modal');
             var body   = document.getElementById('csm-confirm-body');
             var okBtn  = document.getElementById('csm-confirm-ok');
@@ -267,6 +270,7 @@
             var input = document.createElement('input');
             input.type = 'text';
             input.className = 'form-control form-control-sm mt-2';
+            input.setAttribute('aria-label', message);
             input.value = defaultValue || '';
             body.appendChild(input);
 
@@ -295,6 +299,7 @@
                 okBtn.removeEventListener('click', onOk);
                 noBtn.removeEventListener('click', onCancel);
                 input.removeEventListener('keydown', onKey);
+                document.removeEventListener('keydown', onDocKey);
                 if (bsModal) {
                     bsModal.hide();
                 } else {
@@ -310,11 +315,18 @@
                 if (settled) return;
                 settled = true;
                 cleanup();
+                returnFocusTo(opener);
                 fn();
             }
 
             function cancelSelf() {
                 settle(function() { reject(); });
+            }
+
+            // Escape cancels and Tab stays inside, as in the confirm dialog.
+            function onDocKey(e) {
+                if (e.key === 'Escape') { e.preventDefault(); cancelSelf(); return; }
+                if (e.key === 'Tab') CSM.focusTrap(modal.querySelector('.modal-content') || modal, e);
             }
 
             function onOk() {
@@ -327,8 +339,14 @@
             okBtn.addEventListener('click', onOk);
             noBtn.addEventListener('click', onCancel);
             input.addEventListener('keydown', onKey);
+            document.addEventListener('keydown', onDocKey);
             activeDialogCancel = cancelSelf;
         });
     };
+
+    // returnFocusTo puts focus back on what had it before a dialog opened.
+    function returnFocusTo(el) {
+        if (el && el !== document.body && document.contains(el) && typeof el.focus === 'function') el.focus();
+    }
 
 })();

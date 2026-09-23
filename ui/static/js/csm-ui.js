@@ -430,6 +430,15 @@ CSM.detailPanel = (function() {
     var closing = false;
     var hidingOnClose = null;
     var pendingShow = false;
+    // returnFocus is what had focus when the panel opened; closing puts
+    // focus back there, so a keyboard user stays in place in the list.
+    var returnFocus = null;
+
+    function restoreFocus() {
+        var el = returnFocus;
+        returnFocus = null;
+        if (el && document.contains(el) && typeof el.focus === 'function') el.focus();
+    }
 
     function fireClose() {
         var fn = currentOnClose;
@@ -453,6 +462,8 @@ CSM.detailPanel = (function() {
 
     function onKey(e) {
         if (!isOpen()) return;
+        // A dialog opened from the panel owns the keyboard while it is shown.
+        if (document.querySelector('.modal.show')) return;
         if (e.key === 'Escape' || e.key === 'Esc' || e.keyCode === 27) {
             e.preventDefault();
             api.close();
@@ -557,6 +568,8 @@ CSM.detailPanel = (function() {
             if (pendingShow) {
                 pendingShow = false;
                 showPanel();
+            } else {
+                restoreFocus();
             }
         });
         return panelEl;
@@ -566,6 +579,10 @@ CSM.detailPanel = (function() {
         open: function(opts) {
             var el = ensureMount();
             opts = opts || {};
+            if (!isOpen() && !closing) {
+                var active = document.activeElement;
+                returnFocus = active && active !== document.body && !el.contains(active) ? active : null;
+            }
             currentOnClose = typeof opts.onClose === 'function' ? opts.onClose : null;
             var titleEl = el.querySelector('.csm-detail-panel__title');
             var bodyEl  = el.querySelector('.csm-detail-panel__body');
@@ -602,6 +619,7 @@ CSM.detailPanel = (function() {
             } else if (panelEl) {
                 panelEl.classList.remove('show');
             }
+            restoreFocus();
         },
         element: function() { return panelEl; }
     };

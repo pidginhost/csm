@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Closing the detail panel or a dialog now returns focus to what opened it, a dialog opened from the detail panel keeps the keyboard to itself, and the prompt dialog closes with Escape and keeps Tab inside.
 - Refreshing pages now preserves ongoing edits and actions, keeps ModSecurity exclusions consistent, and updates the visible history and refresh timestamp. Detail panels ignore stale responses, and confirmation dialogs retain safe focus and button labels.
 - A suppression created from a finding whose file name contains glob characters such as brackets now matches that file; the pre-filled pattern treated them as wildcards and hid nothing.
 - Web UI caches now notice replaced assets and history changes, and compressed files respect client encoding preferences and header-only requests. History searches keep matching records, and limited findings stay ordered by severity even when every row fits.
