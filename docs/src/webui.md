@@ -68,6 +68,12 @@ unavailable, new renders use the preference without forcing a reload.
 Days with a midnight clock change start at the first valid time of that day;
 a repeated midnight uses its first occurrence.
 
+## Notifications
+
+Success and information notices fade after five seconds. An error stays
+until you close it, and the same error is not shown twice while it is on
+screen.
+
 ## Confirmations
 
 A confirmation for an action that deletes data, blocks traffic, turns

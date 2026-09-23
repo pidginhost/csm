@@ -75,7 +75,7 @@ document.getElementById('btn-reload').addEventListener('click', function() {
         }).catch(function(e) {
             btn.disabled = false;
             btn.innerHTML = '<i class="ti ti-refresh"></i>&nbsp;Reload Rules';
-            CSM.toast('Reload failed: ' + e, 'error');
+            CSM.toast('Reload failed: ' + CSM.errorText(e), 'error');
         });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
@@ -95,7 +95,7 @@ document.getElementById('btn-test-alert').addEventListener('click', function() {
     }).catch(function(e) {
         btn.disabled = false;
         btn.innerHTML = '<i class="ti ti-bell-ringing"></i>&nbsp;Send Test Alert';
-        CSM.toast('Error: ' + e, 'error');
+        CSM.toast(CSM.errorText(e), 'error');
     });
 });
 
@@ -134,7 +134,7 @@ function loadSuppressions() {
                         } else {
                             CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
                         }
-                    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+                    }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
                 }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
             });
         });
@@ -181,7 +181,7 @@ if (importFile) {
                     CSM.toast('Import complete: ' + (result.summary || 'done'), 'success');
                     loadSuppressions();
                 }).catch(function(err) {
-                    CSM.toast('Import failed: ' + err, 'error');
+                    CSM.toast('Import failed: ' + CSM.errorText(err), 'error');
                 }).finally(restore);
             } catch(ex) {
                 CSM.toast('Invalid JSON file', 'error');

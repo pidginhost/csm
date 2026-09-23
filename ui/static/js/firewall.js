@@ -758,7 +758,7 @@ function removeSubnet(cidr) {
             loadSubnets();
             loadStatus();
             loadAudit();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -768,7 +768,7 @@ function unblockIP(ip) {
     CSM.confirm('Unblock ' + ip + '?').then(function() {
         CSM.post('/api/v1/unblock-ip', { ip: ip }).then(function() {
             refreshFirewallData();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -788,7 +788,7 @@ function unbanEverywhere(ip) {
             CSM.toast(msg, 'success');
             refreshFirewallData();
             loadLookup(ip);
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -801,7 +801,7 @@ function removeAllowRule(ip) {
             loadAllowed();
             loadStatus();
             loadAudit();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -813,7 +813,7 @@ function clearThreatState(ip) {
             CSM.toast('Threat state cleared', 'success');
             refreshFirewallData();
             loadLookup(ip);
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -825,7 +825,7 @@ function flushCphulkOnly(ip) {
             CSM.toast('cPHulk history cleared', 'success');
             loadAudit();
             loadLookup(ip);
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -843,7 +843,7 @@ function whitelistIP(ip, durationHours, onSuccess) {
             CSM.toast(permanent ? 'IP whitelisted' : 'Temporary whitelist added', 'success');
             refreshFirewallData();
             if (onSuccess) onSuccess();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -856,7 +856,7 @@ function removeWhitelist(ip) {
             loadWhitelist();
             loadStatus();
             loadAllowed();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -871,7 +871,7 @@ function flushBlocked() {
         CSM.post('/api/v1/firewall/flush', {}).then(function() {
             CSM.toast('Blocked IPs flushed', 'success');
             refreshFirewallData();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -1081,7 +1081,7 @@ document.getElementById('block-form').addEventListener('submit', function(e) {
                 return;
             }
             refreshFirewallData();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -1115,7 +1115,7 @@ document.getElementById('trust-form').addEventListener('submit', function(e) {
             loadBlocked();
             loadStatus();
             loadAudit();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -1155,7 +1155,7 @@ if (bulkUnblockBtn) {
                 }
                 if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Unblocked ' + succeeded + ' IP(s)' });
                 refreshFirewallData();
-            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+            }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
         }).catch(function(err) {
             if (err) CSM.toast(err.message || 'Request failed', 'error');
         });

@@ -234,6 +234,14 @@ CSM.loading = function(el) {
     if (el) el.innerHTML = '<div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>';
 };
 
+// errorText is the text of a caught failure. String(err) starts with
+// "Error: ", which reads as "Error: Error: ..." after a page's own prefix.
+CSM.errorText = function(err) {
+    if (err && typeof err.message === 'string' && err.message) return err.message;
+    if (typeof err === 'string' && err) return err;
+    return 'request failed';
+};
+
 // Render an error state with retry button
 CSM.loadError = function(el, retryFn) {
     if (!el) return;

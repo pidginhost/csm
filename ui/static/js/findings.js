@@ -464,7 +464,7 @@ function fixOne(btn) {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="ti ti-tool"></i>';
             }
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -517,7 +517,7 @@ function verifyOne(btn) {
             // the severity can rise here too.
             setTimeout(refreshFindings, 1000);
         }
-    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = orig; });
+    }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); btn.disabled = false; btn.innerHTML = orig; });
 }
 
 // Dismissal marks the finding as known: it stops alerting while its details
@@ -654,7 +654,7 @@ function bulkAction(action) {
             CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
                 refreshFindings();
-            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+            }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
     } else if (action === 'dismiss') {
@@ -750,7 +750,7 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
         if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'mt-3 small text-success'; return; }
         // Redirect to filtered view for the scanned account
         window.location.href = '/findings?account=' + encodeURIComponent(account);
-    }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='mt-3 small text-danger'; });
+    }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent=CSM.errorText(e); status.className='mt-3 small text-danger'; });
 });
 
 // Load account list for scan autocomplete dropdown

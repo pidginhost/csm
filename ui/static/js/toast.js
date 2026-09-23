@@ -14,10 +14,19 @@
      * @param {string} message - The message to display.
      * @param {string} type    - 'success' | 'error' | 'warning' | 'info'
      */
+    // An error stays until closed; other toasts fade after five seconds. An
+    // error already on screen is not shown twice.
     CSM.toast = function(message, type) {
         type = type || 'info';
         var container = document.getElementById('csm-toasts');
         if (!container) return;
+        var key = type + '\u0000' + message;
+        if (type === 'error') {
+            var shown = container.children;
+            for (var s = 0; s < shown.length; s++) {
+                if (shown[s]._csmKey === key && !shown[s]._csmRemoved) return;
+            }
+        }
 
         var bgClass = {
             success: 'bg-success',
@@ -29,6 +38,7 @@
         var textClass = (type === 'warning') ? 'text-dark' : 'text-white';
 
         var toast = document.createElement('div');
+        toast._csmKey = key;
         toast.className = 'alert ' + bgClass + ' ' + textClass + ' d-flex align-items-center mb-2';
         // WEB_ROADMAP P4.2: errors interrupt with assertive so screen
         // readers announce them immediately; success/warning/info use
@@ -60,9 +70,9 @@
             });
         });
 
-        // Auto-dismiss after 5 seconds
-        var timer = setTimeout(function() { removeToast(toast); }, 5000);
-        toast._csmTimer = timer;
+        if (type !== 'error') {
+            toast._csmTimer = setTimeout(function() { removeToast(toast); }, 5000);
+        }
     };
 
     ['success', 'error', 'warning', 'info'].forEach(function(type) {

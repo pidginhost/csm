@@ -460,7 +460,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         if(tempBtn) tempBtn.addEventListener('click',function(){tempWhitelistIP(this.getAttribute('data-ip'));});
         var permBtn=result.querySelector('.perm-wl-btn');
         if(permBtn) permBtn.addEventListener('click',function(){whitelistIP(this.getAttribute('data-ip'));});
-    }).catch(function(e){status.textContent='Error: '+e;status.className='text-danger small'});
+    }).catch(function(e){status.textContent=CSM.errorText(e);status.className='text-danger small'});
 });
 
 // blockIP blocks for 24 hours by default. A permanent block is a separate,
@@ -477,7 +477,7 @@ function blockIP(ip, permanent) {
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast(done+'\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+        }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -487,7 +487,7 @@ function clearIP(ip) {
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' cleared.\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+        }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -499,7 +499,7 @@ function tempWhitelistIP(ip) {
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' temp-whitelisted for '+data.hours+'h.\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+        }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -509,7 +509,7 @@ function whitelistIP(ip) {
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' permanently whitelisted.\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+        }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -570,7 +570,7 @@ function bulkBlock(permanent) {
             if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: label + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -597,7 +597,7 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
             if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Whitelisted ' + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
 
