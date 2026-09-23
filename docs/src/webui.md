@@ -34,12 +34,12 @@ scope. The header links to session management.
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
 | **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
-| **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), whitelist management, search, audit log; destructive actions live under the Danger tab |
+| **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), the whitelist and allow rules (Allow Rules tab), search, audit log; the lookup links to Threat Intel for the same address; destructive actions live under the Danger tab |
 | **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, and Blocked IPs / Events / Rules tabs. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
 | **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
 | **Email** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
-| **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN (`?ip=<address>` runs it on load), 24 hour and permanent block actions (single and bulk), top attackers, attack type charts, trends |
+| **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN (`?ip=<address>` runs it on load), 24 hour and permanent block and whitelist actions (single and bulk), top attackers, attack type charts, trends; the lookup links to Firewall for the same address, and the whitelist itself is kept under Firewall > Allow Rules |
 | **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
 | **Incidents** | `/incident` | Correlated incident list with detail panel plus forensic timeline search by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |

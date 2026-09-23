@@ -85,6 +85,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- The whitelist is now managed only on the Firewall page under Allow Rules; Threat Intel keeps its whitelist actions and links there, and the two IP lookups link to each other.
 - Filtered history requests, including the Email findings tab, now skip stored entries that cannot match the severity, check or search filter before decoding them, which makes them much faster on large histories.
 - The list of saved database object backups now sorts in linear-logarithmic time, so hosts with many backups load Cleanup History faster.
 - The scan job findings API now returns 500 findings per page by default and at most 5000, and reports when more pages exist, instead of every finding of a large job in one response.

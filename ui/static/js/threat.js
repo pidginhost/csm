@@ -421,6 +421,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Unblock IP and remove from all threat databases"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
         html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Temporarily allow this IP for a set number of hours"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
         html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Permanently allow this IP - never block or flag it again"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
+        html+='<a class="btn btn-ghost-secondary btn-sm" href="/firewall?ip='+encodeURIComponent(intel.ip)+'" title="Firewall state and actions for this IP"><i class="ti ti-firewall-check"></i>&nbsp;Firewall</a>';
         html+='</div>';
         html+='</div></div></div>';
         html+='</div>';
@@ -455,50 +456,6 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         if(permBtn) permBtn.addEventListener('click',function(){whitelistIP(this.getAttribute('data-ip'));});
     }).catch(function(e){status.textContent='Error: '+e;status.className='text-danger small'});
 });
-
-// --- Whitelist management ---
-function loadWhitelist() {
-    CSM.get('/api/v1/threat/whitelist').then(function(entries){
-        var tbody=document.getElementById('wl-tbody');
-        if(!entries||entries.length===0){
-            tbody.innerHTML='<tr><td colspan="3" class="text-center text-muted">No whitelisted IPs</td></tr>';
-            return;
-        }
-        var html='';
-        for(var i=0;i<entries.length;i++){
-            var e=entries[i];
-            var typeBadge=e.configured?'<span class="badge bg-blue-lt">Configured</span>':
-                (e.permanent?'<span class="badge bg-success-lt">Permanent</span>':
-                '<span class="badge bg-warning-lt">Expires '+fmtDate(e.expires_at)+'</span>');
-            html+='<tr><td><code class="font-monospace">'+CSM.esc(e.ip)+'</code></td>';
-            html+='<td>'+typeBadge+'</td>';
-            html+='<td>'+(e.configured?'<span class="text-muted small">Edit csm.yaml</span>':
-                '<button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'" title="Remove IP from whitelist - it may be blocked again if it triggers detections"><i class="ti ti-x"></i>&nbsp;Remove</button>')+'</td></tr>';
-        }
-        tbody.innerHTML=html;
-        // Bind remove buttons after DOM insertion
-        tbody.querySelectorAll('.remove-wl-btn').forEach(function(btn){
-            btn.addEventListener('click',function(){removeWhitelist(this.getAttribute('data-ip'));});
-        });
-    }).catch(function(){ CSM.loadError(document.getElementById('wl-tbody').parentElement.parentElement, loadWhitelist); });
-}
-loadWhitelist();
-
-document.getElementById('add-wl-form').addEventListener('submit',function(e){
-    e.preventDefault();
-    var ip=document.getElementById('add-wl-ip').value.trim();
-    if(!ip)return;
-    whitelistIP(ip);
-});
-
-function removeWhitelist(ip) {
-    CSM.confirm('Remove '+ip+' from whitelist?\n\nThis IP will be subject to threat detection and auto-blocking again.').then(function() {
-        CSM.post('/api/v1/threat/unwhitelist-ip',{ip:ip}).then(function(data){
-            if(data.error){CSM.toast('Error: '+data.error,'error');return;}
-            loadWhitelist();
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
-    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
-}
 
 // blockIP blocks for 24 hours by default. A permanent block is a separate,
 // explicitly confirmed operator action: it never expires in the firewall and
@@ -535,7 +492,6 @@ function tempWhitelistIP(ip) {
         CSM.post('/api/v1/threat/temp-whitelist-ip',{ip:ip,hours:hours}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' temp-whitelisted for '+data.hours+'h.\n\nActions: '+(data.actions||[]).join(', '),'success');
-            loadWhitelist();
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
@@ -546,7 +502,6 @@ function whitelistIP(ip) {
         CSM.post('/api/v1/threat/whitelist-ip',{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' permanently whitelisted.\n\nActions: '+(data.actions||[]).join(', '),'success');
-            loadWhitelist();
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });

@@ -721,6 +721,7 @@ function renderIPDetails(ip, targetEl) {
         details += '<button class="btn btn-outline-success btn-sm lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
         details += '<button class="btn btn-outline-primary btn-sm lookup-cphulk-btn" data-ip="' + CSM.esc(ip) + '">Flush cPHulk only</button>';
         details += '<button class="btn btn-success btn-sm lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
+        details += '<a class="btn btn-ghost-secondary btn-sm" href="/threat?ip=' + encodeURIComponent(ip) + '" title="Reputation, attack history and score for this IP"><i class="ti ti-spy"></i>&nbsp;Threat Intel</a>';
         details += '</div>';
         targetEl.innerHTML = details;
 

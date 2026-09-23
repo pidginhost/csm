@@ -5,6 +5,11 @@
         <div class="csm-page-header__main">
             <h1 class="csm-page-header__title"><i class="ti ti-spy"></i>&nbsp;Threat Intelligence</h1>
         </div>
+        <div class="csm-page-header__actions">
+            <a href="/firewall?view=allow" class="btn btn-ghost-secondary btn-sm" title="Whitelisted IPs are managed on Firewall, Allow Rules">
+                <i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs
+            </a>
+        </div>
     </div>
 
     <!-- Stats Cards -->
@@ -131,25 +136,6 @@
                     </tr>
                 </thead>
                 <tbody id="attackers-tbody"></tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Whitelisted IPs -->
-    <div class="card mt-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs (Customer IPs)</h3>
-            <div class="card-actions">
-                <form id="add-wl-form" class="row g-2 align-items-end">
-                    <div class="col-auto"><input type="text" id="add-wl-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="1.2.3.4"></div>
-                    <div class="col-auto"><button type="submit" class="btn btn-success btn-sm" title="Permanently whitelist this IP - never block or flag it"><i class="ti ti-plus"></i>&nbsp;Add</button></div>
-                </form>
-            </div>
-        </div>
-        <div class="table-responsive">
-            <table class="table table-vcenter card-table table-sm">
-                <thead><tr><th>IP Address</th><th>Type</th><th class="csm-w-100">Actions</th></tr></thead>
-                <tbody id="wl-tbody"></tbody>
             </table>
         </div>
     </div>
