@@ -565,3 +565,30 @@ CSM.filePreview = function(title, subhead, text) {
     body.appendChild(pre);
     CSM.detailPanel.open({ title: title || 'File preview', bodyNode: body });
 };
+
+// Suppression scope. A rule without a path pattern hides every finding of its
+// check and stops that check's remediation, so it is only ever built from an
+// explicit "all paths" choice; a blank pattern is refused rather than widened.
+// suppressionRequest returns the API body, or {error} when the choice is
+// incomplete. suppressionSummary states what the rule will cover.
+CSM.suppressionRequest = function(check, scope, pattern, reason, defaultReason) {
+    var body = { check: check, reason: (reason || '').trim() || defaultReason || 'Suppressed from the web UI' };
+    if (scope === 'all') {
+        body.all_paths = true;
+        return body;
+    }
+    pattern = (pattern || '').trim();
+    if (!pattern) return { error: 'Enter a path or pattern, or choose every finding of this check.' };
+    body.path_pattern = pattern;
+    return body;
+};
+
+CSM.suppressionSummary = function(check, scope, pattern) {
+    if (scope === 'all') {
+        return 'Hides every ' + check + ' finding on this server, stops its alerts, and stops file, process and account remediation for it. IP blocking and challenges are not affected.';
+    }
+    pattern = (pattern || '').trim();
+    if (!pattern) return 'Enter the path or glob pattern this rule should cover.';
+    return 'Hides ' + check + ' findings whose path matches ' + pattern + ', stops their alerts, and stops file, process and account remediation for them.';
+};
+// End suppression scope.

@@ -931,11 +931,14 @@ POST /api/v1/modsec/rules/escalation   Change rule severity/action
 ```
 GET  /api/v1/rules/status        YAML/YARA rule counts, version
 GET  /api/v1/rules/list          Rule files
-GET  /api/v1/suppressions        Suppression rules
-POST /api/v1/rules/reload        Reload signature rules from disk
-POST /api/v1/suppressions        Add or delete suppression rule
-POST /api/v1/rules/modsec-escalation   ModSec escalation override
+GET    /api/v1/suppressions      Suppression rules
+POST   /api/v1/rules/reload      Reload signature rules from disk
+POST   /api/v1/suppressions      Add a suppression rule
+DELETE /api/v1/suppressions      Delete a suppression rule by id
+POST   /api/v1/rules/modsec-escalation   ModSec escalation override
 ```
+
+`POST /api/v1/suppressions` takes `{"check", "path_pattern", "reason"}`. The path pattern is a glob and must be valid. A rule that covers every path of a check, hiding all its findings and stopping their remediation, needs `"all_paths": true` and no `path_pattern`; an empty pattern without it returns 400.
 
 ## Email
 

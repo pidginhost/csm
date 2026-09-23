@@ -2,6 +2,8 @@ package webui
 
 import (
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/state"
@@ -20,11 +22,29 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Check       string `json:"check"`
 			PathPattern string `json:"path_pattern"`
-			Reason      string `json:"reason"`
+			// AllPaths is the explicit opt-in for a rule without a path
+			// pattern, which hides every finding of the check and stops its
+			// remediation.
+			AllPaths bool   `json:"all_paths"`
+			Reason   string `json:"reason"`
 		}
 		if err := decodeJSONBodyLimited(w, r, 32*1024, &req); err != nil || req.Check == "" {
 			writeJSONError(w, "check field is required", http.StatusBadRequest)
 			return
+		}
+		req.PathPattern = strings.TrimSpace(req.PathPattern)
+		switch {
+		case req.PathPattern == "" && !req.AllPaths:
+			writeJSONError(w, "path_pattern is required; set all_paths to suppress every finding of this check", http.StatusBadRequest)
+			return
+		case req.PathPattern != "" && req.AllPaths:
+			writeJSONError(w, "path_pattern and all_paths are mutually exclusive", http.StatusBadRequest)
+			return
+		case req.PathPattern != "":
+			if _, err := filepath.Match(req.PathPattern, ""); err != nil {
+				writeJSONError(w, "path_pattern is not a valid glob: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 
 		id := newSuppressionID()
@@ -41,7 +61,11 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "failed to save suppression: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		s.auditLog(r, "suppress", req.Check, "pattern: "+req.PathPattern)
+		scope := "pattern: " + req.PathPattern
+		if req.AllPaths {
+			scope = "all paths"
+		}
+		s.auditLog(r, "suppress", req.Check, scope)
 		writeJSON(w, map[string]string{"status": "created", "id": id})
 
 	case http.MethodDelete:

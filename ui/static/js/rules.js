@@ -204,23 +204,25 @@ document.getElementById('suppression-form').addEventListener('submit', function(
     e.preventDefault();
     var check = document.getElementById('suppress-check').value.trim();
     if (!check) return;
-    var pathPattern = document.getElementById('suppress-path').value.trim();
-    var reason = document.getElementById('suppress-reason').value.trim();
-    CSM.post('/api/v1/suppressions', {
-        check: check,
-        path_pattern: pathPattern,
-        reason: reason || 'Created from Rules page'
-    }).then(function(data) {
-        if (data.status === 'created') {
-            CSM.toast('Suppression rule created', 'success');
-            document.getElementById('suppress-check').value = '';
-            document.getElementById('suppress-path').value = '';
-            document.getElementById('suppress-reason').value = '';
-            loadSuppressions();
-        } else {
-            CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
-        }
-    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    var allPaths = document.getElementById('suppress-all-paths');
+    var body = CSM.suppressionRequest(check, allPaths.checked ? 'all' : 'path',
+        document.getElementById('suppress-path').value,
+        document.getElementById('suppress-reason').value,
+        'Created from Rules page');
+    if (body.error) {
+        CSM.toast(body.error, 'error');
+        return;
+    }
+    CSM.post('/api/v1/suppressions', body).then(function() {
+        CSM.toast('Suppression rule created', 'success');
+        document.getElementById('suppress-check').value = '';
+        document.getElementById('suppress-path').value = '';
+        document.getElementById('suppress-reason').value = '';
+        allPaths.checked = false;
+        loadSuppressions();
+    }).catch(function(err) {
+        CSM.toast('Suppression not saved: ' + (err && err.message ? err.message : 'request failed'), 'error');
+    });
 });
 
 // Populate check-type datalist from active findings

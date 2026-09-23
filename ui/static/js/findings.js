@@ -490,32 +490,76 @@ function dismissOne(key) {
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
+// --- Suppress dialog ---
+// A suppression without a path pattern hides every finding of the check and
+// stops its remediation, so that scope is a separate, explicit choice in one
+// dialog that says what the rule will cover before it is saved.
+function suppressDefaultPattern(message, filePath) {
+    if (filePath) return filePath;
+    // e.g. "YARA rule match: /home/user/file.php"
+    var m = (message || '').match(/:\s*(\/\S+)/);
+    return m ? m[1] : '';
+}
+
+function suppressDialogScope() {
+    return document.getElementById('suppress-finding-scope-all').checked ? 'all' : 'path';
+}
+
+function updateSuppressDialog() {
+    var check = document.getElementById('suppress-finding-check').textContent;
+    var pattern = document.getElementById('suppress-finding-pattern').value;
+    var scope = suppressDialogScope();
+    document.getElementById('suppress-finding-summary').textContent = CSM.suppressionSummary(check, scope, pattern);
+    document.getElementById('suppress-finding-submit').disabled = !!CSM.suppressionRequest(check, scope, pattern, '').error;
+}
+
+var _suppressDialogBound = false;
+var _suppressInFlight = false;
+function bindSuppressDialog() {
+    if (_suppressDialogBound) return;
+    _suppressDialogBound = true;
+    var pattern = document.getElementById('suppress-finding-pattern');
+    pattern.addEventListener('input', function() {
+        document.getElementById('suppress-finding-scope-path').checked = true;
+        document.getElementById('suppress-finding-scope-all').checked = false;
+        updateSuppressDialog();
+    });
+    document.getElementById('suppress-finding-scope-path').addEventListener('change', updateSuppressDialog);
+    document.getElementById('suppress-finding-scope-all').addEventListener('change', updateSuppressDialog);
+    document.getElementById('suppress-finding-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        if (_suppressInFlight) return;
+        var check = document.getElementById('suppress-finding-check').textContent;
+        var body = CSM.suppressionRequest(check, suppressDialogScope(),
+            document.getElementById('suppress-finding-pattern').value,
+            document.getElementById('suppress-finding-reason').value,
+            'Suppressed from findings page');
+        if (body.error) {
+            CSM.toast(body.error, 'error');
+            return;
+        }
+        _suppressInFlight = true;
+        CSM.post('/api/v1/suppressions', body).then(function() {
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('suppress-finding-modal')).hide();
+            CSM.toast('Suppression rule created', 'success');
+            refreshFindings();
+        }).catch(function(err) {
+            CSM.toast('Suppression not saved: ' + (err && err.message ? err.message : 'request failed'), 'error');
+        }).then(function() {
+            _suppressInFlight = false;
+        });
+    });
+}
+
 function suppressFinding(check, message, filePath) {
-    // Pre-fill with file path if available, suggest wildcard for directory
-    var defaultPath = '';
-    if (filePath) {
-        defaultPath = filePath;
-    } else {
-        // Try to extract path from message (e.g. "YARA rule match: /home/user/file.php")
-        var m = message.match(/:\s*(\/\S+)/);
-        if (m) defaultPath = m[1];
-    }
-    CSM.prompt('Reason for suppression (optional):', '').then(function(reason) {
-        CSM.prompt('Path pattern to match (optional, e.g. /home/user/site/*):', defaultPath).then(function(pathPattern) {
-            CSM.post('/api/v1/suppressions', {
-                check: check,
-                path_pattern: pathPattern,
-                reason: reason || 'Suppressed from findings page'
-            }).then(function(data) {
-                if (data.status === 'created') {
-                    CSM.toast('Suppression rule created', 'success');
-                    refreshFindings();
-                } else {
-                    CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
-                }
-            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-        }).catch(function() { /* cancelled */ });
-    }).catch(function() { /* cancelled */ });
+    bindSuppressDialog();
+    document.getElementById('suppress-finding-check').textContent = check;
+    document.getElementById('suppress-finding-pattern').value = suppressDefaultPattern(message, filePath);
+    document.getElementById('suppress-finding-reason').value = '';
+    document.getElementById('suppress-finding-scope-path').checked = true;
+    document.getElementById('suppress-finding-scope-all').checked = false;
+    updateSuppressDialog();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('suppress-finding-modal')).show();
 }
 
 // --- Bulk actions ---
@@ -882,6 +926,8 @@ function toggleFindingDetail(row) {
             });
             var suppressBtn = panel.querySelector('[data-csm-finding-suppress]');
             if (suppressBtn) suppressBtn.addEventListener('click', function() {
+                // The panel traps focus; close it so the dialog owns the keyboard.
+                CSM.detailPanel.close();
                 suppressFinding(check, message, filepath);
             });
         })

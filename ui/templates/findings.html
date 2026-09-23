@@ -178,6 +178,40 @@
             </div>
         </div>
     </div>
+
+    <!-- Suppress finding modal -->
+    <div class="modal fade" id="suppress-finding-modal" tabindex="-1" aria-hidden="true" aria-labelledby="suppress-finding-title">
+        <div class="modal-dialog modal-dialog-centered">
+            <form class="modal-content" id="suppress-finding-form" novalidate>
+                <div class="modal-header">
+                    <h5 class="modal-title" id="suppress-finding-title"><i class="ti ti-eye-off"></i>&nbsp;Suppress findings</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-3">Check: <code id="suppress-finding-check"></code></p>
+                    <fieldset class="mb-3">
+                        <legend class="form-label">Which findings to hide</legend>
+                        <label class="form-check">
+                            <input class="form-check-input" type="radio" name="suppress-finding-scope" id="suppress-finding-scope-path" value="path" checked>
+                            <span class="form-check-label">Only findings whose path matches</span>
+                        </label>
+                        <input type="text" class="form-control font-monospace mb-2" id="suppress-finding-pattern" aria-label="Path or glob pattern" placeholder="/home/user/site/crud/*" autocomplete="off">
+                        <label class="form-check">
+                            <input class="form-check-input" type="radio" name="suppress-finding-scope" id="suppress-finding-scope-all" value="all">
+                            <span class="form-check-label">Every finding of this check, on every path</span>
+                        </label>
+                    </fieldset>
+                    <label class="form-label" for="suppress-finding-reason">Reason</label>
+                    <input type="text" class="form-control" id="suppress-finding-reason" placeholder="e.g. False positive - vendor library" autocomplete="off">
+                    <div class="alert alert-warning mt-3 mb-0" id="suppress-finding-summary" role="status"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-warning" id="suppress-finding-submit"><i class="ti ti-eye-off"></i>&nbsp;Create rule</button>
+                </div>
+            </form>
+        </div>
+    </div>
 {{end}}
 {{define "scripts"}}
 <script src="/static/js/findings.js"></script>

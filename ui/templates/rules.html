@@ -106,8 +106,12 @@
                     <datalist id="check-types"></datalist>
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label" for="suppress-path">Path Pattern <span class="text-muted">(optional)</span></label>
+                    <label class="form-label" for="suppress-path">Path Pattern</label>
                     <input type="text" class="form-control font-monospace" id="suppress-path" placeholder="e.g. /home/user/site/crud/*">
+                    <label class="form-check mt-1 mb-0">
+                        <input class="form-check-input" type="checkbox" id="suppress-all-paths">
+                        <span class="form-check-label small">Every finding of this check, on every path</span>
+                    </label>
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label" for="suppress-reason">Reason <span class="text-muted">(optional)</span></label>
