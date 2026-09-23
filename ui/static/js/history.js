@@ -277,27 +277,8 @@
     if (fromDate || toDate || windowHours) { if (clearBtn) clearBtn.classList.remove('d-none'); }
 
     // Event delegation for history table expand buttons
-    var historyContainer = document.getElementById('history-content');
-    if (historyContainer) {
-        historyContainer.addEventListener('click', function(e) {
-            var expandBtn = e.target.closest('.expand-btn');
-            if (expandBtn) {
-                var row = expandBtn.closest('tr');
-                if (row) {
-                    var next = row.nextElementSibling;
-                    if (next && next.classList.contains('details-row')) {
-                        // The row is hidden by `.details-row { display:none }`; an
-                        // inline display toggle can never beat that rule. Toggle the
-                        // `.details-row.show` class the stylesheet already defines.
-                        var showing = next.classList.toggle('show');
-                        expandBtn.classList.toggle('expanded', showing);
-                        expandBtn.setAttribute('aria-expanded', showing ? 'true' : 'false');
-                        expandBtn.setAttribute('aria-label', showing ? 'Collapse details' : 'Expand details');
-                    }
-                }
-            }
-        });
-    }
+    // The expand buttons open their details rows through the shared
+    // handler in table.js.
 
     // --- Tab-deferred loading ---
     // Only load history data when the History tab is first shown

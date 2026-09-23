@@ -593,7 +593,8 @@
             html += '<td><span class="small">' + CSM.esc(checkLabel) + '</span></td>';
             html += '<td>' + CSM.esc(account || '') + '</td>';
             html += '<td><code>' + CSM.esc(ip || '') + '</code></td>';
-            html += '<td class="text-wrap csm-tw-400">' + CSM.esc(f.message || '') + '</td>';
+            html += '<td class="text-wrap csm-tw-400">' + CSM.esc(f.message || '') +
+                (f.details ? ' <button type="button" class="btn btn-ghost-secondary btn-sm expand-btn" aria-expanded="false" aria-label="Expand details" title="Expand details"><i class="ti ti-chevron-down"></i></button>' : '') + '</td>';
             html += '<td data-timestamp="' + CSM.attr(f.timestamp || '') + '">' + CSM.fmtDate(f.timestamp) + '</td>';
             html += '</tr>';
             if (f.details) {

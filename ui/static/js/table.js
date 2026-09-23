@@ -416,9 +416,11 @@ CSM.Table.prototype.render = function() {
     }
     this._orderRows();
 
-    // Show only current page rows
+    // Show only current page rows. A details row follows its row; the
+    // stylesheet keeps it closed until its expand button opens it.
     for (var j = start; j < end; j++) {
         this.filteredRows[j].row.style.display = '';
+        if (this.filteredRows[j].detail) this.filteredRows[j].detail.style.display = '';
     }
 
     // Empty-state placeholder when filteredRows is empty
@@ -575,16 +577,22 @@ CSM.Table.prototype._removeEmptyState = function() {
     if (row) row.remove();
 };
 
-// Expand/collapse detail rows (for history page)
-CSM.Table.prototype.toggleDetail = function(row) {
-    var item = null;
-    for (var i = 0; i < this.filteredRows.length; i++) {
-        if (this.filteredRows[i].row === row) { item = this.filteredRows[i]; break; }
-    }
-    if (item && item.detail) {
-        item.detail.style.display = item.detail.style.display === 'none' ? '' : 'none';
-    }
+// toggleDetailRow opens or closes the details row under an expand button's
+// row. One document handler serves every table, CSM.Table or not.
+CSM.toggleDetailRow = function(btn) {
+    var row = btn.closest('tr');
+    var next = row ? row.nextElementSibling : null;
+    if (!next || !next.classList.contains('details-row')) return;
+    var showing = next.classList.toggle('show');
+    btn.classList.toggle('expanded', showing);
+    btn.setAttribute('aria-expanded', showing ? 'true' : 'false');
+    btn.setAttribute('aria-label', showing ? 'Collapse details' : 'Expand details');
 };
+
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('.expand-btn') : null;
+    if (btn) CSM.toggleDetailRow(btn);
+});
 
 // Persistent table state - save to localStorage
 CSM.Table.prototype._saveState = function() {
