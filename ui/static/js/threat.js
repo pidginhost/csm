@@ -566,6 +566,14 @@ function whitelistIP(ip) {
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
+// Other pages link here with ?ip= to look one address up.
+(function() {
+    var ip = (new URLSearchParams(window.location.search).get('ip') || '').trim();
+    if (!ip || !(isValidIPv4(ip) || isValidIPv6(ip))) return;
+    document.getElementById('tr-lookup-ip').value = ip;
+    document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
+})();
+
 // --- Bulk operations ---
 // CSM.bulk limits select-all and every bulk action to rows the table shows,
 // so a permanent block or whitelist never reaches rows on other pages or

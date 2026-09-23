@@ -13,6 +13,52 @@ const vm = require('node:vm');
 const { createWindow } = require('./fakedom.js');
 
 const JS_DIR = path.join(__dirname, 'static', 'js');
+const TEMPLATE_DIR = path.join(__dirname, 'templates');
+
+// The shared scripts layout.html loads before every page script, minus the
+// vendored Tabler bundle (see bootstrapStub) and the header-only helpers.
+const SHARED = ['csrf.js', 'toast.js', 'csm-ui.js', 'prefs.js', 'table.js'];
+
+// templateBody returns a page template's "content" block with the Go
+// template directives removed, so a test runs the page script against the
+// markup it ships with. Conditional blocks keep both branches.
+function templateBody(name) {
+    const text = fs.readFileSync(path.join(TEMPLATE_DIR, name + '.html'), 'utf8');
+    const start = text.indexOf('{{define "content"}}');
+    if (start < 0) throw new Error('pagekit: ' + name + '.html has no content block');
+    const re = /\{\{-?\s*(\w+)?[^}]*\}\}/g;
+    re.lastIndex = start + '{{define "content"}}'.length;
+    let depth = 1, m, end = -1;
+    while ((m = re.exec(text))) {
+        const word = m[1] || '';
+        if (['if', 'range', 'with', 'block', 'define'].includes(word)) depth++;
+        else if (word === 'end' && --depth === 0) { end = m.index; break; }
+    }
+    if (end < 0) throw new Error('pagekit: unterminated content block in ' + name + '.html');
+    return text.slice(start + '{{define "content"}}'.length, end).replace(/\{\{[^}]*\}\}/g, '');
+}
+
+function bootstrapStub() {
+    const instances = new Map();
+    function component() {
+        return {
+            getOrCreateInstance(el) {
+                if (!instances.has(el)) {
+                    instances.set(el, {
+                        shown: false,
+                        show() { this.shown = true; el.classList.add('show'); },
+                        hide() { this.shown = false; el.classList.remove('show'); },
+                        toggle() { this.shown ? this.hide() : this.show(); },
+                        dispose() { instances.delete(el); }
+                    });
+                }
+                return instances.get(el);
+            },
+            getInstance(el) { return instances.get(el) || null; }
+        };
+    }
+    return { Modal: component(), Tab: component(), Offcanvas: component(), Dropdown: component(), Tooltip: component(), Collapse: component() };
+}
 
 function source(name) {
     return fs.readFileSync(path.join(JS_DIR, name), 'utf8');
@@ -35,10 +81,16 @@ function loadPage(bodyHTML, scripts, options = {}) {
         '<div id="csm-connection-lost" class="d-none"></div>' +
         '<div id="csm-toast-container"></div>' + bodyHTML;
     const window = createWindow(shell, { url: options.url });
-    // Page-lifetime intervals (relative-time refresh, pollers) must not keep
-    // the test process alive after the tests finish.
+    // Page timers (relative-time refresh, pollers, debounces) must not keep
+    // the test process alive after the tests finish. A test that waits for
+    // one uses its own timer, which keeps the loop running meanwhile.
     window.setInterval = (fn, ms, ...args) => {
         const t = setInterval(fn, ms, ...args);
+        if (t && t.unref) t.unref();
+        return t;
+    };
+    window.setTimeout = (fn, ms, ...args) => {
+        const t = setTimeout(fn, ms, ...args);
         if (t && t.unref) t.unref();
         return t;
     };
@@ -49,6 +101,7 @@ function loadPage(bodyHTML, scripts, options = {}) {
     });
     window.AbortController = AbortController;
     window.EventSource = undefined;
+    window.bootstrap = bootstrapStub();
     Object.assign(window, options.globals || {});
     const context = vm.createContext(window);
     for (const name of scripts) {
@@ -90,4 +143,4 @@ function settle(rounds = 3) {
     return p;
 }
 
-module.exports = { loadPage, settle, jsonResponse };
+module.exports = { loadPage, settle, jsonResponse, templateBody, SHARED };

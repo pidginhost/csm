@@ -375,7 +375,7 @@
 
         var footerHTML = '';
         footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/threat?ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-radar"></i>&nbsp;Threat Intel</a>';
-        footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/firewall?view=lookup&ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-firewall"></i>&nbsp;Firewall</a>';
+        footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/firewall?ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-firewall"></i>&nbsp;Firewall</a>';
         footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/modsec/rules?rule=' + encodeURIComponent(b.rule_id || '') + '"><i class="ti ti-settings"></i>&nbsp;Rule</a>';
 
         CSM.detailPanel.open({

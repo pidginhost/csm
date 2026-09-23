@@ -1276,3 +1276,9 @@ refreshFirewallData();
 if (CSM.refresh && typeof CSM.refresh.onRefresh === 'function') {
     CSM.refresh.onRefresh(refreshFirewallData);
 }
+
+// Other pages link here with ?ip= to inspect one address.
+(function() {
+    var ip = (new URLSearchParams(window.location.search).get('ip') || '').trim();
+    if (ip && (isValidIPv4(ip) || isValidIPv6(ip))) inspectIP(ip);
+})();
