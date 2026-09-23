@@ -101,9 +101,9 @@ type Server struct {
 	hasUI           bool   // true if UI directory with templates exists
 	uiDir           string // path to UI directory on disk
 	startTime       time.Time
-	sigCount        int // loaded signature rule count
-	fanotifyActive  bool
-	logWatcherCount int
+	sigCount        int         // loaded signature rule count
+	fanotifyActive  func() bool // live daemon reader; nil outside the daemon
+	logWatcherCount func() int  // live daemon reader; nil outside the daemon
 	blocker         IPBlocker
 	geoIPDB         atomic.Pointer[geoip.DB]
 	// emailQuarantine and emailAVWatcherMode are installed by the daemon
@@ -684,10 +684,23 @@ func (s *Server) SetIPBlocker(b IPBlocker) {
 	s.blocker = b
 }
 
-// SetHealthInfo sets daemon health info for the health API.
-func (s *Server) SetHealthInfo(fanotifyActive bool, logWatchers int) {
+// SetHealthInfo installs the daemon readers the health API and dashboard
+// call on each request. Log watchers can start after the web UI, so a
+// snapshot taken at startup went stale.
+func (s *Server) SetHealthInfo(fanotifyActive func() bool, logWatchers func() int) {
 	s.fanotifyActive = fanotifyActive
 	s.logWatcherCount = logWatchers
+}
+
+func (s *Server) fanotifyRunning() bool {
+	return s.fanotifyActive != nil && s.fanotifyActive()
+}
+
+func (s *Server) logWatchersRunning() int {
+	if s.logWatcherCount == nil {
+		return 0
+	}
+	return s.logWatcherCount()
 }
 
 // SetEmailQuarantine sets the email quarantine for the email AV API endpoints.
@@ -768,7 +781,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 		"threatIntel":  cfg.Reputation.AbuseIPDBKey != "",
 		"signatures":   cfg.Signatures.RulesDir != "",
 		"challenge":    cfg.Challenge.Difficulty > 0,
-		"fanotify":     s.fanotifyActive,
+		"fanotify":     s.fanotifyRunning(),
 		"hostname":     s.cfg.Hostname,
 		"authScope":    "admin",
 		// #nosec G101 -- Not credentials. This is a lookup from

@@ -749,12 +749,12 @@ func TestSetSigCount(t *testing.T) {
 
 func TestSetHealthInfo(t *testing.T) {
 	s := newTestServer(t, "t")
-	s.SetHealthInfo(true, 7)
-	if !s.fanotifyActive {
+	s.SetHealthInfo(func() bool { return true }, func() int { return 7 })
+	if !s.fanotifyRunning() {
 		t.Error("fanotifyActive should be true")
 	}
-	if s.logWatcherCount != 7 {
-		t.Errorf("logWatcherCount = %d, want 7", s.logWatcherCount)
+	if got := s.logWatchersRunning(); got != 7 {
+		t.Errorf("logWatcherCount = %d, want 7", got)
 	}
 }
 
@@ -870,7 +870,7 @@ func TestAPIStatusJSON(t *testing.T) {
 
 func TestAPIHealthJSON(t *testing.T) {
 	s := newTestServer(t, "token")
-	s.SetHealthInfo(true, 9)
+	s.SetHealthInfo(func() bool { return true }, func() int { return 9 })
 	s.SetSigCount(100)
 
 	req := httptest.NewRequest("GET", "/api/v1/health", nil)

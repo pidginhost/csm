@@ -2458,10 +2458,7 @@ func (d *Daemon) startWebUI() {
 	// Push web-UI verified_bots edits into the live registry + verifier so they
 	// take effect without a restart, the same path SIGHUP uses.
 	srv.SetVerifiedBotsReloader(func() error { d.reconcileVerifiedBots(); return nil })
-	d.logWatchersMu.Lock()
-	numWatchers := len(d.logWatchers)
-	d.logWatchersMu.Unlock()
-	srv.SetHealthInfo(d.getFileMonitor() != nil, numWatchers)
+	srv.SetHealthInfo(d.FanotifyActive, d.LogWatcherCount)
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}

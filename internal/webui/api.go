@@ -868,8 +868,8 @@ func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 		"uptime":         time.Since(s.startTime).String(),
 		"uptime_seconds": int(time.Since(s.startTime).Seconds()),
 		"rules_loaded":   s.signatureCount(),
-		"fanotify":       s.fanotifyActive,
-		"log_watchers":   s.logWatcherCount,
+		"fanotify":       s.fanotifyRunning(),
+		"log_watchers":   s.logWatchersRunning(),
 	}
 	writeJSON(w, health)
 }

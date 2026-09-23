@@ -425,8 +425,7 @@ func TestHandleDashboardSeeded(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
 	// Seed sig/fanotify/watcher fields; handler should render without error
 	s.SetSigCount(42)
-	s.fanotifyActive = true
-	s.logWatcherCount = 7
+	s.SetHealthInfo(func() bool { return true }, func() int { return 7 })
 
 	w := httptest.NewRecorder()
 	s.handleDashboard(w, httptest.NewRequest("GET", "/", nil))

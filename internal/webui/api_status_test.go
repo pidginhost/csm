@@ -238,7 +238,7 @@ func TestApiStatus_SecurityPostureCriticalFromOpenIncident(t *testing.T) {
 	// Daemon operationally fine (rules + watchers present) so the posture is
 	// driven purely by the open critical incident, not by an op problem.
 	s.sigCount = 5
-	s.logWatcherCount = 3
+	s.SetHealthInfo(nil, func() int { return 3 })
 	corr := incident.NewCorrelator(incident.CorrelatorConfig{})
 	if _, created, err := corr.OnFinding(alert.Finding{
 		Check:     "wp_login_bruteforce",
@@ -273,7 +273,7 @@ func TestApiStatus_SecurityPostureHealthyWhenClean(t *testing.T) {
 	s := &Server{cfg: capsTestCfg(), startTime: time.Now().Add(-time.Hour)}
 	s.SetHealthProvider(statusFakeProvider{})
 	s.sigCount = 5
-	s.logWatcherCount = 3
+	s.SetHealthInfo(nil, func() int { return 3 })
 	// No incident correlator => no active incidents.
 
 	rec := httptest.NewRecorder()
