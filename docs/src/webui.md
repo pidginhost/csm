@@ -227,8 +227,13 @@ for the security principles behind opaque identifiers, expiry and revocation.
 
 | Key | Action |
 |-----|--------|
-| `j / k` | Move selection down/up |
+| `j / k` | Move selection down/up (focus moves to the row) |
+| `o` / `Enter` | Open selected finding |
 | `d` | Dismiss selected finding |
+
+Finding and incident rows, finding group headers and sortable table headers
+also work from the keyboard: Tab to them and press Enter or Space. A sorted
+header reports its order to screen readers.
 | `f` | Fix selected finding |
 
 Each finding row offers up to four actions: **Fix** (apply the automated

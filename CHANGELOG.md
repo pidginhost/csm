@@ -114,6 +114,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Added
 
+- Finding and incident rows, finding group headers and sortable table headers now work from the keyboard, sorted headers report their order to screen readers, and on Findings o or Enter opens the finding selected with j and k.
 - Correlated incidents can now be selected and marked contained, resolved or dismissed together; the change stops at the first failure and reports how many were updated.
 - A finding that reports an attacker address, such as a brute-force source, can now be blocked from its detail panel, as an incident can; other findings do not offer Block.
 - Findings can now suppress a selection at once, creating one rule per selected file; findings that name no file are skipped so a check-wide rule is never created in bulk.

@@ -160,7 +160,7 @@ function renderFindings(data) {
     var html = '';
     for (var k = 0; k < findings.length; k++) {
         var f = findings[k];
-        html += '<tr class="finding-row feed-item"' +
+        html += '<tr class="finding-row feed-item" tabindex="0"' +
             ' data-key="' + CSM.esc(f.key || (f.check + ':' + f.message)) + '"' +
             ' data-check="' + CSM.esc(f.check) + '"' +
             ' data-message="' + CSM.esc(f.message) + '"' +
@@ -197,10 +197,15 @@ function renderFindings(data) {
         checkboxes[c].addEventListener('change', updateSelection);
     }
 
-    // Bind click-to-expand on rows
+    // Bind click-to-expand on rows; a focused row opens with Enter or Space.
     for (var rx = 0; rx < rows.length; rx++) {
         rows[rx].addEventListener('click', function(e) {
             if (e.target.closest('button') || e.target.closest('input')) return;
+            toggleFindingDetail(this);
+        });
+        rows[rx].addEventListener('keydown', function(e) {
+            if (e.target !== this || (e.key !== 'Enter' && e.key !== ' ')) return;
+            e.preventDefault();
             toggleFindingDetail(this);
         });
     }
@@ -891,8 +896,9 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
             headerRow.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
             var td = document.createElement('td');
             td.colSpan = colCount;
-            td.innerHTML = '<span class="csm-group-arrow">&#9660;</span>' +
-                CSM.esc(key) + ' <span class="text-muted small">(' + groups[key].length + ' finding' + (groups[key].length !== 1 ? 's' : '') + ')</span>';
+            td.innerHTML = '<button type="button" class="csm-group-toggle" aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
+                '<span class="csm-group-arrow" aria-hidden="true">&#9660;</span>' + CSM.esc(key) + '</button>' +
+                ' <span class="text-muted small">(' + groups[key].length + ' finding' + (groups[key].length !== 1 ? 's' : '') + ')</span>';
             var accountURL = mode === 'account' ? CSM.accountURL(key) : '';
             if (accountURL) {
                 td.innerHTML += ' <a class="ms-2 small" href="' + CSM.attr(accountURL) + '">Account page</a>';
@@ -909,6 +915,8 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
                 if (e.target.closest('a')) return;
                 var isCollapsed = headerRow.classList.toggle('collapsed');
                 headerRow.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+                var toggleBtn = headerRow.querySelector('.csm-group-toggle');
+                if (toggleBtn) toggleBtn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
                 if (isCollapsed) _collapsedGroups[mode + '\u0000' + key] = true;
                 else delete _collapsedGroups[mode + '\u0000' + key];
                 groups[key].forEach(function(row) {

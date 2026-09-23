@@ -245,6 +245,9 @@ CSM.Table = function(opts) {
 
                 header.style.cursor = 'pointer';
                 header.title = 'Click to sort';
+                // Sortable from the keyboard too; aria-sort says the order.
+                header.setAttribute('tabindex', '0');
+                header.setAttribute('aria-sort', 'none');
                 csmTableListen(tbl, header, 'click', function() {
                     if (tbl.sortColumn === idx) {
                         tbl.sortAsc = !tbl.sortAsc;
@@ -256,11 +259,18 @@ CSM.Table = function(opts) {
                     var allHeaders = tbl.table.querySelectorAll('thead th');
                     for (var j = 0; j < allHeaders.length; j++) {
                         allHeaders[j].classList.remove('sort-asc', 'sort-desc');
+                        if (allHeaders[j].hasAttribute('aria-sort')) allHeaders[j].setAttribute('aria-sort', 'none');
                     }
                     header.classList.add(tbl.sortAsc ? 'sort-asc' : 'sort-desc');
+                    header.setAttribute('aria-sort', tbl.sortAsc ? 'ascending' : 'descending');
                     tbl.applySort();
                     tbl.render();
                     tbl._saveState();
+                });
+                csmTableListen(tbl, header, 'keydown', function(e) {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    header.click();
                 });
             })(h, headers[h], this);
         }
@@ -618,6 +628,9 @@ CSM.Table.prototype._restoreState = function(opts) {
             var headers = this.table.querySelectorAll('thead th');
             if (headers[state.sortCol]) {
                 headers[state.sortCol].classList.add(this.sortAsc ? 'sort-asc' : 'sort-desc');
+                if (headers[state.sortCol].hasAttribute('aria-sort')) {
+                    headers[state.sortCol].setAttribute('aria-sort', this.sortAsc ? 'ascending' : 'descending');
+                }
             }
         }
         if (state.search && opts.search !== false && opts.searchId) {

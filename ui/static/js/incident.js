@@ -436,7 +436,7 @@
             var inc = rows[i];
             var owner = inc.mailbox || inc.domain || inc.account || keySummary(inc.correlation_key) || 'unknown';
             var active = inc.id === selectedID ? ' class="table-active"' : '';
-            html += '<tr data-incident-id="' + CSM.attr(inc.id) + '"' + active + '>';
+            html += '<tr data-incident-id="' + CSM.attr(inc.id) + '" tabindex="0"' + active + '>';
             html += '<td><input type="checkbox" class="form-check-input incident-cb" data-incident-id="' + CSM.attr(inc.id) + '" aria-label="Select incident ' + CSM.attr(labelize(inc.kind) + ' ' + owner) + '"></td>';
             html += '<td><span class="badge bg-' + (statusClasses[inc.status] || 'secondary') + '-lt">' + CSM.esc(inc.status) + '</span></td>';
             html += '<td data-sort="' + severityNumber(inc.severity) + '"><span class="badge badge-' + CSM.severityClassFromLabel(inc.severity) + '">' + CSM.esc(inc.severity || 'UNKNOWN') + '</span></td>';
@@ -465,6 +465,11 @@
         trs.forEach(function(tr) {
             tr.addEventListener('click', function(e) {
                 if (e.target.closest('input')) return;
+                openIncident(this.getAttribute('data-incident-id'), true);
+            });
+            tr.addEventListener('keydown', function(e) {
+                if (e.target !== this || (e.key !== 'Enter' && e.key !== ' ')) return;
+                e.preventDefault();
                 openIncident(this.getAttribute('data-incident-id'), true);
             });
         });

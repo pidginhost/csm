@@ -45,6 +45,7 @@ CSM.shortcuts = (function() {
             label: 'Findings page',
             items: [
                 { keys: 'j / k', desc: 'Move selection down / up' },
+                { keys: 'o / Enter', desc: 'Open selected finding' },
                 { keys: 'd', desc: 'Dismiss selected finding' },
                 { keys: 'f', desc: 'Fix selected finding' }
             ]
@@ -86,6 +87,9 @@ CSM.shortcuts = (function() {
         if (index >= rows.length) index = rows.length - 1;
         _selectedRowIndex = index;
         rows[index].classList.add('csm-kbd-selected');
+        // Focus follows the selection, so Enter opens the row and screen
+        // readers announce it.
+        if (typeof rows[index].focus === 'function') rows[index].focus({ preventScroll: true });
         // Scroll into view if needed
         rows[index].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
@@ -270,6 +274,12 @@ CSM.shortcuts = (function() {
             if (e.key === 'k') {
                 e.preventDefault();
                 _selectRow(_selectedRowIndex - 1);
+                return;
+            }
+            if (e.key === 'o' && _selectedRowIndex >= 0) {
+                e.preventDefault();
+                var openRow = _getVisibleFindingRows()[_selectedRowIndex];
+                if (openRow) openRow.click();
                 return;
             }
             if (e.key === 'd' && _selectedRowIndex >= 0) {

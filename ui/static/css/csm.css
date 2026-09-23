@@ -153,6 +153,9 @@ body.theme-dark { background-color: var(--csm-bg-page); }
 
 /* Prevent selects from stretching in flex/grid containers */
 .csm-auto-width { width: auto; }
+/* Rows and headers that open or sort from the keyboard show where focus is. */
+tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(--tblr-primary); outline-offset: -2px; }
+.csm-group-toggle { background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; }
 
 /* Responsive input widths — replaces inline style="width:Xpx" */
 .csm-input-sm { width: 140px; }
