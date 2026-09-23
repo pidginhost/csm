@@ -1,7 +1,7 @@
 // Run with: node --test ui/table_test.js
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage } = require('./pagekit.js');
+const { loadPage, RUNTIME } = require('./pagekit.js');
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
@@ -11,7 +11,7 @@ function rowsHTML(names) {
 
 function tablePage(names) {
     return loadPage('<input id="s"><table id="t"><thead><tr><th>Name</th></tr></thead><tbody>' +
-        rowsHTML(names) + '</tbody></table>', ['csrf.js', 'table.js']);
+        rowsHTML(names) + '</tbody></table>', RUNTIME.concat(['table.js']));
 }
 
 function visibleRows(page) {

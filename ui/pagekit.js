@@ -1,7 +1,7 @@
 'use strict';
 // Runs the real Web UI scripts over fakedom for behavioural tests.
 //
-//   const page = loadPage('<table id="t">...</table>', ['csrf.js', 'table.js']);
+//   const page = loadPage('<table id="t">...</table>', RUNTIME.concat(['table.js']));
 //   page.window.CSM, page.document, page.requests, page.respond(...)
 //
 // The shared scripts are loaded exactly as the layout loads them. fetch is a
@@ -15,9 +15,12 @@ const { createWindow } = require('./fakedom.js');
 const JS_DIR = path.join(__dirname, 'static', 'js');
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 
+// The runtime every other script builds on, in the order layout.html loads it.
+const RUNTIME = ['csm-core.js', 'csm-format.js', 'csm-page.js', 'csm-live.js'];
+
 // The shared scripts layout.html loads before every page script, minus the
 // vendored Tabler bundle (see bootstrapStub) and the header-only helpers.
-const SHARED = ['csrf.js', 'toast.js', 'csm-ui.js', 'prefs.js', 'table.js'];
+const SHARED = RUNTIME.concat(['toast.js', 'csm-ui.js', 'prefs.js', 'table.js']);
 
 // templateBody returns a page template's "content" block with the Go
 // template directives removed, so a test runs the page script against the
@@ -147,4 +150,4 @@ function settle(rounds = 3) {
     return p;
 }
 
-module.exports = { loadPage, settle, jsonResponse, templateBody, SHARED };
+module.exports = { loadPage, settle, jsonResponse, templateBody, SHARED, RUNTIME };

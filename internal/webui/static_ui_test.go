@@ -15,7 +15,7 @@ import (
 )
 
 func TestSharedEscapeHelperEscapesQuotedAttributes(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,13 +25,13 @@ func TestSharedEscapeHelperEscapesQuotedAttributes(t *testing.T) {
 		`.replace(/'/g, '&#39;')`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing attribute escaping fragment %q", fragment)
+			t.Fatalf("runtime missing attribute escaping fragment %q", fragment)
 		}
 	}
 }
 
 func TestSharedFormattingHelpersHandleMissingValues(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestSharedFormattingHelpersHandleMissingValues(t *testing.T) {
 		`CSM.prefs && typeof CSM.prefs.formatDateTime === 'function'`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing formatter guard fragment %q", fragment)
+			t.Fatalf("runtime missing formatter guard fragment %q", fragment)
 		}
 	}
 }
@@ -527,6 +527,23 @@ var templateAssetRef = regexp.MustCompile(`\{\{asset "([^"]+)"\}\}`)
 
 // readTemplateSource reads a template with each {{asset "path"}} written as
 // the /static/path it links, so source checks see the linked file.
+// runtimeScripts is the shared runtime, in the order layout.html loads it.
+var runtimeScripts = []string{"csm-core.js", "csm-format.js", "csm-page.js", "csm-live.js"}
+
+// readRuntimeSource returns the runtime scripts joined in load order, for
+// pins that do not depend on which runtime file holds a helper.
+func readRuntimeSource() ([]byte, error) {
+	var out []byte
+	for _, name := range runtimeScripts {
+		src, err := os.ReadFile(filepath.Join("../../ui/static/js", name))
+		if err != nil {
+			return nil, err
+		}
+		out = append(append(out, src...), '\n')
+	}
+	return out, nil
+}
+
 func readTemplateSource(t *testing.T, path string) string {
 	t.Helper()
 	body, err := os.ReadFile(path)
@@ -538,16 +555,17 @@ func readTemplateSource(t *testing.T, path string) string {
 
 func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
 	text := readTemplateSource(t, "../../ui/templates/layout.html")
-	tablerIdx := strings.Index(text, `/static/js/tabler.min.js`)
-	csrfIdx := strings.Index(text, `/static/js/csrf.js`)
-	toastIdx := strings.Index(text, `/static/js/toast.js`)
-	uiIdx := strings.Index(text, `/static/js/csm-ui.js`)
-	tableIdx := strings.Index(text, `/static/js/table.js`)
-	if tablerIdx < 0 || csrfIdx < 0 || toastIdx < 0 || uiIdx < 0 || tableIdx < 0 {
-		t.Fatal("layout.html missing shared Web UI scripts")
-	}
-	if tablerIdx >= csrfIdx || csrfIdx >= toastIdx || toastIdx >= uiIdx || uiIdx >= tableIdx {
-		t.Fatal("layout.html must load tabler.min.js, csrf.js, toast.js, csm-ui.js, then table.js")
+	want := append(append([]string{"tabler.min.js"}, runtimeScripts...), "toast.js", "csm-ui.js", "table.js")
+	last := -1
+	for _, name := range want {
+		idx := strings.Index(text, `/static/js/`+name)
+		if idx < 0 {
+			t.Fatalf("layout.html missing shared Web UI script %s", name)
+		}
+		if idx <= last {
+			t.Fatalf("layout.html must load %s in this order", strings.Join(want, ", "))
+		}
+		last = idx
 	}
 }
 
@@ -561,19 +579,19 @@ func TestBootstrapAliasRunsBeforeSharedScriptConsumers(t *testing.T) {
 	for i, match := range matches {
 		order[match[1]] = i
 	}
-	csrfOrder, ok := order["csrf.js"]
+	csrfOrder, ok := order["csm-core.js"]
 	if !ok {
-		t.Fatal("layout.html missing csrf.js")
+		t.Fatal("layout.html missing csm-core.js")
 	}
 	tablerOrder, ok := order["tabler.min.js"]
 	if !ok {
 		t.Fatal("layout.html missing tabler.min.js")
 	}
 	if tablerOrder >= csrfOrder {
-		t.Fatal("csrf.js must run after tabler.min.js so the Tabler namespace exists")
+		t.Fatal("csm-core.js must run after tabler.min.js so the Tabler namespace exists")
 	}
 	for name, idx := range order {
-		if name == "tabler.min.js" || name == "csrf.js" {
+		if name == "tabler.min.js" || name == "csm-core.js" {
 			continue
 		}
 		src, err := os.ReadFile(filepath.Join("../../ui/static/js", name))
@@ -582,13 +600,13 @@ func TestBootstrapAliasRunsBeforeSharedScriptConsumers(t *testing.T) {
 		}
 		text := string(src)
 		if idx < csrfOrder && (strings.Contains(text, "window.bootstrap") || strings.Contains(text, "typeof bootstrap") || strings.Contains(text, "bootstrap.")) {
-			t.Fatalf("%s consumes Bootstrap globals before csrf.js installs the Tabler alias", name)
+			t.Fatalf("%s consumes Bootstrap globals before csm-core.js installs the Tabler alias", name)
 		}
 	}
 }
 
 func TestCSRFInstallsTablerBootstrapAlias(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := os.ReadFile("../../ui/static/js/csm-core.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,11 +616,11 @@ func TestCSRFInstallsTablerBootstrapAlias(t *testing.T) {
 		`window.bootstrap = window.tabler;`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing Tabler bootstrap alias fragment %q", fragment)
+			t.Fatalf("csm-core.js missing Tabler bootstrap alias fragment %q", fragment)
 		}
 	}
 	if strings.Index(text, `!window.bootstrap`) > strings.Index(text, `window.bootstrap = window.tabler;`) {
-		t.Fatal("csrf.js must guard an existing bootstrap bundle before assigning the Tabler alias")
+		t.Fatal("csm-core.js must guard an existing bootstrap bundle before assigning the Tabler alias")
 	}
 }
 
@@ -623,7 +641,7 @@ func TestBundledTablerExportsBootstrapComponents(t *testing.T) {
 		}
 	}
 	if strings.Contains(text, `window.bootstrap`) {
-		t.Fatal("tabler.min.js unexpectedly exports window.bootstrap; csrf.js should own the compatibility alias")
+		t.Fatal("tabler.min.js unexpectedly exports window.bootstrap; csm-core.js should own the compatibility alias")
 	}
 }
 
@@ -2032,7 +2050,7 @@ func TestNoRawObjectInterpolationInDOMWrites(t *testing.T) {
 // TestAllJSFetchesGoThroughCSMRequest pins WEB_ROADMAP P1.2: every page
 // script must call the shared CSM.request / CSM.get / CSM.fetch / CSM.poll
 // / CSM.post / CSM.delete helpers so the 30s timeout, AbortController, and
-// CSRF token wiring stay uniform. csrf.js is the only file allowed to call
+// CSRF token wiring stay uniform. csm-core.js is the only file allowed to call
 // the global `fetch` builtin directly (it is the wrapper).
 func TestAllJSFetchesGoThroughCSMRequest(t *testing.T) {
 	files := webUISourceFiles(t, "../../ui/static/js/*.js")
@@ -2040,7 +2058,7 @@ func TestAllJSFetchesGoThroughCSMRequest(t *testing.T) {
 	// non-identifier (or start-of-line / whitespace) before the bareword.
 	bareFetch := regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])fetch\s*\(`)
 	for _, path := range files {
-		if filepath.Base(path) == "csrf.js" {
+		if filepath.Base(path) == "csm-core.js" {
 			continue
 		}
 		src, err := os.ReadFile(path)
@@ -2061,7 +2079,7 @@ func TestAllJSFetchesGoThroughCSMRequest(t *testing.T) {
 // inspecting 412 / 422 status codes directly) and silent (CSM.poll
 // suppresses the auto-toast so it can surface its own errors).
 func TestCSMRequestExposesAllowNonOKAndSilent(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2081,7 +2099,7 @@ func TestCSMRequestExposesAllowNonOKAndSilent(t *testing.T) {
 		`return CSM.fetch(url, opts);`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing CSM.request option fragment %q", fragment)
+			t.Fatalf("runtime missing CSM.request option fragment %q", fragment)
 		}
 	}
 }
@@ -2091,7 +2109,7 @@ func TestCSMRequestExposesAllowNonOKAndSilent(t *testing.T) {
 // silent because action handlers already render their own success/failure
 // toast messages.
 func TestCSMWriteHelpersUseCSMRequest(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2125,20 +2143,20 @@ func TestCSMWriteHelpersUseCSMRequest(t *testing.T) {
 	} {
 		start := strings.Index(text, tc.name+" = function")
 		if start == -1 {
-			t.Fatalf("csrf.js missing %s definition", tc.name)
+			t.Fatalf("runtime missing %s definition", tc.name)
 		}
 		end := strings.Index(text[start:], "\n};")
 		if end == -1 {
-			t.Fatalf("csrf.js %s has no terminator", tc.name)
+			t.Fatalf("runtime %s has no terminator", tc.name)
 		}
 		body := text[start : start+end]
 		for _, fragment := range tc.mustHave {
 			if !strings.Contains(body, fragment) {
-				t.Fatalf("csrf.js %s missing fragment %q", tc.name, fragment)
+				t.Fatalf("runtime %s missing fragment %q", tc.name, fragment)
 			}
 		}
 		if strings.Contains(body, tc.mustNotHave) {
-			t.Fatalf("csrf.js %s must route through CSM.request, not fetch()", tc.name)
+			t.Fatalf("runtime %s must route through CSM.request, not fetch()", tc.name)
 		}
 	}
 }
@@ -2192,7 +2210,7 @@ func csmPollBody(t *testing.T, text string) string {
 	t.Helper()
 	pollStart := strings.Index(text, "CSM.poll = function(url, interval, callback, opts) {")
 	if pollStart == -1 {
-		t.Fatal("csrf.js missing CSM.poll definition")
+		t.Fatal("runtime missing CSM.poll definition")
 	}
 	tail := text[pollStart:]
 	for _, terminator := range []string{"\n    };\n})();", "\n};"} {
@@ -2200,7 +2218,7 @@ func csmPollBody(t *testing.T, text string) string {
 			return tail[:pollEnd]
 		}
 	}
-	t.Fatal("csrf.js CSM.poll has no terminator")
+	t.Fatal("runtime CSM.poll has no terminator")
 	return ""
 }
 
@@ -2209,7 +2227,7 @@ func csmPollBody(t *testing.T, text string) string {
 // timeout applies and pollers cannot hang indefinitely on a stuck
 // backend.
 func TestCSMPollUsesCSMRequest(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2231,7 +2249,7 @@ func TestCSMPollUsesCSMRequest(t *testing.T) {
 // CSM.request also reschedules so a regression in the request helper
 // cannot wedge every poller.
 func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2245,7 +2263,7 @@ func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
 		`snapshot[i].onVisibility();`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing poller registry fragment %q", fragment)
+			t.Fatalf("runtime missing poller registry fragment %q", fragment)
 		}
 	}
 	for _, fragment := range []string{
@@ -2290,7 +2308,7 @@ func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
 }
 
 func TestCSMPollVisibilityKeepsBackoffAndInvalidatesQueuedTimers(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2549,7 +2567,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 // wire a search / select to a query string key without writing custom
 // load+sync code.
 func TestURLStateHelperExposesP21Surface(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2566,13 +2584,13 @@ func TestURLStateHelperExposesP21Surface(t *testing.T) {
 		`window.addEventListener('popstate', handler);`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing CSM.urlState fragment %q", fragment)
+			t.Fatalf("runtime missing CSM.urlState fragment %q", fragment)
 		}
 	}
 }
 
 func TestURLStateBindKeepsQueryAuthoritative(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2589,13 +2607,13 @@ func TestURLStateBindKeepsQueryAuthoritative(t *testing.T) {
 		`if (l.cancel) l.cancel();`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing URL-state authority fragment %q", fragment)
+			t.Fatalf("runtime missing URL-state authority fragment %q", fragment)
 		}
 	}
 }
 
 func TestURLStateBindUsesChangeForDateInputs(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2607,7 +2625,7 @@ func TestURLStateBindUsesChangeForDateInputs(t *testing.T) {
 		`return 'change';`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing date input URL-state event fragment %q", fragment)
+			t.Fatalf("runtime missing date input URL-state event fragment %q", fragment)
 		}
 	}
 }
@@ -2764,7 +2782,7 @@ func TestSharedTableCanSearchByRowAttribute(t *testing.T) {
 // gates on enabled, the layout template carries the pill + buttons, and
 // layout.js wires them up.
 func TestAutoRefreshPillWired(t *testing.T) {
-	js, err := os.ReadFile("../../ui/static/js/csrf.js")
+	js, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2791,7 +2809,7 @@ func TestAutoRefreshPillWired(t *testing.T) {
 		`snapshot[i].onRefreshNow();`,
 	} {
 		if !strings.Contains(text, fragment) {
-			t.Fatalf("csrf.js missing CSM.refresh fragment %q", fragment)
+			t.Fatalf("runtime missing CSM.refresh fragment %q", fragment)
 		}
 	}
 
@@ -2834,11 +2852,11 @@ func TestAutoRefreshPillWired(t *testing.T) {
 
 func TestAutoRefreshDataIntervalsUseSharedToggle(t *testing.T) {
 	allowedDirectSetInterval := map[string]bool{
-		"csrf.js":     true, // relative timestamp labels
-		"findings.js": true, // per-finding countdown labels
-		"layout.js":   true, // refresh-age label tick
-		"settings.js": true, // firewall rollback countdown
-		"undo.js":     true, // undo banner countdown label
+		"csm-format.js": true, // relative timestamp labels
+		"findings.js":   true, // per-finding countdown labels
+		"layout.js":     true, // refresh-age label tick
+		"settings.js":   true, // firewall rollback countdown
+		"undo.js":       true, // undo banner countdown label
 	}
 	for _, path := range webUISourceFiles(t, "../../ui/static/js/*.js") {
 		src, err := os.ReadFile(path)
@@ -2927,9 +2945,9 @@ func TestSharedExportTableWired(t *testing.T) {
 }
 
 func TestSharedExportTableEscapesSpreadsheetFormulaCells(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
-		t.Fatalf("read csrf.js: %v", err)
+		t.Fatalf("read runtime: %v", err)
 	}
 	text := string(src)
 	for _, want := range []string{
@@ -2940,7 +2958,7 @@ func TestSharedExportTableEscapesSpreadsheetFormulaCells(t *testing.T) {
 		`obj[col.key] = row[col.key] != null ? row[col.key] : '';`,
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("csrf.js missing CSV export guard fragment %q", want)
+			t.Errorf("runtime missing CSV export guard fragment %q", want)
 		}
 	}
 }
@@ -3654,7 +3672,7 @@ func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
 // the firewall form, and routes every timestamp parse through one shared
 // CSM.parseTimestamp helper that owns the normalisation regex.
 func TestValidatorsTightenedAndTimestampParseShared(t *testing.T) {
-	csrf, err := os.ReadFile("../../ui/static/js/csrf.js")
+	csrf, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3667,11 +3685,11 @@ func TestValidatorsTightenedAndTimestampParseShared(t *testing.T) {
 		`var ts = CSM.parseTimestamp(dateStr);`, // timeAgo now uses the shared helper
 	} {
 		if !strings.Contains(csrfText, fragment) {
-			t.Errorf("csrf.js missing item-18 fragment %q", fragment)
+			t.Errorf("runtime missing item-18 fragment %q", fragment)
 		}
 	}
 	if strings.Contains(csrfText, `/^[0-9a-fA-F:]+$/.test(s)`) {
-		t.Error("csrf.js still uses the loose any-colons IPv6 check; tighten validateIP")
+		t.Error("runtime still uses the loose any-colons IPv6 check; tighten validateIP")
 	}
 
 	// The "$1T$2" normalisation regex must live in exactly one place
@@ -4159,7 +4177,7 @@ func TestIdleWatchersCollapsed(t *testing.T) {
 // onRefresh helper, and the cross-IIFE _bumpSubscriber bridge from
 // CSM.poll so pollers do not get treated as no-subscriber pages.
 func TestRefreshManualHasFallback(t *testing.T) {
-	js, err := os.ReadFile("../../ui/static/js/csrf.js")
+	js, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4174,7 +4192,7 @@ func TestRefreshManualHasFallback(t *testing.T) {
 		`CSM.refresh._bumpSubscriber()`,
 	} {
 		if !strings.Contains(jsText, fragment) {
-			t.Fatalf("csrf.js missing refresh-fallback fragment %q", fragment)
+			t.Fatalf("runtime missing refresh-fallback fragment %q", fragment)
 		}
 	}
 
@@ -4869,7 +4887,7 @@ func TestSSEHealthPillWired(t *testing.T) {
 		}
 	}
 
-	csrf, err := os.ReadFile("../../ui/static/js/csrf.js")
+	csrf, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4881,7 +4899,7 @@ func TestSSEHealthPillWired(t *testing.T) {
 		`'/api/v1/events'`,
 	} {
 		if !strings.Contains(csrfText, fragment) {
-			t.Fatalf("csrf.js missing P5.6 fragment %q", fragment)
+			t.Fatalf("runtime missing P5.6 fragment %q", fragment)
 		}
 	}
 
@@ -4910,7 +4928,7 @@ func TestSSEHealthPillWired(t *testing.T) {
 }
 
 func TestSSEWrapperIgnoresStaleSources(t *testing.T) {
-	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	src, err := readRuntimeSource()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4938,12 +4956,12 @@ func csmSSEBody(t *testing.T, text string) string {
 	t.Helper()
 	start := strings.Index(text, "CSM.sse = (function() {")
 	if start == -1 {
-		t.Fatal("csrf.js missing CSM.sse definition")
+		t.Fatal("runtime missing CSM.sse definition")
 	}
 	tail := text[start:]
 	end := strings.Index(tail, "\n})();\n")
 	if end == -1 {
-		t.Fatal("csrf.js CSM.sse has no terminator")
+		t.Fatal("runtime CSM.sse has no terminator")
 	}
 	return tail[:end]
 }

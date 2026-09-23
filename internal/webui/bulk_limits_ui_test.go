@@ -22,13 +22,13 @@ func readUIScript(t *testing.T, name string) string {
 // once and fail the whole delete. The pages must split the selection into
 // batches no larger than the server accepts.
 func TestQuarantineBulkDeleteSendsBatchesWithinServerLimit(t *testing.T) {
-	shared := readUIScript(t, "csrf.js")
+	shared := readUIScript(t, "csm-core.js")
 	for _, fragment := range []string{
 		fmt.Sprintf("CSM.QUARANTINE_BULK_MAX = %d;", quarantineBulkDeleteMax),
 		"CSM.postBatches = function(url, items, size, body, onBatch) {",
 	} {
 		if !strings.Contains(shared, fragment) {
-			t.Fatalf("csrf.js missing %q", fragment)
+			t.Fatalf("csm-core.js missing %q", fragment)
 		}
 	}
 	src := readUIScript(t, "quarantine.js")
@@ -49,8 +49,8 @@ func TestQuarantineBulkDeleteSendsBatchesWithinServerLimit(t *testing.T) {
 // split into batches behind a single undo. The page checks the server limit
 // before sending instead of failing with the raw server error.
 func TestThreatBulkActionsCheckServerLimitFirst(t *testing.T) {
-	if want := fmt.Sprintf("CSM.THREAT_BULK_MAX = %d;", threatBulkActionMax); !strings.Contains(readUIScript(t, "csrf.js"), want) {
-		t.Fatalf("csrf.js missing %q", want)
+	if want := fmt.Sprintf("CSM.THREAT_BULK_MAX = %d;", threatBulkActionMax); !strings.Contains(readUIScript(t, "csm-core.js"), want) {
+		t.Fatalf("csm-core.js missing %q", want)
 	}
 	if got := strings.Count(readUIScript(t, "threat.js"), "ips.length > CSM.THREAT_BULK_MAX"); got != 2 {
 		t.Fatalf("threat.js checks the bulk limit in %d places, want block and whitelist", got)
@@ -60,8 +60,8 @@ func TestThreatBulkActionsCheckServerLimitFirst(t *testing.T) {
 // A bulk dismissal is one undo entry, so the page refuses a selection the
 // server would refuse instead of splitting it into several undo entries.
 func TestFindingsBulkDismissChecksServerLimitFirst(t *testing.T) {
-	if want := fmt.Sprintf("CSM.DISMISS_BULK_MAX = %d;", dismissBulkMax); !strings.Contains(readUIScript(t, "csrf.js"), want) {
-		t.Fatalf("csrf.js missing %q", want)
+	if want := fmt.Sprintf("CSM.DISMISS_BULK_MAX = %d;", dismissBulkMax); !strings.Contains(readUIScript(t, "csm-core.js"), want) {
+		t.Fatalf("csm-core.js missing %q", want)
 	}
 }
 
@@ -86,8 +86,8 @@ func TestQuarantineMutationsStayLockedThroughRefresh(t *testing.T) {
 }
 
 func TestFindingsBulkActionsCheckBodyLimit(t *testing.T) {
-	if want := fmt.Sprintf("CSM.FIX_BULK_BODY_MAX = %d;", bulkFixBodyMax); !strings.Contains(readUIScript(t, "csrf.js"), want) {
-		t.Fatalf("csrf.js missing %q", want)
+	if want := fmt.Sprintf("CSM.FIX_BULK_BODY_MAX = %d;", bulkFixBodyMax); !strings.Contains(readUIScript(t, "csm-core.js"), want) {
+		t.Fatalf("csm-core.js missing %q", want)
 	}
 	src := readUIScript(t, "findings.js")
 	for _, fragment := range []string{

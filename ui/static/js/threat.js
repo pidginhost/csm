@@ -1,5 +1,7 @@
 // CSM Threat Intelligence page
 
+(function() {
+
 var fmtDate = CSM.fmtDate;
 
 var _threatAttackerData = [];
@@ -516,7 +518,7 @@ function whitelistIP(ip) {
 // Other pages link here with ?ip= to look one address up.
 (function() {
     var ip = (new URLSearchParams(window.location.search).get('ip') || '').trim();
-    if (!ip || !(isValidIPv4(ip) || isValidIPv6(ip))) return;
+    if (!CSM.validateIP(ip)) return;
     document.getElementById('tr-lookup-ip').value = ip;
     document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
 })();
@@ -622,3 +624,5 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
 new MutationObserver(function(mutations) {
     mutations.forEach(function(m) { if (m.attributeName === 'class') CSM.applyChartTheme(); });
 }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+})();

@@ -1,6 +1,8 @@
 // CSM.ui - Shared rendering primitives (no modal/confirm logic - that stays in toast.js)
 var CSM = CSM || {};
 
+(function() {
+
 // The severity table. Findings carry a numeric level (0-2) and some APIs a
 // label; CSM.severity accepts either, in any case, and returns the label, the
 // token-backed .badge-* class, the level and a sort rank. Anything else is
@@ -68,7 +70,7 @@ CSM.makeClickable = function(el) {
     });
 };
 
-// fmtDateTime removed - use CSM.fmtDate(ts) instead (defined in csrf.js)
+// fmtDateTime removed - use CSM.fmtDate(ts) instead (defined in csm-format.js)
 
 // A server-rendered form with data-csm-confirm asks before it submits. The
 // page scripts cannot use inline handlers under the CSP, so one listener
@@ -908,3 +910,5 @@ CSM.suppressionSaved = function(resp) {
     CSM.toast('Suppression rule created', 'success');
 };
 // End suppression scope.
+
+})();

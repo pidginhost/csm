@@ -102,6 +102,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- The Web UI's shared script is split by purpose and every script keeps its helpers to itself, so scripts can no longer clash over names; scripts stay within ES2019.
 - Removed unused Web UI code, including a read-only sidebar variant that no page could show, since every page needs an admin credential.
 - Quarantine is now the one list of file backups: it shows pre-clean backups with their type and the live state of the original path, and filters by type. Cleanup History keeps the database object backups and links to it.
 - The History tab now pages with the same first, previous, next and last controls and summary as the Incidents lists.

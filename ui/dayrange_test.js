@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, SHARED, settle, RUNTIME } = require('./pagekit.js');
 
 function zone(tz) {
     return { 'csm-prefs': JSON.stringify({ timezone: tz }) };
@@ -15,7 +15,7 @@ const DAY_START = '2026-09-22T11:15:00.000Z';
 const NEXT_DAY_START = '2026-09-23T11:15:00.000Z';
 
 function prefsPage(storage) {
-    return loadPage('', ['csrf.js', 'prefs.js'], { storage });
+    return loadPage('', RUNTIME.concat(['prefs.js']), { storage });
 }
 
 test('a day starts and ends at midnight in the operator zone', () => {

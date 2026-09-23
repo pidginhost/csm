@@ -20,7 +20,7 @@ func TestLoadErrorHidesContentWithDisplayUtilities(t *testing.T) {
 	if !rule.Match(css) {
 		t.Error("csm.css does not hide content marked by CSM.loadError over display utilities")
 	}
-	js, err := os.ReadFile("../../ui/static/js/csrf.js")
+	js, err := os.ReadFile("../../ui/static/js/csm-page.js")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -64,6 +64,16 @@ gofmt -w .              # fix formatting
 - Keep functions focused; avoid large multi-responsibility functions.
 - New checks must include at least one unit test.
 
+## Web UI
+
+- The scripts in `ui/static/js` are served as written, with no build step.
+  They may use syntax and browser APIs up to ES2019; a test rejects later
+  syntax.
+- Each script keeps its helpers inside a function scope and adds only to the
+  `CSM` namespace. The shared runtime is `csm-core.js` (config and requests),
+  `csm-format.js`, `csm-page.js` and `csm-live.js`, loaded in that order.
+- The behavioural tests for the scripts need only Node: `node --test ui/`.
+
 ## Testing
 
 ```bash

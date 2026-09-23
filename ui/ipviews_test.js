@@ -28,7 +28,9 @@ test('a whitelist action on Threat Intel still reaches the server', async () => 
     const page = threatPage();
     await settle();
     page.window.CSM.confirm = () => Promise.resolve();
-    page.run('whitelistIP("203.0.113.9")');
+    page.respond('/api/v1/threat/top-attackers', 200, [{ ip: '203.0.113.9', event_count: 1, verdict: 'suspicious' }]);
+    await settle();
+    page.document.querySelector('.quick-wl-btn[data-ip="203.0.113.9"]').click();
     await settle();
     const req = page.respond('/api/v1/threat/whitelist-ip', 200, { actions: [] });
     assert.equal(req.body.ip, '203.0.113.9');

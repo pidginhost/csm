@@ -34,7 +34,7 @@ function findingsPage(selected = []) {
         },
         refreshFindings() { refreshed++; }
     });
-    const shared = fs.readFileSync(path.join(__dirname, 'static/js/csrf.js'), 'utf8');
+    const shared = fs.readFileSync(path.join(__dirname, 'static/js/csm-core.js'), 'utf8');
     vm.runInContext(section(shared, 'CSM.QUARANTINE_BULK_MAX', '// Wrapper for DELETE'), context);
     const src = fs.readFileSync(path.join(__dirname, 'static/js/findings.js'), 'utf8');
     vm.runInContext(section(src, '// --- Single actions ---', '// --- Suppress dialog ---'), context);

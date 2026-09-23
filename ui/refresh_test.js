@@ -1,7 +1,7 @@
 // Run with: node --test ui/refresh_test.js
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
+const { loadPage, templateBody, SHARED, settle, RUNTIME } = require('./pagekit.js');
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const chartStub = function () { return { destroy() {}, update() {}, data: { datasets: [] }, options: {} }; };
@@ -35,7 +35,7 @@ function trackTimers(page) {
 }
 
 test('a refresh timer returning from a hidden tab runs once if it is overdue', async () => {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     let runs = 0;
     page.window.CSM.refresh.interval(() => { runs++; }, 40);
     setHidden(page, true);
@@ -49,7 +49,7 @@ test('a refresh timer returning from a hidden tab runs once if it is overdue', a
 });
 
 test('returning to a tab does not refresh while auto-refresh is paused', async () => {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     let runs = 0;
     page.window.CSM.refresh.interval(() => { runs++; }, 40);
     page.window.CSM.refresh.setEnabled(false, { transient: true });
@@ -64,7 +64,7 @@ test('a short tab switch keeps the original refresh deadline', () => {
     const timers = new Map();
     let nextID = 0;
     class ClockDate extends Date { static now() { return now; } }
-    const page = loadPage('', ['csrf.js'], { globals: {
+    const page = loadPage('', RUNTIME, { globals: {
         Date: ClockDate,
         setTimeout(fn, delay) { const id = ++nextID; timers.set(id, { fn, delay }); return id; },
         clearTimeout(id) { timers.delete(id); }

@@ -1,10 +1,10 @@
 // Run with: node --test ui/timezone_test.js
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage } = require('./pagekit.js');
+const { loadPage, RUNTIME } = require('./pagekit.js');
 
 function serverTimePage(zone, offsetMinutes) {
-    const page = loadPage('', ['csrf.js', 'prefs.js']);
+    const page = loadPage('', RUNTIME.concat(['prefs.js']));
     const html = page.document.documentElement;
     html.setAttribute('data-csm-server-tz', zone);
     html.setAttribute('data-csm-server-offset', String(offsetMinutes));

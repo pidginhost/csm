@@ -8,7 +8,7 @@ const { test } = require('node:test');
 // Loads the shared timestamp helpers with a document that returns the given
 // elements for each selector the refresher may query.
 function timeHelpers(bySelector = {}) {
-    const source = fs.readFileSync(path.join(__dirname, 'static/js/csrf.js'), 'utf8');
+    const source = fs.readFileSync(path.join(__dirname, 'static/js/csm-format.js'), 'utf8');
     const start = source.indexOf('// Parse an ISO 8601');
     const end = source.indexOf('// Auto-refresh relative timestamps');
     assert.ok(start >= 0 && end > start, 'timestamp helpers moved');

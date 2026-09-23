@@ -1,7 +1,7 @@
 // Run with: node --test ui/prefs_test.js
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, settle } = require('./pagekit.js');
+const { loadPage, settle, RUNTIME } = require('./pagekit.js');
 
 const CACHE = 'csm-prefs';
 
@@ -10,7 +10,7 @@ const CACHE = 'csm-prefs';
 // before any page script runs, so dates are formatted in the operator's
 // zone from the first render.
 test('the last known preferences apply before the server answers', () => {
-    const page = loadPage('', ['csrf.js', 'prefs.js'], {
+    const page = loadPage('', RUNTIME.concat(['prefs.js']), {
         storage: { [CACHE]: JSON.stringify({ timezone: 'UTC', density: 'compact' }) }
     });
     assert.equal(page.pending('/api/v1/prefs/user').length, 1, 'server copy still loading');
@@ -19,7 +19,7 @@ test('the last known preferences apply before the server answers', () => {
 });
 
 test('a server copy that changes the time zone reloads the page once', async () => {
-    const page = loadPage('', ['csrf.js', 'prefs.js'], {
+    const page = loadPage('', RUNTIME.concat(['prefs.js']), {
         storage: { [CACHE]: JSON.stringify({ timezone: 'local' }) }
     });
     page.respond('/api/v1/prefs/user', 200, { timezone: 'UTC' });
@@ -29,7 +29,7 @@ test('a server copy that changes the time zone reloads the page once', async () 
 });
 
 test('a server copy that matches what rendered does not reload', async () => {
-    const page = loadPage('', ['csrf.js', 'prefs.js'], {
+    const page = loadPage('', RUNTIME.concat(['prefs.js']), {
         storage: { [CACHE]: JSON.stringify({ timezone: 'UTC' }) }
     });
     page.respond('/api/v1/prefs/user', 200, { timezone: 'UTC', density: 'compact' });
@@ -39,7 +39,7 @@ test('a server copy that matches what rendered does not reload', async () => {
 });
 
 test('when the browser cannot store preferences the page never reload-loops', async () => {
-    const page = loadPage('', ['csrf.js', 'prefs.js']);
+    const page = loadPage('', RUNTIME.concat(['prefs.js']));
     page.window.localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
     page.respond('/api/v1/prefs/user', 200, { timezone: 'UTC' });
     await settle();
@@ -48,7 +48,7 @@ test('when the browser cannot store preferences the page never reload-loops', as
 });
 
 test('saving a new time zone re-renders the page; other changes apply live', async () => {
-    const page = loadPage('', ['csrf.js', 'prefs.js']);
+    const page = loadPage('', RUNTIME.concat(['prefs.js']));
     page.respond('/api/v1/prefs/user', 200, { timezone: 'local' });
     await settle();
     const held = page.window.CSM.prefs.get();
@@ -68,7 +68,7 @@ test('saving a new time zone re-renders the page; other changes apply live', asy
 });
 
 test('a failed server read keeps the last known preferences', async () => {
-    const page = loadPage('', ['csrf.js', 'prefs.js'], {
+    const page = loadPage('', RUNTIME.concat(['prefs.js']), {
         storage: { [CACHE]: JSON.stringify({ timezone: 'UTC' }) }
     });
     page.respond('/api/v1/prefs/user', 500, { error: 'Store error' });
@@ -78,7 +78,7 @@ test('a failed server read keeps the last known preferences', async () => {
 });
 
 test('a stale cached auto-refresh off follows the server back on', async () => {
-    const page = loadPage('', ['csrf.js', 'prefs.js'], {
+    const page = loadPage('', RUNTIME.concat(['prefs.js']), {
         storage: { [CACHE]: JSON.stringify({ auto_refresh: 'off' }) }
     });
     assert.equal(page.window.CSM.refresh.enabled, false);
@@ -88,13 +88,13 @@ test('a stale cached auto-refresh off follows the server back on', async () => {
 });
 
 test('a corrupt cache is ignored', () => {
-    const page = loadPage('', ['csrf.js', 'prefs.js'], { storage: { [CACHE]: '{not json' } });
+    const page = loadPage('', RUNTIME.concat(['prefs.js']), { storage: { [CACHE]: '{not json' } });
     assert.equal(page.window.CSM.prefs.get().timezone, 'local');
 });
 
 test('saving a zone only reloads if the cache can be read back', async () => {
     for (const failWrite of [true, false]) {
-        const page = loadPage('', ['csrf.js', 'prefs.js']);
+        const page = loadPage('', RUNTIME.concat(['prefs.js']));
         page.respond('/api/v1/prefs/user', 200, { timezone: 'local' });
         await settle();
         const held = page.window.CSM.prefs.get();

@@ -3,7 +3,7 @@
 // what extends an idle browser session; timer polls do not.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage } = require('./pagekit.js');
+const { loadPage, RUNTIME } = require('./pagekit.js');
 
 function header(req, name) {
     const h = req.headers || {};
@@ -11,7 +11,7 @@ function header(req, name) {
 }
 
 test('requests carry the activity marker only after operator input', () => {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     page.window.CSM.get('/api/v1/idle');
     assert.equal(header(page.pending('/api/v1/idle')[0], 'X-CSM-Active'), undefined, 'poll marked active without input');
 
@@ -27,7 +27,7 @@ test('requests carry the activity marker only after operator input', () => {
 
 for (const kind of ['object', 'Headers', 'pairs']) {
     test('activity preserves ' + kind + ' headers and expires on reused options', () => {
-        const page = loadPage('', ['csrf.js']);
+        const page = loadPage('', RUNTIME);
         page.run('Date.now = function() { return 1000; }');
         const entries = [['Content-Type', 'application/json'], ['X-Request-ID', 'activity-test']];
         const headers = kind === 'Headers' ? new Headers(entries) : kind === 'pairs' ? entries : Object.fromEntries(entries);
@@ -47,7 +47,7 @@ for (const kind of ['object', 'Headers', 'pairs']) {
 }
 
 test('activity marker is recomputed at dispatch and scroll counts as input', () => {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     page.run('Date.now = function() { return 1000; }');
     const options = { headers: { 'x-csm-active': '1' } };
     page.window.CSM.request('/api/v1/before-input', options);
@@ -65,7 +65,7 @@ test('activity marker is recomputed at dispatch and scroll counts as input', () 
 });
 
 test('GET accepts Headers options before and after input', () => {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     const options = { headers: new Headers({ 'X-Request-ID': 'activity-test' }) };
     for (const active of [false, true]) {
         if (active) page.document.dispatchEvent(new page.window.Event('keydown'));
@@ -80,14 +80,14 @@ test('GET accepts Headers options before and after input', () => {
 
 
 test('GET preserves an explicit Accept header without adding a second value', () => {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     page.window.CSM.get('/api/v1/custom-accept', { headers: new Headers({ accept: 'text/csv' }) });
     const headers = new Headers(page.pending('/api/v1/custom-accept')[0].headers);
     assert.equal(headers.get('Accept'), 'text/csv');
 });
 
 test('request header pairs retain repeated values across activity marking', () => {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     const options = { headers: [['X-Filter', 'one'], ['x-filter', 'two'], ['X-Filter', 'three']] };
     page.document.dispatchEvent(new page.window.Event('keydown'));
     page.window.CSM.request('/api/v1/repeated-headers', options);
@@ -97,7 +97,7 @@ test('request header pairs retain repeated values across activity marking', () =
 
 
 test('layout scrolling without operator input does not mark requests active', () => {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     page.document.dispatchEvent(new page.window.Event('scroll'));
     page.window.CSM.get('/api/v1/layout-scroll');
     assert.equal(new Headers(page.pending('/api/v1/layout-scroll')[0].headers).get('X-CSM-Active'), null);

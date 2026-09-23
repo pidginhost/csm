@@ -92,7 +92,7 @@ for (const spec of [
     });
 }
 
-test('Firewall deep links and programmatic switches keep the selected tab in sync', () => {
+test('Firewall deep links and programmatic switches keep the selected tab in sync', async () => {
     const page = loadPage(templateBody('firewall'), SHARED.concat(['firewall.js']),
         { url: 'https://csm.example.test/firewall?view=allow' });
     function selected(view) {
@@ -105,6 +105,9 @@ test('Firewall deep links and programmatic switches keep the selected tab in syn
         }
     }
     selected('allow');
-    page.window.switchFirewallView('blocks');
-    selected('blocks');
+    // Inspect on a blocked address switches to the Overview lookup.
+    page.respond('/api/v1/blocked-ips', 200, [{ ip: '192.0.2.1', reason: 'r', source: 'web_ui' }]);
+    await settle();
+    page.document.querySelector('.fw-inspect-btn[data-ip="192.0.2.1"]').click();
+    selected('overview');
 });

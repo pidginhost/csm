@@ -30,6 +30,8 @@
  */
 var CSM = CSM || {};
 
+(function() {
+
 CSM._tableInstances = CSM._tableInstances || [];
 
 CSM.printTables = CSM.printTables || (function() {
@@ -668,3 +670,5 @@ CSM.Table.prototype._syncPerPageSelect = function(opts) {
     var perPageEl = document.getElementById(opts.perPageSelectId);
     if (perPageEl) perPageEl.value = String(this.perPage || 0);
 };
+
+})();

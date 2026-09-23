@@ -1,5 +1,7 @@
 // CSM Quarantine page
 
+(function() {
+
 var _quarTable = null;
 var _quarURLUnbind = null;
 var _quarDateListenersBound = false;
@@ -332,3 +334,5 @@ if (CSM.refresh && typeof CSM.refresh.onRefresh === 'function') {
         if (!_quarMutationBusy) loadQuarantine();
     });
 }
+
+})();

@@ -87,11 +87,11 @@ func TestTemplatesLinkStaticFilesThroughTheAssetHelper(t *testing.T) {
 
 func TestStaticCachePolicy(t *testing.T) {
 	s := newRealUIServer(t)
-	versioned := s.assetURL("js/csrf.js")
+	versioned := s.assetURL("js/csm-core.js")
 	if w := getStatic(s, versioned, nil); w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Cache-Control"), "immutable") {
 		t.Errorf("current version: code %d, Cache-Control %q, want a long immutable cache", w.Code, w.Header().Get("Cache-Control"))
 	}
-	for _, target := range []string{"/static/js/csrf.js", "/static/js/csrf.js?v=stale"} {
+	for _, target := range []string{"/static/js/csm-core.js", "/static/js/csm-core.js?v=stale"} {
 		w := getStatic(s, target, nil)
 		if cc := w.Header().Get("Cache-Control"); w.Code != http.StatusOK || cc != "no-cache" {
 			t.Errorf("%s: code %d, Cache-Control %q, want no-cache (revalidate)", target, w.Code, cc)
@@ -101,11 +101,11 @@ func TestStaticCachePolicy(t *testing.T) {
 
 func TestStaticTextIsGzipped(t *testing.T) {
 	s := newRealUIServer(t)
-	want, err := os.ReadFile("../../ui/static/js/csrf.js")
+	want, err := os.ReadFile("../../ui/static/js/csm-core.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := getStatic(s, "/static/js/csrf.js", map[string]string{"Accept-Encoding": "gzip"})
+	w := getStatic(s, "/static/js/csm-core.js", map[string]string{"Accept-Encoding": "gzip"})
 	if w.Header().Get("Content-Encoding") != "gzip" || !strings.Contains(w.Header().Get("Vary"), "Accept-Encoding") {
 		t.Fatalf("headers %v, want gzip with Vary: Accept-Encoding", w.Header())
 	}
@@ -119,10 +119,10 @@ func TestStaticTextIsGzipped(t *testing.T) {
 	}
 
 	// No encoding without Accept-Encoding, and never on a range request.
-	if w := getStatic(s, "/static/js/csrf.js", nil); w.Header().Get("Content-Encoding") != "" || !bytes.Equal(w.Body.Bytes(), want) {
+	if w := getStatic(s, "/static/js/csm-core.js", nil); w.Header().Get("Content-Encoding") != "" || !bytes.Equal(w.Body.Bytes(), want) {
 		t.Error("plain request was encoded")
 	}
-	if w := getStatic(s, "/static/js/csrf.js", map[string]string{"Accept-Encoding": "gzip", "Range": "bytes=0-9"}); w.Header().Get("Content-Encoding") != "" || w.Code != http.StatusPartialContent {
+	if w := getStatic(s, "/static/js/csm-core.js", map[string]string{"Accept-Encoding": "gzip", "Range": "bytes=0-9"}); w.Header().Get("Content-Encoding") != "" || w.Code != http.StatusPartialContent {
 		t.Errorf("range request: code %d, encoding %q", w.Code, w.Header().Get("Content-Encoding"))
 	}
 }
@@ -137,7 +137,7 @@ func TestStaticGzipQuality(t *testing.T) {
 		{"gzip;q=0.5", true}, {"br, GZIP; q=1.0", true},
 		{"*;q=1", true}, {"gzip;q=0, *;q=1", false},
 	} {
-		w := getStatic(s, "/static/js/csrf.js", map[string]string{"Accept-Encoding": tc.accept})
+		w := getStatic(s, "/static/js/csm-core.js", map[string]string{"Accept-Encoding": tc.accept})
 		if got := w.Header().Get("Content-Encoding") == "gzip"; got != tc.gzip {
 			t.Errorf("Accept-Encoding %q: gzip=%v, want %v", tc.accept, got, tc.gzip)
 		}
@@ -146,13 +146,13 @@ func TestStaticGzipQuality(t *testing.T) {
 
 func TestStaticHeadAndNotModifiedHaveNoBody(t *testing.T) {
 	s := newRealUIServer(t)
-	initial := getStatic(s, "/static/js/csrf.js", nil)
+	initial := getStatic(s, "/static/js/csm-core.js", nil)
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		for _, conditional := range []bool{false, true} {
 			if method == http.MethodGet && !conditional {
 				continue
 			}
-			r := httptest.NewRequest(method, "/static/js/csrf.js", nil)
+			r := httptest.NewRequest(method, "/static/js/csm-core.js", nil)
 			r.Header.Set("Accept-Encoding", "gzip")
 			want := http.StatusOK
 			if conditional {

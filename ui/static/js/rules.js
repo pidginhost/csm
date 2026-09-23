@@ -1,5 +1,7 @@
 // CSM Rules page
 
+(function() {
+
 var fmtSize = CSM.formatSize;
 
 function loadStatus() {
@@ -254,3 +256,5 @@ if (CSM.refresh) CSM.refresh.onRefresh(function() {
     loadFiles();
     loadSuppressions();
 });
+
+})();

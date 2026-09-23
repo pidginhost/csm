@@ -1,5 +1,7 @@
 // CSM Firewall page
 
+(function() {
+
 var _fwBlockedData = [];
 var _fwSetView = function() {};
 var _fwTables = {};
@@ -1218,5 +1220,7 @@ if (CSM.refresh && typeof CSM.refresh.onRefresh === 'function') {
 // Other pages link here with ?ip= to inspect one address.
 (function() {
     var ip = (new URLSearchParams(window.location.search).get('ip') || '').trim();
-    if (ip && (isValidIPv4(ip) || isValidIPv6(ip))) inspectIP(ip);
+    if (CSM.validateIP(ip)) inspectIP(ip);
+})();
+
 })();

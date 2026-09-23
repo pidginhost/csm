@@ -1,5 +1,7 @@
 // CSM Audit Log page
 
+(function() {
+
 var actionBadges = {
     block_ip:           'bg-red',
     block_ip_permanent: 'bg-red',
@@ -198,3 +200,5 @@ document.querySelectorAll('[data-export]').forEach(function(el) {
         CSM.exportTable(_auditExportRows(), _auditExportCols, this.getAttribute('data-export'), 'csm-audit');
     });
 });
+
+})();

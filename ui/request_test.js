@@ -1,10 +1,10 @@
 // Run with: node --test ui/request_test.js
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { loadPage, settle } = require('./pagekit.js');
+const { loadPage, settle, RUNTIME } = require('./pagekit.js');
 
 function requestPage() {
-    const page = loadPage('', ['csrf.js']);
+    const page = loadPage('', RUNTIME);
     const toasts = [];
     page.window.CSM.toast = (message, kind) => toasts.push({ message, kind });
     page.toasts = toasts;
