@@ -493,10 +493,14 @@ func localizeValidationFields(results []fieldError, section string) {
 	}
 }
 
+// writeValidationErrors answers 422 with the one error message every
+// failure carries and the per-field problems next to it.
 func writeValidationErrors(w http.ResponseWriter, errs []fieldError) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnprocessableEntity)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": errs})
+	msg := "Invalid values"
+	if len(errs) == 1 {
+		msg = errs[0].Field + ": " + errs[0].Message
+	}
+	writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]interface{}{"error": msg, "errors": errs})
 }
 
 const fileOnlyFieldMessage = "Change this in csm.yaml. The web UI cannot set commands, file paths, sockets or environment variable names."
@@ -968,9 +972,7 @@ func (s *Server) apiSettingsRestart(w http.ResponseWriter, r *http.Request) {
 
 	s.auditLog(r, "settings-restart", "daemon", "")
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	writeJSONStatus(w, http.StatusAccepted, map[string]string{
 		"status":           "restart issued",
 		"started_at_token": s.daemonStartToken(),
 	})

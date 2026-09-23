@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -314,12 +315,12 @@ func (s *Server) apiIncidentShow(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/incidents/")
 	id = strings.TrimSuffix(id, "/")
 	if id == "" || s.incidentCorrelator == nil {
-		http.NotFound(w, r)
+		writeJSONError(w, "Incident not found", http.StatusNotFound)
 		return
 	}
 	inc, ok := s.incidentCorrelator.Get(id)
 	if !ok {
-		http.NotFound(w, r)
+		writeJSONError(w, "Incident not found", http.StatusNotFound)
 		return
 	}
 	writeJSON(w, inc)
@@ -338,20 +339,23 @@ func (s *Server) apiIncidentStatus(w http.ResponseWriter, r *http.Request) {
 	// Cap the request body like every other mutating handler; a bare
 	// json.NewDecoder(r.Body) would buffer an unbounded body into memory.
 	if err := decodeJSONBodyLimited(w, r, 16*1024, &body); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
+		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 	if s.incidentCorrelator == nil {
-		http.Error(w, "incidents not enabled", http.StatusServiceUnavailable)
+		writeJSONError(w, "Incidents are not enabled", http.StatusServiceUnavailable)
 		return
 	}
 	if err := s.incidentCorrelator.SetStatus(id, incident.Status(body.Status), body.Details); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		code := http.StatusBadRequest
+		if errors.Is(err, incident.ErrIncidentNotFound) {
+			code = http.StatusNotFound
+		}
+		writeJSONError(w, err.Error(), code)
 		return
 	}
 	s.auditLog(r, "incident_status", id, strings.TrimSpace(body.Status+" "+body.Details))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"ok":true}`))
+	writeJSON(w, map[string]interface{}{"ok": true})
 }
 
 // apiIncidentRouter dispatches /api/v1/incidents/<id>[...] sub-paths.

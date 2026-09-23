@@ -1932,16 +1932,41 @@ func extractAccountFromFinding(f alert.Finding) string {
 }
 
 func writeJSONError(w http.ResponseWriter, message string, code int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+	writeJSONStatus(w, code, map[string]string{"error": message})
 }
 
 // writeJSON sends compact JSON: indentation added about a third to large
 // lists such as findings and history, and nothing reads it but code.
 func writeJSON(w http.ResponseWriter, data interface{}) {
+	writeJSONStatus(w, http.StatusOK, data)
+}
+
+// writeJSONStatus sends data as JSON with the given status code.
+func writeJSONStatus(w http.ResponseWriter, code int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+// writeRequestError answers a failure from middleware that guards both API
+// and page routes: JSON under /api/, plain text elsewhere.
+func writeRequestError(w http.ResponseWriter, r *http.Request, msg string, code int) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeJSONError(w, msg, code)
+		return
+	}
+	http.Error(w, msg, code)
+}
+
+// apiNotFound answers every /api/ path no route matches. Without it the
+// page catch-all served the dashboard HTML with 200 to API clients.
+// Unauthenticated callers get 401, as for a real route.
+func (s *Server) apiNotFound(w http.ResponseWriter, r *http.Request) {
+	if !s.tokenHasScope(r, "read") {
+		writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	writeJSONError(w, "Not found", http.StatusNotFound)
 }
 
 // queryInt reads a non-negative integer query parameter. A missing, negative

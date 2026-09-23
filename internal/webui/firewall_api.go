@@ -205,7 +205,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 	defer s.threatActionMu.Unlock()
 
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -265,7 +265,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 // apiFirewallRemoveAllow removes a firewall allow rule.
 func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -399,7 +399,7 @@ func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
 // apiFirewallDenySubnet blocks a subnet via the firewall engine.
 func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -447,7 +447,7 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 // apiFirewallRemoveSubnet removes a subnet block.
 func (s *Server) apiFirewallRemoveSubnet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -483,7 +483,7 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 	defer s.threatActionMu.Unlock()
 
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -512,7 +512,7 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 // apiFirewallFlushCphulk clears cPHulk login history for one IP without touching firewall state.
 func (s *Server) apiFirewallFlushCphulk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -676,7 +676,7 @@ func cphulkTempBanLookupIP(ip string) (string, bool) {
 // POST /api/v1/firewall/unban  body: {"ip": "1.2.3.4"}
 func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 

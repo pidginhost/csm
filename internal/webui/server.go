@@ -295,6 +295,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	}
 
 	// Auth-protected API - read (read-scope tokens accepted)
+	// Any /api/ path no route below matches; see apiNotFound.
+	mux.Handle("/api/", http.HandlerFunc(s.apiNotFound))
 	mux.Handle("/api/v1/events", s.requireRead(http.HandlerFunc(s.apiEvents)))
 	mux.Handle("/api/v1/status", s.requireRead(http.HandlerFunc(s.apiStatus)))
 	mux.Handle("/api/v1/challenge/stats", s.requireRead(http.HandlerFunc(s.apiChallengeStats)))
@@ -996,7 +998,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
 				if !s.originAllowed(origin, r.Host) {
-					http.Error(w, "Cross-origin request blocked", http.StatusForbidden)
+					writeRequestError(w, r, "Cross-origin request blocked", http.StatusForbidden)
 					return
 				}
 				w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -1024,7 +1026,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 			}
 			if len(recent) >= 600 {
 				s.apiMu.Unlock()
-				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				writeRequestError(w, r, "Rate limit exceeded", http.StatusTooManyRequests)
 				return
 			}
 			if _, tracked := s.apiRequests[ip]; !tracked {
@@ -1122,7 +1124,7 @@ func (s *Server) requireCSRF(next http.Handler) http.Handler {
 		// need CSRF protection, but read-scope bearer tokens never authorize
 		// mutating handlers on their own.
 		if isUnsafeCSRFMethod(r.Method) && !s.isAdminBearerAuth(r) && !s.validateCSRF(r) {
-			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
+			writeRequestError(w, r, "Invalid CSRF token", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

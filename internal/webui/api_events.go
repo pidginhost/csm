@@ -25,12 +25,12 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if bus == nil {
-		http.Error(w, "event bus not available", http.StatusServiceUnavailable)
+		writeJSONError(w, "event bus not available", http.StatusServiceUnavailable)
 		return
 	}
 
 	if _, ok := w.(http.Flusher); !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeJSONError(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 
@@ -39,7 +39,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 	// reported as a clean 503 rather than mid-stream.
 	sub, ok := bus.TrySubscribe()
 	if !ok {
-		http.Error(w, "too many event stream subscribers", http.StatusServiceUnavailable)
+		writeJSONError(w, "too many event stream subscribers", http.StatusServiceUnavailable)
 		return
 	}
 	shutdownDone := s.pruneDone
@@ -78,7 +78,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		return rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 	}
 	if err := setWriteDeadline(); err != nil {
-		http.Error(w, "streaming write deadlines unsupported", http.StatusInternalServerError)
+		writeJSONError(w, "streaming write deadlines unsupported", http.StatusInternalServerError)
 		return
 	}
 

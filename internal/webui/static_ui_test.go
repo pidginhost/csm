@@ -2443,7 +2443,7 @@ func TestCSRFValidatorSkipsAdminBearerAndChecksConstantTime(t *testing.T) {
 		`if token := r.Header.Get("X-CSRF-Token"); token != "" {`,
 		// Form tokens come from the body only; TestCSRFFormTokenMustComeFromTheBody.
 		`if token := r.PostFormValue("csrf_token"); token != "" {`,
-		`http.Error(w, "Invalid CSRF token", http.StatusForbidden)`,
+		`writeRequestError(w, r, "Invalid CSRF token", http.StatusForbidden)`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("server.go missing CSRF validator fragment %q", fragment)
