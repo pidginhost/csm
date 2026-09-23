@@ -207,6 +207,11 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     border-top: 2px solid var(--tblr-primary);
     padding: 12px 24px; z-index: 1000;
     display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 0.5rem;
+}
+/* Start at the sidebar edge instead of covering the sidebar. */
+@media (min-width: 992px) {
+    .csm-apply-bar { left: 244px; }
 }
 .csm-detail { white-space: pre-wrap; }
 .csm-pre-line { white-space: pre-line; }
@@ -1124,6 +1129,8 @@ tr[tabindex]:focus-visible, th[tabindex]:focus-visible { outline: 2px solid var(
     background: var(--csm-bg-card);
 }
 .theme-dark .csm-topbar { background: var(--csm-bg-card); border-bottom-color: var(--csm-border); }
+/* On a phone the header controls wrap instead of running off the screen. */
+.csm-topbar .navbar-nav { flex-wrap: wrap; row-gap: 0.25rem; justify-content: flex-end; }
 
 /* Hide brand subtitle on tablet so the toggle + brand fit on one row */
 @media (max-width: 991.98px) {

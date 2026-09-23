@@ -115,3 +115,31 @@ func TestLightThemeSurfacesFollowTheTheme(t *testing.T) {
 		t.Error("login page does not follow the chosen theme")
 	}
 }
+
+// On a desktop the ModSecurity apply bar starts at the sidebar edge instead
+// of covering the sidebar; on a phone the header wraps instead of running
+// off the screen.
+func TestFixedBarsFitTheLayout(t *testing.T) {
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(css)
+	for _, want := range []string{
+		"@media (min-width: 992px) {\n    .csm-apply-bar { left: 244px; }\n}",
+		".csm-topbar .navbar-nav { flex-wrap: wrap; row-gap: 0.25rem; justify-content: flex-end; }",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("csm.css missing %q", want)
+		}
+	}
+	layout := readTemplateText(t, "layout")
+	for _, want := range []string{
+		`<a href="/sessions" class="btn btn-ghost-secondary btn-sm" aria-label="Sessions"><i class="ti ti-devices" aria-hidden="true"></i><span class="d-none d-sm-inline">&nbsp;Sessions</span></a>`,
+		`<button type="submit" class="btn btn-ghost-secondary btn-sm" aria-label="Log out">`,
+	} {
+		if !strings.Contains(layout, want) {
+			t.Errorf("layout.html missing %q", want)
+		}
+	}
+}
