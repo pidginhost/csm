@@ -8,7 +8,7 @@
 // fakedom_test.js.
 
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
-const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
 
 function decodeEntities(s) {
     return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
@@ -20,7 +20,7 @@ function decodeEntities(s) {
         return Object.prototype.hasOwnProperty.call(ENTITIES, k) ? ENTITIES[k] : m;
     });
 }
-const escapeText = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/ /g, '&nbsp;');
+const escapeText = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\u00a0/g, '&nbsp;');
 const escapeAttr = s => escapeText(s).replace(/"/g, '&quot;');
 
 class Event {
@@ -47,12 +47,24 @@ class Event {
 }
 class CustomEvent extends Event {}
 
+const INSPECT = Symbol.for('nodejs.util.inspect.custom');
+
 class Node {
     constructor(doc) {
-        this.ownerDocument = doc;
-        this.parentNode = null;
+        // The upward links are not enumerable, so printing or diffing a node
+        // (a failing assert.equal does both) walks its subtree only. Walking
+        // up reaches the document, the window and every page global, which
+        // exhausts memory.
+        Object.defineProperty(this, 'ownerDocument', { value: doc, writable: true, enumerable: false });
+        Object.defineProperty(this, 'parentNode', { value: null, writable: true, enumerable: false });
         this.childNodes = [];
         this._listeners = {};
+    }
+    [INSPECT]() {
+        if (this.nodeType !== 1) return '[' + this.nodeName + ']';
+        const id = this.getAttribute('id');
+        const cls = this.getAttribute('class');
+        return '<' + this.tagName.toLowerCase() + (id ? '#' + id : '') + (cls ? '.' + cls.trim().split(/\s+/).join('.') : '') + '>';
     }
     get parentElement() { return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null; }
     get firstChild() { return this.childNodes[0] || null; }
@@ -615,7 +627,7 @@ function createWindow(bodyHTML = '', options = {}) {
             Object.assign(this, { href: next.href, pathname: next.pathname, search: next.search, hash: next.hash });
         }
     });
-    document.defaultView = window;
+    Object.defineProperty(document, 'defaultView', { value: window, enumerable: false });
     window.window = window;
     window.self = window;
     window.globalThis = window;

@@ -81,6 +81,19 @@ test('form properties behave like a browser', () => {
     assert.equal(t.hasAttribute('disabled'), true);
 });
 
+test('a failing assertion on nodes stays small', () => {
+    const { document } = createWindow('<div id="a" class="x y"><span>one</span></div><p>two</p>');
+    const util = require('node:util');
+    assert.equal(util.inspect(document.getElementById('a')), '<div#a.x.y>');
+    let message = '';
+    try {
+        assert.equal(document.getElementById('a'), document.querySelector('p'));
+    } catch (e) {
+        message = e.message;
+    }
+    assert.ok(message.length > 0 && message.length < 20000, 'assertion message is ' + message.length + ' bytes');
+});
+
 test('textContent replaces children and data attributes map to dataset', () => {
     const { document } = createWindow('<div id="d"><b>x</b><i>y</i></div>');
     const d = document.getElementById('d');
