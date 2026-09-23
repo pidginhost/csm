@@ -1905,7 +1905,10 @@ func TestThreatAccountListEscapesAccountNames(t *testing.T) {
 	if strings.Contains(text, "Object.keys(rec.accounts).join(") {
 		t.Fatal("threat.js still joins account names without CSM.esc; XSS regression")
 	}
-	if !strings.Contains(text, "Object.keys(rec.accounts).map(CSM.esc).join(") {
+	// accountHTML links a valid account name and escapes both the link text
+	// and any other value; ui/accountlinks_test.js renders a hostile name.
+	if !strings.Contains(text, "Object.keys(rec.accounts).map(accountHTML).join(") ||
+		!strings.Contains(text, "return url?'<a href=\"'+CSM.attr(url)+'\">'+CSM.esc(name)+'</a>':CSM.esc(name);") {
 		t.Fatal("threat.js must escape every account name before joining for the IP lookup card")
 	}
 }

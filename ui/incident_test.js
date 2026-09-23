@@ -25,6 +25,7 @@ function incidentPage(overrides = {}) {
             initTimeAgo() {},
             esc: String,
             attr: String,
+            accountURL() { return ''; },
             ...overrides
         }
     });

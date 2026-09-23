@@ -103,6 +103,10 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - The status API no longer reads the whole daemon binary on every request to report its hash; it hashes the binary again only when the file changes.
 - The web UI now samples host metrics only when the Performance page asks for them, at most once every ten seconds, instead of every ten seconds for as long as the daemon runs.
 
+### Added
+
+- The account page is now linked from the finding detail, account groups on Findings, incident detail and the accounts targeted in a Threat Intel lookup, and the command palette opens an account typed by name and lists Sessions.
+
 
 ## [3.43.0] - 2026-09-22
 

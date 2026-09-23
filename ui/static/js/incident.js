@@ -507,6 +507,10 @@
             html += '<div class="col-sm-6 col-lg-3"><div class="subheader">Firewall</div><div class="h3 m-0 text-muted" id="csm-incident-fw-status">Checking...</div><div class="text-muted small font-monospace">' + CSM.esc(incSourceIP) + '</div></div>';
         }
         html += '</div>';
+        var accountURL = CSM.accountURL(inc.account || (inc.correlation_key && inc.correlation_key.account));
+        if (accountURL) {
+            html += '<div class="mb-3"><a class="btn btn-ghost-secondary btn-sm" href="' + CSM.attr(accountURL) + '"><i class="ti ti-user"></i>&nbsp;Account page</a></div>';
+        }
         html += '<div class="timeline-list">';
         var events = (inc.timeline || []).slice().sort(function(a, b) {
             return new Date(b.time).getTime() - new Date(a.time).getTime();

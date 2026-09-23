@@ -79,6 +79,14 @@ CSM.makeClickable = function(el) {
 
 // fmtDateTime removed - use CSM.fmtDate(ts) instead (defined in csrf.js)
 
+// accountURL returns the Account page URL for a hosting account name, or ''
+// when the value is not one (a placeholder, a mailbox, a path). The rule is
+// the server's account name check.
+CSM.accountURL = function(name) {
+    name = String(name || '');
+    return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? '/account?name=' + encodeURIComponent(name) : '';
+};
+
 // Standard empty state block (non-table). Tables still use CSM.emptyState.
 //
 //   CSM.emptyStateBlock({

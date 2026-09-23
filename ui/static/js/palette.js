@@ -23,6 +23,10 @@ CSM.palette = (function() {
     }
 
     function collectEntries() {
+        var sessions = document.querySelector('a[href="/sessions"]');
+        if (sessions) {
+            entries.push({ label: 'Sessions', href: '/sessions', iconClass: 'ti ti-devices', group: 'page' });
+        }
         var items = document.querySelectorAll('#csm-nav [data-csm-route]');
         for (var i = 0; i < items.length; i++) {
             if (!isVisibleRoute(items[i])) continue;
@@ -120,6 +124,11 @@ CSM.palette = (function() {
         }
         if (query) {
             results.sort(function(a, b) { return b.score - a.score; });
+            // A typed account name opens that account; page matches rank first.
+            var accountURL = CSM.accountURL(query);
+            if (accountURL) {
+                results.push({ entry: { label: 'Account: ' + query, href: accountURL, iconClass: 'ti ti-user', group: 'account' }, score: -1 });
+            }
         }
         while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
 

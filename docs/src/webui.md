@@ -20,9 +20,11 @@ groups only reorder visibility:
 
 Sidebar group expand/collapse state is saved in the browser. On
 viewports under 992px the sidebar collapses into a top-bar drawer
-toggled from the hamburger button. Account detail (`/account`) is
-hidden from the sidebar; it is reached from finding rows, incident
-detail, and Threat Intel result panels. Browser logins require administrator
+toggled from the hamburger button. Account detail (`/account?name=<account>`) is
+not in the sidebar; the finding detail, account groups on Findings, incident
+detail, the accounts targeted in a Threat Intel lookup and the dashboard's
+accounts-at-risk card link to it, and the command palette opens an account
+typed by name. The palette also lists Sessions. Browser logins require administrator
 scope. The header links to session management.
 
 ## Pages

@@ -813,6 +813,10 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
             td.colSpan = colCount;
             td.innerHTML = '<span class="csm-group-arrow">&#9660;</span>' +
                 CSM.esc(key) + ' <span class="text-muted small">(' + groups[key].length + ' finding' + (groups[key].length !== 1 ? 's' : '') + ')</span>';
+            var accountURL = mode === 'account' ? CSM.accountURL(key) : '';
+            if (accountURL) {
+                td.innerHTML += ' <a class="ms-2 small" href="' + CSM.attr(accountURL) + '">Account page</a>';
+            }
             headerRow.appendChild(td);
 
             tbody.appendChild(headerRow);
@@ -821,7 +825,8 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
                 tbody.appendChild(row);
             });
 
-            headerRow.addEventListener('click', function() {
+            headerRow.addEventListener('click', function(e) {
+                if (e.target.closest('a')) return;
                 var isCollapsed = headerRow.classList.toggle('collapsed');
                 headerRow.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
                 if (isCollapsed) _collapsedGroups[mode + '\u0000' + key] = true;
@@ -862,7 +867,12 @@ function toggleFindingDetail(row) {
     CSM.get('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message))
         .then(function(data) {
             var html = '<div class="csm-fs-sm">';
-            if (account) html += '<div class="mb-2"><strong>Account:</strong> <code>' + CSM.esc(account) + '</code></div>';
+            if (account) {
+                var accountURL = CSM.accountURL(account);
+                var accountHTML = '<code>' + CSM.esc(account) + '</code>';
+                if (accountURL) accountHTML = '<a href="' + CSM.attr(accountURL) + '" title="Open the account page">' + accountHTML + '</a>';
+                html += '<div class="mb-2"><strong>Account:</strong> ' + accountHTML + '</div>';
+            }
             html += '<div class="mb-2"><strong>Check:</strong> <code>' + CSM.esc(check) + '</code></div>';
             html += '<div class="mb-2"><strong>Message:</strong><br>' + CSM.esc(message) + '</div>';
             if (filepath) html += '<div class="mb-2"><strong>File:</strong> <code class="csm-break-all">' + CSM.esc(filepath) + '</code></div>';
