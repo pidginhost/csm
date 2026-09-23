@@ -65,10 +65,28 @@ func stageOutput(ops fileOps, path string, encode func(io.Writer) error) (staged
 	h := sha256.New()
 	err = encode(io.MultiWriter(f, h))
 	if err = errors.Join(err, f.Sync(), f.Close()); err != nil {
-		_ = ops.remove(f.Name())
+		if removeErr := removeTemporary(ops, f.Name()); removeErr != nil {
+			return stagedOutput{}, errCleanup
+		}
 		return stagedOutput{}, errPublish
 	}
 	return stagedOutput{temp: f.Name(), dest: path, digest: hex.EncodeToString(h.Sum(nil))}, nil
+}
+
+func removeTemporary(ops fileOps, path string) error {
+	err := ops.remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func discardStaged(ops fileOps, staged []stagedOutput) error {
+	var err error
+	for _, s := range staged {
+		err = errors.Join(err, removeTemporary(ops, s.temp))
+	}
+	return err
 }
 
 // encodeRows writes gzip JSONL. Encoding, flush and gzip finalization errors
@@ -95,12 +113,7 @@ func encodeRows[T any](dst io.Writer, rows []T) (err error) {
 func publishOutputs(ops fileOps, staged []stagedOutput) error {
 	type published struct{ dest, backup string }
 	var done []published
-	discard := func(from int) {
-		for _, s := range staged[from:] {
-			_ = ops.remove(s.temp)
-		}
-	}
-	rollback := func() error {
+	rollback := func(cleanupErr error) error {
 		failed := false
 		for i := len(done) - 1; i >= 0; i-- {
 			p := done[i]
@@ -115,6 +128,9 @@ func publishOutputs(ops fileOps, staged []stagedOutput) error {
 		if failed {
 			return errRollback
 		}
+		if cleanupErr != nil {
+			return errCleanup
+		}
 		return errPublish
 	}
 	for i, s := range staged {
@@ -122,26 +138,31 @@ func publishOutputs(ops fileOps, staged []stagedOutput) error {
 		if _, err := os.Lstat(s.dest); err == nil {
 			backup = filepath.Join(filepath.Dir(s.dest), backupPrefix+rand.Text())
 			if linkErr := ops.link(s.dest, backup); linkErr != nil {
-				discard(i)
-				return rollback()
+				return rollback(discardStaged(ops, staged[i:]))
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
-			discard(i)
-			return rollback()
+			return rollback(discardStaged(ops, staged[i:]))
 		}
 		if err := ops.rename(s.temp, s.dest); err != nil {
+			var cleanupErr error
 			if backup != "" {
-				_ = ops.remove(backup)
+				cleanupErr = removeTemporary(ops, backup)
 			}
-			discard(i)
-			return rollback()
+			return rollback(errors.Join(cleanupErr, discardStaged(ops, staged[i:])))
 		}
 		done = append(done, published{s.dest, backup})
 	}
+	var cleanupErr error
 	for _, p := range done {
 		if p.backup != "" {
-			_ = ops.remove(p.backup)
+			cleanupErr = errors.Join(cleanupErr, removeTemporary(ops, p.backup))
 		}
+	}
+	if cleanupErr != nil {
+		// Every destination, including the manifest, is already committed.
+		// Earlier backups may be gone, so claiming or attempting rollback
+		// here would misrepresent the state of the bundle.
+		return errPublishedCleanup
 	}
 	return nil
 }

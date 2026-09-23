@@ -40,6 +40,8 @@ What the tool replaces, in every structured field and in free text:
   2001:db8::/32, both reserved and never routed, one address per raw value.
   Loopback addresses, system users such as `root` or `nobody`, and bare
   numeric uids are kept: they identify nobody and carry meaning.
+  Equivalent IPv6 spellings share one pseudonym across all streams; IPv4
+  addresses written in IPv6 form use the IPv4 pseudonym.
   Addresses inside filenames and before numeric rotation suffixes are also
   replaced. This can replace address-shaped version numbers; privacy takes
   priority over preserving ambiguous numeric text.
@@ -56,10 +58,11 @@ What the tool replaces, in every structured field and in free text:
 
 Before writing, the tool scans its own output for every identity it learned
 from structured fields, paths and mail addresses, for domain-shaped names,
-for raw ids, and for any mailbox or address outside the reserved ranges. It
-refuses to write if it finds one. This independent scan also checks preserved
-metadata such as check names, and accepts only ids this run emitted. A name
-glued to underscores or file extensions is still found. The summary prints
+for raw ids (including inside longer tokens), and for any mailbox or address
+outside the reserved ranges. It refuses to write if it finds one. The raw-id
+scan includes check names and severity labels; these fields otherwise keep
+their original vocabulary. Structured finding ids must be ids this run
+emitted. A name glued to underscores or file extensions is still found. The summary prints
 row counts, the number of distinct checks, replacement counts, the time span
 and a salt fingerprint, never identities, check names, paths or the salt
 itself. An error names only the stream, the file's position on the command
@@ -68,6 +71,9 @@ line, the line number and a fixed reason.
 Every row must parse as exactly one JSON object of the known schema, with a
 supported version and a timestamp. Unknown or repeated fields, nulls, data
 after the object and values over the size limits refuse the whole run.
+Malformed Unicode, non-JSON whitespace and timestamps that cannot be written
+back as JSON also refuse the run before a salt is created. Typed rows accept
+only the exact pseudonym spellings emitted during that run.
 
 Handling rules:
 
@@ -83,11 +89,20 @@ Handling rules:
 - Outputs cannot replace an input, the salt, the input manifest or each
   other, whether named by path, through a symlinked directory or as a hard
   link, and an existing output must be a regular file. These checks run
-  before the salt is created. Every output is written to a private temporary
+  before the salt is created, including for missing directories and paths
+  containing `..`. Case-only and Unicode-equivalent path variants are
+  refused on every platform, as are paths that would need a file to also
+  serve as a directory. Every output is written to a private temporary
   file beside its destination, and all are complete before any is renamed
   into place; if publishing fails partway, the outputs already replaced are
   restored. New directories have mode 0700 and outputs mode 0600, even when
   replacing a less restricted file.
+- Filesystem cleanup failures are reported without claiming success. If
+  rollback fails, remaining recovery copies are retained. If every output
+  was published but backup cleanup fails, the error explicitly says the
+  outputs were published; check the manifest and remove the leftover backups
+  before sharing the directory. Other cleanup errors report unchanged outputs
+  with temporary files left to remove.
 - Recorded streams stay outside the repository entirely, in a private
   directory such as `~/.local/share/csm/finding-streams/` with mode 0700. A
   pseudonymized stream still describes real incidents on a real host, and this

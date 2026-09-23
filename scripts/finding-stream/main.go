@@ -39,6 +39,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -70,7 +72,9 @@ const (
 	errInputManifest     cliError = "the input manifest does not match the supplied inputs"
 	errLeak              cliError = "leak check failed; nothing written"
 	errPublish           cliError = "publication failed; previous outputs are unchanged"
-	errRollback          cliError = "publication failed and previous outputs could not all be restored; recovery copies kept beside them"
+	errCleanup           cliError = "publication failed; previous outputs are unchanged; temporary-file cleanup failed"
+	errPublishedCleanup  cliError = "outputs published; backup cleanup failed"
+	errRollback          cliError = "publication failed and previous outputs could not all be restored; any recovery copies were retained"
 	errSaltLoad          cliError = "salt: cannot read or create"
 	errSaltUnsafe        cliError = "salt must be a regular file accessible only by its owner (mode 0600)"
 	errSaltShort         cliError = "salt file is shorter than 32 bytes"
@@ -188,7 +192,7 @@ func (o options) protected() []string {
 // must be absent or a regular file, and must not be the same file as an
 // input, the salt, the inventory or another output: by path, through
 // symlinked directories, or as a hard link.
-func checkDestinations(o options) error {
+func checkDestinations(o *options) error {
 	type resolved struct {
 		path string
 		info os.FileInfo
@@ -205,7 +209,13 @@ func checkDestinations(o options) error {
 		return resolved{canonical, info}, nil
 	}
 	same := func(a, b resolved) bool {
-		return a.path == b.path || (a.info != nil && b.info != nil && os.SameFile(a.info, b.info))
+		// A file cannot also be a directory needed by another destination.
+		// Refuse case and Unicode variants even before either file exists:
+		// some filesystems treat those spellings as the same name.
+		ap, bp := strings.ToLower(norm.NFC.String(a.path)), strings.ToLower(norm.NFC.String(b.path))
+		return strings.EqualFold(ap, bp) || strings.HasPrefix(ap, bp+string(filepath.Separator)) ||
+			strings.HasPrefix(bp, ap+string(filepath.Separator)) ||
+			(a.info != nil && b.info != nil && os.SameFile(a.info, b.info))
 	}
 	var outs, protected []resolved
 	for _, p := range o.outputs() {
@@ -236,32 +246,73 @@ func checkDestinations(o options) error {
 			}
 		}
 	}
+	// Stage and publish using the same resolved paths we just checked.
+	// filepath.Dir on the original spelling could erase a symlink/.. and
+	// put temporary files on a different filesystem from the destination.
+	i := 0
+	for _, dest := range []*string{&o.out, &o.actionsOut, &o.firewallOut, &o.manifest} {
+		if *dest != "" {
+			*dest = outs[i].path
+			i++
+		}
+	}
 	return nil
 }
 
-// canonicalPath resolves every symlink in p's existing directory chain; a
-// missing final component keeps its name.
+// Resolve symlinks before interpreting '..', including links whose targets
+// do not exist yet. filepath.Abs would clean away traversal before the
+// filesystem sees it, and EvalSymlinks stops at the first missing component.
 func canonicalPath(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
+	if !filepath.IsAbs(p) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		p = wd + string(filepath.Separator) + p
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err == nil {
-		return resolved, nil
+	resolved := string(filepath.Separator)
+	parts := strings.Split(p, string(filepath.Separator))
+	links := 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		next := filepath.Join(resolved, part)
+		info, err := os.Lstat(next)
+		if errors.Is(err, os.ErrNotExist) {
+			resolved = next
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			links++
+			if links > 255 {
+				return "", errDestination
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return "", err
+			}
+			if filepath.IsAbs(target) {
+				resolved = string(filepath.Separator)
+			}
+			parts = append(strings.Split(target, string(filepath.Separator)), parts...)
+			continue
+		}
+		if len(parts) > 0 && !info.IsDir() {
+			return "", errDestination
+		}
+		resolved = next
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	parent := filepath.Dir(abs)
-	if parent == abs {
-		return abs, nil
-	}
-	resolvedParent, err := canonicalPath(parent)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(resolvedParent, filepath.Base(abs)), nil
+	return resolved, nil
 }
 
 type recordPos struct{ ordinal, line int }
@@ -359,7 +410,7 @@ func (in *inputs) readInventory(path string) error {
 		return fail(errLineTooLong)
 	}
 	var inv inputManifest
-	if err := decodeStrict(bytes.TrimSpace(data), &inv); err != nil {
+	if err := decodeStrict(data, &inv); err != nil {
 		return fail(err)
 	}
 	sum := sha256.Sum256(data)
@@ -400,7 +451,7 @@ func readStream(path string, kind streamKind, ordinal int, visit func(line int, 
 	line := 0
 	for sc.Scan() {
 		line++
-		data := bytes.TrimSpace(sc.Bytes())
+		data := bytes.Trim(sc.Bytes(), " \t\r\n")
 		if len(data) == 0 {
 			continue
 		}
@@ -479,7 +530,7 @@ func (r *anonymizeRun) execute(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err = checkDestinations(o); err != nil {
+	if err = checkDestinations(&o); err != nil {
 		return err
 	}
 	var tool toolRevision
@@ -527,8 +578,8 @@ func (r *anonymizeRun) stage(o options, in *inputs, out *transformed, cov map[st
 	var staged []stagedOutput
 	var files []streamFile
 	fail := func(err error) ([]stagedOutput, error) {
-		for _, s := range staged {
-			_ = r.ops.remove(s.temp)
+		if discardStaged(r.ops, staged) != nil {
+			return nil, errCleanup
 		}
 		return nil, err
 	}

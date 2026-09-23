@@ -33,6 +33,8 @@ func FuzzDecodeStrict(f *testing.F) {
 	for _, seed := range []string{
 		"", "{}", "[]", "null", `{"v":1}`, `{"v":1,"v":1}`, `{"V":1}`, `{"v":1}{"v":1}`, `{"v":1} x`, `{"v":1}]`,
 		`{"before":null}`, `{"command":["a",1]}`, `{"before":{"exists":true,"extra":1}}`, `{"action_version":-1}`,
+		`{"finding_id":"raw-\ud800"}`, `{"finding_id":"raw-\udc00"}`, `{"finding_id":"raw-\ud83d\ude00"}`,
+		`{"finding_id":"raw-\\ud800"}`, "{\"finding_id\":\"raw-\xff\"}", `{"ts":"2026-09-08T10:00:00+24:00"}`,
 		`{"ts":"2026-09-08T10:00:00Z","op":"respond.block_ip","actor":"daemon","target":"203.0.113.9","result":"applied"}`,
 	} {
 		f.Add([]byte(seed))

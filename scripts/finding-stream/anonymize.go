@@ -23,33 +23,35 @@ import (
 // Everything else that calibration needs (timestamps, check names,
 // severities, path structure, plugin names, process names) is kept.
 type Anonymizer struct {
-	salt       []byte
-	accounts   map[string]struct{}
-	hosts      map[string]string // lower-cased name or alias -> canonical hostname
-	domains    map[string]struct{}
-	emails     map[string]struct{}
-	counts     map[string]int
-	pseudonyms map[string]struct{}
-	ids        map[string]idKind   // emitted salted id -> its domain
-	rawIDs     map[string]struct{} // learned raw ids made of id token bytes
-	rawIDText  map[string]struct{} // learned raw ids with other bytes
-	dropped    map[string]int      // discarded nonempty values per input field
+	salt         []byte
+	accounts     map[string]struct{}
+	hosts        map[string]string // lower-cased name or alias -> canonical hostname
+	domains      map[string]struct{}
+	emails       map[string]struct{}
+	counts       map[string]int
+	pseudonyms   map[string]struct{}
+	ids          map[string]idKind   // emitted salted id -> its domain
+	rawIDs       map[string]struct{} // learned raw ids made of id token bytes
+	rawIDLengths map[int]struct{}    // distinct lengths, not one text scan per id
+	rawIDText    map[string]struct{} // learned raw ids with other bytes
+	dropped      map[string]int      // discarded nonempty values per input field
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
 func NewAnonymizer(salt []byte) *Anonymizer {
 	return &Anonymizer{
-		salt:       append([]byte(nil), salt...),
-		accounts:   make(map[string]struct{}),
-		hosts:      make(map[string]string),
-		domains:    make(map[string]struct{}),
-		emails:     make(map[string]struct{}),
-		counts:     make(map[string]int),
-		pseudonyms: make(map[string]struct{}),
-		ids:        make(map[string]idKind),
-		rawIDs:     make(map[string]struct{}),
-		rawIDText:  make(map[string]struct{}),
-		dropped:    make(map[string]int),
+		salt:         append([]byte(nil), salt...),
+		accounts:     make(map[string]struct{}),
+		hosts:        make(map[string]string),
+		domains:      make(map[string]struct{}),
+		emails:       make(map[string]struct{}),
+		counts:       make(map[string]int),
+		pseudonyms:   make(map[string]struct{}),
+		ids:          make(map[string]idKind),
+		rawIDs:       make(map[string]struct{}),
+		rawIDLengths: make(map[int]struct{}),
+		rawIDText:    make(map[string]struct{}),
+		dropped:      make(map[string]int),
 	}
 }
 
@@ -152,6 +154,13 @@ func (a *Anonymizer) IPv4(raw string) string {
 
 // IPv6 maps an address into 2001:db8::/32 (RFC 3849 documentation prefix).
 func (a *Anonymizer) IPv6(raw string) string {
+	if addr, err := netip.ParseAddr(raw); err == nil {
+		addr = addr.Unmap()
+		if addr.Is4() {
+			return a.IPv4(addr.String())
+		}
+		raw = addr.String()
+	}
 	mac := hmac.New(sha256.New, a.salt)
 	mac.Write([]byte("ipv6\x00" + strings.ToLower(raw)))
 	sum := mac.Sum(nil)
@@ -622,6 +631,7 @@ func (a *Anonymizer) Verify(events []alert.AuditEvent) []string {
 	var problems []string
 	for i := range events {
 		found := a.leaksIn(eventText(events[i]))
+		found = append(found, a.rawIDLeaks(events[i].Check+"\n"+events[i].Severity)...)
 		// An output id must be one this run emitted, not merely id-shaped.
 		if id := events[i].FindingID; id != "" && !a.emittedID(id, idFinding) {
 			found = append(found, "finding id not emitted")
@@ -718,10 +728,29 @@ func (a *Anonymizer) leaksIn(text string) []string {
 	for _, raw := range unmaskedIPv6(text) {
 		found["ipv6 "+raw] = struct{}{}
 	}
+	for _, problem := range a.rawIDLeaks(text) {
+		found[problem] = struct{}{}
+	}
+	out := make([]string, 0, len(found))
+	for f := range found {
+		out = append(out, f)
+	}
+	return out
+}
+
+func (a *Anonymizer) rawIDLeaks(text string) []string {
+	found := map[string]struct{}{}
 	if len(a.rawIDs) > 0 {
 		for _, tok := range idTokens(text) {
-			if _, ok := a.rawIDs[tok]; ok {
-				found["id "+tok] = struct{}{}
+			// IDs also occur in prefixed tokens and filename components.
+			// Index by length so cost does not grow with every recorded ID.
+			for size := range a.rawIDLengths {
+				for start := 0; start+size <= len(tok); start++ {
+					candidate := tok[start : start+size]
+					if _, ok := a.rawIDs[candidate]; ok {
+						found["id "+candidate] = struct{}{}
+					}
+				}
 			}
 		}
 	}

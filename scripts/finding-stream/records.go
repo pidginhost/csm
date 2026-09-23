@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -297,6 +298,7 @@ func (a *Anonymizer) learnRawID(id string) {
 	}
 	if strings.Trim(id, idTokenBytes) == "" {
 		a.rawIDs[id] = struct{}{}
+		a.rawIDLengths[len(id)] = struct{}{}
 		return
 	}
 	a.rawIDText[id] = struct{}{}
@@ -668,11 +670,13 @@ var (
 
 func (a *Anonymizer) emittedAddress(s string) bool {
 	addr, err := netip.ParseAddr(s)
-	return err == nil && a.isPseudonym(s) && (anonIPv4Space.Contains(addr) || anonIPv6Space.Contains(addr))
+	_, emitted := a.pseudonyms[s]
+	return err == nil && emitted && (anonIPv4Space.Contains(addr) || anonIPv6Space.Contains(addr))
 }
 
 func (a *Anonymizer) emittedName(s, prefix string) bool {
-	return s == "" || (strings.HasPrefix(s, prefix) && a.isPseudonym(s))
+	_, emitted := a.pseudonyms[s]
+	return s == "" || (strings.HasPrefix(s, prefix) && emitted)
 }
 
 func (a *Anonymizer) emittedID(s string, kind idKind) bool {
@@ -691,6 +695,9 @@ func (a *Anonymizer) emittedID(s string, kind idKind) bool {
 func decodeStrict(data []byte, v any) error {
 	if len(data) > maxLineBytes {
 		return errLineTooLong
+	}
+	if !validJSONUnicode(data) {
+		return errSyntax
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -810,6 +817,17 @@ func checkValue(dec *json.Decoder, t reflect.Type, key string, depth map[reflect
 		if len(tok) > limit {
 			return errTooLong
 		}
+		if t == timeType {
+			stamp, err := time.Parse(time.RFC3339Nano, tok)
+			if err != nil {
+				return errType
+			}
+			// Go accepts timezone offsets that its JSON encoder refuses.
+			// Reject those during input validation, before creating the salt.
+			if _, err := stamp.MarshalJSON(); err != nil {
+				return errType
+			}
+		}
 	case json.Number:
 		switch t.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -827,6 +845,52 @@ func checkValue(dec *json.Decoder, t reflect.Type, key string, depth map[reflect
 		}
 	}
 	return nil
+}
+
+// encoding/json replaces malformed UTF-8 and lone UTF-16 surrogates with
+// U+FFFD. Distinct raw identifiers would then become the same join key.
+// Check the original string bytes before either decoding pass loses them.
+func validJSONUnicode(data []byte) bool {
+	if !utf8.Valid(data) {
+		return false
+	}
+	for i := 0; i < len(data); i++ {
+		if data[i] != '"' {
+			continue
+		}
+		for i++; i < len(data) && data[i] != '"'; i++ {
+			if data[i] != '\\' {
+				continue
+			}
+			i++
+			if i >= len(data) {
+				return false
+			}
+			if data[i] != 'u' {
+				continue
+			}
+			if i+4 >= len(data) {
+				return false
+			}
+			u, err := strconv.ParseUint(string(data[i+1:i+5]), 16, 16)
+			if err != nil || u >= 0xdc00 && u <= 0xdfff {
+				return false
+			}
+			i += 4
+			if u < 0xd800 || u > 0xdbff {
+				continue
+			}
+			if i+6 >= len(data) || data[i+1] != '\\' || data[i+2] != 'u' {
+				return false
+			}
+			low, err := strconv.ParseUint(string(data[i+3:i+7]), 16, 16)
+			if err != nil || low < 0xdc00 || low > 0xdfff {
+				return false
+			}
+			i += 6
+		}
+	}
+	return true
 }
 
 var fieldTypeCache sync.Map
