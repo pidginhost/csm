@@ -2,6 +2,7 @@ package webui
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
@@ -159,9 +160,8 @@ func (s *Server) apiDBObjectBackupRestore(w http.ResponseWriter, r *http.Request
 // descending. Local helper rather than relying on sort.Slice so
 // the comparator is unambiguous in code review.
 func sortDBObjectBackupsNewestFirst(entries []dbObjectBackupEntry) {
-	for i := 1; i < len(entries); i++ {
-		for j := i; j > 0 && entries[j].DroppedAt > entries[j-1].DroppedAt; j-- {
-			entries[j], entries[j-1] = entries[j-1], entries[j]
-		}
-	}
+	// Stable, so backups dropped in the same second keep their store order.
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].DroppedAt > entries[j].DroppedAt
+	})
 }

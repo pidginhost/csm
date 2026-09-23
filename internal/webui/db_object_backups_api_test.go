@@ -211,4 +211,19 @@ func TestSortDBObjectBackupsNewestFirst(t *testing.T) {
 			t.Errorf("position %d = %q, want %q (full = %v)", i, got[i], want[i], got)
 		}
 	}
+
+	// Backups dropped in the same second keep their store order.
+	same := []dbObjectBackupEntry{
+		{Name: "first", DroppedAt: "2026-04-01T10:00:00Z"},
+		{Name: "newer", DroppedAt: "2026-04-02T10:00:00Z"},
+		{Name: "second", DroppedAt: "2026-04-01T10:00:00Z"},
+	}
+	sortDBObjectBackupsNewestFirst(same)
+	got = []string{same[0].Name, same[1].Name, same[2].Name}
+	want = []string{"newer", "first", "second"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d = %q, want %q (full = %v)", i, got[i], want[i], got)
+		}
+	}
 }
