@@ -57,6 +57,21 @@ func TestEnrichedFindingsLimitReturnsMostSevereFirst(t *testing.T) {
 	}
 }
 
+func TestEnrichedFindingsLimitSortsWithoutTruncating(t *testing.T) {
+	s := newTestServer(t, "tok")
+	now := time.Now()
+	s.store.SetLatestFindings([]alert.Finding{
+		{Check: "perf_memory", Severity: alert.Warning, Message: "warning", Timestamp: now},
+		{Check: "ip_reputation", Severity: alert.Critical, Message: "Known malicious IP accessing server: 203.0.113.7 (spamhaus)", Timestamp: now.Add(-time.Hour)},
+	})
+	for _, query := range []string{"limit=2", "limit=20"} {
+		got := getEnriched(t, s, query)
+		if len(got.Findings) != 2 || got.Findings[0].Check != "ip_reputation" || got.Total != 2 {
+			t.Errorf("%s: got %+v, want both findings in severity order", query, got)
+		}
+	}
+}
+
 // ip_reputation rows for one address merge into one row whose message lists
 // the sources; a new source changes the row and so the version.
 func TestEnrichedFindingsVersionTracksIPReputation(t *testing.T) {

@@ -44,3 +44,35 @@ func TestBinaryHashReadsTheFileOnlyWhenItChanges(t *testing.T) {
 		t.Fatalf("reads = %d after the binary changed, want 2", reads)
 	}
 }
+
+func TestBinaryHashRecomputesAfterReplacementDuringHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm")
+	if err := os.WriteFile(path, []byte("old binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := hashBinary
+	reads := 0
+	hashBinary = func(p string) (string, error) {
+		reads++
+		h, err := integrity.HashFile(p)
+		if err == nil && reads == 1 {
+			if writeErr := os.WriteFile(p, []byte("replacement binary"), 0o700); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		}
+		return h, err
+	}
+	t.Cleanup(func() { hashBinary = old })
+	var cache binaryHashCache
+	first := cache.get(path)
+	want, err := integrity.HashFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.get(path); got != want || got == first || reads != 2 {
+		t.Fatalf("after replacement: got %q, want %q, reads=%d", got, want, reads)
+	}
+	if got := cache.get(path); got != want || reads != 2 {
+		t.Fatalf("stable file: got %q, want %q, reads=%d", got, want, reads)
+	}
+}

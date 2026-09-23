@@ -373,9 +373,9 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(accounts)
 
 	total := len(items)
-	if limit := queryInt(r, "limit", 0); limit > 0 && limit < len(items) {
+	if limit := queryInt(r, "limit", 0); limit > 0 {
 		sortEnrichedBySeverity(items)
-		items = items[:limit]
+		items = items[:min(limit, len(items))]
 	}
 
 	writeJSON(w, map[string]interface{}{

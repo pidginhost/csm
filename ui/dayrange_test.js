@@ -37,6 +37,20 @@ test('server time without a zone name uses the server offset', () => {
     assert.equal(new Date(page.window.CSM.prefs.dayBoundary('2026-09-23', false)).toISOString(), '2026-09-22T21:00:00.000Z');
 });
 
+test('memoized boundaries follow zone changes within the same page', () => {
+    const page = prefsPage(zone('Europe/Bucharest'));
+    const prefs = page.window.CSM.prefs;
+    const day = '2026-09-23';
+    assert.equal(new Date(prefs.dayBoundary(day, false)).toISOString(), '2026-09-22T21:00:00.000Z');
+    prefs.user.timezone = 'Pacific/Chatham';
+    assert.equal(new Date(prefs.dayBoundary(day, false)).toISOString(), DAY_START);
+    prefs.user.timezone = 'server';
+    page.document.documentElement.setAttribute('data-csm-server-offset', '180');
+    assert.equal(new Date(prefs.dayBoundary(day, false)).toISOString(), '2026-09-22T21:00:00.000Z');
+    page.document.documentElement.setAttribute('data-csm-server-offset', '120');
+    assert.equal(new Date(prefs.dayBoundary(day, false)).toISOString(), '2026-09-22T22:00:00.000Z');
+});
+
 test('browser time uses the browser zone', () => {
     const prefs = prefsPage(zone('local')).window.CSM.prefs;
     assert.equal(prefs.dayBoundary('2026-09-23', false), new Date(2026, 8, 23).getTime());

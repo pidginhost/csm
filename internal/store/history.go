@@ -53,6 +53,9 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 		// (rather than on a timer) so the daily-aggregate path has a
 		// single owner.
 		if len(findings) > 0 {
+			if err := bumpHistoryRevision(tx); err != nil {
+				return err
+			}
 			if err := pruneStatsDaily(tx, time.Now()); err != nil {
 				return err
 			}
@@ -97,24 +100,16 @@ func nextHistoryKey(b *bolt.Bucket, timestamp time.Time, start int) string {
 	}
 }
 
-// HistoryMark is a cheap value that changes whenever the history bucket
-// does: its entry count and oldest and newest keys. Callers compare it to
-// reuse results computed from history.
+func bumpHistoryRevision(tx *bolt.Tx) error {
+	return incrCounter(tx, "history:revision", 1)
+}
+
+// HistoryMark changes with history mutations, even when retention and a later
+// append reuse the same keys or a migration changes only interior keys.
 func (db *DB) HistoryMark() string {
 	var mark string
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("history"))
-		if b == nil {
-			return nil
-		}
-		count := ""
-		if v := tx.Bucket([]byte("meta")).Get([]byte("history:count")); v != nil {
-			count = string(v)
-		}
-		c := b.Cursor()
-		first, _ := c.First()
-		last, _ := c.Last()
-		mark = count + "|" + string(first) + "|" + string(last)
+		mark = string(tx.Bucket([]byte("meta")).Get([]byte("history:revision")))
 		return nil
 	})
 	return mark
@@ -310,8 +305,6 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 	return results, matched
 }
 
-// containsLower checks if s contains substr using case-insensitive matching.
-// substr must already be lowercase.
 // historyPrefilter returns a test on a stored entry's JSON that is false only
 // when the entry cannot pass the severity, check or search filter, so the
 // walk that counts matches decodes only plausible entries. Each part applies
@@ -327,8 +320,21 @@ func historyPrefilter(severity int, searchLower string, checks map[string]bool) 
 		}
 	}
 	var checkNeedles [][]byte
-	for name := range checks {
-		if !storedVerbatim(name) {
+	activeChecks := 0
+	for _, enabled := range checks {
+		if enabled {
+			activeChecks++
+		}
+	}
+	if checks != nil && activeChecks == 0 {
+		return func([]byte) bool { return false }
+	}
+	for name, enabled := range checks {
+		if !enabled {
+			continue
+		}
+		// The empty check also matches an absent or null field.
+		if name == "" || !storedVerbatim(name) {
 			checkNeedles = nil
 			break
 		}
@@ -340,16 +346,54 @@ func historyPrefilter(severity int, searchLower string, checks map[string]bool) 
 	}
 	return func(v []byte) bool {
 		if sevNeedles != nil && !bytes.Contains(v, sevNeedles[0]) && !bytes.Contains(v, sevNeedles[1]) {
-			return false
+			// Zero also accepts omitted/null fields and negative zero. Keep
+			// the fast rejection for ordinary nonzero severity values.
+			if severity == 0 && (!bytes.Contains(v, []byte(`"severity":`)) ||
+				bytes.Contains(v, []byte(`"severity":null`)) || bytes.Contains(v, []byte(`"severity":-0`))) {
+				return true
+			}
+			return !plainHistoryJSON(v)
 		}
 		if checks != nil && checkNeedles != nil && !containsAnyBytes(v, checkNeedles) {
-			return false
+			return !plainHistoryJSON(v)
 		}
 		if searchNeedle != nil && !bytes.Contains(bytes.ToLower(v), searchNeedle) {
-			return false
+			return !plainHistoryJSON(v)
 		}
 		return true
 	}
+}
+
+// Raw needles are conclusive only for unescaped compact JSON with canonical
+// field names. Other valid encodings (including case-insensitive JSON keys)
+// are left to the decoder. This is an eligibility check, not a JSON validator.
+func plainHistoryJSON(v []byte) bool {
+	if len(v) < 2 || v[0] != '{' || v[len(v)-1] != '}' {
+		return false
+	}
+	start := -1
+	for i, b := range v {
+		if b == '\\' {
+			return false
+		}
+		if b == '"' {
+			if start < 0 {
+				start = i + 1
+			} else {
+				if i+1 < len(v) && v[i+1] == ':' {
+					for _, c := range v[start:i] {
+						if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+							return false
+						}
+					}
+				}
+				start = -1
+			}
+		} else if start < 0 && (b == ' ' || b == '\t' || b == '\n' || b == '\r') {
+			return false
+		}
+	}
+	return true
 }
 
 // storedVerbatim reports whether encoding/json writes s unchanged inside a
@@ -372,6 +416,7 @@ func containsAnyBytes(v []byte, needles [][]byte) bool {
 	return false
 }
 
+// substr must already be lowercase.
 func containsLower(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), substr)
 }

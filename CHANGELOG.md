@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Web UI caches now notice replaced assets and history changes, and compressed files respect client encoding preferences and header-only requests. History searches keep matching records, and limited findings stay ordered by severity even when every row fits.
 - Table date filters no longer slow down on long lists, because each date is converted to the preferred time zone once instead of once per row.
 - Web UI date filters now handle midnight clock changes and server time-zone overrides correctly, and preference saves reload only when the browser can retain them. Account views follow recorded owners and linked roots, limited email lists report omissions, refresh timers keep their deadlines, and performance fixes use current targets without overlapping.
 - Importing a settings bundle now skips suppression rules whose check is not a check name or whose path pattern is not a valid glob, as the suppression form does.

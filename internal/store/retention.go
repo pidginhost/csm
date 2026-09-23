@@ -44,6 +44,9 @@ func (db *DB) SweepHistoryOlderThan(cutoff time.Time) (int, error) {
 		if deleted == 0 {
 			return nil
 		}
+		if err := bumpHistoryRevision(tx); err != nil {
+			return err
+		}
 		// Decrement the history:count counter without letting it underflow.
 		current := 0
 		if v := tx.Bucket([]byte("meta")).Get([]byte("history:count")); v != nil {

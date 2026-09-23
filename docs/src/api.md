@@ -89,7 +89,8 @@ GET  /api/v1/events              Server-Sent Events stream of findings as they d
 GET  /api/v1/health              Daemon health (fanotify, watchers, engines)
 GET  /api/v1/findings            Current active findings
 GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info, and a list version.
-                                 ?limit=N returns the N most severe, newest first; counts cover all.
+                                 ?limit=N orders by severity, then newest, even when all rows fit;
+                                 returns at most N rows, while counts cover all.
                                  ?fields=version returns only {version, total}, for change polling
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
 GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=).

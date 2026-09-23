@@ -2,6 +2,11 @@
 
 HTTPS dashboard with polling-based live updates (10s feed, 60s stats). Dark/light theme toggle.
 
+Static assets use content-versioned URLs. Only a URL matching the served file
+receives immutable caching; older or unversioned URLs must revalidate. Replacing
+a file changes its version even when its size and modification time are preserved.
+Text assets use gzip when accepted by the client, except for byte-range requests.
+
 ## Navigation
 
 The sidebar groups pages by operator workflow. URLs are stable; the

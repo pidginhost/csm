@@ -70,3 +70,20 @@ func TestAuditTailMatchesAFullRead(t *testing.T) {
 		t.Fatalf("limit 2 = %+v", two)
 	}
 }
+
+func TestAuditTailCRLFAndLongLineBoundaries(t *testing.T) {
+	for _, padding := range []int{64*1024 - 1, 64 * 1024, 64*1024 + 1, 1024 * 1024} {
+		entry := UIAuditEntry{Action: "first", Details: strings.Repeat("x", padding)}
+		line, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, suffix := range []string{"", "\r\n"} {
+			data := append(append([]byte(nil), line...), []byte("\r\n\r\ninvalid\r\n{\"action\":\"last\"}"+suffix)...)
+			got := tailAuditEntries(bytes.NewReader(data), int64(len(data)), 0)
+			if len(got) != 2 || got[0].Action != "last" || got[1].Details != entry.Details {
+				t.Fatalf("padding=%d suffix=%q: got %d rows", padding, suffix, len(got))
+			}
+		}
+	}
+}
