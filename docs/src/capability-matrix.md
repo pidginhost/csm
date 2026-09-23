@@ -91,7 +91,8 @@ challenge gate or mail hold, 3 quarantines, blocks or denies a target, and 4
 signals processes, reloads services, or rewrites content or configuration.
 Rows describe maximum live effect, so preview-only tier 1 has no separate
 row today. A tier does not promise automatic rollback; see recovery gaps
-below and the current contracts in the JSON inventory.
+below and the current contracts in the JSON inventory. The TIER column of
+`csm privileges` and the JSON inventory use the same 0 to 4 numbers.
 
 <!-- BEGIN GENERATED MATRIX -->
 | Operation | Needs | Trigger | Risk tier | Writes | Turn it off | Action record | Without the privilege |

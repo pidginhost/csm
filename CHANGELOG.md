@@ -35,7 +35,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 ### Added
 
 - The privileged-operation JSON inventory now includes action risk and current safety and recovery coverage.
-- The capability matrix now shows a risk tier for every privileged operation, from read-only detection to destructive responses.
+- The capability matrix and `csm privileges` now show a risk tier for every privileged operation, from read-only detection to destructive responses.
 
 ## [3.43.0] - 2026-09-22
 

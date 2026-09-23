@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -135,5 +136,49 @@ func TestClampCellMarksWhatItCut(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "\u2026") {
 		t.Fatalf("clamped value does not mark the cut: %q", got)
+	}
+}
+
+func TestPrivilegesTextShowsRiskTier(t *testing.T) {
+	var buf bytes.Buffer
+	if err := printPrivilegesText(&buf); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	header := lines[0]
+	if strings.Join(strings.Fields(header), " ") != "OPERATION NEEDS TRIGGER TIER WRITES TURN IT OFF" {
+		t.Fatalf("unexpected header %q; TIER must follow TRIGGER", header)
+	}
+	tierStart, writesStart := strings.Index(header, "TIER"), strings.Index(header, "WRITES")
+	ops := privops.Operations()
+	rows := map[string][]string{}
+	for _, line := range lines[1:] {
+		if line == "" {
+			break
+		} // notes begin after the table
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			t.Fatalf("short table row %q", line)
+		}
+		rows[fields[0]] = append(rows[fields[0]], line)
+	}
+	if len(rows) != len(ops) {
+		t.Fatalf("rows=%d want %d", len(rows), len(ops))
+	}
+	for _, op := range ops {
+		matches := rows[op.ID]
+		if len(matches) != 1 {
+			t.Errorf("%s row count=%d want 1", op.ID, len(matches))
+			continue
+		}
+		line := matches[0]
+		fields, runes := strings.Fields(line), []rune(line)
+		if len(runes) < writesStart {
+			t.Fatalf("short row %q", line)
+		}
+		if fields[2] != string(op.Trigger) || fields[3] != strconv.Itoa(op.Risk.Number()) ||
+			strings.TrimSpace(string(runes[tierStart:writesStart])) != strconv.Itoa(op.Risk.Number()) {
+			t.Errorf("%s: wrong or misaligned trigger/tier in %q", op.ID, line)
+		}
 	}
 }

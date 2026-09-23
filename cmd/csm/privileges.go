@@ -44,7 +44,7 @@ func runPrivileges() {
 
 func printPrivilegesText(w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "OPERATION\tNEEDS\tTRIGGER\tWRITES\tTURN IT OFF"); err != nil {
+	if _, err := fmt.Fprintln(tw, "OPERATION\tNEEDS\tTRIGGER\tTIER\tWRITES\tTURN IT OFF"); err != nil {
 		return err
 	}
 	for _, op := range privops.Operations() {
@@ -59,10 +59,11 @@ func printPrivilegesText(w io.Writer) error {
 			// there is no switch and the line under it says why.
 			stop = "not configurable"
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n",
 			op.ID,
 			clampCell(strings.Join(privs, ","), needsWidth),
 			op.Trigger,
+			op.Risk.Number(),
 			clampCell(summarizeWrites(op.Writes, op.Unsandboxed), writesWidth),
 			stop,
 		); err != nil {
