@@ -87,6 +87,14 @@ CSM.Table = function(opts) {
     this.tbody = this.table.querySelector('tbody');
     if (!this.tbody) return;
 
+    // A page that reloads its data refills the same table and wraps it again.
+    // The earlier instance still holds the old rows and listens to the same
+    // controls, so it would append stale rows back; retire it first.
+    for (var p = CSM._tableInstances.length - 1; p >= 0; p--) {
+        var prev = CSM._tableInstances[p];
+        if (prev !== this && prev.opts && prev.opts.tableId === opts.tableId) prev.destroy();
+    }
+
     this.perPage = typeof opts.perPage === 'number' ? opts.perPage : 25;
     this.currentPage = 1;
     this.searchText = '';

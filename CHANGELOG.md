@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Tables that reload their data, such as the rules, ModSecurity and incident lists, no longer show stale duplicate rows after a reload, an apply or a filter change.
 - Dates in the Web UI no longer turn into "3h ago" a minute after a page loads. Only times shown as relative are refreshed, so absolute dates, account history rows and exports keep their content, and an expiry still ahead reads "in 3h" instead of "just now".
 - Undoing a dismissal preserves later operator decisions and restores alerting for findings first received in real time.
 - Cleanup file selection counts and controls now follow pagination and filtering.
