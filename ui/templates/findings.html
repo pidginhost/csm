@@ -214,7 +214,7 @@
     </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/findings.js"></script>
-<script src="/static/js/history.js"></script>
+<script src="{{asset "js/findings.js"}}"></script>
+<script src="{{asset "js/history.js"}}"></script>
 {{end}}
 {{template "layout" .}}

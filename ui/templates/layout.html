@@ -5,12 +5,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CSM - {{template "title" .}}</title>
-    <link rel="stylesheet" href="/static/css/tabler.min.css">
-    <link rel="stylesheet" href="/static/css/tabler-icons.min.css">
-    <link rel="stylesheet" href="/static/css/csm.css">
+    <link rel="stylesheet" href="{{asset "css/tabler.min.css"}}">
+    <link rel="stylesheet" href="{{asset "css/tabler-icons.min.css"}}">
+    <link rel="stylesheet" href="{{asset "css/csm.css"}}">
     <meta name="csrf-token" content="{{csrfToken}}">
     <script id="csm-config" type="application/json">{{csmConfig}}</script>
-    <script src="/static/js/theme-init.js"></script>
+    <script src="{{asset "js/theme-init.js"}}"></script>
 </head>
 <body class="layout-fluid" data-csm-page="{{template "page" .}}">
     <div class="page">
@@ -284,17 +284,17 @@
             </div>
         </div>
     </div>
-    <script src="/static/js/tabler.min.js"></script>
-    <script src="/static/js/csrf.js"></script>
-    <script src="/static/js/toast.js"></script>
-    <script src="/static/js/csm-ui.js"></script>
-    <script src="/static/js/prefs.js"></script>
-    <script src="/static/js/table.js"></script>
-    <script src="/static/js/shortcuts.js"></script>
-    <script src="/static/js/palette.js"></script>
-    <script src="/static/js/views.js"></script>
-    <script src="/static/js/undo.js"></script>
-    <script src="/static/js/layout.js"></script>
+    <script src="{{asset "js/tabler.min.js"}}"></script>
+    <script src="{{asset "js/csrf.js"}}"></script>
+    <script src="{{asset "js/toast.js"}}"></script>
+    <script src="{{asset "js/csm-ui.js"}}"></script>
+    <script src="{{asset "js/prefs.js"}}"></script>
+    <script src="{{asset "js/table.js"}}"></script>
+    <script src="{{asset "js/shortcuts.js"}}"></script>
+    <script src="{{asset "js/palette.js"}}"></script>
+    <script src="{{asset "js/views.js"}}"></script>
+    <script src="{{asset "js/undo.js"}}"></script>
+    <script src="{{asset "js/layout.js"}}"></script>
     {{template "scripts" .}}
 </body>
 </html>

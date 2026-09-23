@@ -498,12 +498,23 @@ func TestVerifiedBotsLastRefreshUsesLocalFormatter(t *testing.T) {
 	}
 }
 
-func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
-	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
+// templateAssetRef is how templates link a static file: {{asset "js/x.js"}}
+// renders /static/js/x.js?v=<content hash>.
+var templateAssetRef = regexp.MustCompile(`\{\{asset "([^"]+)"\}\}`)
+
+// readTemplateSource reads a template with each {{asset "path"}} written as
+// the /static/path it links, so source checks see the linked file.
+func readTemplateSource(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(tmpl)
+	return templateAssetRef.ReplaceAllString(string(body), "/static/$1")
+}
+
+func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
+	text := readTemplateSource(t, "../../ui/templates/layout.html")
 	tablerIdx := strings.Index(text, `/static/js/tabler.min.js`)
 	csrfIdx := strings.Index(text, `/static/js/csrf.js`)
 	toastIdx := strings.Index(text, `/static/js/toast.js`)
@@ -518,11 +529,8 @@ func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
 }
 
 func TestBootstrapAliasRunsBeforeSharedScriptConsumers(t *testing.T) {
-	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	matches := regexp.MustCompile(`<script src="/static/js/([^"]+\.js)"></script>`).FindAllStringSubmatch(string(tmpl), -1)
+	tmpl := readTemplateSource(t, "../../ui/templates/layout.html")
+	matches := regexp.MustCompile(`<script src="/static/js/([^"]+\.js)"></script>`).FindAllStringSubmatch(tmpl, -1)
 	if len(matches) == 0 {
 		t.Fatal("layout.html missing shared script tags")
 	}
@@ -4370,11 +4378,8 @@ func assertCSPDirectiveHasNoStyleRelaxation(t *testing.T, name string, sources [
 func assertNoInlineExecutableScripts(t *testing.T, path string) {
 	t.Helper()
 
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := html.Parse(strings.NewReader(string(body)))
+	body := readTemplateSource(t, path)
+	root, err := html.Parse(strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
@@ -4760,11 +4765,8 @@ func TestCommandPaletteWired(t *testing.T) {
 		}
 	}
 
-	layout, err := os.ReadFile("../../ui/templates/layout.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(layout), `<script src="/static/js/palette.js"></script>`) {
+	layout := readTemplateSource(t, "../../ui/templates/layout.html")
+	if !strings.Contains(layout, `<script src="/static/js/palette.js"></script>`) {
 		t.Fatal("layout.html does not load palette.js")
 	}
 

@@ -107,6 +107,8 @@ type Server struct {
 	templates       map[string]*template.Template
 	hasUI           bool   // true if UI directory with templates exists
 	uiDir           string // path to UI directory on disk
+	staticDir       string // uiDir/static
+	assets          assetVersions
 	startTime       time.Time
 	sigCount        int         // loaded signature rule count
 	fanotifyActive  func() bool // live daemon reader; nil outside the daemon
@@ -240,6 +242,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	// Try to load templates from disk
 	templateDir := filepath.Join(s.uiDir, "templates")
 	staticDir := filepath.Join(s.uiDir, "static")
+	s.staticDir = staticDir
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
@@ -272,7 +275,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		// own CSS/JS), so they are not behind requireAuth. They must not be
 		// enumerable, though: noListDir makes directory requests 404 instead of
 		// returning an index listing of every shipped file.
-		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(noListDir{http.Dir(staticDir)})))
+		mux.Handle("/static/", s.staticHandler(staticDir))
 		mux.HandleFunc("/login", s.handleLogin)
 		mux.Handle("/", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
 		mux.Handle("/dashboard", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
@@ -956,6 +959,7 @@ func (s *Server) templateFuncs() template.FuncMap {
 		"timeAgo":         timeAgo,
 		"formatTime":      formatTime,
 		"isoTime":         isoTime,
+		"asset":           s.assetURL,
 		"csrfToken":       s.csrfToken,
 		"csmConfig":       func() template.JS { return jsonForScript(s.csmConfig()) },
 		"json":            jsonForScript,
