@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/redisinfo"
@@ -54,8 +55,8 @@ type userProcs struct {
 }
 
 type perfFindingView struct {
-	Severity  int       `json:"severity"`
-	SevClass  string    `json:"sev_class"`
+	Severity  string `json:"severity"`
+	level     alert.Severity
 	Check     string    `json:"check"`
 	Message   string    `json:"message"`
 	Details   string    `json:"details,omitempty"`
@@ -450,8 +451,8 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 		}
 		key := f.Key()
 		views = append(views, perfFindingView{
-			Severity:  int(f.Severity),
-			SevClass:  severityClass(f.Severity),
+			Severity:  f.Severity.String(),
+			level:     f.Severity,
 			Check:     f.Check,
 			Message:   f.Message,
 			Details:   f.Details,
@@ -463,7 +464,7 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 
 	// Sort by severity descending
 	sort.Slice(views, func(i, j int) bool {
-		return views[i].Severity > views[j].Severity
+		return views[i].level > views[j].level
 	})
 
 	if len(views) > limit {

@@ -10,8 +10,9 @@
     var CHECK_NAMES = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || {};
 
     function sevClass(sev) {
-        if (sev >= 2) return 'danger';
-        if (sev >= 1) return 'warning';
+        var level = CSM.severity(sev).level;
+        if (level >= 2) return 'danger';
+        if (level >= 1) return 'warning';
         return 'info';
     }
 

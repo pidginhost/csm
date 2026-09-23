@@ -795,8 +795,8 @@ func TestAPIHistoryWithChecksFilter(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var resp struct {
-		Findings []alert.Finding `json:"items"`
-		Total    int             `json:"total"`
+		Findings []apiFinding `json:"items"`
+		Total    int          `json:"total"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad JSON: %v", err)

@@ -8,7 +8,7 @@ const { loadPage, templateBody, SHARED, settle } = require('./pagekit.js');
 
 function finding(check, message, filePath) {
     return {
-        key: check + ':' + message, severity: 'HIGH', sev_class: 'high', check, message, file_path: filePath,
+        key: check + ':' + message, severity: 'HIGH', check, message, file_path: filePath,
         first_seen: '2026-09-22T10:00:00Z', last_seen: '2026-09-22T10:00:00Z'
     };
 }

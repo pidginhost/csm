@@ -14,8 +14,8 @@ import (
 
 type timelineEvent struct {
 	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"`     // "finding", "action", "block"
-	Severity  int       `json:"severity"` // 0=info, 1=high, 2=critical
+	Type      string    `json:"type"`               // "finding", "action", "block"
+	Severity  string    `json:"severity,omitempty"` // a finding's label; actions have none
 	Summary   string    `json:"summary"`
 	Details   string    `json:"details,omitempty"`
 	Source    string    `json:"source"` // "history", "audit", "firewall"
@@ -106,7 +106,7 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		events = append(events, timelineEvent{
 			Timestamp: f.Timestamp.UTC(),
 			Type:      "finding",
-			Severity:  int(f.Severity),
+			Severity:  f.Severity.String(),
 			Summary:   summary,
 			Details:   f.Details,
 			Source:    "history",
@@ -154,7 +154,7 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 				events = append(events, timelineEvent{
 					Timestamp: ev.Time.UTC(),
 					Type:      "finding",
-					Severity:  int(inc.Severity),
+					Severity:  inc.Severity.String(),
 					Summary:   summary,
 					Details:   "From incident " + inc.ID + " (" + string(inc.Kind) + ", " + string(inc.Status) + ")",
 					Source:    "incident:" + inc.ID,
@@ -182,7 +182,6 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		events = append(events, timelineEvent{
 			Timestamp: a.Timestamp.UTC(),
 			Type:      "action",
-			Severity:  0,
 			Summary:   a.Action + ": " + a.Target,
 			Details:   a.Details,
 			Source:    "audit",

@@ -348,9 +348,9 @@ func TestAPIHistoryChecksDateFilterFindsRowsOlderThanOldScanCap(t *testing.T) {
 		t.Fatalf("X-CSM-Truncated = %q, want unset for exact store-filtered results", got)
 	}
 	var resp struct {
-		Findings  []alert.Finding `json:"items"`
-		Total     int             `json:"total"`
-		Truncated bool            `json:"truncated"`
+		Findings  []apiFinding `json:"items"`
+		Total     int          `json:"total"`
+		Truncated bool         `json:"truncated"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -395,9 +395,9 @@ func TestAPIHistoryDateFilterFindsRowsOlderThanScanCap(t *testing.T) {
 		t.Fatalf("X-CSM-Truncated = %q, want unset for exact store-filtered results", got)
 	}
 	var resp struct {
-		Findings  []alert.Finding `json:"items"`
-		Total     int             `json:"total"`
-		Truncated bool            `json:"truncated"`
+		Findings  []apiFinding `json:"items"`
+		Total     int          `json:"total"`
+		Truncated bool         `json:"truncated"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)

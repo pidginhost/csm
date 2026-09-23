@@ -77,7 +77,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Current findings for this account
 	type findingView struct {
-		Severity int    `json:"severity"`
+		Severity string `json:"severity"`
 		Check    string `json:"check"`
 		Message  string `json:"message"`
 		HasFix   bool   `json:"has_fix"`
@@ -90,7 +90,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		if accountFindingMatches(f, name, homePrefixes) {
 			accountFindings = append(accountFindings, findingView{
-				Severity: int(f.Severity),
+				Severity: f.Severity.String(),
 				Check:    f.Check,
 				Message:  f.Message,
 				HasFix:   checks.HasFix(f.Check),
@@ -126,7 +126,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 	// Recent history for this account (last 100 matching entries)
 	allHistory, _ := s.store.ReadHistory(2000, 0)
 	type histEntry struct {
-		Severity  int       `json:"severity"`
+		Severity  string    `json:"severity"`
 		Check     string    `json:"check"`
 		Message   string    `json:"message"`
 		Timestamp time.Time `json:"timestamp"`
@@ -138,7 +138,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		if accountFindingMatches(f, name, homePrefixes) {
 			history = append(history, histEntry{
-				Severity: int(f.Severity), Check: f.Check, Message: f.Message,
+				Severity: f.Severity.String(), Check: f.Check, Message: f.Message,
 				Timestamp: f.Timestamp.UTC(),
 			})
 		}

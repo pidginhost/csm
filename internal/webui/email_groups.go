@@ -25,19 +25,20 @@ const (
 )
 
 type emailGroup struct {
-	Kind           string          `json:"kind"`
-	Severity       int             `json:"severity"`
-	Title          string          `json:"title"`
-	Subject        string          `json:"subject"`
-	Count          int             `json:"count"`
-	FirstSeen      time.Time       `json:"first_seen"`
-	LastSeen       time.Time       `json:"last_seen"`
-	Summary        string          `json:"summary"`
-	SampleFindings []alert.Finding `json:"sample_findings"`
-	IPs            []string        `json:"ips,omitempty"`
-	TopIPs         []string        `json:"top_ips,omitempty"`
-	Domains        []string        `json:"domains,omitempty"`
-	MessageIDs     []string        `json:"message_ids,omitempty"`
+	Kind           string `json:"kind"`
+	Severity       string `json:"severity"`
+	level          alert.Severity
+	Title          string       `json:"title"`
+	Subject        string       `json:"subject"`
+	Count          int          `json:"count"`
+	FirstSeen      time.Time    `json:"first_seen"`
+	LastSeen       time.Time    `json:"last_seen"`
+	Summary        string       `json:"summary"`
+	SampleFindings []apiFinding `json:"sample_findings"`
+	IPs            []string     `json:"ips,omitempty"`
+	TopIPs         []string     `json:"top_ips,omitempty"`
+	Domains        []string     `json:"domains,omitempty"`
+	MessageIDs     []string     `json:"message_ids,omitempty"`
 }
 
 type emailGroupsResponse struct {
@@ -220,7 +221,7 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 			agg = &aggregator{
 				group: &emailGroup{
 					Kind:      kind,
-					Severity:  int(f.Severity),
+					level:     f.Severity,
 					Title:     emailGroupTitle(kind, f),
 					Subject:   emailGroupSubject(kind, f),
 					FirstSeen: ts.UTC(),
@@ -234,8 +235,8 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 			order = append(order, key)
 		}
 		agg.group.Count++
-		if int(f.Severity) > agg.group.Severity {
-			agg.group.Severity = int(f.Severity)
+		if f.Severity > agg.group.level {
+			agg.group.level = f.Severity
 		}
 		if ts.Before(agg.group.FirstSeen) {
 			agg.group.FirstSeen = ts.UTC()
@@ -272,7 +273,8 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 			hint = " across " + plural(len(agg.domainSet), "domain")
 		}
 		g.Summary = plural(g.Count, "event") + hint
-		g.SampleFindings = agg.samples
+		g.Severity = g.level.String()
+		g.SampleFindings = toAPIFindings(agg.samples)
 		if len(agg.ipCounts) > 0 {
 			g.IPs = sortedKeys(agg.ipCounts)
 			g.TopIPs = topKeysByCount(agg.ipCounts, 5)
@@ -290,8 +292,8 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Severity != out[j].Severity {
-			return out[i].Severity > out[j].Severity
+		if out[i].level != out[j].level {
+			return out[i].level > out[j].level
 		}
 		if out[i].Count != out[j].Count {
 			return out[i].Count > out[j].Count

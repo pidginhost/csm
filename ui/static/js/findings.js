@@ -151,7 +151,7 @@ function renderFindings(data) {
             ' data-hasVerify="' + (f.has_verify ? 'true' : 'false') + '"' +
             ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '">' +
             '<td><input type="checkbox" class="form-check-input row-checkbox" aria-label="Select finding ' + CSM.attr(f.check + ': ' + f.message) + '"></td>' +
-            '<td data-sort="' + CSM.severity(f.severity).rank + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
+            '<td data-sort="' + CSM.severity(f.severity).rank + '"><span class="badge badge-' + CSM.esc(CSM.severity(f.severity).cls) + '">' + CSM.esc(f.severity) + '</span></td>' +
             '<td><code>' + CSM.esc(f.check) + '</code></td>' +
             '<td class="text-secondary csm-break-all">' + CSM.esc(f.message) + '</td>' +
             '<td class="text-nowrap"><span class="font-monospace small" data-timestamp="' + CSM.esc(f.first_seen) + '">' + CSM.fmtDate(f.first_seen) + '</span></td>' +

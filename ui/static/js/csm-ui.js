@@ -296,7 +296,7 @@ CSM.emptyStateBlock = function(opts) {
 // Returns an HTMLElement; caller appends and may bind a click handler.
 //
 //   CSM.summaryItem({
-//       severity: 2,                      // 0=warn, 1=high, 2=crit (optional)
+//       severity: 'CRITICAL',             // label or 0-2 level (optional)
 //       title: 'jane@example.com',
 //       meta: '54 auth failures from 3 IPs',
 //       count: 54,                         // optional badge value
@@ -311,9 +311,10 @@ CSM.summaryItem = function(opts) {
     var tag = opts.href ? 'a' : 'div';
     var el = document.createElement(tag);
     el.className = 'csm-summary-list__item';
-    if (opts.severity === 2) el.classList.add('csm-summary-list__item--crit');
-    else if (opts.severity === 1) el.classList.add('csm-summary-list__item--high');
-    else if (opts.severity === 0) el.classList.add('csm-summary-list__item--warn');
+    var level = CSM.severity(opts.severity).level;
+    if (level === 2) el.classList.add('csm-summary-list__item--crit');
+    else if (level === 1) el.classList.add('csm-summary-list__item--high');
+    else if (level === 0) el.classList.add('csm-summary-list__item--warn');
     if (opts.href) {
         el.setAttribute('href', opts.href);
     }
@@ -321,7 +322,7 @@ CSM.summaryItem = function(opts) {
     el.tabIndex = 0;
 
     var sevHTML = '';
-    if (typeof opts.severity === 'number') {
+    if (level >= 0) {
         sevHTML = '<span class="csm-summary-list__sev">' + CSM.severityBadge(opts.severity) + '</span>';
     }
     var titleHTML = '<div class="csm-summary-list__title">' + (opts.titleHTML || CSM.esc(opts.title || '')) + '</div>';

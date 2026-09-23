@@ -814,8 +814,8 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 	if f.Severity != "CRITICAL" {
 		t.Errorf("severity = %q, want CRITICAL", f.Severity)
 	}
-	if f.SevClass == "" {
-		t.Error("sev_class should not be empty")
+	if strings.Contains(w.Body.String(), "sev_class") {
+		t.Error("sev_class sent; the page derives its CSS class from the severity label")
 	}
 	if f.Account != "alice" {
 		t.Errorf("account = %q, want alice", f.Account)

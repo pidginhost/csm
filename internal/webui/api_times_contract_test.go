@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -156,6 +157,13 @@ func TestResponsesUseUTCInstantsAndEmptyLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedAttackDB(t, map[string]*attackdb.IPRecord{"203.0.113.9": {IP: "203.0.113.9", ThreatScore: 50, EventCount: 1, FirstSeen: at, LastSeen: at}})
+	if err := db.RecordAttackEvent(store.AttackEvent{Timestamp: at, IP: "203.0.113.9", AttackType: "brute_force", CheckName: "wp_login", Severity: int(alert.High)}, 0); err != nil {
+		t.Fatal(err)
+	}
+	demoted := alert.Finding{Severity: alert.Warning, DemotedFrom: alert.High, Check: "webshell", Message: "demoted in /home/alice/b.php", Timestamp: at}
+	if err := db.AppendHistory([]alert.Finding{demoted}); err != nil {
+		t.Fatal(err)
+	}
 	writeFirewallAudit(t, s.cfg.StatePath, []firewall.AuditEntry{{Timestamp: at, Action: "block", IP: "203.0.113.9", Duration: "24h0m0s"}})
 	fwState := firewall.FirewallState{
 		Blocked:    []firewall.BlockedEntry{{IP: "203.0.113.9", Reason: "scanner", BlockedAt: at, ExpiresAt: at.Add(48 * time.Hour)}},
@@ -206,7 +214,7 @@ func TestResponsesUseUTCInstantsAndEmptyLists(t *testing.T) {
 		"/api/v1/rules/status", "/api/v1/performance", "/api/v1/threat/db-stats", "/api/v1/hardening",
 		"/api/v1/settings/firewall/rollback", "/api/v1/email/deferrals", "/api/v1/email/queue-composition",
 		"/api/v1/email/stats", "/api/v1/firewall/check?ip=203.0.113.9", "/api/v1/undo/pending",
-		"/api/v1/challenge/stats", "/api/v1/modsec/rules",
+		"/api/v1/challenge/stats", "/api/v1/modsec/rules", "/api/v1/threat/events?ip=203.0.113.9",
 	} {
 		w := serve("GET", path, "")
 		if w.Code != http.StatusOK {
@@ -214,6 +222,9 @@ func TestResponsesUseUTCInstantsAndEmptyLists(t *testing.T) {
 			continue
 		}
 		assertTimeContract(t, path, w.Body.Bytes())
+		for _, p := range severityProblems(w.Body.Bytes()) {
+			t.Errorf("%s: %s", path, p)
+		}
 		for _, p := range nullPaths(w.Body.Bytes()) {
 			if !unknownValue[p] {
 				t.Errorf("%s: %s is null; an empty list is [] and an empty map {}", path, p)
@@ -242,6 +253,44 @@ func TestTimeContractCatchesOldForms(t *testing.T) {
 	if p := timeContractProblems([]byte(good)); len(p) != 0 {
 		t.Errorf("checker refused a valid body: %v", p)
 	}
+}
+
+// severityProblems walks a JSON body. A severity is its label: CRITICAL,
+// HIGH or WARNING. The numeric level and a CSS class name are the page's
+// business, not the API's.
+func severityProblems(body []byte) []string {
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return []string{"body is not JSON"}
+	}
+	var problems []string
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, e := range x {
+				p := path + "." + k
+				if k == "params" {
+					continue // a saved view's URL filters, not a severity
+				}
+				switch k {
+				case "sev_class":
+					problems = append(problems, p+" is a CSS class; the page derives it from the label")
+				case "severity", "severity_max", "sev", "demoted_from":
+					if s, ok := e.(string); !ok || (s != "CRITICAL" && s != "HIGH" && s != "WARNING") {
+						problems = append(problems, fmt.Sprintf("%s = %v is not CRITICAL, HIGH or WARNING", p, e))
+					}
+				}
+				walk(p, e)
+			}
+		case []any:
+			for _, e := range x {
+				walk(path+"[]", e)
+			}
+		}
+	}
+	walk("", v)
+	return problems
 }
 
 // unknownValue lists the values that are null when they are not known: the

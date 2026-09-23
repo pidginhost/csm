@@ -18,31 +18,27 @@ func TestIPDedup(t *testing.T) {
 	items := []enrichedFinding{
 		{
 			Severity:  "HIGH",
-			SevClass:  "high",
 			Check:     "ip_reputation",
-			Message:   "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB)",
+			Message:   "Known malicious IP accessing server: 203.0.113.44 (AbuseIPDB)",
 			FirstSeen: mustRFC3339(t, "2026-04-01T10:00:00Z"),
 			LastSeen:  mustRFC3339(t, "2026-04-01T10:00:00Z"),
 		},
 		{
 			Severity:  "CRITICAL",
-			SevClass:  "critical",
 			Check:     "ip_reputation",
-			Message:   "Known malicious IP accessing server: 1.2.3.4 (Spamhaus)",
+			Message:   "Known malicious IP accessing server: 203.0.113.44 (Spamhaus)",
 			FirstSeen: mustRFC3339(t, "2026-04-01T09:00:00Z"),
 			LastSeen:  mustRFC3339(t, "2026-04-01T11:00:00Z"),
 		},
 		{
 			Severity:  "HIGH",
-			SevClass:  "high",
 			Check:     "ip_reputation",
-			Message:   "Known malicious IP accessing server: 5.6.7.8 (AbuseIPDB)",
+			Message:   "Known malicious IP accessing server: 198.51.100.58 (AbuseIPDB)",
 			FirstSeen: mustRFC3339(t, "2026-04-01T10:00:00Z"),
 			LastSeen:  mustRFC3339(t, "2026-04-01T10:00:00Z"),
 		},
 		{
 			Severity:  "CRITICAL",
-			SevClass:  "critical",
 			Check:     "brute_force",
 			Message:   "Brute force detected",
 			FirstSeen: mustRFC3339(t, "2026-04-01T10:00:00Z"),
@@ -52,15 +48,15 @@ func TestIPDedup(t *testing.T) {
 
 	result := dedupIPReputation(items)
 
-	// Should have 3 entries: brute_force + deduped 1.2.3.4 + 5.6.7.8
+	// Should have 3 entries: brute_force + deduped 203.0.113.44 + 198.51.100.58
 	if len(result) != 3 {
 		t.Fatalf("expected 3 entries after dedup, got %d", len(result))
 	}
 
-	// The deduped 1.2.3.4 entry should have CRITICAL severity (promoted from HIGH)
+	// The deduped 203.0.113.44 entry should have CRITICAL severity (promoted from HIGH)
 	found := false
 	for _, r := range result {
-		if r.Check == "ip_reputation" && r.Message == "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB, Spamhaus)" {
+		if r.Check == "ip_reputation" && r.Message == "Known malicious IP accessing server: 203.0.113.44 (AbuseIPDB, Spamhaus)" {
 			found = true
 			if r.Severity != "CRITICAL" {
 				t.Errorf("expected CRITICAL severity after merge, got %s", r.Severity)
@@ -74,7 +70,7 @@ func TestIPDedup(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected deduped ip_reputation entry for 1.2.3.4")
+		t.Error("expected deduped ip_reputation entry for 203.0.113.44")
 	}
 
 	// Non-ip_reputation entry should pass through unchanged
@@ -103,12 +99,12 @@ func TestIPDedupNoIPReputation(t *testing.T) {
 func TestIPDedupSortsMergedSourcesForStableMessage(t *testing.T) {
 	for name, items := range map[string][]enrichedFinding{
 		"abuse_first": {
-			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB score: 90/100)", Severity: "HIGH", SevClass: "high"},
-			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (Spamhaus score: 95/100)", Severity: "CRITICAL", SevClass: "critical"},
+			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 203.0.113.44 (AbuseIPDB score: 90/100)", Severity: "HIGH"},
+			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 203.0.113.44 (Spamhaus score: 95/100)", Severity: "CRITICAL"},
 		},
 		"spamhaus_first": {
-			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (Spamhaus score: 95/100)", Severity: "CRITICAL", SevClass: "critical"},
-			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB score: 90/100)", Severity: "HIGH", SevClass: "high"},
+			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 203.0.113.44 (Spamhaus score: 95/100)", Severity: "CRITICAL"},
+			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 203.0.113.44 (AbuseIPDB score: 90/100)", Severity: "HIGH"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -116,7 +112,7 @@ func TestIPDedupSortsMergedSourcesForStableMessage(t *testing.T) {
 			if len(result) != 1 {
 				t.Fatalf("deduped entries = %d, want 1", len(result))
 			}
-			want := "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB score: 90/100, Spamhaus score: 95/100)"
+			want := "Known malicious IP accessing server: 203.0.113.44 (AbuseIPDB score: 90/100, Spamhaus score: 95/100)"
 			if result[0].Message != want {
 				t.Fatalf("message = %q, want %q", result[0].Message, want)
 			}

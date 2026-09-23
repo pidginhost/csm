@@ -144,14 +144,14 @@ func TestEmailGroupsSortsBySeverityThenLastSeen(t *testing.T) {
 	if len(groups) != 3 {
 		t.Fatalf("got %d groups, want 3", len(groups))
 	}
-	if groups[0].Severity != int(alert.Critical) {
-		t.Errorf("first group severity = %d, want critical", groups[0].Severity)
+	if groups[0].Severity != "CRITICAL" {
+		t.Errorf("first group severity = %s, want critical", groups[0].Severity)
 	}
 	if groups[0].Title != "newer@example.com" {
 		t.Errorf("first crit group should be newest: got %q", groups[0].Title)
 	}
-	if groups[2].Severity != int(alert.Warning) {
-		t.Errorf("last group severity = %d, want warning", groups[2].Severity)
+	if groups[2].Severity != "WARNING" {
+		t.Errorf("last group severity = %s, want warning", groups[2].Severity)
 	}
 }
 
@@ -328,8 +328,8 @@ func TestEmailGroupsSortByCountWithinSeverity(t *testing.T) {
 	if len(groups) != 4 {
 		t.Fatalf("got %d groups, want 4", len(groups))
 	}
-	if groups[0].Severity != int(alert.Critical) {
-		t.Errorf("group[0] severity = %d, want critical first", groups[0].Severity)
+	if groups[0].Severity != "CRITICAL" {
+		t.Errorf("group[0] severity = %s, want critical first", groups[0].Severity)
 	}
 	gotCounts := []int{groups[1].Count, groups[2].Count, groups[3].Count}
 	wantCounts := []int{50, 5, 1}

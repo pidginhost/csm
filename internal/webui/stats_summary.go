@@ -141,6 +141,9 @@ func summarizeHistory(findings []alert.Finding) *statsSummary {
 	if len(atRisk) > 50 {
 		atRisk = atRisk[:50]
 	}
+	for _, a := range atRisk {
+		a["severity"] = alert.Severity(a["severity"].(int)).String()
+	}
 
 	// Top targeted accounts (by finding count)
 	var topAccounts []accountCount

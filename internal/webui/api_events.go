@@ -131,7 +131,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 				if streamStopped() {
 					return nil
 				}
-				wire, err := apiValue(f)
+				wire, err := apiValue(toAPIFinding(f))
 				if err != nil {
 					encodingFailed = true
 					return err

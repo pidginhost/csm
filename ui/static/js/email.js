@@ -568,7 +568,7 @@
         _emailExportData = findings.map(function(f) {
             return {
                 check: f.check,
-                severity: f.severity === 2 ? 'critical' : f.severity === 1 ? 'high' : 'warning',
+                severity: CSM.severity(f.severity).cls,
                 message: f.message,
                 account: f.account || '',
                 timestamp: f.timestamp || ''

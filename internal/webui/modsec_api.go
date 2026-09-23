@@ -385,16 +385,7 @@ func modsecWindow(r *http.Request) time.Duration {
 // severity. ok is false when no (or an unrecognized) filter is requested, in
 // which case all severities pass.
 func modsecSeverityFilter(r *http.Request) (alert.Severity, bool) {
-	switch strings.ToLower(r.URL.Query().Get("severity")) {
-	case "warning":
-		return alert.Warning, true
-	case "high":
-		return alert.High, true
-	case "critical":
-		return alert.Critical, true
-	default:
-		return 0, false
-	}
+	return parseSeverity(r.URL.Query().Get("severity"))
 }
 
 // modsecCountryOf resolves an IP to its ISO country code and full name via the

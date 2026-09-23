@@ -7,7 +7,7 @@ const { loadPage, templateBody, items, SHARED, settle } = require('./pagekit.js'
 
 function finding(check, message, account) {
     return {
-        key: check + ':' + message, severity: 'HIGH', sev_class: 'high', check, message,
+        key: check + ':' + message, severity: 'HIGH', check, message,
         account, first_seen: '2026-09-22T10:00:00Z', last_seen: '2026-09-22T10:00:00Z'
     };
 }

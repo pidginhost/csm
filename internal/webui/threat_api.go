@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -111,6 +112,12 @@ func (s *Server) apiThreatIP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, intel)
 }
 
+// threatEventView is an attack event as the API sends it: sev is a label.
+type threatEventView struct {
+	attackdb.Event
+	Severity string `json:"sev"`
+}
+
 // GET /api/v1/threat/events?ip=1.2.3.4&limit=50
 func (s *Server) apiThreatEvents(w http.ResponseWriter, r *http.Request) {
 	ip := r.URL.Query().Get("ip")
@@ -126,7 +133,7 @@ func (s *Server) apiThreatEvents(w http.ResponseWriter, r *http.Request) {
 
 	adb := attackdb.Global()
 	if adb == nil {
-		writeItems(w, []attackdb.Event{}, map[string]interface{}{"limit": limit, "truncated": false})
+		writeItems(w, []threatEventView{}, map[string]interface{}{"limit": limit, "truncated": false})
 		return
 	}
 
@@ -136,7 +143,11 @@ func (s *Server) apiThreatEvents(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		events = events[:limit]
 	}
-	writeItems(w, events, map[string]interface{}{"limit": limit, "truncated": truncated})
+	views := make([]threatEventView, len(events))
+	for i, ev := range events {
+		views[i] = threatEventView{Event: ev, Severity: alert.Severity(ev.Severity).String()}
+	}
+	writeItems(w, views, map[string]interface{}{"limit": limit, "truncated": truncated})
 }
 
 // GET /api/v1/threat/db-stats

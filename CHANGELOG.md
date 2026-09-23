@@ -106,6 +106,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- **Breaking:** API severities are now labels (`CRITICAL`, `HIGH`, `WARNING`) everywhere, including findings, history, the event stream and attack events, and the CSS class that came with some of them is gone. Severity filters also take the label in any case.
 - **Breaking:** an empty list or map anywhere in an API response is now `[]` or `{}` instead of null.
 - **Breaking:** API times are now RFC 3339 instants in UTC with sub-second precision, left out when not set, and durations are seconds in keys ending in `_seconds`. Relative ages, clock times without a date and duplicate `_iso` fields are gone, and hourly timeline buckets carry their start instant.
 - **Breaking:** API routes that return a list now answer an object with the list under `items`, next to `total` and, where the list is paged or capped, `offset`, `limit` and `truncated`, instead of a bare array or a route-specific key. An empty list is `[]`, never null, and `/api/v1/incidents` always answers one page with its total.

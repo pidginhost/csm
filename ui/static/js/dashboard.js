@@ -70,7 +70,7 @@
     var notifInternalChecks = { auto_response: 1, auto_block: 1, check_timeout: 1, health: 1 };
 
     function _maybeNotify(f) {
-        if (f.severity !== 2) return;
+        if (CSM.severity(f.severity).level !== 2) return;
         if (!('Notification' in window)) return;
         if (Notification.permission !== 'granted') return;
         if (localStorage.getItem('csm-notif') !== 'on') return;

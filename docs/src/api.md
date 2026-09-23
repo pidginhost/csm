@@ -92,6 +92,14 @@ restart polling. The `temporary` reason on `/api/v1/firewall/check` keeps its
 "(expires in ...)" text for existing callers; `expires_at` carries the
 instant.
 
+## Severity
+
+A severity is its label: `CRITICAL`, `HIGH` or `WARNING`. That covers
+`severity`, `severity_max`, `demoted_from` and the attack event `sev`.
+Clients derive colours and sort order from the label. A `severity` filter
+takes the label in any case, or the older `0`, `1` or `2` level. The findings
+inside an email quarantine entry keep the scanning engine's own rating.
+
 ## Status & Data
 
 ```

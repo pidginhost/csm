@@ -114,7 +114,7 @@ func (s *Server) apiScanJobFindings(w http.ResponseWriter, r *http.Request, db *
 		writeJSONError(w, "failed to list findings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeItems(w, findings, map[string]any{
+	writeItems(w, toAPIFindings(findings), map[string]any{
 		"job_id":    id,
 		"total":     total,
 		"offset":    offset,

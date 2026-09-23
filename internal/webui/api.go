@@ -185,7 +185,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 	latest := s.store.LatestFindings()
 
 	type entryView struct {
-		Severity  int       `json:"severity"`
+		Severity  string    `json:"severity"`
 		Check     string    `json:"check"`
 		Message   string    `json:"message"`
 		Details   string    `json:"details,omitempty"`
@@ -212,7 +212,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 			lastSeen = entry.LastSeen
 		}
 		result = append(result, entryView{
-			Severity:  int(f.Severity),
+			Severity:  f.Severity.String(),
 			Check:     f.Check,
 			Message:   f.Message,
 			Details:   f.Details,
@@ -229,7 +229,6 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 type enrichedFinding struct {
 	Key           string    `json:"key"`
 	Severity      string    `json:"severity"`
-	SevClass      string    `json:"sev_class"`
 	Check         string    `json:"check"`
 	Message       string    `json:"message"`
 	Details       string    `json:"details,omitempty"`
@@ -278,7 +277,6 @@ func dedupIPReputation(items []enrichedFinding) []enrichedFinding {
 			}
 			if severityRank(item.Severity) > severityRank(g.entry.Severity) {
 				g.entry.Severity = item.Severity
-				g.entry.SevClass = item.SevClass
 			}
 		} else {
 			ipGroups[ip] = &ipGroup{
@@ -319,7 +317,6 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 		items = append(items, enrichedFinding{
 			Key:           f.Key(),
 			Severity:      severityLabel(f.Severity),
-			SevClass:      severityClass(f.Severity),
 			Check:         f.Check,
 			Message:       f.Message,
 			Details:       f.Details,
@@ -425,7 +422,7 @@ func enrichedFindingsVersion(items []enrichedFinding) string {
 }
 
 // apiHistory returns paginated finding history.
-// Supports optional filtering via "from", "to" (YYYY-MM-DD or RFC 3339), and "severity" (0/1/2) query params.
+// Supports optional filtering via "from", "to" (YYYY-MM-DD or RFC 3339), and "severity" (a label or 0/1/2) query params.
 func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50)
 	if limit > 5000 {
@@ -465,8 +462,8 @@ func parseHistoryQuery(w http.ResponseWriter, r *http.Request) (historyQuery, bo
 		return historyQuery{}, false
 	}
 	q := historyQuery{from: v.Get("from"), to: v.Get("to"), search: v.Get("search"), severity: -1}
-	if v.Get("severity") != "" {
-		q.severity = queryInt(r, "severity", -1)
+	if sev, ok := parseSeverity(v.Get("severity")); ok {
+		q.severity = int(sev)
 	}
 	if checksStr := v.Get("checks"); checksStr != "" {
 		q.checks = make(map[string]bool)
@@ -492,22 +489,67 @@ func historyPageTruncated(total, offset, returned int) bool {
 	return total > offset+returned
 }
 
-// historyFinding decorates a stored finding with the normalized account and
-// remote IP so clients render structured fields instead of regex-scraping the
-// human-readable message. The embedded Finding promotes its own JSON fields, so
-// existing consumers see the same shape plus account/ip.
+// apiFinding is a stored finding as the API sends it: its severity, and the
+// one it was demoted from, are labels. The embedded Finding promotes its
+// other JSON fields; these shallower fields take the severity keys.
+type apiFinding struct {
+	alert.Finding
+	Severity    string `json:"severity"`
+	DemotedFrom string `json:"demoted_from,omitempty"`
+}
+
+func toAPIFinding(f alert.Finding) apiFinding {
+	a := apiFinding{Finding: f, Severity: f.Severity.String()}
+	// Demotion only lowers a severity, so WARNING, the zero level, is never
+	// the one a finding was demoted from.
+	if f.DemotedFrom > alert.Warning {
+		a.DemotedFrom = f.DemotedFrom.String()
+	}
+	return a
+}
+
+func toAPIFindings(findings []alert.Finding) []apiFinding {
+	out := make([]apiFinding, len(findings))
+	for i, f := range findings {
+		out[i] = toAPIFinding(f)
+	}
+	return out
+}
+
+// historyFinding is an apiFinding with the normalized account and remote IP,
+// so clients render structured fields instead of regex-scraping the
+// human-readable message. It embeds the exported Finding, not apiFinding:
+// apiValue cannot reach into an unexported embedded struct.
 type historyFinding struct {
 	alert.Finding
-	Account string `json:"account,omitempty"`
-	IP      string `json:"ip,omitempty"`
+	Severity    string `json:"severity"`
+	DemotedFrom string `json:"demoted_from,omitempty"`
+	Account     string `json:"account,omitempty"`
+	IP          string `json:"ip,omitempty"`
 }
 
 func withAccountIP(findings []alert.Finding) []historyFinding {
 	out := make([]historyFinding, len(findings))
 	for i, f := range findings {
-		out[i] = historyFinding{Finding: f, Account: findingAccount(f), IP: findingIP(f)}
+		a := toAPIFinding(f)
+		out[i] = historyFinding{Finding: f, Severity: a.Severity, DemotedFrom: a.DemotedFrom,
+			Account: findingAccount(f), IP: findingIP(f)}
 	}
 	return out
+}
+
+// parseSeverity reads a severity filter: a label in any case, or the 0/1/2
+// level older callers send. ok is false for anything else.
+func parseSeverity(text string) (alert.Severity, bool) {
+	switch strings.ToUpper(strings.TrimSpace(text)) {
+	case "WARNING", "0":
+		return alert.Warning, true
+	case "HIGH", "1":
+		return alert.High, true
+	case "CRITICAL", "2":
+		return alert.Critical, true
+	}
+	return 0, false
 }
 
 // findingAccount returns the account/mailbox attribution for a finding,
@@ -1914,7 +1956,7 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 	// Search history for related findings (same check type, last 50)
 	allHistory, _ := s.store.ReadHistory(2000, 0)
 	type histEntry struct {
-		Severity  int       `json:"severity"`
+		Severity  string    `json:"severity"`
 		Check     string    `json:"check"`
 		Message   string    `json:"message"`
 		Timestamp time.Time `json:"timestamp"`
@@ -1926,7 +1968,7 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		if f.Check == check {
 			related = append(related, histEntry{
-				Severity:  int(f.Severity),
+				Severity:  f.Severity.String(),
 				Check:     f.Check,
 				Message:   f.Message,
 				Timestamp: f.Timestamp.UTC(),

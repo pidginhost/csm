@@ -281,11 +281,11 @@ func TestScanJobsRouter_Findings_Pagination(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		JobID    string          `json:"job_id"`
-		Findings []alert.Finding `json:"items"`
-		Total    int             `json:"total"`
-		Offset   int             `json:"offset"`
-		Limit    int             `json:"limit"`
+		JobID    string       `json:"job_id"`
+		Findings []apiFinding `json:"items"`
+		Total    int          `json:"total"`
+		Offset   int          `json:"offset"`
+		Limit    int          `json:"limit"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -326,10 +326,10 @@ func TestScanJobsRouter_Findings_DefaultPageIsBounded(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+tok)
 		s.requireRead(http.HandlerFunc(s.apiScanJobsRouter)).ServeHTTP(w, req)
 		var resp struct {
-			Findings  []alert.Finding `json:"items"`
-			Total     int             `json:"total"`
-			Limit     int             `json:"limit"`
-			Truncated bool            `json:"truncated"`
+			Findings  []apiFinding `json:"items"`
+			Total     int          `json:"total"`
+			Limit     int          `json:"limit"`
+			Truncated bool         `json:"truncated"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("unmarshal: %v: %s", err, w.Body.String())
@@ -368,7 +368,7 @@ func TestScanJobsRouter_Findings_NilBecomesEmpty(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var resp struct {
-		Findings []alert.Finding `json:"items"`
+		Findings []apiFinding `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)

@@ -121,8 +121,10 @@ func TestAPIPerformanceSortsBySeverityDesc(t *testing.T) {
 		t.Fatalf("findings = %d, want 3", len(resp.Findings))
 	}
 	for i := 1; i < len(resp.Findings); i++ {
-		if resp.Findings[i-1].Severity < resp.Findings[i].Severity {
-			t.Errorf("sort order broken at index %d: %d < %d",
+		prev, _ := parseSeverity(resp.Findings[i-1].Severity)
+		cur, _ := parseSeverity(resp.Findings[i].Severity)
+		if prev < cur {
+			t.Errorf("sort order broken at index %d: %s < %s",
 				i, resp.Findings[i-1].Severity, resp.Findings[i].Severity)
 		}
 	}

@@ -786,13 +786,13 @@ func TestSizeAndSeverityColumnsSortNumerically(t *testing.T) {
 	findingsText := string(findings)
 	for _, want := range []string{
 		// The rank comes from the shared severity table; ui/severity_test.js.
-		`'<td data-sort="' + CSM.severity(f.severity).rank + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">'`,
+		`'<td data-sort="' + CSM.severity(f.severity).rank + '"><span class="badge badge-' + CSM.esc(CSM.severity(f.severity).cls) + '">'`,
 	} {
 		if !strings.Contains(findingsText, want) {
 			t.Errorf("findings.js missing severity sort-rank fragment %q", want)
 		}
 	}
-	if strings.Contains(findingsText, `'<td><span class="badge badge-' + CSM.esc(f.sev_class)`) {
+	if strings.Contains(findingsText, `'<td><span class="badge badge-' + CSM.esc(CSM.severity(f.severity).cls)`) {
 		t.Error("findings.js severity cell still has no data-sort rank")
 	}
 

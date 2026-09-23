@@ -21,7 +21,7 @@ type relayAbuseResponse struct {
 type relayAbuseEntry struct {
 	Path         string           `json:"path"`
 	PathLabel    string           `json:"path_label"`
-	Severity     int              `json:"severity"`
+	Severity     string           `json:"severity"`
 	SourceIP     string           `json:"source_ip,omitempty"`
 	CPUser       string           `json:"cp_user,omitempty"`
 	TriggerCount int              `json:"trigger_count"`
@@ -137,7 +137,7 @@ func toRelayAbuseEntry(f alert.Finding) relayAbuseEntry {
 	e := relayAbuseEntry{
 		Path:         f.Path,
 		PathLabel:    relayPathLabel(f.Path),
-		Severity:     int(f.Severity),
+		Severity:     f.Severity.String(),
 		SourceIP:     f.SourceIP,
 		CPUser:       f.CPUser,
 		TriggerCount: relayTriggerCount(f),
