@@ -88,6 +88,12 @@ and retain one undo action. Larger selections must be narrowed before sending.
 Findings bulk fix also asks for a smaller selection when the request would
 exceed the API body-size limit, which includes finding details.
 
+Findings bulk suppress creates one path rule per selected file, up to 100
+files, with the file name matched literally. Selected findings that name no
+file are skipped; a rule for a whole check is made from one finding. Rules are
+saved one at a time, and a failure stops the rest and reports how many were
+saved.
+
 ## Security
 
 - **Authentication** - API bearer tokens in the header; opaque server-side browser sessions in HttpOnly/Secure/SameSite=Strict cookies

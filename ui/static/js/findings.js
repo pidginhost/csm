@@ -641,7 +641,59 @@ function bulkAction(action) {
                 refreshFindings();
             }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+
+    } else if (action === 'suppress') {
+        bulkSuppress(items);
     }
+}
+
+// bulkSuppress creates one path rule per selected file. A finding without a
+// file is skipped: its only rule would hide the whole check, which stays a
+// deliberate choice made from that one finding.
+var _bulkSuppressInFlight = false;
+function bulkSuppress(items) {
+    if (_bulkSuppressInFlight) return;
+    var seen = {}, rules = [], skipped = 0;
+    items.forEach(function(i) {
+        var pattern = suppressDefaultPattern(i.message, i.file_path);
+        if (!pattern) { skipped++; return; }
+        var id = i.check + '\u0000' + pattern;
+        if (seen[id]) return;
+        seen[id] = true;
+        rules.push(CSM.suppressionRequest(i.check, 'path', pattern, '', 'Suppressed from findings page'));
+    });
+    if (rules.length === 0) {
+        CSM.toast('None of the selected findings names a file. Suppress them one at a time to choose a scope.', 'warning');
+        return;
+    }
+    if (rules.length > CSM.SUPPRESS_BULK_MAX) {
+        CSM.toast('Too many files selected (' + rules.length + '); the bulk suppress limit is ' + CSM.SUPPRESS_BULK_MAX + '. Narrow the selection and repeat.', 'error');
+        return;
+    }
+    var question = 'Suppress ' + rules.length + ' file(s)?\n\nOne rule per file: matching findings are hidden, and their alerts and remediation stop. IP blocking is not affected.';
+    if (skipped) question += '\n\n' + skipped + ' selected finding(s) without a file are skipped.';
+    CSM.confirm(question).then(function() {
+        _bulkSuppressInFlight = true;
+        var saved = 0, warnings = [];
+        function next() {
+            if (saved >= rules.length) return Promise.resolve();
+            return CSM.post('/api/v1/suppressions', rules[saved]).then(function(resp) {
+                saved++;
+                if (resp && resp.warning && warnings.indexOf(resp.warning) < 0) warnings.push(resp.warning);
+                return next();
+            });
+        }
+        return next().then(function() {
+            CSM.toast('Suppressed ' + saved + ' file(s)', 'success');
+            if (warnings.length) CSM.toast(warnings.join('\n'), 'warning');
+        }, function(err) {
+            CSM.toast('Saved ' + saved + ' of ' + rules.length + ' suppression rule(s); the rest were not sent: ' + (err && err.message ? err.message : 'request failed'), 'error');
+        }).then(function() {
+            _bulkSuppressInFlight = false;
+            clearAllSelections();
+            refreshFindings();
+        });
+    }, function() { /* cancelled */ });
 }
 
 // --- Scan account ---
@@ -690,6 +742,8 @@ var _bulkFixBtn = document.getElementById('bulk-fix-btn');
 if (_bulkFixBtn) _bulkFixBtn.addEventListener('click', function() { bulkAction('fix'); });
 var _bulkDismissBtn = document.getElementById('bulk-dismiss-btn');
 if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulkAction('dismiss'); });
+var _bulkSuppressBtn = document.getElementById('bulk-suppress-btn');
+if (_bulkSuppressBtn) _bulkSuppressBtn.addEventListener('click', function() { bulkAction('suppress'); });
 var _bulkCancelBtn = document.getElementById('bulk-cancel-btn');
 if (_bulkCancelBtn) _bulkCancelBtn.addEventListener('click', clearAllSelections);
 
