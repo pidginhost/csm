@@ -1084,12 +1084,12 @@ func TestAPIDismissFindingSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("code = %d, want 200", w.Code)
 	}
-	var got map[string]string
+	var got map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got["status"] != "dismissed" {
-		t.Errorf("status = %q", got["status"])
+		t.Errorf("status = %v", got["status"])
 	}
 }
 

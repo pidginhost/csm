@@ -54,6 +54,14 @@ func TestThreatBulkActionsCheckServerLimitFirst(t *testing.T) {
 	}
 }
 
+// A bulk dismissal is one undo entry, so the page refuses a selection the
+// server would refuse instead of splitting it into several undo entries.
+func TestFindingsBulkDismissChecksServerLimitFirst(t *testing.T) {
+	if want := fmt.Sprintf("CSM.DISMISS_BULK_MAX = %d;", dismissBulkMax); !strings.Contains(readUIScript(t, "csrf.js"), want) {
+		t.Fatalf("csrf.js missing %q", want)
+	}
+}
+
 func TestQuarantineMutationsStayLockedThroughRefresh(t *testing.T) {
 	src := readUIScript(t, "quarantine.js")
 	for _, fragment := range []string{

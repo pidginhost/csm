@@ -33,6 +33,7 @@ CSM.post = function(url, body) {
 // server constants; the Web UI tests compare the two.
 CSM.QUARANTINE_BULK_MAX = 100;
 CSM.THREAT_BULK_MAX = 100;
+CSM.DISMISS_BULK_MAX = 500;
 CSM.FIX_BULK_BODY_MAX = 65536;
 
 // Send items to an endpoint that accepts at most `size` per request, one batch

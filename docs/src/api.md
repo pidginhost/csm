@@ -992,7 +992,7 @@ POST /api/v1/verified-bots/apply  Validate, apply, and reload an edited verified
 ```
 POST /api/v1/fix                      Apply fix for a finding
 POST /api/v1/fix-bulk                 Bulk fix multiple findings
-POST /api/v1/dismiss                  Dismiss a finding
+POST /api/v1/dismiss                  Dismiss one finding {key} or up to 500 {keys}; returns undo_token
 POST /api/v1/scan-account             On-demand account scan
 POST /api/v1/verify-finding           Re-check a single finding on demand (admin scope, CSRF)
 POST /api/v1/quarantine-restore       Restore quarantined file

@@ -1460,6 +1460,10 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 
 // apiDismissFinding marks a finding as baseline (acknowledged/dismissed).
 // POST /api/v1/dismiss  body: {"key": "check:message"}
+// dismissBulkMax bounds one dismiss request. The whole request is one undo
+// entry, so a larger selection must be narrowed rather than split.
+const dismissBulkMax = 500
+
 func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1467,17 +1471,51 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Key string `json:"key"`
+		Key  string   `json:"key"`
+		Keys []string `json:"keys"`
 	}
-	if err := decodeJSONBodyLimited(w, r, 16*1024, &req); err != nil || req.Key == "" {
-		writeJSONError(w, "Key is required", http.StatusBadRequest)
+	if err := decodeJSONBodyLimited(w, r, 1<<20, &req); err != nil {
+		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
+	keys := req.Keys
+	switch {
+	case req.Key != "" && len(req.Keys) > 0:
+		writeJSONError(w, "Send key or keys, not both", http.StatusBadRequest)
+		return
+	case req.Key != "":
+		keys = []string{req.Key}
+	case len(keys) == 0:
+		writeJSONError(w, "Key is required", http.StatusBadRequest)
+		return
+	case len(keys) > dismissBulkMax:
+		writeJSONError(w, fmt.Sprintf("At most %d findings per request", dismissBulkMax), http.StatusBadRequest)
+		return
+	}
+	for _, key := range keys {
+		if key == "" {
+			writeJSONError(w, "Key is required", http.StatusBadRequest)
+			return
+		}
+	}
 
-	s.store.DismissFinding(req.Key)
-	s.store.DismissLatestFinding(req.Key)
-	s.auditLog(r, "dismiss", req.Key, "")
-	writeJSON(w, map[string]string{"status": "dismissed", "key": req.Key})
+	undos := make([]state.DismissUndo, 0, len(keys))
+	for _, key := range keys {
+		undos = append(undos, s.store.DismissFindingWithUndo(key))
+		s.auditLog(r, "dismiss", key, "")
+	}
+	resp := map[string]interface{}{"status": "dismissed", "count": len(keys)}
+	summary := fmt.Sprintf("Dismissed %d findings", len(keys))
+	if len(keys) == 1 {
+		resp["key"] = keys[0]
+		check, _ := state.ParseKey(keys[0])
+		summary = "Dismissed " + check + " finding"
+	}
+	if token := s.recordUndoEntry(r, "dismiss", undoInverseFindingUndismiss, summary,
+		undoPayloadIPs{Dismissals: undos}); token != "" {
+		resp["undo_token"] = token
+	}
+	writeJSON(w, resp)
 }
 
 // apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.

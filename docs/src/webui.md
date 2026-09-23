@@ -154,8 +154,9 @@ Each finding row offers up to four actions: **Fix** (apply the automated
 remediation, shown only when one exists), **Re-check** (re-evaluate the finding
 against the live filesystem and clear it if the condition is gone, useful after
 fixing something by hand instead of waiting for the next scan), **Dismiss**
-(hide it; restorable), and **Suppress** (create a rule to hide similar
-findings).
+(stop alerts for it while it stays unchanged; a later scan that still finds it
+lists it again, and undo is offered for 30 seconds), and **Suppress** (create a
+rule to hide similar findings for good).
 
 Re-check appears only when CSM can test a current condition again. Supported
 targets include file permissions and content, phishing and `.htaccess` files,

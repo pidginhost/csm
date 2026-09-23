@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -23,6 +24,7 @@ const (
 	undoInverseThreatWhitelist   = "threat_bulk_unwhitelist"
 	undoInverseThreatUnwhitelist = "threat_bulk_whitelist"
 	undoInverseFirewallUnblock   = "firewall_bulk_reblock"
+	undoInverseFindingUndismiss  = "finding_undismiss"
 )
 
 // maxUndoPayloadSize bounds decompression of persisted data while leaving
@@ -42,6 +44,9 @@ type undoPayloadIPs struct {
 	// RestoreThreats carries the threat-DB rows a bulk action removed so the
 	// matching undo can put them back exactly.
 	RestoreThreats []undoThreatRow `json:"restore_threats,omitempty"`
+	// Dismissals carries what a finding dismissal changed so its undo can
+	// list the finding again and re-arm its alerts.
+	Dismissals []state.DismissUndo `json:"dismissals,omitempty"`
 }
 
 // undoThreatRow captures a removed threat-DB row's identity so undo can
@@ -77,7 +82,7 @@ func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary strin
 		return ""
 	}
 	entry, err := sdb.AppendUndoEntry(opkey, store.UndoEntry{
-		Targets: payload.IPs,
+		Targets: undoTargets(payload),
 		Action:  action,
 		Inverse: inverse,
 		Payload: raw,
@@ -88,6 +93,19 @@ func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary strin
 		return ""
 	}
 	return entry.ID
+}
+
+// undoTargets names what an undo entry acts on: its IPs, or the finding keys
+// of a dismissal.
+func undoTargets(payload undoPayloadIPs) []string {
+	if len(payload.IPs) > 0 {
+		return payload.IPs
+	}
+	keys := make([]string, 0, len(payload.Dismissals))
+	for _, d := range payload.Dismissals {
+		keys = append(keys, d.Key)
+	}
+	return keys
 }
 
 func encodeUndoPayload(payload undoPayloadIPs) ([]byte, error) {
@@ -321,6 +339,11 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		}
 		restoreUndoThreatRows(payload.RestoreThreats)
 		resp.Count = count
+	case undoInverseFindingUndismiss:
+		for _, d := range payload.Dismissals {
+			s.store.UndoDismiss(d)
+		}
+		resp.Count = len(payload.Dismissals)
 	default:
 		return undoRunResponse{}, fmt.Errorf("unknown inverse action %q", entry.Inverse)
 	}

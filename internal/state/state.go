@@ -1452,6 +1452,73 @@ func (s *Store) DismissFinding(key string) {
 	}
 }
 
+// DismissUndo records what DismissFindingWithUndo changed, so UndoDismiss can
+// return the finding to the state it had before the operator dismissed it.
+type DismissUndo struct {
+	Key string `json:"key"`
+	// ClearBaseline is set when the dismissal turned an alerting entry into a
+	// baseline one. An entry that was already baseline stays baseline.
+	ClearBaseline bool `json:"clear_baseline,omitempty"`
+	// Removed holds the findings the dismissal took out of the latest list.
+	Removed []alert.Finding `json:"removed,omitempty"`
+}
+
+// DismissFindingWithUndo marks the finding baseline and removes it from the
+// latest list, like DismissFinding followed by DismissLatestFinding, and
+// returns what it changed.
+func (s *Store) DismissFindingWithUndo(key string) DismissUndo {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	u := DismissUndo{Key: key}
+	s.mu.Lock()
+	if entry, exists := s.entries[key]; exists && !entry.IsBaseline {
+		entry.IsBaseline = true
+		s.dirty = true
+		u.ClearBaseline = true
+	}
+	s.mu.Unlock()
+
+	var kept []alert.Finding
+	for _, f := range s.latestFindings {
+		if f.Key() == key {
+			u.Removed = append(u.Removed, f)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	s.latestFindings = kept
+	s.persistLatestLocked()
+	return u
+}
+
+// UndoDismiss reverses DismissFindingWithUndo. A copy of the finding that a
+// scan reported again in the meantime is newer evidence and is kept.
+func (s *Store) UndoDismiss(u DismissUndo) {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	if u.ClearBaseline {
+		s.mu.Lock()
+		if entry, exists := s.entries[u.Key]; exists && entry.IsBaseline {
+			entry.IsBaseline = false
+			s.dirty = true
+		}
+		s.mu.Unlock()
+	}
+	if len(u.Removed) == 0 {
+		return
+	}
+	merged := findingsByKey(s.latestFindings)
+	for _, f := range u.Removed {
+		if _, present := merged[f.Key()]; !present {
+			merged[f.Key()] = f
+		}
+	}
+	s.latestFindings = orderAndCapLatest(merged)
+	s.persistLatestLocked()
+}
+
 // ParseKey splits a state key "check:message" into its components.
 func ParseKey(key string) (check, message string) {
 	for i := 0; i < len(key); i++ {

@@ -205,7 +205,7 @@ function buildActionButtons(row) {
     if (hasVerify) {
         btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 verify-btn" title="Re-check whether this finding is still present" aria-label="Re-check finding"><i class="ti ti-refresh"></i></button>';
     }
-    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn" title="Dismiss this finding (can be restored)" aria-label="Dismiss finding"><i class="ti ti-x"></i></button>';
+    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn" title="Dismiss: stop alerts for this finding while it stays unchanged. A later scan can list it again; use Suppress to hide it for good." aria-label="Dismiss finding"><i class="ti ti-x"></i></button>';
     btnHtml += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Create a suppression rule to hide similar findings" aria-label="Suppress finding"><i class="ti ti-eye-off"></i></button>';
     cell.innerHTML = btnHtml;
 
@@ -484,9 +484,21 @@ function verifyOne(btn) {
     }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = orig; });
 }
 
+// Dismissal marks the finding as known: it stops alerting while its details
+// stay the same, but a later scan that still reports it lists it again. The
+// only way back is the short undo window, so the wording says so.
+var DISMISS_EXPLAINED = 'Dismissed findings stop alerting while they stay unchanged. A later scan that still finds them lists them again; use Suppress to hide them for good. You can undo for 30 seconds.';
+
+function offerDismissUndo(data, label) {
+    if (data && data.undo_token && CSM.undo) CSM.undo.offer({ token: data.undo_token, label: label });
+}
+
 function dismissOne(key) {
-    CSM.confirm('Dismiss this finding?').then(function() {
-        CSM.post('/api/v1/dismiss', {key: key}).then(function() { refreshFindings(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    CSM.confirm('Dismiss this finding?\n\n' + DISMISS_EXPLAINED).then(function() {
+        CSM.post('/api/v1/dismiss', {key: key}).then(function(data) {
+            offerDismissUndo(data, 'Dismissed 1 finding');
+            refreshFindings();
+        }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -604,22 +616,18 @@ function bulkAction(action) {
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
     } else if (action === 'dismiss') {
-        CSM.confirm('Dismiss ' + items.length + ' finding(s)?').then(function() {
-            var succeeded = 0, failed = 0;
-            var chain = Promise.resolve();
-            items.forEach(function(i) {
-                chain = chain.then(function() {
-                    return CSM.post('/api/v1/dismiss', { key: i.key || (i.check + ':' + i.message) })
-                        .then(function() { succeeded++; })
-                        .catch(function() { failed++; });
-                });
-            });
-            chain.then(function() {
-                if (failed > 0) {
-                    CSM.toast('Dismissed ' + succeeded + ' of ' + (succeeded + failed) + ' (' + failed + ' failed)', 'warning');
-                }
+        // One request is one undo entry, so a selection over the server
+        // limit is narrowed instead of being split into several.
+        if (items.length > CSM.DISMISS_BULK_MAX) {
+            CSM.toast('Too many findings selected (' + items.length + '); the bulk dismiss limit is ' + CSM.DISMISS_BULK_MAX + '. Narrow the selection and repeat.', 'error');
+            return;
+        }
+        var keys = items.map(function(i) { return i.key || (i.check + ':' + i.message); });
+        CSM.confirm('Dismiss ' + items.length + ' finding(s)?\n\n' + DISMISS_EXPLAINED).then(function() {
+            return CSM.post('/api/v1/dismiss', { keys: keys }).then(function(data) {
+                offerDismissUndo(data, 'Dismissed ' + (data.count || keys.length) + ' finding(s)');
                 refreshFindings();
-            });
+            }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
     } else if (action === 'quarantine') {
