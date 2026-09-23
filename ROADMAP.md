@@ -354,10 +354,9 @@ Remaining: no complete action risk table, no shared limits or failure pause
 across the other response families, and no complete rollback and detection-time
 identity proof for every action. The reputation escalation loop also needs its
 own feedback-lifecycle guard; an hourly cap alone does not bound its lifetime.
-The scan block budget is shared across accounts and checks, and its default was
-chosen without measuring normal demand. Pending candidates have bounded retries
-with no guaranteed priority; admission is not a promise of eventual
-enforcement. Other block sources have separate controls, as
+The scan block budget is shared across accounts and checks. Pending candidates
+have bounded retries with no guaranteed priority; admission is not a promise
+of eventual enforcement. Other block sources have separate controls, as
 described in [auto-response](docs/src/auto-response.md). The file-response
 failure pause is host-wide across automatic quarantine and cleaning paths.
 Admitted file refusals still consume attempt capacity; their failure charge is
@@ -386,15 +385,14 @@ mandatory identity revalidation immediately before tiers 3 and 4
 (inode and device for files, pidfd for processes, rule handle for firewall
 entries), and enough recorded metadata to reverse the action.
 
-Every limit and breaker is also an attack surface: an attacker who can exhaust
-or trip one switches off the response to their own activity, while removing
-limits would let an attacker who can trigger detections turn unbounded
-responses against the hosted sites. Limits must therefore bound both resource
-use and harm to hosted sites while keeping detection and response health
-visible. Retain finite action, queue and storage budgets alongside
-evidence-based failure breakers, and size each budget from measured normal
-demand: a budget below it withholds correct responses. Extend the existing
-controls through the [durable action lifecycle](#action-log-covers-six-of-twenty-seven-host-changes),
+Design response safeguards for adversarial workloads as well as operational
+faults. Limits must bound both resource use and harm to hosted sites while
+keeping detection and response health visible. Retain finite action, queue and
+storage budgets alongside evidence-based failure breakers. Calibrate budgets
+against representative response demand, including bursts, and measured host
+capacity; validate safe behavior under overload and make withheld responses
+visible. Extend the existing controls through the
+[durable action lifecycle](#action-log-covers-six-of-twenty-seven-host-changes),
 without adding a parallel policy or resetting admission state during
 [firewall state migration](#firewall-state-migration-to-bbolt).
 
@@ -453,8 +451,8 @@ configuration), and irreversible actions declare their recovery limits; a
 deliberately broken detector in a test cannot exceed its circuit breaker;
 PID reuse, symlink swap, bind-mount ambiguity under CageFS and a file replaced
 between detection and action are each covered by a test that proves the action
-is refused. Replay mixed legitimate and malicious workloads, including
-attacker-driven overload and induced faults followed by a real attack:
+is refused. Replay mixed legitimate and malicious workloads under normal load,
+overload, injected faults and recovery:
 detections retain their severity, a withheld Critical response remains
 visible, and unrelated healthy scopes receive their reserved service unless a
 shared safety failure prevents it. Verify bounded queues, fair admission,
