@@ -784,3 +784,74 @@ func TestBlockIPContractStatesRegistryAndBudgetScope(t *testing.T) {
 		t.Errorf("block_ip Limit = %q\nwant %q", c.Limit, wantLimit)
 	}
 }
+
+// reviewedSafetyContracts pins the public contract text. Each field was
+// checked against the code it describes; a change to one needs the same
+// review, so it must be made here too.
+var reviewedSafetyContracts = map[string]SafetyContract{
+	"integrate.challenge_port_gate": {
+		Authority: "challenge startup with challenge.enabled and challenge.port_gate.enabled; a loopback-only listener or non-Linux build has no gate",
+		Identity:  "Allow validates the address and listener family; IPList adds membership before calling Allow after unlocking; the gate itself does not revalidate list membership; loopback and configured infrastructure ranges have accept rules",
+		Recovery:  "elements carry kernel timeouts; explicit list removal attempts Revoke, while expiry relies on the kernel timeout; gate errors are logged and list/map/gate changes are not one transaction",
+		Limit:     "no challenge-list capacity or generation fence is present; gate installation failure leaves the listener publicly reachable",
+	},
+	"integrate.challenge_snippet": {
+		Authority: "non-observe startup refreshes legacy snippets and stale managed snippets on supported web servers independently of challenge.enabled; explicit integration commands also install or remove them",
+		Identity:  "managed Install and Remove run the web server configtest after changing the snippet and before reload; legacy map-reference repair and runtime map updates do not use that transaction",
+		Recovery:  "managed configtest or reload failure attempts to restore previous snippet bytes; restore failures are logged and recovery reload is best-effort; legacy repair and runtime maps have no unified rollback with the gate",
+		Limit:     "managed Install skips identical bytes, and nginx map reload skips unchanged maps; there is no shared reload pacing or capacity bound",
+	},
+	"integrate.firewall_ruleset": {
+		Authority: "daemon firewall startup or reload when enabled and permitted by mode, or an explicit operator apply",
+		Identity:  "Apply holds the engine lock and batches old-table deletion, new rules and persisted set elements into one nftables transaction; the legacy state loader can seed empty elements on missing or malformed state",
+		Recovery:  "a rejected kernel batch leaves the prior kernel table; timed snapshot recovery belongs to apply-confirmed, not every Apply; kernel atomicity is not an atomic transaction with disk state",
+		Limit:     "one Apply per engine lock; this is ruleset installation, not automatic block admission",
+	},
+	"operate.manual_firewall": {
+		Authority: "an operator command accepted by the root control socket or an admin-authorized web UI request",
+		Identity:  "single-IP force blocks retain canonicalization and hard address guards under the engine lock but bypass automatic dry-run and soft allows; subnet blocks still refuse protected overlap",
+		Recovery:  "unblock and remove-allow reverse their selected entries; apply-confirmed has a timed ruleset snapshot rollback; a flush has no general inverse that restores all prior entries",
+		Limit:     "single-IP deny limits still apply; manual commands bypass the automatic hourly budget and have no shared all-operation ceiling",
+	},
+	"respond.block_ip": {
+		Authority: "single-IP scan blocks require a check the registry marks blockable, auto_response.enabled and block_ips, and non-observe mode; the subnet-spray, ASN-crawl and netblock escalation paths block subnets under their own fixed rules without consulting the registry; other automatic callers retain their own gates; the wired engine dry_run callback suppresses live automatic blocks",
+		Identity:  "single-IP targets are canonicalized; infrastructure, local, loopback, unspecified, link-local and operator-allow checks run under the engine lock; verified-range callbacks run outside that lock; subnet paths check protected overlap; the engine does not authenticate registry evidence",
+		Recovery:  "temporary single-IP elements expire in the kernel; temporary subnet expiry requires daemon cleanup because subnet sets have no kernel timeouts; unblock or blocked-IP flush removes IP entries, while subnets require subnet removal; permanent entries do not expire and inverse operations do not reconstruct evicted entries or lost traffic",
+		Limit:     "max_blocks_per_hour charges single-IP scan blocks and ASN-crawl subnets only; subnet-spray and netblock escalation subnets, and challenge-timeout, incident, spray and central-intel blocks, are not charged; single-IP deny limits do not provide an all-source or subnet ceiling",
+	},
+	"respond.clean_file": {
+		Authority: "automatic cleaning requires auto_response.enabled and non-observe mode; PHP cleaning is the supported batch quarantine alternative and also requires quarantine_files; access-file cleaning instead requires clean_htaccess",
+		Identity:  "the automatic caller's captured device/inode, size and modification time are checked after reservation and against the opened descriptor; the cleaner revalidates the target before replacement",
+		Recovery:  "a durable pre-clean backup carries saved attributes before replacement; pre-replacement failure leaves the source, but a later directory-sync failure can report failure after cleaned bytes were installed; failed cleaning does not escalate to quarantine",
+		Limit:     "the same persisted host/account attempt limits and host-wide failure pause as quarantine; dry_run does not preview cleaning",
+	},
+	"respond.quarantine_file": {
+		Authority: "automatic quarantine requires auto_response.enabled, quarantine_files and non-observe mode; the batch path selects eligible Critical findings and realtime signatures pass the high-confidence validator; directories and special files are refused by the automatic gate",
+		Identity:  "device/inode plus size and modification time are captured before reservation and rechecked after it and when opening the source; quarantine copies from the verified descriptor and checks again before removal; these stat checks are not a content hash",
+		Recovery:  "successful quarantine retains a recovery copy and owner, permissions and modification time for restore; failures can retain a copy or occur after source removal, so inspect action evidence before retrying",
+		Limit:     "shared persisted rolling-hour host and account attempt limits and a host-wide failure pause; failed and interrupted attempts remain charged; dry_run does not preview file actions",
+	},
+}
+
+func TestSafetyContractsMatchReviewedText(t *testing.T) {
+	seen := map[string]bool{}
+	for _, op := range Operations() {
+		if op.Contract == nil {
+			continue
+		}
+		seen[op.ID] = true
+		want, ok := reviewedSafetyContracts[op.ID]
+		if !ok {
+			t.Errorf("%s has a contract that is not in the reviewed list", op.ID)
+			continue
+		}
+		if *op.Contract != want {
+			t.Errorf("%s contract = %+v\nreviewed %+v", op.ID, *op.Contract, want)
+		}
+	}
+	for id := range reviewedSafetyContracts {
+		if !seen[id] {
+			t.Errorf("reviewed contract for %s has no matching operation contract", id)
+		}
+	}
+}
