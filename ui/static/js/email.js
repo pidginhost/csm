@@ -52,15 +52,8 @@
     var outboundAbuseLoaded = false;
     var queueCompositionLoaded = false;
 
-    function localDateInputValue(date) {
-        var d = date || new Date();
-        var m = String(d.getMonth() + 1).padStart(2, '0');
-        var day = String(d.getDate()).padStart(2, '0');
-        return d.getFullYear() + '-' + m + '-' + day;
-    }
-
     // ---------- Filter state from URL ----------
-    var today = localDateInputValue();
+    var today = CSM.prefs.today();
     var fromEl = document.getElementById('filter-from');
     var toEl = document.getElementById('filter-to');
     var sevEl = document.getElementById('filter-severity');
@@ -180,10 +173,11 @@
 
     function emailDateQuery(base) {
         var qs = base || '';
-        var from = (document.getElementById('filter-from') || {}).value || '';
-        var to = (document.getElementById('filter-to') || {}).value || '';
-        if (from) qs += (qs ? '&' : '') + 'from=' + encodeURIComponent(from);
-        if (to) qs += (qs ? '&' : '') + 'to=' + encodeURIComponent(to);
+        var range = CSM.prefs.dayRange(
+            (document.getElementById('filter-from') || {}).value || '',
+            (document.getElementById('filter-to') || {}).value || '');
+        if (range.from) qs += (qs ? '&' : '') + 'from=' + encodeURIComponent(range.from);
+        if (range.to) qs += (qs ? '&' : '') + 'to=' + encodeURIComponent(range.to);
         return qs;
     }
 
@@ -560,13 +554,14 @@
     // ---------- Findings tab (table) ----------
 
     function loadFindings() {
-        var from = (document.getElementById('filter-from') || {}).value || '';
-        var to = (document.getElementById('filter-to') || {}).value || '';
+        var range = CSM.prefs.dayRange(
+            (document.getElementById('filter-from') || {}).value || '',
+            (document.getElementById('filter-to') || {}).value || '');
         var sev = (document.getElementById('filter-severity') || {}).value || '';
         var check = (document.getElementById('filter-check') || {}).value || '';
         var params = 'checks=' + encodeURIComponent(check || EMAIL_CHECKS) + '&limit=' + EMAIL_FINDINGS_LIMIT;
-        if (from) params += '&from=' + encodeURIComponent(from);
-        if (to)   params += '&to=' + encodeURIComponent(to);
+        if (range.from) params += '&from=' + encodeURIComponent(range.from);
+        if (range.to)   params += '&to=' + encodeURIComponent(range.to);
         if (sev)  params += '&severity=' + encodeURIComponent(sev);
         var seq = ++_emailFindingsLoadSeq;
         CSM.get('/api/v1/history?' + params)
@@ -676,20 +671,6 @@
     var _emailQuarTable = null;
     var _emailQuarURLUnbind = null;
     var _emailQuarDateListenersBound = false;
-
-    function _emailQuarLocalDateMillis(value, endExclusive) {
-        if (!value) return null;
-        var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-        if (!parts) return null;
-        var year = Number(parts[1]);
-        var month = Number(parts[2]) - 1;
-        var day = Number(parts[3]);
-        var d = new Date(year, month, day);
-        if (isNaN(d.getTime())) return null;
-        if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
-        if (endExclusive) d.setDate(d.getDate() + 1);
-        return d.getTime();
-    }
 
     function _emailQuarURLInputs(fromEl, toEl) {
         return {
@@ -808,8 +789,8 @@
                     if (!raw) return true;
                     var ts = CSM.parseTimestamp(raw);
                     if (isNaN(ts)) return true;
-                    var from = fromEl ? _emailQuarLocalDateMillis(fromEl.value, false) : null;
-                    var to = toEl ? _emailQuarLocalDateMillis(toEl.value, true) : null;
+                    var from = fromEl ? CSM.prefs.dayBoundary(fromEl.value, false) : null;
+                    var to = toEl ? CSM.prefs.dayBoundary(toEl.value, true) : null;
                     if (from !== null && ts < from) return false;
                     if (to !== null && ts >= to) return false;
                     return true;
@@ -1435,7 +1416,7 @@
         var sevVal = (document.getElementById('filter-severity') || {}).value || '';
         var checkVal = (document.getElementById('filter-check') || {}).value || '';
         var searchVal = (document.getElementById('email-search') || {}).value || '';
-        var todayStr = localDateInputValue();
+        var todayStr = CSM.prefs.today();
         CSM.urlState.set({
             from: fromVal !== todayStr ? fromVal : '',
             to: toVal !== todayStr ? toVal : '',

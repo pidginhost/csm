@@ -1210,6 +1210,47 @@ func TestReadHistoryFilteredJSONLFallbackAppliesFilters(t *testing.T) {
 	}
 }
 
+func TestReadHistoryFilteredJSONLFallbackAcceptsInstants(t *testing.T) {
+	prev := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(prev) })
+
+	dir := t.TempDir()
+	start := time.Date(2026, 9, 22, 11, 15, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	var data []byte
+	for _, f := range []alert.Finding{
+		{Timestamp: start.Add(-time.Second), Severity: alert.High, Check: "before"},
+		{Timestamp: start, Severity: alert.High, Check: "first"},
+		{Timestamp: end.Add(-time.Second), Severity: alert.High, Check: "last"},
+		{Timestamp: end, Severity: alert.High, Check: "after"},
+	} {
+		line, err := json.Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(append(data, line...), '\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, "history.jsonl"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	got, total := s.ReadHistoryFilteredWithChecks(10, 0, start.Format(time.RFC3339), end.Format(time.RFC3339), -1, "", nil)
+	if total != 2 || len(got) != 2 {
+		t.Fatalf("got %+v (total %d), want first and last only", got, total)
+	}
+	for _, f := range got {
+		if f.Check != "first" && f.Check != "last" {
+			t.Fatalf("got %+v, want first and last only", got)
+		}
+	}
+}
+
 // --- AppendHistory JSONL fallback --------------------------------------
 //
 // These tests exercise the deprecated JSONL path that fires only when

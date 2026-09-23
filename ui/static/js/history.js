@@ -30,8 +30,9 @@
 
     function loadHistory() {
         var url = '/api/v1/history?limit=' + perPage + '&offset=' + (page * perPage);
-        if (fromDate) url += '&from=' + fromDate;
-        if (toDate) url += '&to=' + toDate;
+        var range = CSM.prefs.dayRange(fromDate, toDate);
+        if (range.from) url += '&from=' + encodeURIComponent(range.from);
+        if (range.to) url += '&to=' + encodeURIComponent(range.to);
         if (sevFilter !== 'all') url += '&severity=' + sevFilter;
         if (searchTerm) url += '&search=' + encodeURIComponent(searchTerm);
 

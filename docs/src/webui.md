@@ -47,6 +47,12 @@ scope. The header links to session management.
 Audit attribution is captured when the action is authorized and remains available
 if the browser session expires or is revoked while the action runs.
 
+## Dates and time zones
+
+Every page shows dates in the time zone chosen under Preferences: the browser's,
+the server's, or a named zone. Date filters pick whole days in that zone.
+Changing the zone reloads the page so dates already on screen follow it.
+
 ## Bulk file actions
 
 Select-all and every bulk action reach only the rows the table currently

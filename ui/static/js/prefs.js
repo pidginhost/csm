@@ -148,7 +148,7 @@ CSM.prefs = (function() {
         merge(next, state);
         merge(next, patch);
         if (typeof CSM === 'undefined' || !CSM.request) {
-            state = next;
+            replaceState(next);
             applyAll();
             return Promise.resolve(state);
         }
@@ -196,6 +196,65 @@ CSM.prefs = (function() {
         return 'UTC' + sign + String(Math.floor(abs / 60)).padStart(2, '0') + ':' + String(abs % 60).padStart(2, '0');
     }
 
+    // zoneOffsetMinutes is how far the operator's zone is ahead of UTC at the
+    // instant ms.
+    function zoneOffsetMinutes(ms) {
+        var tz = state.timezone || 'local';
+        if (tz === 'server') {
+            var zone = serverZone();
+            if (!zone.name) return zone.offsetMinutes;
+            tz = zone.name;
+        }
+        if (tz === 'local') return -new Date(ms).getTimezoneOffset();
+        try {
+            var parts = {};
+            new Intl.DateTimeFormat('en-US', {
+                timeZone: tz, hourCycle: 'h23',
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', second: '2-digit'
+            }).formatToParts(new Date(ms)).forEach(function(part) {
+                parts[part.type] = part.value;
+            });
+            var wall = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+            return Math.round((wall - Math.floor(ms / 1000) * 1000) / 60000);
+        } catch (e) {
+            return -new Date(ms).getTimezoneOffset();
+        }
+    }
+
+    // dayBoundary returns the instant (ms) a calendar day YYYY-MM-DD starts in
+    // the operator's zone or, with endExclusive, the instant the next day
+    // starts. A malformed or impossible day returns null.
+    function dayBoundary(value, endExclusive) {
+        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
+        if (!m) return null;
+        var y = +m[1], mo = +m[2] - 1, d = +m[3];
+        var check = new Date(Date.UTC(y, mo, d));
+        if (check.getUTCFullYear() !== y || check.getUTCMonth() !== mo || check.getUTCDate() !== d) return null;
+        var wall = Date.UTC(y, mo, d + (endExclusive ? 1 : 0));
+        // Midnight can fall on the other side of a clock change from the
+        // first guess; the second pass uses the offset in force at midnight.
+        var guess = wall - zoneOffsetMinutes(wall) * 60000;
+        return wall - zoneOffsetMinutes(guess) * 60000;
+    }
+
+    // dayRange turns an inclusive pair of days into the instants the API
+    // filters on: the first day's start and the start of the day after the
+    // last. A missing or malformed day is left out.
+    function dayRange(fromDay, toDay) {
+        var from = dayBoundary(fromDay, false);
+        var to = dayBoundary(toDay, true);
+        return {
+            from: from === null ? '' : new Date(from).toISOString(),
+            to: to === null ? '' : new Date(to).toISOString()
+        };
+    }
+
+    // today returns the current day in the operator's zone as YYYY-MM-DD.
+    function today() {
+        return formatDateTime(new Date()).slice(0, 10);
+    }
+
     // Format a Date according to the operator's timezone preference. Returns
     // a YYYY-MM-DD HH:MM:SS string in the chosen zone. "server" uses the
     // server's zone, "local" the browser's.
@@ -238,6 +297,9 @@ CSM.prefs = (function() {
         formatDateTime: formatDateTime,
         serverZone: serverZone,
         offsetLabel: offsetLabel,
+        dayBoundary: dayBoundary,
+        dayRange: dayRange,
+        today: today,
         defaults: function() { return cloneDefaults(); }
     };
 })();

@@ -374,7 +374,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 }
 
 // apiHistory returns paginated finding history.
-// Supports optional filtering via "from", "to" (YYYY-MM-DD), and "severity" (0/1/2) query params.
+// Supports optional filtering via "from", "to" (YYYY-MM-DD or RFC 3339), and "severity" (0/1/2) query params.
 func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50)
 	if limit > 5000 {
@@ -385,6 +385,9 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	fromStr := r.URL.Query().Get("from")
 	toStr := r.URL.Query().Get("to")
 	sevStr := r.URL.Query().Get("severity")
+	if _, _, ok := historyRangeQuery(w, r.URL.Query(), time.Time{}, time.Time{}); !ok {
+		return
+	}
 
 	searchStr := r.URL.Query().Get("search")
 

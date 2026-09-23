@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Date filters on the Findings history, Email, Audit, Quarantine, Account and Threat Intel pages now mean days in the time zone preference. The history and email APIs accept an RFC 3339 range end as exclusive and reject a date they cannot read with 400 instead of ignoring it.
 - Dates on the Firewall, Hardening and Browser sessions pages now follow the time zone preference. The firewall audit API reports its timestamps as RFC 3339 instants in UTC.
 - Dates now use the saved time zone preference from the first render of a page, and changing the time zone re-renders the page. Before, a page could show dates in the browser zone until it was reloaded.
 - The "Server time" display preference now shows the server's own time zone. It always showed UTC because the page was never told the server's zone.

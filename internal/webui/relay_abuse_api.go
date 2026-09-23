@@ -73,8 +73,10 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	from := parseEmailGroupDate(q.Get("from"), now.Add(-24*time.Hour), false)
-	to := parseEmailGroupDate(q.Get("to"), now, true)
+	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	if !ok {
+		return
+	}
 	if to.Before(from) {
 		from, to = to, from
 	}
@@ -93,7 +95,7 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 	// unrelated findings and findings newer than the range never hide a
 	// match. truncated means more matches exist than the budget returns.
 	rows := s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
-		return f.Check == "email_php_relay_abuse" && !f.Timestamp.After(to)
+		return f.Check == "email_php_relay_abuse" && f.Timestamp.Before(to)
 	})
 	if len(rows) > emailGroupsScanCap {
 		rows = rows[:emailGroupsScanCap]

@@ -113,6 +113,14 @@ POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a
 GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
 
+### Date ranges
+
+`/api/v1/history`, `/api/v1/email/groups` and `/api/v1/email/relay-abuse` take
+`from` and `to` as a calendar date (`YYYY-MM-DD`) or an RFC 3339 time. A date is
+a day in the server's time zone, and `to` includes the whole day. An RFC 3339
+`to` is exclusive. The web UI sends RFC 3339 times so a day follows the
+operator's time zone preference. A value in neither form is rejected with 400.
+
 ### WordPress verification coverage
 
 `wordpress_verification` contains `core` and `plugins` coverage when installation

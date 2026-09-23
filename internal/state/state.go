@@ -721,20 +721,17 @@ func (s *Store) ReadHistoryFilteredWithChecks(
 	search string,
 	checks map[string]bool,
 ) ([]alert.Finding, int) {
-	var fromDate, toDate time.Time
+	// An unreadable bound is dropped; the web UI rejects one before it gets
+	// here. toEnd is exclusive.
+	fromDate, fromErr := store.ParseHistoryBound(from, false)
+	toEnd, toErr := store.ParseHistoryBound(to, true)
 	fromFilter := ""
 	toFilter := ""
-	if from != "" {
-		if t, err := time.ParseInLocation("2006-01-02", from, time.Local); err == nil {
-			fromDate = t
-			fromFilter = from
-		}
+	if fromErr == nil {
+		fromFilter = from
 	}
-	if to != "" {
-		if t, err := time.ParseInLocation("2006-01-02", to, time.Local); err == nil {
-			toDate = t.Add(24*time.Hour - time.Nanosecond)
-			toFilter = to
-		}
+	if toErr == nil {
+		toFilter = to
 	}
 
 	if db := store.Global(); db != nil {
@@ -749,7 +746,7 @@ func (s *Store) ReadHistoryFilteredWithChecks(
 		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
 			continue
 		}
-		if !toDate.IsZero() && f.Timestamp.After(toDate) {
+		if !toEnd.IsZero() && !f.Timestamp.Before(toEnd) {
 			continue
 		}
 		if severity >= 0 && int(f.Severity) != severity {

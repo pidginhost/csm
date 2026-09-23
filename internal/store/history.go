@@ -132,6 +132,34 @@ func (db *DB) ReadHistoryFiltered(limit, offset int, from, to string, severity i
 	return db.ReadHistoryFilteredWithChecks(limit, offset, from, to, severity, search, nil)
 }
 
+// ParseHistoryBound reads one end of a history date range. A calendar date
+// (YYYY-MM-DD) names a server-local day: as a start it is that day's
+// midnight, as an end the next day's, so the whole day is included. An RFC
+// 3339 instant is used as given; as an end it is exclusive. An empty bound
+// is the zero time.
+func ParseHistoryBound(s string, end bool) (time.Time, error) {
+	return parseHistoryBoundIn(s, end, time.Local)
+}
+
+func parseHistoryBoundIn(s string, end bool, loc *time.Location) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	day, err := time.ParseInLocation("2006-01-02", s, loc)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("date %q is neither YYYY-MM-DD nor RFC 3339", s)
+	}
+	if end {
+		// AddDate keeps calendar-day semantics across DST changes.
+		day = day.AddDate(0, 0, 1)
+	}
+	return day, nil
+}
+
 // ReadHistoryFilteredWithChecks reads findings with optional filters, including
 // an exact check-name set when checks is non-nil.
 func (db *DB) ReadHistoryFilteredWithChecks(
@@ -147,17 +175,17 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 
 	var fromPrefix, toPrefix string
 	if from != "" {
-		if fromTime, err := time.ParseInLocation("2006-01-02", from, time.Local); err == nil {
+		if fromTime, err := ParseHistoryBound(from, false); err == nil {
 			fromPrefix = timeKeyLowerBound(fromTime)
 		} else {
 			fromPrefix = ParseTimeKeyPrefix(from)
 		}
 	}
 	if to != "" {
-		if toTime, err := time.ParseInLocation("2006-01-02", to, time.Local); err == nil {
-			// Use the following local midnight as an exclusive upper bound.
-			// AddDate preserves calendar-day semantics across DST changes.
-			toPrefix = timeKeyLowerBound(toTime.AddDate(0, 0, 1))
+		if toTime, err := ParseHistoryBound(to, true); err == nil {
+			// An exclusive upper bound: the next local midnight for a
+			// date, the instant itself for an RFC 3339 end.
+			toPrefix = timeKeyLowerBound(toTime)
 		} else {
 			toPrefix = ParseTimeKeyPrefix(to) + "99"
 		}

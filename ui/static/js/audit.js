@@ -69,20 +69,6 @@ function auditURLInputs(fromInput, toInput) {
     };
 }
 
-function auditLocalDateMillis(value, endExclusive) {
-    if (!value) return null;
-    var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!parts) return null;
-    var year = Number(parts[1]);
-    var month = Number(parts[2]) - 1;
-    var day = Number(parts[3]);
-    var d = new Date(year, month, day);
-    if (isNaN(d.getTime())) return null;
-    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
-    if (endExclusive) d.setDate(d.getDate() + 1);
-    return d.getTime();
-}
-
 // auditActorLabel names who acted: the credential name, and whether it came
 // as a browser login or an API token. Entries written before the audit
 // recorded an actor have neither.
@@ -135,8 +121,8 @@ function loadAudit() {
             if (!raw) return true;
             var ts = CSM.parseTimestamp(raw);
             if (isNaN(ts)) return true;
-            var from = _auditFromInput ? auditLocalDateMillis(_auditFromInput.value, false) : null;
-            var to = _auditToInput ? auditLocalDateMillis(_auditToInput.value, true) : null;
+            var from = _auditFromInput ? CSM.prefs.dayBoundary(_auditFromInput.value, false) : null;
+            var to = _auditToInput ? CSM.prefs.dayBoundary(_auditToInput.value, true) : null;
             if (from !== null && ts < from) return false;
             if (to !== null && ts >= to) return false;
             return true;

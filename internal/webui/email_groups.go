@@ -2,11 +2,13 @@ package webui
 
 import (
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // emailGroupsScanCap is the hard upper bound on findings inspected per
@@ -374,24 +376,28 @@ func topKeysByCount(m map[string]int, k int) []string {
 	return out
 }
 
-// parseEmailGroupDate accepts RFC3339 or YYYY-MM-DD; returns the default
-// when the input is empty or unparseable. Date-only upper bounds include
-// the whole local day, matching /api/v1/history.
-func parseEmailGroupDate(s string, def time.Time, endOfDay bool) time.Time {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return def
+// historyRangeQuery reads the from and to parameters the history endpoints
+// share, with the meaning store.ParseHistoryBound gives them: to is
+// exclusive. A missing bound takes its default. An unreadable one is a 400,
+// written here, and ok is false.
+func historyRangeQuery(w http.ResponseWriter, q url.Values, defFrom, defTo time.Time) (from, to time.Time, ok bool) {
+	from, err := store.ParseHistoryBound(q.Get("from"), false)
+	if err != nil {
+		writeJSONError(w, "Invalid from: use YYYY-MM-DD or an RFC 3339 time", http.StatusBadRequest)
+		return from, to, false
 	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
+	to, err = store.ParseHistoryBound(q.Get("to"), true)
+	if err != nil {
+		writeJSONError(w, "Invalid to: use YYYY-MM-DD or an RFC 3339 time", http.StatusBadRequest)
+		return from, to, false
 	}
-	if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
-		if endOfDay {
-			return t.Add(24*time.Hour - time.Nanosecond)
-		}
-		return t
+	if from.IsZero() {
+		from = defFrom
 	}
-	return def
+	if to.IsZero() {
+		to = defTo
+	}
+	return from, to, true
 }
 
 // apiEmailGroups handles GET /api/v1/email/groups. Returns server-side
@@ -410,8 +416,10 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	from := parseEmailGroupDate(q.Get("from"), now.Add(-24*time.Hour), false)
-	to := parseEmailGroupDate(q.Get("to"), now, true)
+	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	if !ok {
+		return
+	}
 	if to.Before(from) {
 		from, to = to, from
 	}
@@ -422,7 +430,7 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 		// Filter while walking history so unrelated findings, or findings
 		// newer than the requested range, never use up the scan budget.
 		findings = s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
-			if f.Timestamp.After(to) {
+			if !f.Timestamp.Before(to) {
 				return false
 			}
 			kind := emailKindForCheck(f.Check)
