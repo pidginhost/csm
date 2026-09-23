@@ -183,8 +183,8 @@ type Op struct {
 	Audited bool
 	// Risk is the operation's action-risk tier.
 	Risk RiskTier
-	// Contract is the operation's safety contract; nil until its slice of the
-	// safety model specifies it.
+	// Contract is the operation's safety contract; nil until that contract has
+	// been specified for the operation.
 	Contract *SafetyContract
 	// RecoveryGap names recovery work not covered by this inventory's
 	// contracts. Required for host-changing operations without a contract.

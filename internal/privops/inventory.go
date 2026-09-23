@@ -7,7 +7,7 @@ var operations = []Op{
 	{
 		ID:               "respond.hold_outgoing_mail",
 		Risk:             RiskReversible,
-		RecoveryGap:      "Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here.",
+		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Subsystem:        "response",
 		Summary:          "request a cPanel account outgoing-mail hold through whmapi1 after sustained mail abuse",
 		Privileges:       []Privilege{Root},
@@ -61,7 +61,7 @@ var operations = []Op{
 	{
 		ID: "respond.af_alg_kill", Subsystem: "response",
 		Risk:        RiskDestructive,
-		RecoveryGap: "Process termination and restart cannot restore lost process state; a full recovery contract is outside this slice.",
+		RecoveryGap: "Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract.",
 		Summary:     "kill a verified AF_ALG socket caller through the separate Copy Fail response setting",
 		Privileges:  []Privilege{CapKill, Root}, Trigger: Automatic,
 		Writes:     []string{"process:signal"},
@@ -90,7 +90,7 @@ var operations = []Op{
 	{
 		ID: "respond.mail_delivery_gate", Subsystem: "response",
 		Risk:        RiskReversible,
-		RecoveryGap: "Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here.",
+		RecoveryGap: "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Summary:     "defer Exim delivery with fanotify permission responses when tempfail policy requires it",
 		Privileges:  []Privilege{CapSysAdmin, Root}, Trigger: Automatic,
 		Writes:     []string{"fanotify:mail delivery decisions"},
@@ -361,7 +361,7 @@ var operations = []Op{
 	{
 		ID:               "respond.kill_process",
 		Risk:             RiskDestructive,
-		RecoveryGap:      "Process termination and restart cannot restore lost process state; a full recovery contract is outside this slice.",
+		RecoveryGap:      "Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract.",
 		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "signal a malicious process through a kernel process handle, never a recycled PID, never root",
@@ -446,7 +446,7 @@ var operations = []Op{
 	{
 		ID:               "respond.freeze_mail",
 		Risk:             RiskReversible,
-		RecoveryGap:      "Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here.",
+		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Subsystem:        "response",
 		Summary:          "freeze queued Exim messages attributed to a confirmed PHP-relay finding",
 		Privileges:       []Privilege{Root},
@@ -460,7 +460,7 @@ var operations = []Op{
 	{
 		ID:               "respond.quarantine_mail",
 		Risk:             RiskContain,
-		RecoveryGap:      "Mail release or restore identity and restart recovery are outside the firewall/file contract coverage here.",
+		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Subsystem:        "response",
 		Summary:          "move an infected message out of the Exim spool after an antivirus match",
 		Privileges:       []Privilege{Root},
@@ -487,7 +487,7 @@ var operations = []Op{
 	{
 		ID:               "respond.restart_mail_auth",
 		Risk:             RiskDestructive,
-		RecoveryGap:      "Process termination and restart cannot restore lost process state; a full recovery contract is outside this slice.",
+		RecoveryGap:      "Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract.",
 		Subsystem:        "response",
 		Summary:          "restart the panel's mail authentication service after a sustained outage",
 		Privileges:       []Privilege{Root},
