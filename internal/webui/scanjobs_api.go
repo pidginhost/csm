@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -142,7 +141,7 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body scanJobEnqueueBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 4*1024, &body); err != nil {
 		writeJSONError(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

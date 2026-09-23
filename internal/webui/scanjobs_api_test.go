@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -500,6 +501,25 @@ func TestScanJobsEnqueue_AllScopeWithQuarantine_400(t *testing.T) {
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (quarantine rejected for scope=all)", w.Code)
+	}
+}
+
+// A misspelt option ("quarantin") must not start a scan that silently runs
+// without it; oversized and multi-value bodies are refused too.
+func TestScanJobsEnqueue_RejectsMalformedBodies(t *testing.T) {
+	s, _, _, fake := newTestServerWithFakeScanJobs(t)
+	fake.enqueueID = "sj-test"
+	for name, body := range map[string]any{
+		"unknown field": map[string]any{"scope": "account", "target": "alice", "quarantin": true},
+		"oversized":     map[string]any{"scope": "account", "target": "alice", "pad": strings.Repeat("x", 128*1024)},
+	} {
+		w := adminPost(s, "/api/v1/scan-jobs", body)
+		if w.Code != http.StatusBadRequest && w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s: status = %d, want 400 or 413", name, w.Code)
+		}
+	}
+	if fake.lastScope != "" {
+		t.Fatalf("a malformed body enqueued a %q scan", fake.lastScope)
 	}
 }
 
