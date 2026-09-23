@@ -557,9 +557,9 @@ function bindSuppressDialog() {
             return;
         }
         _suppressInFlight = true;
-        CSM.post('/api/v1/suppressions', body).then(function() {
+        CSM.post('/api/v1/suppressions', body).then(function(resp) {
             bootstrap.Modal.getOrCreateInstance(document.getElementById('suppress-finding-modal')).hide();
-            CSM.toast('Suppression rule created', 'success');
+            CSM.suppressionSaved(resp);
             refreshFindings();
         }).catch(function(err) {
             CSM.toast('Suppression not saved: ' + (err && err.message ? err.message : 'request failed'), 'error');

@@ -3,11 +3,35 @@ package webui
 import (
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// suppressionCheckName matches the check names findings carry. A rule
+// matches a finding's check exactly, so a glob or free text would be saved
+// as a rule that matches nothing.
+var suppressionCheckName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$`)
+
+// knownCheck reports whether name is a registered check or the check of a
+// current finding. Checks from other subsystems may be missing from the
+// registry, so an unknown name is a warning, not an error.
+func (s *Server) knownCheck(name string) bool {
+	for _, known := range checks.AllCheckNames() {
+		if known == name {
+			return true
+		}
+	}
+	for _, f := range s.store.LatestFindings() {
+		if f.Check == name {
+			return true
+		}
+	}
+	return false
+}
 
 func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -30,6 +54,10 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := decodeJSONBodyLimited(w, r, 32*1024, &req); err != nil || req.Check == "" {
 			writeJSONError(w, "check field is required", http.StatusBadRequest)
+			return
+		}
+		if !suppressionCheckName.MatchString(req.Check) {
+			writeJSONError(w, "check must be a check name such as webshell; patterns and spaces are not allowed", http.StatusBadRequest)
 			return
 		}
 		req.PathPattern = strings.TrimSpace(req.PathPattern)
@@ -67,7 +95,11 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 			scope = "all paths"
 		}
 		s.auditLog(r, "suppress", req.Check, scope)
-		writeJSON(w, map[string]string{"status": "created", "id": id})
+		resp := map[string]string{"status": "created", "id": id}
+		if !s.knownCheck(req.Check) {
+			resp["warning"] = "No known check is named " + req.Check + "; the rule matches nothing until a finding with that check appears."
+		}
+		writeJSON(w, resp)
 
 	case http.MethodDelete:
 		var req struct {

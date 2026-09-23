@@ -213,8 +213,8 @@ document.getElementById('suppression-form').addEventListener('submit', function(
         CSM.toast(body.error, 'error');
         return;
     }
-    CSM.post('/api/v1/suppressions', body).then(function() {
-        CSM.toast('Suppression rule created', 'success');
+    CSM.post('/api/v1/suppressions', body).then(function(resp) {
+        CSM.suppressionSaved(resp);
         document.getElementById('suppress-check').value = '';
         document.getElementById('suppress-path').value = '';
         document.getElementById('suppress-reason').value = '';

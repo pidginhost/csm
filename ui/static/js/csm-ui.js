@@ -602,4 +602,14 @@ CSM.suppressionSummary = function(check, scope, pattern) {
     if (!pattern) return 'Enter the path or glob pattern this rule should cover.';
     return 'Hides ' + check + ' findings whose path matches ' + pattern + ', stops their alerts, and stops file, process and account remediation for them.';
 };
+
+// suppressionSaved reports a created rule. The server warns when no known
+// check has the rule's name, since such a rule matches nothing.
+CSM.suppressionSaved = function(resp) {
+    if (resp && resp.warning) {
+        CSM.toast('Suppression rule created. ' + resp.warning, 'warning');
+        return;
+    }
+    CSM.toast('Suppression rule created', 'success');
+};
 // End suppression scope.
