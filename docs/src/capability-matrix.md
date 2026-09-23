@@ -163,14 +163,16 @@ Regenerate the table with `go run ./cmd/csm privileges --markdown`. A gate in
 ## Risk tiers and recovery coverage
 
 `csm privileges --json` reports each operation's risk tier as a number from 0
-to 4. A row with no tier would report -1; the build refuses such an inventory.
-The tier is the operation's maximum live effect on a wrong target. It is not the
-severity of the finding that triggered the operation.
-Decoding and re-encoding the JSON inventory preserves these public tier numbers,
-including -1 for an unclassified tier.
+to 4. A row with no tier would report -1; the test suite refuses such an
+inventory, so a release never ships one. The tier is the operation's maximum
+live effect on a wrong target. It is not the severity of the finding that
+triggered the operation.
 
-Seven operations carry a safety contract in the JSON inventory: the authority
-they need, how the target is revalidated before the change, how the change is
+Seven operations carry a safety contract in the JSON inventory:
+`respond.block_ip`, `operate.manual_firewall`, `integrate.firewall_ruleset`,
+`integrate.challenge_port_gate`, `integrate.challenge_snippet`,
+`respond.quarantine_file` and `respond.clean_file`. Each states the authority it
+needs, how the target is revalidated before the change, how the change is
 reversed, and the limit that bounds it. The contracts describe current
 behaviour, including what it does not cover. Every other operation that changes
 the host states the recovery this inventory does not yet cover:

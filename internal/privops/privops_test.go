@@ -855,3 +855,38 @@ func TestSafetyContractsMatchReviewedText(t *testing.T) {
 		}
 	}
 }
+
+// The doc names the operations that carry a contract. That list must match
+// the inventory, so adding or removing a contract updates the page too.
+func TestCapabilityDocNamesEveryContract(t *testing.T) {
+	data, err := os.ReadFile("../../docs/src/capability-matrix.md")
+	if err != nil {
+		t.Fatalf("read capability matrix doc: %v", err)
+	}
+	doc := string(data)
+	start := strings.Index(doc, "carry a safety contract in the JSON inventory:")
+	if start < 0 {
+		t.Fatal("capability matrix doc has no contract list")
+	}
+	end := strings.Index(doc[start:], "Each states")
+	if end < 0 {
+		t.Fatal("capability matrix doc contract list is not terminated")
+	}
+	list := doc[start : start+end]
+	named := 0
+	for _, op := range Operations() {
+		if op.Contract == nil {
+			if strings.Contains(list, "`"+op.ID+"`") {
+				t.Errorf("doc lists %s as carrying a contract, but it has none", op.ID)
+			}
+			continue
+		}
+		named++
+		if !strings.Contains(list, "`"+op.ID+"`") {
+			t.Errorf("doc contract list omits %s", op.ID)
+		}
+	}
+	if strings.Count(list, "`") != 2*named {
+		t.Errorf("doc contract list names %d operations, inventory has %d contracts", strings.Count(list, "`")/2, named)
+	}
+}
