@@ -301,7 +301,9 @@ func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) 
 func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 100)
 
-	entries := firewall.ReadAuditLog(s.cfg.StatePath, limit)
+	// Filters apply to the whole log and the limit to what they matched, so a
+	// search reaches entries older than the newest page.
+	entries := firewall.ReadAuditLog(s.cfg.StatePath, 0)
 	if entries == nil {
 		writeJSON(w, []interface{}{})
 		return
@@ -348,6 +350,9 @@ func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 			Duration:  e.Duration,
 			TimeAgo:   timeAgo(e.Timestamp),
 		})
+	}
+	if limit > 0 && len(result) > limit {
+		result = result[len(result)-limit:]
 	}
 	writeJSON(w, result)
 }
