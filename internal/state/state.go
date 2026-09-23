@@ -789,6 +789,22 @@ func (s *Store) ReadHistorySince(since time.Time) []alert.Finding {
 	return out
 }
 
+// LatestByCheck returns the timestamp of the newest history entry of every
+// check. The bbolt store keeps an index; the JSONL fallback reads history.
+func (s *Store) LatestByCheck() map[string]time.Time {
+	if db := store.Global(); db != nil {
+		return db.LatestByCheck()
+	}
+	out := map[string]time.Time{}
+	all, _ := s.ReadHistory(1<<30, 0)
+	for _, f := range all {
+		if f.Check != "" && f.Timestamp.After(out[f.Check]) {
+			out[f.Check] = f.Timestamp
+		}
+	}
+	return out
+}
+
 // SearchHistorySince returns up to limit matching findings since the given
 // time, newest-first.
 func (s *Store) SearchHistorySince(since time.Time, limit int, match func(alert.Finding) bool) []alert.Finding {

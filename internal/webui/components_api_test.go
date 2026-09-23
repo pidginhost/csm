@@ -9,6 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/queuehealth"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 type stubComponentsProvider struct {
@@ -245,5 +246,30 @@ func TestAPIComponents_YaraWorkerHasFriendlyLabel(t *testing.T) {
 	rows := decodeComponentRows(t, s)
 	if len(rows) != 1 || rows[0].Status != "degraded" || rows[0].Label != "YARA-X worker" {
 		t.Fatalf("yara_worker row = %+v, want degraded with friendly label", rows)
+	}
+}
+
+// A watcher's last event comes from the per-check index, not from decoding up
+// to a week of history on every dashboard poll, so it also survives history
+// retention dropping the finding that reported it.
+func TestAPIComponents_LastEventSurvivesHistoryRetention(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now()
+	s.provider = &stubComponentsProvider{
+		statuses: map[string]bool{"fanotify": true},
+		changed:  map[string]time.Time{"fanotify": now.Add(-time.Hour)},
+	}
+	at := now.Add(-2 * time.Hour).Truncate(time.Second)
+	s.store.AppendHistory([]alert.Finding{{Check: "webshell_realtime", Severity: alert.High, Message: "event", Timestamp: at}})
+	if _, err := store.Global().SweepHistoryOlderThan(now); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := decodeComponentRows(t, s)
+	if len(rows) != 1 || rows[0].LastEventCheck != "webshell_realtime" {
+		t.Fatalf("rows = %+v, want fanotify's last event", rows)
+	}
+	if got, err := time.Parse(time.RFC3339, rows[0].LastEventISO); err != nil || !got.Equal(at) {
+		t.Fatalf("last event = %q, want %s", rows[0].LastEventISO, at)
 	}
 }

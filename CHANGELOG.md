@@ -74,6 +74,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- The dashboard component list now reads when each watcher last reported from a small index kept with history, instead of decoding up to a week of history on every refresh, and keeps that time after history retention removes the finding.
 - The status API no longer reads the whole daemon binary on every request to report its hash; it hashes the binary again only when the file changes.
 - The web UI now samples host metrics only when the Performance page asks for them, at most once every ten seconds, instead of every ten seconds for as long as the daemon runs.
 

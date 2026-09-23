@@ -35,6 +35,7 @@ var bucketNames = []string{
 	"db_object_backups",
 	"sig_watch",
 	bucketStatsDaily,
+	bucketLatestByCheck,
 	"phprelay:meta",
 	"phprelay:msgindex",
 	"phprelay:ignore",
@@ -175,6 +176,9 @@ func Open(statePath string) (*DB, error) {
 	// no-op afterwards thanks to a meta sentinel.
 	if err := db.BackfillStatsDaily(); err != nil {
 		fmt.Fprintf(os.Stderr, "store: stats:daily backfill warning: %v\n", err)
+	}
+	if err := db.BackfillLatestByCheck(); err != nil {
+		fmt.Fprintf(os.Stderr, "store: stats:latest_by_check backfill warning: %v\n", err)
 	}
 
 	if err := db.seedDefaultModSecNoEscalateRules(); err != nil {

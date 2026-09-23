@@ -36,6 +36,9 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 			if err := incrStatsDaily(tx, f.Timestamp, f.Severity); err != nil {
 				return err
 			}
+			if err := bumpLatestByCheck(tx, f.Check, f.Timestamp); err != nil {
+				return err
+			}
 		}
 
 		writer.settle()

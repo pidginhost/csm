@@ -211,25 +211,27 @@ type watcherEvent struct {
 	check string
 }
 
-// lastEventByWatcher walks history within the lookback window and returns
-// the most recent finding per known watcher key. Findings whose Check is
-// not in componentCheckOrigin are skipped so periodic-scan output does
-// not get attributed to a real-time watcher.
+// lastEventByWatcher returns the most recent finding per known watcher key
+// within the lookback window. It reads the store's per-check index of newest
+// timestamps rather than decoding the window's history on every poll.
+// Checks not in componentCheckOrigin are skipped so periodic-scan output
+// does not get attributed to a real-time watcher.
 func (s *Server) lastEventByWatcher(window time.Duration) map[string]watcherEvent {
 	out := map[string]watcherEvent{}
 	if s.store == nil {
 		return out
 	}
 	since := time.Now().Add(-window)
-	for _, f := range s.store.ReadHistorySince(since) {
-		watcher, ok := componentCheckOrigin[f.Check]
-		if !ok {
+	for check, at := range s.store.LatestByCheck() {
+		watcher, ok := componentCheckOrigin[check]
+		if !ok || at.Before(since) {
 			continue
 		}
-		if cur, exists := out[watcher]; exists && !cur.at.Before(f.Timestamp) {
+		// Map order is random; equal times resolve by check name.
+		if cur, exists := out[watcher]; exists && (cur.at.After(at) || cur.at.Equal(at) && cur.check < check) {
 			continue
 		}
-		out[watcher] = watcherEvent{at: f.Timestamp, check: f.Check}
+		out[watcher] = watcherEvent{at: at, check: check}
 	}
 	// Also fold in the latest scan set so freshly-emitted findings appear
 	// before they have rolled into history.
