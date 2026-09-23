@@ -26,7 +26,7 @@ import (
 func TestAPIPerformanceReturnsPerfFindings(t *testing.T) {
 	s := newTestServer(t, "tok")
 	m := &perfMetrics{CPUCores: 2, Uptime: "5d 1h"}
-	s.perfSnapshot.Store(m)
+	s.storePerfSample(m, time.Now())
 
 	now := time.Now()
 	s.store.SetLatestFindings([]alert.Finding{

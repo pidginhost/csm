@@ -124,8 +124,11 @@ type Server struct {
 	queueFlusher       intel.QueueFlusher
 	forwardHeld        heldForwardStore
 	version            string
-	perfSnapshot       atomic.Pointer[perfMetrics]
-	perfCancel         context.CancelFunc
+	// Host metrics are sampled when the Performance page asks, at most once
+	// per perfSampleTTL; perfMu makes concurrent requests share a sample.
+	perfSample         atomic.Pointer[perfSample]
+	perfMu             sync.Mutex
+	samplePerf         func() *perfMetrics
 	incidentCorrelator *incident.Correlator
 
 	// Rate limiting
@@ -205,6 +208,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		verifyFinding:    checks.VerifyFindingInput,
 		applyFix:         checks.ApplyFix,
 		scanInProgress:   checks.ScanInProgress,
+		samplePerf:       sampleMetrics,
 		accountRoots:     checks.AccountHomeRoots,
 		scanAccounts:     checks.EnumerateScanAccounts,
 	}
@@ -541,10 +545,6 @@ func (s *Server) Start() error {
 
 	obs.Go("webui-prune-logins", s.pruneLoginAttempts)
 
-	perfCtx, perfCancel := context.WithCancel(context.Background())
-	s.perfCancel = perfCancel
-	obs.Go("webui-metrics-sample", func() { s.sampleMetricsLoop(perfCtx) })
-
 	fmt.Fprintf(os.Stderr, "WebUI listening on https://%s\n", s.cfg.WebUI.Listen)
 	return s.httpSrv.ListenAndServeTLS(certPath, keyPath)
 }
@@ -553,9 +553,6 @@ func (s *Server) Start() error {
 // the underlying pruneDone close is guarded so duplicate shutdown does
 // not panic.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.perfCancel != nil {
-		s.perfCancel()
-	}
 	s.shutdownOnce.Do(func() { close(s.pruneDone) })
 	if s.httpSrv == nil {
 		return nil

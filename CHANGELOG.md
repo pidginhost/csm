@@ -70,6 +70,11 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - Cron findings containing known persistence patterns now retain their severity during maintenance, including when the payload is encoded.
 - Control-panel provenance now requires a resolved executable even when process details come from the cache. Live cron writes containing persistence tokens retain their original severity during maintenance.
 
+### Changed
+
+- The web UI now samples host metrics only when the Performance page asks for them, at most once every ten seconds, instead of every ten seconds for as long as the daemon runs.
+
+
 ## [3.43.0] - 2026-09-22
 
 ### Highlights

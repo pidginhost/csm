@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
@@ -209,7 +210,7 @@ func TestAPIRulesReloadPOSTNoGlobalScanners(t *testing.T) {
 
 func TestAPIPerformanceWithStoredSnapshot(t *testing.T) {
 	s := newTestServer(t, "tok")
-	// Seed a snapshot directly into perfSnapshot
+	// Seed a fresh sample so the handler serves it
 	m := &perfMetrics{
 		LoadAvg:    [3]float64{0.5, 0.7, 0.9},
 		CPUCores:   4,
@@ -217,7 +218,7 @@ func TestAPIPerformanceWithStoredSnapshot(t *testing.T) {
 		MemUsedMB:  2048,
 		Uptime:     "1d 2h",
 	}
-	s.perfSnapshot.Store(m)
+	s.storePerfSample(m, time.Now())
 
 	w := httptest.NewRecorder()
 	s.apiPerformance(w, httptest.NewRequest("GET", "/?limit=50", nil))

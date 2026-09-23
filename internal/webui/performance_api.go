@@ -382,22 +382,47 @@ func sampleMetrics() *perfMetrics {
 	return m
 }
 
-// sampleMetricsLoop samples metrics immediately and then every 10 seconds.
-func (s *Server) sampleMetricsLoop(ctx context.Context) {
-	result := sampleMetrics()
-	s.perfSnapshot.Store(result)
+// perfSampleTTL is how long a metrics sample is served before the next
+// request takes a new one. Var so tests can force a fresh sample.
+var perfSampleTTL = 10 * time.Second
 
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			result := sampleMetrics()
-			s.perfSnapshot.Store(result)
-		}
+// perfSample is one metrics sample and when it was taken.
+type perfSample struct {
+	metrics *perfMetrics
+	at      time.Time
+}
+
+func (s *Server) storePerfSample(m *perfMetrics, at time.Time) {
+	s.perfSample.Store(&perfSample{metrics: m, at: at})
+}
+
+func (s *Server) freshPerfSample() (*perfMetrics, bool) {
+	p := s.perfSample.Load()
+	if p == nil || time.Since(p.at) >= perfSampleTTL {
+		return nil, false
 	}
+	return p.metrics, true
+}
+
+// currentPerfMetrics returns a sample no older than perfSampleTTL, taking
+// one if needed. Requests that arrive while a sample is being taken wait for
+// it instead of sampling again.
+func (s *Server) currentPerfMetrics() *perfMetrics {
+	if m, ok := s.freshPerfSample(); ok {
+		return m
+	}
+	s.perfMu.Lock()
+	defer s.perfMu.Unlock()
+	if m, ok := s.freshPerfSample(); ok {
+		return m
+	}
+	sample := s.samplePerf
+	if sample == nil {
+		sample = sampleMetrics
+	}
+	m := sample()
+	s.storePerfSample(m, time.Now())
+	return m
 }
 
 // apiPerformance returns the latest performance snapshot plus perf_ findings.
@@ -407,7 +432,7 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 		limit = 500
 	}
 
-	metrics := s.perfSnapshot.Load()
+	metrics := s.currentPerfMetrics()
 
 	latest := s.store.LatestFindings()
 	suppressions := s.store.LoadSuppressions()

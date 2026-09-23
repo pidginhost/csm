@@ -867,25 +867,14 @@ func TestPerfMetricsMySQLFieldsJSONContract(t *testing.T) {
 	}
 }
 
-func TestSampleMetricsLoopStoresSnapshotFinalCoverage(t *testing.T) {
+func TestSampleMetricsOnDemandStoresSnapshotFinalCoverage(t *testing.T) {
 	s := newTestServer(t, "tok")
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	// sampleMetricsLoop samples immediately then every 10s; we cancel quickly
-	// and verify the initial snapshot landed.
-	done := make(chan struct{})
-	go func() {
-		s.sampleMetricsLoop(ctx)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("sampleMetricsLoop did not return on ctx cancel")
+	// The first request samples the real host metrics and keeps the sample.
+	if m := s.currentPerfMetrics(); m == nil {
+		t.Fatal("currentPerfMetrics returned no sample")
 	}
-	// After the loop ran at least once, perfSnapshot should have a value.
-	if m := s.perfSnapshot.Load(); m == nil {
-		t.Error("perfSnapshot unset after sampleMetricsLoop ran")
+	if p := s.perfSample.Load(); p == nil || p.metrics == nil {
+		t.Error("sample not kept after an on-demand sample")
 	}
 }
 
