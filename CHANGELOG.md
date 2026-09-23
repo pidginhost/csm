@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- A quarantine restore that fails partway, for example because the account is over quota, no longer leaves a partial root-owned copy at the original path. That copy hid the entry from the quarantine list and made every retry fail.
 - Dismissing a finding no longer claims it can be restored. The Findings page now says a dismissal stops alerts while the finding is unchanged and that a later scan can list it again, offers undo for 30 seconds, and dismisses a bulk selection as one action that one undo reverses.
 - Select-all on the Cleanup file backups and the Threat Intel attackers table no longer reaches rows on other pages or hidden by a search, so a permanent delete, permanent block or whitelist acts only on the rows on screen.
 - The deep scan no longer sends every file it reads to the PHP analysis worker. Files that cannot hold a remote-code flow are ruled out in the daemon, so images and plain text no longer queue behind real analyses, start the worker, or count as unexamined while it is unavailable.

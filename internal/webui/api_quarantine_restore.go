@@ -138,6 +138,22 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, fmt.Sprintf("Cannot restore - file already exists at original path: %v", createErr), http.StatusConflict)
 			return
 		}
+		createdInfo, statErr := dst.Stat()
+		if statErr != nil {
+			_ = src.Close()
+			_ = dst.Close()
+			writeJSONError(w, fmt.Sprintf("Cannot stat restored file: %v", statErr), http.StatusInternalServerError)
+			return
+		}
+		// discard removes the copy this restore created when a later step
+		// fails, so no partial, root-owned file stays at the original path
+		// while the quarantine still holds the evidence. A name that no longer
+		// refers to that copy belongs to someone else and is left alone.
+		discard := func() {
+			if ensureTargetStillNamesInfo(target, createdInfo) == nil {
+				_ = target.Parent.Remove(target.Name)
+			}
+		}
 		if quarantineRestoreAfterCreateForTest != nil {
 			quarantineRestoreAfterCreateForTest(restorePath)
 		}
@@ -153,6 +169,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		}
 		if copyErr != nil {
 			_ = dst.Close()
+			discard()
 			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
 			return
 		}
@@ -166,17 +183,20 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := dst.Chown(meta.Owner, meta.Group); err != nil {
 			_ = dst.Close()
+			discard()
 			writeJSONError(w, fmt.Sprintf("Cannot restore file ownership; quarantine retained: %v", err), http.StatusInternalServerError)
 			return
 		}
 		if err := dst.Chmod(restoredMode); err != nil {
 			_ = dst.Close()
+			discard()
 			writeJSONError(w, fmt.Sprintf("Cannot restore file mode: %v", err), http.StatusInternalServerError)
 			return
 		}
 		if !meta.OriginalModTime.IsZero() {
 			if err := restoreQuarantineModTime(dst, meta.OriginalModTime); err != nil {
 				_ = dst.Close()
+				discard()
 				writeJSONError(w, fmt.Sprintf("Cannot restore modification time; quarantine retained: %v", err), http.StatusInternalServerError)
 				return
 			}
@@ -189,10 +209,12 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := syncQuarantineRestoredFile(dst); err != nil {
 			_ = dst.Close()
+			discard()
 			writeJSONError(w, fmt.Sprintf("Restored file could not be synced; quarantine retained: %v", err), http.StatusInternalServerError)
 			return
 		}
 		if err := dst.Close(); err != nil {
+			discard()
 			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", err), http.StatusInternalServerError)
 			return
 		}
