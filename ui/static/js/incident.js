@@ -576,10 +576,11 @@
                 }
                 attachFirewallStatus('csm-incident-fw-status', ip);
                 loadIncidentDetail(id);
+            }).catch(function(err) {
+                if (btn) btn.disabled = false;
+                CSM.toast('Block failed: ' + (err && err.message ? err.message : 'request failed'), 'error');
             });
-        }).catch(function() {
-            if (btn) btn.disabled = false;
-        });
+        }, function() { /* cancelled */ });
     }
 
     function statusButton(inc, status, icon) {
@@ -589,7 +590,7 @@
     }
 
     function setIncidentStatus(id, status) {
-        CSM.post('/api/v1/incidents/' + encodeURIComponent(id) + '/status', {
+        return CSM.post('/api/v1/incidents/' + encodeURIComponent(id) + '/status', {
             status: status,
             details: 'web-ui'
         }).then(function() {
@@ -597,6 +598,8 @@
             pendingIncidentID = id;
             loadIncidents();
             loadIncidentDetail(id);
+        }).catch(function(err) {
+            CSM.toast('Incident not updated: ' + (err && err.message ? err.message : 'request failed'), 'error');
         });
     }
 
