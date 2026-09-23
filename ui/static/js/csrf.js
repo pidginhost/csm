@@ -216,6 +216,18 @@ CSM.fmtDate = function(ts, opts) {
     return result;
 };
 
+// Server-rendered dates (<time data-csm-date datetime="...">) carry the
+// instant; rewrite their text in the operator's time zone.
+CSM.initDates = function(root) {
+    var els = (root || document).querySelectorAll('[data-csm-date]');
+    for (var i = 0; i < els.length; i++) {
+        var raw = els[i].getAttribute('datetime');
+        if (!raw) continue;
+        var text = CSM.fmtDate(raw, { tz: true });
+        if (text !== '\u2014') els[i].textContent = text;
+    }
+};
+
 // Render a loading skeleton placeholder
 CSM.loading = function(el) {
     if (el) el.innerHTML = '<div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>';

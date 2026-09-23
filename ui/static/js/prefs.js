@@ -99,6 +99,7 @@ CSM.prefs = (function() {
         applyDensity();
         applyAutoRefresh();
         document.documentElement.setAttribute('data-csm-tz', state.timezone || 'local');
+        if (CSM.initDates) CSM.initDates();
         listeners.slice().forEach(function(fn) {
             try { fn(state); } catch (e) { /* listeners must not throw */ }
         });
@@ -108,13 +109,13 @@ CSM.prefs = (function() {
     // needs a reload, because pages do not re-render their dates.
     merge(state, readCache());
     var renderedZone = state.timezone;
-    applyAll();
 
     function load() {
         if (loadPromise) return loadPromise;
+        // Apply the last known copy while the server copy loads.
+        applyAll();
         if (typeof CSM === 'undefined' || !CSM.request) {
             loadPromise = Promise.resolve(state);
-            applyAll();
             return loadPromise;
         }
         loadPromise = CSM.request('/api/v1/prefs/user', {

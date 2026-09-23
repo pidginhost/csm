@@ -342,7 +342,7 @@ func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		result = append(result, auditView{
-			Timestamp: e.Timestamp.Format("2006-01-02 15:04:05"),
+			Timestamp: e.Timestamp.UTC().Format(time.RFC3339),
 			Action:    e.Action,
 			IP:        e.IP,
 			Reason:    e.Reason,

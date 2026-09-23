@@ -48,7 +48,7 @@
         var typeLabel = { cpanel: 'cPanel', cloudlinux: 'CloudLinux + cPanel', bare: 'Bare Server' };
         document.getElementById('score-server-type').textContent = '(' + (typeLabel[report.server_type] || report.server_type) + ')';
         if (report.timestamp) {
-            document.getElementById('audit-timestamp').textContent = 'Last run: ' + new Date(report.timestamp).toLocaleString();
+            document.getElementById('audit-timestamp').textContent = 'Last run: ' + CSM.fmtDate(report.timestamp, { tz: true });
         }
 
         var cats = {};

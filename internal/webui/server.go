@@ -210,21 +210,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		s.uiDir = "/opt/csm/ui"
 	}
 
-	funcMap := template.FuncMap{
-		"severityClass":   severityClass,
-		"severityLabel":   severityLabel,
-		"timeAgo":         timeAgo,
-		"formatTime":      formatTime,
-		"csrfToken":       s.csrfToken,
-		"csmConfig":       func() template.JS { return jsonForScript(s.csmConfig()) },
-		"json":            jsonForScript,
-		"multiply":        func(a, b int) int { return a * b },
-		"add":             func(a, b int) int { return a + b },
-		"subtract":        func(a, b int) int { return a - b },
-		"divisibleBy":     func(a, b int) bool { return b != 0 && a%b == 0 },
-		"serverTimeZone":  serverTimeZoneName,
-		"serverUTCOffset": serverUTCOffsetMinutes,
-	}
+	funcMap := s.templateFuncs()
 
 	// Try to load templates from disk
 	templateDir := filepath.Join(s.uiDir, "templates")
@@ -924,6 +910,31 @@ func timeAgo(t time.Time) string {
 
 func formatTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05")
+}
+
+// isoTime renders an instant for a <time datetime> attribute, which the
+// page rewrites in the operator's time zone.
+func isoTime(t time.Time) string {
+	return t.UTC().Format(time.RFC3339)
+}
+
+func (s *Server) templateFuncs() template.FuncMap {
+	return template.FuncMap{
+		"severityClass":   severityClass,
+		"severityLabel":   severityLabel,
+		"timeAgo":         timeAgo,
+		"formatTime":      formatTime,
+		"isoTime":         isoTime,
+		"csrfToken":       s.csrfToken,
+		"csmConfig":       func() template.JS { return jsonForScript(s.csmConfig()) },
+		"json":            jsonForScript,
+		"multiply":        func(a, b int) int { return a * b },
+		"add":             func(a, b int) int { return a + b },
+		"subtract":        func(a, b int) int { return a - b },
+		"divisibleBy":     func(a, b int) bool { return b != 0 && a%b == 0 },
+		"serverTimeZone":  serverTimeZoneName,
+		"serverUTCOffset": serverUTCOffsetMinutes,
+	}
 }
 
 // --- Security headers middleware ---

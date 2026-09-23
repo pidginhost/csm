@@ -32,6 +32,27 @@ func writeFirewallAudit(t *testing.T, statePath string, entries []firewall.Audit
 	}
 }
 
+// Audit times are instants, so the page can show them in the operator's
+// time zone. A server-local wall clock without a zone cannot be converted.
+func TestFirewallAuditTimestampsAreInstants(t *testing.T) {
+	s := newTestServer(t, "tok")
+	zone := time.FixedZone("server", 3*3600)
+	writeFirewallAudit(t, s.cfg.StatePath, []firewall.AuditEntry{{
+		Timestamp: time.Date(2026, 9, 23, 3, 0, 0, 0, zone), Action: "block", IP: "203.0.113.77", Source: "auto_block",
+	}})
+	w := httptest.NewRecorder()
+	s.apiFirewallAudit(w, httptest.NewRequest(http.MethodGet, "/api/v1/firewall/audit?limit=5", nil))
+	var got []struct {
+		Timestamp string `json:"timestamp"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Timestamp != "2026-09-23T00:00:00Z" {
+		t.Fatalf("timestamps = %+v, want RFC 3339 UTC", got)
+	}
+}
+
 // Filters apply to the whole log and the limit to what they matched: a
 // search for an address blocked before the last page of entries must find it.
 func TestFirewallAuditSearchReachesOlderEntries(t *testing.T) {

@@ -618,7 +618,8 @@ function loadAudit() {
                 var source = entries[i].source || 'unknown';
                 var inspectIPValue = extractLookupIP(entries[i].ip || '');
                 h += '<tr data-action="' + CSM.esc(entries[i].action || '') + '" data-source="' + CSM.esc(source) + '">';
-                h += '<td data-timestamp="' + CSM.esc(entries[i].timestamp || '') + '"><div>' + CSM.esc(entries[i].time_ago || '-') + '</div><div class="text-muted small">' + CSM.esc(entries[i].timestamp || '') + '</div></td>';
+                var ts = entries[i].timestamp || '';
+                h += '<td data-timestamp="' + CSM.esc(ts) + '"><div data-time-ago="' + CSM.esc(ts) + '">' + CSM.esc(CSM.timeAgo(ts) || '-') + '</div><div class="text-muted small">' + CSM.esc(CSM.fmtDate(ts)) + '</div></td>';
                 h += '<td><div><span class="badge bg-secondary-lt">' + humanizeAction(entries[i].action) + '</span></div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
                 h += '<td><code>' + CSM.esc(entries[i].ip || '-') + '</code></td>';
                 h += '<td class="small">' + formatReason(entries[i].reason, '-') + '</td>';
@@ -940,7 +941,7 @@ function loadChallenges() {
                 rc.innerHTML = '<tr><td colspan="3" class="text-muted small">None yet.</td></tr>';
             } else {
                 rc.innerHTML = recent.map(function(e) {
-                    var t = e.at ? new Date(e.at).toLocaleTimeString() : '';
+                    var t = e.at ? CSM.fmtDate(e.at) : '';
                     return '<tr>' +
                         '<td class="text-muted small text-nowrap">' + CSM.esc(t) + '</td>' +
                         '<td class="font-monospace small">' + CSM.esc(e.ip || '') + '</td>' +

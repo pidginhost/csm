@@ -14,7 +14,9 @@
       <tr>
         <td>{{.Name}}{{if .Current}} <span class="badge bg-blue-lt">Current</span>{{end}}</td>
         <td>{{.UserAgent}}</td><td>{{.RemoteIP}}</td>
-        <td>{{formatTime .Created}}</td><td>{{formatTime .LastSeen}}</td><td>{{formatTime .Expires}}</td>
+        <td><time data-csm-date datetime="{{isoTime .Created}}">{{formatTime .Created}}</time></td>
+        <td><time data-csm-date datetime="{{isoTime .LastSeen}}">{{formatTime .LastSeen}}</time></td>
+        <td><time data-csm-date datetime="{{isoTime .Expires}}">{{formatTime .Expires}}</time></td>
         <td><form method="post" action="/sessions/revoke">
           <input type="hidden" name="csrf_token" value="{{csrfToken}}">
           <input type="hidden" name="id" value="{{.ID}}">

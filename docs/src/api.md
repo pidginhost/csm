@@ -915,6 +915,9 @@ POST /api/v1/firewall/unban          Unblock IP + flush cphulk
 POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ```
 
+The audit log reports each `timestamp` as an RFC 3339 instant in UTC. It was
+the server's local wall clock without a zone before.
+
 ## ModSecurity
 
 ```
