@@ -423,6 +423,9 @@ CSM.bulk = function(opts) {
             return checked().map(function(cb) { return cb.getAttribute(valueAttr); });
         },
         selectedCount: function() { return checked().length; },
+        // selectedElements returns the checked, visible checkboxes, for pages
+        // that act on the rows rather than on one attribute.
+        selectedElements: function() { return checked(); },
         clear: function() {
             all().forEach(function(cb) { cb.checked = false; });
             var selectAll = resolveSelectAll();

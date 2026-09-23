@@ -52,17 +52,15 @@ func TestFirewallBlockedSelectAllSkipsHiddenRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(js)
-	start := strings.Index(text, "function visibleBlockedCheckboxes(")
-	if start < 0 {
-		t.Fatal("firewall.js missing visibleBlockedCheckboxes helper")
+	// The blocked table selects through the shared bulk helper, which counts
+	// only checkboxes the operator can see; ui/selection_test.js hides a row
+	// with the lifetime filter and selects all.
+	if !strings.Contains(text, "rowCheckboxSelector: '#blocked-table .fw-blocked-cb',") ||
+		!strings.Contains(text, "selectAllSelector: '#select-all-blocked',") {
+		t.Fatal("firewall.js blocked selection does not use the shared bulk helper")
 	}
-	end := strings.Index(text[start:], "\n}")
-	if end < 0 {
-		t.Fatal("visibleBlockedCheckboxes helper not terminated")
-	}
-	fn := text[start : start+end]
-	if !strings.Contains(fn, `row.style.display === 'none'`) || !strings.Contains(fn, "return") {
-		t.Fatal("firewall.js select-all must skip rows hidden by table filters/pagination")
+	if !strings.Contains(readUIScript(t, "csm-ui.js"), "return cb.offsetParent !== null;") {
+		t.Fatal("the shared bulk helper must skip rows hidden by table filters/pagination")
 	}
 }
 
@@ -76,12 +74,16 @@ func TestFirewallBlockedSelectionSyncsAfterTableRender(t *testing.T) {
 	}
 	text := string(js)
 	buttonFn := firewallJSFunction(t, text, "function updateBlockedBulkButton(")
+	if !strings.Contains(buttonFn, "blockedBulk().refresh();") {
+		t.Error("firewall.js blocked selection does not repaint through the shared bulk helper")
+	}
+	shared := readUIScript(t, "csm-ui.js")
 	for _, want := range []string{
 		"selectAll.indeterminate",
 		"selectAll.checked",
 	} {
-		if !strings.Contains(buttonFn, want) {
-			t.Errorf("firewall.js missing blocked-selection sync %q", want)
+		if !strings.Contains(shared, want) {
+			t.Errorf("csm-ui.js missing selection sync %q", want)
 		}
 	}
 	tableStart := strings.Index(text, "_fwTables.blocked = new CSM.Table({")

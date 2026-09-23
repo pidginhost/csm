@@ -183,11 +183,6 @@ function renderFindings(data) {
         buildActionButtons(rows[r]);
     }
 
-    // Bind row checkboxes
-    var checkboxes = tbody.querySelectorAll('.row-checkbox');
-    for (var c = 0; c < checkboxes.length; c++) {
-        checkboxes[c].addEventListener('change', updateSelection);
-    }
 
     // Bind click-to-expand on rows; a focused row opens with Enter or Space.
     for (var rx = 0; rx < rows.length; rx++) {
@@ -353,46 +348,43 @@ if (perPageEl) perPageEl.addEventListener('change', function() {
 });
 
 // --- Selection management ---
-function getVisibleRows() {
-    return Array.from(document.querySelectorAll('.finding-row')).filter(function(r) {
-        return r.style.display !== 'none';
-    });
+// The shared bulk helper counts only rows the operator can see: rows on
+// other pages, filtered out, or in a collapsed group are never selected.
+var _findingsBulk = null;
+function findingsBulk() {
+    if (!_findingsBulk) {
+        _findingsBulk = CSM.bulk({
+            rowCheckboxSelector: '.finding-row .row-checkbox',
+            selectAllSelector: '#select-all',
+            valueAttr: 'aria-label',
+            onChange: paintSelection
+        });
+    }
+    return _findingsBulk;
 }
 
 function getSelectedRows() {
-    return getVisibleRows().filter(function(r) {
-        var cb = r.querySelector('.row-checkbox');
-        return cb && cb.checked;
-    });
+    if (!_findingsBulk) return [];
+    return _findingsBulk.selectedElements().map(function(cb) { return cb.closest('.finding-row'); });
 }
 
-function toggleSelectAll() {
-    var checked = document.getElementById('select-all').checked;
-    getVisibleRows().forEach(function(r) {
-        var cb = r.querySelector('.row-checkbox');
-        if (cb) cb.checked = checked;
-    });
-    updateSelection();
-}
-
-function updateSelection() {
-    var selected = getSelectedRows();
-    var count = selected.length;
+function paintSelection(count) {
     var countEl = document.getElementById('selected-count');
     if (countEl) countEl.textContent = count;
     var bulkBar = document.getElementById('findings-bulk-bar');
     if (bulkBar) bulkBar.hidden = (count === 0);
     // Show Fix button only if any selected row is fixable.
-    var hasFixable = selected.some(function(r) { return r.getAttribute('data-hasFix') === 'true'; });
+    var hasFixable = getSelectedRows().some(function(r) { return r.getAttribute('data-hasFix') === 'true'; });
     var fixBtn = document.getElementById('bulk-fix-btn');
     if (fixBtn) fixBtn.classList.toggle('d-none', !hasFixable);
 }
 
+function updateSelection() {
+    findingsBulk().refresh();
+}
+
 function clearAllSelections() {
-    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
-    var sa = document.getElementById('select-all');
-    if (sa) sa.checked = false;
-    updateSelection();
+    findingsBulk().clear();
 }
 
 // Warn before navigating away with active selections
@@ -406,10 +398,7 @@ window.addEventListener('beforeunload', function(e) {
 // Reset select-all when check filter changes
 var checkFilterEl = document.getElementById('check-filter');
 if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
-    var selectAll = document.getElementById('select-all');
-    if (selectAll) selectAll.checked = false;
-    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
-    updateSelection();
+    clearAllSelections();
     syncFindingsURL();
 });
 
@@ -421,10 +410,7 @@ if (accountFilterEl) accountFilterEl.addEventListener('input', function() {
         findingsTable.currentPage = 1;
         findingsTable.applyFilters();
     }
-    var selectAll = document.getElementById('select-all');
-    if (selectAll) selectAll.checked = false;
-    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
-    updateSelection();
+    clearAllSelections();
     syncFindingsURL();
 });
 
@@ -761,8 +747,6 @@ CSM.get('/api/v1/accounts', { silent: true }).then(function(accounts) {
 }).catch(function(err){ console.error('loadAccounts:', err); });
 
 // Bind select-all checkbox
-var _selectAll = document.getElementById('select-all');
-if (_selectAll) _selectAll.addEventListener('change', toggleSelectAll);
 
 // Bind bulk action buttons
 var _bulkFixBtn = document.getElementById('bulk-fix-btn');
@@ -1068,8 +1052,11 @@ var _findingsExportCols = [
     {key:'last_seen', label:'Last Seen'}
 ];
 
+// The export follows the table: the rows the current filters and page show.
 function getExportData() {
-    var rows = getVisibleRows();
+    var rows = Array.from(document.querySelectorAll('.finding-row')).filter(function(r) {
+        return r.style.display !== 'none';
+    });
     return rows.map(function(r) {
         return {
             severity: r.querySelector('.badge') ? r.querySelector('.badge').textContent.trim() : '',

@@ -302,44 +302,29 @@ function loadSubnets() {
         });
 }
 
-// Bulk unblock selection helpers. Only rows the table currently shows count:
-// CSM.Table hides filtered/other-page rows via style.display, and acting on
-// hidden rows would let a narrowed filter mass-unblock entries the operator
-// never saw. Checked rows that a later filter hid are ignored the same way.
-function visibleBlockedCheckboxes() {
-    var out = [];
-    document.querySelectorAll('#blocked-table tbody tr').forEach(function(row) {
-        if (row.style.display === 'none') return;
-        var cb = row.querySelector('.fw-blocked-cb');
-        if (cb) out.push(cb);
-    });
-    return out;
+// Bulk unblock selection. Only rows the table currently shows count: acting
+// on hidden rows would let a narrowed filter mass-unblock entries the
+// operator never saw. The shared bulk helper ignores checked rows that a
+// later filter or page change hid.
+var _blockedBulk = null;
+function blockedBulk() {
+    if (!_blockedBulk) {
+        _blockedBulk = CSM.bulk({
+            rowCheckboxSelector: '#blocked-table .fw-blocked-cb',
+            selectAllSelector: '#select-all-blocked',
+            valueAttr: 'data-ip',
+            buttons: [{ el: document.getElementById('blocked-bulk-unblock-btn'), labelTemplate: 'Unblock selected ({n})' }]
+        });
+    }
+    return _blockedBulk;
 }
 
 function getSelectedBlockedIPs() {
-    var ips = [];
-    visibleBlockedCheckboxes().forEach(function(cb) {
-        if (cb.checked) ips.push(cb.getAttribute('data-ip'));
-    });
-    return ips;
+    return blockedBulk().selectedValues();
 }
 
 function updateBlockedBulkButton() {
-    var btn = document.getElementById('blocked-bulk-unblock-btn');
-    if (!btn) return;
-    var visible = visibleBlockedCheckboxes();
-    var count = visible.filter(function(cb) { return cb.checked; }).length;
-    var selectAll = document.getElementById('select-all-blocked');
-    if (selectAll) {
-        selectAll.checked = visible.length > 0 && count === visible.length;
-        selectAll.indeterminate = count > 0 && count < visible.length;
-    }
-    if (count > 0) {
-        btn.classList.remove('d-none');
-        btn.textContent = 'Unblock selected (' + count + ')';
-    } else {
-        btn.classList.add('d-none');
-    }
+    blockedBulk().refresh();
 }
 
 function blockedTableStateKey() {
@@ -472,17 +457,6 @@ function loadBlocked() {
                 });
             });
 
-            var selectAll = document.getElementById('select-all-blocked');
-            if (selectAll) {
-                selectAll.addEventListener('change', function() {
-                    var checked = this.checked;
-                    visibleBlockedCheckboxes().forEach(function(cb) { cb.checked = checked; });
-                    updateBlockedBulkButton();
-                });
-            }
-            el.querySelectorAll('.fw-blocked-cb').forEach(function(cb) {
-                cb.addEventListener('change', updateBlockedBulkButton);
-            });
             updateBlockedBulkButton();
 
         })
