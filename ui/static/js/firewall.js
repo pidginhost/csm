@@ -959,56 +959,8 @@ function loadChallenges() {
         });
 }
 
-// /api/v1/geoip/batch caps each request at 500 IPs, so chunk the call;
-// hosts with thousands of blocked IPs otherwise see HTTP 400 — and a
-// per-IP fallback flood would trip the API rate limit with 429s.
-var GEOIP_CHUNK = 250;
-
 function enrichGeoIP(container) {
-    var cells = container.querySelectorAll('.geo-cell');
-    if (cells.length === 0) return;
-
-    var cellMap = {};
-    for (var i = 0; i < cells.length; i++) {
-        var ip = cells[i].dataset.ip;
-        if (!ip) continue;
-        cellMap[ip] = cellMap[ip] || [];
-        cellMap[ip].push(cells[i]);
-    }
-    var uniqueIPs = Object.keys(cellMap);
-    if (uniqueIPs.length === 0) return;
-
-    function paint(results) {
-        for (var ip in results) {
-            if (!Object.prototype.hasOwnProperty.call(results, ip)) continue;
-            var targets = cellMap[ip];
-            if (!targets) continue;
-            var html = formatGeo(results[ip]);
-            for (var j = 0; j < targets.length; j++) {
-                targets[j].innerHTML = html;
-            }
-        }
-    }
-
-    function markUnavailable(ips) {
-        for (var i = 0; i < ips.length; i++) {
-            var targets = cellMap[ips[i]];
-            if (!targets) continue;
-            for (var j = 0; j < targets.length; j++) {
-                targets[j].textContent = '-';
-            }
-        }
-    }
-
-    function requestGeoIPChunk(ips) {
-        CSM.post('/api/v1/geoip/batch', { ips: ips })
-            .then(function(data) { paint(data.results || {}); })
-            .catch(function() { markUnavailable(ips); });
-    }
-
-    for (var s = 0; s < uniqueIPs.length; s += GEOIP_CHUNK) {
-        requestGeoIPChunk(uniqueIPs.slice(s, s + GEOIP_CHUNK));
-    }
+    CSM.enrichGeoIP(container, { format: formatGeo, failText: '-' });
 }
 
 function updateTrustForm() {

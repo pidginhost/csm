@@ -604,42 +604,15 @@
         if (CSM.applyTruncateMiddle) CSM.applyTruncateMiddle(el);
     }
 
-    // /api/v1/geoip/batch caps each request at 500 IPs, so chunk the call;
-    // hosts with thousands of unique attackers otherwise see HTTP 400.
-    var GEOIP_CHUNK = 250;
-
+    // The server already put the country it knows into each cell; the batch
+    // lookup adds the network, and a failure leaves the cell as it was.
     function enrichGeoIP(container) {
-        var cells = container.querySelectorAll('.geo-cell');
-        if (cells.length === 0) return;
-        // Map IP -> [cell, ...] so chunked responses paint every matching cell.
-        var byIP = {};
-        for (var i = 0; i < cells.length; i++) {
-            var ip = cells[i].dataset.ip;
-            if (!ip) continue;
-            (byIP[ip] = byIP[ip] || []).push(cells[i]);
-        }
-        var uniqueIPs = Object.keys(byIP);
-        if (uniqueIPs.length === 0) return;
-
-        function paint(results) {
-            for (var ip in results) {
-                if (!Object.prototype.hasOwnProperty.call(results, ip)) continue;
-                var matched = byIP[ip];
-                if (!matched) continue;
-                var g = results[ip];
-                if (!g || !g.country) continue;
-                var html = CSM.countryFlag(g.country) + ' ' + CSM.esc(g.country);
-                if (g.as_org) html += '<br><small class="text-muted">' + CSM.esc(g.as_org) + '</small>';
-                for (var k = 0; k < matched.length; k++) matched[k].innerHTML = html;
-            }
-        }
-
-        for (var s = 0; s < uniqueIPs.length; s += GEOIP_CHUNK) {
-            var slice = uniqueIPs.slice(s, s + GEOIP_CHUNK);
-            CSM.post('/api/v1/geoip/batch', { ips: slice })
-                .then(function(data) { paint(data.results || {}); })
-                .catch(function() { /* non-fatal */ });
-        }
+        CSM.enrichGeoIP(container, { format: function(g) {
+            if (!g.country) return '';
+            var html = CSM.countryFlag(g.country) + ' ' + CSM.esc(g.country);
+            if (g.as_org) html += '<br><small class="text-muted">' + CSM.esc(g.as_org) + '</small>';
+            return html;
+        } });
     }
 
     // ---------- Tab activation + filters ----------

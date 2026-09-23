@@ -84,6 +84,44 @@ document.addEventListener('submit', function(e) {
     }).then(function() { form.submit(); }, function() { /* cancelled */ });
 });
 
+// enrichGeoIP fills every .geo-cell in container (data-ip holds the address)
+// from /api/v1/geoip/batch. Each address is looked up once, in chunks of
+// 250: the endpoint caps a request at 500, and a per-address fallback would
+// trip the API rate limit. opts.format(geo) returns the cell HTML, or '' to
+// leave the cell as it is; opts.failText, when set, replaces the cells of a
+// chunk that failed.
+CSM.GEOIP_CHUNK = 250;
+CSM.enrichGeoIP = function(container, opts) {
+    opts = opts || {};
+    var cells = container ? container.querySelectorAll('.geo-cell') : [];
+    var byIP = {};
+    for (var i = 0; i < cells.length; i++) {
+        var ip = cells[i].dataset.ip;
+        if (ip) (byIP[ip] = byIP[ip] || []).push(cells[i]);
+    }
+    var ips = Object.keys(byIP);
+    function paint(results) {
+        Object.keys(results).forEach(function(ip) {
+            var html = byIP[ip] ? opts.format(results[ip] || {}) : '';
+            if (!html) return;
+            byIP[ip].forEach(function(cell) { cell.innerHTML = html; });
+        });
+    }
+    function fail(chunk) {
+        if (opts.failText == null) return;
+        chunk.forEach(function(ip) {
+            byIP[ip].forEach(function(cell) { cell.textContent = opts.failText; });
+        });
+    }
+    for (var s = 0; s < ips.length; s += CSM.GEOIP_CHUNK) {
+        (function(chunk) {
+            CSM.post('/api/v1/geoip/batch', { ips: chunk })
+                .then(function(data) { paint((data && data.results) || {}); })
+                .catch(function() { fail(chunk); });
+        })(ips.slice(s, s + CSM.GEOIP_CHUNK));
+    }
+};
+
 // chartTheme gives the chart colours for the current theme; applyChartTheme
 // repaints every chart, tooltips included, when the theme changes.
 CSM.chartTheme = function() {

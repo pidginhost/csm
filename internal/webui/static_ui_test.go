@@ -5048,13 +5048,19 @@ func TestFirewallGeoIPEnrichmentChunksBatchRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	jsText := string(js)
+	// Chunking and the failure text live in the shared helper, which
+	// ui/geoip_test.js drives with 600 addresses and a failed chunk.
+	if !strings.Contains(jsText, `CSM.enrichGeoIP(container, { format: formatGeo, failText: '-' });`) {
+		t.Error("firewall.js does not use the chunked shared GeoIP lookup")
+	}
+	shared := readUIScript(t, "csm-ui.js")
 	for _, fragment := range []string{
-		`var GEOIP_CHUNK = 250;`,
-		`requestGeoIPChunk(uniqueIPs.slice(s, s + GEOIP_CHUNK));`,
-		`catch(function() { markUnavailable(ips); });`,
+		`CSM.GEOIP_CHUNK = 250;`,
+		`})(ips.slice(s, s + CSM.GEOIP_CHUNK));`,
+		`.catch(function() { fail(chunk); });`,
 	} {
-		if !strings.Contains(jsText, fragment) {
-			t.Errorf("firewall.js missing geoip chunking fragment %q", fragment)
+		if !strings.Contains(shared, fragment) {
+			t.Errorf("csm-ui.js missing geoip chunking fragment %q", fragment)
 		}
 	}
 	for _, bad := range []string{
@@ -5537,7 +5543,7 @@ func TestModSecPageHasFilterControls(t *testing.T) {
 		`modsec-country-filter`,
 		`events-country-filter`,
 		`var countryHTML = b.country ?`,
-		`if (!g || !g.country) continue;`,
+		`if (!g.country) return '';`,
 		`g.as_org`,
 		`e.country`, // events table renders a country column
 	} {
