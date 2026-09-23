@@ -74,6 +74,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Changed
 
+- The ModSecurity blocks view no longer slows down sharply when many escalated addresses and many block rows coincide.
 - Web UI API responses are sent as compact JSON, which makes large lists such as findings and history noticeably smaller.
 - The audit page and incident timelines now read the UI audit log from the end and stop once they have the entries they show, instead of parsing the whole log each time.
 - The quarantine list no longer hashes every quarantined file and its live copy on each request; a pair is compared again only when either file changes.

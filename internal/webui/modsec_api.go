@@ -140,6 +140,9 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	byBlock := make(map[string]*blockAgg)
+	// byIP indexes the aggregates per address, so marking escalated
+	// addresses does not scan every aggregate once per address.
+	byIP := make(map[string][]*blockAgg)
 	escalatedIPs := make(map[string]bool)
 
 	blockKey := func(ip, rule string) string {
@@ -181,6 +184,7 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
 				firstSeen:   f.Timestamp,
 			}
 			byBlock[key] = agg
+			byIP[ip] = append(byIP[ip], agg)
 		}
 		agg.hits++
 		if agg.firstSeen.IsZero() || f.Timestamp.Before(agg.firstSeen) {
@@ -219,14 +223,10 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for ip := range escalatedIPs {
-		hasBlock := false
-		for _, agg := range byBlock {
-			if agg.ip == ip {
-				agg.escalated = true
-				hasBlock = true
-			}
+		for _, agg := range byIP[ip] {
+			agg.escalated = true
 		}
-		if !hasBlock {
+		if len(byIP[ip]) == 0 {
 			if len(byBlock) >= modsecBlocksMaxAggregates {
 				truncated = true
 				continue

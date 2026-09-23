@@ -276,3 +276,41 @@ func TestModSecBlocksReportsHistoryScanTruncation(t *testing.T) {
 		t.Fatalf("X-CSM-Truncated = %q, want 1 when ModSec history scan cap is hit", got)
 	}
 }
+
+// An escalation marks every rule row of its address, and an escalated
+// address with no block rows still gets a row.
+func TestModSecBlocksMarksEscalatedAddresses(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now()
+	escalation := func(ip string) alert.Finding {
+		return alert.Finding{Check: "modsec_csm_block_escalation", Severity: alert.Critical,
+			Message: "Escalated block from " + ip, Details: "[client " + ip + "]", Timestamp: now}
+	}
+	if err := store.Global().AppendHistory([]alert.Finding{
+		modsecBlock("203.0.113.50", "example.com", "/a", "900001", now),
+		modsecBlock("203.0.113.50", "example.com", "/b", "900002", now),
+		modsecBlock("203.0.113.51", "example.com", "/c", "900001", now),
+		escalation("203.0.113.50"),
+		escalation("203.0.113.52"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.apiModSecBlocks(w, httptest.NewRequest("GET", "/", nil))
+	var rows []modsecBlockView
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	escalated := map[string]int{}
+	plain := map[string]int{}
+	for _, r := range rows {
+		if r.Escalated {
+			escalated[r.IP]++
+		} else {
+			plain[r.IP]++
+		}
+	}
+	if escalated["203.0.113.50"] != 2 || plain["203.0.113.51"] != 1 || escalated["203.0.113.52"] != 1 || len(rows) != 4 {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
