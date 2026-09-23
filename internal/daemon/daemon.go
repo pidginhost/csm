@@ -2854,7 +2854,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 		res, err := checks.ApplyBlock(cfg, checks.ApplyBlockRequest{
 			IP:           e.IP,
 			EngineReason: fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100)),
-			Reason:       fmt.Sprintf("challenge timeout: %s", truncateStr(e.Reason, 100)),
+			Reason:       challengeTimeoutReasonPrefix + truncateStr(e.Reason, 100),
 			TTL:          expiry,
 			Source:       checks.BlockSourceChallenge,
 			FindingID:    e.FindingID,

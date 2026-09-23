@@ -149,8 +149,8 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 	case reporting.DecisionBlock:
 		res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
 			IP:           a.ip,
-			EngineReason: "central-intel (locally corroborated)",
-			Reason:       "central-intel (locally corroborated)",
+			EngineReason: centralIntelBlockReason,
+			Reason:       centralIntelBlockReason,
 			TTL:          centralBlockTTL,
 			Source:       checks.BlockSourceCentral,
 			FindingID:    a.findingID,

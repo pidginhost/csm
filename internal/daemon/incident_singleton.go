@@ -140,7 +140,7 @@ func IncidentCorrelator() *incident.Correlator {
 					}
 					// ttl comes from the correlator's escalation ladder; zero
 					// is a permanent block, which the engine understands.
-					live, err := blocker(ip, "CSM credential_spray: "+reason, ttl, findingID)
+					live, err := blocker(ip, credentialSprayReasonPrefix+reason, ttl, findingID)
 					if err != nil {
 						if live && errors.Is(err, firewall.ErrActionAuditPending) {
 							csmlog.Warn("credential_spray block audit delivery pending", "ip", ip, "err", err)
@@ -175,7 +175,7 @@ func IncidentCorrelator() *incident.Correlator {
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
-					live, err := blocker(ip, "CSM incident: "+reason, ttl, findingID)
+					live, err := blocker(ip, incidentReasonPrefix+reason, ttl, findingID)
 					if err != nil {
 						if live && errors.Is(err, firewall.ErrActionAuditPending) {
 							csmlog.Warn("incident auto-block audit delivery pending", "ip", ip, "err", err)
