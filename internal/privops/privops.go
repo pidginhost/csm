@@ -10,6 +10,7 @@
 package privops
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"slices"
@@ -103,6 +104,23 @@ func (r RiskTier) Number() int {
 // views. The internal zero value is an unclassified sentinel, not tier 0.
 func (r RiskTier) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprint(r.Number())), nil
+}
+
+// UnmarshalJSON translates public tier numbers back to their internal values.
+// JSON null leaves the destination unchanged, as it does for other scalars.
+func (r *RiskTier) UnmarshalJSON(data []byte) error {
+	var number *int
+	if err := json.Unmarshal(data, &number); err != nil {
+		return err
+	}
+	if number == nil {
+		return nil
+	}
+	if *number < -1 || *number > RiskDestructive.Number() {
+		return fmt.Errorf("invalid risk tier %d", *number)
+	}
+	*r = RiskTier(*number + 1) // #nosec G115 -- public tiers -1 through 4 map to 0 through 5.
+	return nil
 }
 
 // SafetyContract describes current authority, identity, recovery and limits.

@@ -647,6 +647,58 @@ func TestOperationsJSONReportsRiskTier(t *testing.T) {
 	}
 }
 
+func TestOperationsJSONRoundTrip(t *testing.T) {
+	want := Operations()
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Op
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("decoding the inventory changed its operation metadata")
+	}
+}
+
+func TestRiskTierUnmarshalJSON(t *testing.T) {
+	for raw, want := range map[string]RiskTier{
+		"-1": RiskUnclassified,
+		"0":  RiskObserve,
+		"1":  RiskPreview,
+		"2":  RiskReversible,
+		"3":  RiskContain,
+		"4":  RiskDestructive,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			var got RiskTier
+			if err := json.Unmarshal([]byte(raw), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Errorf("decoded tier = %v, want %v", got, want)
+			}
+		})
+	}
+	for _, raw := range []string{"-2", "5", "255", "256", "1.5", `"2"`, "true", "{}", "[]"} {
+		t.Run(raw, func(t *testing.T) {
+			got := RiskDestructive
+			if err := json.Unmarshal([]byte(raw), &got); err == nil {
+				t.Fatal("accepted an invalid risk tier")
+			}
+			if got != RiskDestructive {
+				t.Fatal("invalid input changed the previous risk tier")
+			}
+		})
+	}
+	// Like other scalar JSON destinations, null leaves an existing value intact.
+	got := RiskContain
+	if err := json.Unmarshal([]byte("null"), &got); err != nil || got != RiskContain {
+		t.Fatalf("null changed the risk tier: got %v, err %v", got, err)
+	}
+}
+
 func TestOperationsCopiesSafetyContracts(t *testing.T) {
 	var first *SafetyContract
 	for _, op := range Operations() {

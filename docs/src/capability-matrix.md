@@ -166,6 +166,8 @@ Regenerate the table with `go run ./cmd/csm privileges --markdown`. A gate in
 to 4. A row with no tier would report -1; the build refuses such an inventory.
 The tier is the operation's maximum live effect on a wrong target. It is not the
 severity of the finding that triggered the operation.
+Decoding and re-encoding the JSON inventory preserves these public tier numbers,
+including -1 for an unclassified tier.
 
 Seven operations carry a safety contract in the JSON inventory: the authority
 they need, how the target is revalidated before the change, how the change is
