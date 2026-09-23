@@ -325,9 +325,9 @@ None of these should be closed by raising a threshold or excluding a path.
 **Status:** partial. Automatic file response limits are implemented; the full
 risk model and the remaining response families are open.
 
-What exists: `auto_response.dry_run` defaults to on; per-IP blocks are capped
-at `max_blocks_per_hour` (default 50) and service restarts at
-`max_restarts_per_hour` (3); the virtual-patch mode has a safe default; the
+What exists: `auto_response.dry_run` defaults to on; the scan block path uses
+the configurable `max_blocks_per_hour` budget and service restarts use
+`max_restarts_per_hour`; the virtual-patch mode has a safe default; the
 verdict callback lets a panel downgrade a block; process signalling goes
 through pidfd; quarantine and virtual patching resolve paths with `openat2`
 and `RESOLVE_BENEATH`; the incident correlator has safety caps and a dry-run
@@ -354,11 +354,19 @@ Remaining: no complete action risk table, no shared limits or failure pause
 across the other response families, and no complete rollback and detection-time
 identity proof for every action. The reputation escalation loop also needs its
 own feedback-lifecycle guard; an hourly cap alone does not bound its lifetime.
-The IP block limit is one fixed host-wide hourly count that was never derived
-from measured demand. It holds back correct blocks as much as wrong ones, and
-blocks over it wait in a retry queue with no ordering or priority. The
-file-response failure pause is host-wide, so it does not yet follow the scoping
-rules below.
+The scan block budget is shared across accounts and checks. Pending candidates
+have bounded retries with no guaranteed priority; admission is not a promise
+of eventual enforcement. Other block sources have separate controls, as
+described in [auto-response](docs/src/auto-response.md). The file-response
+failure pause is host-wide across automatic quarantine and cleaning paths.
+Admitted file refusals still consume attempt capacity; their failure charge is
+cleared only after the outcome is saved. Interrupted actions and unsaved
+outcomes keep that charge.
+
+Automatic per-address blocks already use the firewall engine's infrastructure,
+local-address, operator-allow and verified-crawler guards. The requirements
+below extend response safety and guard coverage; they are planned work, not a
+change to the current controls.
 
 **Decision:** classify every automated action into a tier, in one table with a
 completeness test:
@@ -377,56 +385,81 @@ mandatory identity revalidation immediately before tiers 3 and 4
 (inode and device for files, pidfd for processes, rule handle for firewall
 entries), and enough recorded metadata to reverse the action.
 
-Every limit and breaker is also an attack surface: an attacker who can exhaust
-or trip one switches off the response to their own activity. Removing limits
-does not fix that, because an attacker who can trigger detections could then
-turn unbounded responses against the hosted sites. The limits therefore follow
-these rules:
+Limits must bound both resource use and harm to hosted sites while keeping
+detection and response health visible. Retain finite action, queue and storage
+budgets alongside evidence-based failure breakers. Extend the existing controls
+through the [durable action lifecycle](#action-log-covers-six-of-twenty-seven-host-changes),
+without adding a parallel policy or resetting admission state during
+[firewall state migration](#firewall-state-migration-to-bbolt).
 
 - A breaker pauses automatic action only. Detection, findings and alerts
   continue at their own severity.
-- Budgets and failure pauses are scoped to what one actor can reach: an
-  account, a check, a source. A host-wide pause needs failures from
-  independent scopes, which shows the mechanism itself is broken.
-- A refusal caused by a changed or missing target never counts as a mechanism
-  failure. File responses already follow this.
-- Exhausting a budget on attacker-supplied targets, such as source addresses,
-  moves the response to a cheaper or wider tier (challenge, rate limit,
-  subnet block) instead of stopping or deferring it.
-- High-confidence findings keep reserved capacity that low-confidence findings
-  cannot use up.
+- Scope budgets and pauses by verified account and action ownership, with
+  shared bounds for common resources and unknown ownership. A source address
+  or check name alone does not establish an independent actor. Use deterministic,
+  fair admission with bounded reserved capacity for independently supported
+  findings.
+- Pause only the affected action scopes unless a shared mechanism is unsafe.
+  Verified shared storage or execution failures can require a wider pause
+  immediately; failures in several accounts alone do not prove that condition.
+  Unavailable intent or budget persistence still refuses new mutations.
+- Record target refusals separately from execution and storage failures. Keep
+  admitted attempts charged, and reconcile uncertain outcomes before retrying.
+  Define bounded recovery and revalidation for every pause; reloads, restarts
+  and policy changes must not silently reset its state.
+- Alternative containment must be supported for the affected protocol,
+  honor existing mode and action opt-ins, and pass admission and identity checks.
+  Resource pressure alone never authorizes broader targets or stronger actions.
+  If no safe action is available, retain the finding and record the deferred or
+  refused outcome and required operator review.
 - A pause that leaves a Critical finding without its automatic action raises a
-  Critical alert and is reported by status and `csm doctor`.
+  deduplicated Critical alert and is reported by status and `csm doctor`.
+  Account for every deferred, refused or dropped candidate without creating an
+  unbounded alert queue. A dispatched request is not proof of containment.
 
-For firewall blocks the limit targets what makes a block wrong, not how many
-blocks there are:
+For firewall blocks, correctness feedback supplements resource limits:
 
-- One never-block set at the block chokepoint: infrastructure addresses, the
-  server's own addresses, the firewall allow list, verified crawlers, the
-  address of an active operator session, and a check that the blocked address
-  is the connecting peer or was reported by a trusted proxy.
-- A per-check breaker driven by evidence that its blocks were wrong: the
-  address had authenticated successfully, is a verified crawler, or was
-  unblocked by an operator. It moves that check to challenge or rate limit and
-  leaves other checks blocking.
-- Short first block lifetimes with the existing escalation ladder, so a wrong
-  block expires on its own.
-- Volume handled by aggregation (subnet and ASN blocks) and by sized firewall
-  sets. A fixed ceiling, if one stays, is a runaway guard far above measured
-  demand, and reaching it is Critical.
+- Preserve hard address exclusions and automatic allow protections at the
+  authoritative action boundary, including range overlap checks and existing
+  explicit operator-command semantics. Verify source attribution against the
+  connecting peer or an explicitly trusted proxy chain. Any operator-session
+  safeguard needs authenticated provenance, expiry and service scope.
+- A detector-specific breaker needs reviewed correctness evidence linked to
+  the original finding and action. Authentication or an operator unblock alone
+  is not proof of a false positive. Preserve independent attack evidence and
+  other healthy response paths; corrective feedback does not demote findings.
+- Specify temporary-block expiry and renewal together with the escalation
+  lifecycle. Validate escalation evidence using
+  [corroboration grading](#corroboration-grading); response records and repeated
+  reports are not new corroboration. Preserve operator exclusions and undo.
+- Keep firewall sets and admission bounded. Range or ASN-based containment
+  requires separate corroboration, protected-range checks and an explicit
+  policy limiting collateral impact; it is not a substitute for capacity.
+
+The same admission authority must cover automatic entry points, retries and
+recovery. Under [privilege separation](#privilege-separation), the executor must
+verify policy and admission independently of caller-supplied findings or state,
+while preserving a single owner for the live database.
 
 **Acceptance:** the tier table is complete or the build fails; every reversible
 tier 2 to 4 action has an automated rollback test (firewall, quarantine,
 configuration), and irreversible actions declare their recovery limits; a
-deliberately broken detector in a test cannot exceed its circuit breaker; PID reuse, symlink swap, bind-mount ambiguity under CageFS
-and a file replaced between detection and action are each covered by a test
-that proves the action is refused. Each breaker has an adversarial test: a
-decoy flood or induced failures, followed by the real payload, still yield the
-finding and a Critical alert, and other accounts keep automatic response. A
-synthetic block campaign larger than any fixed limit is blocked or aggregated
-with no address lost. Thresholds come from recorded finding streams, and those
-recordings include the firewall action log so operator unblocks can be
-measured.
+deliberately broken detector in a test cannot exceed its circuit breaker;
+PID reuse, symlink swap, bind-mount ambiguity under CageFS and a file replaced
+between detection and action are each covered by a test that proves the action
+is refused. Replay mixed legitimate and malicious workloads, overload and
+faults: detections retain their severity, a withheld Critical response remains
+visible, and unrelated healthy scopes receive their reserved service unless a
+shared safety failure prevents it. Verify bounded queues, fair admission,
+explicit overflow outcomes, protected targets, unsupported alternatives and
+rejection of forged scope or corrective feedback. Shared storage failures must
+refuse mutations while preserving findings. Crash, restart, reload, migration
+and undo tests preserve admission and revalidate identity without blindly
+repeating uncertain actions or reporting false success.
+
+Calibrate with recorded finding streams joined to action outcomes and reviewed
+operator decisions; keep raw recordings and operational tuning private, and
+publish only sanitized fixtures and aggregate validation results.
 
 The "enough recorded metadata to reverse the action" half has a start:
 `internal/actionlog` records the operation, the finding that caused it, the
@@ -434,8 +467,8 @@ exact argv, the file digest before and after, and the command that reverses it.
 It covers six operations, not the whole tier 3 and 4 set -- see
 [action log coverage](#action-log-covers-six-of-twenty-seven-host-changes).
 
-**Size:** 1 week for the table, breakers and revalidation; rollback and
-adversarial tests on top.
+**Size:** staged by action family after its admission, recovery and supported
+containment contract is specified; include rollback and adversarial tests.
 
 ## Action log covers six of twenty-seven host changes
 
