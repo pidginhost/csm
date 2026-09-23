@@ -298,9 +298,7 @@ func TestAPIQuarantineListsSeededEntryFinalCoverage(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var entries []map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
-		t.Fatalf("json: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &entries)
 	found := false
 	for _, e := range entries {
 		if e["id"] == id && e["reason"] == "final-coverage" {

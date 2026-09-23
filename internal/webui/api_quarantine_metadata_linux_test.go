@@ -104,9 +104,7 @@ func TestQuarantineListingSortsLegacyAndFractionalTimestamps(t *testing.T) {
 		ID        string `json:"id"`
 		Timestamp string `json:"quarantined_at"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, w.Body.Bytes(), &entries)
 	want := []string{"legacy-newest", "fractional", "whole-second", "older-offset", "unknown"}
 	if len(entries) != len(want) {
 		t.Fatalf("entries=%v", entries)
