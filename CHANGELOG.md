@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Screen readers no longer read whole lists and the refresh clock aloud every time a Web UI page refreshes; only short status messages such as errors and connection changes are announced.
 - Row checkboxes, rule switches, icon-only buttons and search fields in the Web UI now have names that screen readers announce, instead of relying on placeholders or icons.
 - Closing the detail panel or a dialog now returns focus to what opened it, a dialog opened from the detail panel keeps the keyboard to itself, and the prompt dialog closes with Escape and keeps Tab inside.
 - Refreshing pages now preserves ongoing edits and actions, keeps ModSecurity exclusions consistent, and updates the visible history and refresh timestamp. Detail panels ignore stale responses, and confirmation dialogs retain safe focus and button labels.

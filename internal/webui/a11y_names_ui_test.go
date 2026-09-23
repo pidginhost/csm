@@ -124,3 +124,31 @@ func textOf(n *html.Node) string {
 	walk(n)
 	return b.String()
 }
+
+// A live region is read aloud whenever it changes. Lists and tab panels
+// that refresh on a timer, and a clock that ticks every second, would be
+// read out again and again; only short status messages are live.
+func TestOnlyStatusMessagesAreLiveRegions(t *testing.T) {
+	status := map[string]bool{
+		"csm-sse-pill": true, "csm-connection-lost": true, "csm-update-banner": true,
+		"csm-toasts": true, "scan-status": true,
+	}
+	files, err := filepath.Glob("../../ui/templates/*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := regexp.MustCompile(`<[a-z]+[^>]*aria-live="[a-z]+"[^>]*>`)
+	id := regexp.MustCompile(`\bid="([^"]+)"`)
+	for _, file := range files {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tag := range live.FindAllString(string(src), -1) {
+			m := id.FindStringSubmatch(tag)
+			if m == nil || !status[m[1]] {
+				t.Errorf("%s: live region that is not a short status message: %s", filepath.Base(file), tag)
+			}
+		}
+	}
+}
