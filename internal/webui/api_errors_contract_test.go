@@ -143,3 +143,32 @@ func TestValidationErrorsCarryAnErrorMessage(t *testing.T) {
 		t.Errorf("field errors lost: %q", w.Body.String())
 	}
 }
+
+// Read routes answer only GET. Admin reads used to run their handler for any
+// method, so a DELETE on /api/v1/quarantine listed the quarantine.
+func TestAdminReadRoutesRefuseOtherMethods(t *testing.T) {
+	s := newUIServer(t)
+	for _, path := range []string{
+		"/api/v1/quarantine", "/api/v1/history/csv", "/api/v1/accounts", "/api/v1/account",
+		"/api/v1/export", "/api/v1/finding-detail", "/api/v1/quarantine-preview",
+		"/api/v1/db-object-backups", "/api/v1/incident", "/api/v1/incidents", "/api/v1/modsec/rules",
+		"/api/v1/email/stats", "/api/v1/performance", "/api/v1/hardening", "/api/v1/threat/stats",
+		"/api/v1/threat/top-attackers", "/api/v1/threat/ip", "/api/v1/threat/events",
+		"/api/v1/threat/db-stats", "/api/v1/threat/whitelist", "/api/v1/rules/status",
+		"/api/v1/rules/list", "/api/v1/audit", "/api/v1/firewall/status", "/api/v1/firewall/allowed",
+		"/api/v1/firewall/audit", "/api/v1/firewall/subnets", "/api/v1/firewall/check", "/api/v1/geoip",
+	} {
+		for _, method := range []string{http.MethodPost, http.MethodDelete} {
+			req := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+			req.Header.Set("Authorization", "Bearer admin-secret")
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			s.httpSrv.Handler.ServeHTTP(w, req)
+			assertJSONError(t, method+" "+path, w, http.StatusMethodNotAllowed)
+			if got := w.Header().Get("Allow"); got != "GET" {
+				t.Errorf("%s %s: Allow = %q, want GET", method, path, got)
+			}
+		}
+	}
+}
+

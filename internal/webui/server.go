@@ -319,30 +319,30 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/health", s.requireRead(http.HandlerFunc(s.apiHealth)))
 	mux.Handle("/api/v1/components", s.requireRead(http.HandlerFunc(s.apiComponents)))
 	// Auth-protected API - admin-only reads (data with write-adjacent sensitivity)
-	mux.Handle("/api/v1/quarantine", s.requireAuth(http.HandlerFunc(s.apiQuarantine)))
+	mux.Handle("/api/v1/quarantine", s.requireAuth(getOnly(http.HandlerFunc(s.apiQuarantine))))
 	mux.Handle("/api/v1/modsec/stats", s.requireRead(http.HandlerFunc(s.apiModSecStats)))
 	mux.Handle("/api/v1/modsec/blocks", s.requireRead(http.HandlerFunc(s.apiModSecBlocks)))
 	mux.Handle("/api/v1/modsec/events", s.requireRead(http.HandlerFunc(s.apiModSecEvents)))
-	mux.Handle("/api/v1/modsec/rules", s.requireAuth(http.HandlerFunc(s.apiModSecRules)))
+	mux.Handle("/api/v1/modsec/rules", s.requireAuth(getOnly(http.HandlerFunc(s.apiModSecRules))))
 	mux.Handle("/api/v1/modsec/rules/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesApply))))
 	mux.Handle("/api/v1/modsec/rules/escalation", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesEscalation))))
 	mux.Handle("/api/v1/verified-bots", s.requireAuth(http.HandlerFunc(s.apiVerifiedBots)))
 	mux.Handle("/api/v1/verified-bots/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiVerifiedBotsApply))))
-	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
-	mux.Handle("/api/v1/account", s.requireAuth(http.HandlerFunc(s.apiAccountDetail)))
-	mux.Handle("/api/v1/history/csv", s.requireAuth(http.HandlerFunc(s.apiHistoryCSV)))
-	mux.Handle("/api/v1/export", s.requireAuth(http.HandlerFunc(s.apiExport)))
+	mux.Handle("/api/v1/accounts", s.requireAuth(getOnly(http.HandlerFunc(s.apiAccounts))))
+	mux.Handle("/api/v1/account", s.requireAuth(getOnly(http.HandlerFunc(s.apiAccountDetail))))
+	mux.Handle("/api/v1/history/csv", s.requireAuth(getOnly(http.HandlerFunc(s.apiHistoryCSV))))
+	mux.Handle("/api/v1/export", s.requireAuth(getOnly(http.HandlerFunc(s.apiExport))))
 	mux.Handle("/api/v1/import", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiImport))))
-	mux.Handle("/api/v1/incident", s.requireAuth(http.HandlerFunc(s.apiIncident)))
+	mux.Handle("/api/v1/incident", s.requireAuth(getOnly(http.HandlerFunc(s.apiIncident))))
 	// Admin-scope on both routes: ServeMux cannot disambiguate by HTTP method,
 	// so the POST .../status mutator forces admin; reads under the same prefix
 	// inherit it (admin is a superset of read). The sub-path also runs CSRF
 	// because the router can dispatch POST .../status; requireCSRF only acts
 	// on unsafe methods so GET .../<id> still passes through.
-	mux.Handle("/api/v1/incidents", s.requireAuth(http.HandlerFunc(s.apiIncidentList)))
+	mux.Handle("/api/v1/incidents", s.requireAuth(getOnly(http.HandlerFunc(s.apiIncidentList))))
 	mux.Handle("/api/v1/incidents/groups", s.requireRead(http.HandlerFunc(s.apiIncidentGroups)))
 	mux.Handle("/api/v1/incidents/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiIncidentRouter))))
-	mux.Handle("/api/v1/email/stats", s.requireAuth(http.HandlerFunc(s.apiEmailStats)))
+	mux.Handle("/api/v1/email/stats", s.requireAuth(getOnly(http.HandlerFunc(s.apiEmailStats))))
 	mux.Handle("/api/v1/email/quarantine", s.requireAuth(http.HandlerFunc(s.apiEmailQuarantineList)))
 	mux.Handle("/api/v1/email/quarantine/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailQuarantineAction))))
 	mux.Handle("/api/v1/email/av/status", s.requireAuth(http.HandlerFunc(s.apiEmailAVStatus)))
@@ -354,23 +354,23 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/queue/flush-backscatter", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailFlushBackscatter))))
 	mux.Handle("/api/v1/email/held", s.requireAuth(http.HandlerFunc(s.apiEmailHeldList)))
 	mux.Handle("/api/v1/email/held/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailHeldAction))))
-	mux.Handle("/api/v1/performance", s.requireAuth(http.HandlerFunc(s.apiPerformance)))
+	mux.Handle("/api/v1/performance", s.requireAuth(getOnly(http.HandlerFunc(s.apiPerformance))))
 	mux.Handle("/api/v1/perf/fix-error-log", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixErrorLog))))
 	mux.Handle("/api/v1/perf/fix-display-errors", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixDisplayErrors))))
 	mux.Handle("/api/v1/perf/fix-wp-cron", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixWPCron))))
-	mux.Handle("/api/v1/hardening", s.requireAuth(http.HandlerFunc(s.apiHardening)))
+	mux.Handle("/api/v1/hardening", s.requireAuth(getOnly(http.HandlerFunc(s.apiHardening))))
 	mux.Handle("/api/v1/hardening/run", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiHardeningRun))))
 
 	// Threat Intelligence API
-	mux.Handle("/api/v1/threat/stats", s.requireAuth(http.HandlerFunc(s.apiThreatStats)))
-	mux.Handle("/api/v1/threat/top-attackers", s.requireAuth(http.HandlerFunc(s.apiThreatTopAttackers)))
-	mux.Handle("/api/v1/threat/ip", s.requireAuth(http.HandlerFunc(s.apiThreatIP)))
-	mux.Handle("/api/v1/threat/events", s.requireAuth(http.HandlerFunc(s.apiThreatEvents)))
-	mux.Handle("/api/v1/threat/db-stats", s.requireAuth(http.HandlerFunc(s.apiThreatDBStats)))
-	mux.Handle("/api/v1/audit", s.requireAuth(http.HandlerFunc(s.apiUIAudit)))
-	mux.Handle("/api/v1/finding-detail", s.requireAuth(http.HandlerFunc(s.apiFindingDetail)))
+	mux.Handle("/api/v1/threat/stats", s.requireAuth(getOnly(http.HandlerFunc(s.apiThreatStats))))
+	mux.Handle("/api/v1/threat/top-attackers", s.requireAuth(getOnly(http.HandlerFunc(s.apiThreatTopAttackers))))
+	mux.Handle("/api/v1/threat/ip", s.requireAuth(getOnly(http.HandlerFunc(s.apiThreatIP))))
+	mux.Handle("/api/v1/threat/events", s.requireAuth(getOnly(http.HandlerFunc(s.apiThreatEvents))))
+	mux.Handle("/api/v1/threat/db-stats", s.requireAuth(getOnly(http.HandlerFunc(s.apiThreatDBStats))))
+	mux.Handle("/api/v1/audit", s.requireAuth(getOnly(http.HandlerFunc(s.apiUIAudit))))
+	mux.Handle("/api/v1/finding-detail", s.requireAuth(getOnly(http.HandlerFunc(s.apiFindingDetail))))
 	mux.Handle("/api/v1/threat/whitelist-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatWhitelistIP))))
-	mux.Handle("/api/v1/threat/whitelist", s.requireAuth(http.HandlerFunc(s.apiThreatWhitelist)))
+	mux.Handle("/api/v1/threat/whitelist", s.requireAuth(getOnly(http.HandlerFunc(s.apiThreatWhitelist))))
 	mux.Handle("/api/v1/threat/unwhitelist-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatUnwhitelistIP))))
 	mux.Handle("/api/v1/threat/block-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatBlockIP))))
 	mux.Handle("/api/v1/threat/block-ip-permanent", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatBlockIPPermanent))))
@@ -379,19 +379,19 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/threat/bulk-action", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatBulkAction))))
 
 	// Rules API
-	mux.Handle("/api/v1/rules/status", s.requireAuth(http.HandlerFunc(s.apiRulesStatus)))
-	mux.Handle("/api/v1/rules/list", s.requireAuth(http.HandlerFunc(s.apiRulesList)))
+	mux.Handle("/api/v1/rules/status", s.requireAuth(getOnly(http.HandlerFunc(s.apiRulesStatus))))
+	mux.Handle("/api/v1/rules/list", s.requireAuth(getOnly(http.HandlerFunc(s.apiRulesList))))
 	mux.Handle("/api/v1/rules/reload", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiRulesReload))))
 
 	// Suppressions API
 	mux.Handle("/api/v1/suppressions", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSuppressions))))
 
 	// Firewall API
-	mux.Handle("/api/v1/firewall/status", s.requireAuth(http.HandlerFunc(s.apiFirewallStatus)))
-	mux.Handle("/api/v1/firewall/allowed", s.requireAuth(http.HandlerFunc(s.apiFirewallAllowed)))
-	mux.Handle("/api/v1/firewall/audit", s.requireAuth(http.HandlerFunc(s.apiFirewallAudit)))
-	mux.Handle("/api/v1/firewall/subnets", s.requireAuth(http.HandlerFunc(s.apiFirewallSubnets)))
-	mux.Handle("/api/v1/firewall/check", s.requireAuth(http.HandlerFunc(s.apiFirewallCheck)))
+	mux.Handle("/api/v1/firewall/status", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallStatus))))
+	mux.Handle("/api/v1/firewall/allowed", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallAllowed))))
+	mux.Handle("/api/v1/firewall/audit", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallAudit))))
+	mux.Handle("/api/v1/firewall/subnets", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallSubnets))))
+	mux.Handle("/api/v1/firewall/check", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallCheck))))
 
 	// Settings API
 	mux.Handle("/api/v1/settings/restart", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSettingsRestart))))
@@ -403,7 +403,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/settings/", s.requireAuth(http.HandlerFunc(s.apiSettings)))
 
 	// GeoIP API
-	mux.Handle("/api/v1/geoip", s.requireAuth(http.HandlerFunc(s.apiGeoIPLookup)))
+	mux.Handle("/api/v1/geoip", s.requireAuth(getOnly(http.HandlerFunc(s.apiGeoIPLookup))))
 	mux.Handle("/api/v1/geoip/batch", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiGeoIPBatch))))
 
 	// Auth-protected API - actions (with CSRF validation)
@@ -416,10 +416,10 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/unblock-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiUnblockIP))))
 	mux.Handle("/api/v1/unblock-bulk", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiUnblockBulk))))
 	mux.Handle("/api/v1/dismiss", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiDismissFinding))))
-	mux.Handle("/api/v1/quarantine-preview", s.requireAuth(http.HandlerFunc(s.apiQuarantinePreview)))
+	mux.Handle("/api/v1/quarantine-preview", s.requireAuth(getOnly(http.HandlerFunc(s.apiQuarantinePreview))))
 	mux.Handle("/api/v1/quarantine-restore", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiQuarantineRestore))))
 	mux.Handle("/api/v1/quarantine/bulk-delete", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiQuarantineBulkDelete))))
-	mux.Handle("/api/v1/db-object-backups", s.requireAuth(http.HandlerFunc(s.apiDBObjectBackups)))
+	mux.Handle("/api/v1/db-object-backups", s.requireAuth(getOnly(http.HandlerFunc(s.apiDBObjectBackups))))
 	mux.Handle("/api/v1/db-object-backup-preview", s.requireAuth(http.HandlerFunc(s.apiDBObjectBackupPreview)))
 	mux.Handle("/api/v1/db-object-backup-restore", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiDBObjectBackupRestore))))
 	mux.Handle("/api/v1/firewall/deny-subnet", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallDenySubnet))))
@@ -1036,6 +1036,19 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 			s.apiMu.Unlock()
 		}
 
+		next.ServeHTTP(w, r)
+	})
+}
+
+// getOnly answers every method but GET with a JSON 405, for read routes
+// behind requireAuth; requireRead does the same for its routes.
+func getOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }

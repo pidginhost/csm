@@ -146,6 +146,7 @@ func (s *Server) requireRead(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.tokenHasScope(r, "read") {
 			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
 				writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
