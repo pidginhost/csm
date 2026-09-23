@@ -424,6 +424,8 @@ CSM.refresh = (function() {
         var timerId = null;
         var stopped = false;
         var delay = Math.max(0, Number(interval) || 0);
+        // Creation counts as a run: the page loads its data when it starts.
+        var lastRun = Date.now();
         subscribers++;
 
         function clearTimer() {
@@ -439,6 +441,7 @@ CSM.refresh = (function() {
             timerId = setTimeout(function() {
                 timerId = null;
                 if (stopped || document.hidden || !enabled) return;
+                lastRun = Date.now();
                 invokeTimer(fn);
                 schedule();
             }, delay);
@@ -447,13 +450,25 @@ CSM.refresh = (function() {
         function runNow() {
             if (stopped || document.hidden) return;
             clearTimer();
+            lastRun = Date.now();
             invokeTimer(fn);
             schedule();
+        }
+
+        // resume runs when the tab becomes visible: at once if a run is
+        // overdue, otherwise on the normal schedule. Pages rely on this and
+        // keep no visibility handlers of their own, which used to start a
+        // second set of timers and reload while auto-refresh was paused.
+        function resume() {
+            if (stopped || document.hidden || !enabled) return;
+            if (Date.now() - lastRun >= delay) runNow();
+            else schedule();
         }
 
         var timer = {
             pause: clearTimer,
             schedule: schedule,
+            resume: resume,
             runNow: runNow,
             stop: function() {
                 if (stopped) return;
@@ -532,7 +547,7 @@ CSM.refresh = (function() {
             eachTimer(function(timer) { timer.pause(); });
             return;
         }
-        eachTimer(function(timer) { timer.schedule(); });
+        eachTimer(function(timer) { timer.resume(); });
     });
 
     return api;

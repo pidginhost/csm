@@ -127,7 +127,9 @@ function loadPage(bodyHTML, scripts, options = {}) {
             return requests[i];
         },
         pending(match) { return requests.filter(r => !r.settled && (!match || r.url.includes(match))); },
-        run(code) { return vm.runInContext(code, context); }
+        run(code) { return vm.runInContext(code, context); },
+        // load runs one more script, for tests that prepare the page first.
+        load(name) { vm.runInContext(source(name), context, { filename: name }); }
     };
     return page;
 }

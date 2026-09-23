@@ -1532,14 +1532,6 @@
         }, 60000));
     }
     _startEmailPolling();
-
-    document.addEventListener('visibilitychange', function() {
-        if (document.hidden) {
-            _stopEmailIntervals();
-        } else {
-            _startEmailPolling();
-        }
-    });
     window.addEventListener('beforeunload', function() {
         _stopEmailIntervals();
     });

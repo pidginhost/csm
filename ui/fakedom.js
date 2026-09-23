@@ -249,6 +249,8 @@ class Element extends Node {
     set disabled(v) { this.toggleAttribute('disabled', !!v); }
     get hidden() { return this.hasAttribute('hidden'); }
     set hidden(v) { this.toggleAttribute('hidden', !!v); }
+    get open() { return this.hasAttribute('open'); }
+    set open(v) { this.toggleAttribute('open', !!v); }
     get readOnly() { return this.hasAttribute('readonly'); }
     set readOnly(v) { this.toggleAttribute('readonly', !!v); }
     get tabIndex() { const v = this.getAttribute('tabindex'); return v === null ? -1 : parseInt(v, 10); }

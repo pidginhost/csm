@@ -3544,12 +3544,23 @@ func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
 		"_stopIntervals();\n        // Fast cadence",
 		"function _startChartIntervals() {",
 		"_stopChartIntervals();\n        // Refresh charts every 60 seconds",
-		"_startChartIntervals();\n            // Immediate refresh on return",
-		"try { loadComponents(); } catch(e) {}",
+		"try { loadComponents(); } catch(e) { console.error('loadComponents:', e); }",
 		"CSM.get('/api/v1/components', { silent: true })",
 	} {
 		if !strings.Contains(dashText, fragment) {
 			t.Errorf("dashboard.js missing interval stop-before-start fragment %q", fragment)
+		}
+	}
+	// The shared refresh timers pause and resume with the tab. A page handler
+	// of its own restarted a second set of timers and reloaded even while
+	// auto-refresh was paused.
+	for _, page := range []string{"dashboard.js", "email.js", "performance.js"} {
+		src, err := os.ReadFile("../../ui/static/js/" + page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), "'visibilitychange'") {
+			t.Errorf("%s registers its own visibilitychange handler", page)
 		}
 	}
 	// After consolidation the chart interval-creation pushes live only in

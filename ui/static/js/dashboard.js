@@ -18,14 +18,6 @@
     }
 
     window.addEventListener('beforeunload', _cleanup);
-    document.addEventListener('visibilitychange', function() {
-        if (document.hidden) {
-            _stopIntervals();
-        } else {
-            // Restart intervals on visibility restore
-            _startPolling();
-        }
-    });
 
     // --- Chart.js global defaults for dark/light theme ---
     var isDark = document.documentElement.classList.contains('theme-dark');
@@ -1043,21 +1035,6 @@
     }
 
     window.addEventListener('beforeunload', _cleanupCharts);
-    document.addEventListener('visibilitychange', function() {
-        if (document.hidden) {
-            _stopChartIntervals();
-        } else {
-            // Restart refresh intervals (charts survive tab switches);
-            // _startChartIntervals stops the prior set before re-adding.
-            _startChartIntervals();
-            // Immediate refresh on return
-            try { loadTimeline(); } catch(e) {}
-            try { loadAttackTypes(); } catch(e) {}
-            try { loadTrend(); } catch(e) {}
-            try { loadPriorityQueue(); } catch(e) {}
-            try { loadComponents(); } catch(e) {}
-        }
-    });
 
     // --- Theme reactivity: update chart colors when dark/light mode toggles ---
     function updateChartTheme() {
@@ -1333,6 +1310,10 @@
                     }
                 });
 
+                // The idle list is rebuilt on every refresh; keep it open if
+                // the operator opened it.
+                var prevIdle = el.querySelector('details.csm-idle-watchers');
+                var idleOpen = !!(prevIdle && prevIdle.open);
                 var html = '';
                 if (nonIdle.length > 0) {
                     html += '<div class="table-responsive"><table class="table table-sm card-table mb-0">' +
@@ -1348,7 +1329,7 @@
                 if (idle.length > 0) {
                     var label = CSM.esc(String(idle.length)) + ' watcher' + (idle.length === 1 ? '' : 's') +
                         ' idle <span class="text-muted small">&middot; no events in 7 days</span>';
-                    var idleHTML = '<details class="csm-idle-watchers small mt-2">' +
+                    var idleHTML = '<details class="csm-idle-watchers small mt-2"' + (idleOpen ? ' open' : '') + '>' +
                         '<summary class="text-muted py-2">' + label + '</summary>' +
                         '<div class="table-responsive"><table class="table table-sm card-table mb-0">' +
                             '<thead><tr>' +

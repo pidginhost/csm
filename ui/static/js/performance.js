@@ -499,22 +499,8 @@
     }
 
     update();
-    var _perfInterval = CSM.refresh.interval(update, 10000);
-    function _stopPerfInterval() {
-        if (_perfInterval) {
-            _perfInterval.stop();
-            _perfInterval = null;
-        }
-    }
+    CSM.refresh.interval(update, 10000);
 
-    document.addEventListener('visibilitychange', function() {
-        if (document.hidden) {
-            _stopPerfInterval();
-        } else {
-            update();
-            _perfInterval = CSM.refresh.interval(update, 10000);
-        }
-    });
 
     // WEB_ROADMAP P2.4: shared CSV/JSON export of current performance
     // findings. _perfLastFindings is refreshed on every update().
