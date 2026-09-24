@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"bytes"
 	"net/netip"
 	"testing"
 )
@@ -35,6 +36,29 @@ func FuzzCanonicalTargets(f *testing.F) {
 					t.Fatalf("accepted %q overlaps protected %s", got.Key(), p)
 				}
 			}
+		}
+	})
+}
+
+func FuzzUnmarshalEvidence(f *testing.F) {
+	reg, _ := NewRegistry(testLookup)
+	p, _ := reg.Register(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}})
+	tg, _ := CanonicalAddress("192.0.2.1", Caps{})
+	e, _ := p.Mint(EvidenceInput{Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: SeverityHigh, Observation: ObservationRef{"s", "c", 1}, ObservedAt: t0, Parser: ParserRef{"sshd", 1}, Target: tg})
+	seed, _ := e.MarshalBinary()
+	f.Add(seed)
+	f.Add([]byte("E\x01{}"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got, err := UnmarshalEvidence(data)
+		if err != nil {
+			return
+		}
+		again, err := got.MarshalBinary()
+		if err != nil || !bytes.Equal(again, data) {
+			t.Fatalf("accepted a non-canonical record")
+		}
+		if got.Target().IsZero() {
+			t.Fatalf("accepted a record without a target")
 		}
 	})
 }

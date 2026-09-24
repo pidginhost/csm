@@ -1,0 +1,177 @@
+package admission
+
+import (
+	"fmt"
+	"sort"
+	"sync"
+)
+
+// Policy is the admission projection of a check's response policy.
+type Policy struct {
+	Family Family
+	Basis  Basis
+}
+
+// PolicyLookup resolves a check name, including a renamed producer's old
+// name, to its canonical registered name and policy. ok is false for an
+// unregistered check. Producers and the engine use the same lookup so they
+// cannot disagree about a check; checks.AdmissionPolicy is the production
+// lookup.
+type PolicyLookup func(check string) (canonical string, p Policy, ok bool)
+
+// ProducerID names a registered evidence producer.
+type ProducerID string
+
+// ValidProducerID accepts 1-48 bytes of lowercase letters, digits and
+// underscores, starting with a letter.
+func ValidProducerID(id ProducerID) bool {
+	if len(id) == 0 || len(id) > 48 || id[0] < 'a' || id[0] > 'z' {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// ObservationKind is how a producer identifies an observation.
+type ObservationKind uint8
+
+const (
+	// ObservationLogCursor: a position in a log file or journal.
+	ObservationLogCursor ObservationKind = iota + 1
+	// ObservationEventSeq: a sequence number of kernel, socket or IPC
+	// events.
+	ObservationEventSeq
+	// ObservationScanPass: one pass of a scan over server-owned state.
+	ObservationScanPass
+	observationEnd
+)
+
+func (k ObservationKind) Valid() bool { return k >= ObservationLogCursor && k < observationEnd }
+
+// maxProducerChecks bounds one producer's check list.
+const maxProducerChecks = 32
+
+// ProducerSpec is what a producer registers. Checks are exact names; a
+// dynamic prefix is never a catch-all.
+type ProducerSpec struct {
+	ID          ProducerID
+	Entry       Entry
+	Observation ObservationKind
+	Checks      []string
+}
+
+// Registry holds the producers allowed to mint evidence. Register all
+// producers, then Seal; a sealed registry accepts none.
+type Registry struct {
+	mu        sync.Mutex
+	lookup    PolicyLookup
+	producers map[ProducerID]ProducerSpec
+	sealed    bool
+}
+
+func NewRegistry(lookup PolicyLookup) (*Registry, error) {
+	if lookup == nil {
+		return nil, fmt.Errorf("registry needs a policy lookup")
+	}
+	return &Registry{lookup: lookup, producers: map[ProducerID]ProducerSpec{}}, nil
+}
+
+// Producer is the capability to mint evidence as one registered producer.
+// Only Register creates one.
+type Producer struct {
+	reg *Registry
+	id  ProducerID
+}
+
+func (p *Producer) ID() ProducerID { return p.id }
+
+// Register validates spec and returns the producer's minting capability.
+// Every check must be registered with an evidence family.
+func (r *Registry) Register(spec ProducerSpec) (*Producer, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case r.sealed:
+		return nil, fmt.Errorf("producer %q registered after the registry was sealed", spec.ID)
+	case !ValidProducerID(spec.ID):
+		return nil, fmt.Errorf("invalid producer ID %q", spec.ID)
+	case !spec.Entry.Valid():
+		return nil, fmt.Errorf("producer %q has an unknown entry", spec.ID)
+	case !spec.Observation.Valid():
+		return nil, fmt.Errorf("producer %q has an unknown observation kind", spec.ID)
+	case len(spec.Checks) == 0 || len(spec.Checks) > maxProducerChecks:
+		return nil, fmt.Errorf("producer %q must publish 1-%d checks", spec.ID, maxProducerChecks)
+	}
+	if _, dup := r.producers[spec.ID]; dup {
+		return nil, fmt.Errorf("producer %q is already registered", spec.ID)
+	}
+	checks := make([]string, 0, len(spec.Checks))
+	seen := map[string]bool{}
+	for _, name := range spec.Checks {
+		canonical, p, ok := r.lookup(name)
+		if !ok || canonical != name {
+			return nil, fmt.Errorf("producer %q lists %q, which is not a canonical registered check", spec.ID, name)
+		}
+		if p.Family == FamilyNone {
+			return nil, fmt.Errorf("producer %q lists %q, which carries no admissible address evidence", spec.ID, name)
+		}
+		if err := ValidPolicy(p.Family, p.Basis); err != nil {
+			return nil, fmt.Errorf("producer %q lists %q: %w", spec.ID, name, err)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("producer %q lists %q twice", spec.ID, name)
+		}
+		seen[name] = true
+		checks = append(checks, name)
+	}
+	sort.Strings(checks)
+	spec.Checks = checks
+	r.producers[spec.ID] = spec
+	return &Producer{reg: r, id: spec.ID}, nil
+}
+
+// Seal stops further registration.
+func (r *Registry) Seal() {
+	r.mu.Lock()
+	r.sealed = true
+	r.mu.Unlock()
+}
+
+// Spec returns a copy of a registered producer's spec.
+func (r *Registry) Spec(id ProducerID) (ProducerSpec, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	spec, ok := r.producers[id]
+	if ok {
+		spec.Checks = append([]string(nil), spec.Checks...)
+	}
+	return spec, ok
+}
+
+func (spec ProducerSpec) publishes(check string) bool {
+	i := sort.SearchStrings(spec.Checks, check)
+	return i < len(spec.Checks) && spec.Checks[i] == check
+}
+
+// Validate refuses evidence whose producer, entry, check or policy no
+// longer matches the registry. Admission calls it on every use, so a
+// policy change takes effect on evidence minted before it.
+func (r *Registry) Validate(e Evidence) error {
+	spec, ok := r.Spec(e.rec.Producer)
+	if !ok {
+		return refuse(ReasonPolicy, "evidence producer is not registered")
+	}
+	if spec.Entry != e.rec.Entry || !spec.publishes(e.rec.Check) {
+		return refuse(ReasonPolicy, "evidence entry or check is not registered for its producer")
+	}
+	canonical, p, ok := r.lookup(e.rec.Check)
+	if !ok || canonical != e.rec.Check || p != (Policy{Family: e.rec.Family, Basis: e.rec.Basis}) {
+		return refuse(ReasonPolicy, "check policy changed since the evidence was minted")
+	}
+	return nil
+}
