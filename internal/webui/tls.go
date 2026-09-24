@@ -101,7 +101,7 @@ func renewTLSCert(certPath, keyPath string) error {
 	if err != nil {
 		return err
 	}
-	block, _ := pem.Decode(certPEM)
+	block := leafCertificateBlock(certPEM)
 	if block == nil {
 		return nil
 	}
@@ -133,6 +133,19 @@ func renewTLSCert(certPath, keyPath string) error {
 		return fmt.Errorf("renewing certificate: %w", err)
 	}
 	return writeTLSFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// leafCertificateBlock returns the certificate the TLS stack serves: the
+// first CERTIFICATE block. A combined file, such as cPanel's service
+// certificate, carries the private key ahead of it.
+func leafCertificateBlock(data []byte) *pem.Block {
+	for {
+		block, rest := pem.Decode(data)
+		if block == nil || block.Type == "CERTIFICATE" {
+			return block
+		}
+		data = rest
+	}
 }
 
 // ownCertExpiring recognizes CSM's self-signed certificates near expiry.

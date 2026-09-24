@@ -3,9 +3,11 @@ package webui
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -49,6 +51,20 @@ func TestTLSStartDoesNotCreateMissingOperatorFiles(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Error("startup created an operator-managed TLS file")
 		}
+	}
+}
+
+// The Web UI never started when both settings named one combined key and
+// certificate file, the layout of cPanel's service certificate.
+func TestTLSStartAcceptsACombinedOperatorFile(t *testing.T) {
+	s := serverWithOccupiedListener(t)
+	path := filepath.Join(t.TempDir(), "service.pem")
+	writeCombinedPEM(t, path)
+	s.cfg.WebUI.TLSCert = path
+	s.cfg.WebUI.TLSKey = path
+	// The occupied listener is the first failure past certificate setup.
+	if err := s.Start(); !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("startup stopped before the listener: %v", err)
 	}
 }
 
