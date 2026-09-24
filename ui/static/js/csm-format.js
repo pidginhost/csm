@@ -191,7 +191,7 @@ function isValidIPv4(s) {
 }
 
 // IPv6 grammar: at most one "::" compression, 1-4 hex digits per group, an
-// optional embedded IPv4 allowed only as the final group (e.g. "::ffff:1.2.3.4").
+// optional embedded IPv4 allowed only as the final group (e.g. "::ffff:192.0.2.4").
 // Without "::" there must be exactly 8 groups; with "::" fewer than 8, since the
 // compression stands for one or more zero groups. The old check accepted any
 // string of hex and colons, so ":::::" and over-length addresses passed.
@@ -226,7 +226,7 @@ CSM.validateIP = function(s) {
 
 // Client-side CIDR validator: address part must be a valid IP and the prefix a
 // decimal length within range (0-32 for IPv4, 0-128 for IPv6). Rejects "/99",
-// "1.2.3.4/abc", and a missing prefix.
+// "192.0.2.4/abc", and a missing prefix.
 CSM.validateCIDR = function(s) {
     if (!s) return false;
     var slash = s.indexOf('/');
