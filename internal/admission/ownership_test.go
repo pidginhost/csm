@@ -273,3 +273,20 @@ func TestClaimValuesAreFrozen(t *testing.T) {
 		}
 	}
 }
+
+// The ledger stores this tracker encoding; see TestEvidenceEncodingAndIDAreFrozen.
+func TestGenerationsEncodingIsFrozen(t *testing.T) {
+	g := NewGenerations()
+	if _, err := g.Observe([]string{"bob", "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte(`{"v":1,"next":3,"live":{"alice":1,"bob":2}}`), 0x67, 0xdf, 0xae, 0x67, 0x0e, 0xe9, 0x85, 0xd8)
+	got, err := g.MarshalBinary()
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("encoding = %q %v, want %q", got, err, want)
+	}
+	var restored Generations
+	if err := restored.UnmarshalBinary(want); err != nil {
+		t.Fatalf("golden tracker does not decode: %v", err)
+	}
+}

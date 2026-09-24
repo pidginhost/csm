@@ -509,3 +509,38 @@ func TestRegisterRefusesUnknownSeverityFloor(t *testing.T) {
 		t.Error("a check with an unknown severity floor registered")
 	}
 }
+
+// The ledger stores these bytes under this ID. A change to the field names,
+// field order, checksum or ID derivation must be a deliberate format change
+// with a new version, never a side effect of a refactor.
+func TestEvidenceEncodingAndIDAreFrozen(t *testing.T) {
+	tp := newTestProducers(t)
+	inv, err := NewInventory(map[string]uint64{"alice": 4}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := sshInput(t)
+	in.Check = "reputation"
+	in.Owner = inv.Resolve(Claim{ClaimAccount, "alice"})
+	in.Intel = &IntelRef{Source: "feed", Expires: t0.Add(time.Hour)}
+	e, err := tp.reputation.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const body = `{"producer":"reputation_scan","entry":1,"check":"reputation","family":7,"basis":1,` +
+		`"finding_id":"0123456789abcdef","severity":2,"stream":"secure:dev=2049,ino=77","cursor":"offset=4096",` +
+		`"version":1,"observed_at":1790251200000000000,"parser":"sshd","parser_version":1,"target":"ip:192.0.2.1",` +
+		`"owner_account":"alice","owner_generation":4,"intel_source":"feed","intel_expires":1790254800000000000}`
+	want := append([]byte("E\x01"+body), 0xf8, 0x3a, 0xfb, 0x6f, 0xd3, 0x61, 0x55, 0x6c)
+	got, err := e.MarshalBinary()
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("encoding = %q %v, want %q", got, err, want)
+	}
+	if e.ID() != "ev_0420f53c6c1a4fbd02004e9f379171f8" {
+		t.Errorf("ID() = %s", e.ID())
+	}
+	back, err := UnmarshalEvidence(want)
+	if err != nil || !back.Equal(e) {
+		t.Errorf("golden record does not decode: %v", err)
+	}
+}
