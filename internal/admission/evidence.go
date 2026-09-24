@@ -142,6 +142,9 @@ func (e Evidence) ID() EvidenceID {
 // producer's entry and the check's current family and basis are recorded;
 // callers cannot choose them.
 func (p *Producer) Mint(in EvidenceInput) (Evidence, error) {
+	if p == nil || p.reg == nil {
+		return Evidence{}, refuse(ReasonPolicy, "producer is not registered")
+	}
 	spec, ok := p.reg.Spec(p.id)
 	if !ok {
 		return Evidence{}, refuse(ReasonPolicy, "producer is not registered")

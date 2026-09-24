@@ -1,7 +1,9 @@
 package admission
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"strings"
 	"testing"
 )
 
@@ -149,6 +151,7 @@ func TestGenerationsRoundTripAndRefuseCorruption(t *testing.T) {
 		"reused generation":  sealGenerations(t, `{"v":1,"next":3,"live":{"alice":1,"bob":1}}`),
 		"generation >= next": sealGenerations(t, `{"v":1,"next":2,"live":{"alice":2}}`),
 		"zero next":          sealGenerations(t, `{"v":1,"next":0,"live":{}}`),
+		"null inventory":     sealGenerations(t, `{"v":1,"next":3,"live":null}`),
 		"future version":     sealGenerations(t, `{"v":2,"next":1,"live":{}}`),
 		"unknown field":      sealGenerations(t, `{"v":1,"next":1,"live":{},"x":1}`),
 		"bad name":           sealGenerations(t, `{"v":1,"next":2,"live":{"a/b":1}}`),
@@ -158,8 +161,66 @@ func TestGenerationsRoundTripAndRefuseCorruption(t *testing.T) {
 	}
 	for name, b := range bodies {
 		var g2 Generations
+		if err := g2.UnmarshalBinary(data); err != nil {
+			t.Fatal(err)
+		}
 		if err := g2.UnmarshalBinary(b); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+		after, err := g2.MarshalBinary()
+		if err != nil || !bytes.Equal(after, data) {
+			t.Errorf("%s: refused restore changed tracker: %v", name, err)
+		}
+	}
+}
+
+func TestUninitializedGenerationsRefuseUse(t *testing.T) {
+	for _, names := range [][]string{nil, {"alice"}} {
+		t.Run(strings.Join(names, ","), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("uninitialized tracker panicked: %v", r)
+				}
+			}()
+			var g Generations
+			if _, err := g.Observe(names); err == nil {
+				t.Error("uninitialized tracker accepted an observation")
+			}
+			if _, err := g.MarshalBinary(); err == nil {
+				t.Error("uninitialized tracker encoded unusable state")
+			}
+			if g.next != 0 || g.live != nil {
+				t.Error("refusal changed the uninitialized tracker")
+			}
+		})
+	}
+}
+
+func TestOwnershipErrorsNeverEchoInput(t *testing.T) {
+	const marker = "untrusted_marker"
+	cases := map[string]func() error{
+		"account": func() error {
+			_, err := NewInventory(map[string]uint64{marker + "/": 1}, nil)
+			return err
+		},
+		"domain spelling": func() error {
+			_, err := NewInventory(nil, map[string]string{marker + ".EXAMPLE": "alice"})
+			return err
+		},
+		"domain owner": func() error {
+			_, err := NewInventory(nil, map[string]string{marker + ".example": "alice"})
+			return err
+		},
+		"unknown field": func() error {
+			return NewGenerations().UnmarshalBinary(sealGenerations(t, `{"v":1,"next":1,"live":{},"`+marker+`":1}`))
+		},
+		"wrong field type": func() error {
+			return NewGenerations().UnmarshalBinary(sealGenerations(t, `{"v":1,"next":1,"live":{"`+marker+`":[]}}`))
+		},
+	}
+	for name, call := range cases {
+		if err := call(); err == nil || strings.Contains(err.Error(), marker) {
+			t.Errorf("%s: expected a refusal without input text, got %v", name, err)
 		}
 	}
 }

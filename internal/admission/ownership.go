@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"math"
 	"sort"
 	"strconv"
@@ -101,17 +101,17 @@ func NewInventory(accounts map[string]uint64, domains map[string]string) (*Inven
 	inv := &Inventory{accounts: make(map[string]uint64, len(accounts)), domains: make(map[string]string, len(domains))}
 	for name, gen := range accounts {
 		if !ValidAccountName(name) || gen == 0 {
-			return nil, fmt.Errorf("inventory account entry %q has an invalid name or zero generation", name)
+			return nil, errors.New("inventory account entry has an invalid name or zero generation")
 		}
 		inv.accounts[name] = gen
 	}
 	for domain, owner := range domains {
 		d := canonicalDomain(domain)
 		if d == "" || d != domain {
-			return nil, fmt.Errorf("inventory domain %q is empty or not canonical", domain)
+			return nil, errors.New("inventory domain is empty or not canonical")
 		}
 		if _, ok := inv.accounts[owner]; !ok {
-			return nil, fmt.Errorf("inventory domain %q names an unlisted account", domain)
+			return nil, errors.New("inventory domain names an unlisted account")
 		}
 		inv.domains[d] = owner
 	}
@@ -168,7 +168,9 @@ func (inv *Inventory) Current(o Owner) bool {
 // while it appears in consecutive complete observations; a name that
 // disappears and returns gets a new one, so an observed recreation never
 // inherits the old account's scope. Unobserved replacement requires a
-// platform incarnation identity before this tracker can be used live. Generations are never reused.
+// platform incarnation identity before this tracker can be used live. Generations
+// are never reused. Initialize with NewGenerations or a successful UnmarshalBinary
+// before observing or encoding; the zero value cannot allocate identities.
 type Generations struct {
 	next uint64
 	live map[string]uint64
@@ -182,10 +184,13 @@ func NewGenerations() *Generations {
 // current name-to-generation map. Callers must not pass a partial
 // observation: a transient read failure would retire every missing account.
 func (g *Generations) Observe(names []string) (map[string]uint64, error) {
+	if g.next == 0 {
+		return nil, errors.New("inventory generation tracker is not initialized")
+	}
 	present := make(map[string]bool, len(names))
 	for _, name := range names {
 		if !ValidAccountName(name) {
-			return nil, fmt.Errorf("inventory observation has an invalid account name")
+			return nil, errors.New("inventory observation has an invalid account name")
 		}
 		present[name] = true
 	}
@@ -196,7 +201,7 @@ func (g *Generations) Observe(names []string) (map[string]uint64, error) {
 		}
 	}
 	if newCount > math.MaxUint64-g.next {
-		return nil, fmt.Errorf("inventory generation counter is exhausted")
+		return nil, errors.New("inventory generation counter is exhausted")
 	}
 	for name := range g.live {
 		if !present[name] {
@@ -232,6 +237,9 @@ const generationsVersion = 1
 // MarshalBinary encodes the tracker as versioned JSON followed by an 8-byte
 // SHA-256 prefix of that JSON.
 func (g *Generations) MarshalBinary() ([]byte, error) {
+	if g.next == 0 {
+		return nil, errors.New("inventory generation tracker is not initialized")
+	}
 	body, err := json.Marshal(generationsRecord{V: generationsVersion, Next: g.next, Live: g.live})
 	if err != nil {
 		return nil, err
@@ -245,37 +253,37 @@ func (g *Generations) MarshalBinary() ([]byte, error) {
 // would hand every account a fresh generation.
 func (g *Generations) UnmarshalBinary(data []byte) error {
 	if len(data) < 8 {
-		return fmt.Errorf("generations record is truncated")
+		return errors.New("generations record is truncated")
 	}
 	body, sum := data[:len(data)-8], data[len(data)-8:]
 	if want := sha256.Sum256(body); !bytes.Equal(sum, want[:8]) {
-		return fmt.Errorf("generations record checksum mismatch")
+		return errors.New("generations record checksum mismatch")
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	var rec generationsRecord
 	if err := dec.Decode(&rec); err != nil {
-		return fmt.Errorf("generations record does not decode: %w", err)
+		return errors.New("generations record does not decode")
 	}
 	canonical, err := json.Marshal(rec)
 	if err != nil || !bytes.Equal(canonical, body) {
-		return fmt.Errorf("generations record is not in canonical form")
+		return errors.New("generations record is not in canonical form")
 	}
 	if rec.V != generationsVersion {
-		return fmt.Errorf("generations record version %d is not supported", rec.V)
+		return errors.New("generations record version is not supported")
 	}
 	if rec.Next == 0 {
-		return fmt.Errorf("generations record has no next generation")
+		return errors.New("generations record has no next generation")
+	}
+	if rec.Live == nil {
+		return errors.New("generations record has no inventory")
 	}
 	used := make(map[uint64]bool, len(rec.Live))
 	for name, gen := range rec.Live {
 		if !ValidAccountName(name) || gen == 0 || gen >= rec.Next || used[gen] {
-			return fmt.Errorf("generations record has an invalid entry")
+			return errors.New("generations record has an invalid entry")
 		}
 		used[gen] = true
-	}
-	if rec.Live == nil {
-		rec.Live = map[string]uint64{}
 	}
 	g.next, g.live = rec.Next, rec.Live
 	return nil

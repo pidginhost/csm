@@ -2,6 +2,7 @@ package admission
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"net/netip"
 	"testing"
 )
@@ -49,16 +50,75 @@ func FuzzUnmarshalEvidence(f *testing.F) {
 	f.Add(seed)
 	f.Add([]byte("E\x01{}"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		got, err := UnmarshalEvidence(data)
-		if err != nil {
-			return
+		check := func(data []byte) {
+			got, err := UnmarshalEvidence(data)
+			if err != nil {
+				if _, ok := ReasonOf(err); !ok {
+					t.Fatalf("refusal without a reason: %v", err)
+				}
+				return
+			}
+			again, err := got.MarshalBinary()
+			if err != nil || !bytes.Equal(again, data) {
+				t.Fatal("accepted a non-canonical record")
+			}
+			if err := validateRecord(got.rec); err != nil {
+				t.Fatalf("accepted an invalid record: %v", err)
+			}
+			if got.Target().IsZero() {
+				t.Fatal("accepted a record without a target")
+			}
 		}
-		again, err := got.MarshalBinary()
-		if err != nil || !bytes.Equal(again, data) {
-			t.Fatalf("accepted a non-canonical record")
-		}
-		if got.Target().IsZero() {
-			t.Fatalf("accepted a record without a target")
+		check(data)
+		// Mutations must also reach the decoder past the corruption check.
+		if len(data) >= 12 && len(data) <= MaxEvidenceBytes {
+			check(resealFuzzRecord(data))
 		}
 	})
+}
+
+func FuzzGenerations(f *testing.F) {
+	g := NewGenerations()
+	if _, err := g.Observe([]string{"alice"}); err != nil {
+		f.Fatal(err)
+	}
+	seed, err := g.MarshalBinary()
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(seed)
+	f.Add(resealFuzzRecord(append([]byte(`{"v":1,"next":2,"live":null}`), make([]byte, 8)...)))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		check := func(data []byte) {
+			var restored Generations
+			if err := restored.UnmarshalBinary(seed); err != nil {
+				t.Fatal(err)
+			}
+			err := restored.UnmarshalBinary(data)
+			after, encodeErr := restored.MarshalBinary()
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			if err != nil {
+				if !bytes.Equal(after, seed) {
+					t.Fatal("refused restore changed the tracker")
+				}
+			} else if !bytes.Equal(after, data) {
+				t.Fatal("accepted a non-canonical tracker")
+			}
+		}
+		check(data)
+		if len(data) >= 8 {
+			check(resealFuzzRecord(data))
+		}
+	})
+}
+
+// Both persisted formats end with an eight-byte checksum.
+func resealFuzzRecord(data []byte) []byte {
+	out := append([]byte(nil), data...)
+	head := out[:len(out)-8]
+	sum := sha256.Sum256(head)
+	copy(out[len(head):], sum[:8])
+	return out
 }

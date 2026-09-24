@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -256,5 +257,42 @@ func TestAssessReputationFeedsDoNotMultiplyRoots(t *testing.T) {
 	a, err = Assess(addr, []Evidence{one, two, local, mail}, t0)
 	if err != nil || a.Tier.Class != ClassC3 || !a.Corroborated || a.DirectC3 {
 		t.Fatalf("multiple supports must raise only once: %+v %v", a, err)
+	}
+}
+
+func TestAssessIgnoresOrderingAndIdenticalDuplicates(t *testing.T) {
+	tp := newTestProducers(t)
+	addr := mustAddr(t, "192.0.2.1")
+	local := mintRoot(t, t0, rootSpec{p: tp.ssh, check: "ssh_brute", target: "192.0.2.1", age: time.Hour, cursor: "local"})
+	mail := mintRoot(t, t0, rootSpec{p: tp.mail, check: "mail_brute", target: "192.0.2.1", age: 23*time.Hour + 30*time.Minute, cursor: "mail", sev: SeverityCritical})
+	reputation := mintRoot(t, t0, rootSpec{p: tp.reputation, check: "reputation", target: "192.0.2.1", age: 3 * time.Hour, cursor: "rep", intel: 3*time.Hour + time.Minute})
+	direct := mintRoot(t, t0, rootSpec{p: tp.mail, check: "mail_takeover", target: "192.0.2.1", cursor: "direct", sev: SeverityWarning})
+	for _, roots := range [][]Evidence{{local, mail, reputation}, {local, mail, reputation, direct}} {
+		want, err := Assess(addr, roots, t0)
+		if err != nil || want.Tier != (Tier{ClassC3, SeverityHigh}) || want.DirectC3 != (len(roots) == 4) || want.Corroborated == want.DirectC3 {
+			t.Fatalf("unexpected baseline assessment: %+v %v", want, err)
+		}
+		var permute func(int)
+		permute = func(i int) {
+			if i == len(roots) {
+				// Every duplicate count through the input bound must preserve
+				// the complete assessment, including deadlines and sorted IDs.
+				input := append([]Evidence(nil), roots...)
+				for len(input) <= MaxRoots {
+					got, err := Assess(addr, input, t0)
+					if err != nil || !reflect.DeepEqual(got, want) {
+						t.Fatalf("ordering or duplication changed assessment: %+v %v; want %+v", got, err, want)
+					}
+					input = append(input, roots[len(input)%len(roots)])
+				}
+				return
+			}
+			for j := i; j < len(roots); j++ {
+				roots[i], roots[j] = roots[j], roots[i]
+				permute(i + 1)
+				roots[i], roots[j] = roots[j], roots[i]
+			}
+		}
+		permute(0)
 	}
 }

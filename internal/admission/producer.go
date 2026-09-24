@@ -97,34 +97,34 @@ func (r *Registry) Register(spec ProducerSpec) (*Producer, error) {
 	defer r.mu.Unlock()
 	switch {
 	case r.sealed:
-		return nil, fmt.Errorf("producer %q registered after the registry was sealed", spec.ID)
+		return nil, fmt.Errorf("producer registered after the registry was sealed")
 	case !ValidProducerID(spec.ID):
-		return nil, fmt.Errorf("invalid producer ID %q", spec.ID)
+		return nil, fmt.Errorf("invalid producer ID")
 	case !spec.Entry.Valid():
-		return nil, fmt.Errorf("producer %q has an unknown entry", spec.ID)
+		return nil, fmt.Errorf("producer has an unknown entry")
 	case !spec.Observation.Valid():
-		return nil, fmt.Errorf("producer %q has an unknown observation kind", spec.ID)
+		return nil, fmt.Errorf("producer has an unknown observation kind")
 	case len(spec.Checks) == 0 || len(spec.Checks) > maxProducerChecks:
-		return nil, fmt.Errorf("producer %q must publish 1-%d checks", spec.ID, maxProducerChecks)
+		return nil, fmt.Errorf("producer must publish 1-%d checks", maxProducerChecks)
 	}
 	if _, dup := r.producers[spec.ID]; dup {
-		return nil, fmt.Errorf("producer %q is already registered", spec.ID)
+		return nil, fmt.Errorf("producer is already registered")
 	}
 	checks := make([]string, 0, len(spec.Checks))
 	seen := map[string]bool{}
 	for _, name := range spec.Checks {
 		canonical, p, ok := r.lookup(name)
 		if !ok || canonical != name {
-			return nil, fmt.Errorf("producer %q lists %q, which is not a canonical registered check", spec.ID, name)
+			return nil, fmt.Errorf("producer check is not a canonical registered check")
 		}
 		if p.Family == FamilyNone {
-			return nil, fmt.Errorf("producer %q lists %q, which carries no admissible address evidence", spec.ID, name)
+			return nil, fmt.Errorf("producer check carries no admissible address evidence")
 		}
 		if err := ValidPolicy(p.Family, p.Basis); err != nil {
-			return nil, fmt.Errorf("producer %q lists %q: %w", spec.ID, name, err)
+			return nil, fmt.Errorf("producer check has an invalid evidence policy")
 		}
 		if seen[name] {
-			return nil, fmt.Errorf("producer %q lists %q twice", spec.ID, name)
+			return nil, fmt.Errorf("producer check is repeated")
 		}
 		seen[name] = true
 		checks = append(checks, name)

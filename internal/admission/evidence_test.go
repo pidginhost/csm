@@ -3,6 +3,7 @@ package admission
 import (
 	"bytes"
 	"crypto/sha256"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +129,59 @@ func TestMintBindsProducerEntryAndPolicy(t *testing.T) {
 	}
 	if spare, _ := tp.spare.Mint(sshInput(t)); spare.Entry() != EntryIncident || spare.ID() == e.ID() {
 		t.Error("evidence is not bound to its producer's entry and identity")
+	}
+}
+
+func TestMintWithoutRegisteredProducerRefuses(t *testing.T) {
+	for name, p := range map[string]*Producer{"nil": nil, "zero": {}} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("unissued producer panicked: %v", r)
+				}
+			}()
+			e, err := p.Mint(sshInput(t))
+			wantReason(t, "unissued producer", err, ReasonPolicy)
+			if !e.Equal(Evidence{}) {
+				t.Error("unissued producer returned evidence")
+			}
+		})
+	}
+}
+
+func TestRegistrationErrorsNeverEchoInput(t *testing.T) {
+	const marker = "untrusted_marker"
+	good := ProducerSpec{ID: marker, Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}}
+	cases := map[string]func(*Registry, *ProducerSpec){
+		"invalid ID":      func(_ *Registry, s *ProducerSpec) { s.ID += "/" },
+		"entry":           func(_ *Registry, s *ProducerSpec) { s.Entry = 0 },
+		"observation":     func(_ *Registry, s *ProducerSpec) { s.Observation = 0 },
+		"no checks":       func(_ *Registry, s *ProducerSpec) { s.Checks = nil },
+		"unknown check":   func(_ *Registry, s *ProducerSpec) { s.Checks = []string{marker} },
+		"no evidence":     func(_ *Registry, s *ProducerSpec) { s.Checks = []string{"login_audit"} },
+		"duplicate check": func(_ *Registry, s *ProducerSpec) { s.Checks = []string{"ssh_brute", "ssh_brute"} },
+		"sealed registry": func(r *Registry, _ *ProducerSpec) { r.Seal() },
+		"duplicate producer": func(r *Registry, _ *ProducerSpec) {
+			if _, err := r.Register(good); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"invalid policy": func(r *Registry, _ *ProducerSpec) {
+			r.lookup = func(check string) (string, Policy, bool) {
+				return check, Policy{FamilyReputation, BasisCompromise}, true
+			}
+		},
+	}
+	for name, setup := range cases {
+		r, err := NewRegistry(testLookup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := good
+		setup(r, &spec)
+		if _, err := r.Register(spec); err == nil || strings.Contains(err.Error(), marker) {
+			t.Errorf("%s: expected a refusal without input text, got %v", name, err)
+		}
 	}
 }
 
@@ -258,7 +312,15 @@ func TestEvidenceRoundTripsAndRefusesTampering(t *testing.T) {
 		"future version": append([]byte{'E', 2}, data[2:]...),
 		"unknown field":  reseal(strings.Replace(body, `{"producer"`, `{"x":1,"producer"`, 1)),
 		"trailing value": reseal(body + "{}"),
+		"trailing close": reseal(body + "}"),
+		"leading space":  reseal(" " + body),
+		"trailing space": reseal(body + "\n"),
 		"spaced":         reseal(strings.Replace(body, `"entry":1`, `"entry": 1`, 1)),
+		"duplicate key":  reseal(strings.Replace(body, `"entry":1`, `"entry":1,"entry":1`, 1)),
+		"case alias":     reseal(strings.Replace(body, `"entry":1`, `"Entry":1`, 1)),
+		"escaped key":    reseal(strings.Replace(body, `"entry":1`, `"\u0065ntry":1`, 1)),
+		"omitted zero":   reseal(strings.Replace(body, `"entry":1`, `"intel_expires":0,"entry":1`, 1)),
+		"null optional":  reseal(strings.Replace(body, `"entry":1`, `"intel_source":null,"entry":1`, 1)),
 		"no family":      reseal(strings.Replace(body, `"family":4`, `"family":0`, 1)),
 		"host with gen":  reseal(strings.Replace(body, `"owner_account":"alice",`, ``, 1)),
 		"mapped target":  reseal(strings.Replace(body, `"ip:192.0.2.1"`, `"ip:::ffff:192.0.2.1"`, 1)),
@@ -271,6 +333,48 @@ func TestEvidenceRoundTripsAndRefusesTampering(t *testing.T) {
 	}
 	if bytes.Contains(data, []byte("0123456789abcdef")) == false {
 		t.Error("encoding lost the finding link")
+	}
+}
+
+func TestEvidenceTimeNanosecondBoundaries(t *testing.T) {
+	tp := newTestProducers(t)
+	latest := time.Unix(0, math.MaxInt64)
+	for _, observed := range []time.Time{time.Unix(0, 1), latest} {
+		in := sshInput(t)
+		in.ObservedAt = observed
+		e, err := tp.ssh.Mint(in)
+		if err != nil || !e.ObservedAt().Equal(observed) {
+			t.Fatalf("representable observation changed: %v", err)
+		}
+		data, err := e.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := UnmarshalEvidence(data)
+		if err != nil || !back.Equal(e) {
+			t.Fatalf("representable observation did not round-trip: %v", err)
+		}
+	}
+	in := sshInput(t)
+	in.Check = "reputation"
+	in.Intel = &IntelRef{Source: "feed", Expires: latest}
+	e, err := tp.reputation.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intel, ok := e.Intel(); !ok || !intel.Expires.Equal(latest) {
+		t.Fatal("representable intel expiry changed")
+	}
+	for _, outside := range []time.Time{latest.Add(time.Nanosecond), time.Unix(0, math.MinInt64).Add(-time.Nanosecond)} {
+		in := sshInput(t)
+		in.ObservedAt = outside
+		_, err := tp.ssh.Mint(in)
+		wantReason(t, "unrepresentable observation", err, ReasonInvalid)
+		in.ObservedAt = t0
+		in.Check = "reputation"
+		in.Intel = &IntelRef{Source: "feed", Expires: outside}
+		_, err = tp.reputation.Mint(in)
+		wantReason(t, "unrepresentable intel expiry", err, ReasonInvalid)
 	}
 }
 
