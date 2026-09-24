@@ -1,6 +1,8 @@
 package admission
 
 import (
+	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -100,6 +102,47 @@ func TestCanonicalPrefix(t *testing.T) {
 	}
 	_, err := CanonicalPrefix("2001:db8::/48", Caps{})
 	wantReason(t, "IPv6 prefix without capability", err, ReasonUnsupportedContainment)
+}
+
+// A supernet of the mapped range cannot be unmapped as one IPv4 prefix.
+// Non-mapped host bits must not let it bypass the mapped-prefix refusal.
+func TestPrefixesSpanningMappedIPv4AreRefused(t *testing.T) {
+	mapped := netip.MustParseAddr("::ffff:192.0.2.1")
+	for bits := 81; bits < 96; bits++ {
+		network := netip.PrefixFrom(mapped, bits).Masked()
+		for _, addr := range []netip.Addr{network.Addr(), network.Addr().Next(), mapped} {
+			raw := addr.String() + "/" + strconv.Itoa(bits)
+			t.Run(raw, func(t *testing.T) {
+				for _, caps := range []Caps{{}, v6} {
+					got, err := CanonicalPrefix(raw, caps)
+					wantReason(t, "CanonicalPrefix", err, ReasonInvalid)
+					if !got.IsZero() {
+						t.Errorf("refused prefix returned target %q", got.Key())
+					}
+					got, err = ParseTargetKey("net:"+raw, caps)
+					wantReason(t, "ParseTargetKey", err, ReasonInvalid)
+					if !got.IsZero() {
+						t.Errorf("refused key returned target %q", got.Key())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPrefixesAdjacentToMappedIPv4RemainNative(t *testing.T) {
+	for _, raw := range []string{"::fffe:0:0/96", "::1:0:0:0/96"} {
+		got, err := CanonicalPrefix(raw, v6)
+		if err != nil || got.Key() != "net:"+raw || got.Prefix() != netip.MustParsePrefix(raw) {
+			t.Fatalf("CanonicalPrefix(%q) = %q %v", raw, got.Key(), err)
+		}
+		again, err := ParseTargetKey(got.Key(), v6)
+		if err != nil || again != got {
+			t.Errorf("adjacent prefix does not round-trip: %q %v", again.Key(), err)
+		}
+		_, err = CanonicalPrefix(raw, Caps{})
+		wantReason(t, "native prefix without capability", err, ReasonUnsupportedContainment)
+	}
 }
 
 func TestCanonicalService(t *testing.T) {

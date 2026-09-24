@@ -72,6 +72,8 @@ var protectedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("ff00::/8"),
 }
 
+var mappedIPv4Prefix = netip.MustParsePrefix("::ffff:0:0/96")
+
 func (t Target) IsZero() bool { return !t.prefix.IsValid() }
 
 // Prefix returns the masked prefix; a single address has full length.
@@ -144,8 +146,8 @@ func CanonicalAddress(raw string, caps Caps) (Target, error) {
 }
 
 // CanonicalPrefix parses one CIDR prefix and masks its host bits. A prefix
-// that overlaps a protected range, the default route, or a mapped prefix
-// reaching outside IPv4 is refused.
+// that overlaps a protected range, the default route, or both native and
+// IPv4-mapped IPv6 is refused.
 func CanonicalPrefix(raw string, caps Caps) (Target, error) {
 	p, err := netip.ParsePrefix(raw)
 	if err != nil {
@@ -166,6 +168,11 @@ func CanonicalPrefix(raw string, caps Caps) (Target, error) {
 		if protected.Overlaps(p) {
 			return Target{}, refuse(ReasonProtected, "prefix overlaps an unspecified, loopback, link-local, multicast or broadcast range")
 		}
+	}
+	// A native base address can still span mapped IPv4 addresses. Such a
+	// prefix cannot be represented by one target after unmapping.
+	if p.Overlaps(mappedIPv4Prefix) {
+		return Target{}, refuse(ReasonInvalid, "prefix spans native and IPv4-mapped IPv6")
 	}
 	if err := checkFamily(addr, caps); err != nil {
 		return Target{}, err
