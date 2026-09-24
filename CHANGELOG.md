@@ -11,7 +11,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
-- The Web UI accepts combined certificate and private-key files again. Renewing a CSM-generated certificate in a combined file preserves the key and the rest of the bundle.
 - Web UI severity filters, date sorting and live notifications now follow the updated API contract. Failed actions and encoding errors return errors, and capped lists report missing results.
 - Web UI tables, desktop notifications, the incident timeline and merged IP reputation findings now compare times as instants instead of as text, which misordered entries from different time zones or within the same second.
 - The incident timeline, UI audit log, threat event, top attacker and ModSecurity event APIs now say when entries were left out, and the incident timeline no longer reports its page size as the total.
@@ -85,7 +84,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 ### Security
 
 - Web UI activity tracking and request checks now keep idle sessions from lingering while preserving normal operator actions. Certificate renewal preserves working keys and operator-managed files, and IPv6 rate limits handle scoped addresses consistently.
-- The self-signed Web UI certificate is now renewed automatically before it expires and served without a restart; a certificate installed by the operator is never replaced, and replacing its files takes effect without a restart.
+- The self-signed Web UI certificate is now renewed automatically before it expires and served without a restart; a certificate installed by the operator is never replaced, and replacing its files takes effect without a restart. Renewal in a combined certificate and key file keeps the key and the rest of the bundle.
 - The Web UI's Content-Security-Policy now also forbids plugins, <base> tags, framing and form posts to other sites, and the legacy browser XSS auditor, which could be abused to disable page scripts, is turned off.
 - CSRF tokens are now bound to the browser session instead of shared by every browser until the daemon restarts, and a form token is accepted only from the request body, not the query string.
 - A loopback origin such as https://localhost:9443 is now trusted only when it is the origin the request was sent to, so another local web service in the same browser can no longer make authenticated requests to the Web UI.
