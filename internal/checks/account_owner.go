@@ -42,26 +42,40 @@ func domainAccountOwner(domain string) string {
 }
 
 func loadDomainOwners() map[string]string {
-	out := make(map[string]string)
 	data, err := osFS.ReadFile("/etc/userdomains")
 	if err != nil {
-		return out
+		return make(map[string]string)
 	}
+	return parseUserDomains(data)
+}
+
+// parseUserDomains preserves the legacy last-row-wins domain lookup.
+func parseUserDomains(data []byte) map[string]string {
+	out := make(map[string]string)
 	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+		domain, owner := parseUserDomain(line)
+		if domain != "" && owner != "nobody" {
+			out[domain] = owner
 		}
-		idx := strings.LastIndexByte(line, ':')
-		if idx <= 0 {
-			continue
-		}
-		dom := strings.ToLower(strings.TrimSpace(line[:idx]))
-		owner := strings.TrimSpace(line[idx+1:])
-		if dom == "" || dom == "*" || owner == "" || owner == "nobody" {
-			continue
-		}
-		out[dom] = owner
 	}
 	return out
+}
+
+// parseUserDomain preserves unlisted owners so strict readers can detect
+// conflicting rows before filtering owners. Empty and wildcard rows are ignored.
+func parseUserDomain(line string) (string, string) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", ""
+	}
+	idx := strings.LastIndexByte(line, ':')
+	if idx <= 0 {
+		return "", ""
+	}
+	domain := strings.ToLower(strings.TrimSpace(line[:idx]))
+	owner := strings.TrimSpace(line[idx+1:])
+	if domain == "" || domain == "*" || owner == "" {
+		return "", ""
+	}
+	return domain, owner
 }
