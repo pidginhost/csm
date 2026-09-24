@@ -39,7 +39,11 @@ func staleTimeKey(k string) bool {
 	case "time_ago", "expires_in", "uptime", "elapsed", "duration", "oldest_age", "update_interval", "hour":
 		return true
 	}
-	return strings.HasSuffix(k, "_ago") || strings.HasSuffix(k, "_iso")
+	if strings.HasSuffix(k, "_ago") || strings.HasSuffix(k, "_iso") {
+		return true
+	}
+	// A duration in seconds is named *_seconds, not seconds_* or *_sec.
+	return (strings.Contains(k, "seconds") || strings.HasSuffix(k, "_sec")) && !strings.HasSuffix(k, "_seconds")
 }
 
 // timeContractProblems walks a JSON body. Every instant is an RFC 3339
@@ -244,6 +248,8 @@ func TestTimeContractCatchesOldForms(t *testing.T) {
 		`{"uptime":"3h2m1s"}`,
 		`{"expires_in":"1h2m"}`,
 		`{"items":[{"updated":1779743255}]}`,
+		`{"automation":{"firewall_rollback_seconds_remaining":5}}`,
+		`{"uptime_sec":5}`,
 	} {
 		if len(timeContractProblems([]byte(body))) == 0 {
 			t.Errorf("checker accepted %s", body)

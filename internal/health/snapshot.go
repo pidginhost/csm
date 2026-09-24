@@ -87,7 +87,7 @@ type AutomationStatus struct {
 	FirewallBlockedIPs            int               `json:"firewall_blocked_ips"`
 	FirewallBlockedSubnets        int               `json:"firewall_blocked_subnets"`
 	FirewallRollbackPending       bool              `json:"firewall_rollback_pending"`
-	FirewallRollbackSecondsRemain int64             `json:"firewall_rollback_seconds_remaining,omitempty"`
+	FirewallRollbackSecondsRemain int64             `json:"firewall_rollback_remaining_seconds,omitempty"`
 	LastAction                    *AutomationAction `json:"last_action,omitempty"`
 }
 

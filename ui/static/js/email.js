@@ -247,7 +247,7 @@
                 var pf = data.port_flood[i];
                 var pfRow = document.createElement('div');
                 pfRow.className = 'small text-muted';
-                pfRow.textContent = 'Port ' + pf.port + ': ' + pf.hits + ' / ' + pf.seconds + 's';
+                pfRow.textContent = 'Port ' + pf.port + ': ' + pf.hits + ' / ' + pf.window_seconds + 's';
                 el.appendChild(pfRow);
             }
         }

@@ -40,7 +40,7 @@ type portFloodEntry struct {
 	Port    int    `json:"port"`
 	Proto   string `json:"proto"`
 	Hits    int    `json:"hits"`
-	Seconds int    `json:"seconds"`
+	Seconds int    `json:"window_seconds"`
 }
 
 type senderEntry struct {
