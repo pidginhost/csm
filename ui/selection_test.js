@@ -18,6 +18,29 @@ function tick(page, el) {
     el.dispatchEvent(new page.window.Event('change'));
 }
 
+test('ModSecurity keeps icon spacing when selection rebuilds the disable label', async () => {
+    const page = loadPage(templateBody('modsec'), SHARED.concat(['modsec.js']));
+    page.respond('/api/v1/modsec/blocks', 200, items([
+        { ip: '192.0.2.1', rule_id: '900112', hits: 1 },
+        { ip: '192.0.2.2', rule_id: '900113', hits: 1 }
+    ]));
+    await settle();
+    const btn = page.document.getElementById('modsec-bulk-disable');
+    const boxes = page.document.querySelectorAll('.modsec-block-cb');
+    assert.equal(boxes.length, 2);
+    for (const [index, selected, label] of [
+        [0, 1, 'Disable 1 rule'], [1, 2, 'Disable 2 rules'],
+        [1, 1, 'Disable 1 rule'], [0, 0, 'Disable Selected']
+    ]) {
+        tick(page, boxes[index]);
+        assert.ok(btn.querySelector('.ti-circle-off'), 'the rebuilt button lost its icon');
+        // A plain leading space collapses in the anonymous flex item.
+        assert.equal(btn.textContent, '\u00a0' + label);
+        assert.equal(btn.disabled, selected === 0);
+        assert.equal(btn.classList.contains('d-none'), selected === 0);
+    }
+});
+
 test('Findings select-all shows a partial selection and follows the fix button', async () => {
     const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js']));
     page.respond('/api/v1/findings/enriched', 200, { items: [

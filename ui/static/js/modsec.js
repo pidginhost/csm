@@ -163,7 +163,7 @@
         var icon = document.createElement('i');
         icon.className = 'ti ti-circle-off';
         btn.appendChild(icon);
-        btn.appendChild(document.createTextNode(n > 0 ? ' Disable ' + n + ' ' + (n === 1 ? 'rule' : 'rules') : ' Disable Selected'));
+        btn.appendChild(document.createTextNode(n > 0 ? '\u00a0Disable ' + n + ' ' + (n === 1 ? 'rule' : 'rules') : '\u00a0Disable Selected'));
         btn.disabled = (n === 0);
         btn.classList.toggle('d-none', n === 0);
     }
