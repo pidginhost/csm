@@ -155,9 +155,6 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - The capability matrix and `csm privileges` now show a risk tier for every privileged operation, from read-only detection to destructive responses.
 - The finding-stream tool can anonymize the action and firewall audit logs alongside a recording and write a manifest of digests, join counts and missing streams. Rows it cannot classify refuse the run, and a failed run leaves earlier output in place.
 - A replay tool runs a recorded finding stream through a model of the current automatic block limit, retry queue and temporary deny limit, and reports aggregate outcomes with the assumptions they rest on and the block paths it leaves out. Reports never replace an existing file, including one created while the replay runs.
-
-### Added
-
 - Findings, Dashboard and Incidents now react to new findings as they are dispatched, over the Web UI's event stream, and their timed checks slow to a once-a-minute safety net while the stream is connected.
 - Finding and incident rows, finding group headers and sortable table headers now work from the keyboard, sorted headers report their order to screen readers, and on Findings o or Enter opens the finding selected with j and k.
 - Correlated incidents can now be selected and marked contained, resolved or dismissed together; the change stops at the first failure and reports how many were updated.
